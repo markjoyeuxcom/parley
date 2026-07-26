@@ -1,0 +1,1054 @@
+/* Surface-specific layout: Grid, Parley, Loops. */
+
+/* ── Grid ────────────────────────────────────────────────────────────────── */
+
+.grid-surface {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg-canvas);
+}
+
+.grid-canvas {
+  flex: 1;
+  min-height: 0;
+  padding: var(--s5);
+  display: flex;
+}
+
+.split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  gap: var(--s3);
+}
+
+.split--column {
+  flex-direction: column;
+}
+
+/* Drag handle between panes. Invisible until hovered — the gap itself is the
+   affordance, and a visible bar in every seam would fragment a 16-pane grid. */
+.split__handle {
+  flex: 0 0 3px;
+  border-radius: var(--r-pill);
+  background: transparent;
+  cursor: col-resize;
+  transition: background var(--fast) var(--ease);
+}
+
+.split--column > .split__handle {
+  cursor: row-resize;
+}
+
+.split__handle:hover,
+.split__handle.is-dragging {
+  background: var(--accent-line);
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-terminal);
+  overflow: hidden;
+  transition: border-color var(--fast) var(--ease);
+}
+
+.pane.is-focused {
+  border-color: var(--accent-line);
+}
+
+.pane.is-drop-target {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.pane__chrome {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  height: 30px;
+  padding: 0 var(--s3) 0 var(--s4);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.pane__title {
+  font-size: var(--text-tiny);
+  font-weight: 530;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.pane__term {
+  flex: 1;
+  min-height: 0;
+  padding: var(--s4) 0 var(--s2) var(--s4);
+  overflow: hidden;
+}
+
+.pane__term .xterm {
+  height: 100%;
+}
+
+.pane__term .xterm-viewport {
+  background: transparent !important;
+}
+
+/* A slot restored from a saved layout whose process has not been started.
+   Quiet — it is a placeholder, not an error. */
+.pane__idle {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s4);
+  background: var(--bg-sunken);
+  padding: var(--s6);
+  text-align: center;
+}
+
+.pane__idle-title {
+  font-size: var(--text-small);
+  font-weight: 550;
+  color: var(--text-secondary);
+}
+
+.pane__idle-body {
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+}
+
+/* Skills rail: drag one onto a pane to run it there. */
+.skill-rail {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  overflow-x: auto;
+  padding: var(--s3) var(--s6);
+  border-top: 1px solid var(--line);
+  background: var(--bg-canvas);
+  flex-shrink: 0;
+  min-height: 42px;
+}
+
+.skill-rail::-webkit-scrollbar {
+  height: 0;
+}
+
+.skill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s3);
+  height: 24px;
+  padding: 0 var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--text-tiny);
+  font-weight: 510;
+  white-space: nowrap;
+  cursor: grab;
+  transition:
+    border-color var(--fast) var(--ease),
+    color var(--fast) var(--ease);
+}
+
+.skill:hover {
+  border-color: var(--line-strong);
+  color: var(--text-primary);
+}
+
+.skill:active {
+  cursor: grabbing;
+}
+
+.skill.is-dragging {
+  opacity: 0.4;
+}
+
+/* ── Parley ──────────────────────────────────────────────────────────────── */
+
+/*
+ * Session layout.
+ *
+ * On a wide window this is the standard macOS three-pane developer-tool shape:
+ * sidebar │ conversation │ inspector. The verdict, findings and plan are the
+ * artifact the whole session exists to produce, so they get a column of their
+ * own that scrolls independently — not a short drawer competing with the
+ * transcript for vertical space.
+ *
+ * Below 1280px the inspector goes back under the transcript, because a 400px
+ * column would strangle both.
+ */
+.session__body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.session__body--split {
+  grid-template-rows: minmax(0, 1fr) minmax(0, 46%);
+}
+
+.session__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.session__inspector {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  background: var(--bg-sunken);
+}
+
+.session__inspector-inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s6);
+  padding: var(--s6);
+  /* Keeps the inspector readable if the window is stretched very wide. */
+  max-width: 820px;
+}
+
+.session__inspector-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding-bottom: var(--s1);
+}
+
+@media (min-width: 1280px) {
+  .session__body--split {
+    grid-template-columns: minmax(0, 1fr) clamp(400px, 36%, 620px);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .session__inspector {
+    border-top: none;
+    border-left: 1px solid var(--line);
+  }
+}
+
+/*
+ * Very wide windows. The transcript stays near its reading measure — stretching
+ * prose to 1200px would make it worse, not better — but the inspector is dense
+ * structured content (milestones, file lists, audit notes) that genuinely reads
+ * better with more room, so the extra width goes there rather than being left
+ * as a dead band down the middle.
+ */
+@media (min-width: 1800px) {
+  .session__body--split {
+    grid-template-columns: minmax(0, 1fr) clamp(620px, 40%, 860px);
+  }
+
+  .session__inspector-inner {
+    max-width: none;
+  }
+
+  .transcript__inner {
+    max-width: 880px;
+  }
+}
+
+.transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s7) var(--s8) var(--s9);
+}
+
+.transcript__inner {
+  max-width: 780px;
+  min-width: 0;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s8);
+}
+
+/* A turn is a left-ruled block, not a chat bubble. The rule colour identifies
+   the side, so the two voices are distinguishable while scanning without
+   reading the header. */
+.turn {
+  display: grid;
+  grid-template-columns: 2px minmax(0, 1fr);
+  gap: var(--s6);
+}
+
+.turn__rail {
+  border-radius: var(--r-pill);
+  background: var(--line);
+}
+
+.turn--a .turn__rail {
+  background: var(--side-a);
+}
+
+.turn--b .turn__rail {
+  background: var(--side-b);
+}
+
+.turn__content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.turn__header {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  flex-wrap: wrap;
+}
+
+.turn__stage {
+  font-size: var(--text-small);
+  font-weight: 590;
+  color: var(--text-primary);
+}
+
+.turn__body {
+  font-size: var(--text-body);
+  line-height: var(--leading-relaxed);
+  color: var(--text-primary);
+  user-select: text;
+  white-space: pre-wrap;
+  /* `anywhere` rather than `break-word`: only `anywhere` actually reduces the
+     element's min-content width, which is what stops a long unbroken token in a
+     transcript from widening its whole column. */
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.turn__body--pending {
+  color: var(--text-secondary);
+}
+
+.turn--interjection {
+  grid-template-columns: minmax(0, 1fr);
+  padding: var(--s5) var(--s6);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+}
+
+/* Composer for human interjections. */
+.composer {
+  border-top: 1px solid var(--line);
+  background: var(--bg-canvas);
+  padding: var(--s5) var(--s8);
+  flex-shrink: 0;
+}
+
+.composer__inner {
+  max-width: 780px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.composer__row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s4);
+}
+
+.composer__input {
+  flex: 1;
+  min-height: var(--control-h-lg);
+  max-height: 160px;
+  padding: 7px var(--s5);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-body);
+  line-height: var(--leading-normal);
+  resize: none;
+  user-select: text;
+}
+
+.composer__input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Verdict panel */
+
+.verdict {
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.verdict__head {
+  padding: var(--s6) var(--s6) var(--s5);
+  border-bottom: 1px solid var(--line-faint);
+}
+
+.verdict__decision {
+  font-size: var(--text-section);
+  font-weight: 590;
+  letter-spacing: var(--track-title);
+  line-height: var(--leading-tight);
+  color: var(--text-primary);
+  user-select: text;
+}
+
+.verdict__rationale {
+  margin-top: var(--s4);
+  font-size: var(--text-body);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
+  user-select: text;
+}
+
+.verdict__scores {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  padding: var(--s6);
+}
+
+.verdict__score-row {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s5);
+}
+
+.verdict__score-name {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+.dissent {
+  padding: var(--s5) var(--s6);
+  border-top: 1px solid var(--line-faint);
+  background: var(--caution-soft);
+}
+
+.dissent__body {
+  font-size: var(--text-small);
+  line-height: var(--leading-relaxed);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+/* Findings */
+
+.finding {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s5) var(--s6);
+  border-bottom: 1px solid var(--line-faint);
+}
+
+.finding:last-child {
+  border-bottom: none;
+}
+
+.finding__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+}
+
+.finding__title {
+  font-size: var(--text-body);
+  font-weight: 550;
+  color: var(--text-primary);
+  user-select: text;
+}
+
+.finding--dismissed .finding__title {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+  text-decoration-color: var(--line-strong);
+}
+
+.finding__detail {
+  font-size: var(--text-small);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
+  user-select: text;
+}
+
+.evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  margin-top: var(--s1);
+}
+
+.evidence__item {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 2px var(--s3);
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-faint);
+  color: var(--text-secondary);
+  user-select: text;
+}
+
+/* ── Loops ───────────────────────────────────────────────────────────────── */
+
+.caps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line-faint);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.cap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s5);
+  background: var(--bg-surface);
+}
+
+.cap__bar {
+  height: 3px;
+  border-radius: var(--r-pill);
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+
+.cap__fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--r-pill);
+  transition: width var(--normal) var(--ease);
+}
+
+.cap__fill.is-near {
+  background: var(--caution);
+}
+
+.cap__fill.is-spent {
+  background: var(--fail);
+}
+
+/* Iteration timeline */
+
+.iterations {
+  display: flex;
+  flex-direction: column;
+}
+
+.iteration {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: var(--s5);
+  padding: var(--s5) var(--s6);
+  border-bottom: 1px solid var(--line-faint);
+}
+
+.iteration:last-child {
+  border-bottom: none;
+}
+
+.iteration__index {
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-quaternary);
+  text-align: right;
+  padding-top: 1px;
+}
+
+.iteration__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  min-width: 0;
+}
+
+.iteration__summary {
+  font-size: var(--text-small);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.iteration__check {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: var(--leading-normal);
+  padding: var(--s4);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-faint);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-x: auto;
+  user-select: text;
+  max-height: 200px;
+}
+
+/* Milestones in the audited pipeline */
+
+.milestone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  padding: var(--s5) var(--s6);
+  border-bottom: 1px solid var(--line-faint);
+}
+
+.milestone:last-child {
+  border-bottom: none;
+}
+
+.milestone__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+}
+
+.milestone__index {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
+  font-size: var(--text-micro);
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.milestone__title {
+  font-size: var(--text-body);
+  font-weight: 550;
+  flex: 1;
+  min-width: 0;
+}
+
+.milestone__intent {
+  font-size: var(--text-small);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
+  user-select: text;
+}
+
+/* The auditor's disposition, quoted verbatim. Visually distinct from Parley's
+   own text because it is another agent's words, not the app's. */
+.audit-note {
+  font-size: var(--text-small);
+  line-height: var(--leading-relaxed);
+  padding: var(--s4) var(--s5);
+  border-left: 2px solid var(--line-strong);
+  background: var(--bg-sunken);
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+  color: var(--text-secondary);
+  user-select: text;
+  white-space: pre-wrap;
+}
+
+.audit-note--reject {
+  border-left-color: var(--fail);
+}
+
+.audit-note--revise {
+  border-left-color: var(--caution);
+}
+
+.audit-note--accept {
+  border-left-color: var(--pass);
+}
+
+/* ── Live run feed ────────────────────────────────────────────────────────
+   Reads as instrumentation, not as content: monospace, dim, fixed height. It is
+   there to answer "is it stuck or is it working?" at a glance and then be
+   ignored. */
+
+.run {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.run__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--line-faint);
+}
+
+.run__phase {
+  font-size: var(--text-micro);
+  font-weight: 620;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+
+.run__elapsed {
+  font-size: var(--text-tiny);
+  color: var(--text-secondary);
+}
+
+.run__count {
+  font-size: var(--text-micro);
+  color: var(--text-quaternary);
+}
+
+.run__empty {
+  padding: var(--s4);
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+}
+
+.run__feed {
+  max-height: 168px;
+  overflow-y: auto;
+  padding: var(--s3) var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.run__line {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: var(--s3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.run__time {
+  color: var(--text-quaternary);
+}
+
+.run__text {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* Approval gate — deliberately heavier than any other control in the app. */
+.gate {
+  border: 1px solid var(--caution);
+  border-radius: var(--r-lg);
+  background: var(--caution-soft);
+  padding: var(--s5) var(--s6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.gate__title {
+  font-size: var(--text-small);
+  font-weight: 620;
+  color: var(--text-primary);
+}
+
+.gate__body {
+  font-size: var(--text-small);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
+}
+
+.gate__paths {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+}
+
+/* ── Plan pipeline ──────────────────────────────────────────────────────────
+ *
+ * The stages a plan walks before a human sees it. Rendered as a fixed sequence
+ * rather than a spinner because the useful information is positional: you are
+ * here, of four, and these are still to come. A spinner cannot say that.
+ */
+.pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.pipeline__stages {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pipeline__stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+/* The bar is the stage. Colour carries state; the label just names it. */
+.pipeline__marker {
+  height: 3px;
+  border-radius: var(--r-pill);
+  background: var(--line);
+}
+
+.pipeline__label {
+  font-size: var(--text-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-quaternary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pipeline__stage--done .pipeline__marker {
+  background: var(--pass);
+}
+
+.pipeline__stage--done .pipeline__label {
+  color: var(--text-tertiary);
+}
+
+.pipeline__stage--active .pipeline__marker {
+  background: var(--accent);
+  animation: pipeline-pulse 1.6s ease-in-out infinite;
+}
+
+.pipeline__stage--active .pipeline__label {
+  color: var(--accent-text);
+  font-weight: 550;
+}
+
+@keyframes pipeline-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.32;
+  }
+}
+
+/* A stage that takes twenty minutes should not also be a mystery about what it
+   is for. */
+.pipeline__caption {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pipeline__stage--active .pipeline__marker {
+    animation: none;
+  }
+}
+
+/* ── Milestone fold ───────────────────────────────────────────────────────
+   A settled milestone collapses to its head. The head is a button, so it has
+   to be reset back to looking like the row it replaced. */
+
+.milestone__head--toggle {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.milestone__head--toggle > svg {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.milestone__head--toggle:hover .milestone__title {
+  color: var(--text-primary);
+}
+
+/* ── Verification outcome ─────────────────────────────────────────────────
+   Four states that mean different things, told apart by tone rather than by
+   a sentence the reader has to parse. */
+
+.verification {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.verification__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+}
+
+.verification__command {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* ── Review outcome ───────────────────────────────────────────────────────
+   Blocking findings stop the milestone; notes do not. reviewPassed is derived
+   from the blocking list being empty, so the two must never look alike. */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.review__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+}
+
+.review__blocking {
+  margin: 0;
+  padding: var(--s4) var(--s5) var(--s4) var(--s7);
+  border-left: 2px solid var(--fail);
+  background: var(--bg-sunken);
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+  font-size: var(--text-small);
+  line-height: var(--leading-relaxed);
+  color: var(--text-primary);
+  user-select: text;
+}
+
+.review__blocking li + li {
+  margin-top: var(--s3);
+}
+
+.review__notes-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s3);
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+.review__notes-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.review__notes {
+  margin: 0;
+  padding-left: var(--s7);
+  font-size: var(--text-small);
+  line-height: var(--leading-relaxed);
+  color: var(--text-tertiary);
+  user-select: text;
+}
+
+.review__record {
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.review__record > summary {
+  cursor: default;
+  color: var(--text-tertiary);
+}
+
+.review__record > summary:hover {
+  color: var(--text-secondary);
+}
+
+/* ── Audit dispositions ───────────────────────────────────────────────────
+   Finding, verdict, what changed. Previously one block of prose long enough
+   that it was read out of SQLite instead. */
+
+.dispositions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.dispositions__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-small);
+  line-height: var(--leading-relaxed);
+  user-select: text;
+}
+
+.dispositions__table td {
+  padding: var(--s4);
+  border-top: 1px solid var(--line-faint);
+  vertical-align: top;
+}
+
+.dispositions__table tr:first-child td {
+  border-top: none;
+}
+
+.dispositions__finding {
+  width: 38%;
+  color: var(--text-primary);
+}
+
+.dispositions__verdict {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.dispositions__note {
+  color: var(--text-secondary);
+}

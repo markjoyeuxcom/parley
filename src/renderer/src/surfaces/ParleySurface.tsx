@@ -1,0 +1,516 @@
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { Archive, ArchiveRestore, Hammer, Pause, Play, Plus, Send, Square, Trash2 } from 'lucide-react'
+import type { Id, InterjectionTarget, Session, Turn } from '@shared/domain'
+import { api } from '../lib/api'
+import { firstLine, formatTokens, relativeTime, shortPath, statusTone, VENDOR_LABEL } from '../lib/format'
+import { useStore } from '../state'
+import { DeleteSessionDialog } from '../components/DeleteSessionDialog'
+import { NewSessionDialog } from '../components/NewSessionDialog'
+import { NewPlanDialog, PlanPanel } from '../components/PlanPanel'
+import { FindingsPanel, VerdictPanel } from '../components/VerdictPanel'
+import { Chip, Dot, Empty, Label, Spinner } from '../components/ui'
+
+export function ParleySurface(): ReactNode {
+  const { state, dispatch, openSession, refreshSessions, attempt, notify } = useStore()
+  const [showNew, setShowNew] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<Session | null>(null)
+
+  const archive = async (session: Session): Promise<void> => {
+    const next = session.archivedAt === null
+    const done = await attempt(() => api.archiveSession(session.id, next))
+    if (!done) return
+    // Archiving what is currently open would leave a detail pane for a session
+    // no longer in the list beside it.
+    if (next && state.activeSessionId === session.id) {
+      dispatch({ type: 'activeSession', sessionId: null })
+    }
+    await refreshSessions()
+    notify('info', next ? 'Archived. Nothing was deleted — restore it any time.' : 'Restored.')
+  }
+
+  const toggleArchived = async (): Promise<void> => {
+    const next = !state.showArchived
+    dispatch({ type: 'showArchived', showArchived: next })
+    await refreshSessions(next)
+  }
+
+  return (
+    <div className="workspace">
+      <aside className="sidebar">
+        <div className="sidebar__header">
+          <Label>Sessions</Label>
+          <button className="btn btn--subtle btn--icon btn--sm" onClick={() => setShowNew(true)} title="New session">
+            <Plus size={13} strokeWidth={2} />
+          </button>
+        </div>
+
+        <div className="scroll-y">
+          {state.sessions.length === 0 ? (
+            <div style={{ padding: 'var(--s6)' }} className="field__hint">
+              No sessions yet. Put a decision to two CLIs and keep the record.
+            </div>
+          ) : (
+            <div className="list">
+              {state.sessions.map((session) => (
+                <SessionRow
+                  key={session.id}
+                  session={session}
+                  active={session.id === state.activeSessionId}
+                  onOpen={() => void openSession(session.id)}
+                  onArchive={() => void archive(session)}
+                  onDelete={() => setPendingDelete(session)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Only offered once something is actually hidden — an control that
+            reveals nothing is just noise in the corner. */}
+        {state.archivedCount > 0 ? (
+          <button className="sidebar__footer-btn" onClick={() => void toggleArchived()}>
+            {state.showArchived
+              ? 'Hide archived'
+              : `Show ${state.archivedCount} archived`}
+          </button>
+        ) : null}
+      </aside>
+
+      <div className="pane-column">
+        {state.activeSessionId ? (
+          <SessionView key={state.activeSessionId} />
+        ) : (
+          <Empty
+            title="Nothing selected"
+            body="Open a past session, or start a new one. Two CLIs from different model families argue to a scored verdict, and you keep the transcript, the dissent and the report."
+            action={
+              <button className="btn btn--primary" onClick={() => setShowNew(true)}>
+                <Plus size={12} strokeWidth={2} />
+                New session
+              </button>
+            }
+          />
+        )}
+      </div>
+
+      {showNew ? (
+        <NewSessionDialog
+          onClose={() => setShowNew(false)}
+          onStarted={(session) => {
+            dispatch({ type: 'surface', surface: 'parley' })
+            void refreshSessions()
+            void openSession(session.id)
+          }}
+        />
+      ) : null}
+
+      {pendingDelete ? (
+        <DeleteSessionDialog
+          session={pendingDelete}
+          onClose={() => setPendingDelete(null)}
+          onDeleted={() => {
+            const gone = pendingDelete.id
+            setPendingDelete(null)
+            if (state.activeSessionId === gone) dispatch({ type: 'activeSession', sessionId: null })
+            void refreshSessions()
+          }}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+function SessionRow({
+  session,
+  active,
+  onOpen,
+  onArchive,
+  onDelete,
+}: {
+  session: Session
+  active: boolean
+  onOpen: () => void
+  onArchive: () => void
+  onDelete: () => void
+}): ReactNode {
+  const tone = statusTone(session.status)
+  const live = session.status === 'running'
+  const archived = session.archivedAt !== null
+
+  return (
+    // A wrapper, because the row itself is a button and a button cannot contain
+    // one. The control is overlaid and revealed on hover or keyboard focus.
+    <div className="list-row">
+      <button className={`list-item ${active ? 'is-active' : ''}`} onClick={onOpen}>
+        <div className="list-item__top">
+          {live ? <Dot tone="dot--live" /> : <Dot tone={tone.tone.replace('chip--', 'dot--')} />}
+          <span className="list-item__title">{firstLine(session.matter, 64)}</span>
+        </div>
+        <div className="list-item__meta">
+          {session.mock ? <Chip tone="chip--caution">mock</Chip> : null}
+          {archived ? <Chip>archived</Chip> : null}
+          <span>{session.kind === 'review' ? 'Review' : 'Debate'}</span>
+          <span>·</span>
+          <span>{relativeTime(session.createdAt)}</span>
+          {session.project ? (
+            <>
+              <span>·</span>
+              <span className="truncate">{session.project}</span>
+            </>
+          ) : null}
+        </div>
+      </button>
+
+      {live ? null : (
+        <div className="list-row__actions">
+          {/* Delete is offered only once archived. Two deliberate steps, so
+              nothing is destroyed by one stray click while scrolling. */}
+          {archived ? (
+            <button
+              className="list-row__action list-row__action--danger"
+              onClick={onDelete}
+              title="Delete permanently"
+              aria-label="Delete session permanently"
+            >
+              <Trash2 size={12} strokeWidth={2} />
+            </button>
+          ) : null}
+          <button
+            className="list-row__action"
+            onClick={onArchive}
+            title={archived ? 'Restore to the list' : 'Archive — hides it, keeps the record'}
+            aria-label={archived ? 'Restore session' : 'Archive session'}
+          >
+            {archived ? <ArchiveRestore size={12} strokeWidth={2} /> : <Archive size={12} strokeWidth={2} />}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SessionView(): ReactNode {
+  const { state, attempt, notify, openPlan, dispatch } = useStore()
+  const detail = state.sessionDetail
+  const [showPlan, setShowPlan] = useState(false)
+
+  if (!detail) {
+    return (
+      <div className="empty">
+        <Spinner />
+      </div>
+    )
+  }
+
+  const { session, turns, verdict, findings, plans } = detail
+  const tone = statusTone(session.status)
+  const running = session.status === 'running'
+  const paused = session.status === 'paused'
+  const active = running || paused || session.status === 'stopping'
+
+  /** Whether there is anything to put in the inspector column yet. */
+  const hasOutcome = Boolean(verdict || findings.length || plans.length || state.planDetail)
+
+  const exportReport = async (): Promise<void> => {
+    const result = await attempt(() => api.exportReport(session.id))
+    if (result?.saved && result.path) notify('info', `Saved to ${result.path}`)
+  }
+
+  return (
+    <>
+      <div className="bar">
+        <Chip tone={tone.tone}>{tone.label}</Chip>
+        {session.mock ? (
+          <Chip tone="chip--caution" title="Produced by the mock adapters — not real work">
+            mock
+          </Chip>
+        ) : null}
+        <span className="truncate" style={{ fontSize: 'var(--text-small)', fontWeight: 530, minWidth: 0 }}>
+          {firstLine(session.matter, 110)}
+        </span>
+        <div className="spacer" />
+
+        {session.repoPath ? (
+          <Chip tone="chip--mono" title={session.repoPath}>
+            {shortPath(session.repoPath)}
+          </Chip>
+        ) : (
+          <Chip title="No repository attached — both sides run tool-free">no repo</Chip>
+        )}
+        <span className="dimmer tnum" style={{ fontSize: 'var(--text-tiny)' }}>
+          {formatTokens(session.usage)}
+        </span>
+
+        {active ? (
+          <>
+            {running ? (
+              <button
+                className="btn btn--sm"
+                onClick={() => void attempt(() => api.pauseSession(session.id))}
+                title="Pause at the next turn boundary"
+              >
+                <Pause size={12} strokeWidth={2} />
+                Pause
+              </button>
+            ) : paused ? (
+              <button className="btn btn--sm" onClick={() => void attempt(() => api.resumeSession(session.id))}>
+                <Play size={12} strokeWidth={2} />
+                Resume
+              </button>
+            ) : null}
+            <button
+              className="btn btn--sm btn--danger"
+              onClick={() => void attempt(() => api.stopSession(session.id))}
+              title="Kill the in-flight turn now"
+            >
+              <Square size={11} strokeWidth={2.5} />
+              Stop
+            </button>
+          </>
+        ) : null}
+
+        {/* Available even once a plan exists: a plan can go stale, and the
+            verdict is the durable artifact worth replanning from. */}
+        {verdict ? (
+          <button
+            className="btn btn--sm"
+            onClick={() => setShowPlan(true)}
+            title={plans.length ? 'Draft another plan from this verdict' : 'Turn this verdict into audited work'}
+          >
+            <Hammer size={12} strokeWidth={2} />
+            {plans.length ? 'New plan' : 'Plan work'}
+          </button>
+        ) : null}
+      </div>
+
+      <div className={hasOutcome ? 'session__body session__body--split' : 'session__body'}>
+        <div className="session__main">
+          <Transcript sessionId={session.id} turns={turns} streaming={state.streaming} />
+          {active ? <Composer sessionId={session.id} /> : null}
+        </div>
+
+        {hasOutcome ? (
+          <aside className="session__inspector">
+            <div className="session__inspector-inner">
+              <div className="session__inspector-head">
+                <Label>Outcome</Label>
+                <div className="spacer" />
+                {verdict ? (
+                  <span className="dimmer" style={{ fontSize: 'var(--text-micro)' }}>
+                    Immutable record
+                  </span>
+                ) : null}
+              </div>
+
+              {verdict ? <VerdictPanel verdict={verdict} onExport={() => void exportReport()} /> : null}
+              <FindingsPanel findings={findings} />
+
+              {/* Stays visible while a plan is open. It used to render only when
+                  nothing was open, so opening one plan hid the way to the other —
+                  and two plans per session (implementation, then remediation) is
+                  the normal case, not the exception. */}
+              {plans.length ? (
+                <div className="segmented" role="tablist" aria-label="Plans in this session">
+                  {plans.map((plan) => {
+                    const isOpen = state.planDetail?.plan.id === plan.id
+                    return (
+                      <button
+                        key={plan.id}
+                        role="tab"
+                        aria-selected={isOpen}
+                        className={isOpen ? 'segmented__item is-active' : 'segmented__item'}
+                        onClick={() => void openPlan(plan.id)}
+                      >
+                        {plan.kind}
+                        {plan.status !== 'complete' ? (
+                          <span className="segmented__count">{plan.status}</span>
+                        ) : null}
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : null}
+
+              {state.planDetail ? (
+                <PlanPanel
+                  detail={state.planDetail}
+                  onRefresh={() => void openPlan(state.planDetail!.plan.id)}
+                />
+              ) : null}
+            </div>
+          </aside>
+        ) : null}
+      </div>
+
+      {showPlan ? (
+        <NewPlanDialog
+          session={session}
+          onClose={() => setShowPlan(false)}
+          onCreated={(planDetail) => dispatch({ type: 'planDetail', detail: planDetail })}
+        />
+      ) : null}
+    </>
+  )
+}
+
+function Transcript({
+  sessionId,
+  turns,
+  streaming,
+}: {
+  sessionId: Id
+  turns: Turn[]
+  streaming: Record<Id, string>
+}): ReactNode {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const pinnedToBottom = useRef(true)
+
+  // Follow the stream only while the reader is already at the bottom. Yanking
+  // the viewport while someone is reading an earlier turn is the fastest way to
+  // make a live transcript unusable.
+  useLayoutEffect(() => {
+    const element = scrollRef.current
+    if (!element || !pinnedToBottom.current) return
+    element.scrollTop = element.scrollHeight
+  }, [turns, streaming])
+
+  useEffect(() => {
+    pinnedToBottom.current = true
+  }, [sessionId])
+
+  return (
+    <div
+      className="transcript"
+      ref={scrollRef}
+      onScroll={(event) => {
+        const el = event.currentTarget
+        pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+      }}
+    >
+      <div className="transcript__inner">
+        {turns.length === 0 ? (
+          <div className="row" style={{ justifyContent: 'center', padding: 'var(--s9)' }}>
+            <Spinner />
+            <span className="dim" style={{ fontSize: 'var(--text-small)' }}>
+              Opening…
+            </span>
+          </div>
+        ) : (
+          turns.map((turn) => {
+            const live = streaming[turn.id]
+            const text = turn.text || live || ''
+            const pending = !turn.endedAt && !turn.text
+
+            return (
+              <div className={`turn turn--${turn.side}`} key={turn.id}>
+                <div className="turn__rail" />
+                <div className="turn__content">
+                  <div className="turn__header">
+                    <span className="turn__stage">{turn.stage}</span>
+                    <Chip tone={turn.side === 'a' ? 'chip--a' : 'chip--b'}>
+                      {turn.side.toUpperCase()} · {VENDOR_LABEL[turn.vendor] ?? turn.vendor}
+                    </Chip>
+                    {turn.model ? <Chip tone="chip--mono">{turn.model}</Chip> : null}
+                    {!turn.endedAt ? <Spinner /> : null}
+                    {turn.error ? <Chip tone="chip--fail">failed</Chip> : null}
+                  </div>
+
+                  {turn.error ? (
+                    <div className="turn__body" style={{ color: 'var(--fail)' }}>
+                      {turn.error}
+                    </div>
+                  ) : (
+                    <div className={`turn__body ${pending ? 'turn__body--pending' : ''}`}>
+                      {text || 'Thinking…'}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The interjection composer.
+ *
+ * `Both` is visible to each side. A whisper reaches one side only and the other
+ * never learns it happened — which is what makes it useful for testing whether
+ * an agent will hold a position under private pressure.
+ */
+function Composer({ sessionId }: { sessionId: Id }): ReactNode {
+  const { attempt, notify } = useStore()
+  const [text, setText] = useState('')
+  const [target, setTarget] = useState<InterjectionTarget>('both')
+
+  const submit = async (): Promise<void> => {
+    const body = text.trim()
+    if (!body) return
+    const done = await attempt(() => api.interject(sessionId, target, body))
+    if (done) {
+      setText('')
+      notify(
+        'info',
+        target === 'both'
+          ? 'Queued for both sides on their next turn.'
+          : `Whispered to side ${target.toUpperCase()} — the other side will not see it.`,
+      )
+    }
+  }
+
+  return (
+    <div className="composer">
+      <div className="composer__inner">
+        <div className="composer__row">
+          <div className="segmented" role="group" aria-label="Interjection target">
+            {(['both', 'a', 'b'] as InterjectionTarget[]).map((option) => (
+              <button
+                key={option}
+                className={`segmented__item ${target === option ? 'is-active' : ''}`}
+                onClick={() => setTarget(option)}
+                title={
+                  option === 'both'
+                    ? 'Both sides see this'
+                    : `Only side ${option.toUpperCase()} sees this`
+                }
+              >
+                {option === 'both' ? 'Both' : `Whisper ${option.toUpperCase()}`}
+              </button>
+            ))}
+          </div>
+          <div className="spacer" />
+          <span className="dimmer" style={{ fontSize: 'var(--text-micro)' }}>
+            Delivered on the next turn
+          </span>
+        </div>
+
+        <div className="composer__row">
+          <textarea
+            className="composer__input"
+            rows={1}
+            placeholder={
+              target === 'both'
+                ? 'Direct both sides — assume 10× load, or ignore cost entirely…'
+                : `Press side ${target.toUpperCase()} privately…`
+            }
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                void submit()
+              }
+            }}
+          />
+          <button className="btn btn--primary" disabled={!text.trim()} onClick={() => void submit()}>
+            <Send size={12} strokeWidth={2} />
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

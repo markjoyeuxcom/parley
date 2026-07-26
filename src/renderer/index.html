@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Parley</title>
+    <!--
+      Content Security Policy for the renderer.
+
+      No remote origins at all: every asset is bundled, so there is nothing to
+      fetch. 'unsafe-inline' is present for style only because Vite injects the
+      stylesheet inline in development and xterm sets inline styles on its own
+      layers at runtime. Scripts get no such exemption.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
+    />
+    <meta name="color-scheme" content="light dark" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

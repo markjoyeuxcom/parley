@@ -1,0 +1,1034 @@
+/* Component layer. */
+
+/* ── Buttons ─────────────────────────────────────────────────────────────
+   Flat, hairline-bordered, and quiet. The primary variant is the only filled
+   one, and there should be at most one visible at a time. */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s3);
+  height: var(--control-h);
+  padding: 0 var(--s5);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-small);
+  font-weight: 510;
+  letter-spacing: -0.002em;
+  white-space: nowrap;
+  cursor: default;
+  transition:
+    background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    opacity var(--fast) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.btn:active:not(:disabled) {
+  background: var(--bg-active);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+}
+
+.btn--primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 550;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn--primary:active:not(:disabled) {
+  background: var(--accent-hover);
+  filter: brightness(0.94);
+}
+
+.btn--subtle {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+
+.btn--subtle:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.btn--danger {
+  color: var(--fail);
+  border-color: var(--line);
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: var(--fail-soft);
+  border-color: transparent;
+}
+
+.btn--sm {
+  height: var(--control-h-sm);
+  padding: 0 var(--s4);
+  font-size: var(--text-tiny);
+  border-radius: var(--r-sm);
+}
+
+.btn--lg {
+  height: var(--control-h-lg);
+  padding: 0 var(--s6);
+  font-size: var(--text-body);
+}
+
+.btn--icon {
+  width: var(--control-h);
+  padding: 0;
+}
+
+.btn--icon.btn--sm {
+  width: var(--control-h-sm);
+}
+
+.btn--wide {
+  width: 100%;
+}
+
+/* ── Segmented control ──────────────────────────────────────────────────── */
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  background: var(--bg-inset);
+  border-radius: var(--r-lg);
+  gap: 2px;
+}
+
+.segmented__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s3);
+  height: 26px;
+  padding: 0 var(--s5);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-small);
+  font-weight: 510;
+  cursor: default;
+  transition:
+    background var(--fast) var(--ease),
+    color var(--fast) var(--ease);
+}
+
+.segmented__item:hover:not(.is-active) {
+  color: var(--text-primary);
+}
+
+.segmented__item.is-active {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 550;
+  box-shadow: var(--shadow-raised);
+}
+
+.segmented__count {
+  font-size: var(--text-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  background: var(--neutral-soft);
+  border-radius: var(--r-pill);
+  padding: 0 5px;
+  line-height: 15px;
+  min-width: 16px;
+  text-align: center;
+}
+
+/* ── Fields ─────────────────────────────────────────────────────────────── */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.field__label {
+  font-size: var(--text-tiny);
+  font-weight: 550;
+  color: var(--text-secondary);
+}
+
+.field__hint {
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+  line-height: var(--leading-normal);
+}
+
+.input,
+.textarea,
+.select {
+  width: 100%;
+  padding: 0 var(--s4);
+  height: var(--control-h);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-body);
+  user-select: text;
+  transition:
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+}
+
+.textarea {
+  height: auto;
+  min-height: 76px;
+  padding: var(--s4);
+  line-height: var(--leading-normal);
+  resize: vertical;
+}
+
+.input:hover,
+.textarea:hover,
+.select:hover {
+  border-color: var(--line-strong);
+}
+
+.input:focus,
+.textarea:focus,
+.select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.input::placeholder,
+.textarea::placeholder {
+  color: var(--text-quaternary);
+}
+
+.select {
+  appearance: none;
+  padding-right: var(--s7);
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) calc(50% + 1px),
+    calc(100% - 9px) calc(50% + 1px);
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  color: var(--text-primary);
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--s5);
+}
+
+.field-row--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* ── Panels ─────────────────────────────────────────────────────────────── */
+
+.panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: var(--s4) var(--s5);
+  border-bottom: 1px solid var(--line-faint);
+  min-height: 38px;
+}
+
+.panel__title {
+  font-size: var(--text-small);
+  font-weight: 590;
+  color: var(--text-primary);
+}
+
+.panel__body {
+  padding: var(--s5);
+}
+
+.panel__body--flush {
+  padding: 0;
+}
+
+/* A bar that sits above content: toolbars, filter rows, footers. */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s4) var(--s6);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-canvas);
+  min-height: 44px;
+  flex-shrink: 0;
+}
+
+.bar--footer {
+  border-bottom: none;
+  border-top: 1px solid var(--line);
+}
+
+.spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Status chips ───────────────────────────────────────────────────────── */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  height: 19px;
+  padding: 0 var(--s3);
+  border-radius: var(--r-sm);
+  background: var(--neutral-soft);
+  color: var(--text-secondary);
+  font-size: var(--text-micro);
+  font-weight: 590;
+  letter-spacing: 0.012em;
+  white-space: nowrap;
+}
+
+.chip--pass {
+  background: var(--pass-soft);
+  color: var(--pass);
+}
+
+.chip--caution {
+  background: var(--caution-soft);
+  color: var(--caution);
+}
+
+.chip--fail {
+  background: var(--fail-soft);
+  color: var(--fail);
+}
+
+.chip--accent {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.chip--a {
+  background: var(--side-a-soft);
+  color: var(--side-a);
+}
+
+.chip--b {
+  background: var(--side-b-soft);
+  color: var(--side-b);
+}
+
+.chip--mono {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+/* A 6px status dot. Pairs with text — never the only signal. */
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-quaternary);
+  flex-shrink: 0;
+}
+
+.dot--pass {
+  background: var(--pass);
+}
+.dot--caution {
+  background: var(--caution);
+}
+.dot--fail {
+  background: var(--fail);
+}
+.dot--accent {
+  background: var(--accent);
+}
+
+.dot--live {
+  background: var(--pass);
+  animation: pulse 2.4s var(--ease) infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ── Lists ──────────────────────────────────────────────────────────────── */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  padding: var(--s3);
+  gap: 1px;
+}
+
+.list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: var(--s4) var(--s4);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
+  cursor: default;
+  transition: background var(--fast) var(--ease);
+}
+
+.list-item:hover {
+  background: var(--bg-hover);
+}
+
+.list-item.is-active {
+  background: var(--bg-selected);
+}
+
+.list-item__top {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: 0;
+}
+
+.list-item__title {
+  font-size: var(--text-small);
+  font-weight: 530;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.list-item__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+  min-width: 0;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────────── */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  background: var(--bg-sunken);
+}
+
+.sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: var(--s5) var(--s5) var(--s4);
+  flex-shrink: 0;
+}
+
+.sidebar__section {
+  padding: var(--s5) var(--s5) var(--s2);
+}
+
+/* ── Metrics ────────────────────────────────────────────────────────────── */
+
+.stats {
+  display: grid;
+  gap: 1px;
+  background: var(--line-faint);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s5);
+  background: var(--bg-surface);
+}
+
+.stat__value {
+  font-size: var(--text-title);
+  font-weight: 590;
+  letter-spacing: var(--track-title);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  line-height: 1.15;
+}
+
+.stat__label {
+  font-size: var(--text-micro);
+  font-weight: 620;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.stat__note {
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+}
+
+/* Score meter. A thin rule, not a rounded progress pill. */
+.meter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s5);
+}
+
+.meter__track {
+  height: 3px;
+  background: var(--bg-inset);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+}
+
+.meter__fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--r-pill);
+  transition: width var(--slow) var(--ease);
+}
+
+.meter__value {
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  min-width: 34px;
+  text-align: right;
+}
+
+/* ── Overlays ───────────────────────────────────────────────────────────── */
+
+/*
+ * Scrims dim rather than blur.
+ *
+ * A full-viewport `backdrop-filter` forces Chromium to allocate a composited
+ * layer the size of the window — on a retina display that is enough to trip
+ * "tile memory limits exceeded", after which content can silently fail to draw.
+ * Dimming costs nothing and is what a macOS sheet does anyway.
+ */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: grid;
+  place-items: center;
+  padding: var(--s9);
+  background: rgba(0, 0, 0, 0.38);
+  animation: fade var(--fast) var(--ease);
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.dialog {
+  width: min(560px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raised);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-float);
+  overflow: hidden;
+  animation: rise var(--normal) var(--ease);
+}
+
+.dialog--wide {
+  width: min(760px, 100%);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.995);
+  }
+}
+
+.dialog__header {
+  padding: var(--s6) var(--s6) var(--s4);
+}
+
+.dialog__title {
+  font-size: var(--text-section);
+  font-weight: 590;
+  letter-spacing: var(--track-title);
+}
+
+.dialog__subtitle {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  margin-top: var(--s2);
+  line-height: var(--leading-normal);
+}
+
+.dialog__body {
+  padding: var(--s2) var(--s6) var(--s6);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s5);
+}
+
+.dialog__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s4);
+  padding: var(--s5) var(--s6);
+  border-top: 1px solid var(--line);
+  background: var(--bg-surface);
+}
+
+/* ── Anchored menu ──────────────────────────────────────────────────────── */
+
+.menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.menu__panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: var(--z-overlay);
+  min-width: 260px;
+  max-width: 460px;
+  padding: var(--s2);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-float);
+  animation: rise var(--fast) var(--ease);
+}
+
+.menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s3) var(--s3);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-small);
+  text-align: left;
+  cursor: default;
+}
+
+.menu__item:hover {
+  background: var(--bg-hover);
+}
+
+.menu__item.is-selected {
+  color: var(--accent-text);
+}
+
+.menu__tick {
+  width: 12px;
+  flex-shrink: 0;
+  font-size: var(--text-tiny);
+  color: var(--accent);
+}
+
+.menu__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.menu__section {
+  padding: var(--s3) var(--s3) var(--s2);
+  border-top: 1px solid var(--line-faint);
+  margin-top: var(--s2);
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+  line-height: var(--leading-normal);
+}
+
+.menu__section:first-child {
+  border-top: none;
+  margin-top: 0;
+}
+
+/* ── Command palette ────────────────────────────────────────────────────── */
+
+.palette-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-palette);
+  display: flex;
+  justify-content: center;
+  padding-top: 14vh;
+  background: rgba(0, 0, 0, 0.32);
+  animation: fade var(--fast) var(--ease);
+}
+
+.palette {
+  width: min(580px, calc(100% - 48px));
+  height: fit-content;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raised);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-float);
+  overflow: hidden;
+  animation: rise var(--normal) var(--ease);
+}
+
+.palette__input {
+  height: 46px;
+  padding: 0 var(--s6);
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-medium);
+  user-select: text;
+}
+
+.palette__input:focus {
+  outline: none;
+}
+
+.palette__list {
+  overflow-y: auto;
+  padding: var(--s3);
+}
+
+.palette__item {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  width: 100%;
+  padding: var(--s4) var(--s4);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-body);
+  text-align: left;
+  cursor: default;
+}
+
+.palette__item.is-active {
+  background: var(--bg-selected);
+}
+
+.palette__hint {
+  margin-left: auto;
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-surface);
+  font-size: var(--text-micro);
+  font-weight: 550;
+  color: var(--text-tertiary);
+}
+
+/* ── Mock-mode banner ────────────────────────────────────────────────────
+   Deliberately the loudest element in the entire interface, and not
+   dismissible. In mock mode the app fabricates verdicts, findings and reviews
+   that are indistinguishable from real ones; anyone who forgets which mode they
+   are in will read invented output as evidence. The hazard stripe is the one
+   place a "decorative" treatment earns its place. */
+
+.mock-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s4);
+  height: 26px;
+  flex-shrink: 0;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--caution-soft),
+    var(--caution-soft) 10px,
+    transparent 10px,
+    transparent 20px
+  );
+  border-bottom: 1px solid var(--caution);
+  font-size: var(--text-tiny);
+  font-weight: 620;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--caution);
+}
+
+.mock-banner__detail {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 480;
+  color: var(--text-secondary);
+}
+
+/* ── Notices ────────────────────────────────────────────────────────────── */
+
+.notices {
+  position: fixed;
+  right: var(--s6);
+  bottom: var(--s6);
+  z-index: var(--z-overlay);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  max-width: 380px;
+}
+
+.notice {
+  display: flex;
+  gap: var(--s4);
+  padding: var(--s5);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-float);
+  font-size: var(--text-small);
+  line-height: var(--leading-normal);
+  animation: slide-in var(--normal) var(--ease);
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+.notice__mark {
+  width: 3px;
+  border-radius: var(--r-pill);
+  background: var(--text-quaternary);
+  flex-shrink: 0;
+}
+
+.notice--warn .notice__mark {
+  background: var(--caution);
+}
+.notice--error .notice__mark {
+  background: var(--fail);
+}
+.notice--info .notice__mark {
+  background: var(--accent);
+}
+
+/* ── Empty states ───────────────────────────────────────────────────────── */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s4);
+  padding: var(--s10) var(--s8);
+  text-align: center;
+  height: 100%;
+}
+
+.empty__title {
+  font-size: var(--text-medium);
+  font-weight: 550;
+  color: var(--text-secondary);
+}
+
+.empty__body {
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+  max-width: 42ch;
+  line-height: var(--leading-relaxed);
+}
+
+/* ── Spinner ─────────────────────────────────────────────────────────────
+   A thin rotating arc. No dots, no pulsing blobs. */
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--line-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Misc ───────────────────────────────────────────────────────────────── */
+
+.divider {
+  height: 1px;
+  background: var(--line);
+  border: none;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s5);
+}
+
+.stack--tight {
+  gap: var(--s4);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+}
+
+.row--tight {
+  gap: var(--s3);
+}
+
+/* ── Archiving a session ────────────────────────────────────────────────────
+ *
+ * The row is itself a button, so the control cannot live inside it. It is
+ * overlaid instead, and revealed on hover or keyboard focus so a list of ten
+ * sessions is not also a list of ten buttons competing for attention.
+ */
+.list-row {
+  position: relative;
+}
+
+.list-row__actions {
+  position: absolute;
+  top: var(--s3);
+  right: var(--s3);
+  display: flex;
+  gap: 2px;
+}
+
+.list-row__action {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--fast) var(--ease), background var(--fast) var(--ease);
+}
+
+/* Keyboard users get the same affordance; without :focus-visible the control
+   would be reachable by Tab but invisible while focused. */
+.list-row:hover .list-row__action,
+.list-row__action:focus-visible {
+  opacity: 1;
+}
+
+/* Destructive, and coloured only on hover — a permanently red icon in a list
+   reads as an alarm rather than an option. */
+.list-row__action--danger:hover {
+  background: var(--fail-soft);
+  color: var(--fail);
+}
+
+.list-row__action:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+/* Reserve the space permanently rather than letting the title reflow under the
+   control when it appears. */
+.list-item__top {
+  padding-right: 46px;
+}
+
+.sidebar__footer-btn {
+  flex-shrink: 0;
+  width: 100%;
+  padding: var(--s4) var(--s5);
+  border: none;
+  border-top: 1px solid var(--line-faint);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--text-micro);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar__footer-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+/* The itemised cost of a permanent deletion. A plain list, because the numbers
+   are the argument and decoration would only soften them. */
+.impact {
+  margin: 0;
+  padding-left: var(--s6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}

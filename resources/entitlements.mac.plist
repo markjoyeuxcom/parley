@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!--
+      Hardened runtime entitlements.
+
+      node-pty spawns through its own `spawn-helper` executable, and every
+      terminal pane then execs a user binary (their login shell, `claude`,
+      `codex`). Under the hardened runtime, library validation and the default
+      inheritance rules block exactly that, which surfaces as "posix_spawnp
+      failed" for every pane — including a plain shell.
+
+      allow-jit and allow-unsigned-executable-memory are what V8 needs; the two
+      disable-* keys are what lets a signed app exec helper and user binaries it
+      did not sign itself.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+
+    <!--
+      Parley reads and writes repositories the user explicitly chooses through
+      the system folder picker.
+    -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- The CLIs talk to their vendors' APIs on the user's behalf. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+  </dict>
+</plist>

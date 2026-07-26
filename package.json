@@ -1,0 +1,86 @@
+{
+  "name": "parley",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local-first macOS workbench for governed Claude Code and Codex work.",
+  "author": "Mark Joyeux Products",
+  "license": "UNLICENSED",
+  "main": "out/main/index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "predev": "node scripts/check-electron.mjs",
+    "dev": "electron-vite dev",
+    "prebuild": "node scripts/check-electron.mjs",
+    "build": "electron-vite build",
+    "fix:electron": "rm -rf node_modules/electron/dist node_modules/electron/path.txt && node node_modules/electron/install.js",
+    "preview": "electron-vite preview",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "rebuild": "electron-rebuild -v 43.2.0 -f -m . -o node-pty",
+    "postinstall": "npm run rebuild",
+    "package:mac": "npm run build && electron-builder --mac --arm64",
+    "package:mac:dir": "npm run build && electron-builder --mac --arm64 --dir"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-search": "0.16.0",
+    "@xterm/addon-webgl": "0.19.0",
+    "@xterm/xterm": "6.0.0",
+    "lucide-react": "1.26.0",
+    "motion": "12.42.2",
+    "node-pty": "1.1.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "4.2.0",
+    "@types/node": "24.9.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "typescript": "7.0.2",
+    "vite": "^7.3.0",
+    "vitest": "4.1.10"
+  },
+  "build": {
+    "appId": "ai.moomora.parley",
+    "productName": "Parley",
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/node-pty/**"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "resources"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "darkModeSupport": true,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "resources/entitlements.mac.plist",
+      "entitlementsInherit": "resources/entitlements.mac.plist",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "dmg": {
+      "sign": false
+    }
+  }
+}

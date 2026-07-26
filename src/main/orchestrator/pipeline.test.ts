@@ -1,0 +1,879 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import {
+  isGreenfield,
+  missingExpectedPaths,
+  pathsOutsideScope,
+  parseAudit,
+  parsePlan,
+  parseMutations,
+  parseReview,
+  summariseMutations,
+  judgeMutation,
+  milestoneVerdict,
+  parseMutationRepairs,
+  structuralConcerns,
+  summariseTests,
+  withMutationApplied,
+  readTree,
+  renderDiffForReview,
+  treeUnchanged,
+} from './pipeline'
+import { LoopConfigError, validateExitCommand } from './loop'
+import type { MutationResult, TestResult } from '@shared/domain'
+import { auditPrompt, planPrompt } from '@shared/protocol'
+
+describe('parsePlan', () => {
+  it('reads milestones in order', () => {
+    const text = [
+      '```json',
+      JSON.stringify({
+        title: 'Bound the retry path',
+        milestones: [
+          { title: 'Add a cap', intent: 'stop the spin', expectedPaths: ['src/net.ts'], testCommand: 'npm test' },
+          { title: 'Cover it', intent: 'assert the terminal error', expectedPaths: [], testCommand: 'npm test' },
+        ],
+      }),
+      '```',
+    ].join('\n')
+
+    const plan = parsePlan(text)
+    expect(plan?.title).toBe('Bound the retry path')
+    expect(plan?.milestones).toHaveLength(2)
+    expect(plan?.milestones[0]?.expectedPaths).toEqual(['src/net.ts'])
+  })
+
+  it('skips milestones with no title', () => {
+    const text = '```json\n{"milestones":[{"intent":"nameless"},{"title":"real"}]}\n```'
+    expect(parsePlan(text)?.milestones).toHaveLength(1)
+  })
+
+  it('returns null when there is nothing executable', () => {
+    expect(parsePlan('prose only')).toBeNull()
+    expect(parsePlan('```json\n{"milestones":[]}\n```')).toBeNull()
+    expect(parsePlan('```json\n{"milestones":"nope"}\n```')).toBeNull()
+  })
+
+  it('ignores non-string entries in expectedPaths', () => {
+    const text = '```json\n{"milestones":[{"title":"x","expectedPaths":["a.ts",7,null,"b.ts"]}]}\n```'
+    expect(parsePlan(text)?.milestones[0]?.expectedPaths).toEqual(['a.ts', 'b.ts'])
+  })
+})
+
+describe('parseAudit', () => {
+  it('reads dispositions keyed by milestone index', () => {
+    const text = [
+      '```json',
+      JSON.stringify({
+        verdict: 'needs-changes',
+        dispositions: [
+          { milestone: 0, disposition: 'accept', note: 'fine' },
+          { milestone: 1, disposition: 'reject', note: 'file does not exist' },
+        ],
+        blockingConcerns: ['no migration step'],
+      }),
+      '```',
+    ].join('\n')
+
+    const audit = parseAudit(text)
+    expect(audit?.verdict).toBe('needs-changes')
+    expect(audit?.dispositions[1]?.disposition).toBe('reject')
+    expect(audit?.blockingConcerns).toEqual(['no migration step'])
+  })
+
+  it('defaults an unrecognised disposition to revise, not accept', () => {
+    // Erring toward accept would let a malformed audit wave a milestone through.
+    const text = '```json\n{"dispositions":[{"milestone":0,"disposition":"looks-ok"}]}\n```'
+    expect(parseAudit(text)?.dispositions[0]?.disposition).toBe('revise')
+  })
+
+  it('defaults an unrecognised verdict to needs-changes, not sound', () => {
+    expect(parseAudit('```json\n{"verdict":"perfect"}\n```')?.verdict).toBe('needs-changes')
+  })
+
+  it('drops dispositions with a non-integer milestone index', () => {
+    const text = '```json\n{"dispositions":[{"milestone":"first"},{"milestone":-1},{"milestone":2}]}\n```'
+    expect(parseAudit(text)?.dispositions).toHaveLength(1)
+  })
+})
+
+describe('parseReview', () => {
+  it('reads a pass', () => {
+    const review = parseReview(
+      '```json\n{"passed":true,"blocking":[],"notes":[],"note":"scope matches"}\n```',
+    )
+    expect(review?.passed).toBe(true)
+    expect(review?.note).toBe('scope matches')
+  })
+
+  it('reads a fail with blocking problems', () => {
+    const review = parseReview(
+      '```json\n{"passed":false,"blocking":["deleted a test"],"note":"no"}\n```',
+    )
+    expect(review?.passed).toBe(false)
+    expect(review?.blocking).toEqual(['deleted a test'])
+  })
+
+  it('refuses to pass a milestone whose review names a blocking problem', () => {
+    // The failure this exists for: on three consecutive milestones the reviewer
+    // found a real defect, wrote it down, and set passed:true. The flag is not
+    // trusted against the reviewer's own findings.
+    const review = parseReview(
+      '```json\n{"passed":true,"blocking":["a hardcoded snapshot would pass this suite"],"note":"fine"}\n```',
+    )
+    expect(review?.passed).toBe(false)
+    expect(review?.blocking).toHaveLength(1)
+  })
+
+  it('lets notes pass, because taste must not block', () => {
+    const review = parseReview(
+      '```json\n{"passed":true,"blocking":[],"notes":["I would have named it differently"],"note":"good"}\n```',
+    )
+    expect(review?.passed).toBe(true)
+    expect(review?.notes).toEqual(['I would have named it differently'])
+  })
+
+  it('never sends notes to remediation', () => {
+    const review = parseReview(
+      '```json\n{"passed":false,"blocking":["real defect"],"notes":["style nit"],"note":"n"}\n```',
+    )
+    // `blocking` is what becomes the remediation brief. A round told to fix what
+    // was named and nothing else must not also be handed taste.
+    expect(review?.blocking).toEqual(['real defect'])
+    expect(review?.blocking).not.toContain('style nit')
+  })
+
+  it('treats the old single-list key as blocking', () => {
+    // A model still emitting `concerns` has ignored the schema; an unclassified
+    // problem is safer read as blocking than as a note.
+    const review = parseReview(
+      '```json\n{"passed":true,"concerns":["stale occupancy"],"note":"ok"}\n```',
+    )
+    expect(review?.passed).toBe(false)
+    expect(review?.blocking).toEqual(['stale occupancy'])
+  })
+
+  it('ignores blank and non-string entries', () => {
+    const review = parseReview(
+      '```json\n{"passed":true,"blocking":["","   ",7,null],"note":"ok"}\n```',
+    )
+    // Whitespace is not a finding, and must not fail a milestone by accident.
+    expect(review?.blocking).toEqual([])
+    expect(review?.passed).toBe(true)
+  })
+
+  it('returns null when passed is missing or not a boolean', () => {
+    // The caller treats null as "no usable judgement" and fails the milestone,
+    // so this must not coerce a truthy string into a pass.
+    expect(parseReview('```json\n{"note":"looks fine"}\n```')).toBeNull()
+    expect(parseReview('```json\n{"passed":"yes"}\n```')).toBeNull()
+    expect(parseReview('prose')).toBeNull()
+  })
+})
+
+describe('tree snapshots', () => {
+  function gitRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'parley-diff-'))
+    const git = (...args: string[]): void => {
+      execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+    }
+    git('init', '-q')
+    git('config', 'user.email', 'test@example.invalid')
+    git('config', 'user.name', 'test')
+    writeFileSync(join(dir, 'seed.txt'), 'seed\n')
+    git('add', '.')
+    git('commit', '-qm', 'seed')
+    return dir
+  }
+
+  it('reports no change when nothing happened between snapshots', async () => {
+    const dir = gitRepo()
+    const before = await readTree(dir)
+    const after = await readTree(dir)
+    expect(treeUnchanged(before, after)).toBe(true)
+  })
+
+  it('detects an edit to a tracked file', async () => {
+    const dir = gitRepo()
+    const before = await readTree(dir)
+    writeFileSync(join(dir, 'seed.txt'), 'changed\n')
+    expect(treeUnchanged(before, await readTree(dir))).toBe(false)
+  })
+
+  it('detects a new untracked file, which plain `git diff` misses', async () => {
+    const dir = gitRepo()
+    const before = await readTree(dir)
+    writeFileSync(join(dir, 'added.ts'), 'export const x = 1\n')
+    expect(treeUnchanged(before, await readTree(dir))).toBe(false)
+  })
+
+  it('detects a staged change, which plain `git diff` also misses', async () => {
+    const dir = gitRepo()
+    const before = await readTree(dir)
+    writeFileSync(join(dir, 'staged.ts'), 'export const y = 2\n')
+    execFileSync('git', ['add', 'staged.ts'], { cwd: dir, stdio: 'ignore' })
+    expect(treeUnchanged(before, await readTree(dir))).toBe(false)
+  })
+
+  it('still reports no change when the tree was ALREADY dirty and nothing new happened', async () => {
+    // The exact bug this replaced: a single pre-existing untracked file — an
+    // exported report, a leftover from an earlier attempt — made the old
+    // "is the tree empty?" check see changes and wave the milestone through.
+    const dir = gitRepo()
+    writeFileSync(join(dir, 'VERDICT-bff89618.md'), '# leftover\n')
+
+    const before = await readTree(dir)
+    const after = await readTree(dir)
+
+    expect(before.paths).toContain('VERDICT-bff89618.md')
+    expect(treeUnchanged(before, after)).toBe(true)
+  })
+
+  it('detects new work on top of an already-dirty tree', async () => {
+    const dir = gitRepo()
+    writeFileSync(join(dir, 'leftover.md'), 'old\n')
+    const before = await readTree(dir)
+    writeFileSync(join(dir, 'real-work.ts'), 'export const z = 3\n')
+    expect(treeUnchanged(before, await readTree(dir))).toBe(false)
+  })
+
+  it('detects a modification to an existing untracked file', async () => {
+    const dir = gitRepo()
+    writeFileSync(join(dir, 'scratch.txt'), 'one\n')
+    const before = await readTree(dir)
+    writeFileSync(join(dir, 'scratch.txt'), 'one\ntwo\n')
+    expect(treeUnchanged(before, await readTree(dir))).toBe(false)
+  })
+
+  it('never claims "unchanged" outside a git repository', async () => {
+    // Otherwise every milestone in a non-git directory would fail.
+    const dir = mkdtempSync(join(tmpdir(), 'parley-nogit-'))
+    const before = await readTree(dir)
+    expect(before.unknown).toBe(true)
+    expect(treeUnchanged(before, await readTree(dir))).toBe(false)
+  })
+})
+
+describe('renderDiffForReview', () => {
+  function gitRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'parley-render-'))
+    const git = (...args: string[]): void => {
+      execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+    }
+    git('init', '-q')
+    git('config', 'user.email', 't@e.invalid')
+    git('config', 'user.name', 't')
+    writeFileSync(join(dir, 'seed.txt'), 'seed\n')
+    git('add', '.')
+    git('commit', '-qm', 'seed')
+    return dir
+  }
+
+  it('tells the reviewer which paths predate the milestone', async () => {
+    const dir = gitRepo()
+    writeFileSync(join(dir, 'VERDICT-old.md'), 'leftover\n')
+    const before = await readTree(dir)
+
+    writeFileSync(join(dir, 'new-work.ts'), 'export const a = 1\n')
+    const after = await readTree(dir)
+
+    const rendered = renderDiffForReview(after, before)
+    expect(rendered).toMatch(/NOT part of this milestone/)
+    expect(rendered).toContain('VERDICT-old.md')
+    expect(rendered).toContain('new-work.ts')
+  })
+
+  it('omits the caveat when the tree started clean', async () => {
+    const dir = gitRepo()
+    const before = await readTree(dir)
+    writeFileSync(join(dir, 'only-work.ts'), 'export const a = 1\n')
+    const rendered = renderDiffForReview(await readTree(dir), before)
+    expect(rendered).not.toMatch(/NOT part of this milestone/)
+  })
+})
+
+describe('pathsOutsideScope', () => {
+  it('names changed paths the milestone never claimed', () => {
+    // The real case: a milestone scoped to internal/ghforge, a tree that also
+    // holds edits to internal/forge and a stray report. The scoped test command
+    // never touches the latter two, and saying so is the whole point.
+    const changed = [
+      'internal/ghforge/',
+      'internal/forge/capability.go',
+      'internal/ghrepo/create.go',
+      'VERDICT-bff89618.md',
+    ]
+    const expected = ['internal/ghforge/client.go', 'internal/ghforge/repo.go']
+
+    expect(pathsOutsideScope(changed, expected)).toEqual([
+      'internal/forge/capability.go',
+      'internal/ghrepo/create.go',
+      'VERDICT-bff89618.md',
+    ])
+  })
+
+  it('treats an untracked directory as covering the files the plan named inside it', () => {
+    // git reports `pkg/` for a new directory while the plan names `pkg/a.go`.
+    expect(pathsOutsideScope(['pkg/'], ['pkg/a.go'])).toEqual([])
+  })
+
+  it('counts everything as unverified when the milestone declared no paths', () => {
+    expect(pathsOutsideScope(['a.ts', 'b.ts'], [])).toEqual(['a.ts', 'b.ts'])
+  })
+
+  it('returns nothing when the tree is clean', () => {
+    expect(pathsOutsideScope([], ['a.ts'])).toEqual([])
+  })
+})
+
+describe('missingExpectedPaths', () => {
+  it('names the paths the plan promised but the executor never created', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'parley-expect-'))
+    writeFileSync(join(dir, 'present.go'), 'package x\n')
+    expect(missingExpectedPaths(dir, ['present.go', 'internal/forge/kind.go'])).toEqual([
+      'internal/forge/kind.go',
+    ])
+  })
+
+  it('returns nothing when everything exists', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'parley-expect-'))
+    writeFileSync(join(dir, 'a.go'), 'package a\n')
+    expect(missingExpectedPaths(dir, ['a.go'])).toEqual([])
+    expect(missingExpectedPaths(dir, [])).toEqual([])
+  })
+})
+
+describe('validateExitCommand', () => {
+  it('accepts a plain command and returns its argv', () => {
+    expect(validateExitCommand('npm test')).toEqual(['npm', 'test'])
+    expect(validateExitCommand('  go test ./pkg  ')).toEqual(['go', 'test', './pkg'])
+  })
+
+  it('refuses shell syntax rather than silently running a shell', () => {
+    for (const command of ['npm test | tee log', 'npm test && echo ok', 'rm -rf $(pwd)', 'echo $HOME']) {
+      expect(() => validateExitCommand(command), command).toThrow(LoopConfigError)
+    }
+  })
+
+  it('explains why, so the message is actionable', () => {
+    expect(() => validateExitCommand('a | b')).toThrow(/without a shell/i)
+  })
+
+  it('refuses an empty command', () => {
+    expect(() => validateExitCommand('   ')).toThrow(/needs a command/i)
+  })
+
+  it('refuses unbalanced quotes', () => {
+    expect(() => validateExitCommand('npm test "oops')).toThrow(LoopConfigError)
+  })
+})
+
+describe('isGreenfield', () => {
+  function bareRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'parley-green-'))
+    const git = (...args: string[]): void => {
+      execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+    }
+    git('init', '-q')
+    git('config', 'user.email', 't@e.invalid')
+    git('config', 'user.name', 't')
+    return dir
+  }
+
+  it('treats a freshly initialised repository as new', async () => {
+    expect(await isGreenfield(bareRepo())).toBe(true)
+  })
+
+  it('still treats it as new when only untracked debris is present', async () => {
+    // An interrupted first attempt leaves files behind. The project is still
+    // new: there are no conventions to read and no paths to check against.
+    const dir = bareRepo()
+    writeFileSync(join(dir, 'scratch.txt'), 'x\n')
+    expect(await isGreenfield(dir)).toBe(true)
+  })
+
+  it('treats a repository with tracked files as established', async () => {
+    const dir = bareRepo()
+    writeFileSync(join(dir, 'main.go'), 'package main\n')
+    execFileSync('git', ['add', '.'], { cwd: dir, stdio: 'ignore' })
+    expect(await isGreenfield(dir)).toBe(false)
+  })
+
+  it('counts tracked files, not commits', async () => {
+    // Staged but never committed is still a codebase someone is working in.
+    const dir = bareRepo()
+    writeFileSync(join(dir, 'main.go'), 'package main\n')
+    execFileSync('git', ['add', 'main.go'], { cwd: dir, stdio: 'ignore' })
+    expect(await isGreenfield(dir)).toBe(false)
+  })
+
+  it('handles a plain directory that is not a repository', async () => {
+    const empty = mkdtempSync(join(tmpdir(), 'parley-plain-'))
+    expect(await isGreenfield(empty)).toBe(true)
+
+    const withFiles = mkdtempSync(join(tmpdir(), 'parley-plain2-'))
+    writeFileSync(join(withFiles, 'index.js'), '\n')
+    expect(await isGreenfield(withFiles)).toBe(false)
+  })
+
+  it('ignores dotfiles when judging a plain directory', async () => {
+    // An editor or tool config does not make a project.
+    const dir = mkdtempSync(join(tmpdir(), 'parley-dot-'))
+    writeFileSync(join(dir, '.editorconfig'), '\n')
+    expect(await isGreenfield(dir)).toBe(true)
+  })
+})
+
+describe('greenfield prompts', () => {
+  it('tells the planner it is establishing conventions, not reading them', () => {
+    const green = planPrompt('implementation', 'a 3D game', '/new', '', true)
+    const brown = planPrompt('implementation', 'a change', '/repo', '', false)
+
+    expect(green).toMatch(/establishing/i)
+    expect(green).toMatch(/empty/i)
+    expect(brown).toMatch(/Read enough of the codebase/i)
+    expect(brown).not.toMatch(/establishing/i)
+  })
+
+  it('requires the first milestone to make verification runnable', () => {
+    // Otherwise a plan can defer its own testability to milestone four.
+    expect(planPrompt('implementation', 'x', '/new', '', true)).toMatch(
+      /first milestone must scaffold/i,
+    )
+  })
+
+  it('stops the auditor reporting every path as missing', () => {
+    // The failure this exists to prevent: on an empty repo *no* named path
+    // exists, so a literal audit rejects the entire plan for a non-defect.
+    const green = auditPrompt('{}', '/new', true)
+    const brown = auditPrompt('{}', '/repo', false)
+
+    expect(green).toMatch(/do not report missing files/i)
+    expect(brown).toMatch(/Do the named files exist/i)
+    expect(brown).not.toMatch(/do not report missing files/i)
+  })
+})
+
+describe('summariseTests distinguishes three ways of not passing', () => {
+  /**
+   * A non-zero result can mean three different things that call for three
+   * different responses, and the reviewer and executor read this text to decide
+   * which. Told "FAILED", an executor changes the code — right for a real
+   * failure, wrong for a crash, and actively misleading for a hang, where the
+   * code may be correct and simply never returns.
+   */
+  const base = {
+    command: 'tests/run.sh',
+    exitCode: 0,
+    signal: null as string | null,
+    timedOut: false,
+    stdout: '6 test case(s), 0 failure(s)',
+    stderr: '',
+    durationMs: 3000,
+    ranAt: 1,
+  }
+
+  it('reports a clean run as passed', () => {
+    expect(summariseTests(base)).toContain('PASSED')
+  })
+
+  it('reports a real failure with its exit code', () => {
+    const text = summariseTests({ ...base, exitCode: 1 })
+    expect(text).toContain('FAILED (exit 1)')
+    expect(text).not.toMatch(/DID NOT/)
+  })
+
+  it('reports a crash as a crash, not a failing test', () => {
+    const text = summariseTests({ ...base, exitCode: -1, signal: 'SIGSEGV' })
+    expect(text).toMatch(/DID NOT COMPLETE/)
+    expect(text).toContain('SIGSEGV')
+    expect(text).toMatch(/not a failing test/i)
+  })
+
+  it('reports a hang as a hang even though a timeout is also a SIGTERM', () => {
+    // The ordering guard. Parley kills on timeout with SIGTERM, so a summariser
+    // that checked `signal` first would describe a twenty-minute hang as an
+    // external crash and send the reader hunting for what killed the process.
+    const text = summariseTests({
+      ...base,
+      exitCode: -1,
+      signal: 'SIGTERM',
+      timedOut: true,
+      durationMs: 20 * 60 * 1000,
+    })
+    expect(text).toMatch(/DID NOT FINISH/)
+    expect(text).toMatch(/hang/i)
+    expect(text).not.toContain('SIGTERM')
+    expect(text).not.toMatch(/crash in the verification command/)
+  })
+
+  it('says plainly when there was no command to run', () => {
+    // Distinct again from all of the above: nothing was attempted, so the
+    // reviewer must weigh the diff without the benefit of a test result.
+    expect(summariseTests(null)).toMatch(/nothing was run/i)
+  })
+})
+
+describe('parseMutations', () => {
+  it('reads a well-formed mutation', () => {
+    const out = parseMutations([
+      { file: 'src/a.ts', find: 'return derived()', replace: 'return 0', describes: 'hardcoded result' },
+    ])
+    expect(out).toHaveLength(1)
+    expect(out[0]?.describes).toBe('hardcoded result')
+  })
+
+  it('drops a mutation that changes nothing', () => {
+    // find === replace would apply cleanly, pass, and report a false negative:
+    // the suite "caught" nothing because nothing broke.
+    expect(parseMutations([{ file: 'a.ts', find: 'x', replace: 'x', describes: 'noop' }])).toEqual([])
+  })
+
+  it('drops entries with no file or no find text', () => {
+    expect(
+      parseMutations([
+        { file: '', find: 'x', replace: 'y', describes: 'd' },
+        { file: 'a.ts', find: '   ', replace: 'y', describes: 'd' },
+        { file: 'a.ts', replace: 'y', describes: 'd' },
+      ]),
+    ).toEqual([])
+  })
+
+  it('survives junk without failing the whole plan', () => {
+    // A malformed mutation is a missing check, which the review will notice. A
+    // rejected plan over one bad entry is the worse trade.
+    expect(parseMutations('not an array')).toEqual([])
+    expect(parseMutations([null, 7, 'x'])).toEqual([])
+  })
+
+  it('caps the list, so a plan cannot ask for hundreds of test runs', () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      file: 'a.ts',
+      find: `find${i}`,
+      replace: `broken${i}`,
+      describes: 'd',
+    }))
+    expect(parseMutations(many).length).toBeLessThanOrEqual(10)
+  })
+})
+
+describe('summariseMutations', () => {
+  it('says plainly when a break went undetected', () => {
+    const text = summariseMutations([
+      { describes: 'hardcoded winner', file: 'game.gd', caught: false, skipped: '', skipKind: '' as const, exitCode: 0 },
+    ])
+    expect(text).toMatch(/SURVIVED/)
+    expect(text).toMatch(/nothing in it pins this/i)
+  })
+
+  it('distinguishes caught, survived and not-checked', () => {
+    const text = summariseMutations([
+      { describes: 'a', file: 'x', caught: true, skipped: '', skipKind: '' as const, exitCode: 1 },
+      { describes: 'b', file: 'y', caught: false, skipped: '', skipKind: '' as const, exitCode: 0 },
+      {
+        describes: 'c',
+        file: 'z',
+        caught: false,
+        skipped: 'the text was not found',
+        skipKind: 'no-test-command' as const,
+        exitCode: null,
+      },
+    ])
+    expect(text).toMatch(/CAUGHT — x/)
+    expect(text).toMatch(/SURVIVED — y/)
+    expect(text).toMatch(/NOT CHECKED — z/)
+    // A skipped mutation must never read as a pass.
+    expect(text).not.toMatch(/CAUGHT — z/)
+  })
+
+  it('is empty when nothing was declared, so the prompt omits the block', () => {
+    expect(summariseMutations([])).toBe('')
+  })
+})
+
+describe('withMutationApplied', () => {
+  const scratch = (contents: string): { repo: string; file: string } => {
+    const repo = mkdtempSync(join(tmpdir(), 'parley-mutate-'))
+    writeFileSync(join(repo, 'game.gd'), contents, 'utf8')
+    return { repo, file: join(repo, 'game.gd') }
+  }
+  const mutation = { file: 'game.gd', find: 'winner', replace: 'loser', describes: 'flip it' }
+
+  it('shows the mutated text to the run, then puts the file back', async () => {
+    const { repo, file } = scratch('func winner():\n\tpass\n')
+    let seen = ''
+    const outcome = await withMutationApplied(repo, mutation, async () => {
+      seen = readFileSync(file, 'utf8')
+      return 'ran'
+    })
+    expect(outcome).toEqual({ applied: true, result: 'ran' })
+    expect(seen).toBe('func loser():\n\tpass\n')
+    // The whole feature is untrustworthy if this line ever fails.
+    expect(readFileSync(file, 'utf8')).toBe('func winner():\n\tpass\n')
+  })
+
+  it('puts the file back even when the run throws', async () => {
+    const { repo, file } = scratch('func winner():\n')
+    await expect(
+      withMutationApplied(repo, mutation, async () => {
+        throw new Error('test runner exploded')
+      }),
+    ).rejects.toThrow('test runner exploded')
+    expect(readFileSync(file, 'utf8')).toBe('func winner():\n')
+  })
+
+  it('refuses a path that climbs out of the repository', async () => {
+    const { repo } = scratch('func winner():\n')
+    let ran = false
+    const outcome = await withMutationApplied(
+      repo,
+      { ...mutation, file: '../../etc/hosts' },
+      async () => {
+        ran = true
+        return null
+      },
+    )
+    expect(outcome).toEqual({ applied: false, reason: 'that path is outside the repository' })
+    expect(ran).toBe(false)
+  })
+
+  it('refuses an edit that would match more than once', async () => {
+    const { repo, file } = scratch('winner = 1\nwinner = 2\n')
+    const outcome = await withMutationApplied(repo, mutation, async () => null)
+    expect(outcome.applied).toBe(false)
+    if (!outcome.applied) expect(outcome.reason).toMatch(/appears 2 times/)
+    expect(readFileSync(file, 'utf8')).toBe('winner = 1\nwinner = 2\n')
+  })
+
+  it('refuses an edit that matches nothing, rather than silently passing', async () => {
+    const { repo } = scratch('func draw():\n')
+    const outcome = await withMutationApplied(repo, mutation, async () => null)
+    expect(outcome).toEqual({ applied: false, reason: 'the text to replace was not found' })
+  })
+
+  it('refuses a file that is not there', async () => {
+    const { repo } = scratch('func winner():\n')
+    const outcome = await withMutationApplied(repo, { ...mutation, file: 'nope.gd' }, async () => null)
+    expect(outcome).toEqual({ applied: false, reason: 'that file does not exist' })
+  })
+})
+
+describe('judgeMutation', () => {
+  const m = { describes: 'flip the winner', file: 'game.gd' }
+  const ran = (exitCode: number): { applied: true; result: TestResult } => ({
+    applied: true,
+    result: {
+      command: 'tests/run.sh',
+      exitCode,
+      signal: null,
+      timedOut: false,
+      stdout: '',
+      stderr: '',
+      durationMs: 1,
+      ranAt: 0,
+    },
+  })
+
+  it('is caught only when the tests actually ran and failed', () => {
+    expect(judgeMutation(m, ran(1))).toMatchObject({ caught: true, skipped: '', exitCode: 1 })
+  })
+
+  it('survives when the tests ran and still passed', () => {
+    expect(judgeMutation(m, ran(0))).toMatchObject({ caught: false, skipped: '', exitCode: 0 })
+  })
+
+  // The three below are the false-green guards: a mutation that never really ran
+  // must never be recorded as caught, because caught is what lets a milestone pass.
+  it('does not count an unapplied mutation as caught', () => {
+    const r = judgeMutation(m, { applied: false, reason: 'the text to replace was not found' })
+    expect(r.caught).toBe(false)
+    expect(r.skipped).toBe('the text to replace was not found')
+  })
+
+  it('does not count a mutation with no test command as caught', () => {
+    const r = judgeMutation(m, { applied: true, result: null })
+    expect(r.caught).toBe(false)
+    expect(r.skipped).toMatch(/no verification command/)
+  })
+
+  it('never reports both caught and skipped, which would read as a pass', () => {
+    const outcomes = [
+      ran(0),
+      ran(1),
+      { applied: true as const, result: null },
+      { applied: false as const, reason: 'that file does not exist' },
+    ]
+    for (const o of outcomes) {
+      const r = judgeMutation(m, o)
+      expect(r.caught && r.skipped !== '').toBe(false)
+    }
+  })
+})
+
+describe('structuralConcerns', () => {
+  it('objects to checks that have no command to run them', () => {
+    const found = structuralConcerns({
+      testCommand: '  ',
+      mutations: [{ file: 'a.gd', find: 'x', replace: 'y', describes: 'the win check' }],
+    })
+    expect(found).toHaveLength(1)
+    expect(found[0]).toMatch(/no command to run/)
+    expect(found[0]).toMatch(/only look like coverage/)
+  })
+
+  it('says nothing when the milestone is coherent', () => {
+    expect(
+      structuralConcerns({
+        testCommand: 'tests/run.sh',
+        mutations: [{ file: 'a.gd', find: 'x', replace: 'y', describes: 'the win check' }],
+      }),
+    ).toEqual([])
+    expect(structuralConcerns({ testCommand: '', mutations: [] })).toEqual([])
+  })
+})
+
+describe('parseMutationRepairs', () => {
+  it('reads a corrected anchor', () => {
+    const { repairs, impossible } = parseMutationRepairs(
+      '{"repairs":[{"index":1,"find":"if winner:","replace":"if true:"}],"impossible":[]}',
+    )
+    expect(repairs.get(1)).toEqual({ find: 'if winner:', replace: 'if true:' })
+    expect(impossible.size).toBe(0)
+  })
+
+  it('accepts a refusal as a real answer', () => {
+    const { repairs, impossible } = parseMutationRepairs(
+      '{"repairs":[],"impossible":[{"index":2,"why":"the win check was never written"}]}',
+    )
+    expect(repairs.size).toBe(0)
+    expect(impossible.get(2)).toBe('the win check was never written')
+  })
+
+  it('drops a no-op edit, which would pass without checking anything', () => {
+    const { repairs } = parseMutationRepairs(
+      '{"repairs":[{"index":1,"find":"same","replace":"same"}]}',
+    )
+    expect(repairs.size).toBe(0)
+  })
+
+  it('ignores an out-of-range or unparseable index', () => {
+    const { repairs } = parseMutationRepairs(
+      '{"repairs":[{"index":0,"find":"a","replace":"b"},{"index":"x","find":"c","replace":"d"},{"index":99,"find":"e","replace":"f"}]}',
+    )
+    expect(repairs.size).toBe(0)
+  })
+
+  it('lets a repair win over a contradictory impossible for the same item', () => {
+    const { repairs, impossible } = parseMutationRepairs(
+      '{"repairs":[{"index":1,"find":"a","replace":"b"}],"impossible":[{"index":1,"why":"cannot"}]}',
+    )
+    expect(repairs.has(1)).toBe(true)
+    expect(impossible.has(1)).toBe(false)
+  })
+
+  it('returns empty on junk rather than throwing', () => {
+    expect(parseMutationRepairs('sorry, I could not do that').repairs.size).toBe(0)
+  })
+})
+
+describe('summariseMutations, after a repair round', () => {
+  it('marks an unapplied check as blocking, not as a harmless gap', () => {
+    const text = summariseMutations([
+      {
+        describes: 'the win check',
+        file: 'game.gd',
+        caught: false,
+        skipped: 'the re-anchored edit also failed: the text to replace was not found',
+        skipKind: 'unapplied',
+        exitCode: null,
+      },
+    ])
+    expect(text).toMatch(/COULD NOT BE CHECKED \(blocking\)/)
+  })
+
+  it('still distinguishes a missing test command from an unapplied anchor', () => {
+    const text = summariseMutations([
+      { describes: 'a', file: 'x', caught: false, skipped: 'no command', skipKind: 'no-test-command', exitCode: null },
+    ])
+    expect(text).toMatch(/NOT CHECKED — x/)
+    expect(text).not.toMatch(/blocking/)
+  })
+})
+
+describe('milestoneVerdict', () => {
+  const green = (): TestResult => ({
+    command: 'tests/run.sh',
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    stdout: '',
+    stderr: '',
+    durationMs: 1,
+    ranAt: 0,
+  })
+  const mut = (over: Partial<MutationResult>): MutationResult => ({
+    describes: 'the win check',
+    file: 'game.gd',
+    caught: true,
+    skipped: '',
+    skipKind: '',
+    exitCode: 1,
+    ...over,
+  })
+
+  it('passes a green suite whose every declared break was caught', () => {
+    const v = milestoneVerdict(green(), [mut({})])
+    expect(v.testsPassed).toBe(true)
+    expect(v.surviving).toEqual([])
+  })
+
+  it('fails when the suite is red, whatever the mutations say', () => {
+    expect(milestoneVerdict({ ...green(), exitCode: 1 }, [mut({})]).testsPassed).toBe(false)
+  })
+
+  it('fails when a declared break went unnoticed', () => {
+    const v = milestoneVerdict(green(), [mut({ caught: false, exitCode: 0 })])
+    expect(v.testsPassed).toBe(false)
+    expect(v.surviving).toHaveLength(1)
+  })
+
+  // The point of the repair round: one stale anchor is forgiven and retried, but a
+  // check that still cannot be applied afterwards must not pass as verified.
+  it('fails when a check could not be applied even after re-anchoring', () => {
+    const v = milestoneVerdict(green(), [
+      mut({ caught: false, skipped: 'the re-anchored edit also failed', skipKind: 'unapplied', exitCode: null }),
+    ])
+    expect(v.testsPassed).toBe(false)
+    expect(v.unverifiable).toHaveLength(1)
+  })
+
+  it('does not fail on a missing test command, which is a plan defect not a code one', () => {
+    const v = milestoneVerdict(null, [
+      mut({ caught: false, skipped: 'no command', skipKind: 'no-test-command', exitCode: null }),
+    ])
+    expect(v.testsPassed).toBe(true)
+    expect(v.notRunnable).toHaveLength(1)
+  })
+
+  // Each bucket is reported to the operator by name, so a filter that quietly
+  // scoops up unrelated results would misdescribe what actually happened.
+  it('sorts a mixed set into the right buckets and no others', () => {
+    const v = milestoneVerdict(green(), [
+      mut({ describes: 'caught' }),
+      mut({ describes: 'survived', caught: false, exitCode: 0 }),
+      mut({ describes: 'stale', caught: false, skipped: 'no match', skipKind: 'unapplied', exitCode: null }),
+      mut({ describes: 'no command', caught: false, skipped: 'none', skipKind: 'no-test-command', exitCode: null }),
+    ])
+    expect(v.surviving.map((m) => m.describes)).toEqual(['survived'])
+    expect(v.unverifiable.map((m) => m.describes)).toEqual(['stale'])
+    expect(v.notRunnable.map((m) => m.describes)).toEqual(['no command'])
+    expect(v.testsPassed).toBe(false)
+  })
+
+  it('passes a milestone with no tests and no mutations, as before', () => {
+    expect(milestoneVerdict(null, []).testsPassed).toBe(true)
+  })
+})
