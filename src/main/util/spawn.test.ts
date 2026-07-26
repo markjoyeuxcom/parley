@@ -108,7 +108,15 @@ describe('capture reports how a process ended', () => {
   it('still captures output from a process that later dies', async () => {
     const result = await capture(
       node,
-      ['-e', 'console.log("ran some tests"); process.kill(process.pid, "SIGABRT")'],
+      [
+        '-e',
+        // Killed from the write callback, not the next line. console.log to a pipe
+        // is asynchronous and SIGABRT is not, so signalling immediately raced the
+        // flush: this passed on one machine and failed on another. The behaviour
+        // under test is that output already written survives the death, which needs
+        // the write to have actually happened.
+        'process.stdout.write("ran some tests\\n", () => process.kill(process.pid, "SIGABRT"))',
+      ],
       tmpdir(),
     )
     expect(result.stdout).toContain('ran some tests')

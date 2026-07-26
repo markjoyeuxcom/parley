@@ -580,11 +580,16 @@ Blocking:
   - The milestone's central claim is not established by its tests. Apply this check: imagine an implementation that gets the milestone's main point wrong but is otherwise plausible — stale state behind correct events, a hardcoded field, a value the tests never vary. Would it pass this suite? If it would, the claim is unverified and passing tests are evidence of nothing. This blocks even when the code in front of you looks correct: what is under review is the milestone, and an unverifiable milestone is not done.
   - **The verification can be made to pass without running.** Any path by which the command reports success while executing nothing, or while ignoring the state of the code: an empty or unreadable test directory treated as zero failures, a runner that cannot load and exits 0 anyway, an environment variable or argument that short-circuits the command, a mode flag that stubs out the real work. This blocks however unlikely you judge the trigger, and whether or not anything is broken today, because the exit code is the entire basis on which this work is judged — and a green result you cannot trust is worse than a red one. If you find yourself writing that something *could* report success without testing anything, that sentence belongs in "blocking", not "notes".
 
+  - **Behaviour that is wrong, however narrow the window.** If you can name the input or state and say what goes wrong, it is blocking. How rarely you judge it to fire is not a reason to downgrade it: a same-millisecond tie, an off-by-one at a boundary, a default that silently widens a destructive scope, a comparison that admits the case its own description excludes. If your sentence contains "silently", "never fires", "is skipped", or "clears everything", you are describing a defect and it belongs here.
+  - **A primitive this milestone depends on whose real path is untested.** Hand-written hashing, comparison, parsing, normalisation or serialisation where the tested inputs do not reach the code that will actually run — a single-block vector for a hash whose every production input spans several blocks. Reading it and finding it correct is not a substitute. This is the exact class of error that careful reading does not catch and one known-answer vector does, so the absence of that vector is the finding.
+
 Notes, not blocking:
   - Coverage you would like that is not the milestone's own claim.
   - Naming, structure, style, or how you would have written it.
   - Concerns about milestones not yet built.
   - Work that belongs elsewhere in the plan.
+
+Before you put anything in "notes", read it back to yourself. If it says something is wrong, missing, or quietly skipped, it is a finding and it belongs in "blocking" — "notes" is for what you would like, not for what does not work. Filing a defect as a note is the same failure as ticking "passed" beside it; both leave a known problem in the tree with nothing stopping it.
 
 Do not block on taste. A milestone that does what it said, proves it, and stays in scope passes — say so plainly and put the rest in "notes".`.trim()
 

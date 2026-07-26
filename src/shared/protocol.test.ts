@@ -239,6 +239,35 @@ describe('the neutralised-verification rule', () => {
     }
   })
 
+  /**
+   * Milestone 1 of the ledger plan passed with six "notes", three of which named
+   * incorrect behaviour: a coverage predicate that admitted the case its own
+   * description excluded, a hand-rolled SHA-256 whose only known-answer vector was
+   * shorter than every production input, and a nullable default that silently
+   * widened a destructive scope. Deriving `passed` from `blocking` closed the
+   * "tick it anyway" hole; this closes the one next to it.
+   */
+  it('refuses the downgrade route into notes', () => {
+    expect(REVIEW_CONTRACT).toMatch(/however narrow the window/i)
+    expect(REVIEW_CONTRACT).toMatch(/rarely you judge it to fire is not a reason to downgrade/i)
+    // The self-check at the point of writing, not just a rule earlier in the prompt.
+    expect(REVIEW_CONTRACT).toMatch(/read it back to yourself/i)
+    expect(REVIEW_CONTRACT).toMatch(/same failure as ticking "passed" beside it/i)
+  })
+
+  it('names the words a reviewer uses when it is describing a defect', () => {
+    for (const tell of [/silently/i, /never fires/i, /is skipped/i, /clears everything/i]) {
+      expect(REVIEW_CONTRACT).toMatch(tell)
+    }
+  })
+
+  it('blocks an untested primitive rather than accepting that it was read carefully', () => {
+    expect(REVIEW_CONTRACT).toMatch(/whose real path is untested/i)
+    expect(REVIEW_CONTRACT).toMatch(/single-block vector/i)
+    // The specific excuse that let the hash through: "I traced it and it is correct."
+    expect(REVIEW_CONTRACT).toMatch(/Reading it and finding it correct is not a substitute/i)
+  })
+
   it('forecloses the two excuses that produced the misfiling', () => {
     // "unlikely to happen" and "nothing is broken today" are exactly how a
     // reviewer talks itself into notes.

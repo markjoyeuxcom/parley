@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -636,7 +636,7 @@ describe('withMutationApplied', () => {
         return null
       },
     )
-    expect(outcome).toEqual({ applied: false, reason: 'that path is outside the repository' })
+    expect(outcome).toEqual({ applied: false, reason: 'that path resolves outside the repository' })
     expect(ran).toBe(false)
   })
 
@@ -699,12 +699,36 @@ describe('judgeMutation', () => {
     expect(r.skipped).toMatch(/no verification command/)
   })
 
+  // A suite that dies on any malformed input would otherwise "catch" every mutation
+  // while checking nothing — the false green this whole stage exists to detect.
+  it('does not credit a crash as catching the break', () => {
+    const r = judgeMutation(m, {
+      applied: true,
+      result: { ...ran(139).result, signal: 'SIGSEGV' },
+    })
+    expect(r.caught).toBe(false)
+    expect(r.skipKind).toBe('crashed')
+    expect(r.skipped).toMatch(/SIGSEGV/)
+  })
+
+  it('does not credit a timeout as catching the break, though it arrives as SIGTERM', () => {
+    const r = judgeMutation(m, {
+      applied: true,
+      result: { ...ran(143).result, signal: 'SIGTERM', timedOut: true },
+    })
+    expect(r.caught).toBe(false)
+    expect(r.skipKind).toBe('crashed')
+    expect(r.skipped).toMatch(/timed out/)
+  })
+
   it('never reports both caught and skipped, which would read as a pass', () => {
     const outcomes = [
       ran(0),
       ran(1),
       { applied: true as const, result: null },
       { applied: false as const, reason: 'that file does not exist' },
+      { applied: true as const, result: { ...ran(139).result, signal: 'SIGSEGV' } },
+      { applied: true as const, result: { ...ran(143).result, signal: 'SIGTERM', timedOut: true } },
     ]
     for (const o of outcomes) {
       const r = judgeMutation(m, o)
@@ -873,7 +897,54 @@ describe('milestoneVerdict', () => {
     expect(v.testsPassed).toBe(false)
   })
 
+  it('fails when the suite crashed under a mutation, since that proved nothing', () => {
+    const v = milestoneVerdict(green(), [
+      mut({ caught: false, skipped: 'killed by SIGSEGV', skipKind: 'crashed', exitCode: 139 }),
+    ])
+    expect(v.testsPassed).toBe(false)
+    expect(v.unverifiable).toHaveLength(1)
+  })
+
   it('passes a milestone with no tests and no mutations, as before', () => {
     expect(milestoneVerdict(null, []).testsPassed).toBe(true)
+  })
+})
+
+describe('withMutationApplied and symlinks', () => {
+  it('refuses a repo-local symlink whose target is outside the repository', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'parley-outside-'))
+    const secret = join(outside, 'secret.txt')
+    writeFileSync(secret, 'do not touch\n', 'utf8')
+
+    const repo = mkdtempSync(join(tmpdir(), 'parley-symlink-'))
+    // Lexically this is repo-local; only resolving it reveals where it goes.
+    symlinkSync(secret, join(repo, 'innocent.gd'))
+
+    let ran = false
+    const outcome = await withMutationApplied(
+      repo,
+      { file: 'innocent.gd', find: 'do not touch', replace: 'touched', describes: 'escape' },
+      async () => {
+        ran = true
+        return null
+      },
+    )
+    expect(outcome).toEqual({ applied: false, reason: 'that path resolves outside the repository' })
+    expect(ran).toBe(false)
+    expect(readFileSync(secret, 'utf8')).toBe('do not touch\n')
+  })
+
+  it('still allows a symlink that stays inside the repository', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'parley-symlink-ok-'))
+    writeFileSync(join(repo, 'real.gd'), 'func winner():\n', 'utf8')
+    symlinkSync(join(repo, 'real.gd'), join(repo, 'alias.gd'))
+
+    const outcome = await withMutationApplied(
+      repo,
+      { file: 'alias.gd', find: 'winner', replace: 'loser', describes: 'inside' },
+      async () => 'ran',
+    )
+    expect(outcome).toEqual({ applied: true, result: 'ran' })
+    expect(readFileSync(join(repo, 'real.gd'), 'utf8')).toBe('func winner():\n')
   })
 })

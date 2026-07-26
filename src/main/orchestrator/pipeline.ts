@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { isAbsolute, join, relative as relative_ } from 'node:path'
 import { extractJson, oneOf, safeString } from '@shared/extract'
 import {
@@ -1837,6 +1844,29 @@ export function judgeMutation(
       exitCode: null,
     }
   }
+  // A crash or a timeout is not the suite noticing the break. A suite that dies on
+  // any malformed input would "catch" every mutation while checking nothing, which
+  // is the precise false green this stage exists to detect — so an abnormal run is
+  // recorded as having proved nothing rather than as a pass. Timeout first: it is
+  // delivered as a SIGTERM and would otherwise read as a crash.
+  if (test.timedOut) {
+    return {
+      ...base,
+      caught: false,
+      skipped: 'the suite timed out under this mutation, so it proved nothing',
+      skipKind: 'crashed',
+      exitCode: test.exitCode,
+    }
+  }
+  if (test.signal) {
+    return {
+      ...base,
+      caught: false,
+      skipped: `the suite was killed by ${test.signal} under this mutation, so it proved nothing`,
+      skipKind: 'crashed',
+      exitCode: test.exitCode,
+    }
+  }
   return { ...base, caught: test.exitCode !== 0, skipped: '', skipKind: '', exitCode: test.exitCode }
 }
 
@@ -1863,11 +1893,24 @@ export async function withMutationApplied<T>(
   const target = join(repoPath, mutation.file)
 
   // `file` comes from a model, so it is checked rather than trusted.
-  const relative = relative_(repoPath, target)
-  if (relative.startsWith('..') || isAbsolute(relative)) {
-    return { applied: false, reason: 'that path is outside the repository' }
-  }
   if (!existsSync(target)) return { applied: false, reason: 'that file does not exist' }
+
+  // Resolved, not lexical. `relative()` compares strings, so a symlink that lives
+  // inside the repository but points outside it passes the check — and writeFileSync
+  // follows the link. The path comes from a model, so the containment has to hold
+  // against the real filesystem rather than against how the path is spelled.
+  let realTarget: string
+  let realRoot: string
+  try {
+    realTarget = realpathSync(target)
+    realRoot = realpathSync(repoPath)
+  } catch (err) {
+    return { applied: false, reason: `could not resolve it: ${err instanceof Error ? err.message : String(err)}` }
+  }
+  const relative = relative_(realRoot, realTarget)
+  if (relative.startsWith('..') || isAbsolute(relative) || relative === '') {
+    return { applied: false, reason: 'that path resolves outside the repository' }
+  }
 
   let original: string
   try {
@@ -1927,7 +1970,9 @@ export function milestoneVerdict(
   notRunnable: MutationResult[]
 } {
   const surviving = mutationResults.filter((m) => !m.caught && !m.skipped)
-  const unverifiable = mutationResults.filter((m) => m.skipKind === 'unapplied')
+  const unverifiable = mutationResults.filter(
+    (m) => m.skipKind === 'unapplied' || m.skipKind === 'crashed',
+  )
   const notRunnable = mutationResults.filter((m) => m.skipKind === 'no-test-command')
   const testsPassed =
     (testResult === null || testResult.exitCode === 0) &&

@@ -361,7 +361,7 @@ export const MutationResult = z.object({
   // two kinds need different handling: an unapplied anchor can be repaired against
   // the real file and re-run, whereas a missing verification command is a defect in
   // the plan itself and no amount of retrying will fix it.
-  skipKind: z.enum(['', 'unapplied', 'no-test-command']).default(''),
+  skipKind: z.enum(['', 'unapplied', 'no-test-command', 'crashed']).default(''),
   exitCode: z.number().int().nullable().default(null),
 })
 export type MutationResult = z.infer<typeof MutationResult>
@@ -492,6 +492,79 @@ export const WorkPlan = z.object({
   createdAt: Timestamp,
 })
 export type WorkPlan = z.infer<typeof WorkPlan>
+
+// ─── Finding ledger ─────────────────────────────────────────────────────────
+
+/**
+ * Whether an occurrence can stop a milestone from being approved.
+ *
+ * The source is deliberately separate: an audit concern and an independent
+ * review concern gate in the same way, while their provenance remains intact.
+ */
+export const FindingOccurrenceKind = z.enum(['blocking', 'note'])
+export type FindingOccurrenceKind = z.infer<typeof FindingOccurrenceKind>
+
+export const FindingOccurrenceSource = z.enum(['audit', 'review'])
+export type FindingOccurrenceSource = z.infer<typeof FindingOccurrenceSource>
+
+/**
+ * The stable, content-addressed part of a ledger entry.
+ *
+ * Scope belongs to occurrences, not findings. The same objection can be raised
+ * against several milestones without one milestone's disposition clearing the
+ * others.
+ */
+export const LedgerFinding = z.object({
+  id: Id,
+  sessionId: Id,
+  text: z.string().min(1),
+  normalizedText: z.string().min(1),
+  createdAt: Timestamp,
+})
+export type LedgerFinding = z.infer<typeof LedgerFinding>
+
+/**
+ * One time a finding was raised, with enough provenance to distinguish repeat
+ * findings and separate remediation rounds.
+ */
+export const FindingOccurrence = z.object({
+  id: Id,
+  findingId: Id,
+  planId: Id,
+  milestoneId: Id.nullable().default(null),
+  round: z.number().int().nonnegative().nullable().default(null),
+  kind: FindingOccurrenceKind,
+  source: FindingOccurrenceSource,
+  createdAt: Timestamp,
+})
+export type FindingOccurrence = z.infer<typeof FindingOccurrence>
+
+export const FindingDispositionState = z.enum(['resolved', 'dismissed', 'accepted-risk'])
+export type FindingDispositionState = z.infer<typeof FindingDispositionState>
+
+export const FindingDispositionSource = z.enum(['human', 'pipeline'])
+export type FindingDispositionSource = z.infer<typeof FindingDispositionSource>
+
+/**
+ * An immutable decision added to the ledger.
+ *
+ * `occurrenceId` names exactly one occurrence. A null scope is an explicit
+ * finding-wide decision and covers only occurrences which existed at the time;
+ * a later recurrence therefore surfaces as open again.
+ */
+export const FindingDisposition = z.object({
+  id: Id,
+  findingId: Id,
+  occurrenceId: Id.nullable().default(null),
+  state: FindingDispositionState,
+  note: z.string().default(''),
+  source: FindingDispositionSource,
+  createdAt: Timestamp,
+})
+export type FindingDisposition = z.infer<typeof FindingDisposition>
+
+export const FindingLedgerState = z.union([z.literal('open'), FindingDispositionState])
+export type FindingLedgerState = z.infer<typeof FindingLedgerState>
 
 // ─── Loops (autonomous run-until-condition) ──────────────────────────────────
 

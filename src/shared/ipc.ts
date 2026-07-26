@@ -205,8 +205,13 @@ export interface AppInfo {
    *
    * The UI must show this permanently and unmissably. A mock run produces
    * sessions, verdicts and reviews that look exactly like real ones while doing
-   * no real work and writing no files, and a user who does not know which mode
-   * they are in will read fabricated output as findings.
+   * no real work, and a user who does not know which mode they are in will read
+   * fabricated output as findings.
+   *
+   * It is not read-only: executing a milestone under the mocks writes one
+   * placeholder file into the repository, because the pipeline's changed-tree gate
+   * cannot otherwise be exercised. Anything claiming mock mode writes nothing is
+   * wrong, and was wrong here.
    */
   mock: boolean
   /**
