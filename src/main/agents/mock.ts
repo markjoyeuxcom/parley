@@ -14,12 +14,16 @@ import type { AgentAdapter, RunRequest, RunResult } from './types'
  */
 export class MockAdapter implements AgentAdapter {
   readonly binary = '(mock)'
+  /** Every prompt this adapter has been sent, for tests that assert on the
+   * pipeline's side of the conversation rather than the mock's. */
+  readonly prompts: string[] = []
   private counter = 0
   private writes = 0
 
   constructor(readonly vendor: Vendor) {}
 
   async run(req: RunRequest): Promise<RunResult> {
+    this.prompts.push(req.prompt)
     this.counter += 1
     const n = this.counter
     await new Promise((r) => setTimeout(r, 40))

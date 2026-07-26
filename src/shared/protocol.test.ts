@@ -3,6 +3,7 @@ import {
   CORRECTION_CONTRACT,
   REVIEW_CONTRACT,
   debatePrompt,
+  remediationPrompt,
   debateStages,
   executePrompt,
   reviewStages,
@@ -284,5 +285,33 @@ describe('the neutralised-verification rule', () => {
   it('still tells the reviewer not to block on taste', () => {
     // Guard against the sharpening turning into a licence to block on anything.
     expect(REVIEW_CONTRACT).toMatch(/Do not block on taste/i)
+  })
+})
+
+describe('remediationPrompt and mutation checks', () => {
+  const base = {
+    round: 1,
+    maxRounds: 2,
+    concerns: [] as string[],
+    reviewerNote: '',
+    testSummary: 'tests passed',
+    reviewerVendor: 'claude',
+  }
+
+  it('carries the surviving break to the executor, with what to do about it', () => {
+    const prompt = remediationPrompt({
+      ...base,
+      mutationSummary: '  SURVIVED — game.gd: the win check. The suite still passed.',
+    })
+    expect(prompt).toMatch(/MUTATION CHECKS/)
+    expect(prompt).toMatch(/SURVIVED — game\.gd/)
+    // The instruction matters as much as the fact: strengthen the tests, do not
+    // implement the broken behaviour the mutation simulated.
+    expect(prompt).toMatch(/strengthen the tests/)
+    expect(prompt).toMatch(/not to change the behaviour the break simulates/)
+  })
+
+  it('omits the block entirely when there were no mutation checks', () => {
+    expect(remediationPrompt(base)).not.toMatch(/MUTATION CHECKS/)
   })
 })

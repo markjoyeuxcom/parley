@@ -11,6 +11,7 @@ import { isAbsolute, join, relative as relative_ } from 'node:path'
 import { extractJson, oneOf, safeString } from '@shared/extract'
 import {
   emptyUsage,
+  type AgentConfig,
   type Id,
   type Milestone,
   type Mutation,
@@ -226,12 +227,17 @@ export class Pipeline {
       return this.repo.listMilestones(plan.id)
     }
 
-    const audit = parseAudit(result.text)
+    const { audit, note: alignmentNote } = alignAudit(
+      parseAudit(result.text),
+      this.repo.listMilestones(plan.id).length,
+    )
     this.applyAudit(plan, audit)
 
     // Persisted now rather than after correction. Correction has two paths that
     // overwrite this note, and the auditor's findings must not leave with them.
-    const auditSummary = summariseAudit(auditorVendor, audit)
+    const auditSummary = [alignmentNote, summariseAudit(auditorVendor, audit)]
+      .filter(Boolean)
+      .join('\n\n')
     this.repo.setPlanCorrectionNote(plan.id, auditSummary)
 
     return this.runCorrection(
@@ -504,6 +510,7 @@ export class Pipeline {
     // while `reviewNote` carries the whole history.
     let lastBlocking: string[] = []
     let lastNotes: string[] = []
+    let lastMutationResults: MutationResult[] = []
     const publishHistory = (): void => {
       current = this.repo.updateMilestone(milestoneId, {
         reviewNote: history.join('\n\n'),
@@ -537,6 +544,11 @@ export class Pipeline {
               concerns: previousConcerns,
               reviewerNote: lastReviewNote,
               testSummary: summariseTests(lastTestResult),
+              // Without this, a mutation-only failure remediates blind: the
+              // reviewer had no objections, the test summary reads green, and the
+              // one actionable fact — which declared break survived — never
+              // reaches the agent being asked to fix it.
+              mutationSummary: summariseMutations(lastMutationResults),
               reviewerVendor,
             })
           : executePrompt(
@@ -592,6 +604,7 @@ export class Pipeline {
       lastPassed = outcome.passed
       lastBlocking = outcome.concerns
       lastNotes = outcome.reviewNotes
+      lastMutationResults = current.mutationResults
       history.push(outcome.note)
       publishHistory()
 
@@ -804,7 +817,7 @@ export class Pipeline {
         input.previousConcerns,
         summariseMutations(mutationResults),
       ),
-      cfg: { ...plan.reviewer, vendor: input.reviewerVendor },
+      cfg: reviewerConfig(plan.reviewer, input.reviewerVendor),
       capability: 'read',
       cwd: plan.repoPath,
       resumeId: input.reviewerResumeId,
@@ -981,7 +994,7 @@ export class Pipeline {
         summariseTests(testResult),
         unverified,
       ),
-      cfg: { ...plan.reviewer, vendor: reviewerVendor },
+      cfg: reviewerConfig(plan.reviewer, reviewerVendor),
       capability: 'read',
       cwd: plan.repoPath,
       signal,
@@ -1194,7 +1207,7 @@ export class Pipeline {
       systemPrompt:
         'You relocate a verification check to match code written by a different agent. You may not weaken what it checks. You are read-only.',
       prompt: mutationRepairPrompt(items),
-      cfg: { ...plan.reviewer, vendor: input.reviewerVendor },
+      cfg: reviewerConfig(plan.reviewer, input.reviewerVendor),
       capability: 'read',
       cwd: plan.repoPath,
       resumeId: input.reviewerResumeId,
@@ -1451,6 +1464,72 @@ export function parseCorrection(text: string): ParsedCorrection | null {
 }
 
 /** The auditor's own findings, kept for the record alongside the planner's reply. */
+/**
+ * Guards the seam between the auditor's reply and the milestones it judges.
+ *
+ * AUDIT_CONTRACT says "index milestones from 0", but nothing enforced it: an
+ * auditor that counted from 1 — the natural prose habit — shifted every
+ * disposition one milestone late, the first milestone read "no disposition
+ * recorded" (which does not block approval), a REJECT landed on the wrong
+ * milestone, and the last disposition matched nothing and vanished. All
+ * silently, and the 0-based mock meant no test could ever see it.
+ *
+ * The shift is applied only on proof, not on suspicion: no index 0, index
+ * `count` present, everything inside [1..count]. That signature cannot be
+ * produced by a 0-based reply. Anything else out of range is discarded loudly —
+ * a disposition that vanishes unheard is the exact silence failure the audit
+ * stage exists to prevent.
+ */
+export function alignAudit(
+  audit: ParsedAudit | null,
+  milestoneCount: number,
+): { audit: ParsedAudit | null; note: string } {
+  if (!audit || audit.dispositions.length === 0 || milestoneCount === 0) {
+    return { audit, note: '' }
+  }
+  const indices = audit.dispositions.map((d) => d.milestone)
+  const provablyOneBased =
+    !indices.includes(0) &&
+    indices.includes(milestoneCount) &&
+    indices.every((i) => i >= 1 && i <= milestoneCount)
+  if (provablyOneBased) {
+    return {
+      audit: {
+        ...audit,
+        dispositions: audit.dispositions.map((d) => ({ ...d, milestone: d.milestone - 1 })),
+      },
+      note: 'The auditor numbered milestones from 1 rather than 0; its dispositions were realigned before being applied.',
+    }
+  }
+  const outOfRange = audit.dispositions.filter((d) => d.milestone >= milestoneCount)
+  if (!outOfRange.length) return { audit, note: '' }
+  return {
+    audit: {
+      ...audit,
+      dispositions: audit.dispositions.filter((d) => d.milestone < milestoneCount),
+    },
+    note:
+      `The audit referenced milestone${outOfRange.length === 1 ? '' : 's'} ` +
+      `${outOfRange.map((d) => d.milestone + 1).join(', ')} which do${outOfRange.length === 1 ? 'es' : ''} not exist; ` +
+      `${outOfRange.length === 1 ? 'that disposition was' : 'those dispositions were'} discarded rather than silently misapplied.`,
+  }
+}
+
+/**
+ * The config an agent actually runs with when its vendor was coerced.
+ *
+ * The pipeline overrides a same-vendor reviewer to the counterpart, but it used
+ * to spread the configured record and swap only the vendor field — carrying a
+ * vendor-specific model name across the boundary, so the codex CLI could be
+ * invoked with a Claude model string. Effort and persona are vendor-neutral and
+ * survive; the model does not, so a swap blanks it and the CLI falls back to its
+ * own default.
+ */
+export function reviewerConfig(configured: AgentConfig, vendor: Vendor): AgentConfig {
+  if (configured.vendor === vendor) return configured
+  return { ...configured, vendor, model: '' }
+}
+
 export function summariseAudit(auditorVendor: string, audit: ParsedAudit | null): string {
   if (!audit) return `${auditorVendor} audited the plan but returned no usable findings.`
   const lines = [`${auditorVendor} audited the plan and judged it ${audit.verdict}.`]

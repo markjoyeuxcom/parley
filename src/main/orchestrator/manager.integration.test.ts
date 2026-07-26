@@ -19,12 +19,17 @@ import { Manager, RequestError } from './manager'
  * across two independent replies, cap enforcement, and the approval gate.
  */
 
-function harness(): { manager: Manager; repo: Repo; events: AppEvent[] } {
+function harness(): {
+  manager: Manager
+  repo: Repo
+  events: AppEvent[]
+  registry: AgentRegistry
+} {
   const repo = new Repo(openDatabase(':memory:'))
   const registry = new AgentRegistry(true)
   const events: AppEvent[] = []
   const manager = new Manager({ repo, registry, emit: (event) => events.push(event) })
-  return { manager, repo, events }
+  return { manager, repo, events, registry }
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
@@ -147,6 +152,39 @@ describe('debate session, end to end', () => {
     const warning = events.find((e) => e.type === 'notice' && e.level === 'warn')
     expect(warning).toBeDefined()
     expect(warning && 'message' in warning ? warning.message : '').toMatch(/blind spots/i)
+  })
+
+  it('refuses a review-exit loop whose verifier shares the worker vendor', () => {
+    const { manager } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-loop-'))
+    expect(() =>
+      manager.createLoop({
+        goal: 'x',
+        repoPath,
+        worker: codex,
+        verifier: { ...codex },
+        exit: { kind: 'review', command: '', criterion: 'the goal holds' },
+        caps: { maxIterations: 3, maxSpendUsd: 0, maxWallClockMs: 60_000 },
+        capability: 'read',
+      }),
+    ).toThrow(/cannot come from the model whose work it is checking/)
+  })
+
+  it('still allows a same-vendor pair when the exit is a deterministic command', () => {
+    const { manager } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-loop-'))
+    const loop = manager.createLoop({
+      goal: 'x',
+      repoPath,
+      worker: codex,
+      verifier: { ...codex },
+      // The verifier is unused here — the command is the check — so the pairing
+      // costs nothing and blocking it would be a false stop.
+      exit: { kind: 'command', command: 'node --version', criterion: '' },
+      caps: { maxIterations: 3, maxSpendUsd: 0, maxWallClockMs: 60_000 },
+      capability: 'read',
+    })
+    expect(loop.status).toBe('idle')
   })
 
   it('refuses a review with no repository', () => {
@@ -394,7 +432,7 @@ describe('handing a rejection back to the executor', () => {
     testCommand = 'node --version',
     mutations: Mutation[] = [],
   ) {
-    const { manager, repo, events } = harness()
+    const { manager, repo, events, registry } = harness()
     const session = manager.startSession({
       kind: 'debate',
       matter: 'x',
@@ -421,7 +459,7 @@ describe('handing a rejection back to the executor', () => {
     repo.updateMilestone(first.id, { testCommand, mutations })
     const approval = repo.grantApproval('milestone.execute', first.id, 'allow')
     const done = await manager.runMilestone(first.id, approval.id)
-    return { done, events, repo }
+    return { done, events, repo, registry }
   }
 
   /**
@@ -444,6 +482,38 @@ describe('handing a rejection back to the executor', () => {
     },
   ]
   const grepResolved = 'grep -q RESOLVED parley-mock-work.txt'
+
+  it('tells the remediating executor which declared break survived', async () => {
+    // grep -q RESOLVED matches RESOLVEDX too, so this mutation survives a green
+    // suite: the milestone fails while the reviewer passes and the tests pass.
+    // The only actionable fact is the surviving break itself, so the remediation
+    // prompt must carry it — without it the executor is told "rejected", shown
+    // green verification, and given nothing to fix.
+    const { done, registry } = await runFirstMilestone(
+      gitRepo('parley-mutate-survive-'),
+      'grep -q RESOLVED parley-mock-work.txt',
+      [
+        {
+          file: 'parley-mock-work.txt',
+          find: 'RESOLVED',
+          replace: 'RESOLVEDX',
+          describes: 'a marker change the tests cannot distinguish',
+        },
+      ],
+    )
+
+    expect(done.status).toBe('failed')
+    expect(done.mutationResults[0]).toMatchObject({ caught: false, skipped: '' })
+
+    // The executor is the codex mock; its remediation round must have been told.
+    const adapter = registry.get('codex') as unknown as { prompts: string[] }
+    const remediation = adapter.prompts.filter((p) => p.includes('This is remediation round'))
+    expect(remediation.length).toBeGreaterThan(0)
+    const mutationRound = remediation.find((p) => p.includes('MUTATION CHECKS'))
+    expect(mutationRound).toBeDefined()
+    expect(mutationRound).toMatch(/SURVIVED — parley-mock-work\.txt/)
+    expect(mutationRound).toMatch(/strengthen the tests/)
+  })
 
   it('re-anchors a stale mutation against the real file and catches the break', async () => {
     const repoPath = gitRepo('parley-mutate-')

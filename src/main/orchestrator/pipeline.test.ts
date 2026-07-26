@@ -7,7 +7,9 @@ import {
   isGreenfield,
   missingExpectedPaths,
   pathsOutsideScope,
+  alignAudit,
   parseAudit,
+  reviewerConfig,
   parsePlan,
   parseMutations,
   parseReview,
@@ -946,5 +948,88 @@ describe('withMutationApplied and symlinks', () => {
     )
     expect(outcome).toEqual({ applied: true, result: 'ran' })
     expect(readFileSync(join(repo, 'real.gd'), 'utf8')).toBe('func winner():\n')
+  })
+})
+
+describe('alignAudit', () => {
+  const d = (
+    milestone: number,
+    disposition: 'accept' | 'revise' | 'reject' = 'accept',
+  ): { milestone: number; disposition: 'accept' | 'revise' | 'reject'; note: string } => ({
+    milestone,
+    disposition,
+    note: 'n',
+  })
+  const parsed = (...dispositions: ReturnType<typeof d>[]): NonNullable<Parameters<typeof alignAudit>[0]> => ({
+    verdict: 'needs-changes',
+    dispositions,
+    blockingConcerns: [],
+  })
+
+  it('leaves a 0-based reply untouched', () => {
+    const { audit, note } = alignAudit(parsed(d(0), d(1), d(2)), 3)
+    expect(audit?.dispositions.map((x) => x.milestone)).toEqual([0, 1, 2])
+    expect(note).toBe('')
+  })
+
+  // The signature that cannot come from a 0-based reply: no index 0, the count
+  // itself present, everything inside [1..count]. A REJECT shifted one milestone
+  // late marks the wrong work rejected and lets the genuinely rejected work pass.
+  it('realigns a provably 1-based reply and says so', () => {
+    const { audit, note } = alignAudit(parsed(d(1, 'reject'), d(2), d(3)), 3)
+    expect(audit?.dispositions.map((x) => x.milestone)).toEqual([0, 1, 2])
+    expect(audit?.dispositions[0]?.disposition).toBe('reject')
+    expect(note).toMatch(/numbered milestones from 1/)
+  })
+
+  it('realigns the single-milestone case', () => {
+    const { audit } = alignAudit(parsed(d(1)), 1)
+    expect(audit?.dispositions.map((x) => x.milestone)).toEqual([0])
+  })
+
+  it('does not shift an ambiguous reply that merely skips the first milestone', () => {
+    // {1, 2} of 3 could be 0-based-missing-first or 1-based-missing-last; there is
+    // no proof either way, so it is applied as written rather than guessed at.
+    const { audit, note } = alignAudit(parsed(d(1), d(2)), 3)
+    expect(audit?.dispositions.map((x) => x.milestone)).toEqual([1, 2])
+    expect(note).toBe('')
+  })
+
+  it('discards an out-of-range disposition loudly instead of dropping it silently', () => {
+    const { audit, note } = alignAudit(parsed(d(0), d(7)), 3)
+    expect(audit?.dispositions.map((x) => x.milestone)).toEqual([0])
+    expect(note).toMatch(/milestone 8 which does not exist/)
+    expect(note).toMatch(/discarded rather than silently misapplied/)
+  })
+
+  it('passes null and empty through unchanged', () => {
+    expect(alignAudit(null, 3)).toEqual({ audit: null, note: '' })
+    const empty = parsed()
+    expect(alignAudit(empty, 3).audit).toBe(empty)
+  })
+})
+
+describe('reviewerConfig', () => {
+  const configured = {
+    vendor: 'claude' as const,
+    model: 'opus',
+    effort: 'high' as const,
+    persona: 'terse',
+  }
+
+  it('passes an uncoerced config through untouched', () => {
+    expect(reviewerConfig(configured, 'claude')).toBe(configured)
+  })
+
+  // The bug this pins: swapping only the vendor field carried a Claude model
+  // name into the codex CLI. Effort and persona are vendor-neutral and survive;
+  // the model is not, and the CLI must fall back to its own default.
+  it('blanks the model when the vendor is swapped, keeping effort and persona', () => {
+    expect(reviewerConfig(configured, 'codex')).toEqual({
+      vendor: 'codex',
+      model: '',
+      effort: 'high',
+      persona: 'terse',
+    })
   })
 })

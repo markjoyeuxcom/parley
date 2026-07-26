@@ -220,12 +220,18 @@ export class Manager {
 
     const repoPath = validateRepoPath(input.repoPath)
 
+    // Deliberately a warning, not a block. Planner and executor are both on the
+    // produce side — the audit and the review still come from the counterpart, so
+    // nobody grades their own work. What this configuration costs is check
+    // *diversity*, and the message says exactly that rather than gesturing at
+    // "weaker separation".
     if (input.planner.vendor === input.executor.vendor) {
+      const counterpart = this.registry.counterpart(input.planner.vendor)
       this.emit({
         type: 'notice',
         level: 'warn',
         message:
-          'The planner and executor are the same vendor. The audit will still come from the other vendor, but the separation is weaker.',
+          `The planner and executor are both ${input.planner.vendor}, so every independent check on this plan — the audit and the review — will come from ${counterpart}. Any blind spot ${counterpart} has now covers both gates.`,
       })
     }
 
@@ -417,13 +423,16 @@ export class Manager {
       throw new RequestError('a review exit condition needs a completion criterion')
     }
 
+    // A hard refusal where the plan pipeline only warns, because the situations
+    // differ in kind: a milestone has a human approval gate and two cross-vendor
+    // checks, while a review-exit loop runs autonomously with exactly one check —
+    // the verifier. loopVerifyPrompt promises the worker "another agent, from a
+    // different model family" is checking it; the config must not be able to make
+    // that a lie.
     if (input.exit.kind === 'review' && input.verifier.vendor === input.worker.vendor) {
-      this.emit({
-        type: 'notice',
-        level: 'warn',
-        message:
-          'The verifier is the same vendor as the worker. It is checking work from a model that shares its blind spots.',
-      })
+      throw new RequestError(
+        "a review-exit loop's only check is its verifier, which cannot come from the model whose work it is checking — use the other vendor, or a command exit",
+      )
     }
 
     const loop = this.repo.createLoop({

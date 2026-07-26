@@ -515,8 +515,11 @@ export function remediationPrompt(input: {
   reviewerNote: string
   testSummary: string
   reviewerVendor: string
+  /** Rendered outcome of the milestone's declared mutation checks. */
+  mutationSummary?: string
 }): string {
   const { round, maxRounds, concerns, reviewerNote, testSummary, reviewerVendor } = input
+  const mutationSummary = input.mutationSummary ?? ''
   return [
     `Your work on this milestone was reviewed by ${reviewerVendor}, independently, and rejected. This is remediation round ${round} of ${maxRounds}.`,
     concerns.length
@@ -524,6 +527,14 @@ export function remediationPrompt(input: {
       : '',
     reviewerNote ? `THE REVIEWER'S ASSESSMENT:\n${reviewerNote}` : '',
     `DETERMINISTIC VERIFICATION (run by the workbench, not by an agent):\n${testSummary}`,
+    // A milestone can fail with a passing suite and a passing review: a declared
+    // break the tests were supposed to catch survived. When that is the whole
+    // reason for the rejection, this block is the only actionable information in
+    // the prompt — without it the executor is told "rejected", shown green
+    // verification, and given nothing to fix.
+    mutationSummary
+      ? `MUTATION CHECKS (the workbench broke the code on purpose and re-ran the tests):\n${mutationSummary}\n\nA SURVIVED line means the suite still passed with that break in place. The fix is to strengthen the tests until the break is caught — not to change the behaviour the break simulates.`
+      : '',
     `Address these specific objections and nothing else. Do not refactor around them, do not expand the milestone's scope, and do not weaken or delete a test to make a complaint go away — the reviewer will see the diff again and that is exactly what it is looking for.`,
     `If you believe an objection is wrong, say so plainly and explain why rather than silently ignoring it. A disagreement you argue is useful; one you bury is not.`,
     `When you are done, state in two or three sentences what you changed in response to each objection.`,
