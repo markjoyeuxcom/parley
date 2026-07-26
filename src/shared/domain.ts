@@ -301,7 +301,10 @@ export type MilestoneStatus = z.infer<typeof MilestoneStatus>
 export interface SessionDeletionImpact {
   turns: number
   hasVerdict: boolean
+  /** Verdict findings and ledger findings destroyed with the session. */
   findings: number
+  /** Immutable ledger decisions destroyed with the session. */
+  dispositions: number
   plans: number
   milestones: number
   /** Milestones that ran to completion — these wrote to a repository. */

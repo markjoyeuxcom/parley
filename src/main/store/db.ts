@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 8
+export const SCHEMA_VERSION = 9
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -121,6 +121,43 @@ CREATE TABLE IF NOT EXISTS findings (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_findings_session ON findings(session_id, priority);
+
+CREATE TABLE IF NOT EXISTS ledger_findings (
+  id              TEXT PRIMARY KEY,
+  session_id      TEXT NOT NULL,
+  text            TEXT NOT NULL,
+  normalized_text TEXT NOT NULL,
+  created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_findings_session
+  ON ledger_findings(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ledger_sightings (
+  id           TEXT PRIMARY KEY,
+  finding_id   TEXT NOT NULL REFERENCES ledger_findings(id) ON DELETE CASCADE,
+  plan_id      TEXT NOT NULL,
+  milestone_id TEXT,
+  round        INTEGER,
+  kind         TEXT NOT NULL,
+  source       TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_sightings_finding
+  ON ledger_sightings(finding_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ledger_dispositions (
+  id            TEXT PRIMARY KEY,
+  finding_id    TEXT NOT NULL REFERENCES ledger_findings(id) ON DELETE CASCADE,
+  occurrence_id TEXT REFERENCES ledger_sightings(id) ON DELETE CASCADE,
+  state         TEXT NOT NULL,
+  note          TEXT NOT NULL DEFAULT '',
+  source        TEXT NOT NULL,
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_dispositions_finding
+  ON ledger_dispositions(finding_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ledger_dispositions_occurrence
+  ON ledger_dispositions(occurrence_id, created_at);
 
 CREATE TABLE IF NOT EXISTS plans (
   id         TEXT PRIMARY KEY,
@@ -398,6 +435,10 @@ export function migrate(db: Db): void {
     } catch {
       // Already present on a database created fresh from SCHEMA.
     }
+  }
+  if (current < 9) {
+    // The finding ledger is additive. SCHEMA creates its three tables before
+    // the recorded version is inspected, leaving every version-8 row intact.
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

@@ -8,12 +8,15 @@ import {
   type ApprovalScope,
   type Evidence,
   type Finding,
+  type FindingDisposition,
+  type FindingOccurrence,
   type GridLayout,
   type Id,
   type Interjection,
   type InterjectionTarget,
   type Loop,
   type LoopIteration,
+  type LedgerFinding,
   type Milestone,
   type MilestoneStatus,
   type Mutation,
@@ -30,6 +33,7 @@ import {
   type Verdict,
   type WorkPlan,
 } from '@shared/domain'
+import { findingIdentity, normaliseFindingText } from '@shared/ledger'
 import type { Db, Row } from './db'
 
 export function newId(): Id {
@@ -261,10 +265,18 @@ export class Repo {
     }
 
     const count = (sql: string): number => num(this.db.get(sql, id)?.['n'])
+    const legacyFindings = count(`SELECT COUNT(*) AS n FROM findings WHERE session_id = ?`)
+    const ledgerFindings = count(`SELECT COUNT(*) AS n FROM ledger_findings WHERE session_id = ?`)
     return {
       turns: count(`SELECT COUNT(*) AS n FROM turns WHERE session_id = ?`),
       hasVerdict: count(`SELECT COUNT(*) AS n FROM verdicts WHERE session_id = ?`) > 0,
-      findings: count(`SELECT COUNT(*) AS n FROM findings WHERE session_id = ?`),
+      findings: legacyFindings + ledgerFindings,
+      dispositions: count(
+        `SELECT COUNT(*) AS n
+         FROM ledger_dispositions d
+         JOIN ledger_findings f ON f.id = d.finding_id
+         WHERE f.session_id = ?`,
+      ),
       plans: planIds.length,
       milestones,
       completedMilestones,
@@ -296,6 +308,17 @@ export class Repo {
       // remains legible with the session gone. Erasing the evidence that
       // permission was given is worse than leaving a row nothing points at.
 
+      this.db.run(
+        `DELETE FROM ledger_dispositions
+         WHERE finding_id IN (SELECT id FROM ledger_findings WHERE session_id = ?)`,
+        id,
+      )
+      this.db.run(
+        `DELETE FROM ledger_sightings
+         WHERE finding_id IN (SELECT id FROM ledger_findings WHERE session_id = ?)`,
+        id,
+      )
+      this.db.run(`DELETE FROM ledger_findings WHERE session_id = ?`, id)
       this.db.run(`DELETE FROM agent_threads WHERE session_id = ?`, id)
       // turns, interjections, verdicts and findings go with this by cascade.
       this.db.run(`DELETE FROM sessions WHERE id = ?`, id)
@@ -533,6 +556,167 @@ export class Repo {
         raisedBy: str(row['raised_by']) as TurnSide,
         createdAt: num(row['created_at']),
       }))
+  }
+
+  // ─── Finding ledger ────────────────────────────────────────────────────────
+
+  upsertLedgerFinding(sessionId: Id, text: string, createdAt = Date.now()): LedgerFinding {
+    const finding: LedgerFinding = {
+      id: findingIdentity(sessionId, text),
+      sessionId,
+      text: text.trim(),
+      normalizedText: normaliseFindingText(text),
+      createdAt,
+    }
+    if (!finding.normalizedText) throw new Error('a finding cannot be empty')
+
+    this.db.run(
+      `INSERT INTO ledger_findings (id, session_id, text, normalized_text, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO NOTHING`,
+      finding.id,
+      finding.sessionId,
+      finding.text,
+      finding.normalizedText,
+      finding.createdAt,
+    )
+
+    const row = this.db.get(`SELECT * FROM ledger_findings WHERE id = ?`, finding.id)
+    if (!row) throw new Error('failed to record finding')
+    return this.toLedgerFinding(row)
+  }
+
+  private toLedgerFinding(row: Row): LedgerFinding {
+    return {
+      id: str(row['id']),
+      sessionId: str(row['session_id']),
+      text: str(row['text']),
+      normalizedText: str(row['normalized_text']),
+      createdAt: num(row['created_at']),
+    }
+  }
+
+  listLedgerFindings(sessionId: Id): LedgerFinding[] {
+    return this.db
+      .all(
+        `SELECT * FROM ledger_findings
+         WHERE session_id = ?
+         ORDER BY created_at ASC, id ASC`,
+        sessionId,
+      )
+      .map((row) => this.toLedgerFinding(row))
+  }
+
+  recordFindingOccurrence(
+    input: Omit<FindingOccurrence, 'id' | 'createdAt'> &
+      Partial<Pick<FindingOccurrence, 'id' | 'createdAt'>>,
+  ): FindingOccurrence {
+    const occurrence: FindingOccurrence = {
+      ...input,
+      id: input.id ?? newId(),
+      createdAt: input.createdAt ?? Date.now(),
+    }
+    this.db.run(
+      `INSERT INTO ledger_sightings
+       (id, finding_id, plan_id, milestone_id, round, kind, source, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      occurrence.id,
+      occurrence.findingId,
+      occurrence.planId,
+      occurrence.milestoneId,
+      occurrence.round,
+      occurrence.kind,
+      occurrence.source,
+      occurrence.createdAt,
+    )
+    return occurrence
+  }
+
+  private toFindingOccurrence(row: Row): FindingOccurrence {
+    return {
+      id: str(row['id']),
+      findingId: str(row['finding_id']),
+      planId: str(row['plan_id']),
+      milestoneId: nullableStr(row['milestone_id']),
+      round: nullableNum(row['round']),
+      kind: str(row['kind']) as FindingOccurrence['kind'],
+      source: str(row['source']) as FindingOccurrence['source'],
+      createdAt: num(row['created_at']),
+    }
+  }
+
+  listFindingOccurrences(sessionId: Id): FindingOccurrence[] {
+    return this.db
+      .all(
+        `SELECT s.*
+         FROM ledger_sightings s
+         JOIN ledger_findings f ON f.id = s.finding_id
+         WHERE f.session_id = ?
+         ORDER BY s.created_at ASC, s.id ASC`,
+        sessionId,
+      )
+      .map((row) => this.toFindingOccurrence(row))
+  }
+
+  disposeFinding(
+    input: Omit<FindingDisposition, 'id' | 'createdAt'> &
+      Partial<Pick<FindingDisposition, 'id' | 'createdAt'>>,
+  ): FindingDisposition {
+    const disposition: FindingDisposition = {
+      ...input,
+      id: input.id ?? newId(),
+      createdAt: input.createdAt ?? Date.now(),
+    }
+
+    if (disposition.occurrenceId !== null) {
+      const occurrence = this.db.get(
+        `SELECT finding_id FROM ledger_sightings WHERE id = ?`,
+        disposition.occurrenceId,
+      )
+      if (!occurrence) throw new Error('no such finding occurrence')
+      if (str(occurrence['finding_id']) !== disposition.findingId) {
+        throw new Error('that occurrence belongs to a different finding')
+      }
+    }
+
+    this.db.run(
+      `INSERT INTO ledger_dispositions
+       (id, finding_id, occurrence_id, state, note, source, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      disposition.id,
+      disposition.findingId,
+      disposition.occurrenceId,
+      disposition.state,
+      disposition.note,
+      disposition.source,
+      disposition.createdAt,
+    )
+    return disposition
+  }
+
+  private toFindingDisposition(row: Row): FindingDisposition {
+    return {
+      id: str(row['id']),
+      findingId: str(row['finding_id']),
+      occurrenceId: nullableStr(row['occurrence_id']),
+      state: str(row['state']) as FindingDisposition['state'],
+      note: str(row['note']),
+      source: str(row['source']) as FindingDisposition['source'],
+      createdAt: num(row['created_at']),
+    }
+  }
+
+  listFindingDispositions(sessionId: Id): FindingDisposition[] {
+    return this.db
+      .all(
+        `SELECT d.*
+         FROM ledger_dispositions d
+         JOIN ledger_findings f ON f.id = d.finding_id
+         WHERE f.session_id = ?
+         ORDER BY d.created_at ASC, d.id ASC`,
+        sessionId,
+      )
+      .map((row) => this.toFindingDisposition(row))
   }
 
   // ─── Approvals ─────────────────────────────────────────────────────────────
