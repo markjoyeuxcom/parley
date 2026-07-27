@@ -8,8 +8,10 @@ import {
   type TurnSide,
 } from '@shared/domain'
 import {
+  CLOSING_STAGE,
   debatePrompt,
   debateSystemPrompt,
+  resolveActor,
   reviewPrompt,
   reviewSystemPrompt,
   stagesFor,
@@ -19,19 +21,12 @@ import {
 import { newId, type Repo } from '@main/store/repo'
 import type { AgentRegistry } from '@main/agents'
 import { RunGate, type OrchestratorDeps } from './types'
-import {
-  mergeVerdicts,
-  parseFindings,
-  parseSideVerdict,
-  renderReport,
-  toVerdict,
-  type SideVerdict,
-} from './verdict'
+import { mergeVerdicts, parseFindings, parseSeatVerdict, renderReport, toVerdict } from './verdict'
 
 /** How long a single turn may run before it is abandoned. */
 const TURN_TIMEOUT_MS = 25 * 60 * 1000
 const NO_USABLE_VERDICT =
-  'Neither advisor produced a usable structured verdict; the transcript is still recorded.'
+  'No advisor produced a usable structured verdict; the transcript is still recorded.'
 
 /**
  * Runs one Parley session to a verdict.
@@ -272,13 +267,19 @@ export class SessionRunner {
       return { seat, text: result.text }
     }
 
-    // Still the two seats the schedule knows. The closing-sequence redesign
-    // asks every seat, concurrently, and merges however many come back.
-    const [a, b] = await Promise.all([ask(0, startIndex), ask(1, startIndex + 1)])
-
-    const sideA: SideVerdict | null = parseSideVerdict(a.text)
-    const sideB: SideVerdict | null = parseSideVerdict(b.text)
-    const merged = mergeVerdicts(sideA, sideB)
+    // The closing sequence is data with a role selector, not a pair of named
+    // asks: every seat records its own verdict. The concurrency is still not
+    // an optimisation — any ordering would invite convergence between however
+    // many advisors there are, so they all answer at once, each blind to the
+    // rest.
+    const seats = resolveActor(CLOSING_STAGE.actor, this.session.participants.length)
+    const replies = await Promise.all(seats.map((seat, at) => ask(seat, startIndex + at)))
+    // Slotted by seat, not by reply order: the merge labels dissent by array
+    // index, and that must stay true under any selector, not only the dense
+    // one in use today.
+    const verdicts = this.session.participants.map(() => null as ReturnType<typeof parseSeatVerdict>)
+    for (const reply of replies) verdicts[reply.seat] = parseSeatVerdict(reply.text)
+    const merged = mergeVerdicts(verdicts)
 
     if (!merged) {
       this.emit({

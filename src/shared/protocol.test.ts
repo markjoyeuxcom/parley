@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CLOSING_STAGE,
   CORRECTION_CONTRACT,
   REVIEW_CONTRACT,
   adoptReviewPrompt,
@@ -7,6 +8,7 @@ import {
   remediationPrompt,
   debateStages,
   executePrompt,
+  resolveActor,
   reviewStages,
   stagesFor,
 } from './protocol'
@@ -60,6 +62,23 @@ describe('reviewStages', () => {
 
   it('ignores maxTurns, because the review protocol is fixed', () => {
     expect(stagesFor('review', 20)).toHaveLength(4)
+  })
+})
+
+describe('role selectors', () => {
+  it('resolves a single-seat actor to that seat alone', () => {
+    expect(resolveActor({ kind: 'seat', seat: 2 }, 5)).toEqual([2])
+  })
+
+  it('resolves each to every seat, in speaking order', () => {
+    expect(resolveActor({ kind: 'each' }, 2)).toEqual([0, 1])
+    expect(resolveActor({ kind: 'each' }, 3)).toEqual([0, 1, 2])
+  })
+
+  it('closes with every seat, whatever the seating', () => {
+    // The closing sequence is data: "ask a, then ask b" became a selector,
+    // and this is the pin that keeps it one.
+    expect(CLOSING_STAGE.actor).toEqual({ kind: 'each' })
   })
 })
 

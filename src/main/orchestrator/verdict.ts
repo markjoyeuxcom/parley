@@ -14,7 +14,7 @@ import { newId } from '@main/store/repo'
 
 const DIMENSIONS: ScoreDimension[] = ['correctness', 'robustness', 'clarity', 'maintainability', 'risk']
 
-export interface SideVerdict {
+export interface SeatVerdict {
   decision: string
   rationale: string
   confidence: number
@@ -22,8 +22,8 @@ export interface SideVerdict {
   dissent: string
 }
 
-/** Parses one side's structured verdict. Returns null if nothing usable was emitted. */
-export function parseSideVerdict(text: string): SideVerdict | null {
+/** Parses one seat's structured verdict. Returns null if nothing usable was emitted. */
+export function parseSeatVerdict(text: string): SeatVerdict | null {
   const { data } = extractJson<Record<string, unknown>>(text)
   if (!data) return null
 
@@ -45,69 +45,117 @@ export function parseSideVerdict(text: string): SideVerdict | null {
   }
 }
 
-export interface MergedVerdict extends SideVerdict {
-  /** 0–1. How closely the two sides' scores align. 1 means identical. */
+export interface MergedVerdict extends SeatVerdict {
+  /** 0–1. How closely the seats' scores align. 1 means identical. */
   agreement: number
-  /** True when only one side produced a usable verdict. */
+  /** True when only one seat produced a usable verdict. */
   singleSource: boolean
 }
 
-/**
- * Merges two independently-produced verdicts.
- *
- * The rule that matters: **disagreement lowers recorded confidence.** Two
- * advisors who each claim 0.9 confidence but score the option ten points apart
- * have not produced a confident answer, and reporting 0.9 would be a lie about
- * how much the exercise actually established. Agreement is measured on the
- * scores, which are numeric and comparable, rather than on the prose.
- *
- * Dissent is concatenated rather than resolved. The losing side's objection is
- * the most perishable and most useful output of an adversarial session, so it
- * is preserved verbatim.
- */
-export function mergeVerdicts(a: SideVerdict | null, b: SideVerdict | null): MergedVerdict | null {
-  if (!a && !b) return null
+/** The dissent label a seat wears: the classic sides for 0 and 1, then numbers. */
+function seatName(seat: number): string {
+  return seat === 0 ? 'Side A' : seat === 1 ? 'Side B' : `Seat ${seat + 1}`
+}
 
-  if (!a || !b) {
-    const only = (a ?? b) as SideVerdict
+/**
+ * Merges independently-produced verdicts, one slot per seat.
+ *
+ * The rule that matters: **disagreement lowers recorded confidence.** Advisors
+ * who each claim 0.9 confidence but score the option ten points apart have not
+ * produced a confident answer, and reporting 0.9 would be a lie about how much
+ * the exercise actually established. Agreement is measured on the scores,
+ * which are numeric and comparable, rather than on the prose — as the mean
+ * score distance across every usable pair, which for two seats is exactly the
+ * delta the two-sided merge always measured. The verdict tests hold the
+ * two-seat outputs to that reduction.
+ *
+ * Dissent is concatenated rather than resolved. A losing seat's objection is
+ * the most perishable and most useful output of an adversarial session, so it
+ * is preserved verbatim, labelled with the seat that holds it.
+ */
+export function mergeVerdicts(verdicts: ReadonlyArray<SeatVerdict | null>): MergedVerdict | null {
+  const usable = verdicts
+    .map((verdict, seat) => (verdict ? { seat, verdict } : null))
+    .filter((entry): entry is { seat: number; verdict: SeatVerdict } => entry !== null)
+  if (usable.length === 0) return null
+
+  if (usable.length === 1) {
+    const only = usable[0]!.verdict
     return {
       ...only,
-      // One side's unchallenged opinion is not a cross-checked verdict. Cap it
+      // One seat's unchallenged opinion is not a cross-checked verdict. Cap it
       // so a single-source result never presents as strongly as a corroborated
-      // one, however sure that side claims to be.
+      // one, however sure that seat claims to be.
       confidence: Math.min(only.confidence, 0.6),
       agreement: 0,
       singleSource: true,
     }
   }
 
-  let totalDelta = 0
   const scores = {} as Record<ScoreDimension, number>
   for (const dim of DIMENSIONS) {
-    const av = a.scores[dim]
-    const bv = b.scores[dim]
-    totalDelta += Math.abs(av - bv)
-    scores[dim] = Math.round(((av + bv) / 2) * 10) / 10
+    let sum = 0
+    for (const { verdict } of usable) sum += verdict.scores[dim]
+    scores[dim] = Math.round((sum / usable.length) * 10) / 10
   }
-  const meanDelta = totalDelta / DIMENSIONS.length
+
+  let totalDelta = 0
+  let pairs = 0
+  for (let i = 0; i < usable.length; i += 1) {
+    for (let j = i + 1; j < usable.length; j += 1) {
+      pairs += 1
+      for (const dim of DIMENSIONS) {
+        totalDelta += Math.abs(usable[i]!.verdict.scores[dim] - usable[j]!.verdict.scores[dim])
+      }
+    }
+  }
+  const meanDelta = totalDelta / (pairs * DIMENSIONS.length)
   const agreement = Math.max(0, 1 - meanDelta / 10)
 
-  // The more confident side supplies the wording; both supply the number.
-  const lead = a.confidence >= b.confidence ? a : b
-  const confidence = Math.round(((a.confidence + b.confidence) / 2) * agreement * 100) / 100
+  // The most confident seat supplies the wording; every seat supplies the
+  // number. Ties go to the earliest seat, as they always did.
+  let lead = usable[0]!
+  for (const entry of usable) {
+    if (entry.verdict.confidence > lead.verdict.confidence) lead = entry
+  }
+  const meanConfidence =
+    usable.reduce((sum, { verdict }) => sum + verdict.confidence, 0) / usable.length
+  const confidence = Math.round(meanConfidence * agreement * 100) / 100
 
   const dissentParts: string[] = []
-  if (a.dissent.trim()) dissentParts.push(`Side A: ${a.dissent.trim()}`)
-  if (b.dissent.trim()) dissentParts.push(`Side B: ${b.dissent.trim()}`)
-  if (!similarDecision(a.decision, b.decision)) {
+  for (const { seat, verdict } of usable) {
+    if (verdict.dissent.trim()) dissentParts.push(`${seatName(seat)}: ${verdict.dissent.trim()}`)
+  }
+
+  let diverging = false
+  for (let i = 0; i < usable.length && !diverging; i += 1) {
+    for (let j = i + 1; j < usable.length; j += 1) {
+      if (!similarDecision(usable[i]!.verdict.decision, usable[j]!.verdict.decision)) {
+        diverging = true
+        break
+      }
+    }
+  }
+  if (diverging) {
+    // The classic pair keeps its exact historical wording — that sentence is
+    // in every existing report and pinned by the tests. More seats get the
+    // general form, every conclusion quoted.
+    const classicPair = usable.length === 2 && usable[0]!.seat === 0 && usable[1]!.seat === 1
     dissentParts.unshift(
-      `The two advisors did not reach the same decision. A concluded: "${a.decision}" B concluded: "${b.decision}"`,
+      classicPair
+        ? `The two advisors did not reach the same decision. A concluded: "${usable[0]!.verdict.decision}" B concluded: "${usable[1]!.verdict.decision}"`
+        : [
+            `The advisors did not all reach the same decision.`,
+            ...usable.map(
+              ({ seat, verdict }) => `${seatName(seat)} concluded: "${verdict.decision}"`,
+            ),
+          ].join(' '),
     )
   }
 
   return {
-    decision: lead.decision,
-    rationale: lead.rationale,
+    decision: lead.verdict.decision,
+    rationale: lead.verdict.rationale,
     confidence,
     scores,
     dissent: dissentParts.join('\n\n'),

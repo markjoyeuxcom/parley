@@ -71,6 +71,42 @@ export function stagesFor(kind: SessionKind, maxTurns: number): StageSpec[] {
   return kind === 'debate' ? debateStages(maxTurns) : reviewStages()
 }
 
+// ─── Role selectors ──────────────────────────────────────────────────────────
+
+/**
+ * Who acts in a stage.
+ *
+ * The role-selector vocabulary the closing sequence needs today: one named
+ * seat, or every seat independently. Further selectors — everyone but the
+ * author, a designated scorer — arrive with the first protocol that speaks
+ * them, not before: an unused selector is dead vocabulary, and the stage
+ * engine that makes these fully general is the next phase's work.
+ */
+export type StageActor = { kind: 'seat'; seat: number } | { kind: 'each' }
+
+/** The seats a selector resolves to, in speaking order. */
+export function resolveActor(actor: StageActor, seatCount: number): number[] {
+  return actor.kind === 'seat'
+    ? [actor.seat]
+    : Array.from({ length: seatCount }, (_, seat) => seat)
+}
+
+/**
+ * The closing sequence, as data.
+ *
+ * "Ask a, then ask b" was the last place the pair was hardcoded into the
+ * protocol: with a selector it reads "every seat records its own verdict,
+ * independently", and that holds for any seating. The exchange stages keep
+ * their single-seat field — a stage where exactly one participant speaks is
+ * the `seat` selector by another name, and unifying the two shapes belongs to
+ * the stage engine.
+ */
+export const CLOSING_STAGE: { id: string; label: string; actor: StageActor } = {
+  id: 'verdict',
+  label: 'Verdict',
+  actor: { kind: 'each' },
+}
+
 // ─── System prompts ──────────────────────────────────────────────────────────
 
 const NO_FLATTERY = `Do not open with praise, restatement of the question, or meta-commentary about the exercise. Start with substance. Never describe your own output as thorough, comprehensive, or careful — let it be judged on content.`

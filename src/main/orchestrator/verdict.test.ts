@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { mergeVerdicts, parseFindings, parseSideVerdict, similarDecision, type SideVerdict } from './verdict'
+import { mergeVerdicts, parseFindings, parseSeatVerdict, similarDecision, type SeatVerdict } from './verdict'
 
-function side(overrides: Partial<SideVerdict> = {}): SideVerdict {
+function side(overrides: Partial<SeatVerdict> = {}): SeatVerdict {
   return {
     decision: 'Adopt the narrower option',
     rationale: 'reversible',
@@ -12,7 +12,7 @@ function side(overrides: Partial<SideVerdict> = {}): SideVerdict {
   }
 }
 
-describe('parseSideVerdict', () => {
+describe('parseSeatVerdict', () => {
   it('reads a well-formed verdict block', () => {
     const text = [
       'My reasoning.',
@@ -27,7 +27,7 @@ describe('parseSideVerdict', () => {
       '```',
     ].join('\n')
 
-    const parsed = parseSideVerdict(text)
+    const parsed = parseSeatVerdict(text)
     expect(parsed?.decision).toBe('Adopt the queue')
     expect(parsed?.confidence).toBe(0.7)
     expect(parsed?.scores.correctness).toBe(8)
@@ -35,20 +35,20 @@ describe('parseSideVerdict', () => {
   })
 
   it('returns null when there is no decision to record', () => {
-    expect(parseSideVerdict('just prose')).toBeNull()
-    expect(parseSideVerdict('```json\n{"rationale":"no decision field"}\n```')).toBeNull()
+    expect(parseSeatVerdict('just prose')).toBeNull()
+    expect(parseSeatVerdict('```json\n{"rationale":"no decision field"}\n```')).toBeNull()
   })
 
   it('defaults missing scores to the midpoint rather than zero', () => {
     // Zero would read as "scored badly", which is a different claim from
     // "did not answer".
-    const parsed = parseSideVerdict('```json\n{"decision":"do it","scores":{"correctness":9}}\n```')
+    const parsed = parseSeatVerdict('```json\n{"decision":"do it","scores":{"correctness":9}}\n```')
     expect(parsed?.scores.correctness).toBe(9)
     expect(parsed?.scores.robustness).toBe(5)
   })
 
   it('clamps out-of-range values instead of trusting them', () => {
-    const parsed = parseSideVerdict(
+    const parsed = parseSeatVerdict(
       '```json\n{"decision":"x","confidence":9,"scores":{"correctness":99,"risk":-4}}\n```',
     )
     expect(parsed?.confidence).toBe(1)
@@ -59,10 +59,10 @@ describe('parseSideVerdict', () => {
 
 describe('mergeVerdicts', () => {
   it('averages the scores of two agreeing sides', () => {
-    const merged = mergeVerdicts(
+    const merged = mergeVerdicts([
       side({ scores: { correctness: 8, robustness: 6, clarity: 7, maintainability: 7, risk: 7 } }),
       side({ scores: { correctness: 6, robustness: 8, clarity: 7, maintainability: 7, risk: 7 } }),
-    )
+    ])
     expect(merged?.scores.correctness).toBe(7)
     expect(merged?.scores.robustness).toBe(7)
   })
@@ -70,11 +70,11 @@ describe('mergeVerdicts', () => {
   it('lowers confidence when the two sides diverge', () => {
     // The point of the whole design: two confident advisors who disagree have
     // not produced a confident answer.
-    const agreeing = mergeVerdicts(side({ confidence: 0.9 }), side({ confidence: 0.9 }))
-    const diverging = mergeVerdicts(
+    const agreeing = mergeVerdicts([side({ confidence: 0.9 }), side({ confidence: 0.9 })])
+    const diverging = mergeVerdicts([
       side({ confidence: 0.9, scores: { correctness: 10, robustness: 10, clarity: 10, maintainability: 10, risk: 10 } }),
       side({ confidence: 0.9, scores: { correctness: 1, robustness: 1, clarity: 1, maintainability: 1, risk: 1 } }),
-    )
+    ])
 
     expect(agreeing?.confidence).toBeCloseTo(0.9, 1)
     expect(diverging?.confidence).toBeLessThan(0.3)
@@ -82,39 +82,110 @@ describe('mergeVerdicts', () => {
   })
 
   it('takes the wording from the more confident side', () => {
-    const merged = mergeVerdicts(
+    const merged = mergeVerdicts([
       side({ decision: 'quiet option', confidence: 0.4 }),
       side({ decision: 'confident option', confidence: 0.95 }),
-    )
+    ])
     expect(merged?.decision).toBe('confident option')
   })
 
   it('preserves both sides dissent rather than resolving it', () => {
-    const merged = mergeVerdicts(
+    const merged = mergeVerdicts([
       side({ dissent: 'A still objects to the schema' }),
       side({ dissent: 'B still objects to the rollout' }),
-    )
+    ])
     expect(merged?.dissent).toContain('A still objects to the schema')
     expect(merged?.dissent).toContain('B still objects to the rollout')
   })
 
   it('flags a material disagreement about the decision itself', () => {
-    const merged = mergeVerdicts(
+    const merged = mergeVerdicts([
       side({ decision: 'Adopt the message queue immediately' }),
       side({ decision: 'Keep everything synchronous and revisit next quarter' }),
-    )
+    ])
     expect(merged?.dissent).toMatch(/did not reach the same decision/i)
   })
 
   it('caps a single-source verdict so it cannot present as corroborated', () => {
-    const merged = mergeVerdicts(side({ confidence: 0.99 }), null)
+    const merged = mergeVerdicts([side({ confidence: 0.99 }), null])
     expect(merged?.singleSource).toBe(true)
     expect(merged?.confidence).toBeLessThanOrEqual(0.6)
   })
 
   it('returns null only when neither side answered', () => {
-    expect(mergeVerdicts(null, null)).toBeNull()
-    expect(mergeVerdicts(null, side())).not.toBeNull()
+    expect(mergeVerdicts([null, null])).toBeNull()
+    expect(mergeVerdicts([null, side()])).not.toBeNull()
+  })
+
+  it('merges three seats, labelling every dissent by its seat', () => {
+    const merged = mergeVerdicts([
+      side({ dissent: 'the schema worry' }),
+      side({ dissent: 'the rollout worry' }),
+      side({ dissent: 'the cost worry' }),
+    ])
+    expect(merged?.dissent).toContain('Side A: the schema worry')
+    expect(merged?.dissent).toContain('Side B: the rollout worry')
+    expect(merged?.dissent).toContain('Seat 3: the cost worry')
+    expect(merged?.singleSource).toBe(false)
+  })
+
+  it('lets one dissenting seat lower a three-way confidence', () => {
+    // Two agreeing seats and one far apart: the disagreement is real and the
+    // recorded confidence must say so, exactly as it always did for a pair.
+    const united = mergeVerdicts([side({ confidence: 0.9 }), side({ confidence: 0.9 }), side({ confidence: 0.9 })])
+    const contested = mergeVerdicts([
+      side({ confidence: 0.9 }),
+      side({ confidence: 0.9 }),
+      side({
+        confidence: 0.9,
+        scores: { correctness: 1, robustness: 1, clarity: 1, maintainability: 1, risk: 1 },
+      }),
+    ])
+    expect(united?.confidence).toBeCloseTo(0.9, 1)
+    expect(contested?.confidence).toBeLessThan(united?.confidence ?? 0)
+    expect(contested?.agreement).toBeLessThan(1)
+  })
+
+  it('takes the wording from the most confident of three seats', () => {
+    const merged = mergeVerdicts([
+      side({ decision: 'first option', confidence: 0.5 }),
+      side({ decision: 'third option', confidence: 0.95 }),
+      side({ decision: 'second option', confidence: 0.7 }),
+    ])
+    expect(merged?.decision).toBe('third option')
+  })
+
+  it('names every conclusion when three seats do not converge', () => {
+    const merged = mergeVerdicts([
+      side({ decision: 'Adopt the message queue immediately' }),
+      side({ decision: 'Keep everything synchronous forever' }),
+      side({ decision: 'Rewrite the ingest layer in a batch job' }),
+    ])
+    expect(merged?.dissent).toMatch(/did not all reach the same decision/i)
+    expect(merged?.dissent).toContain('Side A concluded:')
+    expect(merged?.dissent).toContain('Side B concluded:')
+    expect(merged?.dissent).toContain('Seat 3 concluded:')
+  })
+
+  it('caps two failed seats and one usable one as single-source', () => {
+    // A jury that mostly failed to answer is one unchallenged opinion, however
+    // many chairs were in the room.
+    const merged = mergeVerdicts([null, side({ confidence: 0.99 }), null])
+    expect(merged?.singleSource).toBe(true)
+    expect(merged?.confidence).toBeLessThanOrEqual(0.6)
+  })
+
+  it('keeps seat labels honest when an inner seat produced nothing', () => {
+    // Seats 0 and 2 usable, seat 1 silent: the third chair must still be
+    // called Seat 3, not shifted into the missing seat's name.
+    const merged = mergeVerdicts([
+      side({ dissent: 'the schema worry' }),
+      null,
+      side({ dissent: 'the cost worry' }),
+    ])
+    expect(merged?.dissent).toContain('Side A: the schema worry')
+    expect(merged?.dissent).toContain('Seat 3: the cost worry')
+    expect(merged?.dissent).not.toContain('Side B:')
   })
 })
 

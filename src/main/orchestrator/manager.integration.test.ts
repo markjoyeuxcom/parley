@@ -6,10 +6,11 @@ import { describe, expect, it } from 'vitest'
 import type { AppEvent } from '@shared/events'
 import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
-import { Repo } from '@main/store/repo'
+import { newId, Repo } from '@main/store/repo'
 import { emptyUsage, type Mutation } from '@shared/domain'
 import { occurrenceState } from '@shared/ledger'
 import { Manager, RequestError } from './manager'
+import { SessionRunner } from './session'
 
 /**
  * End-to-end exercises of the engine with the deterministic mock adapters.
@@ -416,6 +417,49 @@ describe('the two-participant contract', () => {
       expect(prompt).not.toContain('press harder')
       expect(prompt).not.toContain('DIRECTION FROM THE HUMAN DIRECTOR')
     }
+  })
+})
+
+describe('the closing sequence asks every seat', () => {
+  it('collects a verdict from a third participant the exchange never seated', async () => {
+    // The exchange schedule is still two-seat, but the closing is a role
+    // selector: every participant records a verdict, including one that never
+    // spoke in the exchange. This is the seam the jury and the dedicated
+    // synthesist grow from — and the wire cannot build this session yet, so it
+    // is seated directly through the store.
+    const repo = new Repo(openDatabase(':memory:'))
+    const registry = new AgentRegistry(true)
+    const events: AppEvent[] = []
+    const session = repo.createSession({
+      id: newId(),
+      kind: 'debate',
+      status: 'idle',
+      matter: 'Should the ingest pipeline move to a queue?',
+      project: '',
+      repoPath: null,
+      participants: [claude, codex, { ...claude }],
+      maxTurns: 2,
+      mock: true,
+      createdAt: Date.now(),
+    })
+
+    await new SessionRunner(session, { repo, registry, emit: (event) => events.push(event) }).run()
+
+    expect(repo.getSession(session.id)?.status).toBe('complete')
+    const turns = repo.listTurns(session.id)
+    // Two exchange turns, then one verdict per seat.
+    expect(turns).toHaveLength(5)
+    const verdictTurns = turns.filter((turn) => turn.stage === 'Verdict')
+    expect(verdictTurns.map((turn) => turn.seat).sort()).toEqual([0, 1, 2])
+
+    const verdict = repo.getVerdict(session.id)
+    expect(verdict).not.toBeNull()
+    // Codex sits in seat 1 and dissents; its label survives the three-way
+    // merge verbatim.
+    expect(verdict?.dissent).toContain('Side B: I still think the migration cost is understated.')
+    // Identical mock scores mean full agreement, so the merged confidence is
+    // the mean credence of the three seats: (0.72 + 0.58 + 0.72) / 3.
+    expect(verdict?.confidence).toBeCloseTo(0.67, 2)
   })
 })
 
@@ -2018,7 +2062,7 @@ describe('plans and the approval gate', () => {
     await waitFor(() => repo.getSession(session.id)?.status === 'failed')
 
     const failed = repo.getSession(session.id)
-    expect(failed?.error).toMatch(/neither advisor produced a usable structured verdict/i)
+    expect(failed?.error).toMatch(/no advisor produced a usable structured verdict/i)
     expect(repo.getVerdict(session.id)).toBeNull()
     expect(repo.listTurns(session.id).filter((turn) => turn.stage === 'Verdict')).toHaveLength(2)
 
