@@ -78,6 +78,8 @@ function makePlan(
     question: '',
     correctionNote: '',
     correctionDispositions: [],
+    isolation: 'checkout' as const,
+    setupCommand: '',
     usage: emptyUsage(),
     mock: true,
     createdAt: Date.now(),

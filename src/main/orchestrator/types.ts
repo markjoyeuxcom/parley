@@ -12,6 +12,13 @@ export interface OrchestratorDeps {
    * and holds still publish and persist — the banner is supplementary.
    */
   notifyUser?: (title: string, body: string) => void
+  /**
+   * Where per-plan execution worktrees live — under userData in the app, a
+   * tmpdir in tests. Injected for the same Electron-free reason as notifyUser.
+   * Optional because only worktree-isolation plans need it; running one
+   * without it is a refusal, not a fallback to the live checkout.
+   */
+  worktreesRoot?: string
 }
 
 /**

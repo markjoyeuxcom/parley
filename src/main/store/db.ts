@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 13
+export const SCHEMA_VERSION = 14
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -191,6 +191,10 @@ CREATE TABLE IF NOT EXISTS plans (
   -- One JSON column rather than a column per stage input, because what a
   -- resumed stage needs differs by stage and would otherwise keep growing.
   pending    TEXT,
+  -- Where milestones execute: 'checkout' (the live tree, the original
+  -- behavior) or 'worktree' (an isolated per-plan branch, landed by a human).
+  isolation  TEXT NOT NULL DEFAULT 'checkout',
+  setup_command TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_plans_created ON plans(created_at DESC);
@@ -301,6 +305,24 @@ CREATE TABLE IF NOT EXISTS hold_acks (
 CREATE TABLE IF NOT EXISTS hold_notifications (
   identity    TEXT PRIMARY KEY,
   notified_at INTEGER NOT NULL
+);
+
+-- Per-plan isolated checkouts (git worktrees) the audited pipeline executes
+-- in. The row is registry, not truth — the directory and the branch are the
+-- truth, and startup reconciliation marks rows orphaned when either vanishes.
+-- Rows are never deleted by reconciliation: a branch can outlive its
+-- directory and still carry unlanded commits.
+CREATE TABLE IF NOT EXISTS worktrees (
+  plan_id     TEXT PRIMARY KEY,
+  origin_path TEXT NOT NULL,
+  path        TEXT NOT NULL,
+  branch      TEXT NOT NULL,
+  base_branch TEXT NOT NULL DEFAULT '',
+  base_commit TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  landed_at   INTEGER,
+  last_error  TEXT NOT NULL DEFAULT '',
+  orphaned    INTEGER NOT NULL DEFAULT 0
 );
 `
 
@@ -586,6 +608,20 @@ export function migrate(db: Db): void {
   if (current < 13) {
     // Decision holds are additive: SCHEMA creates hold_acks and
     // hold_notifications fresh, and no existing row changes shape.
+  }
+  if (current < 14) {
+    // The worktrees table is additive (SCHEMA creates it fresh). Existing
+    // plans backfill as checkout isolation — exactly what they were.
+    for (const column of [
+      `isolation TEXT NOT NULL DEFAULT 'checkout'`,
+      `setup_command TEXT NOT NULL DEFAULT ''`,
+    ]) {
+      try {
+        db.exec(`ALTER TABLE plans ADD COLUMN ${column}`)
+      } catch {
+        // Already present, because SCHEMA above created the table fresh.
+      }
+    }
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

@@ -6,6 +6,7 @@ import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
 import { Repo } from '@main/store/repo'
 import { Manager } from '@main/orchestrator/manager'
+import { reconcileWorktrees } from '@main/orchestrator/worktrees'
 import { PtyManager } from '@main/pty/manager'
 import { disposeIpc, registerIpc } from '@main/ipc/register'
 import { applyResolvedPath, preflightPty } from '@main/util/environment'
@@ -96,6 +97,7 @@ async function bootstrap(): Promise<void> {
     repo,
     registry,
     emit,
+    worktreesRoot: join(app.getPath('userData'), 'worktrees'),
     // One native banner per newly-appearing hold — the push half of the
     // attention queue. Supplementary by design: the stamp is written either
     // way, and the durable surface is the holds list itself, so a denied
@@ -132,6 +134,20 @@ async function bootstrap(): Promise<void> {
       emit({ type: 'notice', level: 'error', message: ptyCheck.detail })
     })
   }
+
+  // Same honesty pass for execution worktrees: a directory or origin that
+  // vanished while the app was closed is flagged now, not discovered as a
+  // silently disabled diff guard mid-run. Never deletes anything.
+  void reconcileWorktrees(repo).then(({ orphaned }) => {
+    if (orphaned === 0) return
+    mainWindow?.webContents.once('did-finish-load', () => {
+      emit({
+        type: 'notice',
+        level: 'warn',
+        message: `${orphaned} execution worktree${orphaned > 1 ? 's' : ''} lost ${orphaned > 1 ? 'their' : 'its'} directory or origin and ${orphaned > 1 ? 'were' : 'was'} marked orphaned. The branches survive.`,
+      })
+    })
+  })
 
   if (strandedTotal > 0) {
     const parts: string[] = []

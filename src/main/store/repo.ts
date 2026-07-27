@@ -32,6 +32,7 @@ import {
   type Usage,
   type Verdict,
   type WorkPlan,
+  type Worktree,
 } from '@shared/domain'
 import { findingIdentity, normaliseFindingText } from '@shared/ledger'
 import type { Db, Row } from './db'
@@ -896,12 +897,72 @@ export class Repo {
     )
   }
 
+  // ─── Worktrees ─────────────────────────────────────────────────────────────
+
+  createWorktree(worktree: Worktree): Worktree {
+    this.db.run(
+      `INSERT INTO worktrees (plan_id, origin_path, path, branch, base_branch, base_commit, created_at, landed_at, last_error, orphaned)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      worktree.planId,
+      worktree.originPath,
+      worktree.path,
+      worktree.branch,
+      worktree.baseBranch,
+      worktree.baseCommit,
+      worktree.createdAt,
+      worktree.landedAt,
+      worktree.lastError,
+      worktree.orphaned ? 1 : 0,
+    )
+    return worktree
+  }
+
+  getWorktreeForPlan(planId: Id): Worktree | null {
+    const row = this.db.get(`SELECT * FROM worktrees WHERE plan_id = ?`, planId)
+    return row ? this.toWorktree(row) : null
+  }
+
+  listWorktrees(): Worktree[] {
+    return this.db
+      .all(`SELECT * FROM worktrees ORDER BY created_at ASC`)
+      .map((r) => this.toWorktree(r))
+  }
+
+  /** Marks disk honesty: the directory or origin vanished, or came back. */
+  flagWorktree(planId: Id, orphaned: boolean, lastError: string): void {
+    this.db.run(
+      `UPDATE worktrees SET orphaned = ?, last_error = ? WHERE plan_id = ?`,
+      orphaned ? 1 : 0,
+      lastError,
+      planId,
+    )
+  }
+
+  markWorktreeLanded(planId: Id, at = Date.now()): void {
+    this.db.run(`UPDATE worktrees SET landed_at = ?, last_error = '' WHERE plan_id = ?`, at, planId)
+  }
+
+  private toWorktree(row: Row): Worktree {
+    return {
+      planId: str(row['plan_id']),
+      originPath: str(row['origin_path']),
+      path: str(row['path']),
+      branch: str(row['branch']),
+      baseBranch: str(row['base_branch']),
+      baseCommit: str(row['base_commit']),
+      createdAt: num(row['created_at']),
+      landedAt: nullableNum(row['landed_at']),
+      lastError: str(row['last_error']),
+      orphaned: num(row['orphaned']) === 1,
+    }
+  }
+
   // ─── Plans and milestones ──────────────────────────────────────────────────
 
   createPlan(plan: WorkPlan): WorkPlan {
     this.db.run(
-      `INSERT INTO plans (id, session_id, kind, title, repo_path, planner, executor, reviewer, status, usage, mock, question, correction_note, correction_dispositions, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO plans (id, session_id, kind, title, repo_path, planner, executor, reviewer, status, usage, mock, question, correction_note, correction_dispositions, isolation, setup_command, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       plan.id,
       plan.sessionId,
       plan.kind,
@@ -916,6 +977,8 @@ export class Repo {
       plan.question,
       plan.correctionNote,
       json(plan.correctionDispositions),
+      plan.isolation,
+      plan.setupCommand,
       plan.createdAt,
     )
     return plan
@@ -937,6 +1000,8 @@ export class Repo {
       correctionNote: str(row['correction_note']),
       correctionDispositions: parseJson<CorrectionDisposition[]>(row['correction_dispositions'], []),
       usage: parseJson<Usage>(row['usage'], emptyUsage()),
+      isolation: str(row['isolation'], 'checkout') === 'worktree' ? 'worktree' : 'checkout',
+      setupCommand: str(row['setup_command']),
       mock: num(row['mock']) === 1,
       createdAt: num(row['created_at']),
     }

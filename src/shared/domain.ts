@@ -482,6 +482,18 @@ export const Milestone = z.object({
 })
 export type Milestone = z.infer<typeof Milestone>
 
+/**
+ * Where a plan's milestones execute.
+ *
+ * `checkout` is the original behavior: the executor writes into the live
+ * checkout at repoPath, and completed work is left uncommitted for the user.
+ * `worktree` isolates execution in a per-plan git worktree on its own branch;
+ * Parley commits each passing milestone there, and nothing reaches the user's
+ * checkout until they land the branch — fast-forward only, as a decision hold.
+ */
+export const WorktreeIsolation = z.enum(['checkout', 'worktree'])
+export type WorktreeIsolation = z.infer<typeof WorktreeIsolation>
+
 export const WorkPlan = z.object({
   id: Id,
   /** The verdict this plan descends from. */
@@ -514,11 +526,43 @@ export const WorkPlan = z.object({
   /** The same dispositions, structured, so they can be shown as a table. */
   correctionDispositions: z.array(CorrectionDisposition).default([]),
   usage: Usage,
+  isolation: WorktreeIsolation.default('checkout'),
+  /**
+   * Shell-free command run once when the plan's worktree is created — the
+   * `npm ci` class of step, without which a fresh worktree cannot even run
+   * its own test commands. Meaningless (and unused) for checkout isolation.
+   */
+  setupCommand: z.string().default(''),
   /** See {@link Session.mock}. */
   mock: z.boolean().default(false),
   createdAt: Timestamp,
 })
 export type WorkPlan = z.infer<typeof WorkPlan>
+
+/**
+ * The registry row for a plan's isolated checkout.
+ *
+ * The row is registry, not truth: the truth is the directory and the branch,
+ * and startup reconciliation re-derives honesty (the orphaned flag) from what
+ * actually survives on disk. Rows are never deleted by reconciliation — a
+ * branch can outlive its directory and still carry unlanded commits.
+ */
+export const Worktree = z.object({
+  planId: Id,
+  /** The repository the worktree was created from, and lands back into. */
+  originPath: z.string(),
+  path: z.string(),
+  branch: z.string(),
+  /** What the origin had checked out at creation — landing guidance, not law. */
+  baseBranch: z.string().default(''),
+  baseCommit: z.string(),
+  createdAt: Timestamp,
+  landedAt: Timestamp.nullable().default(null),
+  lastError: z.string().default(''),
+  /** The directory or origin vanished. The branch may still hold the work. */
+  orphaned: z.boolean().default(false),
+})
+export type Worktree = z.infer<typeof Worktree>
 
 // ─── Finding ledger ─────────────────────────────────────────────────────────
 

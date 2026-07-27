@@ -269,6 +269,8 @@ export class Manager {
       question: '',
       correctionNote: '',
       correctionDispositions: [],
+      isolation: 'checkout' as const,
+      setupCommand: '',
       usage: emptyUsage(),
       mock: this.registry.mock,
       createdAt: Date.now(),

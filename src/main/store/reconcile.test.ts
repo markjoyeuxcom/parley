@@ -52,6 +52,8 @@ function makePlanWithMilestone(repo: Repo, milestoneStatus: Milestone['status'])
     question: '',
     correctionNote: '',
     correctionDispositions: [],
+    isolation: 'checkout' as const,
+    setupCommand: '',
     usage: emptyUsage(),
     mock: false,
     createdAt: Date.now(),
