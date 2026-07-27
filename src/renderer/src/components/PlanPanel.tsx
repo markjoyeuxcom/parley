@@ -246,13 +246,25 @@ export function PlanPanel({
 
   const land = async (): Promise<void> => {
     setLanding(true)
-    const result = await attempt(() => api.landPlan(plan.id))
+    // Landing is the one moment isolated work reaches the checkout, so it is
+    // recorded exactly like a write: a single-use approval, granted here and
+    // spent by the act. The preflight runs before the spend, so a routine git
+    // refusal never burns the grant.
+    const summary =
+      `Allow the branch ${worktree?.branch ?? 'parley/…'} to fast-forward ${plan.repoPath}. ` +
+      'Single fast-forward only; git refuses if the checkout moved.'
+    const approval = await attempt(() => api.grantApproval('plan.land', plan.id, summary))
+    if (!approval) {
+      setLanding(false)
+      return
+    }
+    const result = await attempt(() => api.landPlan(plan.id, approval.id))
     setLanding(false)
     if (result) {
       notify(
         result.landed ? 'info' : 'warn',
         result.landed
-          ? `Landed — ${shortPath(plan.repoPath)} fast-forwarded onto the plan branch.`
+          ? `Landed — ${shortPath(plan.repoPath)} fast-forwarded onto the plan branch. A smoke verification runs in the background.`
           : `Landing refused: ${result.detail}`,
       )
     }

@@ -150,9 +150,9 @@ export const api = {
   /** Continues an interrupted run from its preserved state. Fresh approval. */
   resumeMilestone: (milestoneId: Id, approvalId: Id): Promise<Milestone> =>
     bridge().invoke('plan.resumeMilestone', { milestoneId, approvalId }),
-  /** Fast-forwards the origin onto the plan branch. Human-initiated, always. */
-  landPlan: (planId: Id): Promise<{ landed: boolean; detail: string }> =>
-    bridge().invoke('plan.land', { planId }),
+  /** Fast-forwards the origin onto the plan branch, spending the approval. */
+  landPlan: (planId: Id, approvalId: Id): Promise<{ landed: boolean; detail: string }> =>
+    bridge().invoke('plan.land', { planId, approvalId }),
 
   // Approvals
   grantApproval: (

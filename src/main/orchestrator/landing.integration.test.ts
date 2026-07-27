@@ -202,7 +202,7 @@ describe('fast-forward landing', () => {
     expect(repo.getWorktreeForPlan(plan.id)?.landedAt).toBeNull()
   })
 
-  it('mock plans never land, refused at the manager with the reason', async () => {
+  it('mock plans never land — grant and act both refuse with the reason', async () => {
     const { repo, plan } = await completedWorktreePlan('parley-land-mock-')
     const manager = new Manager({
       repo,
@@ -211,8 +211,65 @@ describe('fast-forward landing', () => {
       worktreesRoot: mkdtempSync(join(tmpdir(), 'parley-landroot-')),
     })
 
-    await expect(manager.landPlan(plan.id)).rejects.toThrow(/mock work never lands/i)
+    expect(() => manager.grantLandApproval(plan.id, 'try')).toThrow(/mock work never lands/i)
+    const smuggled = repo.grantApproval('plan.land', plan.id, 'granted around the gate')
+    await expect(manager.landPlan(plan.id, smuggled.id)).rejects.toThrow(/mock work never lands/i)
     expect(repo.getWorktreeForPlan(plan.id)?.landedAt).toBeNull()
+  })
+
+  it('the landing approval is single-use and the preflight spends nothing', async () => {
+    const { repo, plan, origin } = await completedWorktreePlan('parley-land-approval-')
+    // The registry row's plan is mock (mock adapters built it); landing rules
+    // key on the plan record, so make it a real one for this scenario.
+    repo.setPlanStatus(plan.id, 'complete')
+    const db = repo as unknown as { db: { run: (sql: string, ...p: unknown[]) => unknown } }
+    db.db.run(`UPDATE plans SET mock = 0 WHERE id = ?`, plan.id)
+    const manager = new Manager({
+      repo,
+      registry: new AgentRegistry(true),
+      emit: () => {},
+      worktreesRoot: mkdtempSync(join(tmpdir(), 'parley-landroot-')),
+    })
+
+    // Diverge the origin: the preflight refuses before the spend, so the
+    // approval survives for the retry after the human reconciles.
+    writeFileSync(join(origin, 'seed.txt'), 'diverged\n')
+    execFileSync('git', ['commit', '-aqm', 'diverge'], { cwd: origin })
+    const approval = manager.grantLandApproval(plan.id, 'land it')
+    const refused = await manager.landPlan(plan.id, approval.id)
+    expect(refused.landed).toBe(false)
+    expect(repo.listApprovals().find((a) => a.id === approval.id)?.consumedAt).toBeNull()
+
+    // Reconcile the origin (reset back to the branch's base), then land for
+    // real: the same approval is consumed by the act.
+    execFileSync('git', ['reset', '--hard', 'HEAD~1', '-q'], { cwd: origin })
+    const landed = await manager.landPlan(plan.id, approval.id)
+    expect(landed.landed).toBe(true)
+    expect(repo.listApprovals().find((a) => a.id === approval.id)?.consumedAt).not.toBeNull()
+    expect(repo.getWorktreeForPlan(plan.id)?.landedAt).not.toBeNull()
+
+    // A second attempt dies at the preflight — the branch is gone — before
+    // the spent approval could even be re-examined.
+    const again = await manager.landPlan(plan.id, approval.id)
+    expect(again.landed).toBe(false)
+    expect(again.detail).toMatch(/already landed/i)
+  })
+
+  it('a red post-land smoke verification surfaces as a hold on the landed row', async () => {
+    const { repo, session, plan } = await completedWorktreePlan('parley-land-verify-')
+    const worktree = repo.getWorktreeForPlan(plan.id)
+    if (!worktree) throw new Error('expected a worktree')
+
+    // Simulate the fire-and-forget verifier's red outcome landing after the
+    // fast-forward: the row is landed, and the failure is flagged onto it.
+    repo.markWorktreeLanded(plan.id)
+    repo.flagWorktree(plan.id, false, 'post-land verification failed: `true` exited 1 in the origin.')
+
+    const holds = computeHolds(repo, none).filter((h) => h.planId === plan.id)
+    expect(holds).toHaveLength(1)
+    expect(holds[0]).toMatchObject({ kind: 'merge-blocked', actionable: false, sessionId: session.id })
+    expect(holds[0]?.title).toBe('Landed, but verification failed')
+    expect(holds[0]?.detail).toContain('post-land verification failed')
   })
 
   it('landing an orphaned row still works from the surviving branch', async () => {

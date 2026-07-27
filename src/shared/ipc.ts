@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
   AgentConfig,
   Capability,
+  ApprovalScope,
   FindingDispositionState,
   Id,
   InterjectionTarget,
@@ -70,7 +71,9 @@ export const CreatePlanReq = z.object({
 })
 
 export const GrantApprovalReq = z.object({
-  scope: z.enum(['milestone.execute', 'loop.write']),
+  // The canonical enum, not a re-declaration: an inline copy silently rejects
+  // any scope added to the domain, at the one boundary that must accept it.
+  scope: ApprovalScope,
   subjectId: Id,
   summary: z.string().min(1),
 })
@@ -166,8 +169,13 @@ export const ListSessionsReq = z.object({ includeArchived: z.boolean().default(f
 /** Deleting is permanent. The impact query exists so it is never a blind click. */
 export const DeleteSessionReq = z.object({ sessionId: Id })
 export const GetPlanReq = z.object({ planId: Id })
-/** Lands a complete worktree plan's branch on the origin, fast-forward only. */
-export const LandPlanReq = z.object({ planId: Id })
+/**
+ * Lands a complete worktree plan's branch on the origin, fast-forward only.
+ * Must reference an unconsumed `plan.land` approval — landing is the single
+ * moment isolated work reaches the checkout, and it is recorded like every
+ * other authorisation to touch it.
+ */
+export const LandPlanReq = z.object({ planId: Id, approvalId: Id })
 export const GetLoopReq = z.object({ loopId: Id })
 
 export const ExportReportReq = z.object({ sessionId: Id })

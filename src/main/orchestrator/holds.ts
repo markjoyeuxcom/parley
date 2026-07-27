@@ -44,11 +44,15 @@ export function computeHolds(repo: Repo, acked: ReadonlySet<string>, now = Date.
       // A complete worktree plan waits on exactly one more human act: landing
       // its branch. Ready when git can fast-forward; blocked (with the branch
       // named, since the commits survive) when a landing attempt was refused
-      // or the worktree lost its footing on disk.
+      // or the worktree lost its footing on disk. A *landed* row surfaces only
+      // in one case — the post-land smoke verification failed — the single
+      // exception to landed rows being done.
       if (plan.status === 'complete' && plan.isolation === 'worktree') {
         const worktree = repo.getWorktreeForPlan(plan.id)
         if (worktree && worktree.landedAt === null) {
           holds.push(mergeHold(session.id, plan, worktree))
+        } else if (worktree && worktree.landedAt !== null && worktree.lastError) {
+          holds.push(landVerifyFailedHold(session.id, plan, worktree))
         }
       }
 
@@ -373,6 +377,24 @@ function milestoneStallHold(
     title: 'A run looks stalled',
     detail: `${plan.title} — milestone ${milestone.index + 1}: ${milestone.title} has shown no activity past the stall threshold.${inspectionLine}`,
     sinceAt: stalledSince,
+    mock: plan.mock,
+  })
+}
+
+/**
+ * The landing succeeded but the smoke verification in the origin did not — a
+ * fact worth exactly one acknowledgeable notice, because the fast-forward is
+ * done and the branch is gone: what remains is a human reading the failure.
+ */
+function landVerifyFailedHold(sessionId: string, plan: WorkPlan, worktree: Worktree): Hold {
+  return hold('merge-blocked', plan.id, `landed\0${worktree.lastError}`, {
+    sessionId,
+    planId: plan.id,
+    milestoneId: null,
+    loopId: null,
+    title: 'Landed, but verification failed',
+    detail: `${plan.title} — the branch fast-forwarded, then the smoke check failed in ${plan.repoPath}: ${worktree.lastError}`,
+    sinceAt: worktree.landedAt ?? worktree.createdAt,
     mock: plan.mock,
   })
 }

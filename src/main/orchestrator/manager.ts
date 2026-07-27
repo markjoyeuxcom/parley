@@ -12,6 +12,7 @@ import {
   type Session,
   type Skill,
   type WorkPlan,
+  type Worktree,
 } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import type { Hold } from '@shared/holds'
@@ -20,7 +21,7 @@ import { isShellFree, shellMetacharsIn } from '@shared/command'
 import { newId, type Repo } from '@main/store/repo'
 import { HoldsEngine } from './holds'
 import { LivenessWatchdog } from './liveness'
-import { landWorktree } from './worktrees'
+import { landWorktree, preflightLand, verifyLanding } from './worktrees'
 import { LoopRunner, validateExitCommand, type LoopOutcome } from './loop'
 import { missingExpectedPaths, Pipeline, readTree } from './pipeline'
 import { assertNoUnresolvedBlockingOccurrences } from './gate'
@@ -540,15 +541,10 @@ export class Manager {
   }
 
   /**
-   * Lands a complete worktree plan's branch on the origin, fast-forward only.
-   *
-   * Human-initiated, always — this is the one moment isolated work reaches the
-   * user's checkout, and no pipeline stage may take it. Mock plans are refused
-   * outright: their commits are fabricated work, and fast-forwarding a real
-   * branch onto them would be mock output with no marking anywhere in git —
-   * the exact invisible-mock failure the banner and chips exist to prevent.
+   * The shared refusals for granting a landing and performing one. Kept in one
+   * place so the grant and the act cannot drift apart on what qualifies.
    */
-  async landPlan(planId: Id): Promise<{ landed: boolean; detail: string }> {
+  private landablePlan(planId: Id): { plan: WorkPlan; worktree: Worktree } {
     const plan = this.repo.getPlan(planId)
     if (!plan) throw new RequestError('no such plan')
     if (plan.isolation !== 'worktree') {
@@ -564,11 +560,76 @@ export class Manager {
     }
     const worktree = this.repo.getWorktreeForPlan(planId)
     if (!worktree) throw new RequestError('this plan has no worktree to land')
+    return { plan, worktree }
+  }
+
+  /**
+   * Grants the single-use landing authorisation, behind the same session-wide
+   * finding gate as every other grant. On a complete plan the gate's bite is
+   * rare — its own blockers were dispositioned or settled on the way here —
+   * but landing is the one moment isolated work reaches the checkout, and the
+   * chokepoint stays uniform for everything that follows this series.
+   */
+  grantLandApproval(planId: Id, summary: string): Approval {
+    const { plan } = this.landablePlan(planId)
+    assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
+    return this.repo.grantApproval('plan.land', planId, summary)
+  }
+
+  /**
+   * Lands a complete worktree plan's branch on the origin, fast-forward only,
+   * spending the recorded approval.
+   *
+   * Human-initiated, always — no pipeline stage may take it. The preflight
+   * runs every refusable check *before* the spend: landWorktree refuses
+   * routinely (diverged origin, dirt, a vanished branch), each refusal is
+   * retryable after the human fixes the world, and burning an approval per
+   * git refusal would train people to click through grants. After a
+   * successful fast-forward, a smoke verification of the landed work runs in
+   * the origin — post-return, bounded — and a red result flags the landed
+   * row, which the holds queue surfaces.
+   */
+  async landPlan(planId: Id, approvalId: Id): Promise<{ landed: boolean; detail: string }> {
+    const { plan, worktree } = this.landablePlan(planId)
+
+    const preflight = await preflightLand(worktree)
+    if (!preflight.ok) {
+      this.repo.flagWorktree(planId, worktree.orphaned, preflight.detail)
+      this.holdsChanged()
+      return { landed: false, detail: preflight.detail }
+    }
+
+    // The gate re-check and the spend sit in one synchronous block, the same
+    // human-scale-gap reasoning as execution: a finding can land between the
+    // grant and this click.
+    assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
+    this.repo.consumeApproval(approvalId, 'plan.land', planId)
 
     const result = await landWorktree(this.repo, worktree)
     // Landing mutates the registry with no event on the bus; the queue must
     // move either way — ready → gone on success, ready → blocked on refusal.
     this.holdsChanged()
+
+    if (result.landed) {
+      // Fire-and-forget by design: the renderer awaits landPlan, and holding
+      // its invoke open for a test run is the exact wart answerPlan shed. The
+      // last milestone's command is the plan's own definition of verified.
+      const lastCommand = this.repo
+        .listMilestones(planId)
+        .map((m) => m.testCommand.trim())
+        .filter(Boolean)
+        .at(-1)
+      if (lastCommand) {
+        void verifyLanding(worktree.originPath, lastCommand)
+          .then((verify) => {
+            if (verify.ok) return
+            this.repo.flagWorktree(planId, false, verify.detail)
+            this.holdsChanged()
+            this.emit({ type: 'notice', level: 'warn', message: verify.detail })
+          })
+          .catch(() => {})
+      }
+    }
     return result
   }
 

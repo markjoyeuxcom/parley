@@ -253,6 +253,81 @@ export async function commitMilestone(
 }
 
 /**
+ * Everything about a landing that can be refused without spending anything.
+ *
+ * landWorktree refuses routinely — a diverged origin, uncommitted dirt, a
+ * vanished branch — and each refusal is retryable after the human fixes the
+ * world. Consuming an approval before those checks would burn one per git
+ * refusal and train people to click through grants, so the preflight runs
+ * them first and the spend happens only when git can actually fast-forward.
+ * A genuine origin-moved-in-the-gap race still costs one approval; git still
+ * refuses safely.
+ */
+export async function preflightLand(
+  worktree: Worktree,
+): Promise<{ ok: boolean; detail: string }> {
+  if (worktree.landedAt !== null) return { ok: false, detail: 'this branch has already landed' }
+  if (!existsSync(worktree.originPath)) {
+    return { ok: false, detail: `the origin repository is missing (${worktree.originPath})` }
+  }
+  const branchExists = await git(
+    ['rev-parse', '--verify', '--quiet', `refs/heads/${worktree.branch}`],
+    worktree.originPath,
+  )
+  if (!branchExists.ok) {
+    return { ok: false, detail: `the branch ${worktree.branch} no longer exists in the origin` }
+  }
+  if (existsSync(worktree.path)) {
+    const status = await git(['status', '--porcelain'], worktree.path)
+    if (status.ok && status.stdout) {
+      return {
+        ok: false,
+        detail:
+          'the worktree has uncommitted changes — adopt the milestone that left them, or discard them by hand, before landing',
+      }
+    }
+  }
+  const ancestor = await git(
+    ['merge-base', '--is-ancestor', 'HEAD', worktree.branch],
+    worktree.originPath,
+  )
+  if (!ancestor.ok) {
+    return {
+      ok: false,
+      detail: `the checkout has moved since the branch was cut — a fast-forward is no longer possible. The work is safe on ${worktree.branch}; merge it by hand.`,
+    }
+  }
+  return { ok: true, detail: '' }
+}
+
+/**
+ * Re-runs a verification command in the origin after a landing.
+ *
+ * Honest about what it is: a smoke check. The commands are the milestones'
+ * own, possibly path-scoped, and green here proves the fast-forward landed
+ * what was reviewed — not that the whole repository is healthy. Bounded well
+ * under the pipeline's test timeout because it runs post-return.
+ */
+export async function verifyLanding(
+  originPath: string,
+  testCommand: string,
+): Promise<{ ok: boolean; detail: string }> {
+  const argv = splitCommand(testCommand.trim())
+  if (!argv || argv.length === 0 || !isShellFree(testCommand)) {
+    return { ok: true, detail: '' }
+  }
+  const result = await capture(argv[0] ?? '', argv.slice(1), originPath, LAND_VERIFY_TIMEOUT_MS)
+  if (result.exitCode === 0) return { ok: true, detail: '' }
+  const output = `${result.stderr}\n${result.stdout}`.trim().slice(0, 400)
+  return {
+    ok: false,
+    detail: `post-land verification failed: \`${testCommand.trim()}\` exited ${result.exitCode}${result.timedOut ? ' (timed out)' : ''} in the origin. ${output}`,
+  }
+}
+
+const LAND_VERIFY_TIMEOUT_MS = 5 * 60 * 1000
+
+/**
  * Lands the plan branch on the origin's checked-out branch, fast-forward only.
  *
  * ff-only is the whole safety argument: git itself proves the checkout has not

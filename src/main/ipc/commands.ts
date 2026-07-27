@@ -9,7 +9,7 @@ import { z } from 'zod'
 import { COMMANDS, type CliHealth, type CommandName } from '@shared/ipc'
 import { CH } from '@shared/ipc'
 import type { AppEvent } from '@shared/events'
-import { MAX_PANES, type GridLayout, type Skill } from '@shared/domain'
+import { MAX_PANES, type ApprovalScope, type GridLayout, type Skill } from '@shared/domain'
 import { RequestError, type Manager } from '@main/orchestrator/manager'
 import { newId } from '@main/store/repo'
 import { readCodexDefaultModel } from '@main/util/environment'
@@ -175,7 +175,10 @@ const HANDLERS: Record<CommandName, Handler> = {
       worktree: ctx.manager.repo.getWorktreeForPlan(planId),
     }
   },
-  'plan.land': (p, ctx) => ctx.manager.landPlan((p as { planId: string }).planId),
+  'plan.land': (p, ctx) => {
+    const { planId, approvalId } = p as { planId: string; approvalId: string }
+    return ctx.manager.landPlan(planId, approvalId)
+  },
   'plan.setTestCommand': (p, ctx) => {
     const { milestoneId, command } = p as { milestoneId: string; command: string }
     return ctx.manager.setMilestoneTestCommand(milestoneId, command)
@@ -203,13 +206,21 @@ const HANDLERS: Record<CommandName, Handler> = {
   // ── Approvals ──────────────────────────────────────────────────────────────
   'approval.grant': (p, ctx) => {
     const { scope, subjectId, summary } = p as {
-      scope: 'milestone.execute' | 'loop.write'
+      scope: ApprovalScope
       subjectId: string
       summary: string
     }
-    return scope === 'milestone.execute'
-      ? ctx.manager.grantMilestoneApproval(subjectId, summary)
-      : ctx.manager.repo.grantApproval(scope, subjectId, summary)
+    // Exhaustive on purpose: a scope added without a routing decision must
+    // fail typecheck here, not silently fall into an ungated branch — which
+    // is exactly what the previous binary ternary would have done.
+    switch (scope) {
+      case 'milestone.execute':
+        return ctx.manager.grantMilestoneApproval(subjectId, summary)
+      case 'plan.land':
+        return ctx.manager.grantLandApproval(subjectId, summary)
+      case 'loop.write':
+        return ctx.manager.repo.grantApproval(scope, subjectId, summary)
+    }
   },
   'approval.list': (_p, ctx) => ctx.manager.repo.listApprovals(),
 

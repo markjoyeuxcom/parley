@@ -84,10 +84,16 @@ export const addUsage = (a: Usage, b: Usage): Usage => ({
 // ─── Approvals ───────────────────────────────────────────────────────────────
 
 export const ApprovalScope = z.enum([
-  /** Permits one write-capable milestone execution. */
+  /** Permits one write-capable milestone execution (a resume included). */
   'milestone.execute',
   /** Permits starting a loop that may write to the repository. */
   'loop.write',
+  /**
+   * Permits one fast-forward of the origin checkout onto a plan branch — the
+   * single moment isolated work reaches the user's tree, recorded like every
+   * other authorisation to touch it.
+   */
+  'plan.land',
 ])
 export type ApprovalScope = z.infer<typeof ApprovalScope>
 
