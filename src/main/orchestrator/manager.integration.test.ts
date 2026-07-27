@@ -754,7 +754,7 @@ describe('adopting work that is already in the tree', () => {
    * tests exercising the real verification path rather than asserting against a
    * failure caused by the fixture.
    */
-  async function planIn(repoPath: string, testCommand = 'node --version') {
+  async function planIn(repoPath: string, testCommand = 'node --version', settleLedger = true) {
     const { manager, repo, events, registry } = harness()
     const session = manager.startSession({
       kind: 'debate',
@@ -778,6 +778,10 @@ describe('adopting work that is already in the tree', () => {
     await manager.whenPlanSettled(plan.id)
     const milestones = repo.listMilestones(plan.id)
     const updated = milestones.map((m) => repo.updateMilestone(m.id, { testCommand }))
+    // Drafting leaves the audit's revise finding open in the ledger, and
+    // adoption is gated on it exactly like approval. These tests exercise
+    // post-gate behaviour; the refusal itself has its own test below.
+    if (settleLedger) disposeOpenBlockingOccurrences(repo, session.id)
     return { manager, repo, events, registry, milestones: updated }
   }
 
@@ -824,6 +828,70 @@ describe('adopting work that is already in the tree', () => {
     expect(phases).toContain('reviewing')
     // Nothing was executed.
     expect(phases).not.toContain('executing')
+  })
+
+  it('refuses to adopt while a blocking finding occurrence is unresolved', async () => {
+    // The m6 review's top carried finding: "Adopt & verify" completes a
+    // milestone through review, so it must be stopped by exactly the blockers
+    // that stop "Approve and run" — otherwise adoption is a side door around
+    // the ledger. The refusal fires before the tree is even read.
+    const { manager, repo, milestones } = await planIn(repoWithExistingWork(), 'node --version', false)
+    const first = milestones[0]
+    if (!first) throw new Error('expected a milestone')
+
+    await expect(manager.adoptMilestone(first.id)).rejects.toThrow(
+      /blocking finding occurrence.*unresolved/i,
+    )
+    // Nothing ran: the milestone is exactly as the audit left it.
+    expect(repo.getMilestone(first.id)?.status).toBe('audited')
+    expect(repo.getMilestone(first.id)?.testResult).toBeNull()
+  })
+
+  it('clears mutation results left by an earlier execution attempt', async () => {
+    // Adoption never runs the declared breaks, so results from a previous
+    // execution must not sit beside adoption's fresh verdict as if it had
+    // produced them.
+    const { manager, repo, milestones } = await planIn(repoWithExistingWork())
+    const first = milestones[0]
+    if (!first) throw new Error('expected a milestone')
+    repo.updateMilestone(first.id, {
+      mutationResults: [
+        {
+          describes: 'left over from a failed run',
+          file: 'src/net/client.ts',
+          caught: false,
+          skipped: 'stale',
+          skipKind: 'unapplied',
+          exitCode: null,
+        },
+      ],
+    })
+
+    const done = await manager.adoptMilestone(first.id)
+    expect(done.mutationResults).toEqual([])
+  })
+
+  it('says plainly that declared break checks were not run', async () => {
+    // Execution applies each declared break and requires the tests to fail;
+    // adoption does not. Silence here would let a milestone read as fully
+    // verified when the one check that tests its tests never ran.
+    const { manager, repo, milestones } = await planIn(repoWithExistingWork())
+    const first = milestones[0]
+    if (!first) throw new Error('expected a milestone')
+    repo.updateMilestone(first.id, {
+      mutations: [
+        {
+          file: 'src/net/client.ts',
+          find: 'capped = true',
+          replace: 'capped = false',
+          describes: 'the cap must stay on',
+        },
+      ],
+    })
+
+    const done = await manager.adoptMilestone(first.id)
+    expect(done.reviewNote).toMatch(/deliberate-break check/i)
+    expect(done.reviewNote).toMatch(/only execution runs/i)
   })
 
   it('refuses when there is nothing to adopt', async () => {
@@ -1710,6 +1778,12 @@ describe('plans and the approval gate', () => {
     expect(
       repo.listApprovals().find((approval) => approval.id === premature.id)?.consumedAt,
     ).toBeNull()
+    // Adoption is the third door to a completed milestone, and the same gate
+    // closes it. No tree setup is needed: the gate is checked before the tree
+    // is read, so the refusal cannot depend on what happens to be on disk.
+    await expect(manager.adoptMilestone(first.id)).rejects.toThrow(
+      /blocking finding occurrence.*unresolved/i,
+    )
 
     disposeOpenBlockingOccurrences(repo, session.id)
     const approval = manager.grantMilestoneApproval(first.id, 'allow the write')
@@ -1721,6 +1795,22 @@ describe('plans and the approval gate', () => {
 
     // Re-running needs a fresh approval; the spent one is refused.
     await expect(manager.runMilestone(first.id, approval.id)).rejects.toThrow()
+  })
+
+  it('refuses an approval id that does not exist, before anything runs', async () => {
+    // Restores an assertion the m6 rework deleted with its test: the engine
+    // must refuse a fabricated approval id outright. The store test pins
+    // consumeApproval itself; this pins that runMilestone reaches it and that
+    // the refusal leaves the milestone untouched. The ledger is settled first
+    // so the finding gate cannot be the thing doing the refusing.
+    const { manager, repo, plan, milestone } = await readyPlan()
+    disposeOpenBlockingOccurrences(repo, plan.sessionId)
+
+    await expect(manager.runMilestone(milestone.id, 'no-such-approval')).rejects.toThrow(
+      /no such approval/i,
+    )
+    expect(repo.getMilestone(milestone.id)?.status).toBe('audited')
+    expect(repo.getMilestone(milestone.id)?.testResult).toBeNull()
   })
 
   it('does not expose audited draft milestones after an interrupted correction', async () => {

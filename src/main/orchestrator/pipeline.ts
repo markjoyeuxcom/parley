@@ -992,7 +992,10 @@ export class Pipeline {
    * deterministic tests and the independent cross-vendor review — and record
    * `adopted: true` so the trail says plainly that Parley did not write this.
    *
-   * Needs no approval, because it writes nothing.
+   * Needs no approval, because it writes nothing. It is still gated on the
+   * findings ledger: adoption completes a milestone through review, so an open
+   * blocker that stops "Approve and run" must stop "Adopt & verify" too, or
+   * adoption is a side door around the ledger.
    */
   async adoptMilestone(milestoneId: Id, signal?: AbortSignal): Promise<Milestone> {
     const milestone = this.repo.getMilestone(milestoneId)
@@ -1002,6 +1005,11 @@ export class Pipeline {
     if (!plan) throw new PipelineError('the plan for this milestone is missing')
     const refusal = executionRefusal(plan, milestone)
     if (refusal) throw new PipelineError(refusal)
+
+    // Checked once, not twice: execution re-checks at run because a finding can
+    // arrive in the human-scale gap between granting and running, but adoption
+    // has no approval step and so no gap — this call is its whole entry.
+    assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
 
     const tree = await readTree(plan.repoPath, signal)
     if (!tree.unknown && tree.paths.length === 0) {
@@ -1035,11 +1043,15 @@ export class Pipeline {
       this.emit({ type: 'plan.activity', milestoneId, phase, text })
     }
 
+    // `mutationResults` is cleared with the rest: adoption never runs the
+    // declared breaks, so results left by an earlier execution attempt must not
+    // sit beside adoption's verdict as if this run had produced them.
     let current = this.repo.updateMilestone(milestoneId, {
       status: 'testing',
       testResult: null,
       reviewNote: '',
       reviewPassed: null,
+      mutationResults: [],
     })
     this.emit({ type: 'plan.milestone', milestone: current })
     this.setStatus(plan.id, 'running')
@@ -1084,6 +1096,30 @@ export class Pipeline {
     this.repo.addPlanUsage(plan.id, review.usage)
 
     const parsedReview = parseReview(review.text)
+    // The same ingestion an executed milestone's review gets: what the adopt
+    // reviewer blocks on must reach the ledger, or the gate cannot hold the
+    // next approval or adoption to it. A null round is adoption's signature in
+    // the record — review occurrences from execution always carry their round.
+    // There is no settle-on-pass here: a pass means the blocking list was
+    // empty, and anything older was dispositioned before the gate let this run.
+    if (parsedReview) {
+      for (const finding of parsedReview.blocking) {
+        this.recordFindingOccurrence(plan, finding, {
+          milestoneId,
+          round: null,
+          kind: 'blocking',
+          source: 'review',
+        })
+      }
+      for (const note of parsedReview.notes) {
+        this.recordFindingOccurrence(plan, note, {
+          milestoneId,
+          round: null,
+          kind: 'note',
+          source: 'review',
+        })
+      }
+    }
     const testsPassed = testResult !== null && testResult.exitCode === 0
     const reviewPassed = parsedReview?.passed === true
     const passed = missing.length === 0 && testsPassed && reviewPassed
@@ -1105,6 +1141,15 @@ export class Pipeline {
         `The working tree also contains changes outside this milestone's scope, which ` +
           `${current.testCommand ? `\`${current.testCommand}\`` : 'the verification'} did not exercise: ` +
           `${unverified.join(', ')}.`,
+      )
+    }
+    // Execution applies each declared break and requires the tests to fail;
+    // adoption does not. Saying nothing here would let a milestone read as
+    // fully verified when the one check that tests its *tests* never ran.
+    if (current.mutations.length) {
+      noteParts.push(
+        `This milestone declares ${current.mutations.length} deliberate-break check${current.mutations.length === 1 ? '' : 's'} that only execution runs. ` +
+          `Adoption verified that the tests pass, not that they would catch the wrong implementations the plan named.`,
       )
     }
     if (missing.length) noteParts.push(`Expected paths still absent: ${missing.join(', ')}.`)

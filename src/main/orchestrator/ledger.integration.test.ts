@@ -327,9 +327,14 @@ describe('pipeline finding ledger ingestion', () => {
     expect(repo.listFindingDispositions(session.id)).toEqual([])
   })
 
-  it('leaves the ledger untouched during adoption', async () => {
+  it('refuses adoption while blocking occurrences are unresolved', async () => {
+    // Adoption completes a milestone through review, so it must be stopped by
+    // exactly the blockers that stop approval and execution — otherwise
+    // "Adopt & verify" is a side door around the ledger. This scenario used to
+    // be pinned the other way ("leaves the ledger untouched during adoption"),
+    // which was the m6 review's top carried finding.
     const { pipeline, repo, events, session } = harness()
-    const repoPath = gitRepo('parley-ledger-adopt-')
+    const repoPath = gitRepo('parley-ledger-adopt-gate-')
     writeFileSync(join(repoPath, 'existing.txt'), 'already here\n')
     const plan = makePlan(repo, session.id, repoPath)
     const milestone = makeMilestone(repo, plan.id, {
@@ -350,17 +355,87 @@ describe('pipeline finding ledger ingestion', () => {
       source: 'review',
     })
     const beforeOccurrences = repo.listFindingOccurrences(session.id)
-    const beforeDispositions = repo.listFindingDispositions(session.id)
-    const ledgerEventCount = events.filter((event) => event.type === 'session.ledger').length
+
+    await expect(pipeline.adoptMilestone(milestone.id)).rejects.toThrow(
+      /blocking finding occurrence.*unresolved/i,
+    )
+
+    // Nothing ran and nothing was recorded: the milestone is exactly as the
+    // audit left it, and the refusal itself did not touch the ledger.
+    const after = repo.getMilestone(milestone.id)
+    expect(after?.status).toBe('audited')
+    expect(after?.testResult).toBeNull()
+    expect(repo.listFindingOccurrences(session.id)).toEqual(beforeOccurrences)
+    expect(repo.listFindingDispositions(session.id)).toEqual([])
+    expect(events.filter((event) => event.type === 'session.ledger')).toHaveLength(0)
+  })
+
+  it('records the adoption review\'s findings as occurrences and settles nothing', async () => {
+    // The adopted file carries the sentinel the mock reviewer objects to, so
+    // the adopt review blocks. Those objections must reach the ledger with
+    // full provenance — milestone id, review source, and adoption's signature
+    // null round — or the gate could never hold the next attempt to them.
+    const { pipeline, repo, events, session } = harness()
+    const repoPath = gitRepo('parley-ledger-adopt-blocked-')
+    writeFileSync(join(repoPath, 'existing.txt'), 'NEEDS_WORK\n')
+    const plan = makePlan(repo, session.id, repoPath)
+    const milestone = makeMilestone(repo, plan.id, {
+      expectedPaths: ['existing.txt'],
+    })
+
+    const done = await pipeline.adoptMilestone(milestone.id)
+
+    expect(done.status).toBe('failed')
+    expect(done.adopted).toBe(false)
+
+    const occurrences = repo.listFindingOccurrences(session.id)
+    const blocking = occurrences.filter((occurrence) => occurrence.kind === 'blocking')
+    const notes = occurrences.filter((occurrence) => occurrence.kind === 'note')
+    expect(blocking.length).toBeGreaterThan(0)
+    expect(notes.length).toBeGreaterThan(0)
+    for (const occurrence of occurrences) {
+      expect(occurrence).toMatchObject({
+        planId: plan.id,
+        milestoneId: milestone.id,
+        round: null,
+        source: 'review',
+      })
+    }
+    // A failed adoption disposes nothing: the blockers stay open, which is what
+    // gates the next approval or adoption until a person answers them.
+    expect(repo.listFindingDispositions(session.id)).toEqual([])
+    expect(events.filter((event) => event.type === 'session.ledger')).toHaveLength(
+      occurrences.length,
+    )
+  })
+
+  it('records a clean adoption review\'s notes and disposes nothing', async () => {
+    // A passing adopt review still says things worth keeping — the mock's
+    // "tidy" note — and those land as note occurrences, which never gate. No
+    // settle runs on a pass: a pass means the blocking list was empty, and
+    // anything older was dispositioned before the gate let adoption start.
+    const { pipeline, repo, session } = harness()
+    const repoPath = gitRepo('parley-ledger-adopt-clean-')
+    writeFileSync(join(repoPath, 'existing.txt'), 'already here\n')
+    const plan = makePlan(repo, session.id, repoPath)
+    const milestone = makeMilestone(repo, plan.id, {
+      expectedPaths: ['existing.txt'],
+    })
 
     const done = await pipeline.adoptMilestone(milestone.id)
 
     expect(done.status).toBe('complete')
     expect(done.adopted).toBe(true)
-    expect(repo.listFindingOccurrences(session.id)).toEqual(beforeOccurrences)
-    expect(repo.listFindingDispositions(session.id)).toEqual(beforeDispositions)
-    expect(events.filter((event) => event.type === 'session.ledger')).toHaveLength(
-      ledgerEventCount,
-    )
+    const occurrences = repo.listFindingOccurrences(session.id)
+    expect(occurrences.length).toBeGreaterThan(0)
+    for (const occurrence of occurrences) {
+      expect(occurrence).toMatchObject({
+        milestoneId: milestone.id,
+        round: null,
+        kind: 'note',
+        source: 'review',
+      })
+    }
+    expect(repo.listFindingDispositions(session.id)).toEqual([])
   })
 })

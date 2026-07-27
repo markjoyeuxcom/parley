@@ -211,10 +211,11 @@ export function PlanPanel({
    *
    * The correction stage does not patch milestones, it deletes them and writes
    * the corrected set — so any id held in component state can go stale while a
-   * dialog is open. Approving from that dialog would grant a real, recorded
-   * approval against a row that is gone, because `grantApproval` takes a subject
-   * id without checking it resolves. The run would then refuse, leaving a spent
-   * authorisation for nothing in the audit trail.
+   * dialog is open. Approving from that dialog would be refused — milestone
+   * grants go through the Manager, which checks the id resolves — but the
+   * refusal would read as an opaque "no such milestone" about a row still
+   * visible on screen. Closing the dialog and saying the plan was corrected is
+   * the version of that refusal a person can act on.
    */
   useEffect(() => {
     if (!pendingApproval) return
@@ -866,8 +867,8 @@ function ApprovalGateDialog({
             {permission.unresolved.length === 1 ? 'finding needs' : 'findings need'} a disposition
           </div>
           <div className="gate__body">
-            Approval stays disabled until every blocking occurrence has a recorded human
-            decision. Each control below settles only the occurrence it names.
+            Approval and adoption stay disabled until every blocking occurrence has a recorded
+            human decision. Each control below settles only the occurrence it names.
           </div>
           <div className="ledger-dispose-list">
             {permission.unresolved.map(({ entry, occurrence }) => (
@@ -911,7 +912,13 @@ function ApprovalGateDialog({
             independently. It writes nothing, so it needs no approval — and the record will say the
             work was verified rather than authored here.
           </div>
-          <button className="btn btn--primary btn--wide" disabled={busy} onClick={onAdopt}>
+          {/* Gated exactly like "Approve and run": adoption completes a
+              milestone through review, so an open blocker disables both. */}
+          <button
+            className="btn btn--primary btn--wide"
+            disabled={busy || !permission.allowed}
+            onClick={onAdopt}
+          >
             <ShieldCheck size={12} strokeWidth={2} />
             {busy ? 'Working…' : 'Adopt & verify the existing work'}
           </button>
@@ -926,7 +933,11 @@ function ApprovalGateDialog({
             when the work is sound and the failure was in the checking, not the code. Approve and
             retry instead if the work itself needs another attempt.
           </div>
-          <button className="btn btn--wide" disabled={busy} onClick={onAdopt}>
+          <button
+            className="btn btn--wide"
+            disabled={busy || !permission.allowed}
+            onClick={onAdopt}
+          >
             <ShieldCheck size={12} strokeWidth={2} />
             {busy ? 'Working…' : 'Adopt & verify the existing work'}
           </button>
