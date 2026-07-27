@@ -190,6 +190,18 @@ const HANDLERS: Record<CommandName, Handler> = {
     emit(ctx, { type: 'backlog.changed', repoPath: item.repoPath })
     return item
   },
+  'backlog.confirm': (p, ctx) => {
+    const { itemId } = p as { itemId: string }
+    const item = ctx.manager.repo.transitionBacklogItem(itemId, 'open', { source: 'human' })
+    emit(ctx, { type: 'backlog.changed', repoPath: item.repoPath })
+    return item
+  },
+  'backlog.close': (p, ctx) => {
+    const { itemId, note } = p as { itemId: string; note: string }
+    const item = ctx.manager.repo.transitionBacklogItem(itemId, 'done', { source: 'human', note })
+    emit(ctx, { type: 'backlog.changed', repoPath: item.repoPath })
+    return item
+  },
 
   // ── Plans ──────────────────────────────────────────────────────────────────
   'plan.create': (p, ctx) => ctx.manager.createPlan(p as never),

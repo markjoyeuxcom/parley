@@ -3,6 +3,7 @@ import { existsSync, statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import {
   type AgentConfig,
+  type BacklogItem,
   type InterjectionTarget,
   type Approval,
   emptyUsage,
@@ -23,6 +24,12 @@ import { protocolFor, STOW_CONTRACT } from '@shared/protocol'
 import { canonicalRepoPath } from '@main/util/repoPath'
 import { newId, type Repo } from '@main/store/repo'
 import { HoldsEngine } from './holds'
+import {
+  proposeBacklogClosures,
+  regressPlannedItems,
+  renderBacklogBlock,
+  renderLearningsBlock,
+} from './backlog'
 import { LivenessWatchdog } from './liveness'
 import { landWorktree, preflightLand, verifyLanding } from './worktrees'
 import { LoopRunner, validateExitCommand, type LoopOutcome } from './loop'
@@ -396,6 +403,8 @@ export class Manager {
     note?: string
     isolation?: WorkPlan['isolation']
     setupCommand?: string
+    /** Open backlog items this plan targets; they flip to planned. */
+    backlogItemIds?: Id[]
   }): Promise<{ plan: WorkPlan; milestones: Milestone[] }> {
     const session = this.repo.getSession(input.sessionId)
     if (!session) throw new RequestError('no such session')
@@ -415,6 +424,30 @@ export class Manager {
       throw new RequestError(
         `the setup command needs shell syntax (${shellMetacharsIn(setupCommand).join(' ')}), which Parley spawns without. Use a single command, or a script in the repository that does the rest.`,
       )
+    }
+
+    // Selected backlog items are validated before the plan row exists, so a
+    // bad selection costs nothing. The flip to `planned` happens after the
+    // row is created, in the same synchronous stretch — no await between
+    // validate, create and flip is what makes two racing selections safe:
+    // the second sees `planned` and refuses here.
+    const backlogItemIds = [...new Set(input.backlogItemIds ?? [])]
+    const backlogItems: BacklogItem[] = []
+    for (const itemId of backlogItemIds) {
+      const item = this.repo.getBacklogItem(itemId)
+      if (!item) throw new RequestError(`no such backlog item: ${itemId}`)
+      if (item.state !== 'open') {
+        throw new RequestError(`backlog item “${item.title}” is ${item.state}, not open`)
+      }
+      if (item.mock !== this.registry.mock) {
+        throw new RequestError(
+          `backlog item “${item.title}” is ${item.mock ? 'mock' : 'real'} work; this app is running against ${this.registry.mock ? 'mock adapters' : 'real CLIs'}`,
+        )
+      }
+      if (item.repoPath !== canonicalRepoPath(repoPath)) {
+        throw new RequestError(`backlog item “${item.title}” belongs to a different repository`)
+      }
+      backlogItems.push(item)
     }
 
     // Deliberately a warning, not a block. Planner and executor are both on the
@@ -453,6 +486,18 @@ export class Manager {
     })
     this.emit({ type: 'plan.created', plan })
 
+    // Still the same synchronous stretch as the validation above.
+    for (const item of backlogItems) {
+      this.repo.transitionBacklogItem(item.id, 'planned', {
+        source: 'human',
+        planId: plan.id,
+        note: 'Selected for this plan at creation.',
+      })
+    }
+    if (backlogItems.length) {
+      this.emit({ type: 'backlog.changed', repoPath: canonicalRepoPath(repoPath) })
+    }
+
     // A remediation plan's subject is what earlier reviews objected to, not the
     // decision that started the session. Gathered here because the findings live
     // in this database and the planner only reads the repository — without this,
@@ -462,7 +507,16 @@ export class Manager {
 
     const operatorNote = (input.note ?? '').trim()
 
+    // Confirmed learnings for this repo ride every brief, mock-matched and
+    // capped at render time. Both backlog blocks are baked into the brief
+    // string itself so they survive a clarification park-and-resume, which
+    // stores and replays the brief verbatim.
+    const learnings = this.repo
+      .listLearnings({ repoPath, states: ['confirmed'] })
+      .filter((learning) => learning.mock === this.registry.mock)
+
     const brief = [
+      renderBacklogBlock(backlogItems),
       findings.length
         ? `THE FINDINGS TO FIX. These are the recorded reviews of work already executed in this session. Plan the smallest set of milestones that resolves the substantive ones. A finding you judge not worth acting on must be named and argued, not silently dropped.\n\n${findings.join('\n\n———\n\n')}`
         : '',
@@ -473,6 +527,7 @@ export class Manager {
       verdict.rationale ? `Rationale: ${verdict.rationale}` : '',
       verdict.dissent ? `Unresolved objections to keep in mind: ${verdict.dissent}` : '',
       `Original matter: ${session.matter}`,
+      renderLearningsBlock(learnings),
     ]
       .filter(Boolean)
       .join('\n\n')
@@ -492,6 +547,14 @@ export class Manager {
           this.repo.setPlanStatus(plan.id, 'failed')
           this.emit({ type: 'plan.status', planId: plan.id, status: 'failed' })
         }
+        // Planning-stage death is unrecoverable (no re-draft exists), so the
+        // items this plan claimed return to the backlog.
+        regressPlannedItems(
+          this.repo,
+          plan.id,
+          'The plan died during planning; its items return to the backlog.',
+          (event) => this.emit(event),
+        )
         this.emit({ type: 'notice', level: 'error', message: `Planning failed: ${detail}` })
       })
       .finally(() => this.planRuns.delete(plan.id))
@@ -540,6 +603,13 @@ export class Manager {
           this.repo.setPlanStatus(plan.id, 'failed')
           this.emit({ type: 'plan.status', planId: plan.id, status: 'failed' })
         }
+        // The same planning-death rule as createPlan: no re-draft exists.
+        regressPlannedItems(
+          this.repo,
+          plan.id,
+          'The plan died during planning; its items return to the backlog.',
+          (event) => this.emit(event),
+        )
         this.emit({ type: 'notice', level: 'error', message: `Planning failed: ${detail}` })
       })
       .finally(() => this.planRuns.delete(plan.id))
@@ -733,6 +803,15 @@ export class Manager {
     this.holdsChanged()
 
     if (result.landed) {
+      // Landing is the moment a worktree plan's work becomes real in the
+      // checkout — the completion hook deliberately skipped it, and this is
+      // where its backlog items earn their closure proposal.
+      proposeBacklogClosures(
+        this.repo,
+        planId,
+        `Plan “${plan.title}” completed and its branch landed on ${plan.repoPath}.`,
+        (event) => this.emit(event),
+      )
       // Fire-and-forget by design: the renderer awaits landPlan, and holding
       // its invoke open for a test run is the exact wart answerPlan shed. The
       // last milestone's command is the plan's own definition of verified.

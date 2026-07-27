@@ -2,6 +2,8 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, FolderOpen, Play, ShieldCheck, Square } from 'lucide-react'
 import type {
   AgentConfig,
+  BacklogItem,
+  Id,
   Milestone,
   Session,
   TestResult,
@@ -60,9 +62,44 @@ export function NewPlanDialog({
   onClose: () => void
   onCreated: (detail: PlanDetail) => void
 }): ReactNode {
-  const { attempt } = useStore()
+  const { attempt, state } = useStore()
   const [kind, setKind] = useState<WorkPlanKind>('implementation')
   const [repoPath, setRepoPath] = useState(session.repoPath ?? '')
+  const [backlogChoices, setBacklogChoices] = useState<BacklogItem[]>([])
+  const [selectedItems, setSelectedItems] = useState<ReadonlySet<Id>>(new Set())
+
+  // The repo's open backlog, refetched when the target repo changes — and the
+  // selection cleared with it, because a selection made against one repo must
+  // not survive into another. Mock-matched: mock items are only plannable in
+  // mock mode, and offering the others would only ever error.
+  useEffect(() => {
+    setSelectedItems(new Set())
+    const path = repoPath.trim()
+    if (!path) {
+      setBacklogChoices([])
+      return
+    }
+    let cancelled = false
+    api
+      .listBacklogItems(path)
+      .then((items) => {
+        if (cancelled) return
+        setBacklogChoices(items.filter((item) => item.state === 'open' && item.mock === state.mock))
+      })
+      .catch(() => setBacklogChoices([]))
+    return () => {
+      cancelled = true
+    }
+  }, [repoPath, state.mock])
+
+  const toggleItem = (id: Id): void => {
+    setSelectedItems((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else if (next.size < 12) next.add(id)
+      return next
+    })
+  }
   const [planner, setPlanner] = useState<AgentConfig>({
     vendor: 'claude',
     model: '',
@@ -96,6 +133,7 @@ export function NewPlanDialog({
         reviewer: { ...planner, vendor: reviewerVendor },
         isolation,
         setupCommand: isolation === 'worktree' ? setupCommand : '',
+        backlogItemIds: [...selectedItems],
       }),
     )
     setBusy(false)
@@ -192,6 +230,27 @@ export function NewPlanDialog({
           <option value="worktree">In a worktree — isolated branch, landed by you</option>
         </select>
       </Field>
+
+      {backlogChoices.length ? (
+        <Field
+          label={`Backlog items (${selectedItems.size} selected, up to 12)`}
+          hint="Selected items ride the brief and flip to planned; completing the plan proposes their closure for you to confirm."
+        >
+          <div className="backlog-pick">
+            {backlogChoices.slice(0, 30).map((item) => (
+              <label className="backlog-pick__row" key={item.id}>
+                <input
+                  type="checkbox"
+                  checked={selectedItems.has(item.id)}
+                  onChange={() => toggleItem(item.id)}
+                />
+                <span className="backlog-pick__title">{item.title}</span>
+                {item.priority ? <Chip tone="chip--mono">{item.priority}</Chip> : null}
+              </label>
+            ))}
+          </div>
+        </Field>
+      ) : null}
 
       {isolation === 'worktree' ? (
         <Field

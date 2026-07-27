@@ -22,6 +22,7 @@ import {
   type Worktree,
 } from '@shared/domain'
 import { executionRefusal } from '@shared/execution'
+import { proposeBacklogClosures } from './backlog'
 import { commitMilestone, ensureWorktree, verifyWorktree } from './worktrees'
 import { occurrenceState } from '@shared/ledger'
 import {
@@ -2147,6 +2148,20 @@ export class Pipeline {
   private setStatus(planId: Id, status: WorkPlan['status']): void {
     this.repo.setPlanStatus(planId, status)
     this.emit({ type: 'plan.status', planId, status })
+    // Completion proposes closure on the backlog items this plan targeted — a
+    // proposal, never a close; the human confirms. Worktree plans wait for
+    // landing, the moment their work actually reaches the checkout.
+    if (status === 'complete') {
+      const plan = this.repo.getPlan(planId)
+      if (plan && plan.isolation !== 'worktree') {
+        proposeBacklogClosures(
+          this.repo,
+          planId,
+          `Plan “${plan.title}” completed: every milestone passed verification and independent review.`,
+          (event) => this.emit(event),
+        )
+      }
+    }
   }
 
   /**

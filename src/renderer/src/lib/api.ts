@@ -132,6 +132,12 @@ export const api = {
     bridge().invoke('backlog.reopen', { itemId }),
   setBacklogBlockedBy: (itemId: Id, blockedBy: Id[]): Promise<BacklogItem> =>
     bridge().invoke('backlog.setBlockedBy', { itemId, blockedBy }),
+  /** Confirms a stow proposal into the open backlog. */
+  confirmBacklogItem: (itemId: Id): Promise<BacklogItem> =>
+    bridge().invoke('backlog.confirm', { itemId }),
+  /** Closes a closure-proposed item — the human half of the proposal. */
+  closeBacklogItem: (itemId: Id, note = ''): Promise<BacklogItem> =>
+    bridge().invoke('backlog.close', { itemId, note }),
 
   // Plans
   createPlan: (payload: {
@@ -146,6 +152,8 @@ export const api = {
     isolation?: WorkPlan['isolation']
     /** Shell-free command run once at worktree creation (e.g. `npm ci`). */
     setupCommand?: string
+    /** Open backlog items this plan targets; they flip to planned. */
+    backlogItemIds?: Id[]
   }): Promise<PlanDetail> => bridge().invoke('plan.create', payload),
   listPlans: (): Promise<WorkPlan[]> => bridge().invoke('plan.list'),
   getPlan: (planId: Id): Promise<PlanDetail> => bridge().invoke('plan.get', { planId }),

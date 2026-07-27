@@ -1,4 +1,4 @@
-import type { Id } from '@shared/domain'
+import type { BacklogItem, Id, Learning } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import type { Repo } from '@main/store/repo'
 import { canonicalRepoPath } from '@main/util/repoPath'
@@ -130,4 +130,125 @@ export function ingestAcceptedRisk(
 function firstLineOf(text: string): string {
   const line = (text.split('\n').find((candidate) => candidate.trim()) ?? text).trim()
   return line.length > 120 ? `${line.slice(0, 119)}…` : line
+}
+
+// Brief caps: enforced by construction, not hope. The table grows uncapped;
+// the *brief* is what stays bounded, and curation is the human lever.
+const ITEM_DETAIL_CAP = 500
+const ITEMS_BLOCK_CAP = 6000
+const LEARNINGS_BLOCK_CAP = 1200
+
+/**
+ * The selected backlog items, rendered for a plan brief. Evidence is at most
+ * three path:line references and never the excerpts — the planner reads the
+ * repository, and a path that survives is worth more than a quote that may
+ * not have.
+ */
+export function renderBacklogBlock(items: BacklogItem[]): string {
+  if (!items.length) return ''
+  const lines: string[] = []
+  let used = 0
+  let omitted = 0
+  for (const item of items) {
+    const evidence = item.evidence
+      .slice(0, 3)
+      .map(
+        (entry) =>
+          `${entry.path}${entry.line ? `:${entry.line}` : ''}${entry.symbol ? ` — ${entry.symbol}` : ''}`,
+      )
+      .join(', ')
+    const detail =
+      item.detail.length > ITEM_DETAIL_CAP
+        ? `${item.detail.slice(0, ITEM_DETAIL_CAP - 1)}…`
+        : item.detail
+    const entry = [
+      `- ${item.title}${item.priority ? ` [${item.priority}]` : ''}`,
+      detail ? `  ${detail}` : '',
+      evidence ? `  Evidence: ${evidence}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n')
+    if (used + entry.length > ITEMS_BLOCK_CAP) {
+      omitted += 1
+      continue
+    }
+    used += entry.length
+    lines.push(entry)
+  }
+  if (omitted) {
+    // An honest omission line — silent truncation reads as "covered".
+    lines.push(`(${omitted} more selected item${omitted === 1 ? '' : 's'} omitted for length.)`)
+  }
+  return `THE BACKLOG ITEMS TO ADDRESS. Selected from this repository's backlog. Plan the smallest set of milestones that addresses them; one you judge not worth acting on must be named and argued, not silently dropped.\n\n${lines.join('\n\n')}`
+}
+
+/**
+ * The repo's confirmed learnings, newest-first under a hard character cap,
+ * each dated. Capped at render time on purpose: capping at write time would
+ * silently discard confirmed knowledge, whereas here the oldest simply stop
+ * riding and retirement is the deliberate act.
+ */
+export function renderLearningsBlock(learnings: Learning[]): string {
+  if (!learnings.length) return ''
+  const lines: string[] = []
+  let used = 0
+  for (const learning of learnings) {
+    const line = `- ${learning.text} (learned ${new Date(learning.createdAt).toISOString().slice(0, 10)})`
+    if (used + line.length > LEARNINGS_BLOCK_CAP) break
+    used += line.length
+    lines.push(line)
+  }
+  if (!lines.length) return ''
+  return `WHAT THIS REPOSITORY HAS TAUGHT US (curated record — trust it unless the code contradicts it):\n${lines.join('\n')}`
+}
+
+/**
+ * Completion proposes, a human closes. Idempotent by the state guard: only
+ * items still `planned` under this exact plan move, so a re-fired completion
+ * (or a landing after a completion) cannot double-propose.
+ */
+export function proposeBacklogClosures(
+  repo: Repo,
+  planId: Id,
+  note: string,
+  emit?: (event: AppEvent) => void,
+): number {
+  const plan = repo.getPlan(planId)
+  if (!plan) return 0
+  const items = repo
+    .listBacklogItems({ repoPath: plan.repoPath, states: ['planned'] })
+    .filter((item) => item.planId === planId)
+  for (const item of items) {
+    repo.transitionBacklogItem(item.id, 'closure-proposed', { source: 'pipeline', note })
+  }
+  if (items.length && emit) {
+    emit({ type: 'backlog.changed', repoPath: canonicalRepoPath(plan.repoPath) })
+  }
+  return items.length
+}
+
+/**
+ * Planning-stage death is unrecoverable (there is no re-draft), so the items
+ * it claimed return to the backlog. Execution-stage failure deliberately does
+ * NOT regress — a failed plan is retryable to complete, and detaching its
+ * items would orphan a plan that then finishes.
+ */
+export function regressPlannedItems(
+  repo: Repo,
+  planId: Id,
+  note: string,
+  emit?: (event: AppEvent) => void,
+): number {
+  const plan = repo.getPlan(planId)
+  if (!plan) return 0
+  const items = repo
+    .listBacklogItems({ repoPath: plan.repoPath, states: ['planned'] })
+    .filter((item) => item.planId === planId)
+  for (const item of items) {
+    repo.transitionBacklogItem(item.id, 'open', { source: 'pipeline', note })
+  }
+  if (items.length && emit) {
+    emit({ type: 'backlog.changed', repoPath: canonicalRepoPath(plan.repoPath) })
+  }
+  return items.length
 }

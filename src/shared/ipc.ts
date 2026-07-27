@@ -60,6 +60,8 @@ export const CreatePlanReq = z.object({
   isolation: WorktreeIsolation.default('checkout'),
   /** Shell-free command run once at worktree creation (e.g. `npm ci`). */
   setupCommand: z.string().trim().max(400).default(''),
+  /** Open backlog items this plan targets. Capped by construction. */
+  backlogItemIds: z.array(Id).max(12).default([]),
   sessionId: Id,
   kind: WorkPlanKind,
   repoPath: z.string().min(1),
@@ -165,6 +167,13 @@ export const DropBacklogItemReq = z.object({
 /** Reopens a planned or closure-proposed item; the plan edge is cleared. */
 export const ReopenBacklogItemReq = z.object({ itemId: Id })
 export const SetBacklogBlockedByReq = z.object({ itemId: Id, blockedBy: z.array(Id).max(50) })
+/** Confirms a stow proposal into the open backlog. */
+export const ConfirmBacklogItemReq = z.object({ itemId: Id })
+/** Closes a closure-proposed item — the human half of the proposal. */
+export const CloseBacklogItemReq = z.object({
+  itemId: Id,
+  note: z.string().trim().max(2000).default(''),
+})
 export const DisposeLedgerFindingReq = z.object({
   sessionId: Id,
   findingId: Id,
@@ -218,6 +227,8 @@ export const COMMANDS = {
   'backlog.drop': DropBacklogItemReq,
   'backlog.reopen': ReopenBacklogItemReq,
   'backlog.setBlockedBy': SetBacklogBlockedByReq,
+  'backlog.confirm': ConfirmBacklogItemReq,
+  'backlog.close': CloseBacklogItemReq,
   'plan.create': CreatePlanReq,
   'plan.get': GetPlanReq,
   'plan.list': null,

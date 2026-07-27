@@ -1343,3 +1343,35 @@
   align-items: stretch;
   gap: var(--s1);
 }
+
+/* ─── Backlog picker in the plan dialog ────────────────────────────────────── */
+
+.backlog-pick {
+  display: flex;
+  flex-direction: column;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--line-faint);
+  border-radius: var(--r-md);
+}
+
+.backlog-pick__row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+
+.backlog-pick__row:not(:last-child) {
+  border-bottom: 1px solid var(--line-faint);
+}
+
+.backlog-pick__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
