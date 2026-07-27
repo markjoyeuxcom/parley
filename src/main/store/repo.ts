@@ -125,7 +125,16 @@ export class Repo {
       )
 
       const plans = this.db.run(
-        `UPDATE plans SET status = 'failed' WHERE status IN ('drafting', 'auditing', 'running')`,
+        `UPDATE plans
+         SET status = CASE WHEN status = 'correcting' THEN 'blocked' ELSE 'failed' END,
+             correction_note = CASE
+               WHEN status = 'correcting' AND correction_note = '' THEN ?
+               WHEN status = 'correcting' THEN correction_note || char(10) || char(10) || ?
+               ELSE correction_note
+             END
+         WHERE status IN ('drafting', 'auditing', 'correcting', 'running')`,
+        reason,
+        reason,
       ).changes
 
       const milestones = this.db.run(

@@ -125,6 +125,19 @@ describe('reconcileInterrupted', () => {
     }
   })
 
+  it('blocks a plan interrupted while correcting instead of exposing its audited draft', () => {
+    const repo = freshRepo()
+    const { plan, milestone } = makePlanWithMilestone(repo, 'audited')
+    repo.setPlanStatus(plan.id, 'correcting')
+
+    const counts = repo.reconcileInterrupted()
+
+    expect(counts.plans).toBe(1)
+    expect(repo.getPlan(plan.id)?.status).toBe('blocked')
+    expect(repo.getPlan(plan.id)?.correctionNote).toMatch(/interrupted/i)
+    expect(repo.getMilestone(milestone.id)?.status).toBe('audited')
+  })
+
   it('leaves settled milestones alone', () => {
     for (const status of ['planned', 'audited', 'complete', 'rejected', 'failed'] as const) {
       const repo = freshRepo()

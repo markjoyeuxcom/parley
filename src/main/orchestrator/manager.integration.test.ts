@@ -7,7 +7,7 @@ import type { AppEvent } from '@shared/events'
 import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
 import { Repo } from '@main/store/repo'
-import type { Mutation } from '@shared/domain'
+import { emptyUsage, type Mutation } from '@shared/domain'
 import { Manager, RequestError } from './manager'
 
 /**
@@ -1277,6 +1277,34 @@ describe('an executor that writes nothing', () => {
 })
 
 describe('plans and the approval gate', () => {
+  async function readyPlan() {
+    const { manager, repo } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-plan-gate-'))
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'Bound the retry path',
+      project: '',
+      repoPath: null,
+      agentA: claude,
+      agentB: codex,
+      maxTurns: 2,
+    })
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+    const { plan } = await manager.createPlan({
+      sessionId: session.id,
+      kind: 'implementation',
+      repoPath,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+    })
+    await manager.whenPlanSettled(plan.id)
+    const milestone = repo.listMilestones(plan.id)[0]
+    if (!milestone) throw new Error('expected a milestone')
+    repo.updateMilestone(milestone.id, { testCommand: 'node --version' })
+    return { manager, repo, plan, milestone }
+  }
+
   it('refuses to plan from a session with no verdict', async () => {
     const { manager } = harness()
     const repoPath = mkdtempSync(join(tmpdir(), 'parley-plan-'))
@@ -1353,6 +1381,81 @@ describe('plans and the approval gate', () => {
 
     // Re-running needs a fresh approval; the spent one is refused.
     await expect(manager.runMilestone(first.id, approval.id)).rejects.toThrow()
+  })
+
+  it('does not expose audited draft milestones after an interrupted correction', async () => {
+    const { manager, repo, plan, milestone } = await readyPlan()
+    repo.setPlanStatus(plan.id, 'correcting')
+    repo.reconcileInterrupted()
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'must remain unused')
+
+    await expect(manager.runMilestone(milestone.id, approval.id)).rejects.toThrow(/status pair/i)
+    await expect(manager.adoptMilestone(milestone.id)).rejects.toThrow(/status pair/i)
+    expect(repo.getPlan(plan.id)?.status).toBe('blocked')
+    expect(repo.listApprovals().find((item) => item.id === approval.id)?.consumedAt).toBeNull()
+  })
+
+  it('blocks a plan whose audit could not run instead of offering its unaudited milestones', async () => {
+    const { manager, repo, registry } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-plan-audit-error-'))
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'Bound the retry path',
+      project: '',
+      repoPath: null,
+      agentA: claude,
+      agentB: codex,
+      maxTurns: 2,
+    })
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+
+    const auditor = registry.get('codex')
+    const originalRun = auditor.run.bind(auditor)
+    auditor.run = async (request) =>
+      request.systemPrompt.includes('audit other engineers')
+        ? {
+            text: '',
+            usage: emptyUsage(),
+            resumeId: null,
+            exitCode: 1,
+            error: 'auditor unavailable',
+          }
+        : originalRun(request)
+
+    const { plan } = await manager.createPlan({
+      sessionId: session.id,
+      kind: 'implementation',
+      repoPath,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+    })
+    await manager.whenPlanSettled(plan.id)
+    const milestone = repo.listMilestones(plan.id)[0]
+    if (!milestone) throw new Error('expected a milestone')
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'must remain unused')
+
+    expect(repo.getPlan(plan.id)?.status).toBe('blocked')
+    expect(milestone.status).toBe('planned')
+    expect(milestone.auditNote).toMatch(/execution is blocked/i)
+    await expect(manager.runMilestone(milestone.id, approval.id)).rejects.toThrow(/status pair/i)
+    expect(repo.listApprovals().find((item) => item.id === approval.id)?.consumedAt).toBeNull()
+  })
+
+  it('refuses a concurrent milestone start before spending its approval', async () => {
+    const { manager, repo, milestone } = await readyPlan()
+    const firstApproval = repo.grantApproval('milestone.execute', milestone.id, 'first start')
+    const racingApproval = repo.grantApproval('milestone.execute', milestone.id, 'racing start')
+
+    const firstRun = manager.runMilestone(milestone.id, firstApproval.id)
+    expect(repo.getMilestone(milestone.id)?.status).toBe('executing')
+
+    await expect(manager.runMilestone(milestone.id, racingApproval.id)).rejects.toThrow(
+      /already executing/i,
+    )
+    expect(repo.listApprovals().find((item) => item.id === racingApproval.id)?.consumedAt).toBeNull()
+
+    await firstRun
   })
 })
 

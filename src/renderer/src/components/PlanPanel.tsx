@@ -11,6 +11,7 @@ import type {
 import { api, type PlanDetail } from '../lib/api'
 import { formatDuration, shortPath, statusTone, verificationState } from '../lib/format'
 import { shellMetacharsIn } from '@shared/command'
+import { executionRefusal } from '@shared/execution'
 import { useStore } from '../state'
 import { AgentPicker } from './AgentPicker'
 import { Chip, Dialog, Field, Label, Panel, Spinner } from './ui'
@@ -480,7 +481,7 @@ function MilestoneRow({
 }): ReactNode {
   const tone = statusTone(milestone.status)
   const inFlight = ['executing', 'testing', 'reviewing'].includes(milestone.status)
-  const approvable = milestone.status === 'audited' || milestone.status === 'planned' || milestone.status === 'failed'
+  const approvable = executionRefusal(plan, milestone) === ''
   const [open, setOpen] = useState(!startCollapsed)
   // A milestone that starts running after it was folded away must not stay hidden.
   const expanded = open || inFlight

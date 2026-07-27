@@ -20,6 +20,7 @@ import {
   type Vendor,
   type WorkPlan,
 } from '@shared/domain'
+import { executionRefusal } from '@shared/execution'
 import {
   adoptReviewPrompt,
   auditPrompt,
@@ -219,11 +220,11 @@ export class Pipeline {
       // A failed audit must not silently become an approved plan.
       for (const m of this.repo.listMilestones(plan.id)) {
         const updated = this.repo.updateMilestone(m.id, {
-          auditNote: `The audit could not be completed: ${result.error}. Approve only with that in mind.`,
+          auditNote: `The audit could not be completed: ${result.error}. Execution is blocked until the plan can be audited.`,
         })
         this.emit({ type: 'plan.milestone', milestone: updated })
       }
-      this.setStatus(plan.id, 'ready')
+      this.setStatus(plan.id, 'blocked')
       return this.repo.listMilestones(plan.id)
     }
 
@@ -433,15 +434,11 @@ export class Pipeline {
   async runMilestone(milestoneId: Id, approvalId: Id, signal?: AbortSignal): Promise<Milestone> {
     const milestone = this.repo.getMilestone(milestoneId)
     if (!milestone) throw new PipelineError('no such milestone')
-    if (milestone.status === 'rejected') {
-      throw new PipelineError('the auditor rejected this milestone; revise the plan rather than forcing it')
-    }
-    if (milestone.status === 'complete') {
-      throw new PipelineError('this milestone has already been completed')
-    }
 
     const plan = this.repo.getPlan(milestone.planId)
     if (!plan) throw new PipelineError('the plan for this milestone is missing')
+    const refusal = executionRefusal(plan, milestone)
+    if (refusal) throw new PipelineError(refusal)
 
     // Spend the approval before anything can write. Throws if already spent.
     this.repo.consumeApproval(approvalId, 'milestone.execute', milestoneId)
@@ -926,12 +923,11 @@ export class Pipeline {
   async adoptMilestone(milestoneId: Id, signal?: AbortSignal): Promise<Milestone> {
     const milestone = this.repo.getMilestone(milestoneId)
     if (!milestone) throw new PipelineError('no such milestone')
-    if (milestone.status === 'complete') {
-      throw new PipelineError('this milestone has already been completed')
-    }
 
     const plan = this.repo.getPlan(milestone.planId)
     if (!plan) throw new PipelineError('the plan for this milestone is missing')
+    const refusal = executionRefusal(plan, milestone)
+    if (refusal) throw new PipelineError(refusal)
 
     const tree = await readTree(plan.repoPath, signal)
     if (!tree.unknown && tree.paths.length === 0) {
@@ -1972,6 +1968,10 @@ export async function withMutationApplied<T>(
   const target = join(repoPath, mutation.file)
 
   // `file` comes from a model, so it is checked rather than trusted.
+  const lexicalRelative = relative_(repoPath, target)
+  if (lexicalRelative.startsWith('..') || isAbsolute(lexicalRelative) || lexicalRelative === '') {
+    return { applied: false, reason: 'that path resolves outside the repository' }
+  }
   if (!existsSync(target)) return { applied: false, reason: 'that file does not exist' }
 
   // Resolved, not lexical. `relative()` compares strings, so a symlink that lives

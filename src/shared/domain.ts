@@ -481,6 +481,7 @@ export const WorkPlan = z.object({
     'running',
     'complete',
     'failed',
+    'blocked',
     'cancelled',
   ]),
   /** The blocking question, when `status` is `awaiting-clarification`. */

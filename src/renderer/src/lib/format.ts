@@ -86,6 +86,7 @@ export function statusTone(status: string): { tone: string; label: string } {
     case 'planned':
       return { tone: 'chip--caution', label: status }
     case 'failed':
+    case 'blocked':
     case 'killed':
     case 'cancelled':
     case 'rejected':

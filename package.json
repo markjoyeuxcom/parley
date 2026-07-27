@@ -21,6 +21,7 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
+    "verify": "npm run typecheck && npm test",
     "test:watch": "vitest",
     "rebuild": "electron-rebuild -v 43.2.0 -f -m . -o node-pty",
     "postinstall": "npm run rebuild",
