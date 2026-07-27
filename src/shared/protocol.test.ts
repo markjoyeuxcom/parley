@@ -16,7 +16,7 @@ describe('debateStages', () => {
     for (const turns of [2, 3, 4, 6, 9, 12]) {
       const stages = debateStages(turns)
       expect(stages[0]?.id, `turns=${turns}`).toBe('open')
-      expect(stages[0]?.side).toBe('a')
+      expect(stages[0]?.seat).toBe(0)
       expect(stages.at(-1)?.id, `turns=${turns}`).toBe('converge')
     }
   })
@@ -27,17 +27,17 @@ describe('debateStages', () => {
     }
   })
 
-  it('alternates sides so neither speaks twice in a row', () => {
+  it('alternates seats so nobody speaks twice in a row', () => {
     const stages = debateStages(8)
     for (let i = 1; i < stages.length; i += 1) {
-      expect(stages[i]?.side, `stage ${i}`).not.toBe(stages[i - 1]?.side)
+      expect(stages[i]?.seat, `stage ${i}`).not.toBe(stages[i - 1]?.seat)
     }
   })
 
   it('still yields a complete exchange at the minimum length', () => {
     const stages = debateStages(2)
     expect(stages.map((s) => s.id)).toEqual(['open', 'converge'])
-    expect(stages[1]?.side).toBe('b')
+    expect(stages[1]?.seat).toBe(1)
   })
 
   it('gives every stage a distinct id, since ids key the transcript', () => {
@@ -51,11 +51,11 @@ describe('reviewStages', () => {
     expect(reviewStages().map((s) => s.id)).toEqual(['map', 'audit', 'crossAudit', 'reconcile'])
   })
 
-  it('has the cross-examination come from the side that did not audit', () => {
+  it('has the cross-examination come from the seat that did not audit', () => {
     const stages = reviewStages()
     const audit = stages.find((s) => s.id === 'audit')
     const cross = stages.find((s) => s.id === 'crossAudit')
-    expect(audit?.side).not.toBe(cross?.side)
+    expect(audit?.seat).not.toBe(cross?.seat)
   })
 
   it('ignores maxTurns, because the review protocol is fixed', () => {
@@ -72,7 +72,7 @@ describe('debatePrompt', () => {
   }
 
   it('does not mention an opponent on the opening turn', () => {
-    const prompt = debatePrompt({ ...base, stage: { id: 'open', label: 'Position', side: 'a' } })
+    const prompt = debatePrompt({ ...base, stage: { id: 'open', label: 'Position', seat: 0 } })
     expect(prompt).toContain('adopt a queue?')
     expect(prompt).not.toContain('latest message')
   })
@@ -80,7 +80,7 @@ describe('debatePrompt', () => {
   it('relays only the opponent latest message, never a transcript', () => {
     const prompt = debatePrompt({
       ...base,
-      stage: { id: 'attack.1', label: 'Challenge', side: 'b' },
+      stage: { id: 'attack.1', label: 'Challenge', seat: 1 },
       opponentMessage: 'my single previous message',
     })
     expect(prompt).toContain('my single previous message')
@@ -89,7 +89,7 @@ describe('debatePrompt', () => {
   it('marks director interjections as outranking the other advisor', () => {
     const prompt = debatePrompt({
       ...base,
-      stage: { id: 'refine.1', label: 'Defence', side: 'a' },
+      stage: { id: 'refine.1', label: 'Defence', seat: 0 },
       opponentMessage: 'x',
       interjections: ['assume 10x load'],
     })
@@ -98,7 +98,7 @@ describe('debatePrompt', () => {
   })
 
   it('omits the direction block entirely when there is nothing to relay', () => {
-    const prompt = debatePrompt({ ...base, stage: { id: 'open', label: 'Position', side: 'a' } })
+    const prompt = debatePrompt({ ...base, stage: { id: 'open', label: 'Position', seat: 0 } })
     expect(prompt).not.toMatch(/HUMAN DIRECTOR/)
   })
 })

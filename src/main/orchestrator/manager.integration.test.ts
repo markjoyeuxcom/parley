@@ -92,13 +92,13 @@ describe('debate session, end to end', () => {
       'Verdict',
     ])
 
-    // Sides must alternate through the exchange.
+    // Seats must alternate through the exchange.
     const exchange = turns.slice(0, 4)
-    expect(exchange.map((t) => t.side)).toEqual(['a', 'b', 'a', 'b'])
+    expect(exchange.map((t) => t.seat)).toEqual([0, 1, 0, 1])
 
-    // Both verdict turns are present and come from opposite sides.
+    // Both verdict turns are present and come from different seats.
     const verdictTurns = turns.filter((t) => t.stage === 'Verdict')
-    expect(new Set(verdictTurns.map((t) => t.side))).toEqual(new Set(['a', 'b']))
+    expect(new Set(verdictTurns.map((t) => t.seat))).toEqual(new Set([0, 1]))
 
     const verdict = repo.getVerdict(session.id)
     expect(verdict).not.toBeNull()
@@ -131,9 +131,9 @@ describe('debate session, end to end', () => {
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
 
-    expect(repo.getResumeId(session.id, 'a')).toBeTruthy()
-    expect(repo.getResumeId(session.id, 'b')).toBeTruthy()
-    expect(repo.getResumeId(session.id, 'a')).not.toBe(repo.getResumeId(session.id, 'b'))
+    expect(repo.getResumeId(session.id, 0)).toBeTruthy()
+    expect(repo.getResumeId(session.id, 1)).toBeTruthy()
+    expect(repo.getResumeId(session.id, 0)).not.toBe(repo.getResumeId(session.id, 1))
   })
 
   it('delivers a whisper to one side only', async () => {

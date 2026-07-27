@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 import { Archive, ArchiveRestore, Hammer, Pause, Play, Plus, Send, Square, Trash2 } from 'lucide-react'
 import type { Id, InterjectionTarget, Session, Turn } from '@shared/domain'
 import { api } from '../lib/api'
-import { firstLine, formatTokens, relativeTime, shortPath, statusTone, VENDOR_LABEL } from '../lib/format'
+import { firstLine, formatTokens, relativeTime, seatLabel, seatSide, shortPath, statusTone, VENDOR_LABEL } from '../lib/format'
 import { useStore } from '../state'
 import { DeleteSessionDialog } from '../components/DeleteSessionDialog'
 import { FindingsLedgerPanel } from '../components/FindingsLedgerPanel'
@@ -411,13 +411,13 @@ function Transcript({
             const pending = !turn.endedAt && !turn.text
 
             return (
-              <div className={`turn turn--${turn.side}`} key={turn.id}>
+              <div className={`turn turn--${seatSide(turn.seat)}`} key={turn.id}>
                 <div className="turn__rail" />
                 <div className="turn__content">
                   <div className="turn__header">
                     <span className="turn__stage">{turn.stage}</span>
-                    <Chip tone={turn.side === 'a' ? 'chip--a' : 'chip--b'}>
-                      {turn.side.toUpperCase()} · {VENDOR_LABEL[turn.vendor] ?? turn.vendor}
+                    <Chip tone={seatSide(turn.seat) === 'a' ? 'chip--a' : 'chip--b'}>
+                      {seatLabel(turn.seat)} · {VENDOR_LABEL[turn.vendor] ?? turn.vendor}
                     </Chip>
                     {turn.model ? <Chip tone="chip--mono">{turn.model}</Chip> : null}
                     {!turn.endedAt ? <Spinner /> : null}

@@ -52,6 +52,14 @@ function parseJson<T>(value: unknown, fallback: T): T {
 }
 
 const str = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d)
+
+/** Reads a stored seat that may predate seats: 'a' and 'b' are 0 and 1. */
+function legacySeat(value: string): number {
+  if (value === 'a') return 0
+  if (value === 'b') return 1
+  const parsed = Number.parseInt(value, 10)
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0
+}
 const num = (v: unknown, d = 0): number => (typeof v === 'number' ? v : d)
 const nullableNum = (v: unknown): number | null => (typeof v === 'number' ? v : null)
 const nullableStr = (v: unknown): string | null => (typeof v === 'string' ? v : null)
@@ -370,13 +378,18 @@ export class Repo {
   // ─── Turns ─────────────────────────────────────────────────────────────────
 
   createTurn(turn: Turn): Turn {
+    // `side` mirrors the seat: NOT NULL in every deployed schema, and the read
+    // fallback for a database an older build opens. Seats beyond the first two
+    // have no side name and mirror as their number — unreachable until the
+    // request surface seats more, and retired with the mirror itself.
     this.db.run(
-      `INSERT INTO turns (id, session_id, idx, side, vendor, model, stage, text, usage, started_at, ended_at, error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO turns (id, session_id, idx, side, seat, vendor, model, stage, text, usage, started_at, ended_at, error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       turn.id,
       turn.sessionId,
       turn.index,
-      turn.side,
+      turn.seat === 0 ? 'a' : turn.seat === 1 ? 'b' : String(turn.seat),
+      turn.seat,
       turn.vendor,
       turn.model,
       turn.stage,
@@ -405,7 +418,14 @@ export class Repo {
       id: str(row['id']),
       sessionId: str(row['session_id']),
       index: num(row['idx']),
-      side: str(row['side']) as TurnSide,
+      // Rows older than the v12 backfill carry only the side; a and b are
+      // seats 0 and 1.
+      seat:
+        typeof row['seat'] === 'number'
+          ? row['seat']
+          : str(row['side']) === 'b'
+            ? 1
+            : 0,
       vendor: str(row['vendor']) as Turn['vendor'],
       model: str(row['model']),
       stage: str(row['stage']),
@@ -425,18 +445,22 @@ export class Repo {
 
   // ─── Vendor thread ids ─────────────────────────────────────────────────────
 
-  saveResumeId(sessionId: Id, side: TurnSide, resumeId: string): void {
+  saveResumeId(sessionId: Id, seat: number, resumeId: string): void {
     this.db.run(
-      `INSERT INTO agent_threads (session_id, side, resume_id) VALUES (?, ?, ?)
-       ON CONFLICT(session_id, side) DO UPDATE SET resume_id = excluded.resume_id`,
+      `INSERT INTO agent_threads (session_id, seat, resume_id) VALUES (?, ?, ?)
+       ON CONFLICT(session_id, seat) DO UPDATE SET resume_id = excluded.resume_id`,
       sessionId,
-      side,
+      seat,
       resumeId,
     )
   }
 
-  getResumeId(sessionId: Id, side: TurnSide): string | null {
-    const row = this.db.get(`SELECT resume_id FROM agent_threads WHERE session_id = ? AND side = ?`, sessionId, side)
+  getResumeId(sessionId: Id, seat: number): string | null {
+    const row = this.db.get(
+      `SELECT resume_id FROM agent_threads WHERE session_id = ? AND seat = ?`,
+      sessionId,
+      seat,
+    )
     return nullableStr(row?.['resume_id'])
   }
 
@@ -559,7 +583,9 @@ export class Repo {
           f.title,
           f.detail,
           json(f.evidence),
-          f.raisedBy,
+          // The column is TEXT and once held 'a'/'b'; seats write their number
+          // and the read maps the legacy names onto seats 0 and 1.
+          String(f.raisedBy),
           f.createdAt,
         )
       }
@@ -577,7 +603,7 @@ export class Repo {
         title: str(row['title']),
         detail: str(row['detail']),
         evidence: parseJson<Evidence[]>(row['evidence'], []),
-        raisedBy: str(row['raised_by']) as TurnSide,
+        raisedBy: legacySeat(str(row['raised_by'])),
         createdAt: num(row['created_at']),
       }))
   }

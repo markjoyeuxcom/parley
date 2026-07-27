@@ -136,17 +136,17 @@ describe('session bookkeeping', () => {
 })
 
 describe('resume ids', () => {
-  it('stores one vendor thread id per side and overwrites on update', () => {
+  it('stores one vendor thread id per seat and overwrites on update', () => {
     const repo = freshRepo()
     const session = makeSession(repo)
-    repo.saveResumeId(session.id, 'a', 'claude-1')
-    repo.saveResumeId(session.id, 'b', 'codex-1')
-    expect(repo.getResumeId(session.id, 'a')).toBe('claude-1')
-    expect(repo.getResumeId(session.id, 'b')).toBe('codex-1')
+    repo.saveResumeId(session.id, 0, 'claude-1')
+    repo.saveResumeId(session.id, 1, 'codex-1')
+    expect(repo.getResumeId(session.id, 0)).toBe('claude-1')
+    expect(repo.getResumeId(session.id, 1)).toBe('codex-1')
 
-    repo.saveResumeId(session.id, 'a', 'claude-2')
-    expect(repo.getResumeId(session.id, 'a')).toBe('claude-2')
-    expect(repo.getResumeId(session.id, 'b')).toBe('codex-1')
+    repo.saveResumeId(session.id, 0, 'claude-2')
+    expect(repo.getResumeId(session.id, 0)).toBe('claude-2')
+    expect(repo.getResumeId(session.id, 1)).toBe('codex-1')
   })
 })
 
@@ -362,6 +362,64 @@ describe('migrating an older database', () => {
     expect(typeof row?.['participants']).toBe('string')
   })
 
+  /**
+   * The v11 case: a database from before turns and threads spoke seats. Turns
+   * carried only a side name, and agent_threads was keyed (session_id, side).
+   */
+  function asVersion11(db: ReturnType<typeof openDatabase>): void {
+    db.exec(`ALTER TABLE turns DROP COLUMN seat`)
+    db.exec(`
+      CREATE TABLE agent_threads_sided (
+        session_id TEXT NOT NULL,
+        side       TEXT NOT NULL,
+        resume_id  TEXT NOT NULL,
+        PRIMARY KEY (session_id, side)
+      );
+    `)
+    db.exec(`
+      INSERT INTO agent_threads_sided (session_id, side, resume_id)
+      SELECT session_id, CASE seat WHEN 0 THEN 'a' ELSE 'b' END, resume_id FROM agent_threads
+    `)
+    db.exec(`DROP TABLE agent_threads`)
+    db.exec(`ALTER TABLE agent_threads_sided RENAME TO agent_threads`)
+    db.run(`UPDATE meta SET value = '11' WHERE key = 'schema_version'`)
+  }
+
+  it('seats turns and threads recorded before seats existed', async () => {
+    const db = openDatabase(':memory:')
+    const repo = new Repo(db)
+    const session = makeSession(repo, { matter: 'spoken in sides' })
+    repo.createTurn({
+      id: newId(),
+      sessionId: session.id,
+      index: 0,
+      seat: 1,
+      vendor: 'codex',
+      model: '',
+      stage: 'Challenge',
+      text: 'x',
+      usage: emptyUsage(),
+      startedAt: 1,
+      endedAt: 2,
+      error: null,
+    })
+    repo.saveResumeId(session.id, 0, 'claude-thread')
+    repo.saveResumeId(session.id, 1, 'codex-thread')
+
+    asVersion11(db)
+    const { migrate } = await import('./db')
+    expect(() => migrate(db)).not.toThrow()
+
+    const seated = new Repo(db)
+    expect(seated.listTurns(session.id)[0]?.seat).toBe(1)
+    // Backfilled as data on the row, not merely derived on read.
+    const row = db.get(`SELECT seat FROM turns WHERE session_id = ?`, session.id)
+    expect(row?.['seat']).toBe(1)
+    // The rebuilt thread table carries the resume ids across, per seat.
+    expect(seated.getResumeId(session.id, 0)).toBe('claude-thread')
+    expect(seated.getResumeId(session.id, 1)).toBe('codex-thread')
+  })
+
   it('falls back to the legacy pair when a row has no participants', () => {
     // A database an older build wrote into after this one created it: the
     // participants column exists but the row is NULL. The legacy mirror
@@ -481,12 +539,12 @@ describe('deleting a session', () => {
     const repo = freshRepo()
     const session = makeSession(repo)
     repo.addInterjection({ sessionId: session.id, target: 'both', text: 'note', atTurnIndex: 0 })
-    repo.saveResumeId(session.id, 'a', 'vendor-thread-1')
+    repo.saveResumeId(session.id, 0, 'vendor-thread-1')
 
     repo.deleteSession(session.id)
 
     expect(repo.listInterjections(session.id)).toHaveLength(0)
-    expect(repo.getResumeId(session.id, 'a')).toBeNull()
+    expect(repo.getResumeId(session.id, 0)).toBeNull()
   })
 
   it('leaves other sessions and their work untouched', () => {

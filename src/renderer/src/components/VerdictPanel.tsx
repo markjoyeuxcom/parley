@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Download } from 'lucide-react'
 import type { Finding, ScoreDimension, Verdict } from '@shared/domain'
+import { seatLabel, seatSide } from '../lib/format'
 import { Chip, Meter, Panel } from './ui'
 
 const DIMENSION_LABEL: Record<ScoreDimension, string> = {
@@ -139,8 +140,8 @@ function FindingRow({ finding }: { finding: Finding }): ReactNode {
       <div className="finding__head">
         <Chip tone={PRIORITY_TONE[finding.priority] ?? ''}>{finding.priority}</Chip>
         <div className="finding__title">{finding.title}</div>
-        <Chip tone={finding.raisedBy === 'a' ? 'chip--a' : 'chip--b'} title="Which side raised it">
-          {finding.raisedBy.toUpperCase()}
+        <Chip tone={seatSide(finding.raisedBy) === 'a' ? 'chip--a' : 'chip--b'} title="Which seat raised it">
+          {seatLabel(finding.raisedBy)}
         </Chip>
       </div>
       {finding.detail ? <div className="finding__detail">{finding.detail}</div> : null}

@@ -131,14 +131,27 @@ export const SessionStatus = z.enum([
 ])
 export type SessionStatus = z.infer<typeof SessionStatus>
 
+/**
+ * The two-sided addressing vocabulary that predates seats.
+ *
+ * Turns and threads now speak seat indices; this enum survives only as the
+ * whisper-targeting surface (`InterjectionTarget` and the per-side delivery
+ * columns), which generalises later in the Participants series. Sides a and b
+ * are seats 0 and 1.
+ */
 export const TurnSide = z.enum(['a', 'b'])
 export type TurnSide = z.infer<typeof TurnSide>
+
+/** A participant's position in the session's seating order. */
+export const Seat = z.number().int().nonnegative()
+export type Seat = z.infer<typeof Seat>
 
 export const Turn = z.object({
   id: Id,
   sessionId: Id,
   index: z.number().int().nonnegative(),
-  side: TurnSide,
+  /** Which participant spoke — an index into {@link Session.participants}. */
+  seat: Seat,
   vendor: Vendor,
   model: z.string(),
   /** The protocol stage this turn was produced under. */
@@ -229,7 +242,8 @@ export const Finding = z.object({
   detail: z.string(),
   /** A confirmed finding must carry at least one evidence entry. */
   evidence: z.array(Evidence).default([]),
-  raisedBy: TurnSide,
+  /** The seat of the participant that raised it. */
+  raisedBy: Seat,
   createdAt: Timestamp,
 })
 export type Finding = z.infer<typeof Finding>

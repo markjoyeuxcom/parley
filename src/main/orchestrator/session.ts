@@ -78,17 +78,26 @@ export class SessionRunner {
     return this.session.repoPath ?? homedir()
   }
 
-  private configFor(side: TurnSide) {
-    // Seats 0 and 1 are sides a and b — the transitional mapping while turns
-    // still speak sides. It dissolves when the runner schedules seats.
-    const seat = this.session.participants[side === 'a' ? 0 : 1]
-    if (!seat) throw new Error(`this session has no participant seated for side ${side}`)
-    return seat
+  private configFor(seat: number) {
+    const participant = this.session.participants[seat]
+    if (!participant) throw new Error(`this session has nobody in seat ${seat}`)
+    return participant
   }
 
-  private systemPromptFor(side: TurnSide): string {
-    const cfg = this.configFor(side)
-    return this.session.kind === 'review' ? reviewSystemPrompt(side, cfg) : debateSystemPrompt(side, cfg)
+  /**
+   * The whisper-targeting name for a seat.
+   *
+   * Interjection delivery still speaks the two-sided vocabulary — targets and
+   * per-side delivery columns generalise later in this series. A seat beyond
+   * the first two has no side and therefore, for now, no whisper address.
+   */
+  private whisperSideFor(seat: number): TurnSide | null {
+    return seat === 0 ? 'a' : seat === 1 ? 'b' : null
+  }
+
+  private systemPromptFor(seat: number): string {
+    const cfg = this.configFor(seat)
+    return this.session.kind === 'review' ? reviewSystemPrompt(seat, cfg) : debateSystemPrompt(seat, cfg)
   }
 
   async run(): Promise<void> {
@@ -96,14 +105,17 @@ export class SessionRunner {
     this.setStatus('running')
 
     try {
-      let lastBySide: Partial<Record<TurnSide, string>> = {}
+      const lastBySeat = new Map<number, string>()
 
       for (const [index, stage] of stages.entries()) {
         await this.gate.wait()
         if (this.gate.isStopped) return this.setStatus('cancelled')
 
-        const opponent: TurnSide = stage.side === 'a' ? 'b' : 'a'
-        const turn = await this.runTurn(stage, index, lastBySide[opponent] ?? null)
+        // The schedule is still two-seat, so the counterparty is the other of
+        // seats 0 and 1. The role-selector redesign replaces this with "the
+        // stage's declared inputs" — until then a parley has one opponent.
+        const opponent = stage.seat === 0 ? 1 : 0
+        const turn = await this.runTurn(stage, index, lastBySeat.get(opponent) ?? null)
 
         if (turn.error) {
           // A missing turn corrupts the record this tool exists to produce, so
@@ -112,7 +124,7 @@ export class SessionRunner {
           this.setStatus('failed', turn.error)
           return
         }
-        lastBySide = { ...lastBySide, [stage.side]: turn.text }
+        lastBySeat.set(stage.seat, turn.text)
       }
 
       await this.gate.wait()
@@ -134,11 +146,14 @@ export class SessionRunner {
   }
 
   private async runTurn(stage: StageSpec, index: number, opponentMessage: string | null): Promise<Turn> {
-    const side = stage.side
-    const cfg = this.configFor(side)
+    const seat = stage.seat
+    const cfg = this.configFor(seat)
     const adapter = this.registry.get(cfg.vendor)
 
-    const interjections = this.repo.takeInterjections(this.session.id, side).map((i) => i.text)
+    const whisperSide = this.whisperSideFor(seat)
+    const interjections = whisperSide
+      ? this.repo.takeInterjections(this.session.id, whisperSide).map((i) => i.text)
+      : []
 
     const promptInput = {
       stage,
@@ -154,7 +169,7 @@ export class SessionRunner {
       id: newId(),
       sessionId: this.session.id,
       index,
-      side,
+      seat,
       vendor: cfg.vendor,
       model: cfg.model,
       stage: stage.label,
@@ -168,12 +183,12 @@ export class SessionRunner {
     this.emit({ type: 'session.turn.started', turn })
 
     const result = await adapter.run({
-      systemPrompt: this.systemPromptFor(side),
+      systemPrompt: this.systemPromptFor(seat),
       prompt,
       cfg,
       capability: this.capability(),
       cwd: this.cwd(),
-      resumeId: this.repo.getResumeId(this.session.id, side),
+      resumeId: this.repo.getResumeId(this.session.id, seat),
       signal: this.gate.signal,
       timeoutMs: TURN_TIMEOUT_MS,
       onDelta: (text) =>
@@ -186,7 +201,7 @@ export class SessionRunner {
     turn.error = result.error
 
     this.repo.finishTurn(turn)
-    if (result.resumeId) this.repo.saveResumeId(this.session.id, side, result.resumeId)
+    if (result.resumeId) this.repo.saveResumeId(this.session.id, seat, result.resumeId)
 
     const usage = this.repo.addSessionUsage(this.session.id, result.usage)
     this.session = { ...this.session, usage }
@@ -208,15 +223,15 @@ export class SessionRunner {
   private async recordVerdict(startIndex: number): Promise<boolean> {
     const prompt = verdictPrompt(this.session.matter, this.session.kind)
 
-    const ask = async (side: TurnSide, index: number): Promise<{ side: TurnSide; text: string }> => {
-      const cfg = this.configFor(side)
+    const ask = async (seat: number, index: number): Promise<{ seat: number; text: string }> => {
+      const cfg = this.configFor(seat)
       const adapter = this.registry.get(cfg.vendor)
 
       const turn: Turn = {
         id: newId(),
         sessionId: this.session.id,
         index,
-        side,
+        seat,
         vendor: cfg.vendor,
         model: cfg.model,
         stage: 'Verdict',
@@ -230,12 +245,12 @@ export class SessionRunner {
       this.emit({ type: 'session.turn.started', turn })
 
       const result = await adapter.run({
-        systemPrompt: this.systemPromptFor(side),
+        systemPrompt: this.systemPromptFor(seat),
         prompt,
         cfg,
         capability: this.capability(),
         cwd: this.cwd(),
-        resumeId: this.repo.getResumeId(this.session.id, side),
+        resumeId: this.repo.getResumeId(this.session.id, seat),
         signal: this.gate.signal,
         timeoutMs: TURN_TIMEOUT_MS,
         onDelta: (text) =>
@@ -247,17 +262,19 @@ export class SessionRunner {
       turn.endedAt = Date.now()
       turn.error = result.error
       this.repo.finishTurn(turn)
-      if (result.resumeId) this.repo.saveResumeId(this.session.id, side, result.resumeId)
+      if (result.resumeId) this.repo.saveResumeId(this.session.id, seat, result.resumeId)
 
       const usage = this.repo.addSessionUsage(this.session.id, result.usage)
       this.session = { ...this.session, usage }
       this.emit({ type: 'session.turn.ended', turn })
       this.emit({ type: 'session.usage', sessionId: this.session.id, usage })
 
-      return { side, text: result.text }
+      return { seat, text: result.text }
     }
 
-    const [a, b] = await Promise.all([ask('a', startIndex), ask('b', startIndex + 1)])
+    // Still the two seats the schedule knows. The closing-sequence redesign
+    // asks every seat, concurrently, and merges however many come back.
+    const [a, b] = await Promise.all([ask(0, startIndex), ask(1, startIndex + 1)])
 
     const sideA: SideVerdict | null = parseSideVerdict(a.text)
     const sideB: SideVerdict | null = parseSideVerdict(b.text)
@@ -298,7 +315,7 @@ export class SessionRunner {
     for (const stageName of ['Reconciliation', 'Cross-examination', 'Independent audit']) {
       const turn = [...turns].reverse().find((t) => t.stage === stageName && !t.error)
       if (!turn) continue
-      const parsed = parseFindings(turn.text, this.session.id, turn.side)
+      const parsed = parseFindings(turn.text, this.session.id, turn.seat)
       if (parsed.length) return parsed
     }
     return []

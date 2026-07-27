@@ -196,7 +196,7 @@ describe('reconcileInterrupted', () => {
       id: newId(),
       sessionId: session.id,
       index: 0,
-      side: 'a',
+      seat: 0,
       vendor: 'claude',
       model: '',
       stage: 'Position',

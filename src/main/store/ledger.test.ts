@@ -251,7 +251,7 @@ describe('finding ledger session deletion', () => {
         title: 'Verdict finding',
         detail: 'A finding recorded with the verdict.',
         evidence: [{ path: 'src/example.ts', line: 1, symbol: '', excerpt: '' }],
-        raisedBy: 'a',
+        raisedBy: 0,
         createdAt: 2,
       },
     ])

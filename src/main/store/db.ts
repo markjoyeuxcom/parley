@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 11
+export const SCHEMA_VERSION = 12
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -65,7 +65,11 @@ CREATE TABLE IF NOT EXISTS turns (
   id         TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   idx        INTEGER NOT NULL,
+  -- The legacy side name, mirrored from the seat: NOT NULL in every deployed
+  -- schema and the read fallback for a database an older build opens.
   side       TEXT NOT NULL,
+  -- Which participant spoke, as an index into the session's seating order.
+  seat       INTEGER,
   vendor     TEXT NOT NULL,
   model      TEXT NOT NULL DEFAULT '',
   stage      TEXT NOT NULL,
@@ -82,9 +86,9 @@ CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, idx);
 -- token cost linear in turn count.
 CREATE TABLE IF NOT EXISTS agent_threads (
   session_id TEXT NOT NULL,
-  side       TEXT NOT NULL,
+  seat       INTEGER NOT NULL,
   resume_id  TEXT NOT NULL,
-  PRIMARY KEY (session_id, side)
+  PRIMARY KEY (session_id, seat)
 );
 
 -- Delivery is tracked per side, not once per row. A 'both' interjection has to
@@ -520,6 +524,48 @@ export function migrate(db: Db): void {
          SET participants = '[' || agent_a || ',' || agent_b || ']'
          WHERE participants IS NULL`,
       )
+    })
+  }
+  if (current < 12) {
+    // Turns and threads speak seats. Turns gain the seat column beside the
+    // mirrored side name; agent_threads is rebuilt outright because its
+    // primary key changes from (session_id, side) to (session_id, seat), and
+    // SQLite cannot alter a primary key in place. Thread rows are transient
+    // resume handles, but they are cheap to carry across, so they are.
+    db.transaction(() => {
+      try {
+        db.exec(`ALTER TABLE turns ADD COLUMN seat INTEGER`)
+      } catch {
+        // Already present, because SCHEMA above created the table fresh.
+      }
+      db.exec(
+        `UPDATE turns
+         SET seat = CASE side WHEN 'a' THEN 0 WHEN 'b' THEN 1 ELSE CAST(side AS INTEGER) END
+         WHERE seat IS NULL`,
+      )
+
+      const legacyThreads = db.get(
+        `SELECT name FROM pragma_table_info('agent_threads') WHERE name = 'side'`,
+      )
+      if (legacyThreads) {
+        db.exec(`
+          CREATE TABLE agent_threads_seated (
+            session_id TEXT NOT NULL,
+            seat       INTEGER NOT NULL,
+            resume_id  TEXT NOT NULL,
+            PRIMARY KEY (session_id, seat)
+          );
+        `)
+        db.exec(`
+          INSERT INTO agent_threads_seated (session_id, seat, resume_id)
+          SELECT session_id,
+                 CASE side WHEN 'a' THEN 0 WHEN 'b' THEN 1 ELSE CAST(side AS INTEGER) END,
+                 resume_id
+          FROM agent_threads
+        `)
+        db.exec(`DROP TABLE agent_threads`)
+        db.exec(`ALTER TABLE agent_threads_seated RENAME TO agent_threads`)
+      }
     })
   }
   db.run(

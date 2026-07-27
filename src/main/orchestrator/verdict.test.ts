@@ -154,43 +154,43 @@ describe('parseFindings', () => {
       '```',
     ].join('\n')
 
-    const findings = parseFindings(text, 'session-1', 'b')
+    const findings = parseFindings(text, 'session-1', 1)
     expect(findings).toHaveLength(1)
     expect(findings[0]?.priority).toBe('P1')
     expect(findings[0]?.status).toBe('confirmed')
     expect(findings[0]?.evidence[0]?.line).toBe(88)
-    expect(findings[0]?.raisedBy).toBe('b')
+    expect(findings[0]?.raisedBy).toBe(1)
   })
 
   it('downgrades a confirmed finding that carries no evidence', () => {
     // An agent asserting a bug it cannot point at is exactly what the review
     // protocol exists to catch, so the claim is not taken on trust.
     const text = '```json\n{"findings":[{"title":"Race condition","status":"confirmed","evidence":[]}]}\n```'
-    const findings = parseFindings(text, 's', 'a')
+    const findings = parseFindings(text, 's', 0)
     expect(findings[0]?.status).toBe('unsupported')
   })
 
   it('keeps a dismissed finding, because the record of what was cleared matters', () => {
     const text = '```json\n{"findings":[{"title":"Not actually a leak","status":"dismissed","evidence":[]}]}\n```'
-    expect(parseFindings(text, 's', 'a')[0]?.status).toBe('dismissed')
+    expect(parseFindings(text, 's', 0)[0]?.status).toBe('dismissed')
   })
 
   it('defaults an unknown priority to the lowest rather than the highest', () => {
     const text = '```json\n{"findings":[{"title":"x","priority":"URGENT","status":"unsupported"}]}\n```'
-    expect(parseFindings(text, 's', 'a')[0]?.priority).toBe('P3')
+    expect(parseFindings(text, 's', 0)[0]?.priority).toBe('P3')
   })
 
   it('drops entries with no title and evidence entries with no path', () => {
     const text =
       '```json\n{"findings":[{"detail":"no title"},{"title":"ok","evidence":[{"line":3},{"path":"a.ts"}]}]}\n```'
-    const findings = parseFindings(text, 's', 'a')
+    const findings = parseFindings(text, 's', 0)
     expect(findings).toHaveLength(1)
     expect(findings[0]?.evidence).toHaveLength(1)
     expect(findings[0]?.evidence[0]?.path).toBe('a.ts')
   })
 
   it('returns nothing for malformed or absent blocks', () => {
-    expect(parseFindings('prose only', 's', 'a')).toEqual([])
-    expect(parseFindings('```json\n{"findings":"not an array"}\n```', 's', 'a')).toEqual([])
+    expect(parseFindings('prose only', 's', 0)).toEqual([])
+    expect(parseFindings('```json\n{"findings":"not an array"}\n```', 's', 0)).toEqual([])
   })
 })

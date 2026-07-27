@@ -21,7 +21,8 @@ export interface StageSpec {
   id: string
   /** Shown in the UI next to the turn. */
   label: string
-  side: 'a' | 'b'
+  /** Which participant speaks — an index into the session's seating order. */
+  seat: number
 }
 
 /**
@@ -29,21 +30,26 @@ export interface StageSpec {
  *
  * `maxTurns` trims the middle — the opening and the convergence turn are always
  * present, so a 2-turn debate is still a complete (if shallow) exchange.
+ *
+ * Still a two-seat schedule on purpose: the attack/refine shape has no meaning
+ * for a third seat until the closing sequence is redesigned around roles, which
+ * is that milestone's work, not this one's. Seats 0 and 1 are the old sides a
+ * and b.
  */
 export function debateStages(maxTurns: number): StageSpec[] {
-  const stages: StageSpec[] = [{ id: 'open', label: 'Position', side: 'a' }]
-  let side: 'a' | 'b' = 'b'
+  const stages: StageSpec[] = [{ id: 'open', label: 'Position', seat: 0 }]
+  let seat = 1
   let round = 1
   while (stages.length < maxTurns - 1) {
     stages.push(
-      side === 'b'
-        ? { id: `attack.${round}`, label: round === 1 ? 'Challenge' : `Challenge ${round}`, side: 'b' }
-        : { id: `refine.${round}`, label: round === 1 ? 'Defence' : `Defence ${round}`, side: 'a' },
+      seat === 1
+        ? { id: `attack.${round}`, label: round === 1 ? 'Challenge' : `Challenge ${round}`, seat: 1 }
+        : { id: `refine.${round}`, label: round === 1 ? 'Defence' : `Defence ${round}`, seat: 0 },
     )
-    if (side === 'a') round += 1
-    side = side === 'a' ? 'b' : 'a'
+    if (seat === 0) round += 1
+    seat = seat === 0 ? 1 : 0
   }
-  stages.push({ id: 'converge', label: 'Convergence', side })
+  stages.push({ id: 'converge', label: 'Convergence', seat })
   return stages
 }
 
@@ -54,10 +60,10 @@ export function debateStages(maxTurns: number): StageSpec[] {
  */
 export function reviewStages(): StageSpec[] {
   return [
-    { id: 'map', label: 'Architecture map', side: 'a' },
-    { id: 'audit', label: 'Independent audit', side: 'b' },
-    { id: 'crossAudit', label: 'Cross-examination', side: 'a' },
-    { id: 'reconcile', label: 'Reconciliation', side: 'b' },
+    { id: 'map', label: 'Architecture map', seat: 0 },
+    { id: 'audit', label: 'Independent audit', seat: 1 },
+    { id: 'crossAudit', label: 'Cross-examination', seat: 0 },
+    { id: 'reconcile', label: 'Reconciliation', seat: 1 },
   ]
 }
 
@@ -69,9 +75,10 @@ export function stagesFor(kind: SessionKind, maxTurns: number): StageSpec[] {
 
 const NO_FLATTERY = `Do not open with praise, restatement of the question, or meta-commentary about the exercise. Start with substance. Never describe your own output as thorough, comprehensive, or careful — let it be judged on content.`
 
-export function debateSystemPrompt(role: 'a' | 'b', cfg: AgentConfig): string {
+/** Stances are positional until the role-selector redesign: seat 0 affirms. */
+export function debateSystemPrompt(seat: number, cfg: AgentConfig): string {
   const stance =
-    role === 'a'
+    seat === 0
       ? `You argue the affirmative. Take a clear, falsifiable position and defend it honestly. When the other side lands a real hit, concede that specific point explicitly and adjust — do not defend an indefensible detail to protect the whole.`
       : `You argue the negative. Your job is to find the strongest available objection, not the easiest one. Attack the load-bearing assumption, not the phrasing. If the position is substantially correct, say so and narrow your objection to what genuinely fails — a manufactured disagreement wastes the exercise.`
 
@@ -86,9 +93,10 @@ export function debateSystemPrompt(role: 'a' | 'b', cfg: AgentConfig): string {
     .join('\n\n')
 }
 
-export function reviewSystemPrompt(role: 'a' | 'b', cfg: AgentConfig): string {
+/** Roles are positional until the role-selector redesign: seat 0 maps. */
+export function reviewSystemPrompt(seat: number, cfg: AgentConfig): string {
   const stance =
-    role === 'a'
+    seat === 0
       ? `You are the Codebase Cartographer. You map structure and data flow, then later cross-examine the reviewer's findings against the actual code. You are the check on false positives: a finding you cannot corroborate by reading the referenced file must be marked unsupported, however plausible it sounds.`
       : `You are the Principal Reviewer. You find defects that will actually bite: correctness bugs, unhandled failure modes, security exposure, race conditions, missing verification. Rank by consequence, not by how easy the fix is. Style opinions are out of scope.`
 

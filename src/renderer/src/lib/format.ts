@@ -60,6 +60,22 @@ export function firstLine(text: string, max = 90): string {
   return candidate.length > max ? `${candidate.slice(0, max - 1).trimEnd()}…` : candidate
 }
 
+/**
+ * The side skin a seat wears.
+ *
+ * Seats 0 and 1 are the classic a/b colour pair; later seats reuse it by
+ * parity until the surface learns to seat more than two, later in the
+ * Participants series.
+ */
+export function seatSide(seat: number): 'a' | 'b' {
+  return seat % 2 === 0 ? 'a' : 'b'
+}
+
+/** The short speaker label for a seat: A, B, then numbers. */
+export function seatLabel(seat: number): string {
+  return seat === 0 ? 'A' : seat === 1 ? 'B' : `S${seat + 1}`
+}
+
 export const VENDOR_LABEL: Record<string, string> = {
   claude: 'Claude',
   codex: 'Codex',

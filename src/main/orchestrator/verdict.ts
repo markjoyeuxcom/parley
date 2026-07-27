@@ -8,7 +8,6 @@ import {
   type ScoreDimension,
   type Session,
   type Turn,
-  type TurnSide,
   type Verdict,
 } from '@shared/domain'
 import { newId } from '@main/store/repo'
@@ -154,7 +153,7 @@ const STATUSES: FindingStatus[] = ['confirmed', 'dismissed', 'unsupported']
  * `unsupported`. An agent asserting a bug it cannot point at is the exact
  * failure this review protocol exists to catch, so it is not taken on trust.
  */
-export function parseFindings(text: string, sessionId: Id, raisedBy: TurnSide): Finding[] {
+export function parseFindings(text: string, sessionId: Id, raisedBy: number): Finding[] {
   const { data } = extractJson<Record<string, unknown>>(text)
   if (!data) return []
   const raw = data['findings']
@@ -350,7 +349,10 @@ export function renderReport(
   lines.push('## Exchange')
   lines.push('')
   for (const turn of turns) {
-    const who = `${turn.side.toUpperCase()} · ${turn.vendor}${turn.model ? ` (${turn.model})` : ''}`
+    // Seats 0 and 1 read as the sides they were; later seats read as numbers
+    // until the report learns the role vocabulary.
+    const speaker = turn.seat === 0 ? 'A' : turn.seat === 1 ? 'B' : `Seat ${turn.seat + 1}`
+    const who = `${speaker} · ${turn.vendor}${turn.model ? ` (${turn.model})` : ''}`
     lines.push(`### ${turn.stage} — ${who}`)
     lines.push('')
     lines.push(turn.error ? `_Turn failed: ${turn.error}_` : turn.text || '_no output_')
