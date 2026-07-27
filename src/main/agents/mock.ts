@@ -96,6 +96,7 @@ export class MockAdapter implements AgentAdapter {
    */
   private reply(req: RunRequest, n: number): string {
     const p = req.prompt
+    const correcting = req.systemPrompt.includes('correcting your own plan')
 
     if (req.systemPrompt.includes('audit other engineers') && req.cwd.includes('AUDIT_UNREADABLE')) {
       return `I inspected the plan, but this reply contains no structured audit.`
@@ -135,7 +136,12 @@ export class MockAdapter implements AgentAdapter {
 
     // A brief containing this sentinel makes the planner block on a question
     // once, so the clarification round-trip is exercisable.
-    if (p.includes('"clarification"') && p.includes('ASK_ME') && !p.includes('HAS ANSWERED')) {
+    if (
+      p.includes('"clarification"') &&
+      p.includes('ASK_ME') &&
+      !p.includes('HAS ANSWERED') &&
+      (!req.cwd.includes('ASK_ME') || correcting)
+    ) {
       return [
         `I cannot settle this without you.`,
         '```json',
@@ -153,16 +159,22 @@ export class MockAdapter implements AgentAdapter {
 
     // The correction contract asks for dispositions *and* milestones together,
     // so it must be matched before the plan-only case below.
-    if (p.includes('"dispositions"') && p.includes('"milestones"')) {
+    if (correcting && p.includes('"dispositions"') && p.includes('"milestones"')) {
+      if (req.cwd.includes('CORRECTION_UNREADABLE')) {
+        return `I reconsidered the plan, but this reply contains no structured correction.`
+      }
+      const dispositions = req.cwd.includes('NO_DISPOSITIONS')
+        ? []
+        : [
+            { finding: 'The named test file does not exist yet', disposition: 'accepted', note: 'Created by milestone 2 now.' },
+            { finding: 'Milestone ordering', disposition: 'rejected', note: 'The cap must land before the test that asserts it.' },
+          ]
       return [
         `Answered the audit and reissued the plan.`,
         '```json',
         JSON.stringify(
           {
-            dispositions: [
-              { finding: 'The named test file does not exist yet', disposition: 'accepted', note: 'Created by milestone 2 now.' },
-              { finding: 'Milestone ordering', disposition: 'rejected', note: 'The cap must land before the test that asserts it.' },
-            ],
+            dispositions,
             title: 'Bound the retry path',
             milestones: [
               {

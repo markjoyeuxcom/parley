@@ -873,8 +873,13 @@ describe('adopting work that is already in the tree', () => {
 })
 
 describe('the planner answers its own audit', () => {
-  async function planIn(repoPath: string, brief = 'x') {
-    const { manager, repo, events } = harness()
+  async function planIn(
+    repoPath: string,
+    brief = 'x',
+    configure?: (registry: AgentRegistry) => void,
+  ) {
+    const { manager, repo, events, registry } = harness()
+    configure?.(registry)
     const session = manager.startSession({
       kind: 'debate',
       matter: brief,
@@ -898,6 +903,7 @@ describe('the planner answers its own audit', () => {
       manager,
       repo,
       events,
+      registry,
       plan: repo.getPlan(detail.plan.id) ?? detail.plan,
       milestones: repo.listMilestones(detail.plan.id),
     }
@@ -925,6 +931,147 @@ describe('the planner answers its own audit', () => {
   it('reaches ready, so the plan is approvable', async () => {
     const { repo, plan } = await planIn(mkdtempSync(join(tmpdir(), 'parley-correct3-')))
     expect(repo.getPlan(plan.id)?.status).toBe('ready')
+  })
+
+  it('blocks when the planner adapter cannot answer the audit', async () => {
+    const { repo, plan, milestones } = await planIn(
+      mkdtempSync(join(tmpdir(), 'parley-correction-error-')),
+      'x',
+      (registry) => {
+        const planner = registry.get('claude')
+        const originalRun = planner.run.bind(planner)
+        planner.run = async (request) =>
+          request.systemPrompt.includes('correcting your own plan')
+            ? {
+                text: '',
+                usage: emptyUsage(),
+                resumeId: null,
+                exitCode: 1,
+                error: 'mock correction failure',
+              }
+            : originalRun(request)
+      },
+    )
+    const stored = repo.getPlan(plan.id)
+
+    expect(stored?.status).toBe('blocked')
+    expect(stored?.correctionNote).toMatch(/audited the plan and judged it/i)
+    expect(stored?.correctionNote).toMatch(/mock correction failure/i)
+    expect(milestones).toHaveLength(2)
+  })
+
+  it('blocks when the planner reply is not a usable correction', async () => {
+    const { repo, plan, milestones } = await planIn(
+      mkdtempSync(join(tmpdir(), 'parley-CORRECTION_UNREADABLE-')),
+    )
+    const stored = repo.getPlan(plan.id)
+
+    expect(stored?.status).toBe('blocked')
+    expect(stored?.correctionNote).toMatch(/audited the plan and judged it/i)
+    expect(stored?.correctionNote).toMatch(/did not return a usable corrected plan/i)
+    expect(milestones).toHaveLength(2)
+  })
+
+  it('blocks when audit findings receive no dispositions', async () => {
+    const { repo, plan, milestones } = await planIn(
+      mkdtempSync(join(tmpdir(), 'parley-NO_DISPOSITIONS-')),
+    )
+    const stored = repo.getPlan(plan.id)
+
+    expect(stored?.status).toBe('blocked')
+    expect(stored?.correctionNote).toMatch(/recorded no disposition/i)
+    expect(milestones).toHaveLength(2)
+  })
+
+  it.each([
+    {
+      name: 'no findings',
+      dispositions: [],
+      blockingConcerns: [],
+      expectedStatus: 'ready',
+    },
+    {
+      name: 'only an accepted disposition',
+      dispositions: [{ milestone: 0, disposition: 'accept', note: 'No change needed.' }],
+      blockingConcerns: [],
+      expectedStatus: 'ready',
+    },
+    {
+      name: 'a rejected disposition',
+      dispositions: [{ milestone: 0, disposition: 'reject', note: 'The approach is unsafe.' }],
+      blockingConcerns: [],
+      expectedStatus: 'blocked',
+    },
+    {
+      name: 'a blocking concern',
+      dispositions: [],
+      blockingConcerns: ['The rollback path is missing.'],
+      expectedStatus: 'blocked',
+    },
+  ])(
+    'treats a disposition-free correction correctly after an audit with $name',
+    async ({ name, dispositions, blockingConcerns, expectedStatus }) => {
+      const auditText = [
+        '```json',
+        JSON.stringify({ verdict: 'sound', dispositions, blockingConcerns }),
+        '```',
+      ].join('\n')
+      const { repo, plan, milestones } = await planIn(
+        mkdtempSync(join(tmpdir(), `parley-NO_DISPOSITIONS-${name.replaceAll(' ', '-')}-`)),
+        'x',
+        (registry) => {
+          const auditor = registry.get('codex')
+          const originalRun = auditor.run.bind(auditor)
+          auditor.run = async (request) =>
+            request.systemPrompt.includes('audit other engineers')
+              ? {
+                  text: auditText,
+                  usage: emptyUsage(),
+                  resumeId: 'controlled-audit',
+                  exitCode: 0,
+                  error: null,
+                }
+              : originalRun(request)
+        },
+      )
+      const stored = repo.getPlan(plan.id)
+
+      expect(stored?.status).toBe(expectedStatus)
+      expect(milestones).toHaveLength(expectedStatus === 'ready' ? 1 : 2)
+    },
+  )
+
+  it('keeps the audit summary when a correction question is resumed', async () => {
+    const { manager, repo, plan, milestones } = await planIn(
+      mkdtempSync(join(tmpdir(), 'parley-correction-ASK_ME-')),
+    )
+    const parked = repo.getPlan(plan.id)
+
+    expect(parked?.status).toBe('awaiting-clarification')
+    expect(parked?.correctionNote).toMatch(/audited the plan and judged it/i)
+    expect(milestones).toHaveLength(2)
+
+    const resumed = await manager.answerPlan(plan.id, 'Apply the cap per host.')
+    const note = repo.getPlan(plan.id)?.correctionNote ?? ''
+
+    expect(resumed.plan.status).toBe('ready')
+    expect(resumed.milestones).toHaveLength(1)
+    expect(note).toMatch(/audited the plan and judged it/i)
+    expect(note).toMatch(/The planner answered the audit/i)
+  })
+
+  it('keeps the audit finding count when a correction question is resumed', async () => {
+    const { manager, repo, plan } = await planIn(
+      mkdtempSync(join(tmpdir(), 'parley-correction-ASK_ME-NO_DISPOSITIONS-')),
+    )
+
+    expect(repo.getPlan(plan.id)?.status).toBe('awaiting-clarification')
+
+    const resumed = await manager.answerPlan(plan.id, 'Apply the cap per host.')
+
+    expect(resumed.plan.status).toBe('blocked')
+    expect(repo.getPlan(plan.id)?.correctionNote).toMatch(/recorded no disposition/i)
+    expect(resumed.milestones).toHaveLength(2)
   })
 })
 

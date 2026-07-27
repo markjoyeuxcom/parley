@@ -61,6 +61,8 @@ type PendingStage =
       auditText: string
       auditorVendor: Vendor
       plannerResumeId: string | null
+      auditSummary: string
+      auditFindingCount: number
     }
 
 /** Result of one verify-and-review pass. */
@@ -137,6 +139,8 @@ export class Pipeline {
         auditText: pending.auditText,
         auditorVendor: pending.auditorVendor,
         plannerResumeId: pending.plannerResumeId,
+        auditSummary: pending.auditSummary,
+        auditFindingCount: pending.auditFindingCount,
         answer,
       },
       signal,
@@ -241,11 +245,22 @@ export class Pipeline {
     const auditSummary = [alignmentNote, summariseAudit(auditorVendor, audit)]
       .filter(Boolean)
       .join('\n\n')
+    const auditFindingCount = audit
+      ? audit.dispositions.filter((item) => item.disposition !== 'accept').length +
+        audit.blockingConcerns.length
+      : 0
     this.repo.setPlanCorrectionNote(plan.id, auditSummary)
 
     return this.runCorrection(
       plan,
-      { planText, auditText: result.text, auditorVendor, plannerResumeId, auditSummary },
+      {
+        planText,
+        auditText: result.text,
+        auditorVendor,
+        plannerResumeId,
+        auditSummary,
+        auditFindingCount,
+      },
       signal,
     )
   }
@@ -272,7 +287,8 @@ export class Pipeline {
       auditText: string
       auditorVendor: Vendor
       plannerResumeId: string | null
-      auditSummary?: string
+      auditSummary: string
+      auditFindingCount: number
       answer?: string
     },
     signal?: AbortSignal,
@@ -300,18 +316,11 @@ export class Pipeline {
     this.repo.addPlanUsage(plan.id, result.usage)
 
     if (result.error) {
-      // The audited plan still stands; it simply was not amended.
-      this.repo.setPlanCorrectionNote(
-        plan.id,
-        [
-          input.auditSummary,
-          `The planner could not answer the audit: ${result.error}. The plan below is the original draft, with the audit findings unaddressed.`,
-        ]
-          .filter(Boolean)
-          .join('\n\n'),
+      return this.parkUnansweredCorrection(
+        plan,
+        input.auditSummary,
+        `The planner could not answer the audit: ${result.error}. The plan below is the original draft, with the audit findings unaddressed.`,
       )
-      this.setStatus(plan.id, 'ready')
-      return this.repo.listMilestones(plan.id)
     }
 
     const question = parseClarification(result.text)
@@ -322,23 +331,27 @@ export class Pipeline {
         auditText: input.auditText,
         auditorVendor: input.auditorVendor,
         plannerResumeId: result.resumeId ?? input.plannerResumeId,
+        auditSummary: input.auditSummary,
+        auditFindingCount: input.auditFindingCount,
       })
       return []
     }
 
     const corrected = parseCorrection(result.text)
     if (!corrected || corrected.milestones.length === 0) {
-      this.repo.setPlanCorrectionNote(
-        plan.id,
-        [
-          input.auditSummary,
-          'The planner did not return a usable corrected plan, so the original draft stands with the audit findings unaddressed.',
-        ]
-          .filter(Boolean)
-          .join('\n\n'),
+      return this.parkUnansweredCorrection(
+        plan,
+        input.auditSummary,
+        'The planner did not return a usable corrected plan, so the original draft stands with the audit findings unaddressed.',
       )
-      this.setStatus(plan.id, 'ready')
-      return this.repo.listMilestones(plan.id)
+    }
+
+    if (corrected.dispositions.length === 0 && input.auditFindingCount > 0) {
+      return this.parkUnansweredCorrection(
+        plan,
+        input.auditSummary,
+        renderDispositions(corrected.dispositions),
+      )
     }
 
     // Both halves of the exchange, because the corrected milestones replace the
@@ -346,7 +359,14 @@ export class Pipeline {
     this.repo.setPlanCorrectionDispositions(plan.id, corrected.dispositions)
     this.repo.setPlanCorrectionNote(
       plan.id,
-      [input.auditSummary, renderDispositions(corrected.dispositions)].filter(Boolean).join('\n\n'),
+      [
+        input.auditSummary,
+        corrected.dispositions.length
+          ? renderDispositions(corrected.dispositions)
+          : 'The audit raised no findings requiring a disposition.',
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
     )
     if (corrected.title) this.repo.setPlanTitle(plan.id, corrected.title)
 
@@ -356,6 +376,19 @@ export class Pipeline {
     this.writeMilestones(plan.id, corrected, 'audited')
 
     this.setStatus(plan.id, 'ready')
+    return this.repo.listMilestones(plan.id)
+  }
+
+  private parkUnansweredCorrection(
+    plan: WorkPlan,
+    auditSummary: string,
+    correctionNote: string,
+  ): Milestone[] {
+    this.repo.setPlanCorrectionNote(
+      plan.id,
+      [auditSummary, correctionNote].filter(Boolean).join('\n\n'),
+    )
+    this.setStatus(plan.id, 'blocked')
     return this.repo.listMilestones(plan.id)
   }
 
