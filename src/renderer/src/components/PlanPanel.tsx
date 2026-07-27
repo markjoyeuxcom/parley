@@ -242,7 +242,19 @@ export function PlanPanel({
   const [pendingApproval, setPendingApproval] = useState<Milestone | null>(null)
   const [granting, setGranting] = useState(false)
   const [landing, setLanding] = useState(false)
-  const { attempt, notify } = useStore()
+  const { attempt, notify, state, dispatch } = useStore()
+
+  // The holds queue's deep link: a jump that names one of this plan's
+  // milestones opens its approval dialog directly. Consumed exactly once —
+  // cleared only when this panel actually owns the milestone, so a knock for
+  // another plan is left standing for that plan to answer.
+  useEffect(() => {
+    if (!state.focusMilestoneId) return
+    const target = milestones.find((m) => m.id === state.focusMilestoneId)
+    if (!target) return
+    setPendingApproval(target)
+    dispatch({ type: 'focusMilestone', milestoneId: null })
+  }, [state.focusMilestoneId, milestones, dispatch])
 
   const land = async (): Promise<void> => {
     setLanding(true)

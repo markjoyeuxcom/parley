@@ -7,6 +7,9 @@ import { relativeTime } from '../lib/format'
 import { useStore } from '../state'
 import { Chip, Empty } from './ui'
 
+/** Hold kinds whose exact control is the milestone's approval dialog. */
+const DIALOG_KINDS = new Set<Hold['kind']>(['approval-waiting', 'ledger-gated', 'milestone-failed'])
+
 /**
  * The titlebar affordance for the attention queue.
  *
@@ -67,7 +70,15 @@ export function HoldsPopover(): ReactNode {
     }
     if (hold.sessionId) {
       dispatch({ type: 'surface', surface: 'parley' })
-      void openSession(hold.sessionId).then(() => (hold.planId ? openPlan(hold.planId) : undefined))
+      void openSession(hold.sessionId).then(async () => {
+        if (hold.planId) await openPlan(hold.planId)
+        // For holds whose control is the approval dialog — approve, resume,
+        // disposition — land the user in the dialog itself, not merely near
+        // it. The PlanPanel that owns the milestone consumes the knock.
+        if (hold.milestoneId && DIALOG_KINDS.has(hold.kind)) {
+          dispatch({ type: 'focusMilestone', milestoneId: hold.milestoneId })
+        }
+      })
     }
   }
 

@@ -232,10 +232,20 @@ mode nothing is ever committed: milestones write into your checkout and the
 changes are left in the working tree for you. A plan can instead run with
 **worktree isolation**: every milestone executes in an isolated git worktree on
 a per-plan branch, Parley commits each passing milestone there, and your
-checkout is untouched until you **land** the branch — fast-forward only, one
-click, refused by git itself if your checkout moved. Nothing reaches your
+checkout is untouched until you **land** the branch — fast-forward only, behind
+its own recorded single-use approval, refused by git itself if your checkout
+moved, and smoke-verified in the origin after it lands. Nothing reaches your
 checkout without you. Isolation is what lets Parley work on a repository that
 is in use — including, eventually, its own.
+
+**Interruptions are cheap.** A crashed or stopped milestone keeps its run
+state — the remediation round, the reviewer's critique, both agents' resumable
+sessions, the exact baseline — and can be **resumed** with a fresh approval:
+the executor continues from a critique instead of re-executing, and finished
+work is verified rather than redone. A running milestone has a stop button
+(the run state survives a stop too), and a run that goes silent surfaces as a
+stalled hold with a read-only cross-vendor inspection attached. Nothing is
+ever aborted automatically.
 
 **Adopt & verify** handles work that already exists — usually from an interrupted
 run. It skips execution but keeps both checks that establish anything, and records
@@ -294,10 +304,12 @@ figure, so iterations and wall-clock are the caps doing the real work.
 
 Everything that blocks on a human decision queues in one place: a planner's
 question, a milestone ready to approve, an approval gated by open findings, a
-branch ready to land, a failed milestone, an exhausted loop. The titlebar
-count is decisions only; each hold notifies **once, ever** — a macOS
-notification when it first appears, and never again, including across
-restarts.
+branch ready to land, a failed milestone, a stalled run, an exhausted loop.
+The titlebar count is decisions only; each hold notifies **once, ever** — a
+macOS notification when it first appears, and never again, including across
+restarts. Opening a hold lands you at its exact control — a milestone hold
+opens the approval dialog itself, where approve, resume, adopt and the
+finding dispositions all live.
 
 Two kinds, with different clearing rules. **Decision holds clear only by
 acting** — answering, approving, landing. They cannot be acknowledged away,

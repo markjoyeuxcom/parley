@@ -425,7 +425,7 @@ Every track list in `styles/` uses `minmax(0, 1fr)`. Text that can contain long
 tokens also needs `overflow-wrap: anywhere` — `break-word` does *not* reduce
 min-content width, so it does not fix the layout, only the visual overflow.
 
-## Crash recovery
+## Crash recovery: terminal states, preserved run state, cheap resume
 
 Runners live only in memory. Anything in flight when the process stops leaves a
 row claiming to be `running` or `executing`, and the UI then correctly refuses to
@@ -436,7 +436,43 @@ spinning on "executing" forever.
 terminal state with an explicit reason. It is idempotent, it leaves settled rows
 and unstarted (`idle`) loops alone, and it deliberately does **not** release a
 consumed approval: retrying a write requires fresh authorisation even after a
-crash.
+crash — resuming too.
+
+What a crash no longer destroys is the run itself. `milestones.run_state` (one
+JSON blob, the `plans.pending` argument) carries the remediation round, the
+concerns and the reviewer's critique verbatim, both vendors' resume ids — the
+vendor CLIs own their transcripts on disk, so a resume id survives our process —
+the pre-execution baseline (the one thing a dirty checkout makes
+unreconstructible), and `baselineHead`, the validity anchor. It is written where
+the loop's own locals change, cleared on completion and at retry/adoption entry,
+preserved on failure and stop: **presence is what "resumable" means**, and
+reconcile words the interrupted note accordingly.
+
+`resumeMilestone` spends a fresh `milestone.execute` approval (the summary
+carries the resume framing — no fourth scope) and re-enters the **same seeded
+driver** `runMilestone` uses; never a parallel loop, or the two would drift.
+Entry is decided by the world, not a recorded label: work present in the tree
+means verify it against the preserved baseline; an untouched tree means execute
+— a continuation prompt when the vendor session survived ("if the work is
+complete, say so and stop"), the ordinary prompts with the persisted critique
+when it did not. Resume refuses toward plain retry when `baselineHead` no
+longer matches — every signature in a baseline is relative to HEAD, and
+resuming across a moved HEAD silently misattributes the diff. The run-state
+re-read and the spend share one synchronous block, because a racing retry
+clears the state during the worktree await.
+
+Two companions. **Stop**: `Manager.milestoneRuns` holds a `RunGate` per
+in-flight milestone (execution, adoption and resume share it); the synchronous
+has-check is both the stop button's handle and the concurrency guard. A stop
+takes effect at the next boundary — commits and mutation restores finish, both
+atomic — writes 'Stopped by you.' at every failure sink (never 'run was
+cancelled', which now means only what it says; timeouts say 'run timed out'),
+and keeps the run state. **Liveness**: the `LivenessWatchdog` observes the
+activity stream, persists a throttled stamp on real activity only (a silent
+run's stamp freezes — that frozen value is the stall hold's notify-once
+generation), and asks the counterpart vendor for one read-only inspection per
+stall episode. The verdict lands in the run state and the hold shows it.
+Nothing is ever aborted automatically; the stopper stays human.
 
 ## Show both stdout and stderr, always
 

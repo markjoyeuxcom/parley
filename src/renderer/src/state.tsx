@@ -73,6 +73,13 @@ interface State {
   /** The open decision holds — everything currently waiting on the user. */
   holds: Hold[]
   holdsOpen: boolean
+  /**
+   * A milestone the queue wants opened at its exact control — the approval
+   * dialog. Set by the holds popover's jump, consumed and cleared by the
+   * PlanPanel that owns the milestone. The dialog state itself stays local to
+   * the panel; this is only the knock on its door.
+   */
+  focusMilestoneId: Id | null
   /** Keyed by milestone id, then by loop id. Never persisted. */
   activity: Record<Id, ActivityLog>
 }
@@ -99,6 +106,7 @@ const initialState: State = {
   paletteOpen: false,
   holds: [],
   holdsOpen: false,
+  focusMilestoneId: null,
   activity: {},
 }
 
@@ -122,6 +130,7 @@ type Action =
   | { type: 'palette'; open: boolean }
   | { type: 'holds'; holds: Hold[] }
   | { type: 'holdsPanel'; open: boolean }
+  | { type: 'focusMilestone'; milestoneId: Id | null }
   | { type: 'appEvent'; event: AppEvent }
 
 let noticeSeq = 0
@@ -181,6 +190,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, holds: action.holds }
     case 'holdsPanel':
       return { ...state, holdsOpen: action.open }
+    case 'focusMilestone':
+      return { ...state, focusMilestoneId: action.milestoneId }
     case 'appEvent':
       return applyEvent(state, action.event)
     default:
