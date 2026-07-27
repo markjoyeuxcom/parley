@@ -620,6 +620,17 @@ function MilestoneRow({
         <div className="milestone__index tnum">{milestone.index + 1}</div>
         <div className="milestone__title">{milestone.title}</div>
         {inFlight ? <Spinner /> : null}
+        {/* A failed milestone whose run state survived can continue from its
+            critique instead of starting over — worth a chip, because nothing
+            else distinguishes it from a dead loss. */}
+        {milestone.status === 'failed' && milestone.runState ? (
+          <Chip
+            tone="chip--accent"
+            title="The run state was preserved — this milestone can be resumed with a fresh approval"
+          >
+            resumable
+          </Chip>
+        ) : null}
         {/* Folded rows still have to answer "did anything go wrong here?", so the
             blocking count travels with the summary rather than the detail. */}
         {!expanded && milestone.reviewBlocking.length ? (

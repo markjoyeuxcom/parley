@@ -57,6 +57,36 @@ const MAX_DIFF_CHARS = 120_000
 
 export class PipelineError extends Error {}
 
+/**
+ * Everything a resumed milestone run needs, persisted as one blob on the
+ * milestone row (the plans.pending argument: what a resumption needs differs
+ * by stage and keeps growing). Written during the run at the points where the
+ * loop's own locals change, cleared on completion and at retry/adoption entry,
+ * preserved on failure — presence is what "resumable" means. The domain's
+ * MilestoneRunState is the wire-safe summary of this; the baseline and the
+ * resume ids never leave the main process.
+ */
+export interface RunState {
+  startedAt: number
+  /** The remediation round the next execution would run. */
+  round: number
+  previousConcerns: string[]
+  /** The reviewer's critique prose — a resumed remediation needs it verbatim. */
+  reviewerNote: string
+  /** Tail of the executor's last report, for notes written after a crash. */
+  executionReport: string
+  executorResumeId: string | null
+  reviewerResumeId: string | null
+  /** The pre-execution baseline. Unreconstructible for a dirty checkout. */
+  before: TreeState
+  /** HEAD at baseline capture — the validity anchor. A resume against a moved
+   *  HEAD would diff across two worlds, so it refuses instead. */
+  baselineHead: string
+  /** Written on real activity only, throttled; never on a watchdog tick. */
+  lastActivityAt: number | null
+  lastInspection: { at: number; verdict: string; note: string } | null
+}
+
 /** What a stage parked on a question needs in order to pick up again. */
 type PendingStage =
   | { stage: 'planning'; brief: string; plannerResumeId: string | null }
@@ -567,7 +597,10 @@ export class Pipeline {
 
     // Clear the previous attempt's artifacts. Without this a retry shows the old
     // test output and the old review note beside the new outcome, and the two
-    // get read as if they belonged to the same run.
+    // get read as if they belonged to the same run. The run state joins the
+    // clear: a stale Resume offer surviving a fresh retry would resume into a
+    // world the retry has since rewritten.
+    this.repo.setMilestoneRunState(milestoneId, null)
     let current = this.repo.updateMilestone(milestoneId, {
       status: 'executing',
       approvalId,
@@ -582,6 +615,28 @@ export class Pipeline {
     // against this rather than against "clean", because the repository is very
     // often not clean when a milestone starts.
     const before = await readTree(root, signal)
+
+    // Persisted from here on: a crash at any later point leaves everything a
+    // resumption needs. Saved through one closure so the blob and its local
+    // copy cannot drift.
+    let runState: RunState = {
+      startedAt: Date.now(),
+      round: 0,
+      previousConcerns: [],
+      reviewerNote: '',
+      executionReport: '',
+      executorResumeId: null,
+      reviewerResumeId: null,
+      before,
+      baselineHead: await revParseHead(root, signal),
+      lastActivityAt: null,
+      lastInspection: null,
+    }
+    const saveRunState = (patch: Partial<RunState>): void => {
+      runState = { ...runState, ...patch }
+      this.repo.setMilestoneRunState(milestoneId, runState)
+    }
+    this.repo.setMilestoneRunState(milestoneId, runState)
 
     const executor = this.registry.get(plan.executor.vendor)
 
@@ -687,6 +742,12 @@ export class Pipeline {
       })
       this.repo.addPlanUsage(plan.id, execution.usage)
       if (execution.resumeId) executorResumeId = execution.resumeId
+      // Persisted before the error check on purpose: an errored turn still
+      // learned a resume id and still said something worth keeping.
+      saveRunState({
+        executorResumeId,
+        executionReport: execution.text.trim().slice(-600),
+      })
 
       if (execution.error) {
         current = this.repo.updateMilestone(milestoneId, {
@@ -724,6 +785,7 @@ export class Pipeline {
       lastBlocking = outcome.concerns
       lastNotes = outcome.reviewNotes
       lastMutationResults = current.mutationResults
+      saveRunState({ reviewerResumeId, reviewerNote: outcome.reviewerNote })
       history.push(outcome.note)
       publishHistory()
 
@@ -749,6 +811,9 @@ export class Pipeline {
 
       previousConcerns = outcome.concerns
       round += 1
+      // The persisted round is the one the next execution runs — exactly what
+      // a resumed remediation needs to rebuild its critique prompt.
+      saveRunState({ round, previousConcerns })
     }
 
     let finalPassed = lastPassed
@@ -775,6 +840,10 @@ export class Pipeline {
         )
       }
     }
+    // A completed milestone has nothing to resume; a failed one keeps its run
+    // state — that preservation is the whole difference between "start over"
+    // and "continue from the critique".
+    if (finalPassed) this.repo.setMilestoneRunState(milestoneId, null)
     current = this.repo.updateMilestone(milestoneId, {
       status: finalPassed ? 'complete' : 'failed',
       reviewNote: history.join('\n\n'),
@@ -1138,7 +1207,10 @@ export class Pipeline {
 
     // `mutationResults` is cleared with the rest so an earlier attempt's
     // outcomes cannot sit beside this run's verdict; adoption re-runs the
-    // declared breaks itself once the suite is green.
+    // declared breaks itself once the suite is green. The run state clears
+    // too: adoption supersedes the interrupted attempt it recovers from, and
+    // a Resume offer surviving it would resume into an adopted world.
+    this.repo.setMilestoneRunState(milestoneId, null)
     let current = this.repo.updateMilestone(milestoneId, {
       status: 'testing',
       testResult: null,
@@ -2131,6 +2203,18 @@ export interface TreeFileSnapshot {
   headExists: boolean
   headDigest: string | null
   headDigestKnown: boolean
+}
+
+/**
+ * HEAD at this moment, or '' outside a git repository. Recorded beside a
+ * baseline so a later resume can prove the world has not moved underneath the
+ * preserved state — every signature in a TreeState is relative to HEAD, and a
+ * comparison across two different HEADs silently inverts the attribution
+ * machinery instead of failing.
+ */
+export async function revParseHead(repoPath: string, signal?: AbortSignal): Promise<string> {
+  const result = await capture('git', ['rev-parse', 'HEAD'], repoPath, 30_000, signal)
+  return result.exitCode === 0 ? result.stdout.trim() : ''
 }
 
 export async function readTree(repoPath: string, signal?: AbortSignal): Promise<TreeState> {

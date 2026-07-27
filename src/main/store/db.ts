@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 16
+export const SCHEMA_VERSION = 17
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -219,7 +219,14 @@ CREATE TABLE IF NOT EXISTS milestones (
   mutations        TEXT NOT NULL DEFAULT '[]',
   mutation_results TEXT NOT NULL DEFAULT '[]',
   review_blocking  TEXT NOT NULL DEFAULT '[]',
-  review_notes     TEXT NOT NULL DEFAULT '[]'
+  review_notes     TEXT NOT NULL DEFAULT '[]',
+  -- Everything a resumed run needs, as one JSON blob (the plans.pending
+  -- argument: what a resumption needs keeps growing, and a column per field
+  -- would too). Written during a run, cleared on completion and at retry or
+  -- adoption entry, preserved on failure — its presence is what "resumable"
+  -- means. The domain carries only a summary; the baseline inside can be
+  -- large and never crosses IPC.
+  run_state        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_milestones_plan ON milestones(plan_id, idx);
 
@@ -252,7 +259,10 @@ CREATE TABLE IF NOT EXISTS loops (
   mock            INTEGER NOT NULL DEFAULT 0,
   started_at      INTEGER NOT NULL,
   ended_at        INTEGER,
-  stop_reason     TEXT NOT NULL DEFAULT ''
+  stop_reason     TEXT NOT NULL DEFAULT '',
+  -- When the loop last showed real activity, for stall detection. Written on
+  -- activity only (throttled), never on a watchdog tick.
+  last_activity_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_loops_started ON loops(started_at DESC);
 
@@ -666,6 +676,21 @@ export function migrate(db: Db): void {
         if (hasColumn(table, column)) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`)
       }
     })
+  }
+  if (current < 17) {
+    // Run recovery is additive: milestones gain the run-state blob, loops the
+    // liveness stamp. Existing rows read NULL — nothing was resumable before
+    // this existed, which is exactly what NULL means.
+    for (const [table, column] of [
+      ['milestones', `run_state TEXT`],
+      ['loops', `last_activity_at INTEGER`],
+    ] as const) {
+      try {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`)
+      } catch {
+        // Already present, because SCHEMA above created the table fresh.
+      }
+    }
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

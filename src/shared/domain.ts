@@ -437,6 +437,30 @@ export const CorrectionDisposition = z.object({
 })
 export type CorrectionDisposition = z.infer<typeof CorrectionDisposition>
 
+/**
+ * What the renderer may know about a preserved run.
+ *
+ * A summary on purpose: the full run-state blob carries the tree baseline
+ * (potentially megabytes of diff for a dirty checkout) and both agents'
+ * vendor resume ids, none of which any surface needs. The blob stays in the
+ * main process behind a dedicated repo accessor; this is the shape that rides
+ * on milestone rows and events. Its presence on a failed milestone is what
+ * "resumable" means.
+ */
+export const MilestoneRunState = z.object({
+  startedAt: Timestamp,
+  /** The remediation round the run was in when it stopped. */
+  round: z.number().int().nonnegative(),
+  /** When the run last showed real activity. Null before any was seen. */
+  lastActivityAt: Timestamp.nullable().default(null),
+  /** The cross-vendor stall inspection's verdict, when one ran. */
+  lastInspection: z
+    .object({ at: Timestamp, verdict: z.string(), note: z.string() })
+    .nullable()
+    .default(null),
+})
+export type MilestoneRunState = z.infer<typeof MilestoneRunState>
+
 export const Milestone = z.object({
   id: Id,
   planId: Id,
@@ -479,6 +503,8 @@ export const Milestone = z.object({
   approvalId: Id.nullable().default(null),
   createdAt: Timestamp,
   completedAt: Timestamp.nullable().default(null),
+  /** See {@link MilestoneRunState}. Optional: absent means nothing preserved. */
+  runState: MilestoneRunState.nullable().optional(),
 })
 export type Milestone = z.infer<typeof Milestone>
 

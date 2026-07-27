@@ -174,6 +174,27 @@ describe('schema migrations', () => {
     ])
   })
 
+  it('adds the recovery columns when upgrading from version 16', () => {
+    const db = openDatabase(':memory:')
+    db.exec(`ALTER TABLE milestones DROP COLUMN run_state`)
+    db.exec(`ALTER TABLE loops DROP COLUMN last_activity_at`)
+    db.run(`UPDATE meta SET value = '16' WHERE key = 'schema_version'`)
+
+    migrate(db)
+
+    expect(db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'schema_version'`)?.value).toBe(
+      // The head version, never a literal - a hardcoded number fails on every
+      // future migration for a reason unrelated to what this test checks.
+      String(SCHEMA_VERSION),
+    )
+    expect(
+      db.get(`SELECT name FROM pragma_table_info('milestones') WHERE name = 'run_state'`),
+    ).toBeTruthy()
+    expect(
+      db.get(`SELECT name FROM pragma_table_info('loops') WHERE name = 'last_activity_at'`),
+    ).toBeTruthy()
+  })
+
   it('adds the hold tables when upgrading from version 12', () => {
     const db = openDatabase(':memory:')
     db.exec(`DROP TABLE hold_acks`)

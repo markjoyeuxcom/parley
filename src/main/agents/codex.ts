@@ -214,7 +214,9 @@ export class CodexAdapter implements AgentAdapter {
 
     if (result.exitCode !== 0 && !errorText) {
       errorText = result.terminated
-        ? 'run was cancelled'
+        ? result.timedOut
+          ? `run timed out after ${Math.max(1, Math.round((req.timeoutMs ?? 0) / 60_000))}m`
+          : 'run was cancelled'
         : `codex exited ${result.exitCode}: ${cleanStderr(result.stderr) || 'no stderr'}`
     }
     if (!text && !errorText) {

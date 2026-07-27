@@ -225,7 +225,9 @@ export class ClaudeAdapter implements AgentAdapter {
 
     if (result.exitCode !== 0 && !errorText) {
       errorText = result.terminated
-        ? 'run was cancelled'
+        ? result.timedOut
+          ? `run timed out after ${Math.max(1, Math.round((req.timeoutMs ?? 0) / 60_000))}m`
+          : 'run was cancelled'
         : `claude exited ${result.exitCode}: ${result.stderr.trim().slice(0, 800) || 'no stderr'}`
     }
     if (!text && !errorText) {

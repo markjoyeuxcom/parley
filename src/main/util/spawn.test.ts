@@ -1,6 +1,6 @@
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
-import { capture, isShellFree, splitCommand } from './spawn'
+import { capture, isShellFree, runJsonl, splitCommand } from './spawn'
 
 /**
  * These two functions are the boundary between agent-authored text and a
@@ -121,5 +121,39 @@ describe('capture reports how a process ended', () => {
     )
     expect(result.stdout).toContain('ran some tests')
     expect(result.signal).toBe('SIGABRT')
+  })
+})
+
+describe('runJsonl termination causes', () => {
+  const node = process.execPath
+  const sleepForever = ['-e', 'setTimeout(() => {}, 60000)']
+
+  // "The run was cancelled" and "the run hit its deadline" demand opposite
+  // responses; both arrive as a termination, so the flag is the only witness.
+  it('marks a deadline kill as timed out', async () => {
+    const result = await runJsonl({
+      command: node,
+      args: sleepForever,
+      cwd: tmpdir(),
+      timeoutMs: 150,
+      onEvent: () => {},
+    })
+    expect(result.terminated).toBe(true)
+    expect(result.timedOut).toBe(true)
+  })
+
+  it('marks an abort as cancelled, never timed out', async () => {
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 100)
+    const result = await runJsonl({
+      command: node,
+      args: sleepForever,
+      cwd: tmpdir(),
+      timeoutMs: 60_000,
+      signal: controller.signal,
+      onEvent: () => {},
+    })
+    expect(result.terminated).toBe(true)
+    expect(result.timedOut).toBe(false)
   })
 })

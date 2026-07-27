@@ -126,6 +126,50 @@ describe('reconcileInterrupted', () => {
     }
   })
 
+  it('marks an interrupted milestone resumable when its run state survived, and scrubs stale verdicts', () => {
+    const repo = freshRepo()
+    const { milestone } = makePlanWithMilestone(repo, 'reviewing')
+    // A crash mid-re-review can leave the round before it looking settled.
+    repo.updateMilestone(milestone.id, { reviewPassed: true, completedAt: 12_345 })
+    repo.setMilestoneRunState(milestone.id, {
+      startedAt: 1_000,
+      round: 1,
+      previousConcerns: ['exhaustion is swallowed'],
+      reviewerNote: 'The cap exists but exhaustion is swallowed.',
+      executionReport: 'wrote the retry helper',
+      executorResumeId: 'mock-codex-3',
+      reviewerResumeId: 'mock-claude-4',
+      before: { paths: [], signature: 'x', unknown: false },
+      baselineHead: 'a'.repeat(40),
+      lastActivityAt: null,
+      lastInspection: null,
+    })
+
+    repo.reconcileInterrupted()
+
+    const recovered = repo.getMilestone(milestone.id)
+    expect(recovered?.status).toBe('failed')
+    expect(recovered?.reviewNote).toMatch(/resumed with a fresh approval/i)
+    // The stale verdicts from before the crash must not survive beside 'failed'.
+    expect(recovered?.reviewPassed).toBeNull()
+    expect(recovered?.completedAt).toBeNull()
+    // The blob is preserved whole, and the domain row carries the summary.
+    expect(repo.getMilestoneRunState<{ round: number }>(milestone.id)?.round).toBe(1)
+    expect(recovered?.runState?.round).toBe(1)
+  })
+
+  it('keeps the plain interrupted wording when no run state was preserved', () => {
+    const repo = freshRepo()
+    const { milestone } = makePlanWithMilestone(repo, 'executing')
+
+    repo.reconcileInterrupted()
+
+    const recovered = repo.getMilestone(milestone.id)
+    expect(recovered?.reviewNote).toMatch(/interrupted when parley last quit/i)
+    expect(recovered?.reviewNote).not.toMatch(/resumed/i)
+    expect(recovered?.runState ?? null).toBeNull()
+  })
+
   it('blocks a plan interrupted while correcting instead of exposing its audited draft', () => {
     const repo = freshRepo()
     const { plan, milestone } = makePlanWithMilestone(repo, 'audited')

@@ -31,6 +31,14 @@ export interface JsonlRunResult {
   stderr: string
   /** True when the run was cut short by abort or timeout rather than exiting. */
   terminated: boolean
+  /**
+   * True when Parley's own deadline did the cutting. "The run was cancelled"
+   * and "the run hit its time limit" demand opposite responses — one was asked
+   * for, the other means the work never finished — and both arrive as a
+   * termination. Same distinction capture() already records, for the same
+   * reason.
+   */
+  timedOut: boolean
 }
 
 const MAX_STDERR = 64 * 1024
@@ -55,6 +63,7 @@ export function runJsonl(opts: JsonlRunOptions): Promise<JsonlRunResult> {
     let stdoutTail = ''
     let settled = false
     let terminated = false
+    let timedOut = false
 
     const finish = (exitCode: number, signalName: string | null) => {
       if (settled) return
@@ -63,7 +72,7 @@ export function runJsonl(opts: JsonlRunOptions): Promise<JsonlRunResult> {
       opts.signal?.removeEventListener('abort', onAbort)
       // Flush a trailing partial line — some CLIs omit the final newline.
       if (stdoutTail.trim()) handleLine(stdoutTail)
-      resolve({ exitCode, signal: signalName, stderr, terminated })
+      resolve({ exitCode, signal: signalName, stderr, terminated, timedOut })
     }
 
     const handleLine = (line: string) => {
@@ -111,8 +120,14 @@ export function runJsonl(opts: JsonlRunOptions): Promise<JsonlRunResult> {
     const onAbort = () => kill()
     opts.signal?.addEventListener('abort', onAbort, { once: true })
 
+    // The flag is set in the timer callback, never inside kill(): kill() also
+    // serves aborts, and conflating the two causes is the defect this exists
+    // to remove.
     const timer = opts.timeoutMs
-      ? setTimeout(kill, opts.timeoutMs)
+      ? setTimeout(() => {
+          timedOut = true
+          kill()
+        }, opts.timeoutMs)
       : (undefined as unknown as NodeJS.Timeout)
 
     child.on('error', (err) => {

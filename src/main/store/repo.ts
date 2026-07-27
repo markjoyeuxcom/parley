@@ -17,6 +17,7 @@ import {
   type Loop,
   type LoopIteration,
   type LedgerFinding,
+  MilestoneRunState,
   type Milestone,
   type MilestoneStatus,
   type Mutation,
@@ -52,6 +53,14 @@ function parseJson<T>(value: unknown, fallback: T): T {
 }
 
 const str = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d)
+
+/** The wire-safe view of a stored run-state blob; zod strips the heavy rest. */
+function summariseRunState(raw: unknown): MilestoneRunState | null {
+  const parsed = parseJson<unknown>(raw, null)
+  if (!parsed) return null
+  const summary = MilestoneRunState.safeParse(parsed)
+  return summary.success ? summary.data : null
+}
 
 /** Reads a stored seat that may predate seats: 'a' and 'b' are 0 and 1. */
 function legacySeat(value: string): number {
@@ -152,15 +161,27 @@ export class Repo {
         reason,
       ).changes
 
+      // A preserved run state makes the interruption resumable, and the note
+      // says so — that sentence is the difference between "start over" and
+      // "one click continues it". completed_at and review_passed are nulled
+      // because an interrupted attempt can otherwise carry a stale pass from
+      // the round before the crash, beside a status that says failed.
+      const resumableReason = `${reason} The run state was preserved, so this milestone can be resumed with a fresh approval.`
       const milestones = this.db.run(
         `UPDATE milestones
          SET status = 'failed',
+             completed_at = NULL,
+             review_passed = NULL,
              review_note = CASE
+               WHEN review_note = '' AND run_state IS NOT NULL THEN ?
                WHEN review_note = '' THEN ?
+               WHEN run_state IS NOT NULL THEN review_note || char(10) || char(10) || ?
                ELSE review_note || char(10) || char(10) || ?
              END
          WHERE status IN ('executing', 'testing', 'reviewing')`,
+        resumableReason,
         reason,
+        resumableReason,
         reason,
       ).changes
 
@@ -1207,7 +1228,33 @@ export class Repo {
       approvalId: nullableStr(row['approval_id']),
       createdAt: num(row['created_at']),
       completedAt: nullableNum(row['completed_at']),
+      runState: summariseRunState(row['run_state']),
     }
+  }
+
+  /**
+   * The full run-state blob, main-side only. Everything a resumed run needs —
+   * baseline tree, both resume ids, the critique — none of which belongs on
+   * the wire. Writes go through {@link setMilestoneRunState}; the domain rows
+   * carry only the summary.
+   */
+  getMilestoneRunState<T>(id: Id): T | null {
+    const row = this.db.get(`SELECT run_state FROM milestones WHERE id = ?`, id)
+    const raw = row?.['run_state']
+    if (typeof raw !== 'string' || !raw) return null
+    try {
+      return JSON.parse(raw) as T
+    } catch {
+      return null
+    }
+  }
+
+  setMilestoneRunState(id: Id, state: unknown | null): void {
+    this.db.run(
+      `UPDATE milestones SET run_state = ? WHERE id = ?`,
+      state === null ? null : json(state),
+      id,
+    )
   }
 
   getMilestone(id: Id): Milestone | null {
@@ -1243,6 +1290,9 @@ export class Repo {
       completedAt: 'completed_at',
       mutations: 'mutations',
       mutationResults: 'mutation_results',
+      // Deliberately unwritable through a patch: the domain field is a derived
+      // summary, and the full blob has its own accessor (setMilestoneRunState).
+      runState: '',
     }
     const sets: string[] = []
     const values: unknown[] = []
