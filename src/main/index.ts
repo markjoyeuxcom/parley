@@ -6,6 +6,7 @@ import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
 import { Repo } from '@main/store/repo'
 import { Manager } from '@main/orchestrator/manager'
+import { backfillBacklog } from '@main/orchestrator/backlog'
 import { reconcileWorktrees } from '@main/orchestrator/worktrees'
 import { PtyManager } from '@main/pty/manager'
 import { disposeIpc, registerIpc } from '@main/ipc/register'
@@ -132,6 +133,22 @@ async function bootstrap(): Promise<void> {
     // Wait for the renderer, or the notice lands before anyone can see it.
     mainWindow?.webContents.once('did-finish-load', () => {
       emit({ type: 'notice', level: 'error', message: ptyCheck.detail })
+    })
+  }
+
+  // Replayable by construction (content-hash dedupe), so this both heals the
+  // crash window between a verdict committing and its ingestion committing,
+  // and deliberately back-ingests reviews completed before the backlog
+  // existed — the surface opens populated from record. The count is only
+  // announced when something genuinely new was filed.
+  const backfilled = backfillBacklog(repo)
+  if (backfilled.filed > 0) {
+    mainWindow?.webContents.once('did-finish-load', () => {
+      emit({
+        type: 'notice',
+        level: 'info',
+        message: `${backfilled.filed} backlog item${backfilled.filed > 1 ? 's were' : ' was'} filed from past review sessions.`,
+      })
     })
   }
 

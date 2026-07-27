@@ -17,6 +17,7 @@ import {
 import { newId, type Repo } from '@main/store/repo'
 import type { AgentRegistry } from '@main/agents'
 import { RunGate, type OrchestratorDeps } from './types'
+import { backfillBacklogFromSession } from './backlog'
 import { mergeVerdicts, parseFindings, parseSeatVerdict, renderReport, toVerdict } from './verdict'
 
 /** How long a single turn may run before it is abandoned. */
@@ -281,6 +282,8 @@ export class SessionRunner {
 
     this.repo.saveVerdict(verdict)
     this.emit({ type: 'session.verdict', verdict })
+    // Deterministic, replayable, and dedupe-safe — see orchestrator/backlog.
+    backfillBacklogFromSession(this.repo, this.session.id, (event) => this.emit(event))
     return true
   }
 

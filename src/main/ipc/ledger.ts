@@ -1,6 +1,7 @@
 import type { AppEvent } from '@shared/events'
 import type { CommandPayload, LedgerEntry } from '@shared/ipc'
 import type { Repo } from '@main/store/repo'
+import { ingestAcceptedRisk } from '@main/orchestrator/backlog'
 
 /**
  * The one place a LedgerEntry is assembled from its three tables.
@@ -79,6 +80,11 @@ export function disposeLedgerFinding(
     note: input.note,
     source: 'human',
   })
+  // An accepted risk is carried into the backlog of the repos it was accepted
+  // against — accepting must never quietly become forgetting.
+  if (input.state === 'accepted-risk') {
+    ingestAcceptedRisk(repo, { findingId: input.findingId, occurrenceId: input.occurrenceId }, emit)
+  }
   const entry = groupLedgerEntry(repo, input.sessionId, input.findingId)
   if (!entry) throw new Error('failed to reload finding ledger entry')
   emit({ type: 'session.ledger', entry })

@@ -156,6 +156,15 @@ export const GetSessionReq = z.object({ sessionId: Id })
 export const ListLedgerReq = z.object({ sessionId: Id })
 /** Acknowledges a notice-class hold. Decision-class holds refuse — they clear by acting. */
 export const AckHoldReq = z.object({ holdId: Id })
+
+export const ListBacklogReq = z.object({ repoPath: z.string().optional() })
+export const DropBacklogItemReq = z.object({
+  itemId: Id,
+  note: z.string().trim().max(2000).default(''),
+})
+/** Reopens a planned or closure-proposed item; the plan edge is cleared. */
+export const ReopenBacklogItemReq = z.object({ itemId: Id })
+export const SetBacklogBlockedByReq = z.object({ itemId: Id, blockedBy: z.array(Id).max(50) })
 export const DisposeLedgerFindingReq = z.object({
   sessionId: Id,
   findingId: Id,
@@ -202,6 +211,10 @@ export const COMMANDS = {
   'ledger.dispose': DisposeLedgerFindingReq,
   'holds.list': null,
   'holds.ack': AckHoldReq,
+  'backlog.list': ListBacklogReq,
+  'backlog.drop': DropBacklogItemReq,
+  'backlog.reopen': ReopenBacklogItemReq,
+  'backlog.setBlockedBy': SetBacklogBlockedByReq,
   'plan.create': CreatePlanReq,
   'plan.get': GetPlanReq,
   'plan.list': null,

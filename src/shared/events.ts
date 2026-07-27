@@ -77,6 +77,12 @@ export type AppEvent =
   // Cross-cutting
   | { type: 'notice'; level: 'info' | 'warn' | 'error'; message: string }
   /**
+   * A repository's backlog moved — filed, resighted, transitioned. A refetch
+   * poke rather than a snapshot: backlog lists are cross-session and can be
+   * large, and the surfaces that care fetch the slice they show.
+   */
+  | { type: 'backlog.changed'; repoPath: string }
+  /**
    * The authoritative open-hold set, replacing whatever the client holds.
    *
    * A snapshot rather than deltas, on the plan.milestones precedent: holds are

@@ -1,6 +1,7 @@
 import type {
   AgentConfig,
   Approval,
+  BacklogItem,
   Finding,
   FindingDisposition,
   FindingOccurrence,
@@ -115,6 +116,17 @@ export const api = {
   listHolds: (): Promise<Hold[]> => bridge().invoke('holds.list'),
   /** Returns the updated queue. Refused for decision-class holds. */
   ackHold: (holdId: Id): Promise<Hold[]> => bridge().invoke('holds.ack', { holdId }),
+
+  // Backlog
+  listBacklogItems: (repoPath?: string): Promise<BacklogItem[]> =>
+    bridge().invoke('backlog.list', repoPath ? { repoPath } : {}),
+  dropBacklogItem: (itemId: Id, note = ''): Promise<BacklogItem> =>
+    bridge().invoke('backlog.drop', { itemId, note }),
+  /** Reopens a planned or closure-proposed item; the plan edge is cleared. */
+  reopenBacklogItem: (itemId: Id): Promise<BacklogItem> =>
+    bridge().invoke('backlog.reopen', { itemId }),
+  setBacklogBlockedBy: (itemId: Id, blockedBy: Id[]): Promise<BacklogItem> =>
+    bridge().invoke('backlog.setBlockedBy', { itemId, blockedBy }),
 
   // Plans
   createPlan: (payload: {

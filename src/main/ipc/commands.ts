@@ -162,6 +162,33 @@ const HANDLERS: Record<CommandName, Handler> = {
   'holds.list': (_p, ctx) => ctx.manager.listHolds(),
   'holds.ack': (p, ctx) => ctx.manager.ackHold((p as { holdId: string }).holdId),
 
+  // ── Backlog ───────────────────────────────────────────────────────────────
+  'backlog.list': (p, ctx) => {
+    const { repoPath } = p as { repoPath?: string }
+    return ctx.manager.repo.listBacklogItems(repoPath ? { repoPath } : {})
+  },
+  'backlog.drop': (p, ctx) => {
+    const { itemId, note } = p as { itemId: string; note: string }
+    const item = ctx.manager.repo.transitionBacklogItem(itemId, 'dropped', {
+      source: 'human',
+      note,
+    })
+    emit(ctx, { type: 'backlog.changed', repoPath: item.repoPath })
+    return item
+  },
+  'backlog.reopen': (p, ctx) => {
+    const { itemId } = p as { itemId: string }
+    const item = ctx.manager.repo.transitionBacklogItem(itemId, 'open', { source: 'human' })
+    emit(ctx, { type: 'backlog.changed', repoPath: item.repoPath })
+    return item
+  },
+  'backlog.setBlockedBy': (p, ctx) => {
+    const { itemId, blockedBy } = p as { itemId: string; blockedBy: string[] }
+    const item = ctx.manager.repo.setBacklogBlockedBy(itemId, blockedBy)
+    emit(ctx, { type: 'backlog.changed', repoPath: item.repoPath })
+    return item
+  },
+
   // ── Plans ──────────────────────────────────────────────────────────────────
   'plan.create': (p, ctx) => ctx.manager.createPlan(p as never),
   'plan.list': (_p, ctx) => ctx.manager.repo.listPlans(),
