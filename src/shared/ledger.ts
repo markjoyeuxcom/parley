@@ -6,14 +6,15 @@ import type {
   LedgerFinding,
 } from './domain'
 
-const TRAILING_PUNCTUATION = /[\s\p{P}]+$/u
+const TRAILING_MARKS = /[\s\p{P}\p{S}]+$/u
 
 /**
  * Removes presentation drift without treating a rewritten objection as the
  * same finding.
  */
 export function normaliseFindingText(text: string): string {
-  return text.trim().toLowerCase().replace(/\s+/gu, ' ').replace(TRAILING_PUNCTUATION, '')
+  const collapsed = text.trim().toLowerCase().replace(/\s+/gu, ' ')
+  return collapsed.replace(TRAILING_MARKS, '') || collapsed
 }
 
 /**
@@ -132,8 +133,6 @@ export function occurrenceState(
   return state
 }
 
-export const resolveOccurrenceState = occurrenceState
-
 function findingIdOf(finding: Id | Pick<LedgerFinding, 'id'>): Id {
   return typeof finding === 'string' ? finding : finding.id
 }
@@ -163,8 +162,6 @@ export function findingState(
   }
   return latestState
 }
-
-export const resolveFindingState = findingState
 
 export function isBlockingOccurrence(occurrence: FindingOccurrence): boolean {
   return occurrence.kind === 'blocking'

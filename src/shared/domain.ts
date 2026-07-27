@@ -560,7 +560,7 @@ export type FindingDispositionSource = z.infer<typeof FindingDispositionSource>
 export const FindingDisposition = z.object({
   id: Id,
   findingId: Id,
-  occurrenceId: Id.nullable().default(null),
+  occurrenceId: Id.nullable(),
   state: FindingDispositionState,
   note: z.string().default(''),
   source: FindingDispositionSource,

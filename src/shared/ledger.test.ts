@@ -81,25 +81,45 @@ describe('ledger schemas', () => {
         note: 'Accepted by the user.',
       }),
     ).toMatchObject({ occurrenceId: 'occurrence-1', state: 'accepted-risk' })
+
+    expect(
+      FindingDisposition.safeParse({
+        id: 'disposition-2',
+        findingId: 'finding-1',
+        state: 'resolved',
+        source: 'human',
+        seq: 4,
+        createdAt: 4,
+      }).success,
+    ).toBe(false)
   })
 })
 
 describe('finding identity', () => {
-  it('folds only case, whitespace, and trailing punctuation drift', () => {
+  it('folds only case, whitespace, and trailing punctuation or symbol drift', () => {
     const variants = [
       '  Approval routing is not tested.  ',
       'approval   ROUTING\nis not tested',
       'Approval routing is not tested?!…',
+      'Approval routing is not tested ©™',
     ]
 
     expect(variants.map(normaliseFindingText)).toEqual([
       'approval routing is not tested',
       'approval routing is not tested',
       'approval routing is not tested',
+      'approval routing is not tested',
     ])
     expect(new Set(variants.map(findingFingerprint))).toHaveLength(1)
+    expect(normaliseFindingText('  ?!… ©™  ')).toBe('?!… ©™')
     expect(findingFingerprint('abc')).toBe(
       'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    )
+    expect(
+      findingFingerprint('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq'),
+    ).toBe('248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1')
+    expect(findingFingerprint('a'.repeat(1025))).toBe(
+      '4a82297889eb505cf6b5cbdf69977afab4632d6557539782f657bd7dc78091a5',
     )
   })
 
