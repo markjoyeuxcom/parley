@@ -31,7 +31,7 @@ import {
 } from './pipeline'
 import { LoopConfigError, validateExitCommand } from './loop'
 import type { MutationResult, TestResult } from '@shared/domain'
-import { auditPrompt, planPrompt } from '@shared/protocol'
+import { auditPrompt, planPrompt, reviewDiffPrompt } from '@shared/protocol'
 
 describe('parsePlan', () => {
   it('reads milestones in order', () => {
@@ -701,6 +701,24 @@ describe('greenfield prompts', () => {
     expect(green).toMatch(/do not report missing files/i)
     expect(brown).toMatch(/Do the named files exist/i)
     expect(brown).not.toMatch(/do not report missing files/i)
+  })
+})
+
+describe('reviewDiffPrompt', () => {
+  it('names every declared output that is still missing', () => {
+    const prompt = reviewDiffPrompt(
+      'Ship the cap',
+      'Bound retries',
+      'diff',
+      'tests passed',
+      [],
+      '',
+      ['src/net/client.ts', 'src/net/client.test.ts'],
+    )
+
+    expect(prompt).toMatch(/cannot pass/i)
+    expect(prompt).toContain('src/net/client.ts')
+    expect(prompt).toContain('src/net/client.test.ts')
   })
 })
 

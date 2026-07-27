@@ -667,6 +667,8 @@ export function reviewDiffPrompt(
   previousConcerns: string[] = [],
   /** Rendered outcome of the milestone's declared mutation checks. */
   mutationSummary = '',
+  /** Declared milestone outputs that were still absent after execution. */
+  missingPaths: string[] = [],
 ): string {
   const isFollowUp = previousConcerns.length > 0
   return [
@@ -678,6 +680,11 @@ export function reviewDiffPrompt(
     isFollowUp
       ? `WHAT YOU OBJECTED TO LAST TIME — say for each whether it is now resolved:\n${previousConcerns
           .map((c) => `  • ${c}`)
+          .join('\n')}`
+      : '',
+    missingPaths.length
+      ? `DECLARED OUTPUTS THAT DO NOT EXIST — this milestone cannot pass while any of these paths are absent. Treat this as a blocking completeness failure:\n${missingPaths
+          .map((p) => `  ${p}`)
           .join('\n')}`
       : '',
     `DETERMINISTIC VERIFICATION (run by the workbench, not by an agent):\n${testSummary}`,
@@ -711,11 +718,17 @@ export function adoptReviewPrompt(
   diff: string,
   testSummary: string,
   unverifiedPaths: string[] = [],
+  missingPaths: string[] = [],
 ): string {
   return [
     `Review work that was already present in the repository. Nobody executed it under supervision, and its provenance is unknown — it may be complete, partial, or subtly wrong. This turn is READ-ONLY.`,
     `THE MILESTONE IT IS SUPPOSED TO SATISFY: ${milestoneTitle}`,
     `INTENT: ${intent}`,
+    missingPaths.length
+      ? `DECLARED OUTPUTS THAT DO NOT EXIST — the existing work is incomplete while any of these paths are absent, regardless of the test result:\n${missingPaths
+          .map((p) => `  ${p}`)
+          .join('\n')}`
+      : '',
     `DETERMINISTIC VERIFICATION (run by the workbench, not by an agent):\n${testSummary}`,
     // Stated rather than left to be inferred: the verification is scoped to the
     // milestone, but the diff below is the whole tree, so some of what you are

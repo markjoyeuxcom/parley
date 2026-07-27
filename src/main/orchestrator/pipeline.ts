@@ -813,6 +813,7 @@ export class Pipeline {
         summariseTests(testResult),
         input.previousConcerns,
         summariseMutations(mutationResults),
+        missing,
       ),
       cfg: reviewerConfig(plan.reviewer, input.reviewerVendor),
       capability: 'read',
@@ -837,7 +838,11 @@ export class Pipeline {
       notRunnable,
     } = milestoneVerdict(testResult, mutationResults)
     const reviewPassed = parsedReview?.passed === true
-    const passed = testsPassed && reviewPassed
+    const passed = missing.length === 0 && testsPassed && reviewPassed
+    const missingConcern =
+      missing.length > 0
+        ? `Create or restore every declared output before this milestone can pass. Missing: ${missing.join(', ')}.`
+        : null
 
     const noteParts: string[] = []
     noteParts.push(
@@ -895,7 +900,7 @@ export class Pipeline {
       passed,
       // Blocking only. Remediation is told to fix what was named and nothing
       // else; feeding it taste would contradict that in the same breath.
-      concerns: parsedReview?.blocking ?? [],
+      concerns: [...(missingConcern ? [missingConcern] : []), ...(parsedReview?.blocking ?? [])],
       reviewNotes: parsedReview?.notes ?? [],
       reviewerNote: parsedReview?.note ?? '',
       reviewerResumeId: review.resumeId ?? input.reviewerResumeId,
@@ -940,6 +945,15 @@ export class Pipeline {
     if (missing.length === milestone.expectedPaths.length && milestone.expectedPaths.length > 0) {
       throw new PipelineError(
         `there is nothing to adopt — none of the paths this milestone expects exist: ${missing.join(', ')}`,
+      )
+    }
+
+    const dirtyExpectedPaths = tree.paths.filter(
+      (path) => pathsOutsideScope([path], milestone.expectedPaths).length === 0,
+    )
+    if (dirtyExpectedPaths.length === 0) {
+      throw new PipelineError(
+        'there is nothing to adopt — none of the dirty paths overlap this milestone\'s expected paths',
       )
     }
 
@@ -989,6 +1003,7 @@ export class Pipeline {
         renderDiffForReview(tree, emptyTree()),
         summariseTests(testResult),
         unverified,
+        missing,
       ),
       cfg: reviewerConfig(plan.reviewer, reviewerVendor),
       capability: 'read',
@@ -1000,9 +1015,9 @@ export class Pipeline {
     this.repo.addPlanUsage(plan.id, review.usage)
 
     const parsedReview = parseReview(review.text)
-    const testsPassed = testResult === null || testResult.exitCode === 0
+    const testsPassed = testResult !== null && testResult.exitCode === 0
     const reviewPassed = parsedReview?.passed === true
-    const passed = testsPassed && reviewPassed
+    const passed = missing.length === 0 && testsPassed && reviewPassed
 
     // The opening line states the *mode*, then the outcome. Leading with
     // "Adopted" on a run that was rejected would claim the opposite of what
@@ -1035,6 +1050,11 @@ export class Pipeline {
     if (parsedReview?.notes.length) noteParts.push(`Notes: ${parsedReview.notes.join('; ')}`)
     if (!testsPassed && testResult) {
       noteParts.push(`Verification failed: \`${testResult.command}\` exited ${testResult.exitCode}.`)
+    }
+    if (!testResult) {
+      noteParts.push(
+        'Verification was not performed because this milestone has no verification command.',
+      )
     }
     if (!parsedReview && !review.error) noteParts.push('The reviewer did not return a usable judgement.')
 

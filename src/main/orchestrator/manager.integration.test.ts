@@ -431,6 +431,7 @@ describe('handing a rejection back to the executor', () => {
     repoPath: string,
     testCommand = 'node --version',
     mutations: Mutation[] = [],
+    expectedPaths = ['parley-mock-work.txt'],
   ) {
     const { manager, repo, events, registry } = harness()
     const session = manager.startSession({
@@ -456,7 +457,11 @@ describe('handing a rejection back to the executor', () => {
     const milestones = repo.listMilestones(plan.id)
     const first = milestones[0]
     if (!first) throw new Error('expected a milestone')
-    repo.updateMilestone(first.id, { testCommand, mutations })
+    repo.updateMilestone(first.id, {
+      testCommand,
+      mutations,
+      expectedPaths,
+    })
     const approval = repo.grantApproval('milestone.execute', first.id, 'allow')
     const done = await manager.runMilestone(first.id, approval.id)
     return { done, events, repo, registry }
@@ -568,6 +573,41 @@ describe('handing a rejection back to the executor', () => {
     expect(done.reviewNote).toMatch(/remediated/i)
   })
 
+  it('fails, reviews, and remediates when any declared output is missing', async () => {
+    const missingPath = 'src/net/client.ts'
+    const { done, registry } = await runFirstMilestone(
+      gitRepo(),
+      'node --version',
+      [],
+      ['parley-mock-work.txt', missingPath],
+    )
+
+    expect(done.status).toBe('failed')
+    expect(done.reviewNote).toContain(missingPath)
+    expect(done.reviewBlocking).toContainEqual(expect.stringContaining(missingPath))
+
+    const reviewer = registry.get('claude') as unknown as { prompts: string[] }
+    expect(
+      reviewer.prompts.some(
+        (prompt) => prompt.includes('DECLARED OUTPUTS THAT DO NOT EXIST') && prompt.includes(missingPath),
+      ),
+    ).toBe(true)
+
+    const executor = registry.get('codex') as unknown as { prompts: string[] }
+    expect(
+      executor.prompts.some(
+        (prompt) => prompt.includes('This is remediation round') && prompt.includes(missingPath),
+      ),
+    ).toBe(true)
+  })
+
+  it('keeps the no-command rule unchanged for executed milestones', async () => {
+    const { done } = await runFirstMilestone(gitRepo(), '')
+
+    expect(done.status).toBe('complete')
+    expect(done.testResult).toBeNull()
+  })
+
   it("carries the reviewer's concerns into the executor's next turn", async () => {
     const { events } = await runFirstMilestone(gitRepo())
     const texts = events
@@ -637,7 +677,7 @@ describe('adopting work that is already in the tree', () => {
    * failure caused by the fixture.
    */
   async function planIn(repoPath: string, testCommand = 'node --version') {
-    const { manager, repo, events } = harness()
+    const { manager, repo, events, registry } = harness()
     const session = manager.startSession({
       kind: 'debate',
       matter: 'x',
@@ -660,7 +700,7 @@ describe('adopting work that is already in the tree', () => {
     await manager.whenPlanSettled(plan.id)
     const milestones = repo.listMilestones(plan.id)
     const updated = milestones.map((m) => repo.updateMilestone(m.id, { testCommand }))
-    return { manager, repo, events, milestones: updated }
+    return { manager, repo, events, registry, milestones: updated }
   }
 
   it('completes without an approval, because it writes nothing', async () => {
@@ -725,6 +765,22 @@ describe('adopting work that is already in the tree', () => {
     await expect(manager.adoptMilestone(first.id)).rejects.toThrow(/nothing to adopt/i)
   })
 
+  it('refuses when only unrelated paths are dirty', async () => {
+    const repoPath = repoWithExistingWork()
+    execFileSync('git', ['add', 'src/net/client.ts'], { cwd: repoPath, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-qm', 'existing milestone path'], {
+      cwd: repoPath,
+      stdio: 'ignore',
+    })
+    writeFileSync(join(repoPath, 'unrelated.md'), '# unrelated\n')
+
+    const { manager, milestones } = await planIn(repoPath)
+    const first = milestones[0]
+    if (!first) throw new Error('expected a milestone')
+
+    await expect(manager.adoptMilestone(first.id)).rejects.toThrow(/dirty paths.*expected paths/i)
+  })
+
   it('refuses to adopt a milestone that is already complete', async () => {
     const { manager, milestones } = await planIn(repoWithExistingWork())
     const first = milestones[0]
@@ -745,6 +801,40 @@ describe('adopting work that is already in the tree', () => {
     expect(done.status).toBe('failed')
     expect(done.adopted).toBe(false)
     expect(done.reviewNote).toMatch(/verification failed/i)
+  })
+
+  it('does not treat a missing verification command as a pass', async () => {
+    const { manager, milestones } = await planIn(repoWithExistingWork(), '')
+    const first = milestones[0]
+    if (!first) throw new Error('expected a milestone')
+
+    const done = await manager.adoptMilestone(first.id)
+    expect(done.status).toBe('failed')
+    expect(done.adopted).toBe(false)
+    expect(done.testResult).toBeNull()
+    expect(done.reviewNote).toMatch(/verification was not performed/i)
+  })
+
+  it('does not adopt partially present declared output', async () => {
+    const missingPath = 'src/net/client.test.ts'
+    const { manager, repo, registry, milestones } = await planIn(repoWithExistingWork())
+    const first = milestones[0]
+    if (!first) throw new Error('expected a milestone')
+    repo.updateMilestone(first.id, {
+      expectedPaths: [...first.expectedPaths, missingPath],
+    })
+
+    const done = await manager.adoptMilestone(first.id)
+    expect(done.status).toBe('failed')
+    expect(done.adopted).toBe(false)
+    expect(done.reviewNote).toContain(missingPath)
+
+    const reviewer = registry.get('claude') as unknown as { prompts: string[] }
+    expect(
+      reviewer.prompts.some(
+        (prompt) => prompt.includes('DECLARED OUTPUTS THAT DO NOT EXIST') && prompt.includes(missingPath),
+      ),
+    ).toBe(true)
   })
 
   it('says which changed paths the verification never exercised', async () => {
