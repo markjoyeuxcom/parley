@@ -319,6 +319,72 @@ describe('computeHolds', () => {
     ])
   })
 
+  it('a silent in-flight milestone surfaces as a stalled notice, stable per episode', () => {
+    const repo = freshRepo()
+    const session = makeSession(repo)
+    const plan = makePlan(repo, session.id, 'running')
+    const milestone = makeMilestone(repo, plan.id, 0, 'executing')
+    repo.setMilestoneRunState(milestone.id, {
+      startedAt: 1_000,
+      round: 0,
+      previousConcerns: [],
+      reviewerNote: '',
+      executionReport: '',
+      executorResumeId: null,
+      reviewerResumeId: null,
+      before: { paths: [], signature: 'x', unknown: false },
+      baselineHead: 'a'.repeat(40),
+      lastActivityAt: 10_000,
+      lastInspection: null,
+    })
+
+    // Fresh stamp: no hold. Aged past the threshold: one notice hold whose
+    // identity is the frozen stamp, so re-observing the same stall re-derives
+    // the same hold rather than re-notifying.
+    expect(computeHolds(repo, none, 10_000 + 1_000)).toEqual([])
+    const stalled = computeHolds(repo, none, 10_000 + 6 * 60 * 1000)
+    expect(stalled).toHaveLength(1)
+    expect(stalled[0]).toMatchObject({
+      kind: 'run-stalled',
+      milestoneId: milestone.id,
+      actionable: false,
+      sinceAt: 10_000,
+    })
+    const later = computeHolds(repo, none, 10_000 + 30 * 60 * 1000)
+    expect(later[0]?.id).toBe(stalled[0]?.id)
+
+    // The inspection verdict joins the detail under the same identity — an
+    // update to read, never a second notification.
+    repo.setMilestoneRunState(milestone.id, {
+      startedAt: 1_000,
+      round: 0,
+      previousConcerns: [],
+      reviewerNote: '',
+      executionReport: '',
+      executorResumeId: null,
+      reviewerResumeId: null,
+      before: { paths: [], signature: 'x', unknown: false },
+      baselineHead: 'a'.repeat(40),
+      lastActivityAt: 10_000,
+      lastInspection: { at: 20_000, verdict: 'stuck', note: 'wedged on a lock file' },
+    })
+    const inspected = computeHolds(repo, none, 10_000 + 30 * 60 * 1000)
+    expect(inspected[0]?.id).toBe(stalled[0]?.id)
+    expect(inspected[0]?.detail).toContain('stuck')
+    expect(inspected[0]?.detail).toContain('wedged on a lock file')
+  })
+
+  it('a silent running loop stalls through its own stamp', () => {
+    const repo = freshRepo()
+    const loop = makeLoop(repo, 'running')
+    repo.setLoopActivity(loop.id, 5_000)
+
+    expect(computeHolds(repo, none, 5_000 + 1_000)).toEqual([])
+    const stalled = computeHolds(repo, none, 5_000 + 6 * 60 * 1000)
+    expect(stalled).toHaveLength(1)
+    expect(stalled[0]).toMatchObject({ kind: 'run-stalled', loopId: loop.id, sinceAt: 5_000 })
+  })
+
   it('mock provenance is carried from the underlying record', () => {
     const repo = freshRepo()
     const session = makeSession(repo)

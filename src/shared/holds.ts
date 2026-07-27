@@ -14,6 +14,12 @@ import { sha256 } from './ledger'
  * down: that a human acknowledged it, and that it was notified once.
  */
 
+/**
+ * How long a run may be silent before it counts as stalled. Shared because
+ * the derivation (main) and any surface explaining the threshold must agree.
+ */
+export const STALL_AFTER_MS = 5 * 60 * 1000
+
 export type HoldKind =
   /** A plan is parked on a question only the user can answer. */
   | 'clarification'
@@ -27,6 +33,8 @@ export type HoldKind =
   | 'milestone-failed'
   /** A loop stopped without succeeding: a cap, a failure, or a kill. */
   | 'loop-exhausted'
+  /** An in-flight run has been silent past the stall threshold. */
+  | 'run-stalled'
   /** A worktree plan's branch is ready to fast-forward into the checkout. */
   | 'merge-ready'
   /** Landing was refused — the checkout diverged or has conflicting dirt. */
@@ -48,6 +56,7 @@ export const HOLD_CLASS: Record<HoldKind, HoldClass> = {
   'plan-blocked': 'notice',
   'milestone-failed': 'notice',
   'loop-exhausted': 'notice',
+  'run-stalled': 'notice',
   'merge-ready': 'decision',
   'merge-blocked': 'notice',
 }

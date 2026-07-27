@@ -28,10 +28,37 @@ import {
   treeUnchanged,
   type TreeFileSnapshot,
   type TreeState,
+  PLANNING_CONVERSATION,
 } from './pipeline'
 import { LoopConfigError, validateExitCommand } from './loop'
 import type { MutationResult, TestResult } from '@shared/domain'
 import { auditPrompt, planPrompt, reviewDiffPrompt } from '@shared/protocol'
+
+describe('the planning conversation, declared', () => {
+  it('speaks three read-only stages with the gates reality has', () => {
+    // Consulted by speak and clarificationOf, pinned here: the planner's two
+    // turns share one resumed thread, the audit is a fresh counterpart, and
+    // only the planner's stages may park on a human question.
+    expect(PLANNING_CONVERSATION.drafting).toEqual({
+      status: 'drafting',
+      actor: 'planner',
+      resumed: true,
+      gate: 'clarification',
+    })
+    expect(PLANNING_CONVERSATION.auditing).toEqual({
+      status: 'auditing',
+      actor: 'auditor',
+      resumed: false,
+      gate: 'none',
+    })
+    expect(PLANNING_CONVERSATION.correcting).toEqual({
+      status: 'correcting',
+      actor: 'planner',
+      resumed: true,
+      gate: 'clarification',
+    })
+  })
+})
 
 describe('parsePlan', () => {
   it('reads milestones in order', () => {

@@ -1,5 +1,5 @@
 import type { Hold, HoldKind } from '@shared/holds'
-import { HOLD_CLASS, holdIdentity } from '@shared/holds'
+import { HOLD_CLASS, holdIdentity, STALL_AFTER_MS } from '@shared/holds'
 import type { Loop, Milestone, WorkPlan, Worktree } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import { EXECUTABLE_PAIRS } from '@shared/execution'
@@ -21,7 +21,7 @@ import { unresolvedBlockingOccurrences } from './gate'
  */
 const SESSION_LIMIT = 200
 
-export function computeHolds(repo: Repo, acked: ReadonlySet<string>): Hold[] {
+export function computeHolds(repo: Repo, acked: ReadonlySet<string>, now = Date.now()): Hold[] {
   const holds: Hold[] = []
 
   for (const session of repo.listSessions(SESSION_LIMIT, false)) {
@@ -49,6 +49,21 @@ export function computeHolds(repo: Repo, acked: ReadonlySet<string>): Hold[] {
         const worktree = repo.getWorktreeForPlan(plan.id)
         if (worktree && worktree.landedAt === null) {
           holds.push(mergeHold(session.id, plan, worktree))
+        }
+      }
+
+      // Stalls are checked before the executable-pair continue below: a
+      // running plan is exactly what that line skips, and running is the only
+      // status a stall can happen in. The stamp is written by the watchdog on
+      // real activity only, so a silent run's stamp freezes naturally — which
+      // is what makes the identity stable for the notify-once machinery.
+      if (plan.status === 'running') {
+        for (const milestone of repo.listMilestones(plan.id)) {
+          const inFlight = ['executing', 'testing', 'reviewing'].includes(milestone.status)
+          const stamp = milestone.runState?.lastActivityAt ?? null
+          if (inFlight && stamp !== null && now - stamp > STALL_AFTER_MS) {
+            holds.push(milestoneStallHold(session.id, plan, milestone, stamp))
+          }
         }
       }
 
@@ -82,6 +97,12 @@ export function computeHolds(repo: Repo, acked: ReadonlySet<string>): Hold[] {
   for (const loop of repo.listLoops()) {
     if (loop.status === 'exhausted' || loop.status === 'failed' || loop.status === 'killed') {
       holds.push(loopHold(loop))
+    } else if (
+      loop.status === 'running' &&
+      loop.lastActivityAt != null &&
+      now - loop.lastActivityAt > STALL_AFTER_MS
+    ) {
+      holds.push(loopStallHold(loop, loop.lastActivityAt))
     }
   }
 
@@ -323,6 +344,49 @@ function mergeHold(sessionId: string, plan: WorkPlan, worktree: Worktree): Hold 
     detail: `${plan.title} — branch ${worktree.branch} fast-forwards ${plan.repoPath} when you land it.`,
     sinceAt: worktree.createdAt,
     mock: plan.mock,
+  })
+}
+
+/**
+ * The generation is the frozen stamp itself: stable while the run stays
+ * silent (no activity means no writes), fresh per episode (activity resumed,
+ * then stalled again), so notify-once holds without a tick ever re-minting
+ * the identity. The detail stays static — no live-rendered age — because the
+ * engine dedupes publishes on snapshot equality; the inspection verdict joins
+ * it when one lands, changing the detail under the same identity.
+ */
+function milestoneStallHold(
+  sessionId: string,
+  plan: WorkPlan,
+  milestone: Milestone,
+  stalledSince: number,
+): Hold {
+  const inspection = milestone.runState?.lastInspection ?? null
+  const inspectionLine = inspection
+    ? ` The ${plan.executor.vendor === 'claude' ? 'Codex' : 'Claude'} inspection judged it ${inspection.verdict}: ${inspection.note}`
+    : ' A read-only inspection by the other vendor runs once per stall.'
+  return hold('run-stalled', milestone.id, String(stalledSince), {
+    sessionId,
+    planId: plan.id,
+    milestoneId: milestone.id,
+    loopId: null,
+    title: 'A run looks stalled',
+    detail: `${plan.title} — milestone ${milestone.index + 1}: ${milestone.title} has shown no activity past the stall threshold.${inspectionLine}`,
+    sinceAt: stalledSince,
+    mock: plan.mock,
+  })
+}
+
+function loopStallHold(loop: Loop, stalledSince: number): Hold {
+  return hold('run-stalled', loop.id, String(stalledSince), {
+    sessionId: null,
+    planId: null,
+    milestoneId: null,
+    loopId: loop.id,
+    title: 'A loop looks stalled',
+    detail: `${loop.goal} — no activity past the stall threshold. The kill switch remains yours; nothing stops automatically.`,
+    sinceAt: stalledSince,
+    mock: loop.mock,
   })
 }
 

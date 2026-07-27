@@ -37,7 +37,7 @@ import {
 } from '@shared/protocol'
 import { capture, isShellFree, splitCommand } from '@main/util/spawn'
 import { newId, type Repo } from '@main/store/repo'
-import { assertCapability, type AgentRegistry } from '@main/agents'
+import { assertCapability, type AgentRegistry, type RunResult } from '@main/agents'
 import { groupLedgerEntry } from '@main/ipc/ledger'
 import type { MilestonePhase } from '@shared/events'
 import type { OrchestratorDeps, RunGate } from './types'
@@ -54,6 +54,8 @@ const MAX_REMEDIATION_ROUNDS = 2
 
 const STAGE_TIMEOUT_MS = 30 * 60 * 1000
 const TEST_TIMEOUT_MS = 20 * 60 * 1000
+/** A stall inspection is a look, not a stage: bounded well under a turn. */
+const INSPECT_TIMEOUT_MS = 3 * 60 * 1000
 const MAX_DIFF_CHARS = 120_000
 
 export class PipelineError extends Error {}
@@ -95,6 +97,30 @@ export interface RunState {
  */
 const STOPPED_NOTE =
   'Stopped by you. The run state was preserved, so this milestone can be resumed with a fresh approval.'
+
+/**
+ * The planning conversation, as the engine reads it.
+ *
+ * Three read-only spoken stages: the planner drafts on its own thread, its
+ * counterpart audits fresh, and the planner answers the audit on the same
+ * resumed thread — with a human gate (a clarification) available exactly
+ * where guessing would bake an unagreed assumption into the plan. The audit
+ * has no such gate: an auditor's job is judgement over what is in front of
+ * it, and its dead end is parking the plan blocked, not asking.
+ *
+ * Consulted, not decorative: `speak` resolves the actor, the resumption and
+ * the telemetry label from the entry, and `clarificationOf` lets a reply park
+ * the stage only where the gate declares one. The apply half of each stage —
+ * what its parsed reply does to the plan — stays in the stage functions,
+ * named and explicit, because those consequences are the stage.
+ */
+export const PLANNING_CONVERSATION = {
+  drafting: { status: 'drafting', actor: 'planner', resumed: true, gate: 'clarification' },
+  auditing: { status: 'auditing', actor: 'auditor', resumed: false, gate: 'none' },
+  correcting: { status: 'correcting', actor: 'planner', resumed: true, gate: 'clarification' },
+} as const
+
+type PlanningStage = (typeof PLANNING_CONVERSATION)[keyof typeof PLANNING_CONVERSATION]
 
 /** What a stage parked on a question needs in order to pick up again. */
 type PendingStage =
@@ -240,35 +266,74 @@ export class Pipeline {
     )
   }
 
+  /**
+   * Who a conversation stage speaks as. The auditor is always the planner's
+   * counterpart, carrying the executor's model and effort onto the other
+   * vendor — never the planner grading its own plan.
+   */
+  private conversationActor(plan: WorkPlan, stage: PlanningStage): AgentConfig {
+    return stage.actor === 'planner'
+      ? plan.planner
+      : { ...plan.executor, vendor: this.registry.counterpart(plan.planner.vendor) }
+  }
+
+  /**
+   * One spoken stage of the planning conversation.
+   *
+   * Owns what every stage shares — actor resolution, the read-only run under
+   * the stage timeout, telemetry and usage accounting — so the stage functions
+   * hold only their contracts and their consequences. The whole conversation
+   * is read-only end to end: write exists only past the human approval.
+   */
+  private async speak(
+    plan: WorkPlan,
+    stage: PlanningStage,
+    input: { systemPrompt: string; prompt: string; resumeId?: string | null; signal?: AbortSignal },
+  ): Promise<RunResult> {
+    const cfg = this.conversationActor(plan, stage)
+    const result = await this.registry.get(cfg.vendor).run({
+      systemPrompt: input.systemPrompt,
+      prompt: input.prompt,
+      cfg,
+      capability: 'read',
+      cwd: plan.repoPath,
+      resumeId: stage.resumed ? (input.resumeId ?? null) : null,
+      signal: input.signal,
+      timeoutMs: STAGE_TIMEOUT_MS,
+      onActivity: (text) => this.stage(plan.id, stage.status, text),
+    })
+    this.repo.addPlanUsage(plan.id, result.usage)
+    return result
+  }
+
+  /** A clarification can park only the stages whose gate declares one. */
+  private clarificationOf(stage: PlanningStage, text: string): string {
+    return stage.gate === 'clarification' ? parseClarification(text) : ''
+  }
+
   private async runPlanning(
     plan: WorkPlan,
     input: { brief: string; answer?: string; resumeId?: string | null },
     signal?: AbortSignal,
   ): Promise<Milestone[]> {
-    this.setStatus(plan.id, 'drafting')
+    const stage = PLANNING_CONVERSATION.drafting
+    this.setStatus(plan.id, stage.status)
 
     const greenfield = await isGreenfield(plan.repoPath, signal)
-    const planner = this.registry.get(plan.planner.vendor)
-    const drafted = await planner.run({
+    const drafted = await this.speak(plan, stage, {
       systemPrompt:
         'You plan changes to real codebases. You are read-only in this turn. A plan naming files that do not exist is worse than no plan.',
       prompt: planPrompt(plan.kind, input.brief, plan.repoPath, input.answer ?? '', greenfield),
-      cfg: plan.planner,
-      capability: 'read',
-      cwd: plan.repoPath,
-      resumeId: input.resumeId ?? null,
+      resumeId: input.resumeId,
       signal,
-      timeoutMs: STAGE_TIMEOUT_MS,
-      onActivity: (text) => this.stage(plan.id, 'drafting', text),
     })
-    this.repo.addPlanUsage(plan.id, drafted.usage)
 
     if (drafted.error) {
       this.setStatus(plan.id, 'failed')
       throw new PipelineError(`planning failed: ${drafted.error}`)
     }
 
-    const question = parseClarification(drafted.text)
+    const question = this.clarificationOf(stage, drafted.text)
     if (question) {
       this.park(plan, question, {
         stage: 'planning',
@@ -297,21 +362,16 @@ export class Pipeline {
     greenfield: boolean,
     signal?: AbortSignal,
   ): Promise<Milestone[]> {
-    this.setStatus(plan.id, 'auditing')
+    const stage = PLANNING_CONVERSATION.auditing
+    this.setStatus(plan.id, stage.status)
 
-    const auditorVendor = this.registry.counterpart(plan.planner.vendor)
-    const result = await this.registry.get(auditorVendor).run({
+    const auditorVendor = this.conversationActor(plan, stage).vendor
+    const result = await this.speak(plan, stage, {
       systemPrompt:
         'You audit other engineers\u2019 plans before any code is written. You did not write this plan; your value is catching what its author assumed without checking. You are read-only.',
       prompt: auditPrompt(planText, plan.repoPath, greenfield),
-      cfg: { ...plan.executor, vendor: auditorVendor },
-      capability: 'read',
-      cwd: plan.repoPath,
       signal,
-      timeoutMs: STAGE_TIMEOUT_MS,
-      onActivity: (text) => this.stage(plan.id, 'auditing', text),
     })
-    this.repo.addPlanUsage(plan.id, result.usage)
 
     if (result.error) {
       return this.parkUncertifiedAudit(
@@ -387,9 +447,10 @@ export class Pipeline {
     },
     signal?: AbortSignal,
   ): Promise<Milestone[]> {
-    this.setStatus(plan.id, 'correcting')
+    const stage = PLANNING_CONVERSATION.correcting
+    this.setStatus(plan.id, stage.status)
 
-    const result = await this.registry.get(plan.planner.vendor).run({
+    const result = await this.speak(plan, stage, {
       systemPrompt:
         'You are correcting your own plan after an independent audit. Answer every finding; do not let an inconvenient one disappear.',
       prompt: correctionPrompt({
@@ -399,15 +460,9 @@ export class Pipeline {
         repoPath: plan.repoPath,
         answer: input.answer ?? '',
       }),
-      cfg: plan.planner,
-      capability: 'read',
-      cwd: plan.repoPath,
       resumeId: input.plannerResumeId,
       signal,
-      timeoutMs: STAGE_TIMEOUT_MS,
-      onActivity: (text) => this.stage(plan.id, 'correcting', text),
     })
-    this.repo.addPlanUsage(plan.id, result.usage)
 
     if (result.error) {
       return this.parkUnansweredCorrection(
@@ -417,7 +472,7 @@ export class Pipeline {
       )
     }
 
-    const question = parseClarification(result.text)
+    const question = this.clarificationOf(stage, result.text)
     if (question) {
       this.park(plan, question, {
         stage: 'correction',
@@ -762,6 +817,74 @@ export class Pipeline {
       enterAtVerify,
       resumedRound: state.round,
       seedTestResult,
+    })
+  }
+
+  /**
+   * One read-only cross-vendor look at a silent run: is it progressing or
+   * stuck? Invariant 6 applied to liveness — the judgment comes from the
+   * vendor that is not doing the work, it reads the execution root without
+   * touching it, and it decides nothing: the verdict lands in the run state,
+   * the stall hold shows it, and the stopper stays human. Called by the
+   * watchdog at most once per stall episode; every failure path is silent
+   * because an inspector that cannot answer must not look like a new problem.
+   */
+  async inspectStalledMilestone(milestoneId: Id): Promise<void> {
+    const milestone = this.repo.getMilestone(milestoneId)
+    if (!milestone) return
+    const plan = this.repo.getPlan(milestone.planId)
+    if (!plan) return
+    const state = this.repo.getMilestoneRunState<RunState>(milestoneId)
+    if (!state) return
+
+    const worktree = plan.isolation === 'worktree' ? this.repo.getWorktreeForPlan(plan.id) : null
+    const root = worktree && existsSync(worktree.path) ? worktree.path : plan.repoPath
+    const inspectorVendor = this.registry.counterpart(plan.executor.vendor)
+    const inspector = this.registry.get(inspectorVendor)
+
+    const reply = await inspector.run({
+      systemPrompt:
+        'You are a read-only inspector judging whether another agent’s in-flight run is progressing or stuck. You cannot and must not modify anything.',
+      prompt: [
+        `Another agent (${plan.executor.vendor}) is mid-run on a milestone in this repository and has shown no activity for a while. Judge from the working tree whether the run looks like it is progressing or wedged.`,
+        `MILESTONE: ${milestone.title}`,
+        milestone.intent.trim() ? `INTENT: ${milestone.intent.trim()}` : '',
+        milestone.expectedPaths.length
+          ? `EXPECTED PATHS: ${milestone.expectedPaths.join(', ')}`
+          : '',
+        `REMEDIATION ROUND: ${state.round + 1}`,
+        state.executionReport
+          ? `THE EXECUTOR LAST SAID:\n${state.executionReport}`
+          : '',
+        `Inspect the tree (git status, the expected paths, partial edits). Then reply with a fenced JSON block and nothing after it:\n\`\`\`json\n{ "verdict": "progressing" | "stuck" | "unclear", "note": "<one plain paragraph a person can act on>" }\n\`\`\``,
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+      cfg: { vendor: inspectorVendor, model: '', effort: 'medium', persona: '' },
+      capability: 'read',
+      cwd: root,
+      env: worktree ? { GIT_OPTIONAL_LOCKS: '0' } : undefined,
+      timeoutMs: INSPECT_TIMEOUT_MS,
+    })
+    this.repo.addPlanUsage(plan.id, reply.usage)
+
+    const parsed = extractJson<Record<string, unknown>>(reply.text).data
+    const rawVerdict = typeof parsed?.['verdict'] === 'string' ? parsed['verdict'] : ''
+    const verdict = ['progressing', 'stuck', 'unclear'].includes(rawVerdict)
+      ? rawVerdict
+      : 'unclear'
+    const note =
+      safeString(parsed?.['note']).trim() ||
+      reply.text.trim().slice(0, 400) ||
+      'the inspector returned nothing usable'
+
+    // Read-modify-write against the current blob: the run may have progressed
+    // (or settled and cleared) while the inspector was reading.
+    const fresh = this.repo.getMilestoneRunState<RunState>(milestoneId)
+    if (!fresh) return
+    this.repo.setMilestoneRunState(milestoneId, {
+      ...fresh,
+      lastInspection: { at: Date.now(), verdict, note },
     })
   }
 

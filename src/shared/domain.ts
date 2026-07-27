@@ -747,6 +747,12 @@ export const Loop = z.object({
   startedAt: Timestamp,
   endedAt: Timestamp.nullable().default(null),
   stopReason: z.string().default(''),
+  /**
+   * When the loop last showed real activity, for stall detection. Written by
+   * the liveness watchdog on activity only (throttled), never on a tick.
+   * Optional: absent means the watchdog never saw this loop run.
+   */
+  lastActivityAt: Timestamp.nullable().optional(),
 })
 export type Loop = z.infer<typeof Loop>
 

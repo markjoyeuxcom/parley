@@ -1368,6 +1368,7 @@ export class Repo {
       startedAt: num(row['started_at']),
       endedAt: nullableNum(row['ended_at']),
       stopReason: str(row['stop_reason']),
+      lastActivityAt: nullableNum(row['last_activity_at']),
     }
   }
 
@@ -1393,6 +1394,11 @@ export class Repo {
     const loop = this.getLoop(id)
     if (!loop) throw new Error(`loop ${id} disappeared`)
     return loop
+  }
+
+  /** The liveness stamp. Written on real activity only (throttled), silently. */
+  setLoopActivity(id: Id, at: number): void {
+    this.db.run(`UPDATE loops SET last_activity_at = ? WHERE id = ?`, at, id)
   }
 
   setLoopStatus(id: Id, status: Loop['status'], stopReason = ''): void {

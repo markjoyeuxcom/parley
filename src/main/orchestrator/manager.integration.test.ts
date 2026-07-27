@@ -1448,6 +1448,32 @@ describe('adopting work that is already in the tree', () => {
 })
 
 describe('the planner answers its own audit', () => {
+  it('corrects on the planner’s own resumed thread; the audit speaks fresh', async () => {
+    // The conversation's declared shape, proven as behaviour: drafting starts
+    // a thread, the audit is a stranger to it on purpose, and the correction
+    // is a reply on the planner's own thread — a resumed planner still holds
+    // its draft, so correcting costs a critique rather than a re-explanation.
+    const { registry } = await planIn(mkdtempSync(join(tmpdir(), 'parley-thread-')))
+
+    const planner = registry.get('claude') as unknown as {
+      requests: { systemPrompt: string; resumeId: string | null }[]
+    }
+    const auditor = registry.get('codex') as unknown as {
+      requests: { systemPrompt: string; resumeId: string | null }[]
+    }
+    const drafting = planner.requests.find((r) => r.systemPrompt.includes('You plan changes'))
+    const correcting = planner.requests.find((r) =>
+      r.systemPrompt.includes('correcting your own plan'),
+    )
+    const auditing = auditor.requests.find((r) =>
+      r.systemPrompt.includes('audit other engineers'),
+    )
+
+    expect(drafting?.resumeId).toBeNull()
+    expect(correcting?.resumeId).toMatch(/^mock-claude-\d+$/)
+    expect(auditing?.resumeId).toBeNull()
+  })
+
   async function planIn(
     repoPath: string,
     brief = 'x',

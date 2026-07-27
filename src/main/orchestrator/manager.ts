@@ -19,6 +19,7 @@ import type { AgentRegistry } from '@main/agents'
 import { isShellFree, shellMetacharsIn } from '@shared/command'
 import { newId, type Repo } from '@main/store/repo'
 import { HoldsEngine } from './holds'
+import { LivenessWatchdog } from './liveness'
 import { landWorktree } from './worktrees'
 import { LoopRunner, validateExitCommand, type LoopOutcome } from './loop'
 import { missingExpectedPaths, Pipeline, readTree } from './pipeline'
@@ -121,6 +122,7 @@ export class Manager {
   private readonly pipeline: Pipeline
   private readonly deps: OrchestratorDeps
   private readonly holds: HoldsEngine
+  private readonly liveness: LivenessWatchdog
   readonly repo: Repo
   readonly registry: AgentRegistry
 
@@ -128,13 +130,35 @@ export class Manager {
     // The holds engine sits in front of emit: every durable transition already
     // flows through that one function, so instrumenting it here means every
     // runner — pipeline, sessions, loops — keeps the attention queue current
-    // without knowing it exists.
+    // without knowing it exists. The liveness watchdog observes the same
+    // stream one layer earlier: activity events are its whole signal, and
+    // they are exactly what the holds engine deliberately ignores.
     this.holds = new HoldsEngine(deps.repo, deps.emit, deps.notifyUser)
-    this.deps = { ...deps, emit: this.holds.emit }
+    this.liveness = new LivenessWatchdog({
+      repo: deps.repo,
+      holdsChanged: () => this.holds.schedule(),
+      inspectMilestone: (milestoneId) => {
+        // Fire-and-forget by design; the verdict lands in the run state and
+        // the recompute surfaces it. An inspector that fails must not look
+        // like a new problem.
+        void this.pipeline
+          .inspectStalledMilestone(milestoneId)
+          .then(() => this.holds.schedule())
+          .catch(() => {})
+      },
+    })
+    this.deps = {
+      ...deps,
+      emit: (event) => {
+        this.liveness.observe(event)
+        this.holds.emit(event)
+      },
+    }
     this.repo = deps.repo
     this.registry = deps.registry
     this.pipeline = new Pipeline(this.deps)
     this.seedSkills()
+    this.liveness.start()
     // Publish (and notify, once each) whatever was already waiting when the
     // app started — including holds created moments before a quit.
     this.holds.schedule()
@@ -715,6 +739,8 @@ export class Manager {
   disposeAll(): void {
     for (const runner of this.sessions.values()) runner.gate.stop()
     for (const runner of this.loops.values()) runner.gate.stop()
+    for (const gate of this.milestoneRuns.values()) gate.stop()
+    this.liveness.dispose()
   }
 
   defaultRepoPath(): string {
