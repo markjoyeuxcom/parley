@@ -1551,11 +1551,14 @@ describe('the planner answers its own audit', () => {
     expect(parked?.correctionNote).toMatch(/audited the plan and judged it/i)
     expect(milestones).toHaveLength(2)
 
-    const resumed = await manager.answerPlan(plan.id, 'Apply the cap per host.')
+    // The answer returns immediately; the settled record is read back after
+    // the resumed run completes, which whenPlanSettled now covers.
+    manager.answerPlan(plan.id, 'Apply the cap per host.')
+    await manager.whenPlanSettled(plan.id)
     const note = repo.getPlan(plan.id)?.correctionNote ?? ''
 
-    expect(resumed.plan.status).toBe('ready')
-    expect(resumed.milestones).toHaveLength(1)
+    expect(repo.getPlan(plan.id)?.status).toBe('ready')
+    expect(repo.listMilestones(plan.id)).toHaveLength(1)
     expect(note).toMatch(/audited the plan and judged it/i)
     expect(note).toMatch(/The planner answered the audit/i)
   })
@@ -1567,11 +1570,12 @@ describe('the planner answers its own audit', () => {
 
     expect(repo.getPlan(plan.id)?.status).toBe('awaiting-clarification')
 
-    const resumed = await manager.answerPlan(plan.id, 'Apply the cap per host.')
+    manager.answerPlan(plan.id, 'Apply the cap per host.')
+    await manager.whenPlanSettled(plan.id)
 
-    expect(resumed.plan.status).toBe('blocked')
+    expect(repo.getPlan(plan.id)?.status).toBe('blocked')
     expect(repo.getPlan(plan.id)?.correctionNote).toMatch(/recorded no disposition/i)
-    expect(resumed.milestones).toHaveLength(2)
+    expect(repo.listMilestones(plan.id)).toHaveLength(2)
   })
 })
 
@@ -1619,23 +1623,27 @@ describe('a planner that needs a decision from the user', () => {
 
   it('continues once answered, and does not ask twice', async () => {
     const { manager, repo, plan } = await planAsking()
-    const resumed = await manager.answerPlan(plan.id, 'Per host.')
+    // Returns before the resumed run settles — the settled record is what the
+    // repo holds after whenPlanSettled, which covers resumed runs too.
+    manager.answerPlan(plan.id, 'Per host.')
+    await manager.whenPlanSettled(plan.id)
 
-    expect(resumed.plan.status).toBe('ready')
-    expect(resumed.plan.question).toBe('')
-    expect(resumed.milestones.length).toBeGreaterThan(0)
-    expect(repo.getPlan(plan.id)?.status).toBe('ready')
+    const stored = repo.getPlan(plan.id)
+    expect(stored?.status).toBe('ready')
+    expect(stored?.question).toBe('')
+    expect(repo.listMilestones(plan.id).length).toBeGreaterThan(0)
   })
 
   it('refuses an answer when nothing was asked', async () => {
     const { manager, plan } = await planAsking()
-    await manager.answerPlan(plan.id, 'Per host.')
-    await expect(manager.answerPlan(plan.id, 'again')).rejects.toThrow(/not waiting/i)
+    manager.answerPlan(plan.id, 'Per host.')
+    await manager.whenPlanSettled(plan.id)
+    expect(() => manager.answerPlan(plan.id, 'again')).toThrow(/not waiting/i)
   })
 
   it('refuses an empty answer', async () => {
     const { manager, plan } = await planAsking()
-    await expect(manager.answerPlan(plan.id, '   ')).rejects.toThrow(/answer is required/i)
+    expect(() => manager.answerPlan(plan.id, '   ')).toThrow(/answer is required/i)
   })
 })
 

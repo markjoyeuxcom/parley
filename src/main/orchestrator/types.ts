@@ -6,6 +6,12 @@ export interface OrchestratorDeps {
   repo: Repo
   registry: AgentRegistry
   emit: (event: AppEvent) => void
+  /**
+   * Native notification hook, injected by the entrypoint so the orchestrator
+   * never imports Electron (tests cannot load it). Optional: absent in tests,
+   * and holds still publish and persist — the banner is supplementary.
+   */
+  notifyUser?: (title: string, body: string) => void
 }
 
 /**

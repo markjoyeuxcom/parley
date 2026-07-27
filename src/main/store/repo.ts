@@ -862,6 +862,40 @@ export class Repo {
       .map((r) => this.toApproval(r))
   }
 
+  // ─── Decision holds ────────────────────────────────────────────────────────
+  // The open set is derived, never stored (orchestrator/holds.ts). These
+  // persist only the human's acknowledgements and the notify-once stamps,
+  // keyed by content-addressed hold identity so both survive recomputation.
+
+  ackHold(identity: string, at = Date.now()): void {
+    this.db.run(
+      `INSERT INTO hold_acks (identity, acked_at) VALUES (?, ?)
+       ON CONFLICT(identity) DO NOTHING`,
+      identity,
+      at,
+    )
+  }
+
+  listHoldAcks(): Set<string> {
+    return new Set(this.db.all(`SELECT identity FROM hold_acks`).map((row) => str(row['identity'])))
+  }
+
+  /**
+   * Records that a hold was notified. True exactly once per identity — the
+   * insert either lands or hits the primary key, which is what makes
+   * "notify once, ever" atomic rather than a check-then-act race.
+   */
+  stampNotified(identity: string, at = Date.now()): boolean {
+    return (
+      this.db.run(
+        `INSERT INTO hold_notifications (identity, notified_at) VALUES (?, ?)
+         ON CONFLICT(identity) DO NOTHING`,
+        identity,
+        at,
+      ).changes === 1
+    )
+  }
+
   // ─── Plans and milestones ──────────────────────────────────────────────────
 
   createPlan(plan: WorkPlan): WorkPlan {

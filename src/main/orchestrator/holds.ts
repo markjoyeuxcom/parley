@@ -1,6 +1,7 @@
 import type { Hold, HoldKind } from '@shared/holds'
 import { HOLD_CLASS, holdIdentity } from '@shared/holds'
 import type { Loop, Milestone, WorkPlan } from '@shared/domain'
+import type { AppEvent } from '@shared/events'
 import { EXECUTABLE_PAIRS } from '@shared/execution'
 import type { Repo } from '@main/store/repo'
 import { unresolvedBlockingOccurrences } from './gate'
@@ -185,6 +186,105 @@ function milestoneFailedHold(sessionId: string, plan: WorkPlan, milestone: Miles
     sinceAt: milestone.testResult?.ranAt ?? milestone.createdAt,
     mock: plan.mock,
   })
+}
+
+/**
+ * The event types whose underlying writes can change the derived hold set.
+ *
+ * A positive list, because the bus also carries per-token deltas and activity
+ * telemetry that fire constantly and can never move a hold. Two mutations
+ * reach the database without any event at all — archiving a session, and the
+ * ack itself — so the Manager exposes an explicit recompute for those paths.
+ */
+const RECOMPUTES_ON: ReadonlySet<AppEvent['type']> = new Set([
+  'session.created',
+  'session.status',
+  'session.ledger',
+  'plan.created',
+  'plan.status',
+  'plan.milestone',
+  'plan.milestones',
+  'loop.created',
+  'loop.status',
+])
+
+/**
+ * Keeps the derived hold set current, published, and notified — once.
+ *
+ * Sits in front of the orchestrator's emit: every durable transition already
+ * flows through that function, so wrapping it is the one place that observes
+ * them all. Recomputation is coalesced per microtask because a single
+ * correction emits a burst of milestone events, and publishing is skipped when
+ * the snapshot is unchanged, so listeners only ever see real movement. The
+ * event bus is fire-and-forget with no outbox — a closed window drops events —
+ * which is why the renderer hydrates from holds.list and this event only keeps
+ * a live window current.
+ */
+export class HoldsEngine {
+  private lastPublished = ''
+  private scheduled = false
+
+  constructor(
+    private readonly repo: Repo,
+    private readonly forward: (event: AppEvent) => void,
+    private readonly notifyUser?: (title: string, body: string) => void,
+  ) {}
+
+  /** The instrumented emit the orchestrator runs on. */
+  readonly emit = (event: AppEvent): void => {
+    this.forward(event)
+    if (RECOMPUTES_ON.has(event.type)) this.schedule()
+  }
+
+  list(): Hold[] {
+    return computeHolds(this.repo, this.repo.listHoldAcks())
+  }
+
+  /**
+   * Acknowledges a notice-class hold. Refused for decision-class holds here,
+   * in the main process rather than the UI: an ack-able "waiting on your
+   * answer" would clear the badge while the plan stays parked, which is the
+   * exact silent stall holds exist to kill.
+   */
+  ack(holdId: string): Hold[] {
+    const hold = this.list().find((entry) => entry.id === holdId)
+    if (!hold) throw new Error('no such hold — it may already have cleared')
+    if (hold.actionable) {
+      throw new Error(
+        'this hold clears by acting on it — answer, approve, or land — not by acknowledgement',
+      )
+    }
+    this.repo.ackHold(holdId)
+    const after = this.list()
+    this.publish(after)
+    return after
+  }
+
+  /** Coalesces to one recompute per microtask, however many events arrive. */
+  schedule(): void {
+    if (this.scheduled) return
+    this.scheduled = true
+    queueMicrotask(() => {
+      this.scheduled = false
+      this.publish(this.list())
+    })
+  }
+
+  private publish(holds: Hold[]): void {
+    const snapshot = JSON.stringify(holds)
+    if (snapshot === this.lastPublished) return
+    this.lastPublished = snapshot
+    this.forward({ type: 'holds.changed', holds })
+
+    for (const hold of holds) {
+      // The stamp is written whether or not a notifier is attached, and before
+      // any display attempt: a hold notifies at most once, ever, including
+      // across restarts and regardless of what the OS does with the banner.
+      if (this.repo.stampNotified(hold.id)) {
+        this.notifyUser?.(hold.mock ? `Mock — ${hold.title}` : hold.title, hold.detail)
+      }
+    }
+  }
 }
 
 function loopHold(loop: Loop): Hold {

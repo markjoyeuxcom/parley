@@ -170,4 +170,24 @@ describe('schema migrations', () => {
       { entryKind: 'sighting', id: 'sighting-last', seq: 4 },
     ])
   })
+
+  it('adds the hold tables when upgrading from version 12', () => {
+    const db = openDatabase(':memory:')
+    db.exec(`DROP TABLE hold_acks`)
+    db.exec(`DROP TABLE hold_notifications`)
+    db.run(`UPDATE meta SET value = '12' WHERE key = 'schema_version'`)
+
+    migrate(db)
+
+    expect(db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'schema_version'`)?.value).toBe(
+      // The head version, never a literal - a hardcoded number fails on every
+      // future migration for a reason unrelated to what this test checks.
+      String(SCHEMA_VERSION),
+    )
+    for (const table of ['hold_acks', 'hold_notifications']) {
+      expect(
+        db.get(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table),
+      ).toBeTruthy()
+    }
+  })
 })

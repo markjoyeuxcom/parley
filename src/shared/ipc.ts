@@ -136,6 +136,8 @@ export const PickDirectoryReq = z.object({ title: z.string().default('Choose a f
 
 export const GetSessionReq = z.object({ sessionId: Id })
 export const ListLedgerReq = z.object({ sessionId: Id })
+/** Acknowledges a notice-class hold. Decision-class holds refuse — they clear by acting. */
+export const AckHoldReq = z.object({ holdId: Id })
 export const DisposeLedgerFindingReq = z.object({
   sessionId: Id,
   findingId: Id,
@@ -173,6 +175,8 @@ export const COMMANDS = {
   'session.export': ExportReportReq,
   'ledger.list': ListLedgerReq,
   'ledger.dispose': DisposeLedgerFindingReq,
+  'holds.list': null,
+  'holds.ack': AckHoldReq,
   'plan.create': CreatePlanReq,
   'plan.get': GetPlanReq,
   'plan.list': null,

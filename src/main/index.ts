@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, nativeTheme, Notification, shell } from 'electron'
 import type { AppEvent, PtyChunk } from '@shared/events'
 import { CH, type CliHealth } from '@shared/ipc'
 import { AgentRegistry } from '@main/agents'
@@ -92,7 +92,18 @@ async function bootstrap(): Promise<void> {
 
   const registry = new AgentRegistry()
 
-  manager = new Manager({ repo, registry, emit })
+  manager = new Manager({
+    repo,
+    registry,
+    emit,
+    // One native banner per newly-appearing hold — the push half of the
+    // attention queue. Supplementary by design: the stamp is written either
+    // way, and the durable surface is the holds list itself, so a denied
+    // notification permission degrades to the in-app badge, silently.
+    notifyUser: (title, body) => {
+      if (Notification.isSupported()) new Notification({ title, body }).show()
+    },
+  })
 
   pty = new PtyManager({
     // Terminal output bypasses the validated event channel: a busy pane emits

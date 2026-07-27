@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 12
+export const SCHEMA_VERSION = 13
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -286,6 +286,21 @@ CREATE TABLE IF NOT EXISTS skills (
   prompt      TEXT NOT NULL,
   vendor_hint TEXT,
   built_in    INTEGER NOT NULL DEFAULT 0
+);
+
+-- Decision holds are derived, never stored — see shared/holds.ts. These two
+-- tables carry the only durable facts about one: that a human acknowledged a
+-- notice-class hold, and that it was notified once. Both are keyed by the
+-- content-addressed hold identity, which is what lets them survive
+-- recomputation and restarts without a holds table to go stale.
+CREATE TABLE IF NOT EXISTS hold_acks (
+  identity TEXT PRIMARY KEY,
+  acked_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hold_notifications (
+  identity    TEXT PRIMARY KEY,
+  notified_at INTEGER NOT NULL
 );
 `
 
@@ -567,6 +582,10 @@ export function migrate(db: Db): void {
         db.exec(`ALTER TABLE agent_threads_seated RENAME TO agent_threads`)
       }
     })
+  }
+  if (current < 13) {
+    // Decision holds are additive: SCHEMA creates hold_acks and
+    // hold_notifications fresh, and no existing row changes shape.
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

@@ -12,6 +12,7 @@ import type {
   WorkPlan,
 } from './domain'
 import type { LedgerEntry } from './ipc'
+import type { Hold } from './holds'
 
 /**
  * Events pushed from the main process to the renderer.
@@ -75,6 +76,16 @@ export type AppEvent =
   | { type: 'pane.closed'; paneId: Id }
   // Cross-cutting
   | { type: 'notice'; level: 'info' | 'warn' | 'error'; message: string }
+  /**
+   * The authoritative open-hold set, replacing whatever the client holds.
+   *
+   * A snapshot rather than deltas, on the plan.milestones precedent: holds are
+   * derived, so "which ones closed" is not an event the main process observes —
+   * it is the difference between two computations, and shipping the whole set
+   * makes the renderer's fold trivially correct. The durable copy is queryable
+   * over holds.list at any time; this event only keeps a live window current.
+   */
+  | { type: 'holds.changed'; holds: Hold[] }
 
 /** Which stage of the audited pipeline a live activity line belongs to. */
 export type MilestonePhase = 'executing' | 'testing' | 'reviewing'

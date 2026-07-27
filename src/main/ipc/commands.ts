@@ -78,7 +78,11 @@ const HANDLERS: Record<CommandName, Handler> = {
     if (archived && (session.status === 'running' || session.status === 'paused')) {
       throw new RequestError('stop the session before archiving it')
     }
-    return ctx.manager.repo.setSessionArchived(sessionId, archived)
+    const updated = ctx.manager.repo.setSessionArchived(sessionId, archived)
+    // Archiving reaches the database without any event, and it hides (or
+    // reveals) every hold the session was contributing.
+    ctx.manager.holdsChanged()
+    return updated
   },
 
   'session.deletionImpact': (p, ctx) => {
@@ -153,6 +157,10 @@ const HANDLERS: Record<CommandName, Handler> = {
   },
   'ledger.dispose': (p, ctx) =>
     disposeLedgerFinding(ctx.manager.repo, p as never, (event) => emit(ctx, event)),
+
+  // ── Decision holds ────────────────────────────────────────────────────────
+  'holds.list': (_p, ctx) => ctx.manager.listHolds(),
+  'holds.ack': (p, ctx) => ctx.manager.ackHold((p as { holdId: string }).holdId),
 
   // ── Plans ──────────────────────────────────────────────────────────────────
   'plan.create': (p, ctx) => ctx.manager.createPlan(p as never),

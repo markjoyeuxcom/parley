@@ -13,9 +13,11 @@ import {
   type WorkPlan,
 } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
+import type { Hold } from '@shared/holds'
 import type { AgentRegistry } from '@main/agents'
 import { isShellFree, shellMetacharsIn } from '@shared/command'
 import { newId, type Repo } from '@main/store/repo'
+import { HoldsEngine } from './holds'
 import { LoopRunner, validateExitCommand, type LoopOutcome } from './loop'
 import { missingExpectedPaths, Pipeline, readTree } from './pipeline'
 import { assertNoUnresolvedBlockingOccurrences } from './gate'
@@ -106,14 +108,25 @@ export class Manager {
   private readonly planRuns = new Map<Id, Promise<void>>()
   private readonly loops = new Map<Id, LoopRunner>()
   private readonly pipeline: Pipeline
+  private readonly deps: OrchestratorDeps
+  private readonly holds: HoldsEngine
   readonly repo: Repo
   readonly registry: AgentRegistry
 
-  constructor(private readonly deps: OrchestratorDeps) {
+  constructor(deps: OrchestratorDeps) {
+    // The holds engine sits in front of emit: every durable transition already
+    // flows through that one function, so instrumenting it here means every
+    // runner — pipeline, sessions, loops — keeps the attention queue current
+    // without knowing it exists.
+    this.holds = new HoldsEngine(deps.repo, deps.emit, deps.notifyUser)
+    this.deps = { ...deps, emit: this.holds.emit }
     this.repo = deps.repo
     this.registry = deps.registry
-    this.pipeline = new Pipeline(deps)
+    this.pipeline = new Pipeline(this.deps)
     this.seedSkills()
+    // Publish (and notify, once each) whatever was already waiting when the
+    // app started — including holds created moments before a quit.
+    this.holds.schedule()
   }
 
   private emit(event: AppEvent): void {
@@ -324,8 +337,14 @@ export class Manager {
    *
    * The stage picks up from where it stopped with the answer in hand, rather
    * than restarting — the planner is resumed, so it still holds its own draft.
+   *
+   * Deliberately not awaited, exactly like createPlan and for the same reason:
+   * the resumed run is up to three agent stages with a 30-minute timeout each,
+   * and holding the caller's invoke open for the duration parked the renderer
+   * on "Continuing…" for real runs. Registered in planRuns so shutdown and
+   * tests can still wait on it; the outcome arrives as plan events.
    */
-  async answerPlan(planId: Id, answer: string): Promise<{ plan: WorkPlan; milestones: Milestone[] }> {
+  answerPlan(planId: Id, answer: string): { plan: WorkPlan; milestones: Milestone[] } {
     const plan = this.repo.getPlan(planId)
     if (!plan) throw new RequestError('no such plan')
     if (plan.status !== 'awaiting-clarification') {
@@ -334,8 +353,40 @@ export class Manager {
     const trimmed = answer.trim()
     if (!trimmed) throw new RequestError('an answer is required')
 
-    const milestones = await this.pipeline.resume(plan, trimmed)
-    return { plan: this.repo.getPlan(planId) ?? plan, milestones }
+    const run = this.pipeline
+      .resume(plan, trimmed)
+      .then(() => undefined)
+      .catch((err: unknown) => {
+        const detail = err instanceof Error ? err.message : String(err)
+        if ((this.repo.getPlan(plan.id)?.status ?? 'failed') !== 'failed') {
+          this.repo.setPlanStatus(plan.id, 'failed')
+          this.emit({ type: 'plan.status', planId: plan.id, status: 'failed' })
+        }
+        this.emit({ type: 'notice', level: 'error', message: `Planning failed: ${detail}` })
+      })
+      .finally(() => this.planRuns.delete(plan.id))
+    this.planRuns.set(plan.id, run)
+
+    return { plan: this.repo.getPlan(planId) ?? plan, milestones: [] }
+  }
+
+  // ─── Decision holds ────────────────────────────────────────────────────────
+
+  listHolds(): Hold[] {
+    return this.holds.list()
+  }
+
+  /** Acknowledges a notice-class hold; decision-class holds refuse (see engine). */
+  ackHold(holdId: string): Hold[] {
+    return this.holds.ack(holdId)
+  }
+
+  /**
+   * Explicit recompute for the two mutations that reach the database without
+   * emitting any event: archiving a session, and the ack itself.
+   */
+  holdsChanged(): void {
+    this.holds.schedule()
   }
 
   /**
