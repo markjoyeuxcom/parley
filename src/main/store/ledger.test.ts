@@ -88,6 +88,17 @@ describe('finding ledger persistence', () => {
         createdAt: 3,
       }),
     )
+    const repeatedReview = repo.recordFindingOccurrence(
+      occurrence(finding.id, {
+        id: 'repeated-review',
+        planId: 'plan-1',
+        milestoneId: 'milestone-1',
+        round: 0,
+        kind: 'blocking',
+        source: 'review',
+        createdAt: 3,
+      }),
+    )
     const otherMilestone = repo.recordFindingOccurrence(
       occurrence(finding.id, {
         id: 'other-milestone',
@@ -102,6 +113,7 @@ describe('finding ledger persistence', () => {
     expect(repo.listFindingOccurrences(session.id)).toEqual([
       audit,
       firstReview,
+      repeatedReview,
       otherMilestone,
     ])
     expect(() =>
@@ -228,7 +240,19 @@ describe('finding ledger session deletion', () => {
     const repo = freshRepo()
     const session = makeSession(repo)
     const first = repo.upsertLedgerFinding(session.id, 'First finding.', 1)
-    repo.upsertLedgerFinding(session.id, 'Second finding.', 2)
+    repo.replaceFindings(session.id, [
+      {
+        id: 'verdict-finding',
+        sessionId: session.id,
+        priority: 'P1',
+        status: 'confirmed',
+        title: 'Verdict finding',
+        detail: 'A finding recorded with the verdict.',
+        evidence: [{ path: 'src/example.ts', line: 1, symbol: '', excerpt: '' }],
+        raisedBy: 'a',
+        createdAt: 2,
+      },
+    ])
     const sighting = repo.recordFindingOccurrence(
       occurrence(first.id, { id: 'first-sighting', createdAt: 3 }),
     )
@@ -256,6 +280,7 @@ describe('finding ledger session deletion', () => {
     repo.deleteSession(session.id)
 
     expect(repo.listLedgerFindings(session.id)).toHaveLength(0)
+    expect(repo.listFindings(session.id)).toHaveLength(0)
     expect(repo.listFindingOccurrences(session.id)).toHaveLength(0)
     expect(repo.listFindingDispositions(session.id)).toHaveLength(0)
   })
@@ -264,15 +289,41 @@ describe('finding ledger session deletion', () => {
     const repo = freshRepo()
     const doomed = makeSession(repo, 'doomed')
     const keeper = makeSession(repo, 'keeper')
-    repo.upsertLedgerFinding(doomed.id, 'Same text.', 1)
+    const doomedFinding = repo.upsertLedgerFinding(doomed.id, 'Same text.', 1)
+    const doomedOccurrence = repo.recordFindingOccurrence(
+      occurrence(doomedFinding.id, { id: 'doomed-occurrence', createdAt: 3 }),
+    )
+    repo.disposeFinding({
+      id: 'doomed-disposition',
+      findingId: doomedFinding.id,
+      occurrenceId: doomedOccurrence.id,
+      state: 'dismissed',
+      note: '',
+      source: 'human',
+      createdAt: 4,
+    })
     const keptFinding = repo.upsertLedgerFinding(keeper.id, 'Same text.', 2)
     const keptOccurrence = repo.recordFindingOccurrence(
-      occurrence(keptFinding.id, { id: 'kept-occurrence', createdAt: 3 }),
+      occurrence(keptFinding.id, { id: 'kept-occurrence', createdAt: 5 }),
     )
+    const keptDisposition = repo.disposeFinding({
+      id: 'kept-disposition',
+      findingId: keptFinding.id,
+      occurrenceId: keptOccurrence.id,
+      state: 'resolved',
+      note: '',
+      source: 'pipeline',
+      createdAt: 6,
+    })
+
+    expect(repo.listLedgerFindings(keeper.id)).toEqual([keptFinding])
+    expect(repo.listFindingOccurrences(keeper.id)).toEqual([keptOccurrence])
+    expect(repo.listFindingDispositions(keeper.id)).toEqual([keptDisposition])
 
     repo.deleteSession(doomed.id)
 
     expect(repo.listLedgerFindings(keeper.id)).toEqual([keptFinding])
     expect(repo.listFindingOccurrences(keeper.id)).toEqual([keptOccurrence])
+    expect(repo.listFindingDispositions(keeper.id)).toEqual([keptDisposition])
   })
 })
