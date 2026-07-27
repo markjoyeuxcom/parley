@@ -2,6 +2,7 @@ import { homedir } from 'node:os'
 import { statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import {
+  type Approval,
   emptyUsage,
   type Id,
   type Loop,
@@ -16,6 +17,7 @@ import { isShellFree, shellMetacharsIn } from '@shared/command'
 import { newId, type Repo } from '@main/store/repo'
 import { LoopRunner, validateExitCommand, type LoopOutcome } from './loop'
 import { missingExpectedPaths, Pipeline, readTree } from './pipeline'
+import { assertNoUnresolvedBlockingOccurrences } from './gate'
 import { SessionRunner } from './session'
 import type { OrchestratorDeps } from './types'
 
@@ -355,6 +357,15 @@ export class Manager {
 
   async runMilestone(milestoneId: Id, approvalId: Id): Promise<Milestone> {
     return this.pipeline.runMilestone(milestoneId, approvalId)
+  }
+
+  grantMilestoneApproval(milestoneId: Id, summary: string): Approval {
+    const milestone = this.repo.getMilestone(milestoneId)
+    if (!milestone) throw new RequestError('no such milestone')
+    const plan = this.repo.getPlan(milestone.planId)
+    if (!plan) throw new RequestError('the plan for this milestone is missing')
+    assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
+    return this.repo.grantApproval('milestone.execute', milestoneId, summary)
   }
 
   /**

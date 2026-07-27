@@ -8,6 +8,7 @@ import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
 import { Repo } from '@main/store/repo'
 import { emptyUsage, type Mutation } from '@shared/domain'
+import { occurrenceState } from '@shared/ledger'
 import { Manager, RequestError } from './manager'
 
 /**
@@ -30,6 +31,25 @@ function harness(): {
   const events: AppEvent[] = []
   const manager = new Manager({ repo, registry, emit: (event) => events.push(event) })
   return { manager, repo, events, registry }
+}
+
+function disposeOpenBlockingOccurrences(repo: Repo, sessionId: string): void {
+  const dispositions = repo.listFindingDispositions(sessionId)
+  for (const occurrence of repo.listFindingOccurrences(sessionId)) {
+    if (
+      occurrence.kind !== 'blocking' ||
+      occurrenceState(occurrence, dispositions) !== 'open'
+    ) {
+      continue
+    }
+    repo.disposeFinding({
+      findingId: occurrence.findingId,
+      occurrenceId: occurrence.id,
+      state: 'accepted-risk',
+      note: 'The test operator explicitly accepted this audited risk.',
+      source: 'human',
+    })
+  }
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
@@ -519,6 +539,7 @@ describe('handing a rejection back to the executor', () => {
       mutations,
       expectedPaths,
     })
+    disposeOpenBlockingOccurrences(repo, session.id)
     const approval = repo.grantApproval('milestone.execute', first.id, 'allow')
     const done = await manager.runMilestone(first.id, approval.id)
     return { done, events, repo, registry }
@@ -1310,6 +1331,7 @@ describe('a running milestone reports what it is doing', () => {
     const milestones = repo.listMilestones(plan.id)
     const first = milestones[0]
     if (!first) throw new Error('expected a milestone')
+    disposeOpenBlockingOccurrences(repo, session.id)
     const approval = repo.grantApproval('milestone.execute', first.id, 'allow')
     await manager.runMilestone(first.id, approval.id)
 
@@ -1357,6 +1379,7 @@ describe('a running milestone reports what it is doing', () => {
     const milestones = repo.listMilestones(plan.id)
     const first = milestones[0]
     if (!first) throw new Error('expected a milestone')
+    disposeOpenBlockingOccurrences(repo, session.id)
     const approval = repo.grantApproval('milestone.execute', first.id, 'allow')
     await manager.runMilestone(first.id, approval.id)
 
@@ -1480,6 +1503,7 @@ describe('mock runs are marked as such, permanently', () => {
     const milestones = repo.listMilestones(plan.id)
     const first = milestones[0]
     if (!first) throw new Error('expected a milestone')
+    disposeOpenBlockingOccurrences(repo, session.id)
     const approval = repo.grantApproval('milestone.execute', first.id, 'allow')
     const done = await manager.runMilestone(first.id, approval.id)
 
@@ -1535,6 +1559,7 @@ describe('an executor that writes nothing', () => {
     const milestones = repo.listMilestones(plan.id)
     const first = milestones[0]
     if (!first) throw new Error('expected a milestone')
+    disposeOpenBlockingOccurrences(repo, session.id)
     const approval = repo.grantApproval('milestone.execute', first.id, 'allow the write')
     return manager.runMilestone(first.id, approval.id)
   }
@@ -1667,13 +1692,27 @@ describe('plans and the approval gate', () => {
       expect(milestone.approvalId).toBeNull()
     }
 
-    // Running without an approval at all is refused.
+    // The Manager refuses to grant approval while the audit occurrence remains
+    // unresolved, and direct execution cannot bypass the same gate.
     const first = milestones[0]
     if (!first) throw new Error('expected a milestone')
-    await expect(manager.runMilestone(first.id, 'not-a-real-approval')).rejects.toThrow()
+    expect(() =>
+      manager.grantMilestoneApproval(first.id, 'allow the write'),
+    ).toThrow(/blocking finding occurrence.*unresolved/i)
+    const premature = repo.grantApproval(
+      'milestone.execute',
+      first.id,
+      'must remain unused',
+    )
+    await expect(manager.runMilestone(first.id, premature.id)).rejects.toThrow(
+      /blocking finding occurrence.*unresolved/i,
+    )
+    expect(
+      repo.listApprovals().find((approval) => approval.id === premature.id)?.consumedAt,
+    ).toBeNull()
 
-    // With an approval it runs, and the approval is spent.
-    const approval = repo.grantApproval('milestone.execute', first.id, 'allow the write')
+    disposeOpenBlockingOccurrences(repo, session.id)
+    const approval = manager.grantMilestoneApproval(first.id, 'allow the write')
     const done = await manager.runMilestone(first.id, approval.id)
 
     expect(done.approvalId).toBe(approval.id)
@@ -1803,7 +1842,8 @@ describe('plans and the approval gate', () => {
   })
 
   it('refuses a concurrent milestone start before spending its approval', async () => {
-    const { manager, repo, milestone } = await readyPlan()
+    const { manager, repo, plan, milestone } = await readyPlan()
+    disposeOpenBlockingOccurrences(repo, plan.sessionId)
     const firstApproval = repo.grantApproval('milestone.execute', milestone.id, 'first start')
     const racingApproval = repo.grantApproval('milestone.execute', milestone.id, 'racing start')
 

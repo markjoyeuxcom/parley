@@ -169,7 +169,9 @@ const HANDLERS: Record<CommandName, Handler> = {
       subjectId: string
       summary: string
     }
-    return ctx.manager.repo.grantApproval(scope, subjectId, summary)
+    return scope === 'milestone.execute'
+      ? ctx.manager.grantMilestoneApproval(subjectId, summary)
+      : ctx.manager.repo.grantApproval(scope, subjectId, summary)
   },
   'approval.list': (_p, ctx) => ctx.manager.repo.listApprovals(),
 

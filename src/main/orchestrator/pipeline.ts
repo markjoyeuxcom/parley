@@ -38,6 +38,7 @@ import { assertCapability, type AgentRegistry } from '@main/agents'
 import { groupLedgerEntries } from '@main/ipc/ledger'
 import type { MilestonePhase } from '@shared/events'
 import type { OrchestratorDeps } from './types'
+import { assertNoUnresolvedBlockingOccurrences } from './gate'
 
 /**
  * How many times a rejected milestone may be handed back to its executor.
@@ -486,6 +487,8 @@ export class Pipeline {
     if (!plan) throw new PipelineError('the plan for this milestone is missing')
     const refusal = executionRefusal(plan, milestone)
     if (refusal) throw new PipelineError(refusal)
+
+    assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
 
     // Spend the approval before anything can write. Throws if already spent.
     this.repo.consumeApproval(approvalId, 'milestone.execute', milestoneId)

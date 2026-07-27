@@ -204,6 +204,12 @@ describe('pipeline finding ledger ingestion', () => {
       index: 1,
       title: 'Other milestone',
     })
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'allow')
+    const run = pipeline.runMilestone(milestone.id, approval.id)
+
+    // These unrelated occurrences arrive after execution has synchronously
+    // passed its approval gate. They remain useful for proving that a successful
+    // milestone settles only its own review occurrences.
     const repeated = 'the retry ceiling is not surfaced to the caller'
     const auditOccurrence = recordOccurrence(repo, session.id, repeated, {
       planId: plan.id,
@@ -219,9 +225,7 @@ describe('pipeline finding ledger ingestion', () => {
       kind: 'blocking',
       source: 'review',
     })
-
-    const approval = repo.grantApproval('milestone.execute', milestone.id, 'allow')
-    const done = await pipeline.runMilestone(milestone.id, approval.id)
+    const done = await run
 
     expect(done.status).toBe('complete')
     const occurrences = repo.listFindingOccurrences(session.id)
