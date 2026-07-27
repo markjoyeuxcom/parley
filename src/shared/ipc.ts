@@ -4,6 +4,7 @@ import {
   Capability,
   FindingDispositionState,
   Id,
+  InterjectionTarget,
   LoopCaps,
   LoopExitCondition,
   PaneKind,
@@ -42,7 +43,7 @@ export const StartSessionReq = z.object({
 
 export const InterjectReq = z.object({
   sessionId: Id,
-  target: z.enum(['both', 'a', 'b']),
+  target: InterjectionTarget,
   text: z.string().min(1).max(10_000),
 })
 

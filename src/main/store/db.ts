@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 14
+export const SCHEMA_VERSION = 15
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -91,10 +91,12 @@ CREATE TABLE IF NOT EXISTS agent_threads (
   PRIMARY KEY (session_id, seat)
 );
 
--- Delivery is tracked per side, not once per row. A 'both' interjection has to
--- reach each agent exactly once, and the two sides take their turns at
--- different times, so a single delivered_at would let whichever side read it
--- first swallow the message.
+-- Delivery is tracked per seat, not once per row. An 'all' interjection has to
+-- reach each seat exactly once, and seats take their turns at different times,
+-- so a single delivered_at would let whichever seat read it first swallow the
+-- message. The two per-side columns are the pre-seat stamps, still written as
+-- mirrors for seats 0 and 1: an older build reads them to decide what was
+-- delivered, and a NULL there would re-deliver.
 CREATE TABLE IF NOT EXISTS interjections (
   id             TEXT PRIMARY KEY,
   session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -106,6 +108,13 @@ CREATE TABLE IF NOT EXISTS interjections (
   delivered_b_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_interject_session ON interjections(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS interjection_deliveries (
+  interjection_id TEXT NOT NULL REFERENCES interjections(id) ON DELETE CASCADE,
+  seat            INTEGER NOT NULL,
+  delivered_at    INTEGER NOT NULL,
+  PRIMARY KEY (interjection_id, seat)
+);
 
 CREATE TABLE IF NOT EXISTS verdicts (
   session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
@@ -622,6 +631,21 @@ export function migrate(db: Db): void {
         // Already present, because SCHEMA above created the table fresh.
       }
     }
+  }
+  if (current < 15) {
+    // Whisper delivery becomes per-seat rows (SCHEMA created the table fresh).
+    // The two per-side stamps backfill as seats 0 and 1, and the columns stay
+    // written as mirrors so an older build still knows what was delivered.
+    db.transaction(() => {
+      db.exec(`
+        INSERT OR IGNORE INTO interjection_deliveries (interjection_id, seat, delivered_at)
+        SELECT id, 0, delivered_a_at FROM interjections WHERE delivered_a_at IS NOT NULL
+      `)
+      db.exec(`
+        INSERT OR IGNORE INTO interjection_deliveries (interjection_id, seat, delivered_at)
+        SELECT id, 1, delivered_b_at FROM interjections WHERE delivered_b_at IS NOT NULL
+      `)
+    })
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

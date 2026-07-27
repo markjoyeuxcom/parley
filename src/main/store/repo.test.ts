@@ -66,40 +66,92 @@ describe('interjection delivery', () => {
   it('delivers a whisper only to its target', () => {
     const repo = freshRepo()
     const session = makeSession(repo)
-    repo.addInterjection({ sessionId: session.id, target: 'a', text: 'press harder on cost', atTurnIndex: 0 })
+    repo.addInterjection({ sessionId: session.id, target: 0, text: 'press harder on cost', atTurnIndex: 0 })
 
-    expect(repo.takeInterjections(session.id, 'b')).toHaveLength(0)
-    const forA = repo.takeInterjections(session.id, 'a')
+    expect(repo.takeInterjections(session.id, 1)).toHaveLength(0)
+    const forA = repo.takeInterjections(session.id, 0)
     expect(forA).toHaveLength(1)
     expect(forA[0]?.text).toBe('press harder on cost')
 
     // Already taken — must not be handed out twice.
-    expect(repo.takeInterjections(session.id, 'a')).toHaveLength(0)
+    expect(repo.takeInterjections(session.id, 0)).toHaveLength(0)
   })
 
-  it('delivers a both-targeted interjection once to each side', () => {
+  it('delivers an all-targeted interjection once to each seat', () => {
     const repo = freshRepo()
     const session = makeSession(repo)
-    repo.addInterjection({ sessionId: session.id, target: 'both', text: 'assume 10x load', atTurnIndex: 0 })
+    repo.addInterjection({ sessionId: session.id, target: 'all', text: 'assume 10x load', atTurnIndex: 0 })
 
-    expect(repo.takeInterjections(session.id, 'a')).toHaveLength(1)
+    expect(repo.takeInterjections(session.id, 0)).toHaveLength(1)
     // This is the case the naive single-flag design gets wrong.
-    expect(repo.takeInterjections(session.id, 'b')).toHaveLength(1)
+    expect(repo.takeInterjections(session.id, 1)).toHaveLength(1)
 
-    expect(repo.takeInterjections(session.id, 'a')).toHaveLength(0)
-    expect(repo.takeInterjections(session.id, 'b')).toHaveLength(0)
+    expect(repo.takeInterjections(session.id, 0)).toHaveLength(0)
+    expect(repo.takeInterjections(session.id, 1)).toHaveLength(0)
   })
 
   it('reports deliveredAt only once every intended recipient has read it', () => {
     const repo = freshRepo()
     const session = makeSession(repo)
-    repo.addInterjection({ sessionId: session.id, target: 'both', text: 'assume 10x load', atTurnIndex: 0 })
+    repo.addInterjection({ sessionId: session.id, target: 'all', text: 'assume 10x load', atTurnIndex: 0 })
 
-    repo.takeInterjections(session.id, 'a')
+    repo.takeInterjections(session.id, 0)
     expect(repo.listInterjections(session.id)[0]?.deliveredAt).toBeNull()
 
-    repo.takeInterjections(session.id, 'b')
+    repo.takeInterjections(session.id, 1)
     expect(repo.listInterjections(session.id)[0]?.deliveredAt).not.toBeNull()
+  })
+
+  const threeSeats = [
+    { vendor: 'claude' as const, model: '', effort: 'medium' as const, persona: '' },
+    { vendor: 'codex' as const, model: '', effort: 'medium' as const, persona: '' },
+    { vendor: 'claude' as const, model: '', effort: 'medium' as const, persona: '' },
+  ]
+
+  it('holds an all-targeted delivery open until the third seat has taken it', () => {
+    // "Delivered" means every seat of the session — two of three is still in
+    // flight, which the old two-column stamps could not even represent.
+    const repo = freshRepo()
+    const session = makeSession(repo, { participants: threeSeats })
+    repo.addInterjection({ sessionId: session.id, target: 'all', text: 'assume 10x load', atTurnIndex: 0 })
+
+    expect(repo.takeInterjections(session.id, 0)).toHaveLength(1)
+    expect(repo.takeInterjections(session.id, 1)).toHaveLength(1)
+    expect(repo.listInterjections(session.id)[0]?.deliveredAt).toBeNull()
+
+    expect(repo.takeInterjections(session.id, 2)).toHaveLength(1)
+    expect(repo.listInterjections(session.id)[0]?.deliveredAt).not.toBeNull()
+  })
+
+  it('whispers to a third seat without the first two ever seeing it', () => {
+    const repo = freshRepo()
+    const session = makeSession(repo, { participants: threeSeats })
+    repo.addInterjection({ sessionId: session.id, target: 2, text: 'concede nothing', atTurnIndex: 0 })
+
+    expect(repo.takeInterjections(session.id, 0)).toHaveLength(0)
+    expect(repo.takeInterjections(session.id, 1)).toHaveLength(0)
+    const taken = repo.takeInterjections(session.id, 2)
+    expect(taken).toHaveLength(1)
+    expect(taken[0]?.deliveredAt).not.toBeNull()
+    expect(repo.takeInterjections(session.id, 2)).toHaveLength(0)
+  })
+
+  it('reads legacy side-targeted rows as seat whispers', () => {
+    // Rows written before seats existed carry 'both'/'a'/'b'. They must keep
+    // meaning what they meant: 'a' reaches only seat 0.
+    const repo = freshRepo()
+    const session = makeSession(repo)
+    const db = (repo as unknown as { db: ReturnType<typeof openDatabase> }).db
+    db.run(
+      `INSERT INTO interjections (id, session_id, target, text, at_turn_index, created_at, delivered_a_at, delivered_b_at)
+       VALUES ('legacy-1', ?, 'a', 'old whisper', 0, 1, NULL, NULL)`,
+      session.id,
+    )
+
+    expect(repo.takeInterjections(session.id, 1)).toHaveLength(0)
+    const taken = repo.takeInterjections(session.id, 0)
+    expect(taken).toHaveLength(1)
+    expect(taken[0]?.target).toBe(0)
   })
 })
 
@@ -179,7 +231,7 @@ describe('archiving hides without destroying', () => {
   it('keeps the session and everything hanging off it', () => {
     const repo = freshRepo()
     const session = makeSession(repo)
-    repo.addInterjection({ sessionId: session.id, target: 'both', text: 'consider cost', atTurnIndex: 0 })
+    repo.addInterjection({ sessionId: session.id, target: 'all', text: 'consider cost', atTurnIndex: 0 })
 
     repo.setSessionArchived(session.id, true)
 
@@ -422,6 +474,34 @@ describe('migrating an older database', () => {
     expect(seated.getResumeId(session.id, 1)).toBe('codex-thread')
   })
 
+  /**
+   * The v14 case: whisper delivery lived only in the two per-side stamps.
+   */
+  function asVersion14(db: ReturnType<typeof openDatabase>): void {
+    db.exec(`DROP TABLE interjection_deliveries`)
+    db.run(`UPDATE meta SET value = '14' WHERE key = 'schema_version'`)
+  }
+
+  it('backfills per-seat deliveries from the per-side stamps', async () => {
+    const db = openDatabase(':memory:')
+    const repo = new Repo(db)
+    const session = makeSession(repo, { matter: 'delivered in sides' })
+    repo.addInterjection({ sessionId: session.id, target: 'all', text: 'assume 10x load', atTurnIndex: 0 })
+    repo.takeInterjections(session.id, 0)
+    repo.takeInterjections(session.id, 1)
+
+    asVersion14(db)
+    const { migrate } = await import('./db')
+    expect(() => migrate(db)).not.toThrow()
+
+    const restored = new Repo(db)
+    // Both seats' deliveries came back from the mirrors: nothing re-delivers,
+    // and the record still reads fully delivered.
+    expect(restored.takeInterjections(session.id, 0)).toHaveLength(0)
+    expect(restored.takeInterjections(session.id, 1)).toHaveLength(0)
+    expect(restored.listInterjections(session.id)[0]?.deliveredAt).not.toBeNull()
+  })
+
   it('falls back to the legacy pair when a row has no participants', () => {
     // A database an older build wrote into after this one created it: the
     // participants column exists but the row is NULL. The legacy mirror
@@ -542,7 +622,7 @@ describe('deleting a session', () => {
   it('takes the transcript and the resume ids with it', () => {
     const repo = freshRepo()
     const session = makeSession(repo)
-    repo.addInterjection({ sessionId: session.id, target: 'both', text: 'note', atTurnIndex: 0 })
+    repo.addInterjection({ sessionId: session.id, target: 'all', text: 'note', atTurnIndex: 0 })
     repo.saveResumeId(session.id, 0, 'vendor-thread-1')
 
     repo.deleteSession(session.id)

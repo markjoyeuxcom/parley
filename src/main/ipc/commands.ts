@@ -115,7 +115,7 @@ const HANDLERS: Record<CommandName, Handler> = {
     return getSessionDetail(ctx.manager.repo, sessionId)
   },
   'session.interject': (p, ctx) => {
-    const { sessionId, target, text } = p as { sessionId: string; target: 'both' | 'a' | 'b'; text: string }
+    const { sessionId, target, text } = p as { sessionId: string; target: 'all' | number; text: string }
     ctx.manager.interject(sessionId, target, text)
     return { ok: true }
   },

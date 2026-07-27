@@ -28,7 +28,6 @@ import {
   type Skill,
   type TestResult,
   type Turn,
-  type TurnSide,
   type Usage,
   type Verdict,
   type WorkPlan,
@@ -483,7 +482,7 @@ export class Repo {
        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
       record.id,
       record.sessionId,
-      record.target,
+      String(record.target),
       record.text,
       record.atTurnIndex,
       record.createdAt,
@@ -491,44 +490,93 @@ export class Repo {
     return record
   }
 
-  /**
-   * Returns the interjections a given side has not yet seen, marking them
-   * delivered *for that side only* in the same transaction so a retry cannot
-   * double-deliver.
-   *
-   * A whisper to `a` is never returned for `b`: that asymmetry is the feature —
-   * it is what lets the director press one agent privately and see whether it
-   * holds its position without the other knowing it was pushed.
-   */
-  takeInterjections(sessionId: Id, side: TurnSide): Interjection[] {
-    const column = side === 'a' ? 'delivered_a_at' : 'delivered_b_at'
-    return this.db.transaction(() => {
-      const rows = this.db.all(
-        `SELECT * FROM interjections
-         WHERE session_id = ? AND ${column} IS NULL AND (target = 'both' OR target = ?)
-         ORDER BY created_at ASC`,
-        sessionId,
-        side,
-      )
-      const now = Date.now()
-      for (const row of rows) {
-        this.db.run(`UPDATE interjections SET ${column} = ? WHERE id = ?`, now, str(row['id']))
-      }
-      return rows.map((row) => this.toInterjection({ ...row, [column]: now }))
-    })
+  /** Reads a stored target that may predate seats: 'both' is 'all', sides map. */
+  private toInterjectionTarget(value: string): InterjectionTarget {
+    if (value === 'all' || value === 'both') return 'all'
+    return legacySeat(value)
   }
 
   /**
-   * `deliveredAt` is "delivered to everyone it was addressed to" — for a 'both'
-   * interjection that means the later of the two side timestamps, and null
-   * until the second side has taken it.
+   * Returns the interjections a given seat has not yet seen, marking them
+   * delivered *for that seat only* in the same transaction so a retry cannot
+   * double-deliver.
+   *
+   * A whisper to one seat is never returned for another: that asymmetry is the
+   * feature — it is what lets the director press one agent privately and see
+   * whether it holds its position without the others knowing it was pushed.
    */
-  private toInterjection(row: Row): Interjection {
-    const target = str(row['target']) as InterjectionTarget
-    const a = nullableNum(row['delivered_a_at'])
-    const b = nullableNum(row['delivered_b_at'])
-    const deliveredAt =
-      target === 'a' ? a : target === 'b' ? b : a !== null && b !== null ? Math.max(a, b) : null
+  takeInterjections(sessionId: Id, seat: number): Interjection[] {
+    // Stored targets may predate seats, so a seat matches its own number,
+    // 'all', and the legacy spellings of both.
+    const spellings = ['all', 'both', String(seat)]
+    if (seat === 0) spellings.push('a')
+    if (seat === 1) spellings.push('b')
+
+    return this.db.transaction(() => {
+      const rows = this.db.all(
+        `SELECT * FROM interjections
+         WHERE session_id = ?
+           AND target IN (${spellings.map(() => '?').join(', ')})
+           AND NOT EXISTS (
+             SELECT 1 FROM interjection_deliveries d
+             WHERE d.interjection_id = interjections.id AND d.seat = ?
+           )
+         ORDER BY created_at ASC`,
+        sessionId,
+        ...spellings,
+        seat,
+      )
+      const now = Date.now()
+      for (const row of rows) {
+        const id = str(row['id'])
+        this.db.run(
+          `INSERT INTO interjection_deliveries (interjection_id, seat, delivered_at) VALUES (?, ?, ?)`,
+          id,
+          seat,
+          now,
+        )
+        // The pre-seat stamps stay written for seats 0 and 1: an older build
+        // reads them to decide what was delivered, and a NULL would re-deliver.
+        if (seat === 0) this.db.run(`UPDATE interjections SET delivered_a_at = ? WHERE id = ?`, now, id)
+        if (seat === 1) this.db.run(`UPDATE interjections SET delivered_b_at = ? WHERE id = ?`, now, id)
+      }
+      const seatCount = this.sessionSeatCount(sessionId)
+      return rows.map((row) => this.toInterjection(row, this.deliveriesFor(str(row['id'])), seatCount))
+    })
+  }
+
+  private sessionSeatCount(sessionId: Id): number {
+    return this.getSession(sessionId)?.participants.length ?? 2
+  }
+
+  private deliveriesFor(interjectionId: Id): Array<{ seat: number; at: number }> {
+    return this.db
+      .all(
+        `SELECT seat, delivered_at FROM interjection_deliveries WHERE interjection_id = ?`,
+        interjectionId,
+      )
+      .map((row) => ({ seat: num(row['seat']), at: num(row['delivered_at']) }))
+  }
+
+  /**
+   * `deliveredAt` is "delivered to everyone it was addressed to" — for an
+   * 'all' interjection that means every seat in the session has taken it, and
+   * the stamp is the last seat's; a whisper is delivered when its one seat is.
+   */
+  private toInterjection(
+    row: Row,
+    deliveries: Array<{ seat: number; at: number }>,
+    seatCount: number,
+  ): Interjection {
+    const target = this.toInterjectionTarget(str(row['target']))
+    let deliveredAt: number | null = null
+    if (target === 'all') {
+      if (deliveries.length >= seatCount) {
+        deliveredAt = deliveries.reduce((latest, entry) => Math.max(latest, entry.at), 0)
+      }
+    } else {
+      deliveredAt = deliveries.find((entry) => entry.seat === target)?.at ?? null
+    }
     return {
       id: str(row['id']),
       sessionId: str(row['session_id']),
@@ -541,9 +589,24 @@ export class Repo {
   }
 
   listInterjections(sessionId: Id): Interjection[] {
+    const seatCount = this.sessionSeatCount(sessionId)
+    const deliveries = this.db.all(
+      `SELECT d.interjection_id, d.seat, d.delivered_at
+       FROM interjection_deliveries d
+       JOIN interjections i ON i.id = d.interjection_id
+       WHERE i.session_id = ?`,
+      sessionId,
+    )
+    const byInterjection = new Map<string, Array<{ seat: number; at: number }>>()
+    for (const row of deliveries) {
+      const id = str(row['interjection_id'])
+      const list = byInterjection.get(id) ?? []
+      list.push({ seat: num(row['seat']), at: num(row['delivered_at']) })
+      byInterjection.set(id, list)
+    }
     return this.db
       .all(`SELECT * FROM interjections WHERE session_id = ? ORDER BY created_at ASC`, sessionId)
-      .map((r) => this.toInterjection(r))
+      .map((row) => this.toInterjection(row, byInterjection.get(str(row['id'])) ?? [], seatCount))
   }
 
   // ─── Verdicts and findings ─────────────────────────────────────────────────

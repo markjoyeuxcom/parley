@@ -7,6 +7,7 @@ import type {
   GridLayout,
   Id,
   Interjection,
+  InterjectionTarget,
   Loop,
   LoopIteration,
   Milestone,
@@ -91,7 +92,7 @@ export const api = {
   deleteSession: (sessionId: Id): Promise<{ deleted: boolean }> =>
     bridge().invoke('session.delete', { sessionId }),
   getSession: (sessionId: Id): Promise<SessionDetail> => bridge().invoke('session.get', { sessionId }),
-  interject: (sessionId: Id, target: 'both' | 'a' | 'b', text: string): Promise<unknown> =>
+  interject: (sessionId: Id, target: InterjectionTarget, text: string): Promise<unknown> =>
     bridge().invoke('session.interject', { sessionId, target, text }),
   pauseSession: (sessionId: Id): Promise<unknown> => bridge().invoke('session.pause', { sessionId }),
   resumeSession: (sessionId: Id): Promise<unknown> => bridge().invoke('session.resume', { sessionId }),

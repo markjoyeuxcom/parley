@@ -137,7 +137,7 @@ describe('debate session, end to end', () => {
     expect(repo.getResumeId(session.id, 0)).not.toBe(repo.getResumeId(session.id, 1))
   })
 
-  it('delivers a whisper to one side only', async () => {
+  it('delivers a whisper to one seat only', async () => {
     const { manager, repo } = harness()
     const session = manager.startSession({
       kind: 'debate',
@@ -149,14 +149,32 @@ describe('debate session, end to end', () => {
       maxTurns: 6,
     })
 
-    manager.interject(session.id, 'a', 'press harder on migration cost')
+    manager.interject(session.id, 0, 'press harder on migration cost')
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
 
     const interjections = repo.listInterjections(session.id)
     expect(interjections).toHaveLength(1)
-    expect(interjections[0]?.target).toBe('a')
-    // Delivered means side A consumed it; side B never had a chance to.
+    expect(interjections[0]?.target).toBe(0)
+    // Delivered means seat 0 consumed it; the other seat never had a chance to.
     expect(interjections[0]?.deliveredAt).not.toBeNull()
+  })
+
+  it('refuses a whisper to a seat the session does not have', () => {
+    // A whisper to an empty chair would sit undeliverable forever, silently —
+    // the refusal is the honest answer.
+    const { manager, repo } = harness()
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'x',
+      project: '',
+      repoPath: null,
+      agentA: claude,
+      agentB: codex,
+      maxTurns: 2,
+    })
+
+    expect(() => manager.interject(session.id, 2, 'into the void')).toThrow(/no seat 3/)
+    expect(repo.listInterjections(session.id)).toHaveLength(0)
   })
 
   it('warns when both sides are the same vendor', () => {
@@ -400,7 +418,7 @@ describe('the two-participant contract', () => {
       agentB: codex,
       maxTurns: 6,
     })
-    manager.interject(session.id, 'a', 'press harder on migration cost')
+    manager.interject(session.id, 0, 'press harder on migration cost')
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
 
     const claudePrompts = requestsOf(registry, 'claude').map((request) => request.prompt)
@@ -460,6 +478,41 @@ describe('the closing sequence asks every seat', () => {
     // Identical mock scores mean full agreement, so the merged confidence is
     // the mean credence of the three seats: (0.72 + 0.58 + 0.72) / 3.
     expect(verdict?.confidence).toBeCloseTo(0.67, 2)
+  })
+
+  it('lands a whisper to the third seat in its one speaking turn', async () => {
+    // The third chair never speaks in the exchange, so its verdict is the only
+    // turn a whisper can reach — which is exactly why verdict turns drain the
+    // direction queue. Exactly one prompt carries it, and codex never sees it.
+    const repo = new Repo(openDatabase(':memory:'))
+    const registry = new AgentRegistry(true)
+    const session = repo.createSession({
+      id: newId(),
+      kind: 'debate',
+      status: 'idle',
+      matter: 'Should the ingest pipeline move to a queue?',
+      project: '',
+      repoPath: null,
+      participants: [claude, codex, { ...claude }],
+      maxTurns: 2,
+      mock: true,
+      createdAt: Date.now(),
+    })
+    repo.addInterjection({ sessionId: session.id, target: 2, text: 'hold the risk line', atTurnIndex: 0 })
+
+    await new SessionRunner(session, { repo, registry, emit: () => {} }).run()
+
+    const claudePrompts = (registry.get('claude') as unknown as { requests: { prompt: string }[] })
+      .requests.map((request) => request.prompt)
+    const codexPrompts = (registry.get('codex') as unknown as { requests: { prompt: string }[] })
+      .requests.map((request) => request.prompt)
+    const delivered = claudePrompts.filter((prompt) => prompt.includes('hold the risk line'))
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0]).toContain('DIRECTION FROM THE HUMAN DIRECTOR')
+    for (const prompt of codexPrompts) {
+      expect(prompt).not.toContain('hold the risk line')
+    }
+    expect(repo.listInterjections(session.id)[0]?.deliveredAt).not.toBeNull()
   })
 })
 

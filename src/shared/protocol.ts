@@ -285,16 +285,26 @@ End your message with a single fenced JSON block, exactly in this shape:
 
 Scores are 0–10 and describe the *recommended course of action*, not the debate. "risk" is scored so that 10 means lowest risk. "confidence" is 0–1 and is your own credence — do not inflate it to signal agreement. If you still disagree with the other advisor on something material, put it in "dissent" rather than dropping it.`.trim()
 
-/** Asks each side, independently, for its own structured verdict. */
-export function verdictPrompt(matter: string, kind: SessionKind): string {
+/**
+ * Asks one seat, independently, for its own structured verdict.
+ *
+ * Carries the seat's undelivered direction, because the verdict turn is a
+ * speaking turn like any other — and for a seat that only speaks at the
+ * closing, it is the only turn a whisper can ever reach. Without this, a
+ * whisper queued after the exchange sat undeliverable forever, silently.
+ */
+export function verdictPrompt(matter: string, kind: SessionKind, interjections: string[] = []): string {
   return [
     kind === 'debate'
       ? `The exchange is over. Independently record your own verdict on the matter.`
       : `The review is over. Independently record your own verdict on the state of this codebase.`,
     `THE MATTER:\n${matter}`,
     `Do not try to guess or match the other advisor's verdict. If you disagree with them, that disagreement is the most useful thing you can record.`,
+    interjectionBlock(interjections),
     VERDICT_CONTRACT,
-  ].join('\n\n')
+  ]
+    .filter(Boolean)
+    .join('\n\n')
 }
 
 // ─── Audited execution pipeline ──────────────────────────────────────────────

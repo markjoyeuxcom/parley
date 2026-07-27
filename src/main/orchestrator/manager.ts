@@ -3,6 +3,7 @@ import { existsSync, statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import {
   type AgentConfig,
+  type InterjectionTarget,
   type Approval,
   emptyUsage,
   type Id,
@@ -192,9 +193,13 @@ export class Manager {
     return session
   }
 
-  interject(sessionId: Id, target: 'both' | 'a' | 'b', text: string): void {
+  interject(sessionId: Id, target: InterjectionTarget, text: string): void {
     const session = this.repo.getSession(sessionId)
     if (!session) throw new RequestError('no such session')
+    // A whisper to an empty chair would sit undeliverable forever, silently.
+    if (target !== 'all' && target >= session.participants.length) {
+      throw new RequestError(`this session has no seat ${target + 1} to whisper to`)
+    }
     const turns = this.repo.listTurns(sessionId)
     this.repo.addInterjection({ sessionId, target, text, atTurnIndex: turns.length })
   }

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Archive, ArchiveRestore, Hammer, Pause, Play, Plus, Send, Square, Trash2 } from 'lucide-react'
-import type { Id, InterjectionTarget, Session, Turn } from '@shared/domain'
+import type { AgentConfig, Id, InterjectionTarget, Session, Turn } from '@shared/domain'
 import { api } from '../lib/api'
 import { firstLine, formatTokens, relativeTime, seatLabel, seatSide, shortPath, statusTone, VENDOR_LABEL } from '../lib/format'
 import { useStore } from '../state'
@@ -289,7 +289,7 @@ function SessionView(): ReactNode {
       <div className={hasOutcome ? 'session__body session__body--split' : 'session__body'}>
         <div className="session__main">
           <Transcript sessionId={session.id} turns={turns} streaming={state.streaming} />
-          {active ? <Composer sessionId={session.id} /> : null}
+          {active ? <Composer sessionId={session.id} participants={session.participants} /> : null}
         </div>
 
         {hasOutcome ? (
@@ -446,14 +446,31 @@ function Transcript({
 /**
  * The interjection composer.
  *
- * `Both` is visible to each side. A whisper reaches one side only and the other
- * never learns it happened — which is what makes it useful for testing whether
- * an agent will hold a position under private pressure.
+ * `All` is visible to every seat. A whisper reaches one seat only and the
+ * others never learn it happened — which is what makes it useful for testing
+ * whether an agent will hold a position under private pressure.
  */
-function Composer({ sessionId }: { sessionId: Id }): ReactNode {
+function Composer({
+  sessionId,
+  participants,
+}: {
+  sessionId: Id
+  participants: readonly AgentConfig[]
+}): ReactNode {
   const { attempt, notify } = useStore()
   const [text, setText] = useState('')
-  const [target, setTarget] = useState<InterjectionTarget>('both')
+  const [target, setTarget] = useState<InterjectionTarget>('all')
+
+  // One whisper per seat, labelled by chair and vendor: a jury of three
+  // claudes still reads unambiguously.
+  const options: Array<{ value: InterjectionTarget; label: string; title: string }> = [
+    { value: 'all', label: 'All', title: 'Every advisor sees this' },
+    ...participants.map((participant, seat) => ({
+      value: seat as InterjectionTarget,
+      label: `Whisper ${seatLabel(seat)}`,
+      title: `Only ${seatLabel(seat)} (${VENDOR_LABEL[participant.vendor] ?? participant.vendor}) sees this`,
+    })),
+  ]
 
   const submit = async (): Promise<void> => {
     const body = text.trim()
@@ -463,9 +480,9 @@ function Composer({ sessionId }: { sessionId: Id }): ReactNode {
       setText('')
       notify(
         'info',
-        target === 'both'
-          ? 'Queued for both sides on their next turn.'
-          : `Whispered to side ${target.toUpperCase()} — the other side will not see it.`,
+        target === 'all'
+          ? 'Queued for every advisor on their next turn.'
+          : `Whispered to ${seatLabel(target)} — the other advisors will not see it.`,
       )
     }
   }
@@ -475,18 +492,14 @@ function Composer({ sessionId }: { sessionId: Id }): ReactNode {
       <div className="composer__inner">
         <div className="composer__row">
           <div className="segmented" role="group" aria-label="Interjection target">
-            {(['both', 'a', 'b'] as InterjectionTarget[]).map((option) => (
+            {options.map((option) => (
               <button
-                key={option}
-                className={`segmented__item ${target === option ? 'is-active' : ''}`}
-                onClick={() => setTarget(option)}
-                title={
-                  option === 'both'
-                    ? 'Both sides see this'
-                    : `Only side ${option.toUpperCase()} sees this`
-                }
+                key={String(option.value)}
+                className={`segmented__item ${target === option.value ? 'is-active' : ''}`}
+                onClick={() => setTarget(option.value)}
+                title={option.title}
               >
-                {option === 'both' ? 'Both' : `Whisper ${option.toUpperCase()}`}
+                {option.label}
               </button>
             ))}
           </div>
@@ -501,9 +514,9 @@ function Composer({ sessionId }: { sessionId: Id }): ReactNode {
             className="composer__input"
             rows={1}
             placeholder={
-              target === 'both'
-                ? 'Direct both sides — assume 10× load, or ignore cost entirely…'
-                : `Press side ${target.toUpperCase()} privately…`
+              target === 'all'
+                ? 'Direct every advisor — assume 10× load, or ignore cost entirely…'
+                : `Press ${seatLabel(target)} privately…`
             }
             value={text}
             onChange={(event) => setText(event.target.value)}

@@ -5,7 +5,6 @@ import {
   type Id,
   type Session,
   type Turn,
-  type TurnSide,
 } from '@shared/domain'
 import {
   CLOSING_STAGE,
@@ -79,17 +78,6 @@ export class SessionRunner {
     return participant
   }
 
-  /**
-   * The whisper-targeting name for a seat.
-   *
-   * Interjection delivery still speaks the two-sided vocabulary — targets and
-   * per-side delivery columns generalise later in this series. A seat beyond
-   * the first two has no side and therefore, for now, no whisper address.
-   */
-  private whisperSideFor(seat: number): TurnSide | null {
-    return seat === 0 ? 'a' : seat === 1 ? 'b' : null
-  }
-
   private systemPromptFor(seat: number): string {
     const cfg = this.configFor(seat)
     return this.session.kind === 'review' ? reviewSystemPrompt(seat, cfg) : debateSystemPrompt(seat, cfg)
@@ -145,10 +133,7 @@ export class SessionRunner {
     const cfg = this.configFor(seat)
     const adapter = this.registry.get(cfg.vendor)
 
-    const whisperSide = this.whisperSideFor(seat)
-    const interjections = whisperSide
-      ? this.repo.takeInterjections(this.session.id, whisperSide).map((i) => i.text)
-      : []
+    const interjections = this.repo.takeInterjections(this.session.id, seat).map((i) => i.text)
 
     const promptInput = {
       stage,
@@ -208,19 +193,24 @@ export class SessionRunner {
   }
 
   /**
-   * Asks both sides for a verdict **concurrently and independently**.
+   * Asks every seat for a verdict **concurrently and independently**.
    *
-   * Concurrency is not an optimisation here. Running them in sequence would let
-   * the second verdict be written after the first, and even without relaying it
-   * the ordering invites the kind of convergence the whole exercise is designed
-   * to avoid. Two independent verdicts that disagree are a real result.
+   * Concurrency is not an optimisation here. Any ordering would let a later
+   * verdict be written after an earlier one, and even without relaying it the
+   * ordering invites the kind of convergence the whole exercise is designed to
+   * avoid. Independent verdicts that disagree are a real result.
    */
   private async recordVerdict(startIndex: number): Promise<boolean> {
-    const prompt = verdictPrompt(this.session.matter, this.session.kind)
-
     const ask = async (seat: number, index: number): Promise<{ seat: number; text: string }> => {
       const cfg = this.configFor(seat)
       const adapter = this.registry.get(cfg.vendor)
+
+      // A verdict turn is a speaking turn, so it drains the seat's direction
+      // queue like any other. For a seat that only speaks at the closing this
+      // is the one turn a whisper can reach; before this, such a whisper sat
+      // queued forever, silently.
+      const interjections = this.repo.takeInterjections(this.session.id, seat).map((i) => i.text)
+      const prompt = verdictPrompt(this.session.matter, this.session.kind, interjections)
 
       const turn: Turn = {
         id: newId(),

@@ -131,17 +131,6 @@ export const SessionStatus = z.enum([
 ])
 export type SessionStatus = z.infer<typeof SessionStatus>
 
-/**
- * The two-sided addressing vocabulary that predates seats.
- *
- * Turns and threads now speak seat indices; this enum survives only as the
- * whisper-targeting surface (`InterjectionTarget` and the per-side delivery
- * columns), which generalises later in the Participants series. Sides a and b
- * are seats 0 and 1.
- */
-export const TurnSide = z.enum(['a', 'b'])
-export type TurnSide = z.infer<typeof TurnSide>
-
 /** A participant's position in the session's seating order. */
 export const Seat = z.number().int().nonnegative()
 export type Seat = z.infer<typeof Seat>
@@ -164,15 +153,20 @@ export const Turn = z.object({
 })
 export type Turn = z.infer<typeof Turn>
 
-export const InterjectionTarget = z.enum(['both', 'a', 'b'])
+/**
+ * Who a mid-session message reaches: every seat, or exactly one.
+ *
+ * The stored legacy vocabulary — 'both', 'a', 'b' — reads as 'all', 0 and 1.
+ */
+export const InterjectionTarget = z.union([z.literal('all'), Seat])
 export type InterjectionTarget = z.infer<typeof InterjectionTarget>
 
 /**
  * A mid-session human message.
  *
- * `both` is visible to each agent. `a`/`b` is a whisper: the other side never
- * sees it, which is what makes it useful for testing whether one agent will
- * hold a position under private pressure.
+ * `all` is visible to every seat. A seat number is a whisper: the other seats
+ * never see it, which is what makes it useful for testing whether one agent
+ * will hold a position under private pressure.
  */
 export const Interjection = z.object({
   id: Id,
@@ -182,6 +176,7 @@ export const Interjection = z.object({
   /** Index of the next turn at the time it was queued. */
   atTurnIndex: z.number().int().nonnegative(),
   createdAt: Timestamp,
+  /** When every seat it was addressed to had taken it, or null until then. */
   deliveredAt: Timestamp.nullable().default(null),
 })
 export type Interjection = z.infer<typeof Interjection>
