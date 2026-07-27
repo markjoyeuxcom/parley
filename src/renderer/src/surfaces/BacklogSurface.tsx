@@ -46,7 +46,11 @@ export function BacklogSurface(): ReactNode {
   // Linked-plan status for planned and closure-proposed items. Fetched here
   // rather than held globally: only this surface renders the linkage, and a
   // dead or externally-merged plan is exactly what the status chip exposes.
+  // Keyed on the surface too: plan statuses move without any backlog write
+  // (a run failing, a retry starting), so every visit re-reads them rather
+  // than showing the status as of the last backlog event.
   useEffect(() => {
+    if (state.surface !== 'backlog') return
     let cancelled = false
     void attempt(() => api.listPlans()).then((all) => {
       if (all && !cancelled) setPlans(all)
@@ -54,7 +58,7 @@ export function BacklogSurface(): ReactNode {
     return () => {
       cancelled = true
     }
-  }, [attempt, state.backlogItems])
+  }, [attempt, state.backlogItems, state.surface])
 
   const repos = useMemo(() => {
     const paths = new Set<string>()
