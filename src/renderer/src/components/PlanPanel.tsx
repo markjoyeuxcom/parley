@@ -793,6 +793,22 @@ function ApprovalGateDialog({
    */
   const modifiesExistingByDesign = plan.kind === 'remediation' || plan.kind === 'migration'
 
+  // A failed milestone whose work is already in the tree can be adopted instead
+  // of re-executed: verification and independent review run against the tree as
+  // it stands. This exists for exactly one observed shape — a milestone the
+  // reviewer passed three times that failed only on a provably inert mutation,
+  // where a retry deterministically hits the same wall and a fresh execution
+  // would rebuild thrice-reviewed work from scratch. It deliberately ignores
+  // modifiesExistingByDesign: that flag suppresses the adopt *recommendation*
+  // for work that predates the plan, while this offers adoption of the failed
+  // attempt's own output.
+  const adoptableRetry = Boolean(
+    milestone.status === 'failed' &&
+      preflight &&
+      milestone.expectedPaths.length > 0 &&
+      preflight.missing.length === 0,
+  )
+
   const allExist = Boolean(
     preflight &&
       !modifiesExistingByDesign &&
@@ -853,6 +869,21 @@ function ApprovalGateDialog({
             work was verified rather than authored here.
           </div>
           <button className="btn btn--primary btn--wide" disabled={busy} onClick={onAdopt}>
+            <ShieldCheck size={12} strokeWidth={2} />
+            {busy ? 'Working…' : 'Adopt & verify the existing work'}
+          </button>
+        </div>
+      ) : adoptableRetry ? (
+        <div className="gate">
+          <div className="gate__title">The failed attempt's work is still in the tree</div>
+          <div className="gate__body">
+            Every path this milestone names exists. <strong>Adopt &amp; verify</strong> runs{' '}
+            {milestone.testCommand ? <span className="mono">{milestone.testCommand}</span> : 'the verification step'}{' '}
+            and an independent review against the tree as it stands, without executing again — use it
+            when the work is sound and the failure was in the checking, not the code. Approve and
+            retry instead if the work itself needs another attempt.
+          </div>
+          <button className="btn btn--wide" disabled={busy} onClick={onAdopt}>
             <ShieldCheck size={12} strokeWidth={2} />
             {busy ? 'Working…' : 'Adopt & verify the existing work'}
           </button>
