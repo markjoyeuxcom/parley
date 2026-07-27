@@ -731,8 +731,11 @@ describe('handing a rejection back to the executor', () => {
 
 describe('adopting work that is already in the tree', () => {
   /** A git repo whose working tree already contains the milestone's files. */
-  function repoWithExistingWork(): string {
-    const repoPath = mkdtempSync(join(tmpdir(), 'parley-adopt-'))
+  function repoWithExistingWork(
+    prefix = 'parley-adopt-',
+    content = 'export const capped = true\n',
+  ): string {
+    const repoPath = mkdtempSync(join(tmpdir(), prefix))
     const git = (...args: string[]): void => {
       execFileSync('git', args, { cwd: repoPath, stdio: 'ignore' })
     }
@@ -744,7 +747,7 @@ describe('adopting work that is already in the tree', () => {
     git('commit', '-qm', 'seed')
     // The mock plan's first milestone expects src/net/client.ts.
     mkdirSync(join(repoPath, 'src', 'net'), { recursive: true })
-    writeFileSync(join(repoPath, 'src/net/client.ts'), 'export const capped = true\n')
+    writeFileSync(join(repoPath, 'src/net/client.ts'), content)
     return repoPath
   }
 
@@ -871,10 +874,11 @@ describe('adopting work that is already in the tree', () => {
     expect(done.mutationResults).toEqual([])
   })
 
-  it('says plainly that declared break checks were not run', async () => {
-    // Execution applies each declared break and requires the tests to fail;
-    // adoption does not. Silence here would let a milestone read as fully
-    // verified when the one check that tests its tests never ran.
+  it('fails rather than adopting when a declared break survives the suite', async () => {
+    // Adoption runs the declared breaks exactly as execution does. A test
+    // command that cannot notice the break leaves it surviving, and a
+    // surviving break is the strongest possible evidence the milestone's
+    // central claim rests on nothing — adopted or not.
     const { manager, repo, milestones } = await planIn(repoWithExistingWork())
     const first = milestones[0]
     if (!first) throw new Error('expected a milestone')
@@ -890,8 +894,133 @@ describe('adopting work that is already in the tree', () => {
     })
 
     const done = await manager.adoptMilestone(first.id)
-    expect(done.reviewNote).toMatch(/deliberate-break check/i)
-    expect(done.reviewNote).toMatch(/only execution runs/i)
+    expect(done.status).toBe('failed')
+    expect(done.adopted).toBe(false)
+    expect(done.mutationResults[0]).toMatchObject({ caught: false, skipped: '' })
+    expect(done.reviewNote).toMatch(/did not catch/i)
+    // The suite itself was green; the failure must not be misread as a test
+    // failure.
+    expect(done.reviewNote).not.toMatch(/Verification failed/)
+  })
+
+  it('adopts when the declared breaks are caught, and shows the reviewer they were', async () => {
+    // grep -q capped fails once the mutation strips the word, so the break is
+    // caught — and the adopt reviewer is handed the outcome as evidence about
+    // the tests, exactly as a supervised review would be.
+    const { manager, repo, registry, milestones } = await planIn(
+      repoWithExistingWork(),
+      'grep -q capped src/net/client.ts',
+    )
+    const first = milestones[0]
+    if (!first) throw new Error('expected a milestone')
+    repo.updateMilestone(first.id, {
+      mutations: [
+        {
+          file: 'src/net/client.ts',
+          find: 'capped = true',
+          replace: 'CAP_REMOVED = true',
+          describes: 'the cap flag must be load-bearing',
+        },
+      ],
+    })
+
+    const done = await manager.adoptMilestone(first.id)
+    expect(done.status).toBe('complete')
+    expect(done.adopted).toBe(true)
+    expect(done.mutationResults[0]).toMatchObject({ caught: true, skipKind: '' })
+
+    const reviewer = registry.get('claude') as unknown as { prompts: string[] }
+    expect(
+      reviewer.prompts.some(
+        (prompt) => prompt.includes('MUTATION CHECKS') && prompt.includes('CAUGHT'),
+      ),
+    ).toBe(true)
+
+    // The scariest part of running breaks against work nobody authored: the
+    // file must be byte-identical afterwards.
+    const plan = repo.getPlan(first.planId)
+    if (!plan) throw new Error('expected the plan')
+    expect(readFileSync(join(plan.repoPath, 'src/net/client.ts'), 'utf8')).toBe(
+      'export const capped = true\n',
+    )
+  })
+
+  it('re-anchors a stale check against adopted work and catches the break', async () => {
+    // The planner wrote the anchor before any code existed, and for adopted
+    // work the author is unknown — so the anchor missing is the normal case,
+    // and the repair round (the reviewer's vendor, never a party with a stake)
+    // points the same check at the code that is actually there.
+    const repoPath = repoWithExistingWork('parley-adopt-repair-', 'RESOLVED\n')
+    const { manager, repo, milestones } = await planIn(repoPath, 'grep -q RESOLVED src/net/client.ts')
+    const first = milestones[0]
+    if (!first) throw new Error('expected a milestone')
+    repo.updateMilestone(first.id, {
+      mutations: [
+        {
+          file: 'src/net/client.ts',
+          find: 'WINNER_HARDCODED',
+          replace: 'x',
+          describes: 'the resolved marker must be load-bearing',
+        },
+      ],
+    })
+
+    const done = await manager.adoptMilestone(first.id)
+    expect(done.status).toBe('complete')
+    expect(done.mutationResults).toHaveLength(1)
+    expect(done.mutationResults[0]).toMatchObject({ caught: true, skipKind: '' })
+  })
+
+  it('fails when a check cannot be expressed against the adopted code', async () => {
+    // The "unfixable" sentinel makes the mock repair refuse. A check that
+    // cannot be applied even after re-anchoring is unverifiable, and an
+    // unverifiable claim must not adopt — same rule as execution.
+    const repoPath = repoWithExistingWork('parley-adopt-unfixable-')
+    const { manager, repo, milestones } = await planIn(repoPath)
+    const first = milestones[0]
+    if (!first) throw new Error('expected a milestone')
+    repo.updateMilestone(first.id, {
+      mutations: [
+        {
+          file: 'src/net/client.ts',
+          find: 'WINNER_HARDCODED',
+          replace: 'x',
+          describes: 'a claim nothing in this file decides',
+        },
+      ],
+    })
+
+    const done = await manager.adoptMilestone(first.id)
+    expect(done.status).toBe('failed')
+    expect(done.adopted).toBe(false)
+    expect(done.mutationResults[0]?.skipKind).toBe('unapplied')
+    expect(done.reviewNote).toMatch(/even after being re-anchored/i)
+  })
+
+  it('does not run break checks against a red suite', async () => {
+    // With a failing suite every applied break would "fail" and prove nothing,
+    // so the stage is skipped — the adoption already fails on the tests.
+    const { manager, repo, milestones } = await planIn(
+      repoWithExistingWork(),
+      'node --definitely-not-a-flag',
+    )
+    const first = milestones[0]
+    if (!first) throw new Error('expected a milestone')
+    repo.updateMilestone(first.id, {
+      mutations: [
+        {
+          file: 'src/net/client.ts',
+          find: 'capped = true',
+          replace: 'capped = false',
+          describes: 'the cap must stay on',
+        },
+      ],
+    })
+
+    const done = await manager.adoptMilestone(first.id)
+    expect(done.status).toBe('failed')
+    expect(done.mutationResults).toEqual([])
+    expect(done.reviewNote).toMatch(/verification failed/i)
   })
 
   it('refuses when there is nothing to adopt', async () => {

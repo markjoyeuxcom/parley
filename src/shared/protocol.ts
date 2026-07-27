@@ -719,6 +719,8 @@ export function adoptReviewPrompt(
   testSummary: string,
   unverifiedPaths: string[] = [],
   missingPaths: string[] = [],
+  /** Rendered outcome of the milestone's declared mutation checks. */
+  mutationSummary = '',
 ): string {
   return [
     `Review work that was already present in the repository. Nobody executed it under supervision, and its provenance is unknown — it may be complete, partial, or subtly wrong. This turn is READ-ONLY.`,
@@ -730,6 +732,11 @@ export function adoptReviewPrompt(
           .join('\n')}`
       : '',
     `DETERMINISTIC VERIFICATION (run by the workbench, not by an agent):\n${testSummary}`,
+    // Evidence about the tests rather than the code, exactly as in a supervised
+    // review — and worth more here: "are the tests real tests?" is the question
+    // this reviewer is told to press, and a tried break answers it by trial
+    // rather than by reading.
+    mutationSummary ? `MUTATION CHECKS (the workbench broke the code on purpose and re-ran the tests):\n${mutationSummary}` : '',
     // Stated rather than left to be inferred: the verification is scoped to the
     // milestone, but the diff below is the whole tree, so some of what you are
     // reviewing was never run.

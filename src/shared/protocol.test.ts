@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CORRECTION_CONTRACT,
   REVIEW_CONTRACT,
+  adoptReviewPrompt,
   debatePrompt,
   remediationPrompt,
   debateStages,
@@ -313,5 +314,26 @@ describe('remediationPrompt and mutation checks', () => {
 
   it('omits the block entirely when there were no mutation checks', () => {
     expect(remediationPrompt(base)).not.toMatch(/MUTATION CHECKS/)
+  })
+
+  it('hands the adopt reviewer the mutation outcomes when the checks ran', () => {
+    // Adoption runs the declared breaks too, and the adopt reviewer is told to
+    // press on whether the tests are real — a tried break answers that by
+    // trial, so it must reach the prompt just as it does in a supervised
+    // review.
+    const prompt = adoptReviewPrompt(
+      'title',
+      'intent',
+      'the diff',
+      'tests passed',
+      [],
+      [],
+      '  CAUGHT — src/a.ts: the cap must stay on. The suite failed as it should.',
+    )
+    expect(prompt).toMatch(/MUTATION CHECKS/)
+    expect(prompt).toMatch(/CAUGHT — src\/a\.ts/)
+    expect(adoptReviewPrompt('title', 'intent', 'the diff', 'tests passed')).not.toMatch(
+      /MUTATION CHECKS/,
+    )
   })
 })

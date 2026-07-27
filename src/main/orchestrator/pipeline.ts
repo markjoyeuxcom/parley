@@ -808,33 +808,18 @@ export class Pipeline {
     let mutationResults: MutationResult[] = []
     const testsGreen = testResult === null || testResult.exitCode === 0
     if (testsGreen && current.mutations.length > 0) {
-      activity(
-        'testing',
-        `checking that the tests catch ${current.mutations.length} deliberate break${current.mutations.length === 1 ? '' : 's'}`,
-      )
-      mutationResults = await this.runMutations(current, plan.repoPath, signal)
-      // A stale anchor is expected — the planner wrote it before this code existed —
-      // so it gets one chance to be re-resolved against the file rather than being
-      // shrugged off as unchecked or blocking the milestone on a guess.
-      if (mutationResults.some((m) => m.skipKind === 'unapplied')) {
-        mutationResults = await this.repairMutations(
-          current,
-          mutationResults,
-          input,
-          plan,
-          activity,
-          signal,
-        )
-      }
-      const survived = mutationResults.filter((m) => !m.caught && !m.skipped)
-      activity(
-        'testing',
-        survived.length === 0
-          ? 'every deliberate break was caught'
-          : `${survived.length} deliberate break${survived.length === 1 ? '' : 's'} went undetected`,
-      )
-      current = this.repo.updateMilestone(milestoneId, { mutationResults })
-      this.emit({ type: 'plan.milestone', milestone: current })
+      const staged = await this.runMutationStage({
+        milestoneId,
+        milestone: current,
+        plan,
+        reviewer: input.reviewer,
+        reviewerVendor: input.reviewerVendor,
+        reviewerResumeId: input.reviewerResumeId,
+        activity,
+        signal,
+      })
+      current = staged.milestone
+      mutationResults = staged.mutationResults
     }
 
     // ── Independent review ───────────────────────────────────────────────────
@@ -988,14 +973,18 @@ export class Pipeline {
    * sits there finished. Deleting it to make the pipeline happy would throw away
    * good code; marking it done by hand would put a lie in the audit trail.
    *
-   * So: skip execution, keep both checks that actually establish anything — the
-   * deterministic tests and the independent cross-vendor review — and record
-   * `adopted: true` so the trail says plainly that Parley did not write this.
+   * So: skip execution, keep the checks that actually establish anything — the
+   * deterministic tests, the declared break checks, and the independent
+   * cross-vendor review — and record `adopted: true` so the trail says plainly
+   * that Parley did not write this.
    *
-   * Needs no approval, because it writes nothing. It is still gated on the
-   * findings ledger: adoption completes a milestone through review, so an open
-   * blocker that stops "Approve and run" must stop "Adopt & verify" too, or
-   * adoption is a side door around the ledger.
+   * Needs no approval: no agent gets write capability on this path. The only
+   * writes are the harness's own break checks, applied and restored exactly as
+   * execution applies them — held in memory, reverted in a `finally`, loud on
+   * a failure to restore. It is still gated on the findings ledger: adoption
+   * completes a milestone through review, so an open blocker that stops
+   * "Approve and run" must stop "Adopt & verify" too, or adoption is a side
+   * door around the ledger.
    */
   async adoptMilestone(milestoneId: Id, signal?: AbortSignal): Promise<Milestone> {
     const milestone = this.repo.getMilestone(milestoneId)
@@ -1043,9 +1032,9 @@ export class Pipeline {
       this.emit({ type: 'plan.activity', milestoneId, phase, text })
     }
 
-    // `mutationResults` is cleared with the rest: adoption never runs the
-    // declared breaks, so results left by an earlier execution attempt must not
-    // sit beside adoption's verdict as if this run had produced them.
+    // `mutationResults` is cleared with the rest so an earlier attempt's
+    // outcomes cannot sit beside this run's verdict; adoption re-runs the
+    // declared breaks itself once the suite is green.
     let current = this.repo.updateMilestone(milestoneId, {
       status: 'testing',
       testResult: null,
@@ -1065,17 +1054,48 @@ export class Pipeline {
         `${testResult.command} exited ${testResult.exitCode} in ${(testResult.durationMs / 1000).toFixed(1)}s`,
       )
     }
-    current = this.repo.updateMilestone(milestoneId, { testResult, status: 'reviewing' })
+    current = this.repo.updateMilestone(milestoneId, { testResult })
     this.emit({ type: 'plan.milestone', milestone: current })
 
-    // ── Independent review ───────────────────────────────────────────────────
+    // Fixed before the mutation stage because both stages use it: a stale
+    // anchor is re-resolved by the reviewer's vendor, the one party with no
+    // stake in the outcome.
     const reviewerVendor =
       plan.reviewer.vendor === plan.executor.vendor
         ? this.registry.counterpart(plan.executor.vendor)
         : plan.reviewer.vendor
+    const reviewer = this.registry.get(reviewerVendor)
+
+    // ── Mutation checks ──────────────────────────────────────────────────────
+    //
+    // Adopted code has unknown provenance, so whether its tests would catch a
+    // wrong implementation is worth more here, not less. The stage runs only on
+    // a real green result — against a red or absent suite every applied break
+    // would "fail" and prove nothing, and adoption refuses a missing command at
+    // the verdict anyway.
+    let mutationResults: MutationResult[] = []
+    if (testResult !== null && testResult.exitCode === 0 && current.mutations.length > 0) {
+      const staged = await this.runMutationStage({
+        milestoneId,
+        milestone: current,
+        plan,
+        reviewer,
+        reviewerVendor,
+        reviewerResumeId: null,
+        activity,
+        signal,
+      })
+      current = staged.milestone
+      mutationResults = staged.mutationResults
+    }
+
+    current = this.repo.updateMilestone(milestoneId, { status: 'reviewing' })
+    this.emit({ type: 'plan.milestone', milestone: current })
+
+    // ── Independent review ───────────────────────────────────────────────────
     activity('reviewing', `${reviewerVendor} reviewing work already in the tree`)
 
-    const review = await this.registry.get(reviewerVendor).run({
+    const review = await reviewer.run({
       systemPrompt:
         'You review code that was already present in a repository. Nobody authored it under supervision, so it has to stand on its own. You are read-only.',
       prompt: adoptReviewPrompt(
@@ -1085,6 +1105,7 @@ export class Pipeline {
         summariseTests(testResult),
         unverified,
         missing,
+        summariseMutations(mutationResults),
       ),
       cfg: reviewerConfig(plan.reviewer, reviewerVendor),
       capability: 'read',
@@ -1120,7 +1141,17 @@ export class Pipeline {
         })
       }
     }
-    const testsPassed = testResult !== null && testResult.exitCode === 0
+    // The deterministic half counts the declared breaks exactly as execution
+    // does — a break the milestone said its tests would catch must have been
+    // caught, and a check that could not be applied even after re-anchoring is
+    // fatal. The one difference stays: `milestoneVerdict` reads a missing
+    // command as green and adoption must not, so testResult is required too.
+    const {
+      testsPassed: deterministicPassed,
+      surviving: survivingMutations,
+      unverifiable,
+    } = milestoneVerdict(testResult, mutationResults)
+    const testsPassed = testResult !== null && deterministicPassed
     const reviewPassed = parsedReview?.passed === true
     const passed = missing.length === 0 && testsPassed && reviewPassed
 
@@ -1143,15 +1174,6 @@ export class Pipeline {
           `${unverified.join(', ')}.`,
       )
     }
-    // Execution applies each declared break and requires the tests to fail;
-    // adoption does not. Saying nothing here would let a milestone read as
-    // fully verified when the one check that tests its *tests* never ran.
-    if (current.mutations.length) {
-      noteParts.push(
-        `This milestone declares ${current.mutations.length} deliberate-break check${current.mutations.length === 1 ? '' : 's'} that only execution runs. ` +
-          `Adoption verified that the tests pass, not that they would catch the wrong implementations the plan named.`,
-      )
-    }
     if (missing.length) noteParts.push(`Expected paths still absent: ${missing.join(', ')}.`)
     if (review.error) noteParts.push(`The review could not be completed: ${review.error}`)
     if (parsedReview?.note) noteParts.push(parsedReview.note)
@@ -1162,8 +1184,26 @@ export class Pipeline {
     // approver can see what was judged worth noting and what was judged worth
     // stopping for.
     if (parsedReview?.notes.length) noteParts.push(`Notes: ${parsedReview.notes.join('; ')}`)
-    if (!testsPassed && testResult) {
+    // Keyed on the exit code rather than the combined verdict: a surviving
+    // break also fails `testsPassed`, and reporting that as "exited 0 …
+    // failed" would send the reader looking at the wrong thing. The surviving
+    // break gets its own line below.
+    if (testResult && testResult.exitCode !== 0) {
       noteParts.push(`Verification failed: \`${testResult.command}\` exited ${testResult.exitCode}.`)
+    }
+    if (survivingMutations.length) {
+      noteParts.push(
+        `The tests did not catch ${survivingMutations.length} deliberate break${survivingMutations.length === 1 ? '' : 's'} this milestone said they would:\n` +
+          survivingMutations
+            .map((m) => `  • ${m.file}: ${m.describes} — the suite still passed.`)
+            .join('\n'),
+      )
+    }
+    if (unverifiable.length) {
+      noteParts.push(
+        `${unverifiable.length} verification check${unverifiable.length === 1 ? '' : 's'} could not be applied to the code as written, even after being re-anchored:\n` +
+          unverifiable.map((m) => `  • ${m.file}: ${m.describes} — ${m.skipped}.`).join('\n'),
+      )
     }
     if (!testResult) {
       noteParts.push(
@@ -1346,6 +1386,63 @@ export class Pipeline {
    * Only ever called once the tests have already passed. Running mutations
    * against a red suite proves nothing, since every mutation would "fail".
    */
+  /**
+   * Runs the milestone's declared break checks and persists their outcomes.
+   *
+   * Shared by execution and adoption so the two paths cannot drift: the same
+   * checks, the same single repair round for stale anchors (always the
+   * reviewer's vendor — the party with no stake in the outcome), the same
+   * record on the milestone row. Callers decide when the stage runs, because
+   * their idea of a green suite differs: execution treats a missing command as
+   * green here and lets the verdict report the un-runnable checks, while
+   * adoption refuses to adopt without a command at all.
+   */
+  private async runMutationStage(input: {
+    milestoneId: Id
+    milestone: Milestone
+    plan: WorkPlan
+    reviewer: ReturnType<AgentRegistry['get']>
+    reviewerVendor: Vendor
+    reviewerResumeId: string | null
+    activity: (phase: MilestonePhase, text: string) => void
+    signal?: AbortSignal
+  }): Promise<{ milestone: Milestone; mutationResults: MutationResult[] }> {
+    const { milestone, plan, activity, signal } = input
+    activity(
+      'testing',
+      `checking that the tests catch ${milestone.mutations.length} deliberate break${milestone.mutations.length === 1 ? '' : 's'}`,
+    )
+    let mutationResults = await this.runMutations(milestone, plan.repoPath, signal)
+    // A stale anchor is expected — the planner wrote it before this code
+    // existed — so it gets one chance to be re-resolved against the file rather
+    // than being shrugged off as unchecked or blocking the milestone on a
+    // guess.
+    if (mutationResults.some((m) => m.skipKind === 'unapplied')) {
+      mutationResults = await this.repairMutations(
+        milestone,
+        mutationResults,
+        {
+          reviewer: input.reviewer,
+          reviewerVendor: input.reviewerVendor,
+          reviewerResumeId: input.reviewerResumeId,
+        },
+        plan,
+        activity,
+        signal,
+      )
+    }
+    const survived = mutationResults.filter((m) => !m.caught && !m.skipped)
+    activity(
+      'testing',
+      survived.length === 0
+        ? 'every deliberate break was caught'
+        : `${survived.length} deliberate break${survived.length === 1 ? '' : 's'} went undetected`,
+    )
+    const updated = this.repo.updateMilestone(input.milestoneId, { mutationResults })
+    this.emit({ type: 'plan.milestone', milestone: updated })
+    return { milestone: updated, mutationResults }
+  }
+
   /**
    * Re-resolves mutation anchors that did not match the code as written.
    *

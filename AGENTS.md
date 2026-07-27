@@ -318,14 +318,25 @@ sits there working. One interruption can poison several milestones this way.
 
 Deleting the work to satisfy the pipeline throws away good code. Marking the
 milestone done by hand would put a lie in the audit trail. So `adoptMilestone`
-takes the third path: **skip execution, keep both checks that actually establish
-anything** — the deterministic tests and the independent cross-vendor review —
-and set `adopted: true`.
+takes the third path: **skip execution, keep the checks that actually establish
+anything** — the deterministic tests, the declared mutation checks, and the
+independent cross-vendor review — and set `adopted: true`. The mutation checks
+run on a green suite only, with stale anchors re-resolved by the reviewer's
+vendor, because adopted code has unknown provenance: whether its tests would
+catch a wrong implementation is worth more here, not less. A surviving or
+unapplicable break fails the adoption exactly as it fails an execution.
 
-Three properties are load-bearing:
+Four properties are load-bearing:
 
-- **No approval, because nothing is written.** Do not add one; requiring approval
-  for a read-only verification teaches people to click through gates.
+- **No approval, because no agent gets write capability.** The only writes on
+  this path are the harness's own break checks, applied and restored the same
+  way execution applies them. Do not add an approval; requiring one for a
+  verification teaches people to click through gates.
+- **The findings-ledger gate covers it.** Adoption completes a milestone
+  through review, so an open blocking occurrence stops "Adopt & verify"
+  exactly as it stops "Approve and run" — and the adopt review's own blocking
+  findings are ingested as occurrences, so a failed adoption holds the next
+  attempt to them.
 - **`adopted` is persisted and shown.** A milestone that reads `complete` must
   never imply Parley's executor authored it when it did not.
 - **The reviewer is told the provenance is unknown** and to be harder than usual,
