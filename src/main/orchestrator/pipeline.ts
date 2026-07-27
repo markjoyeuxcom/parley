@@ -31,6 +31,7 @@ import {
   executePrompt,
   planPrompt,
   remediationPrompt,
+  resumeExecutionPrompt,
   mutationRepairPrompt,
   reviewDiffPrompt,
 } from '@shared/protocol'
@@ -643,11 +644,164 @@ export class Pipeline {
       lastActivityAt: null,
       lastInspection: null,
     }
+    this.repo.setMilestoneRunState(milestoneId, runState)
+
+    return this.driveMilestone({
+      milestoneId,
+      plan,
+      worktree,
+      root,
+      agentEnv,
+      gate,
+      activity,
+      runState,
+      history: [],
+      enterAtVerify: false,
+      resumedRound: null,
+      seedTestResult: null,
+    })
+  }
+
+  /**
+   * Continues an interrupted milestone from its preserved run state, spending
+   * a fresh single-use approval — the crash-recovery stance is unchanged, and
+   * what preservation buys is cheapness, not autonomy: the executor gets a
+   * continuation instead of a restatement, the reviewer keeps its objections,
+   * and finished work is verified rather than redone.
+   *
+   * The ordering mirrors runMilestone's pinned shape, with two additions in
+   * the synchronous block before the spend: the run state is re-read (a retry
+   * that started during the worktree await clears it — whoever consumes first
+   * wins, the loser refuses here), and the preserved baseline's HEAD anchor
+   * must still match the tree. Every signature in a baseline is relative to
+   * HEAD; resuming across a moved HEAD would silently misattribute the diff,
+   * so it refuses toward plain retry instead.
+   */
+  async resumeMilestone(milestoneId: Id, approvalId: Id, gate?: RunGate): Promise<Milestone> {
+    const signal = gate?.signal
+    const milestone = this.repo.getMilestone(milestoneId)
+    if (!milestone) throw new PipelineError('no such milestone')
+    const plan = this.repo.getPlan(milestone.planId)
+    if (!plan) throw new PipelineError('the plan for this milestone is missing')
+    const refusal = executionRefusal(plan, milestone)
+    if (refusal) throw new PipelineError(refusal)
+
+    assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
+
+    const preview = this.repo.getMilestoneRunState<RunState>(milestoneId)
+    if (!preview) {
+      throw new PipelineError('this milestone has no preserved run state to resume — retry it instead')
+    }
+
+    const activity = (phase: MilestonePhase, text: string): void => {
+      this.emit({ type: 'plan.activity', milestoneId, phase, text })
+    }
+
+    const worktree = await this.executionWorktree(plan, (text) => activity('executing', text))
+    const root = worktree?.path ?? plan.repoPath
+    const agentEnv = worktree ? { GIT_OPTIONAL_LOCKS: '0' } : undefined
+    const headNow = await revParseHead(root, signal)
+    const nowTree = await readTree(root, signal)
+
+    // The synchronous block: re-checks and the spend, with no await between.
+    const raced = this.repo.getMilestone(milestoneId)
+    if (!raced) throw new PipelineError('no such milestone')
+    const racedRefusal = executionRefusal(this.repo.getPlan(raced.planId) ?? plan, raced)
+    if (racedRefusal) throw new PipelineError(racedRefusal)
+    const state = this.repo.getMilestoneRunState<RunState>(milestoneId)
+    if (!state) {
+      throw new PipelineError(
+        'the preserved run state was cleared by another attempt — retry the milestone instead',
+      )
+    }
+    if (state.baselineHead !== headNow) {
+      throw new PipelineError(
+        'the repository has moved since this run was interrupted — the preserved baseline no longer matches HEAD, so resuming would misattribute the diff. Retry the milestone instead.',
+      )
+    }
+    this.repo.consumeApproval(approvalId, 'milestone.execute', milestoneId)
+    assertCapability('write', true)
+
+    // The interrupted attempt's verdict fields clear like any retry, but its
+    // note becomes the history's first element — publishHistory replaces the
+    // whole note, and losing rounds 1..N from the record would let a resumed
+    // pass read as a clean first attempt.
+    const seedTestResult = raced.testResult
+    const history = raced.reviewNote.trim() ? [raced.reviewNote.trim()] : []
+    const current = this.repo.updateMilestone(milestoneId, {
+      status: 'executing',
+      approvalId,
+      testResult: null,
+      reviewPassed: null,
+    })
+    this.emit({ type: 'plan.milestone', milestone: current })
+    this.setStatus(plan.id, 'running')
+
+    // Entry is decided by the world, not a recorded label: work present means
+    // the interrupted executor got somewhere — verify it rather than redo it.
+    // An untouched tree means nothing landed, so execution runs (resumed when
+    // the vendor session survived, fresh-with-critique when it did not).
+    const enterAtVerify = !treeUnchanged(state.before, nowTree)
+    activity(
+      'executing',
+      enterAtVerify
+        ? 'resuming: work is present, verifying it instead of re-executing'
+        : 'resuming from the preserved run state',
+    )
+
+    return this.driveMilestone({
+      milestoneId,
+      plan,
+      worktree,
+      root,
+      agentEnv,
+      gate,
+      activity,
+      runState: state,
+      history,
+      enterAtVerify,
+      resumedRound: state.round,
+      seedTestResult,
+    })
+  }
+
+  /**
+   * The execute → verify → remediate loop and its settle epilogue, seeded.
+   *
+   * One driver for both entries — a fresh run and a resumption — because a
+   * parallel resume implementation would drift from the most load-bearing
+   * code in the repo. The seed is exactly the preserved run state plus the
+   * entry decision; a fresh run seeds zeros.
+   */
+  private async driveMilestone(input: {
+    milestoneId: Id
+    plan: WorkPlan
+    worktree: Worktree | null
+    root: string
+    agentEnv?: Record<string, string>
+    gate?: RunGate
+    activity: (phase: MilestonePhase, text: string) => void
+    /** Already persisted by the caller; the driver keeps persisting through it. */
+    runState: RunState
+    /** Prior note history to keep — empty for a fresh run. */
+    history: string[]
+    /** Skip the first execution and verify the work already in the tree. */
+    enterAtVerify: boolean
+    /** The round whose note carries the resumed marker, or null. */
+    resumedRound: number | null
+    /** The interrupted attempt's test result, for a resumed remediation prompt. */
+    seedTestResult: TestResult | null
+  }): Promise<Milestone> {
+    const { milestoneId, plan, worktree, root, agentEnv, gate, activity } = input
+    const signal = gate?.signal
+    const before = input.runState.before
+    let runState = input.runState
     const saveRunState = (patch: Partial<RunState>): void => {
       runState = { ...runState, ...patch }
       this.repo.setMilestoneRunState(milestoneId, runState)
     }
-    this.repo.setMilestoneRunState(milestoneId, runState)
+    let current = this.repo.getMilestone(milestoneId)
+    if (!current) throw new PipelineError('milestone disappeared mid-run')
 
     const executor = this.registry.get(plan.executor.vendor)
 
@@ -660,20 +814,22 @@ export class Pipeline {
     // Both sides are resumed across rounds. The executor keeps everything it
     // already did, so remediation costs a critique rather than a restatement of
     // the milestone; the reviewer keeps its own objections, so it can check
-    // whether they were actually met instead of forming a fresh opinion.
-    let executorResumeId: string | null = null
-    let reviewerResumeId: string | null = null
+    // whether they were actually met instead of forming a fresh opinion. All
+    // of it seeds from the run state: zeros for a fresh run, the preserved
+    // values for a resumption — the same loop either way.
+    let executorResumeId = runState.executorResumeId
+    let reviewerResumeId = runState.reviewerResumeId
 
-    let round = 0
-    let previousConcerns: string[] = []
-    let lastReviewNote = ''
-    let lastTestResult: TestResult | null = null
+    let round = runState.round
+    let previousConcerns = [...runState.previousConcerns]
+    let lastReviewNote = runState.reviewerNote
+    let lastTestResult: TestResult | null = input.seedTestResult
     // Tracked explicitly rather than re-derived at the end from `reviewPassed`:
     // that would let a milestone whose tests failed complete on the strength of
     // a satisfied reviewer, which is the exact weak signal this pipeline exists
     // to strengthen.
     let lastPassed = false
-    const history: string[] = []
+    const history = [...input.history]
 
     /**
      * Persists the review history as it accumulates, rather than at the end.
@@ -702,72 +858,96 @@ export class Pipeline {
     }
 
     // ── Execute → verify → review, remediating a bounded number of times ─────
+    let firstIteration = true
     for (;;) {
       const remediating = round > 0
-      if (remediating) {
-        current = this.repo.updateMilestone(milestoneId, { status: 'executing' })
-        this.emit({ type: 'plan.milestone', milestone: current })
-      }
-      activity(
-        'executing',
-        remediating
-          ? `${plan.executor.vendor} addressing ${previousConcerns.length} objection${previousConcerns.length === 1 ? '' : 's'} — round ${round} of ${MAX_REMEDIATION_ROUNDS}`
-          : `${plan.executor.vendor} started on ${root}`,
-      )
+      const resumedEntry = firstIteration && input.resumedRound !== null
+      let executionText = runState.executionReport
 
-      const execution = await executor.run({
-        systemPrompt:
-          'You implement exactly one approved milestone in a real repository. Stay inside its scope. Do not commit.',
-        prompt: remediating
-          ? remediationPrompt({
-              round,
-              maxRounds: MAX_REMEDIATION_ROUNDS,
-              concerns: previousConcerns,
-              reviewerNote: lastReviewNote,
-              testSummary: summariseTests(lastTestResult),
-              // Without this, a mutation-only failure remediates blind: the
-              // reviewer had no objections, the test summary reads green, and the
-              // one actionable fact — which declared break survived — never
-              // reaches the agent being asked to fix it.
-              mutationSummary: summariseMutations(lastMutationResults),
-              reviewerVendor,
-            })
-          : executePrompt(
-              current.title,
-              current.intent,
-              current.expectedPaths,
-              root,
-              plan.correctionNote,
-              current.testCommand,
-            ),
-        cfg: plan.executor,
-        capability: 'write',
-        cwd: root,
-        env: agentEnv,
-        resumeId: executorResumeId,
-        signal,
-        timeoutMs: STAGE_TIMEOUT_MS,
-        // The adapters already report every tool use, file edit and command. This
-        // is the only thing standing between the user and a half-hour spinner.
-        onActivity: (text) => activity('executing', text),
-      })
-      this.repo.addPlanUsage(plan.id, execution.usage)
-      if (execution.resumeId) executorResumeId = execution.resumeId
-      // Persisted before the error check on purpose: an errored turn still
-      // learned a resume id and still said something worth keeping.
-      saveRunState({
-        executorResumeId,
-        executionReport: execution.text.trim().slice(-600),
-      })
+      if (firstIteration && input.enterAtVerify) {
+        // The interrupted run's work is already in the tree; re-executing
+        // would at best waste the spend and at worst clobber it. Verify what
+        // exists — if the review wants changes, the loop remediates normally.
+        activity('testing', 'verifying the work the interrupted run left behind')
+      } else {
+        if (remediating) {
+          current = this.repo.updateMilestone(milestoneId, { status: 'executing' })
+          this.emit({ type: 'plan.milestone', milestone: current })
+        }
+        activity(
+          'executing',
+          remediating
+            ? `${plan.executor.vendor} addressing ${previousConcerns.length} objection${previousConcerns.length === 1 ? '' : 's'} — round ${round} of ${MAX_REMEDIATION_ROUNDS}`
+            : resumedEntry
+              ? `${plan.executor.vendor} resuming on ${root}`
+              : `${plan.executor.vendor} started on ${root}`,
+        )
 
-      if (execution.error) {
-        current = this.repo.updateMilestone(milestoneId, {
-          status: 'failed',
-          reviewNote: [...history, gate?.isStopped ? STOPPED_NOTE : execution.error].join('\n\n'),
+        const execution = await executor.run({
+          systemPrompt:
+            'You implement exactly one approved milestone in a real repository. Stay inside its scope. Do not commit.',
+          prompt: remediating
+            ? remediationPrompt({
+                round,
+                maxRounds: MAX_REMEDIATION_ROUNDS,
+                concerns: previousConcerns,
+                reviewerNote: lastReviewNote,
+                testSummary: summariseTests(lastTestResult),
+                // Without this, a mutation-only failure remediates blind: the
+                // reviewer had no objections, the test summary reads green, and the
+                // one actionable fact — which declared break survived — never
+                // reaches the agent being asked to fix it.
+                mutationSummary: summariseMutations(lastMutationResults),
+                reviewerVendor,
+              })
+            : resumedEntry && executorResumeId
+              ? // The vendor session survived the interruption: a continuation,
+                // not a restatement — the executor still holds its own context.
+                resumeExecutionPrompt(
+                  current.title,
+                  current.intent,
+                  current.expectedPaths,
+                  root,
+                  current.testCommand,
+                )
+              : executePrompt(
+                  current.title,
+                  current.intent,
+                  current.expectedPaths,
+                  root,
+                  plan.correctionNote,
+                  current.testCommand,
+                ),
+          cfg: plan.executor,
+          capability: 'write',
+          cwd: root,
+          env: agentEnv,
+          resumeId: executorResumeId,
+          signal,
+          timeoutMs: STAGE_TIMEOUT_MS,
+          // The adapters already report every tool use, file edit and command. This
+          // is the only thing standing between the user and a half-hour spinner.
+          onActivity: (text) => activity('executing', text),
         })
-        this.emit({ type: 'plan.milestone', milestone: current })
-        this.setStatus(plan.id, 'failed')
-        return current
+        this.repo.addPlanUsage(plan.id, execution.usage)
+        if (execution.resumeId) executorResumeId = execution.resumeId
+        // Persisted before the error check on purpose: an errored turn still
+        // learned a resume id and still said something worth keeping.
+        saveRunState({
+          executorResumeId,
+          executionReport: execution.text.trim().slice(-600),
+        })
+
+        if (execution.error) {
+          current = this.repo.updateMilestone(milestoneId, {
+            status: 'failed',
+            reviewNote: [...history, gate?.isStopped ? STOPPED_NOTE : execution.error].join('\n\n'),
+          })
+          this.emit({ type: 'plan.milestone', milestone: current })
+          this.setStatus(plan.id, 'failed')
+          return current
+        }
+        executionText = execution.text
       }
 
       const outcome = await this.verifyAndReview({
@@ -779,14 +959,16 @@ export class Pipeline {
         gate,
         before,
         round,
+        resumed: resumedEntry,
         previousConcerns,
         reviewer,
         reviewerVendor,
         reviewerResumeId,
         activity,
         signal,
-        firstExecutionText: execution.text,
+        firstExecutionText: executionText,
       })
+      firstIteration = false
 
       if (outcome.kind === 'unchanged') return outcome.milestone
       current = outcome.milestone
@@ -897,6 +1079,8 @@ export class Pipeline {
     gate?: RunGate
     before: TreeState
     round: number
+    /** This round continues an interrupted run; its note must say so. */
+    resumed?: boolean
     previousConcerns: string[]
     reviewer: ReturnType<AgentRegistry['get']>
     reviewerVendor: Vendor
@@ -1086,10 +1270,13 @@ export class Pipeline {
         : null
 
     const noteParts: string[] = []
+    // The resumed marker is the round-provenance rule at work: a pass after an
+    // interruption must never read as a clean uninterrupted attempt.
+    const resumedMark = input.resumed ? ' (resumed after interruption)' : ''
     noteParts.push(
       round === 0
-        ? `Round 1 — ${plan.executor.vendor} executed, ${input.reviewerVendor} reviewed.`
-        : `Round ${round + 1} — ${plan.executor.vendor} remediated, ${input.reviewerVendor} re-reviewed.`,
+        ? `Round 1${resumedMark} — ${plan.executor.vendor} executed, ${input.reviewerVendor} reviewed.`
+        : `Round ${round + 1}${resumedMark} — ${plan.executor.vendor} remediated, ${input.reviewerVendor} re-reviewed.`,
     )
     if (missing.length) {
       // A frequent and otherwise invisible failure: the executor wrote

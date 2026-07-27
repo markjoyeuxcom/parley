@@ -191,6 +191,10 @@ const HANDLERS: Record<CommandName, Handler> = {
     ctx.manager.stopMilestone((p as { milestoneId: string }).milestoneId)
     return { ok: true }
   },
+  'plan.resumeMilestone': (p, ctx) => {
+    const { milestoneId, approvalId } = p as { milestoneId: string; approvalId: string }
+    return ctx.manager.resumeMilestone(milestoneId, approvalId)
+  },
   'plan.runMilestone': (p, ctx) => {
     const { milestoneId, approvalId } = p as { milestoneId: string; approvalId: string }
     return ctx.manager.runMilestone(milestoneId, approvalId)

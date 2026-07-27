@@ -457,6 +457,25 @@ export class Manager {
   }
 
   /**
+   * Resumes an interrupted milestone from its preserved run state, spending a
+   * fresh single-use approval — the crash-recovery stance unchanged. Shares
+   * the in-flight registry with execution and adoption: one run per milestone,
+   * whatever its entry.
+   */
+  async resumeMilestone(milestoneId: Id, approvalId: Id): Promise<Milestone> {
+    if (this.milestoneRuns.has(milestoneId)) {
+      throw new RequestError('that milestone is already running')
+    }
+    const gate = new RunGate()
+    this.milestoneRuns.set(milestoneId, gate)
+    try {
+      return await this.pipeline.resumeMilestone(milestoneId, approvalId, gate)
+    } finally {
+      this.milestoneRuns.delete(milestoneId)
+    }
+  }
+
+  /**
    * Stops a running milestone at its next boundary — the in-flight CLI is
    * killed, but a commit or a mutation restore already underway finishes
    * (both are atomic on their own). The run state is kept, so a stopped

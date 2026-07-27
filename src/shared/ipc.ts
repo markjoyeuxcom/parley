@@ -88,6 +88,8 @@ export const AnswerPlanReq = z.object({
 export const InspectMilestoneReq = z.object({ milestoneId: Id })
 /** Stops a running milestone at its next boundary. The run state is kept. */
 export const StopMilestoneReq = z.object({ milestoneId: Id })
+/** Resumes from preserved run state. Must reference a fresh unconsumed approval. */
+export const ResumeMilestoneReq = z.object({ milestoneId: Id, approvalId: Id })
 
 /** No approval field: adopting verifies existing work and writes nothing. */
 export const AdoptMilestoneReq = z.object({ milestoneId: Id })
@@ -201,6 +203,7 @@ export const COMMANDS = {
   'plan.setTestCommand': SetTestCommandReq,
   'plan.adoptMilestone': AdoptMilestoneReq,
   'plan.stopMilestone': StopMilestoneReq,
+  'plan.resumeMilestone': ResumeMilestoneReq,
   'plan.land': LandPlanReq,
   'approval.grant': GrantApprovalReq,
   'approval.list': null,

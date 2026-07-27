@@ -319,6 +319,40 @@ export function PlanPanel({
   }
 
   /**
+   * Continues an interrupted run from its preserved state.
+   *
+   * Grants and spends a fresh single-use approval — deliberately identical in
+   * ceremony to a run, because the crash-recovery stance is that persistence
+   * buys cheapness, never a skipped gate. The summary records the resume
+   * framing so the durable authorization says what was actually allowed.
+   */
+  const resumeAndRun = async (milestone: Milestone): Promise<void> => {
+    setGranting(true)
+    const summary =
+      plan.isolation === 'worktree'
+        ? `Allow ${plan.executor.vendor} to resume milestone ${milestone.index + 1} (${milestone.title}) in an isolated worktree of ${plan.repoPath}, continuing from its preserved run state. Landing on the checkout is a separate decision.`
+        : `Allow ${plan.executor.vendor} to resume milestone ${milestone.index + 1} (${milestone.title}) in ${plan.repoPath}, continuing from its preserved run state`
+
+    const approval = await attempt(() => api.grantApproval('milestone.execute', milestone.id, summary))
+    setGranting(false)
+    if (!approval) return
+
+    setPendingApproval(null)
+    notify('info', `Milestone ${milestone.index + 1} resuming. You can keep working while it runs.`)
+
+    const result = await attempt(() => api.resumeMilestone(milestone.id, approval.id))
+    if (result) {
+      notify(
+        result.status === 'complete' ? 'info' : 'warn',
+        result.status === 'complete'
+          ? `Milestone ${milestone.index + 1} completed and passed review.`
+          : `Milestone ${milestone.index + 1} did not pass. See the note on the milestone.`,
+      )
+    }
+    onRefresh()
+  }
+
+  /**
    * Verifies work that is already in the tree instead of executing.
    *
    * No approval is granted or spent: nothing is written. The deterministic tests
@@ -455,6 +489,7 @@ export function PlanPanel({
           onClose={() => setPendingApproval(null)}
           onConfirm={() => void approveAndRun(pendingApproval)}
           onAdopt={() => void adoptExisting(pendingApproval)}
+          onResume={() => void resumeAndRun(pendingApproval)}
         />
       ) : null}
     </>
@@ -900,6 +935,7 @@ function ApprovalGateDialog({
   onClose,
   onConfirm,
   onAdopt,
+  onResume,
 }: {
   plan: WorkPlan
   milestone: Milestone
@@ -908,6 +944,7 @@ function ApprovalGateDialog({
   onClose: () => void
   onConfirm: () => void
   onAdopt: () => void
+  onResume: () => void
 }): ReactNode {
   const { attempt } = useStore()
   const permission = approvalPermission(ledger)
@@ -1038,6 +1075,27 @@ function ApprovalGateDialog({
         and change nothing — which is only discoverable, otherwise, after the
         whole run has finished.
       */}
+      {milestone.status === 'failed' && milestone.runState ? (
+        <div className="gate">
+          <div className="gate__title">The interrupted run's state survived</div>
+          <div className="gate__body">
+            Round {milestone.runState.round + 1} was in flight when this run stopped. Resuming
+            continues from the preserved state: the executor picks its own session back up, work
+            already present is verified instead of redone, and the note will say the round was
+            resumed. A resume spends a fresh approval, exactly like a run — that stance is
+            deliberate.
+          </div>
+          <button
+            className="btn btn--primary btn--wide"
+            disabled={busy || !permission.allowed}
+            onClick={onResume}
+          >
+            <Play size={12} strokeWidth={2} />
+            {busy ? 'Working…' : 'Resume from where it stopped'}
+          </button>
+        </div>
+      ) : null}
+
       {allExist ? (
         <div className="gate">
           <div className="gate__title">Every file this milestone would create already exists</div>

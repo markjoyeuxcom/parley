@@ -667,6 +667,35 @@ export function executePrompt(
  * reviewer then has a larger diff to re-examine and the milestone's scope has
  * quietly grown.
  */
+/**
+ * The continuation prompt for an executor whose vendor session survived an
+ * interruption. Deliberately not a restatement: the session still holds its
+ * own context, and the one thing it cannot know is what actually reached the
+ * disk before the process died. "If the work is already complete, say so and
+ * stop" is load-bearing — a resumed executor that redoes finished work at
+ * best wastes the spend and at worst clobbers it.
+ */
+export function resumeExecutionPrompt(
+  title: string,
+  intent: string,
+  expectedPaths: string[],
+  repoPath: string,
+  testCommand: string,
+): string {
+  return [
+    `You were interrupted while implementing a milestone you had already started. This session is your own, resumed — you still hold everything you did. The repository at ${repoPath} contains whatever your work had actually written when the interruption hit: possibly nothing, possibly everything.`,
+    `MILESTONE: ${title}`,
+    intent.trim() ? `INTENT: ${intent.trim()}` : '',
+    expectedPaths.length ? `EXPECTED PATHS: ${expectedPaths.join(', ')}` : '',
+    testCommand.trim()
+      ? `VERIFICATION: the harness will run \`${testCommand.trim()}\` afterwards.`
+      : '',
+    `Inspect the current state of the repository first. Finish anything unfinished. If the work is already complete, say so and stop — do not redo it. Do not commit.`,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+}
+
 export function remediationPrompt(input: {
   round: number
   maxRounds: number
