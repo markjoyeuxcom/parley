@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 17
+export const SCHEMA_VERSION = 18
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -334,6 +334,62 @@ CREATE TABLE IF NOT EXISTS worktrees (
   last_error  TEXT NOT NULL DEFAULT '',
   orphaned    INTEGER NOT NULL DEFAULT 0
 );
+
+-- The per-repository backlog: work items harvested from review findings,
+-- accepted risks and stow sweeps, keyed by canonicalised repo path. The id is
+-- random and content_hash is only a dedupe key against LIVE items — a done or
+-- dropped item must never block a genuine recurrence from filing fresh. The
+-- mock flag is invariant-level: a fabricated finding must never read as real
+-- work in a real repository's backlog.
+CREATE TABLE IF NOT EXISTS backlog_items (
+  id                TEXT PRIMARY KEY,
+  repo_path         TEXT NOT NULL,
+  content_hash      TEXT NOT NULL,
+  title             TEXT NOT NULL,
+  detail            TEXT NOT NULL DEFAULT '',
+  priority          TEXT,
+  state             TEXT NOT NULL,
+  source            TEXT NOT NULL,
+  origin_session_id TEXT,
+  plan_id           TEXT,
+  evidence          TEXT NOT NULL DEFAULT '[]',
+  blocked_by        TEXT NOT NULL DEFAULT '[]',
+  mock              INTEGER NOT NULL DEFAULT 0,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_backlog_repo_state ON backlog_items(repo_path, state);
+
+-- Append-only trail of what happened to each item and who did it. The state
+-- column above is the queryable truth; this is the audit that must always
+-- fold to it.
+CREATE TABLE IF NOT EXISTS backlog_events (
+  id         TEXT PRIMARY KEY,
+  item_id    TEXT NOT NULL REFERENCES backlog_items(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL,
+  note       TEXT NOT NULL DEFAULT '',
+  source     TEXT NOT NULL,
+  -- Monotonic, the ledger's lesson: same-millisecond events with random ids
+  -- would scramble the trail, and the trail must always fold to the column.
+  seq        INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_backlog_events_item ON backlog_events(item_id, seq);
+
+-- Curated per-repository learnings. Confirmed entries ride every new plan
+-- brief for the repo (capped at render time); retirement is the curation
+-- lever. Same mock rule as items.
+CREATE TABLE IF NOT EXISTS learnings (
+  id                TEXT PRIMARY KEY,
+  repo_path         TEXT NOT NULL,
+  text              TEXT NOT NULL,
+  state             TEXT NOT NULL,
+  source            TEXT NOT NULL,
+  origin_session_id TEXT,
+  mock              INTEGER NOT NULL DEFAULT 0,
+  created_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_learnings_repo_state ON learnings(repo_path, state);
 `
 
 class NodeSqliteDb implements Db {
@@ -691,6 +747,10 @@ export function migrate(db: Db): void {
         // Already present, because SCHEMA above created the table fresh.
       }
     }
+  }
+  if (current < 18) {
+    // The backlog is additive: SCHEMA creates backlog_items, backlog_events
+    // and learnings fresh, and no existing row changes shape.
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

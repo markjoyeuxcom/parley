@@ -174,6 +174,27 @@ describe('schema migrations', () => {
     ])
   })
 
+  it('adds the backlog tables when upgrading from version 17', () => {
+    const db = openDatabase(':memory:')
+    db.exec(`DROP TABLE backlog_events`)
+    db.exec(`DROP TABLE backlog_items`)
+    db.exec(`DROP TABLE learnings`)
+    db.run(`UPDATE meta SET value = '17' WHERE key = 'schema_version'`)
+
+    migrate(db)
+
+    expect(db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'schema_version'`)?.value).toBe(
+      // The head version, never a literal - a hardcoded number fails on every
+      // future migration for a reason unrelated to what this test checks.
+      String(SCHEMA_VERSION),
+    )
+    for (const table of ['backlog_items', 'backlog_events', 'learnings']) {
+      expect(
+        db.get(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table),
+      ).toBeTruthy()
+    }
+  })
+
   it('adds the recovery columns when upgrading from version 16', () => {
     const db = openDatabase(':memory:')
     db.exec(`ALTER TABLE milestones DROP COLUMN run_state`)

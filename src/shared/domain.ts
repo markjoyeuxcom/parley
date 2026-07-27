@@ -596,6 +596,108 @@ export const Worktree = z.object({
 })
 export type Worktree = z.infer<typeof Worktree>
 
+// ─── Backlog and learnings ───────────────────────────────────────────────────
+
+/**
+ * An item's place in its lifecycle. `proposed` is agent output awaiting a
+ * human (stow files here); deterministic ingestion files straight to `open`
+ * because its sources are already structured record. `planned` carries the
+ * plan that targeted it; `closure-proposed` is the pipeline saying "this
+ * looks done — confirm it", never closing on its own.
+ */
+export const BacklogItemState = z.enum([
+  'proposed',
+  'open',
+  'planned',
+  'closure-proposed',
+  'done',
+  'dropped',
+])
+export type BacklogItemState = z.infer<typeof BacklogItemState>
+
+export const BacklogItemSource = z.enum(['review-finding', 'accepted-risk', 'stow', 'manual'])
+export type BacklogItemSource = z.infer<typeof BacklogItemSource>
+
+/**
+ * One unit of repo-scoped work worth remembering.
+ *
+ * The id is random; `contentHash` is only a dedupe key against *live* items —
+ * a done or dropped item must never block a genuine recurrence from filing
+ * fresh. Evidence is copied, never referenced: review Finding rows are
+ * wholesale-replaced per session closing, so their ids are unstable by
+ * design. `mock` is invariant-level — fabricated findings must never read as
+ * real work in a real repository's backlog.
+ */
+export const BacklogItem = z.object({
+  id: Id,
+  /** Canonicalised — symlink spellings must not fork a repo's backlog. */
+  repoPath: z.string(),
+  contentHash: z.string(),
+  title: z.string().min(1),
+  detail: z.string().default(''),
+  priority: FindingPriority.nullable().default(null),
+  state: BacklogItemState,
+  source: BacklogItemSource,
+  originSessionId: Id.nullable().default(null),
+  /** The plan that targeted it, while `planned` or `closure-proposed`. */
+  planId: Id.nullable().default(null),
+  evidence: z.array(Evidence).default([]),
+  /** Item ids that should land first. Inert once a blocker is done/dropped. */
+  blockedBy: z.array(Id).default([]),
+  mock: z.boolean().default(false),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+})
+export type BacklogItem = z.infer<typeof BacklogItem>
+
+/**
+ * The append-only trail: every state the item entered (creation appends its
+ * initial state, so replaying the trail always reproduces the column — a
+ * pinned test), plus `resighted` for a live-item collision.
+ */
+export const BacklogEventKind = z.enum([
+  'resighted',
+  'proposed',
+  'open',
+  'planned',
+  'closure-proposed',
+  'done',
+  'dropped',
+])
+export type BacklogEventKind = z.infer<typeof BacklogEventKind>
+
+export const BacklogEventSource = z.enum(['human', 'pipeline', 'stow'])
+export type BacklogEventSource = z.infer<typeof BacklogEventSource>
+
+export const BacklogEvent = z.object({
+  id: Id,
+  itemId: Id,
+  kind: BacklogEventKind,
+  note: z.string().default(''),
+  source: BacklogEventSource,
+  /** Monotonic order — same-millisecond events must not scramble the trail. */
+  seq: z.number().int().positive(),
+  createdAt: Timestamp,
+})
+export type BacklogEvent = z.infer<typeof BacklogEvent>
+
+/**
+ * A durable, curated lesson about one repository. Confirmed learnings ride
+ * every new plan brief for the repo (capped at render time, attributed);
+ * retiring is the curation lever. Stow files `proposed`; a human confirms.
+ */
+export const Learning = z.object({
+  id: Id,
+  repoPath: z.string(),
+  text: z.string().min(1),
+  state: z.enum(['proposed', 'confirmed', 'retired']),
+  source: z.enum(['stow', 'manual']),
+  originSessionId: Id.nullable().default(null),
+  mock: z.boolean().default(false),
+  createdAt: Timestamp,
+})
+export type Learning = z.infer<typeof Learning>
+
 // ─── Finding ledger ─────────────────────────────────────────────────────────
 
 /**

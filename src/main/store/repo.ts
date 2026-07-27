@@ -12,8 +12,16 @@ import {
   type FindingOccurrence,
   type GridLayout,
   type Id,
+  type BacklogEvent,
+  type BacklogEventKind,
+  type BacklogEventSource,
+  type BacklogItem,
+  type BacklogItemSource,
+  type BacklogItemState,
+  type FindingPriority,
   type Interjection,
   type InterjectionTarget,
+  type Learning,
   type Loop,
   type LoopIteration,
   type LedgerFinding,
@@ -34,7 +42,8 @@ import {
   type WorkPlan,
   type Worktree,
 } from '@shared/domain'
-import { findingIdentity, normaliseFindingText } from '@shared/ledger'
+import { findingIdentity, normaliseFindingText, sha256 } from '@shared/ledger'
+import { canonicalRepoPath } from '@main/util/repoPath'
 import type { Db, Row } from './db'
 
 export function newId(): Id {
@@ -53,6 +62,22 @@ function parseJson<T>(value: unknown, fallback: T): T {
 }
 
 const str = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d)
+
+/**
+ * Backlog dedupe identity: the ledger's own normalisation over title and
+ * detail — never a new normalisation, and never title-only, because two
+ * distinct findings sharing a generic title must not collapse into one item.
+ */
+function backlogContentHash(title: string, detail: string): string {
+  return sha256(`${normaliseFindingText(title)}\0${normaliseFindingText(detail)}`)
+}
+
+/** Who the trail says acted, derived from where the item came from. */
+function backlogEventSource(source: BacklogItemSource): BacklogEventSource {
+  if (source === 'stow') return 'stow'
+  if (source === 'manual') return 'human'
+  return 'pipeline'
+}
 
 /** The wire-safe view of a stored run-state blob; zod strips the heavy rest. */
 function summariseRunState(raw: unknown): MilestoneRunState | null {
@@ -1027,6 +1052,366 @@ export class Repo {
       landedAt: nullableNum(row['landed_at']),
       lastError: str(row['last_error']),
       orphaned: num(row['orphaned']) === 1,
+    }
+  }
+
+  // ─── Backlog and learnings ─────────────────────────────────────────────────
+  // The per-repository record of work worth remembering. Repo paths are
+  // canonicalised at this boundary only; the transition method is the single
+  // choke point that keeps the state column and the append-only trail in
+  // agreement.
+
+  /**
+   * Files an item, deduplicating by content against *live* items only. A
+   * collision with a live item appends a `resighted` event rather than doing
+   * nothing — silence is the failure mode — and a terminal item never blocks
+   * a genuine recurrence from filing fresh.
+   */
+  fileBacklogItem(input: {
+    repoPath: string
+    title: string
+    detail?: string
+    priority?: FindingPriority | null
+    source: BacklogItemSource
+    originSessionId?: Id | null
+    evidence?: Evidence[]
+    mock: boolean
+    /** Stow files `proposed`; deterministic sources file `open`. */
+    state?: 'proposed' | 'open'
+    note?: string
+  }): { item: BacklogItem; resighted: boolean } {
+    const repoPath = canonicalRepoPath(input.repoPath)
+    const contentHash = backlogContentHash(input.title, input.detail ?? '')
+    const eventSource = backlogEventSource(input.source)
+
+    return this.db.transaction(() => {
+      const live = this.db.get(
+        `SELECT * FROM backlog_items
+         WHERE repo_path = ? AND content_hash = ?
+           AND state IN ('proposed', 'open', 'planned', 'closure-proposed')
+         LIMIT 1`,
+        repoPath,
+        contentHash,
+      )
+      if (live) {
+        const item = this.toBacklogItem(live)
+        this.appendBacklogEvent(
+          item.id,
+          'resighted',
+          input.note ?? `Raised again (${input.source}).`,
+          eventSource,
+        )
+        return { item, resighted: true }
+      }
+
+      const now = Date.now()
+      const state = input.state ?? 'open'
+      const item: BacklogItem = {
+        id: newId(),
+        repoPath,
+        contentHash,
+        title: input.title,
+        detail: input.detail ?? '',
+        priority: input.priority ?? null,
+        state,
+        source: input.source,
+        originSessionId: input.originSessionId ?? null,
+        planId: null,
+        evidence: input.evidence ?? [],
+        blockedBy: [],
+        mock: input.mock,
+        createdAt: now,
+        updatedAt: now,
+      }
+      this.db.run(
+        `INSERT INTO backlog_items (id, repo_path, content_hash, title, detail, priority, state, source, origin_session_id, plan_id, evidence, blocked_by, mock, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        item.id,
+        item.repoPath,
+        item.contentHash,
+        item.title,
+        item.detail,
+        item.priority,
+        item.state,
+        item.source,
+        item.originSessionId,
+        item.planId,
+        json(item.evidence),
+        json(item.blockedBy),
+        item.mock ? 1 : 0,
+        item.createdAt,
+        item.updatedAt,
+      )
+      this.appendBacklogEvent(item.id, state, input.note ?? `Filed (${input.source}).`, eventSource)
+      return { item, resighted: false }
+    })
+  }
+
+  /**
+   * The single legal-transition choke point: validates the move, updates the
+   * column, appends the event — one transaction, so the trail always folds to
+   * the column (a pinned test). `planned` requires the targeting plan;
+   * reopening clears it, or a dead plan completing later would
+   * closure-propose an item since re-targeted elsewhere.
+   */
+  transitionBacklogItem(
+    id: Id,
+    to: Exclude<BacklogItemState, 'proposed'>,
+    opts: { source: BacklogEventSource; note?: string; planId?: Id },
+  ): BacklogItem {
+    const LEGAL: Record<BacklogItemState, ReadonlyArray<BacklogItemState>> = {
+      proposed: ['open', 'dropped'],
+      open: ['planned', 'dropped'],
+      planned: ['closure-proposed', 'open'],
+      'closure-proposed': ['done', 'open'],
+      done: [],
+      dropped: [],
+    }
+    return this.db.transaction(() => {
+      const row = this.db.get(`SELECT * FROM backlog_items WHERE id = ?`, id)
+      if (!row) throw new Error('no such backlog item')
+      const item = this.toBacklogItem(row)
+      if (!LEGAL[item.state].includes(to)) {
+        throw new Error(`a ${item.state} backlog item cannot become ${to}`)
+      }
+      let planId = item.planId
+      if (to === 'planned') {
+        if (!opts.planId) throw new Error('planning a backlog item requires the plan id')
+        planId = opts.planId
+      } else if (to === 'open') {
+        planId = null
+      }
+      const now = Date.now()
+      this.db.run(
+        `UPDATE backlog_items SET state = ?, plan_id = ?, updated_at = ? WHERE id = ?`,
+        to,
+        planId,
+        now,
+        id,
+      )
+      this.appendBacklogEvent(id, to, opts.note ?? '', opts.source)
+      const updated = this.db.get(`SELECT * FROM backlog_items WHERE id = ?`, id)
+      if (!updated) throw new Error('backlog item disappeared mid-transition')
+      return this.toBacklogItem(updated)
+    })
+  }
+
+  /**
+   * Blockers must exist, share the item's repository, and stay acyclic.
+   * Terminal blockers are left in place — reads treat them as inert, so a
+   * resolved blocker stops blocking without anyone editing this list.
+   */
+  setBacklogBlockedBy(id: Id, blockedBy: Id[]): BacklogItem {
+    return this.db.transaction(() => {
+      const row = this.db.get(`SELECT * FROM backlog_items WHERE id = ?`, id)
+      if (!row) throw new Error('no such backlog item')
+      const item = this.toBacklogItem(row)
+
+      const unique = [...new Set(blockedBy)]
+      for (const blockerId of unique) {
+        if (blockerId === id) throw new Error('an item cannot block itself')
+        const blocker = this.getBacklogItem(blockerId)
+        if (!blocker) throw new Error(`no such blocking item: ${blockerId}`)
+        if (blocker.repoPath !== item.repoPath) {
+          throw new Error('blockers must belong to the same repository')
+        }
+      }
+      // Cycle check: from each proposed blocker, can we walk back to `id`?
+      const visit = (fromId: Id, seen: Set<Id>): boolean => {
+        if (fromId === id) return true
+        if (seen.has(fromId)) return false
+        seen.add(fromId)
+        const from = this.getBacklogItem(fromId)
+        return (from?.blockedBy ?? []).some((next) => visit(next, seen))
+      }
+      if (unique.some((blockerId) => visit(blockerId, new Set()))) {
+        throw new Error('that dependency would create a cycle')
+      }
+
+      this.db.run(
+        `UPDATE backlog_items SET blocked_by = ?, updated_at = ? WHERE id = ?`,
+        json(unique),
+        Date.now(),
+        id,
+      )
+      const updated = this.db.get(`SELECT * FROM backlog_items WHERE id = ?`, id)
+      if (!updated) throw new Error('backlog item disappeared')
+      return this.toBacklogItem(updated)
+    })
+  }
+
+  getBacklogItem(id: Id): BacklogItem | null {
+    const row = this.db.get(`SELECT * FROM backlog_items WHERE id = ?`, id)
+    return row ? this.toBacklogItem(row) : null
+  }
+
+  listBacklogItems(filter: { repoPath?: string; states?: BacklogItemState[] } = {}): BacklogItem[] {
+    const where: string[] = []
+    const params: unknown[] = []
+    if (filter.repoPath) {
+      where.push('repo_path = ?')
+      params.push(canonicalRepoPath(filter.repoPath))
+    }
+    if (filter.states?.length) {
+      where.push(`state IN (${filter.states.map(() => '?').join(', ')})`)
+      params.push(...filter.states)
+    }
+    const clause = where.length ? ` WHERE ${where.join(' AND ')}` : ''
+    return this.db
+      .all(`SELECT * FROM backlog_items${clause} ORDER BY created_at DESC, id ASC`, ...params)
+      .map((r) => this.toBacklogItem(r))
+  }
+
+  distinctBacklogRepos(): string[] {
+    return this.db
+      .all(`SELECT DISTINCT repo_path FROM backlog_items ORDER BY repo_path ASC`)
+      .map((row) => str(row['repo_path']))
+  }
+
+  listBacklogEvents(itemId: Id): BacklogEvent[] {
+    return this.db
+      .all(`SELECT * FROM backlog_events WHERE item_id = ? ORDER BY seq ASC`, itemId)
+      .map((r) => this.toBacklogEvent(r))
+  }
+
+  private appendBacklogEvent(
+    itemId: Id,
+    kind: BacklogEventKind,
+    note: string,
+    source: BacklogEventSource,
+  ): void {
+    this.db.run(
+      `INSERT INTO backlog_events (id, item_id, kind, note, source, seq, created_at)
+       VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM backlog_events), ?)`,
+      newId(),
+      itemId,
+      kind,
+      note,
+      source,
+      Date.now(),
+    )
+  }
+
+  /** Live-duplicate check is exact text; learnings are short and curated. */
+  fileLearning(input: {
+    repoPath: string
+    text: string
+    source: Learning['source']
+    originSessionId?: Id | null
+    mock: boolean
+    /** Stow files `proposed`; manual entries are already human-confirmed. */
+    state?: 'proposed' | 'confirmed'
+  }): { learning: Learning; duplicate: boolean } {
+    const repoPath = canonicalRepoPath(input.repoPath)
+    return this.db.transaction(() => {
+      const live = this.db.get(
+        `SELECT * FROM learnings WHERE repo_path = ? AND text = ? AND state != 'retired' LIMIT 1`,
+        repoPath,
+        input.text,
+      )
+      if (live) return { learning: this.toLearning(live), duplicate: true }
+
+      const learning: Learning = {
+        id: newId(),
+        repoPath,
+        text: input.text,
+        state: input.state ?? (input.source === 'manual' ? 'confirmed' : 'proposed'),
+        source: input.source,
+        originSessionId: input.originSessionId ?? null,
+        mock: input.mock,
+        createdAt: Date.now(),
+      }
+      this.db.run(
+        `INSERT INTO learnings (id, repo_path, text, state, source, origin_session_id, mock, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        learning.id,
+        learning.repoPath,
+        learning.text,
+        learning.state,
+        learning.source,
+        learning.originSessionId,
+        learning.mock ? 1 : 0,
+        learning.createdAt,
+      )
+      return { learning, duplicate: false }
+    })
+  }
+
+  transitionLearning(id: Id, to: 'confirmed' | 'retired'): Learning {
+    const LEGAL: Record<Learning['state'], ReadonlyArray<Learning['state']>> = {
+      proposed: ['confirmed', 'retired'],
+      confirmed: ['retired'],
+      retired: [],
+    }
+    const row = this.db.get(`SELECT * FROM learnings WHERE id = ?`, id)
+    if (!row) throw new Error('no such learning')
+    const learning = this.toLearning(row)
+    if (!LEGAL[learning.state].includes(to)) {
+      throw new Error(`a ${learning.state} learning cannot become ${to}`)
+    }
+    this.db.run(`UPDATE learnings SET state = ? WHERE id = ?`, to, id)
+    return { ...learning, state: to }
+  }
+
+  listLearnings(filter: { repoPath?: string; states?: Array<Learning['state']> } = {}): Learning[] {
+    const where: string[] = []
+    const params: unknown[] = []
+    if (filter.repoPath) {
+      where.push('repo_path = ?')
+      params.push(canonicalRepoPath(filter.repoPath))
+    }
+    if (filter.states?.length) {
+      where.push(`state IN (${filter.states.map(() => '?').join(', ')})`)
+      params.push(...filter.states)
+    }
+    const clause = where.length ? ` WHERE ${where.join(' AND ')}` : ''
+    return this.db
+      .all(`SELECT * FROM learnings${clause} ORDER BY created_at DESC, id ASC`, ...params)
+      .map((r) => this.toLearning(r))
+  }
+
+  private toBacklogItem(row: Row): BacklogItem {
+    return {
+      id: str(row['id']),
+      repoPath: str(row['repo_path']),
+      contentHash: str(row['content_hash']),
+      title: str(row['title']),
+      detail: str(row['detail']),
+      priority: nullableStr(row['priority']) as BacklogItem['priority'],
+      state: str(row['state']) as BacklogItemState,
+      source: str(row['source']) as BacklogItemSource,
+      originSessionId: nullableStr(row['origin_session_id']),
+      planId: nullableStr(row['plan_id']),
+      evidence: parseJson<BacklogItem['evidence']>(row['evidence'], []),
+      blockedBy: parseJson<Id[]>(row['blocked_by'], []),
+      mock: num(row['mock']) === 1,
+      createdAt: num(row['created_at']),
+      updatedAt: num(row['updated_at']),
+    }
+  }
+
+  private toBacklogEvent(row: Row): BacklogEvent {
+    return {
+      id: str(row['id']),
+      itemId: str(row['item_id']),
+      kind: str(row['kind']) as BacklogEventKind,
+      note: str(row['note']),
+      source: str(row['source']) as BacklogEventSource,
+      seq: num(row['seq']),
+      createdAt: num(row['created_at']),
+    }
+  }
+
+  private toLearning(row: Row): Learning {
+    return {
+      id: str(row['id']),
+      repoPath: str(row['repo_path']),
+      text: str(row['text']),
+      state: str(row['state']) as Learning['state'],
+      source: str(row['source']) as Learning['source'],
+      originSessionId: nullableStr(row['origin_session_id']),
+      mock: num(row['mock']) === 1,
+      createdAt: num(row['created_at']),
     }
   }
 
