@@ -539,6 +539,7 @@ export const FindingOccurrence = z.object({
   round: z.number().int().nonnegative().nullable().default(null),
   kind: FindingOccurrenceKind,
   source: FindingOccurrenceSource,
+  seq: z.number().int().positive(),
   createdAt: Timestamp,
 })
 export type FindingOccurrence = z.infer<typeof FindingOccurrence>
@@ -563,6 +564,7 @@ export const FindingDisposition = z.object({
   state: FindingDispositionState,
   note: z.string().default(''),
   source: FindingDispositionSource,
+  seq: z.number().int().positive(),
   createdAt: Timestamp,
 })
 export type FindingDisposition = z.infer<typeof FindingDisposition>

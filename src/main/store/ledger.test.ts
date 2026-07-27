@@ -25,7 +25,7 @@ function makeSession(repo: Repo, matter = 'review the approval gate'): Session {
 function occurrence(
   findingId: string,
   patch: Partial<FindingOccurrence> = {},
-): Omit<FindingOccurrence, 'id' | 'createdAt'> &
+): Omit<FindingOccurrence, 'id' | 'seq' | 'createdAt'> &
   Partial<Pick<FindingOccurrence, 'id' | 'createdAt'>> {
   return {
     findingId,
@@ -112,6 +112,56 @@ describe('finding ledger persistence', () => {
         }),
       ),
     ).toThrow()
+  })
+
+  it('allocates one sequence across both tables and lists each in sequence order', () => {
+    const repo = freshRepo()
+    const session = makeSession(repo)
+    const finding = repo.upsertLedgerFinding(session.id, 'The gate is not tested.', 1)
+
+    const firstOccurrence = repo.recordFindingOccurrence(
+      occurrence(finding.id, { id: 'z-first-occurrence', createdAt: 50 }),
+    )
+    const firstDisposition = repo.disposeFinding({
+      id: 'z-first-disposition',
+      findingId: finding.id,
+      occurrenceId: firstOccurrence.id,
+      state: 'dismissed',
+      note: '',
+      source: 'human',
+      createdAt: 50,
+    })
+    const secondOccurrence = repo.recordFindingOccurrence(
+      occurrence(finding.id, {
+        id: 'a-second-occurrence',
+        milestoneId: 'milestone-2',
+        createdAt: 1,
+      }),
+    )
+    const secondDisposition = repo.disposeFinding({
+      id: 'a-second-disposition',
+      findingId: finding.id,
+      occurrenceId: secondOccurrence.id,
+      state: 'resolved',
+      note: '',
+      source: 'pipeline',
+      createdAt: 1,
+    })
+
+    expect([
+      firstOccurrence.seq,
+      firstDisposition.seq,
+      secondOccurrence.seq,
+      secondDisposition.seq,
+    ]).toEqual([1, 2, 3, 4])
+    expect(repo.listFindingOccurrences(session.id)).toEqual([
+      firstOccurrence,
+      secondOccurrence,
+    ])
+    expect(repo.listFindingDispositions(session.id)).toEqual([
+      firstDisposition,
+      secondDisposition,
+    ])
   })
 
   it('records immutable dispositions scoped to one occurrence or the finding', () => {

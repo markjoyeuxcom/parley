@@ -29,6 +29,7 @@ function occurrence(
     round: 0,
     kind: 'blocking',
     source: 'review',
+    seq: createdAt,
     createdAt,
     ...patch,
   })
@@ -46,6 +47,7 @@ function disposition(
     occurrenceId: null,
     state: 'resolved',
     source: 'human',
+    seq: createdAt,
     createdAt,
     ...patch,
   })
@@ -139,6 +141,57 @@ describe('occurrence-scoped state', () => {
     expect(occurrenceState(second, [settled])).toBe('accepted-risk')
     expect(occurrenceState(recurrence, [settled])).toBe('open')
     expect(findingState('finding-1', [first, second, recurrence], [settled])).toBe('open')
+  })
+
+  it('keeps a same-millisecond recurrence open when it follows a finding-wide disposition', () => {
+    const first = occurrence('occurrence-1', 'finding-1', 10, { seq: 1 })
+    const settled = disposition('disposition-1', 'finding-1', 10, {
+      seq: 2,
+      state: 'accepted-risk',
+    })
+    const recurrence = occurrence('occurrence-2', 'finding-1', 10, { seq: 3 })
+
+    expect(occurrenceState(first, [settled])).toBe('accepted-risk')
+    expect(occurrenceState(recurrence, [settled])).toBe('open')
+    expect(hasOpenBlockingOccurrences([first, recurrence], [settled])).toBe(true)
+  })
+
+  it('resolves same-createdAt dispositions in sequence order', () => {
+    const sighting = occurrence('occurrence-1', 'finding-1', 10, { seq: 1 })
+    const first = disposition('disposition-1', 'finding-1', 20, {
+      occurrenceId: sighting.id,
+      seq: 2,
+      state: 'dismissed',
+    })
+    const second = disposition('disposition-2', 'finding-1', 20, {
+      occurrenceId: sighting.id,
+      seq: 3,
+      state: 'resolved',
+    })
+
+    expect(occurrenceState(sighting, [second, first])).toBe('resolved')
+  })
+
+  it('takes the state of the later closed occurrence by sequence', () => {
+    const first = occurrence('occurrence-1', 'finding-1', 10, { seq: 1 })
+    const second = occurrence('occurrence-2', 'finding-1', 10, {
+      milestoneId: 'milestone-2',
+      seq: 3,
+    })
+    const firstClosed = disposition('disposition-1', 'finding-1', 10, {
+      occurrenceId: first.id,
+      seq: 2,
+      state: 'dismissed',
+    })
+    const secondClosed = disposition('disposition-2', 'finding-1', 10, {
+      occurrenceId: second.id,
+      seq: 4,
+      state: 'accepted-risk',
+    })
+
+    expect(findingState('finding-1', [second, first], [secondClosed, firstClosed])).toBe(
+      'accepted-risk',
+    )
   })
 
   it('uses the latest covering disposition without crossing finding boundaries', () => {

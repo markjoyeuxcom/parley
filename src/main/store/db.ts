@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 9
+export const SCHEMA_VERSION = 10
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -140,10 +140,11 @@ CREATE TABLE IF NOT EXISTS ledger_sightings (
   round        INTEGER,
   kind         TEXT NOT NULL,
   source       TEXT NOT NULL,
+  seq          INTEGER NOT NULL,
   created_at   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_sightings_finding
-  ON ledger_sightings(finding_id, created_at);
+  ON ledger_sightings(finding_id, seq);
 
 CREATE TABLE IF NOT EXISTS ledger_dispositions (
   id            TEXT PRIMARY KEY,
@@ -152,12 +153,13 @@ CREATE TABLE IF NOT EXISTS ledger_dispositions (
   state         TEXT NOT NULL,
   note          TEXT NOT NULL DEFAULT '',
   source        TEXT NOT NULL,
+  seq           INTEGER NOT NULL,
   created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_dispositions_finding
-  ON ledger_dispositions(finding_id, created_at);
+  ON ledger_dispositions(finding_id, seq);
 CREATE INDEX IF NOT EXISTS idx_ledger_dispositions_occurrence
-  ON ledger_dispositions(occurrence_id, created_at);
+  ON ledger_dispositions(occurrence_id, seq);
 
 CREATE TABLE IF NOT EXISTS plans (
   id         TEXT PRIMARY KEY,
@@ -439,6 +441,63 @@ export function migrate(db: Db): void {
   if (current < 9) {
     // The finding ledger is additive. SCHEMA creates its three tables before
     // the recorded version is inspected, leaving every version-8 row intact.
+  }
+  if (current < 10) {
+    db.transaction(() => {
+      for (const table of ['ledger_sightings', 'ledger_dispositions']) {
+        try {
+          db.exec(`ALTER TABLE ${table} ADD COLUMN seq INTEGER NOT NULL DEFAULT 0`)
+        } catch {
+          // Already present, because SCHEMA above created the table fresh.
+        }
+      }
+
+      const rankedLedger = `
+        SELECT entry_kind, id,
+               ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS seq
+        FROM (
+          SELECT 'sighting' AS entry_kind, id, created_at FROM ledger_sightings
+          UNION ALL
+          SELECT 'disposition' AS entry_kind, id, created_at FROM ledger_dispositions
+        )
+      `
+      db.exec(`
+        WITH ranked AS (${rankedLedger})
+        UPDATE ledger_sightings
+        SET seq = (
+          SELECT ranked.seq
+          FROM ranked
+          WHERE ranked.entry_kind = 'sighting'
+            AND ranked.id = ledger_sightings.id
+        )
+      `)
+      db.exec(`
+        WITH ranked AS (${rankedLedger})
+        UPDATE ledger_dispositions
+        SET seq = (
+          SELECT ranked.seq
+          FROM ranked
+          WHERE ranked.entry_kind = 'disposition'
+            AND ranked.id = ledger_dispositions.id
+        )
+      `)
+
+      db.exec(`DROP INDEX IF EXISTS idx_ledger_sightings_finding`)
+      db.exec(`DROP INDEX IF EXISTS idx_ledger_dispositions_finding`)
+      db.exec(`DROP INDEX IF EXISTS idx_ledger_dispositions_occurrence`)
+      db.exec(`
+        CREATE INDEX idx_ledger_sightings_finding
+        ON ledger_sightings(finding_id, seq)
+      `)
+      db.exec(`
+        CREATE INDEX idx_ledger_dispositions_finding
+        ON ledger_dispositions(finding_id, seq)
+      `)
+      db.exec(`
+        CREATE INDEX idx_ledger_dispositions_occurrence
+        ON ledger_dispositions(occurrence_id, seq)
+      `)
+    })
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

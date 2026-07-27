@@ -114,7 +114,7 @@ function coversOccurrence(
 ): boolean {
   if (disposition.findingId !== occurrence.findingId) return false
   if (disposition.occurrenceId !== null) return disposition.occurrenceId === occurrence.id
-  return occurrence.createdAt <= disposition.createdAt
+  return occurrence.seq <= disposition.seq
 }
 
 /** Resolves one occurrence from an append-ordered disposition history. */
@@ -123,11 +123,11 @@ export function occurrenceState(
   dispositions: readonly FindingDisposition[],
 ): FindingLedgerState {
   let state: FindingLedgerState = 'open'
-  let settledAt = -1
+  let settledSeq = -1
   for (const disposition of dispositions) {
-    if (!coversOccurrence(disposition, occurrence) || disposition.createdAt < settledAt) continue
+    if (!coversOccurrence(disposition, occurrence) || disposition.seq < settledSeq) continue
     state = disposition.state
-    settledAt = disposition.createdAt
+    settledSeq = disposition.seq
   }
   return state
 }
@@ -156,7 +156,7 @@ export function findingState(
   for (const occurrence of matching) {
     const state = occurrenceState(occurrence, dispositions)
     if (state === 'open') return 'open'
-    if (occurrence.createdAt >= latest.createdAt) {
+    if (occurrence.seq >= latest.seq) {
       latest = occurrence
       latestState = state
     }

@@ -56,6 +56,13 @@ const num = (v: unknown, d = 0): number => (typeof v === 'number' ? v : d)
 const nullableNum = (v: unknown): number | null => (typeof v === 'number' ? v : null)
 const nullableStr = (v: unknown): string | null => (typeof v === 'string' ? v : null)
 
+const NEXT_LEDGER_SEQUENCE = `(SELECT COALESCE(MAX(seq), 0) + 1
+  FROM (
+    SELECT seq FROM ledger_sightings
+    UNION ALL
+    SELECT seq FROM ledger_dispositions
+  ))`
+
 /** Thrown when an approval cannot be spent. Surfaces to the UI verbatim. */
 export class ApprovalError extends Error {}
 
@@ -617,28 +624,27 @@ export class Repo {
   }
 
   recordFindingOccurrence(
-    input: Omit<FindingOccurrence, 'id' | 'createdAt'> &
+    input: Omit<FindingOccurrence, 'id' | 'seq' | 'createdAt'> &
       Partial<Pick<FindingOccurrence, 'id' | 'createdAt'>>,
   ): FindingOccurrence {
-    const occurrence: FindingOccurrence = {
-      ...input,
-      id: input.id ?? newId(),
-      createdAt: input.createdAt ?? Date.now(),
-    }
+    const id = input.id ?? newId()
+    const createdAt = input.createdAt ?? Date.now()
     this.db.run(
       `INSERT INTO ledger_sightings
-       (id, finding_id, plan_id, milestone_id, round, kind, source, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      occurrence.id,
-      occurrence.findingId,
-      occurrence.planId,
-      occurrence.milestoneId,
-      occurrence.round,
-      occurrence.kind,
-      occurrence.source,
-      occurrence.createdAt,
+       (id, finding_id, plan_id, milestone_id, round, kind, source, seq, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ${NEXT_LEDGER_SEQUENCE}, ?)`,
+      id,
+      input.findingId,
+      input.planId,
+      input.milestoneId,
+      input.round,
+      input.kind,
+      input.source,
+      createdAt,
     )
-    return occurrence
+    const row = this.db.get(`SELECT * FROM ledger_sightings WHERE id = ?`, id)
+    if (!row) throw new Error('failed to record finding occurrence')
+    return this.toFindingOccurrence(row)
   }
 
   private toFindingOccurrence(row: Row): FindingOccurrence {
@@ -650,6 +656,7 @@ export class Repo {
       round: nullableNum(row['round']),
       kind: str(row['kind']) as FindingOccurrence['kind'],
       source: str(row['source']) as FindingOccurrence['source'],
+      seq: num(row['seq']),
       createdAt: num(row['created_at']),
     }
   }
@@ -661,46 +668,45 @@ export class Repo {
          FROM ledger_sightings s
          JOIN ledger_findings f ON f.id = s.finding_id
          WHERE f.session_id = ?
-         ORDER BY s.created_at ASC, s.id ASC`,
+         ORDER BY s.seq ASC`,
         sessionId,
       )
       .map((row) => this.toFindingOccurrence(row))
   }
 
   disposeFinding(
-    input: Omit<FindingDisposition, 'id' | 'createdAt'> &
+    input: Omit<FindingDisposition, 'id' | 'seq' | 'createdAt'> &
       Partial<Pick<FindingDisposition, 'id' | 'createdAt'>>,
   ): FindingDisposition {
-    const disposition: FindingDisposition = {
-      ...input,
-      id: input.id ?? newId(),
-      createdAt: input.createdAt ?? Date.now(),
-    }
+    const id = input.id ?? newId()
+    const createdAt = input.createdAt ?? Date.now()
 
-    if (disposition.occurrenceId !== null) {
+    if (input.occurrenceId !== null) {
       const occurrence = this.db.get(
         `SELECT finding_id FROM ledger_sightings WHERE id = ?`,
-        disposition.occurrenceId,
+        input.occurrenceId,
       )
       if (!occurrence) throw new Error('no such finding occurrence')
-      if (str(occurrence['finding_id']) !== disposition.findingId) {
+      if (str(occurrence['finding_id']) !== input.findingId) {
         throw new Error('that occurrence belongs to a different finding')
       }
     }
 
     this.db.run(
       `INSERT INTO ledger_dispositions
-       (id, finding_id, occurrence_id, state, note, source, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      disposition.id,
-      disposition.findingId,
-      disposition.occurrenceId,
-      disposition.state,
-      disposition.note,
-      disposition.source,
-      disposition.createdAt,
+       (id, finding_id, occurrence_id, state, note, source, seq, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ${NEXT_LEDGER_SEQUENCE}, ?)`,
+      id,
+      input.findingId,
+      input.occurrenceId,
+      input.state,
+      input.note,
+      input.source,
+      createdAt,
     )
-    return disposition
+    const row = this.db.get(`SELECT * FROM ledger_dispositions WHERE id = ?`, id)
+    if (!row) throw new Error('failed to record finding disposition')
+    return this.toFindingDisposition(row)
   }
 
   private toFindingDisposition(row: Row): FindingDisposition {
@@ -711,6 +717,7 @@ export class Repo {
       state: str(row['state']) as FindingDisposition['state'],
       note: str(row['note']),
       source: str(row['source']) as FindingDisposition['source'],
+      seq: num(row['seq']),
       createdAt: num(row['created_at']),
     }
   }
@@ -722,7 +729,7 @@ export class Repo {
          FROM ledger_dispositions d
          JOIN ledger_findings f ON f.id = d.finding_id
          WHERE f.session_id = ?
-         ORDER BY d.created_at ASC, d.id ASC`,
+         ORDER BY d.seq ASC`,
         sessionId,
       )
       .map((row) => this.toFindingDisposition(row))
