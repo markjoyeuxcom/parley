@@ -1,6 +1,8 @@
 import type {
   Approval,
   Finding,
+  FindingDisposition,
+  FindingOccurrence,
   GridLayout,
   Id,
   Interjection,
@@ -16,7 +18,7 @@ import type {
   WorkPlan,
 } from '@shared/domain'
 import type { AppEvent, PtyChunk } from '@shared/events'
-import type { AppInfo, CliHealth, CommandName } from '@shared/ipc'
+import type { AppInfo, CliHealth, CommandName, LedgerEntry } from '@shared/ipc'
 
 /** The preload bridge. The only channel out of the renderer. */
 interface Bridge {
@@ -40,6 +42,7 @@ export interface SessionDetail {
   interjections: Interjection[]
   verdict: Verdict | null
   findings: Finding[]
+  ledger: LedgerEntry[]
   plans: WorkPlan[]
 }
 
@@ -89,6 +92,18 @@ export const api = {
   stopSession: (sessionId: Id): Promise<unknown> => bridge().invoke('session.stop', { sessionId }),
   exportReport: (sessionId: Id): Promise<{ saved: boolean; path: string | null }> =>
     bridge().invoke('session.export', { sessionId }),
+
+  // Finding ledger
+  listLedger: (sessionId: Id): Promise<LedgerEntry[]> =>
+    bridge().invoke('ledger.list', { sessionId }),
+  disposeLedgerFinding: (
+    sessionId: Id,
+    findingId: Id,
+    occurrenceId: FindingOccurrence['id'] | null,
+    state: FindingDisposition['state'],
+    note: string,
+  ): Promise<LedgerEntry> =>
+    bridge().invoke('ledger.dispose', { sessionId, findingId, occurrenceId, state, note }),
 
   // Plans
   createPlan: (payload: {

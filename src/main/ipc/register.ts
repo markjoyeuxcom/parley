@@ -1,13 +1,20 @@
 import { writeFile } from 'node:fs/promises'
 import { BrowserWindow, dialog, ipcMain } from 'electron'
 import { z } from 'zod'
-import { COMMANDS, type CliHealth, type CommandName, type InvokeResult } from '@shared/ipc'
+import {
+  COMMANDS,
+  type CliHealth,
+  type CommandName,
+  type InvokeResult,
+} from '@shared/ipc'
 import { CH } from '@shared/ipc'
+import type { AppEvent } from '@shared/events'
 import { MAX_PANES, type GridLayout, type Skill } from '@shared/domain'
 import { RequestError, type Manager } from '@main/orchestrator/manager'
 import { newId } from '@main/store/repo'
 import { readCodexDefaultModel } from '@main/util/environment'
 import type { PtyManager } from '@main/pty/manager'
+import { disposeLedgerFinding, getSessionDetail, listSessionLedger } from './ledger'
 
 export interface IpcContext {
   manager: Manager
@@ -17,6 +24,10 @@ export interface IpcContext {
 }
 
 type Handler = (payload: unknown, ctx: IpcContext) => unknown | Promise<unknown>
+
+function emit(ctx: IpcContext, event: AppEvent): void {
+  ctx.window()?.webContents.send(CH.event, event)
+}
 
 /**
  * Command handlers.
@@ -80,16 +91,7 @@ const HANDLERS: Record<CommandName, Handler> = {
   },
   'session.get': (p, ctx) => {
     const { sessionId } = p as { sessionId: string }
-    const session = ctx.manager.repo.getSession(sessionId)
-    if (!session) throw new Error('no such session')
-    return {
-      session,
-      turns: ctx.manager.repo.listTurns(sessionId),
-      interjections: ctx.manager.repo.listInterjections(sessionId),
-      verdict: ctx.manager.repo.getVerdict(sessionId),
-      findings: ctx.manager.repo.listFindings(sessionId),
-      plans: ctx.manager.repo.listPlans().filter((plan) => plan.sessionId === sessionId),
-    }
+    return getSessionDetail(ctx.manager.repo, sessionId)
   },
   'session.interject': (p, ctx) => {
     const { sessionId, target, text } = p as { sessionId: string; target: 'both' | 'a' | 'b'; text: string }
@@ -126,6 +128,14 @@ const HANDLERS: Record<CommandName, Handler> = {
     await writeFile(result.filePath, verdict.report, 'utf8')
     return { saved: true, path: result.filePath }
   },
+
+  // ── Finding ledger ────────────────────────────────────────────────────────
+  'ledger.list': (p, ctx) => {
+    const { sessionId } = p as { sessionId: string }
+    return listSessionLedger(ctx.manager.repo, sessionId)
+  },
+  'ledger.dispose': (p, ctx) =>
+    disposeLedgerFinding(ctx.manager.repo, p as never, (event) => emit(ctx, event)),
 
   // ── Plans ──────────────────────────────────────────────────────────────────
   'plan.create': (p, ctx) => ctx.manager.createPlan(p as never),

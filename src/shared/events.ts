@@ -11,6 +11,7 @@ import type {
   Verdict,
   WorkPlan,
 } from './domain'
+import type { LedgerEntry } from './ipc'
 
 /**
  * Events pushed from the main process to the renderer.
@@ -29,6 +30,7 @@ export type AppEvent =
   | { type: 'session.usage'; sessionId: Id; usage: Usage }
   | { type: 'session.finding'; finding: Finding }
   | { type: 'session.verdict'; verdict: Verdict }
+  | { type: 'session.ledger'; entry: LedgerEntry }
   // Work plans
   | { type: 'plan.created'; plan: WorkPlan }
   | { type: 'plan.status'; planId: Id; status: WorkPlan['status'] }

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
   AgentConfig,
   Capability,
+  FindingDispositionState,
   Id,
   LoopCaps,
   LoopExitCondition,
@@ -10,6 +11,9 @@ import {
   SessionKind,
   Skill,
   WorkPlanKind,
+  type FindingDisposition,
+  type FindingOccurrence,
+  type LedgerFinding,
 } from './domain'
 
 /** Channel names. Namespaced so nothing collides with Electron internals. */
@@ -131,6 +135,14 @@ export const LayoutIdReq = z.object({ layoutId: Id })
 export const PickDirectoryReq = z.object({ title: z.string().default('Choose a folder') })
 
 export const GetSessionReq = z.object({ sessionId: Id })
+export const ListLedgerReq = z.object({ sessionId: Id })
+export const DisposeLedgerFindingReq = z.object({
+  sessionId: Id,
+  findingId: Id,
+  occurrenceId: Id.nullable(),
+  state: FindingDispositionState,
+  note: z.string().trim().min(1).max(4000),
+})
 /** Archiving hides a session from the list. It is reversible and deletes nothing. */
 export const ArchiveSessionReq = z.object({ sessionId: Id, archived: z.boolean() })
 export const ListSessionsReq = z.object({ includeArchived: z.boolean().default(false) })
@@ -159,6 +171,8 @@ export const COMMANDS = {
   'session.resume': SessionControlReq,
   'session.stop': SessionControlReq,
   'session.export': ExportReportReq,
+  'ledger.list': ListLedgerReq,
+  'ledger.dispose': DisposeLedgerFindingReq,
   'plan.create': CreatePlanReq,
   'plan.get': GetPlanReq,
   'plan.list': null,
@@ -195,6 +209,12 @@ export type CommandName = keyof typeof COMMANDS
 export type CommandPayload<K extends CommandName> = (typeof COMMANDS)[K] extends z.ZodType
   ? z.infer<(typeof COMMANDS)[K] & z.ZodType>
   : undefined
+
+/** One stable finding and its append-only occurrence and decision history. */
+export interface LedgerEntry extends LedgerFinding {
+  occurrences: FindingOccurrence[]
+  dispositions: FindingDisposition[]
+}
 
 /** Uniform envelope so a thrown error in main never becomes an unhandled rejection. */
 export type InvokeResult<T> = { ok: true; value: T } | { ok: false; error: string }

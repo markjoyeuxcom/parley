@@ -12,6 +12,7 @@ import type { Id, Loop, Pane, Session, Skill } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import type { CliHealth } from '@shared/ipc'
 import { api, type LoopDetail, type PlanDetail, type SessionDetail } from './lib/api'
+import { applyLedgerEvent } from './lib/ledgerState'
 
 export type Surface = 'grid' | 'parley' | 'loops'
 export type ThemeChoice = 'system' | 'light' | 'dark'
@@ -254,6 +255,11 @@ function applyEvent(state: State, event: AppEvent): State {
     case 'session.verdict':
       if (state.sessionDetail?.session.id !== event.verdict.sessionId) return state
       return { ...state, sessionDetail: { ...state.sessionDetail, verdict: event.verdict } }
+
+    case 'session.ledger': {
+      const sessionDetail = applyLedgerEvent(state.sessionDetail, event)
+      return sessionDetail === state.sessionDetail ? state : { ...state, sessionDetail }
+    }
 
     case 'plan.created':
       return state.sessionDetail?.session.id === event.plan.sessionId
