@@ -5,6 +5,7 @@ import { api } from '../lib/api'
 import { firstLine, formatTokens, relativeTime, shortPath, statusTone, VENDOR_LABEL } from '../lib/format'
 import { useStore } from '../state'
 import { DeleteSessionDialog } from '../components/DeleteSessionDialog'
+import { FindingsLedgerPanel } from '../components/FindingsLedgerPanel'
 import { NewSessionDialog } from '../components/NewSessionDialog'
 import { NewPlanDialog, PlanPanel } from '../components/PlanPanel'
 import { FindingsPanel, VerdictPanel } from '../components/VerdictPanel'
@@ -202,14 +203,16 @@ function SessionView(): ReactNode {
     )
   }
 
-  const { session, turns, verdict, findings, plans } = detail
+  const { session, turns, verdict, findings, ledger, plans } = detail
   const tone = statusTone(session.status)
   const running = session.status === 'running'
   const paused = session.status === 'paused'
   const active = running || paused || session.status === 'stopping'
 
   /** Whether there is anything to put in the inspector column yet. */
-  const hasOutcome = Boolean(verdict || findings.length || plans.length || state.planDetail)
+  const hasOutcome = Boolean(
+    verdict || findings.length || ledger.length || plans.length || state.planDetail,
+  )
 
   const exportReport = async (): Promise<void> => {
     const result = await attempt(() => api.exportReport(session.id))
@@ -304,6 +307,11 @@ function SessionView(): ReactNode {
 
               {verdict ? <VerdictPanel verdict={verdict} onExport={() => void exportReport()} /> : null}
               <FindingsPanel findings={findings} />
+              <FindingsLedgerPanel
+                entries={ledger}
+                plans={plans}
+                milestones={state.planDetail?.milestones}
+              />
 
               {/* Stays visible while a plan is open. It used to render only when
                   nothing was open, so opening one plan hid the way to the other —
@@ -334,6 +342,7 @@ function SessionView(): ReactNode {
               {state.planDetail ? (
                 <PlanPanel
                   detail={state.planDetail}
+                  ledger={ledger}
                   onRefresh={() => void openPlan(state.planDetail!.plan.id)}
                 />
               ) : null}

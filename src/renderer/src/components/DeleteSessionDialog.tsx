@@ -84,7 +84,11 @@ export function DeleteSessionDialog({
               <li>
                 {impact.turns} {impact.turns === 1 ? 'turn' : 'turns'} of transcript
                 {impact.hasVerdict ? ', and the verdict' : ''}
-                {impact.findings > 0 ? `, and ${impact.findings} findings` : ''}
+              </li>
+              <li>
+                {impact.findings} {impact.findings === 1 ? 'finding' : 'findings'} and{' '}
+                {impact.dispositions} recorded{' '}
+                {impact.dispositions === 1 ? 'disposition' : 'dispositions'}
               </li>
               {impact.plans > 0 ? (
                 <li>

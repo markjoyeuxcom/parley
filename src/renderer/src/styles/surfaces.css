@@ -1052,3 +1052,201 @@
 .dispositions__note {
   color: var(--text-secondary);
 }
+
+/* ── Findings ledger ──────────────────────────────────────────────────────
+   A single ordered audit trail. Occurrences and decisions use the same rail so
+   repeated findings cannot read as a summary counter with the history hidden. */
+
+.ledger {
+  display: flex;
+  flex-direction: column;
+}
+
+.ledger-finding {
+  min-width: 0;
+  padding: var(--s5) var(--s6);
+  border-bottom: 1px solid var(--line-faint);
+}
+
+.ledger-finding:last-child {
+  border-bottom: none;
+}
+
+.ledger-finding__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s4);
+}
+
+.ledger-finding__text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: var(--text-small);
+  font-weight: 550;
+  line-height: var(--leading-relaxed);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.ledger-timeline {
+  margin: var(--s5) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ledger-event {
+  position: relative;
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr);
+  gap: var(--s4);
+  min-width: 0;
+  padding-bottom: var(--s5);
+}
+
+.ledger-event:last-child {
+  padding-bottom: 0;
+}
+
+.ledger-event:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  top: 10px;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: var(--line);
+}
+
+.ledger-event__marker {
+  z-index: 1;
+  width: 9px;
+  height: 9px;
+  margin-top: 4px;
+  border: 2px solid var(--bg-surface);
+  border-radius: var(--r-pill);
+  background: var(--text-quaternary);
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.ledger-event__marker--open {
+  background: var(--fail);
+}
+
+.ledger-event__marker--resolved {
+  background: var(--pass);
+}
+
+.ledger-event__marker--accepted-risk {
+  background: var(--caution);
+}
+
+.ledger-event__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.ledger-event__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  min-width: 0;
+  font-size: var(--text-tiny);
+  color: var(--text-secondary);
+}
+
+.ledger-event__head strong {
+  color: var(--text-primary);
+  font-weight: 550;
+}
+
+.ledger-event__time {
+  color: var(--text-quaternary);
+  font-size: var(--text-micro);
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-event__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-micro);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+
+.ledger-event__note {
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--leading-relaxed);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.gate--blocking {
+  border-color: var(--fail);
+  background: var(--fail-soft);
+}
+
+.ledger-dispose-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.ledger-dispose {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  min-width: 0;
+  padding: var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+}
+
+.ledger-dispose__finding {
+  color: var(--text-primary);
+  font-size: var(--text-small);
+  font-weight: 550;
+  line-height: var(--leading-relaxed);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.ledger-dispose__meta {
+  color: var(--text-tertiary);
+  font-size: var(--text-micro);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.ledger-dispose__controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s3);
+}
+
+.ledger-dispose__controls .textarea {
+  min-height: 58px;
+}
+
+.ledger-dispose__controls .btn {
+  justify-self: start;
+}
+
+@media (min-width: 720px) {
+  .ledger-dispose__controls {
+    grid-template-columns: minmax(180px, 0.7fr) minmax(0, 1.3fr);
+  }
+
+  .ledger-dispose__controls .btn {
+    grid-column: 2;
+  }
+}

@@ -8,12 +8,15 @@ import type {
   WorkPlan,
   WorkPlanKind,
 } from '@shared/domain'
+import type { LedgerEntry } from '@shared/ipc'
 import { api, type PlanDetail } from '../lib/api'
 import { formatDuration, shortPath, statusTone, verificationState } from '../lib/format'
+import { approvalPermission } from '../lib/ledgerView'
 import { shellMetacharsIn } from '@shared/command'
 import { executionRefusal } from '@shared/execution'
 import { useStore } from '../state'
 import { AgentPicker } from './AgentPicker'
+import { OccurrenceDispositionControl } from './FindingsLedgerPanel'
 import { Chip, Dialog, Field, Label, Panel, Spinner } from './ui'
 import { RunActivity } from './RunActivity'
 import { PlanProgress } from './PlanProgress'
@@ -188,7 +191,15 @@ export function NewPlanDialog({
 }
 
 /** The audited pipeline for one plan, with a per-milestone approval gate. */
-export function PlanPanel({ detail, onRefresh }: { detail: PlanDetail; onRefresh: () => void }): ReactNode {
+export function PlanPanel({
+  detail,
+  ledger,
+  onRefresh,
+}: {
+  detail: PlanDetail
+  ledger: readonly LedgerEntry[]
+  onRefresh: () => void
+}): ReactNode {
   const { plan, milestones } = detail
   const tone = statusTone(plan.status)
   const [pendingApproval, setPendingApproval] = useState<Milestone | null>(null)
@@ -342,6 +353,7 @@ export function PlanPanel({ detail, onRefresh }: { detail: PlanDetail; onRefresh
         <ApprovalGateDialog
           plan={plan}
           milestone={pendingApproval}
+          ledger={ledger}
           busy={granting}
           onClose={() => setPendingApproval(null)}
           onConfirm={() => void approveAndRun(pendingApproval)}
@@ -734,6 +746,7 @@ function DispositionTable({
 function ApprovalGateDialog({
   plan,
   milestone,
+  ledger,
   busy,
   onClose,
   onConfirm,
@@ -741,12 +754,14 @@ function ApprovalGateDialog({
 }: {
   plan: WorkPlan
   milestone: Milestone
+  ledger: readonly LedgerEntry[]
   busy: boolean
   onClose: () => void
   onConfirm: () => void
   onAdopt: () => void
 }): ReactNode {
   const { attempt } = useStore()
+  const permission = approvalPermission(ledger)
   const [preflight, setPreflight] = useState<{
     existing: string[]
     missing: string[]
@@ -829,7 +844,11 @@ function ApprovalGateDialog({
           <button className="btn" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className="btn btn--primary" onClick={onConfirm} disabled={busy}>
+          <button
+            className="btn btn--primary"
+            onClick={onConfirm}
+            disabled={busy || !permission.allowed}
+          >
             {busy ? 'Approving…' : 'Approve and run'}
           </button>
         </>
@@ -839,6 +858,30 @@ function ApprovalGateDialog({
         <div className="gate__title">{milestone.title}</div>
         <div className="gate__body">{milestone.intent}</div>
       </div>
+
+      {!permission.allowed ? (
+        <div className="gate gate--blocking">
+          <div className="gate__title">
+            {permission.unresolved.length}{' '}
+            {permission.unresolved.length === 1 ? 'finding needs' : 'findings need'} a disposition
+          </div>
+          <div className="gate__body">
+            Approval stays disabled until every blocking occurrence has a recorded human
+            decision. Each control below settles only the occurrence it names.
+          </div>
+          <div className="ledger-dispose-list">
+            {permission.unresolved.map(({ entry, occurrence }) => (
+              <OccurrenceDispositionControl
+                key={occurrence.id}
+                entry={entry}
+                occurrence={occurrence}
+                plan={plan}
+                milestone={milestone}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {/*
         The expensive dead end, caught before it costs anything. An executor
