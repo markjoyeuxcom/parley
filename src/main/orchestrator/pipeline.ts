@@ -21,6 +21,7 @@ import {
   type WorkPlan,
 } from '@shared/domain'
 import { executionRefusal } from '@shared/execution'
+import { occurrenceState } from '@shared/ledger'
 import {
   adoptReviewPrompt,
   auditPrompt,
@@ -34,6 +35,7 @@ import {
 import { capture, isShellFree, splitCommand } from '@main/util/spawn'
 import { newId, type Repo } from '@main/store/repo'
 import { assertCapability, type AgentRegistry } from '@main/agents'
+import { groupLedgerEntries } from '@main/ipc/ledger'
 import type { MilestonePhase } from '@shared/events'
 import type { OrchestratorDeps } from './types'
 
@@ -239,6 +241,7 @@ export class Pipeline {
       this.repo.listMilestones(plan.id).length,
     )
     this.applyAudit(plan, audit)
+    this.ingestAuditFindings(plan, audit)
 
     // Persisted now rather than after correction. Correction has two paths that
     // overwrite this note, and the auditor's findings must not leave with them.
@@ -680,6 +683,7 @@ export class Pipeline {
       completedAt: finalPassed ? Date.now() : null,
     })
     this.emit({ type: 'plan.milestone', milestone: current })
+    if (finalPassed) this.settleMilestoneReviewFindings(plan, milestoneId)
 
     const remaining = this.repo
       .listMilestones(plan.id)
@@ -869,6 +873,24 @@ export class Pipeline {
     this.repo.addPlanUsage(plan.id, review.usage)
 
     const parsedReview = parseReview(review.text)
+    if (parsedReview) {
+      for (const finding of parsedReview.blocking) {
+        this.recordFindingOccurrence(plan, finding, {
+          milestoneId,
+          round,
+          kind: 'blocking',
+          source: 'review',
+        })
+      }
+      for (const note of parsedReview.notes) {
+        this.recordFindingOccurrence(plan, note, {
+          milestoneId,
+          round,
+          kind: 'note',
+          source: 'review',
+        })
+      }
+    }
     // Tests must be green *and* every declared break must have been caught *and*
     // the independent reviewer must pass it. Any one alone is exactly the weak
     // signal this pipeline exists to strengthen. A surviving mutation is counted
@@ -1117,6 +1139,94 @@ export class Pipeline {
     this.setStatus(plan.id, passed && remaining.length === 0 ? 'complete' : passed ? 'ready' : 'failed')
 
     return current
+  }
+
+  private ingestAuditFindings(plan: WorkPlan, audit: ParsedAudit | null): void {
+    if (!audit) return
+    const milestones = this.repo.listMilestones(plan.id)
+    for (const disposition of audit.dispositions) {
+      if (disposition.disposition === 'accept' || !disposition.note.trim()) continue
+      // Deliberately plan-level, never a milestone id. The audit judges the
+      // draft, and correction deletes the draft milestones and recreates them
+      // with new ids moments after this runs — an id recorded here dangled on
+      // every normal drafting run, and the panel rendered it as an opaque
+      // 'Milestone <shortId>'. Mapping draft indices onto corrected milestones
+      // would be a guess wearing precision: correction may split, merge or
+      // reorder. The milestone context lives in the finding text instead, where
+      // it stays true no matter what happens to the plan.
+      const context = milestones.find((milestone) => milestone.index === disposition.milestone)
+      const text = context
+        ? `Milestone ${disposition.milestone + 1} (${context.title}): ${disposition.note}`
+        : disposition.note
+      this.recordFindingOccurrence(plan, text, {
+        milestoneId: null,
+        round: null,
+        kind: 'blocking',
+        source: 'audit',
+      })
+    }
+    for (const concern of audit.blockingConcerns) {
+      if (!concern.trim()) continue
+      this.recordFindingOccurrence(plan, concern, {
+        milestoneId: null,
+        round: null,
+        kind: 'blocking',
+        source: 'audit',
+      })
+    }
+  }
+
+  private recordFindingOccurrence(
+    plan: WorkPlan,
+    text: string,
+    provenance: {
+      milestoneId: Id | null
+      round: number | null
+      kind: 'blocking' | 'note'
+      source: 'audit' | 'review'
+    },
+  ): void {
+    const finding = this.repo.upsertLedgerFinding(plan.sessionId, text)
+    this.repo.recordFindingOccurrence({
+      findingId: finding.id,
+      planId: plan.id,
+      ...provenance,
+    })
+    this.emitLedgerEntry(plan.sessionId, finding.id)
+  }
+
+  private settleMilestoneReviewFindings(plan: WorkPlan, milestoneId: Id): void {
+    const dispositions = this.repo.listFindingDispositions(plan.sessionId)
+    const occurrences = this.repo
+      .listFindingOccurrences(plan.sessionId)
+      .filter(
+        (occurrence) =>
+          occurrence.planId === plan.id &&
+          occurrence.milestoneId === milestoneId &&
+          occurrence.source === 'review' &&
+          occurrence.kind === 'blocking' &&
+          occurrenceState(occurrence, dispositions) === 'open',
+      )
+
+    for (const occurrence of occurrences) {
+      this.repo.disposeFinding({
+        findingId: occurrence.findingId,
+        occurrenceId: occurrence.id,
+        state: 'resolved',
+        note: 'The milestone passed deterministic verification and independent review.',
+        source: 'pipeline',
+      })
+      this.emitLedgerEntry(plan.sessionId, occurrence.findingId)
+    }
+  }
+
+  private emitLedgerEntry(sessionId: Id, findingId: Id): void {
+    // Assembled by the same helper the IPC surface uses, so the event stream and
+    // the panel can never disagree about what an entry contains.
+    const entry = groupLedgerEntries(this.repo, sessionId).find(
+      (candidate) => candidate.id === findingId,
+    )
+    if (entry) this.emit({ type: 'session.ledger', entry })
   }
 
   /** Runs the milestone's verification command. Parley runs it, never an agent. */
