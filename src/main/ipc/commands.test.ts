@@ -197,3 +197,58 @@ describe('invokeCommand routing', () => {
     expect(repo.listApprovals()).toHaveLength(0)
   })
 })
+
+describe('handler emits and the attention queue', () => {
+  /**
+   * Pins the seam the mock walkthrough exposed: IPC handlers mutate durable
+   * state too, and their events must flow through the Manager's instrumented
+   * emit. The original helper sent straight to the window — the renderer's
+   * board refreshed while the holds engine never recomputed, so the badge
+   * kept showing a backlog-review hold whose proposals were already triaged.
+   */
+  it('backlog triage over IPC recomputes the holds queue', async () => {
+    const events: import('@shared/events').AppEvent[] = []
+    const repo = new Repo(openDatabase(':memory:'))
+    // A proposal already waiting when the app starts; the constructor's
+    // initial recompute publishes its hold.
+    const { item } = repo.fileBacklogItem({
+      repoPath: '/tmp/queue-live',
+      title: 'A stow proposal awaiting triage.',
+      source: 'stow',
+      mock: true,
+      state: 'proposed',
+    })
+    const manager = new Manager({
+      repo,
+      registry: new AgentRegistry(true),
+      emit: (event) => events.push(event),
+    })
+    const ctx: IpcContext = {
+      manager,
+      pty: new Proxy({}, { get: () => () => { throw new Error('pty must not be touched') } }) as PtyManager,
+      window: () => null,
+      health: () => [],
+      dialogs: {
+        showOpenDialog: () => Promise.reject(new Error('dialogs must not be touched')),
+        showSaveDialog: () => Promise.reject(new Error('dialogs must not be touched')),
+      },
+    }
+    const lastHolds = () => {
+      const event = events.filter((e) => e.type === 'holds.changed').at(-1)
+      return event && 'holds' in event ? event.holds : []
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(lastHolds().some((h) => h.kind === 'backlog-review')).toBe(true)
+
+    // Triage the only proposal over IPC. The forwarded backlog.changed must
+    // reach the holds engine, whose recompute publishes the cleared queue.
+    await invokeCommand(ctx, {
+      command: 'backlog.drop',
+      payload: { itemId: item.id, note: 'Not worth tracking.' },
+    })
+    expect(events.some((e) => e.type === 'backlog.changed')).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(lastHolds().some((h) => h.kind === 'backlog-review')).toBe(false)
+  })
+})

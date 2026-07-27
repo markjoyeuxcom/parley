@@ -7,7 +7,6 @@ import { writeFile } from 'node:fs/promises'
 import type { BrowserWindow } from 'electron'
 import { z } from 'zod'
 import { COMMANDS, type CliHealth, type CommandName } from '@shared/ipc'
-import { CH } from '@shared/ipc'
 import type { AppEvent } from '@shared/events'
 import { MAX_PANES, type ApprovalScope, type GridLayout, type Skill } from '@shared/domain'
 import { RequestError, type Manager } from '@main/orchestrator/manager'
@@ -42,8 +41,12 @@ export interface IpcContext {
 
 type Handler = (payload: unknown, ctx: IpcContext) => unknown | Promise<unknown>
 
+// Through the Manager's instrumented chain — never straight to the window.
+// A handler-originated mutation is a durable transition like any other: the
+// holds engine and the liveness watchdog must observe it, or the attention
+// queue goes stale the moment triage happens through the UI.
 function emit(ctx: IpcContext, event: AppEvent): void {
-  ctx.window()?.webContents.send(CH.event, event)
+  ctx.manager.emit(event)
 }
 
 /**

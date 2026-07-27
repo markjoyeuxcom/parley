@@ -180,7 +180,14 @@ export class Manager {
     this.holds.schedule()
   }
 
-  private emit(event: AppEvent): void {
+  /**
+   * The one emit chain. Public because the IPC layer's handlers mutate state
+   * too (backlog triage, ledger dispositions), and an event that reaches the
+   * window without passing the holds engine leaves the attention queue stale —
+   * the badge kept showing a hold whose proposals were already triaged. Every
+   * event, whatever its origin, goes through here; there is no side door.
+   */
+  emit(event: AppEvent): void {
     this.deps.emit(event)
   }
 
