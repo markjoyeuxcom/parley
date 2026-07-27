@@ -3,7 +3,13 @@ import type { AppEvent } from '@shared/events'
 import type { FindingOccurrence, Session } from '@shared/domain'
 import { openDatabase } from '@main/store/db'
 import { newId, Repo } from '@main/store/repo'
-import { disposeLedgerFinding, getSessionDetail, listSessionLedger } from './ledger'
+import {
+  disposeLedgerFinding,
+  getSessionDetail,
+  groupLedgerEntries,
+  groupLedgerEntry,
+  listSessionLedger,
+} from './ledger'
 
 function harness(): { repo: Repo; session: Session } {
   const repo = new Repo(openDatabase(':memory:'))
@@ -86,6 +92,53 @@ describe('ledger IPC operations', () => {
         dispositions: [],
       },
     ])
+  })
+
+  it('assembles a single entry identically to the full grouping', () => {
+    // groupLedgerEntry exists so per-finding events stop rebuilding the whole
+    // session's ledger — but the panel reads the bulk shape, so the two must
+    // never disagree about what an entry contains. Pinned by comparison, not
+    // by trust.
+    const { repo, session } = harness()
+    const first = repo.upsertLedgerFinding(session.id, 'First finding.', 1)
+    const second = repo.upsertLedgerFinding(session.id, 'Second finding.', 2)
+    repo.recordFindingOccurrence(occurrence(first.id, 'first-occurrence', 'milestone-1'))
+    const secondOccurrence = repo.recordFindingOccurrence(
+      occurrence(second.id, 'second-occurrence', 'milestone-2'),
+    )
+    repo.disposeFinding({
+      findingId: second.id,
+      occurrenceId: secondOccurrence.id,
+      state: 'resolved',
+      note: 'Fixed.',
+      source: 'pipeline',
+    })
+
+    for (const finding of [first, second]) {
+      expect(groupLedgerEntry(repo, session.id, finding.id)).toEqual(
+        groupLedgerEntries(repo, session.id).find((entry) => entry.id === finding.id),
+      )
+    }
+  })
+
+  it('does not lift an entry across a session boundary', () => {
+    const { repo, session } = harness()
+    const other = repo.createSession({
+      id: newId(),
+      kind: 'debate',
+      status: 'complete',
+      matter: 'A different matter entirely.',
+      project: '',
+      repoPath: null,
+      agentA: { vendor: 'claude', model: '', effort: 'medium', persona: '' },
+      agentB: { vendor: 'codex', model: '', effort: 'medium', persona: '' },
+      maxTurns: 6,
+      createdAt: 2,
+    } as Omit<Session, 'usage' | 'endedAt' | 'error' | 'archivedAt'>)
+    const foreign = repo.upsertLedgerFinding(other.id, 'Belongs elsewhere.', 3)
+
+    expect(groupLedgerEntry(repo, session.id, foreign.id)).toBeNull()
+    expect(groupLedgerEntry(repo, session.id, 'no-such-finding')).toBeNull()
   })
 
   it('records a human disposition and emits the updated session ledger entry', () => {

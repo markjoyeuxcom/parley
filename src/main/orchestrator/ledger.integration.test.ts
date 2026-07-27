@@ -373,8 +373,8 @@ describe('pipeline finding ledger ingestion', () => {
   it('records the adoption review\'s findings as occurrences and settles nothing', async () => {
     // The adopted file carries the sentinel the mock reviewer objects to, so
     // the adopt review blocks. Those objections must reach the ledger with
-    // full provenance — milestone id, review source, and adoption's signature
-    // null round — or the gate could never hold the next attempt to them.
+    // full provenance — milestone id and the adoption source — or the gate
+    // could never hold the next attempt to them.
     const { pipeline, repo, events, session } = harness()
     const repoPath = gitRepo('parley-ledger-adopt-blocked-')
     writeFileSync(join(repoPath, 'existing.txt'), 'NEEDS_WORK\n')
@@ -398,7 +398,7 @@ describe('pipeline finding ledger ingestion', () => {
         planId: plan.id,
         milestoneId: milestone.id,
         round: null,
-        source: 'review',
+        source: 'adoption',
       })
     }
     // A failed adoption disposes nothing: the blockers stay open, which is what
@@ -433,9 +433,34 @@ describe('pipeline finding ledger ingestion', () => {
         milestoneId: milestone.id,
         round: null,
         kind: 'note',
-        source: 'review',
+        source: 'adoption',
       })
     }
     expect(repo.listFindingDispositions(session.id)).toEqual([])
+  })
+
+  it('does not claim deterministic verification in a settle note when nothing ran', async () => {
+    // A milestone with no verification command can complete on review alone —
+    // the verdict reads a null result as green. The pipeline's disposition is
+    // immutable, so an unconditional "passed deterministic verification" note
+    // would overstate what happened, permanently.
+    const { pipeline, repo, session } = harness()
+    const repoPath = gitRepo('parley-ledger-settle-honest-')
+    const plan = makePlan(repo, session.id, repoPath)
+    const milestone = makeMilestone(repo, plan.id, { testCommand: '' })
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'allow')
+
+    const done = await pipeline.runMilestone(milestone.id, approval.id)
+
+    expect(done.status).toBe('complete')
+    expect(done.testResult).toBeNull()
+    const settled = repo
+      .listFindingDispositions(session.id)
+      .filter((disposition) => disposition.source === 'pipeline')
+    expect(settled.length).toBeGreaterThan(0)
+    for (const disposition of settled) {
+      expect(disposition.note).toMatch(/no verification command/i)
+      expect(disposition.note).not.toMatch(/passed deterministic verification/i)
+    }
   })
 })

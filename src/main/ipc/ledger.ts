@@ -19,6 +19,30 @@ export function groupLedgerEntries(repo: Repo, sessionId: string): LedgerEntry[]
   }))
 }
 
+/**
+ * Assembles one finding's entry, without loading the session's whole ledger.
+ *
+ * The single-finding twin of {@link groupLedgerEntries}, kept in the same
+ * module for the same reason that one exists at all: the pipeline emits an
+ * event per touched finding, and rebuilding every entry in the session for
+ * each event was churn that grew with the ledger itself. Returns null for a
+ * finding that does not exist or belongs to a different session — the caller
+ * must not be able to lift an entry across a session boundary.
+ */
+export function groupLedgerEntry(
+  repo: Repo,
+  sessionId: string,
+  findingId: string,
+): LedgerEntry | null {
+  const finding = repo.getLedgerFinding(findingId)
+  if (!finding || finding.sessionId !== sessionId) return null
+  return {
+    ...finding,
+    occurrences: repo.listOccurrencesForFinding(findingId),
+    dispositions: repo.listDispositionsForFinding(findingId),
+  }
+}
+
 export function listSessionLedger(repo: Repo, sessionId: string): LedgerEntry[] {
   if (!repo.getSession(sessionId)) throw new Error('no such session')
   return groupLedgerEntries(repo, sessionId)
@@ -44,10 +68,9 @@ export function disposeLedgerFinding(
   emit: (event: AppEvent) => void,
 ): LedgerEntry {
   if (!repo.getSession(input.sessionId)) throw new Error('no such session')
-  const finding = repo
-    .listLedgerFindings(input.sessionId)
-    .find((item) => item.id === input.findingId)
-  if (!finding) throw new Error('no such finding in that session')
+  if (!groupLedgerEntry(repo, input.sessionId, input.findingId)) {
+    throw new Error('no such finding in that session')
+  }
 
   repo.disposeFinding({
     findingId: input.findingId,
@@ -56,9 +79,7 @@ export function disposeLedgerFinding(
     note: input.note,
     source: 'human',
   })
-  const entry = groupLedgerEntries(repo, input.sessionId).find(
-    (item) => item.id === input.findingId,
-  )
+  const entry = groupLedgerEntry(repo, input.sessionId, input.findingId)
   if (!entry) throw new Error('failed to reload finding ledger entry')
   emit({ type: 'session.ledger', entry })
   return entry

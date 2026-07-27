@@ -502,13 +502,17 @@ export type WorkPlan = z.infer<typeof WorkPlan>
 /**
  * Whether an occurrence can stop a milestone from being approved.
  *
- * The source is deliberately separate: an audit concern and an independent
- * review concern gate in the same way, while their provenance remains intact.
+ * The source is deliberately separate: an audit concern, an execution-review
+ * concern and an adoption-review concern all gate in the same way, while
+ * their provenance remains intact. There is deliberately no `correction`
+ * member — the planner's answer to the audit is recorded on the plan, never
+ * in the ledger, because an agent answering its own audit must not be able to
+ * touch the record the human gate reads.
  */
 export const FindingOccurrenceKind = z.enum(['blocking', 'note'])
 export type FindingOccurrenceKind = z.infer<typeof FindingOccurrenceKind>
 
-export const FindingOccurrenceSource = z.enum(['audit', 'review'])
+export const FindingOccurrenceSource = z.enum(['audit', 'review', 'adoption'])
 export type FindingOccurrenceSource = z.infer<typeof FindingOccurrenceSource>
 
 /**

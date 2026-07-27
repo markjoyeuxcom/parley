@@ -35,7 +35,7 @@ import {
 import { capture, isShellFree, splitCommand } from '@main/util/spawn'
 import { newId, type Repo } from '@main/store/repo'
 import { assertCapability, type AgentRegistry } from '@main/agents'
-import { groupLedgerEntries } from '@main/ipc/ledger'
+import { groupLedgerEntry } from '@main/ipc/ledger'
 import type { MilestonePhase } from '@shared/events'
 import type { OrchestratorDeps } from './types'
 import { assertNoUnresolvedBlockingOccurrences } from './gate'
@@ -826,12 +826,6 @@ export class Pipeline {
     current = this.repo.updateMilestone(milestoneId, { status: 'reviewing' })
     this.emit({ type: 'plan.milestone', milestone: current })
 
-    const reviewerVendor =
-      plan.reviewer.vendor === plan.executor.vendor
-        ? this.registry.counterpart(plan.executor.vendor)
-        : plan.reviewer.vendor
-    const reviewer = this.registry.get(reviewerVendor)
-
     activity(
       'reviewing',
       round > 0
@@ -1119,17 +1113,18 @@ export class Pipeline {
     const parsedReview = parseReview(review.text)
     // The same ingestion an executed milestone's review gets: what the adopt
     // reviewer blocks on must reach the ledger, or the gate cannot hold the
-    // next approval or adoption to it. A null round is adoption's signature in
-    // the record — review occurrences from execution always carry their round.
-    // There is no settle-on-pass here: a pass means the blocking list was
-    // empty, and anything older was dispositioned before the gate let this run.
+    // next approval or adoption to it. The source says which stage raised it —
+    // provenance a consumer should never have to reconstruct from a null
+    // round. There is no settle-on-pass here: a pass means the blocking list
+    // was empty, and anything older was dispositioned before the gate let this
+    // run.
     if (parsedReview) {
       for (const finding of parsedReview.blocking) {
         this.recordFindingOccurrence(plan, finding, {
           milestoneId,
           round: null,
           kind: 'blocking',
-          source: 'review',
+          source: 'adoption',
         })
       }
       for (const note of parsedReview.notes) {
@@ -1137,7 +1132,7 @@ export class Pipeline {
           milestoneId,
           round: null,
           kind: 'note',
-          source: 'review',
+          source: 'adoption',
         })
       }
     }
@@ -1271,7 +1266,7 @@ export class Pipeline {
       milestoneId: Id | null
       round: number | null
       kind: 'blocking' | 'note'
-      source: 'audit' | 'review'
+      source: 'audit' | 'review' | 'adoption'
     },
   ): void {
     const finding = this.repo.upsertLedgerFinding(plan.sessionId, text)
@@ -1296,12 +1291,20 @@ export class Pipeline {
           occurrenceState(occurrence, dispositions) === 'open',
       )
 
+    // A milestone with no verification command can complete on review alone —
+    // milestoneVerdict reads a null result as green there. Writing "passed
+    // deterministic verification" into an immutable disposition would then
+    // overstate what happened, permanently.
+    const milestone = this.repo.getMilestone(milestoneId)
+    const note = milestone?.testResult
+      ? 'The milestone passed deterministic verification and independent review.'
+      : 'The milestone passed independent review; it has no verification command, so no deterministic check ran.'
     for (const occurrence of occurrences) {
       this.repo.disposeFinding({
         findingId: occurrence.findingId,
         occurrenceId: occurrence.id,
         state: 'resolved',
-        note: 'The milestone passed deterministic verification and independent review.',
+        note,
         source: 'pipeline',
       })
       this.emitLedgerEntry(plan.sessionId, occurrence.findingId)
@@ -1309,11 +1312,11 @@ export class Pipeline {
   }
 
   private emitLedgerEntry(sessionId: Id, findingId: Id): void {
-    // Assembled by the same helper the IPC surface uses, so the event stream and
-    // the panel can never disagree about what an entry contains.
-    const entry = groupLedgerEntries(this.repo, sessionId).find(
-      (candidate) => candidate.id === findingId,
-    )
+    // Assembled by the same module the IPC surface uses, so the event stream
+    // and the panel can never disagree about what an entry contains — and per
+    // finding, because rebuilding the session's whole ledger for every event
+    // was churn that grew with the ledger itself.
+    const entry = groupLedgerEntry(this.repo, sessionId, findingId)
     if (entry) this.emit({ type: 'session.ledger', entry })
   }
 
@@ -1367,25 +1370,6 @@ export class Pipeline {
     }
   }
 
-  /**
-   * Applies each declared mutation and requires the verification command to fail.
-   *
-   * The point is to test the tests. A green suite says the code works on the
-   * paths someone thought to exercise; it says nothing about whether a plausible
-   * wrong implementation would have been caught, and that is where every serious
-   * defect in this pipeline's first real use actually lived.
-   *
-   * Files are edited in place and restored in a `finally`, deliberately rather
-   * than working on a copy: the verification command is only known to work in the
-   * real tree, where its relative paths, installed dependencies and engine
-   * project files all resolve. The window is one test run, the original content
-   * is held in memory throughout, and a failure to restore is reported loudly
-   * rather than swallowed — leaving a mutated file behind would be far worse than
-   * skipping the check.
-   *
-   * Only ever called once the tests have already passed. Running mutations
-   * against a red suite proves nothing, since every mutation would "fail".
-   */
   /**
    * Runs the milestone's declared break checks and persists their outcomes.
    *
@@ -1569,6 +1553,25 @@ export class Pipeline {
     return merged
   }
 
+  /**
+   * Applies each declared mutation and requires the verification command to fail.
+   *
+   * The point is to test the tests. A green suite says the code works on the
+   * paths someone thought to exercise; it says nothing about whether a plausible
+   * wrong implementation would have been caught, and that is where every serious
+   * defect in this pipeline's first real use actually lived.
+   *
+   * Files are edited in place and restored in a `finally`, deliberately rather
+   * than working on a copy: the verification command is only known to work in the
+   * real tree, where its relative paths, installed dependencies and engine
+   * project files all resolve. The window is one test run, the original content
+   * is held in memory throughout, and a failure to restore is reported loudly
+   * rather than swallowed — leaving a mutated file behind would be far worse than
+   * skipping the check.
+   *
+   * Only ever called once the tests have already passed. Running mutations
+   * against a red suite proves nothing, since every mutation would "fail".
+   */
   private async runMutations(
     milestone: Milestone,
     repoPath: string,
@@ -1640,14 +1643,6 @@ export function parseMutations(value: unknown): Mutation[] {
 }
 
 /**
- * Reads the reply to {@link mutationRepairPrompt}.
- *
- * `impossible` is treated as a real answer rather than a failure. A reviewer that
- * says an intent cannot be checked against this file is telling us something worth
- * recording, and it is a far more useful reply than a fabricated anchor that would
- * pass by accident.
- */
-/**
  * Parley's own structural findings about a milestone, independent of the auditor.
  *
  * Kept separate from the audit because these are facts rather than opinions: they
@@ -1666,6 +1661,14 @@ export function structuralConcerns(milestone: Pick<Milestone, 'mutations' | 'tes
   return out
 }
 
+/**
+ * Reads the reply to {@link mutationRepairPrompt}.
+ *
+ * `impossible` is treated as a real answer rather than a failure. A reviewer that
+ * says an intent cannot be checked against this file is telling us something worth
+ * recording, and it is a far more useful reply than a fabricated anchor that would
+ * pass by accident.
+ */
 export function parseMutationRepairs(text: string): {
   repairs: Map<number, { find: string; replace: string }>
   impossible: Map<number, string>
@@ -1943,13 +1946,6 @@ export function parseReview(text: string): ParsedReview | null {
 
 // ─── Repository inspection ───────────────────────────────────────────────────
 
-/**
- * Collects the working-tree diff for review.
- *
- * Untracked files are listed separately because `git diff` does not show them,
- * and a milestone that adds a new file would otherwise be reviewed as an empty
- * diff — which would sail through.
- */
 /**
  * A snapshot of the working tree.
  *

@@ -27,6 +27,14 @@ const STATE_TONES: Record<FindingLedgerState, string> = {
   'accepted-risk': 'chip--caution',
 }
 
+// Keyed by the enum so a new source member fails the typecheck here rather
+// than silently borrowing another stage's label.
+const SOURCE_LABELS: Record<FindingOccurrence['source'], string> = {
+  audit: 'Plan audit',
+  review: 'Independent review',
+  adoption: 'Adoption review',
+}
+
 function shortId(id: string): string {
   return id.slice(0, 8)
 }
@@ -80,7 +88,7 @@ function OccurrenceEvent({
       <div className={`ledger-event__marker ledger-event__marker--${state}`} />
       <div className="ledger-event__body">
         <div className="ledger-event__head">
-          <strong>{occurrence.source === 'audit' ? 'Plan audit' : 'Independent review'}</strong>
+          <strong>{SOURCE_LABELS[occurrence.source]}</strong>
           <Chip tone={occurrence.kind === 'blocking' ? 'chip--fail' : ''}>
             {occurrence.kind}
           </Chip>
@@ -250,7 +258,7 @@ export function OccurrenceDispositionControl({
     <div className="ledger-dispose">
       <div className="ledger-dispose__finding">{entry.text}</div>
       <div className="ledger-dispose__meta">
-        {occurrence.source === 'audit' ? 'Plan audit' : 'Independent review'} ·{' '}
+        {SOURCE_LABELS[occurrence.source]} ·{' '}
         <span title={occurrence.planId}>
           {plan?.id === occurrence.planId
             ? plan.title || plan.kind

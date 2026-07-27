@@ -735,6 +735,27 @@ export class Repo {
       .map((row) => this.toFindingDisposition(row))
   }
 
+  // Single-finding reads, for assembling one ledger entry without loading the
+  // session's whole ledger. Both tables are indexed on (finding_id, seq), so
+  // these are point lookups rather than scans.
+
+  getLedgerFinding(findingId: Id): LedgerFinding | null {
+    const row = this.db.get(`SELECT * FROM ledger_findings WHERE id = ?`, findingId)
+    return row ? this.toLedgerFinding(row) : null
+  }
+
+  listOccurrencesForFinding(findingId: Id): FindingOccurrence[] {
+    return this.db
+      .all(`SELECT * FROM ledger_sightings WHERE finding_id = ? ORDER BY seq ASC`, findingId)
+      .map((row) => this.toFindingOccurrence(row))
+  }
+
+  listDispositionsForFinding(findingId: Id): FindingDisposition[] {
+    return this.db
+      .all(`SELECT * FROM ledger_dispositions WHERE finding_id = ? ORDER BY seq ASC`, findingId)
+      .map((row) => this.toFindingDisposition(row))
+  }
+
   // ─── Approvals ─────────────────────────────────────────────────────────────
 
   grantApproval(scope: ApprovalScope, subjectId: Id, summary: string): Approval {
