@@ -313,7 +313,8 @@ PARLEY_MOCK=1 npm run dev
 In that mode a hazard-striped banner sits under the toolbar, every session, loop
 and plan is tagged `mock`, and exported reports carry a **NOT REAL WORK** header —
 because mock output is structurally identical to real output while consulting no
-model and writing no files.
+model. (The one thing a mock run ever writes is a single placeholder file during
+a write-capable milestone, so the pipeline's tree checks stay exercisable.)
 
 ### If terminals will not start
 

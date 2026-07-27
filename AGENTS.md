@@ -40,7 +40,7 @@ Break any of these and the product stops being what it is.
 ```bash
 npm run dev          # Electron dev app with HMR
 npm run typecheck    # both projects — must pass clean
-npm test             # 128 deterministic tests, no tokens spent
+npm test             # deterministic tests, no tokens spent
 npm run build        # production bundles into out/
 npm run package:mac  # signed-runtime .dmg + .zip for Apple Silicon
 ```
@@ -48,8 +48,10 @@ npm run package:mac  # signed-runtime .dmg + .zip for Apple Silicon
 Two escape hatches:
 
 - `PARLEY_MOCK=1 npm run dev` — deterministic adapters, no subscription usage.
-  Use it for UI and orchestrator work. **The mock adapters never write files**, so
-  no write milestone and no write-capable loop can ever succeed in this mode.
+  Use it for UI and orchestrator work. The one thing a mock run ever writes is a
+  single placeholder file (`parley-mock-work.txt`) on a write-capable turn —
+  deliberately, because without it the pipeline's changed-tree gate could never
+  pass and the execute → verify → review → remediate path would be untestable.
 - `PARLEY_LIVE=1 npx vitest run src/main/agents/live.test.ts` — the only test
   that really invokes the CLIs. It spends a little quota and proves the argv and
   event schemas are still right. Run it after touching an adapter.
@@ -169,9 +171,9 @@ run). Never `npm install` inside the mounted tree.
 ## Mock mode must never be invisible
 
 Mock runs produce sessions, verdicts, findings, plans and reviews that are
-structurally identical to real ones while consulting no model and writing no
-files. A user who loses track of which mode they are in will read fabricated
-output as evidence — which would break the only thing this tool sells.
+structurally identical to real ones while consulting no model. A user who
+loses track of which mode they are in will read fabricated output as
+evidence — which would break the only thing this tool sells.
 
 So mock-ness is surfaced in four places, and all four are load-bearing:
 
@@ -182,8 +184,10 @@ So mock-ness is surfaced in four places, and all four are load-bearing:
 4. A `NOT REAL WORK` blockquote at the top of the exported Markdown report —
    that file outlives the app, so the warning has to travel with it.
 
-When a milestone fails because the tree is unchanged and mock mode is on, the
-note says so explicitly. That is the one cause a user cannot deduce.
+When a milestone fails with an unchanged tree while mock mode is on, the note
+says the mock executor does write a placeholder — so the likely cause is an
+unwritable repository path, not mock mode itself. That is the one reasoning a
+user cannot reconstruct from the UI, which is why the note spells it out.
 
 ## The Grid is multi-folder, and saved layouts do not change that
 
