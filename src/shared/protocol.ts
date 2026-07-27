@@ -1,4 +1,4 @@
-import type { AgentConfig, SessionKind } from './domain'
+import type { AgentConfig, Capability, SessionKind } from './domain'
 
 /**
  * Turn protocols.
@@ -26,6 +26,38 @@ export interface StageSpec {
 }
 
 /**
+ * What feeds a stage's prompt, declared rather than computed by the runner.
+ *
+ * The vocabulary the two shipped protocols speak: nothing (an opening, a
+ * verdict), or the counterparty's latest message (every exchange turn). Richer
+ * references — a named earlier stage, everyone's replies — arrive with the
+ * first protocol that needs them.
+ */
+export type StageInput = { kind: 'none' } | { kind: 'counterpartyLatest' }
+
+/** A scheduled stage: who speaks, and what they are shown. */
+export interface EngineStage extends StageSpec {
+  input: StageInput
+}
+
+/**
+ * Resolves a stage's declared input against what earlier stages produced.
+ *
+ * The two-seat schedule has exactly one counterparty per speaker; the fuller
+ * resolution — named stages, benches — belongs to the protocols that will
+ * declare it.
+ */
+export function resolveStageInput(
+  input: StageInput,
+  seat: number,
+  latestBySeat: ReadonlyMap<number, string>,
+): string | null {
+  if (input.kind === 'none') return null
+  const counterparty = seat === 0 ? 1 : 0
+  return latestBySeat.get(counterparty) ?? null
+}
+
+/**
  * Debate: stake a position, attack it, refine under pressure, then converge.
  *
  * `maxTurns` trims the middle — the opening and the convergence turn are always
@@ -36,20 +68,32 @@ export interface StageSpec {
  * is that milestone's work, not this one's. Seats 0 and 1 are the old sides a
  * and b.
  */
-export function debateStages(maxTurns: number): StageSpec[] {
-  const stages: StageSpec[] = [{ id: 'open', label: 'Position', seat: 0 }]
+export function debateStages(maxTurns: number): EngineStage[] {
+  const stages: EngineStage[] = [
+    { id: 'open', label: 'Position', seat: 0, input: { kind: 'none' } },
+  ]
   let seat = 1
   let round = 1
   while (stages.length < maxTurns - 1) {
     stages.push(
       seat === 1
-        ? { id: `attack.${round}`, label: round === 1 ? 'Challenge' : `Challenge ${round}`, seat: 1 }
-        : { id: `refine.${round}`, label: round === 1 ? 'Defence' : `Defence ${round}`, seat: 0 },
+        ? {
+            id: `attack.${round}`,
+            label: round === 1 ? 'Challenge' : `Challenge ${round}`,
+            seat: 1,
+            input: { kind: 'counterpartyLatest' },
+          }
+        : {
+            id: `refine.${round}`,
+            label: round === 1 ? 'Defence' : `Defence ${round}`,
+            seat: 0,
+            input: { kind: 'counterpartyLatest' },
+          },
     )
     if (seat === 0) round += 1
     seat = seat === 0 ? 1 : 0
   }
-  stages.push({ id: 'converge', label: 'Convergence', seat })
+  stages.push({ id: 'converge', label: 'Convergence', seat, input: { kind: 'counterpartyLatest' } })
   return stages
 }
 
@@ -58,16 +102,16 @@ export function debateStages(maxTurns: number): StageSpec[] {
  * other's findings. The cross-examination is the point — a finding only reaches
  * `confirmed` if the *other* agent corroborates it against the code.
  */
-export function reviewStages(): StageSpec[] {
+export function reviewStages(): EngineStage[] {
   return [
-    { id: 'map', label: 'Architecture map', seat: 0 },
-    { id: 'audit', label: 'Independent audit', seat: 1 },
-    { id: 'crossAudit', label: 'Cross-examination', seat: 0 },
-    { id: 'reconcile', label: 'Reconciliation', seat: 1 },
+    { id: 'map', label: 'Architecture map', seat: 0, input: { kind: 'none' } },
+    { id: 'audit', label: 'Independent audit', seat: 1, input: { kind: 'counterpartyLatest' } },
+    { id: 'crossAudit', label: 'Cross-examination', seat: 0, input: { kind: 'counterpartyLatest' } },
+    { id: 'reconcile', label: 'Reconciliation', seat: 1, input: { kind: 'counterpartyLatest' } },
   ]
 }
 
-export function stagesFor(kind: SessionKind, maxTurns: number): StageSpec[] {
+export function stagesFor(kind: SessionKind, maxTurns: number): EngineStage[] {
   return kind === 'debate' ? debateStages(maxTurns) : reviewStages()
 }
 
@@ -105,6 +149,67 @@ export const CLOSING_STAGE: { id: string; label: string; actor: StageActor } = {
   id: 'verdict',
   label: 'Verdict',
   actor: { kind: 'each' },
+}
+
+// ─── Session protocols as values ─────────────────────────────────────────────
+
+/**
+ * Everything that makes a session kind what it is, in one value.
+ *
+ * This is the stage engine's founding move: the runner stops knowing what a
+ * debate or a review is and interprets one of these instead. The fields are
+ * still functions — the schedule, the stances, the prompts — because
+ * protocols become editable documents in the next phase, not this one; what
+ * this phase establishes is that a protocol is *a value the engine reads*,
+ * so there is exactly one place a protocol's whole shape lives.
+ */
+export interface SessionProtocol {
+  /** The exchange schedule, seats and declared inputs included. */
+  stages(maxTurns: number): EngineStage[]
+  /** The stance a seat argues from, layered under its persona. */
+  systemPrompt(seat: number, cfg: AgentConfig): string
+  /** One speaking turn's prompt, built from the stage's resolved input. */
+  stagePrompt(input: StagePromptInput): string
+  /** The closing sequence: who records verdicts. */
+  closing: { actor: StageActor }
+  /**
+   * What a turn may touch. Never `write`: sessions analyse and argue; writing
+   * happens only in the audited pipeline, behind an approval.
+   */
+  capability(repoAttached: boolean): Exclude<Capability, 'write'>
+  /**
+   * Stage labels to harvest findings from, in preference order. Empty for a
+   * protocol whose record is the verdict alone.
+   */
+  findingsFrom: readonly string[]
+}
+
+export const DEBATE_PROTOCOL: SessionProtocol = {
+  stages: debateStages,
+  systemPrompt: debateSystemPrompt,
+  stagePrompt: debatePrompt,
+  closing: CLOSING_STAGE,
+  // Reads only when a repository was attached; otherwise entirely tool-free,
+  // which is cheaper and removes any path to the filesystem for a session
+  // that has no business touching it.
+  capability: (repoAttached) => (repoAttached ? 'read' : 'none'),
+  findingsFrom: [],
+}
+
+export const REVIEW_PROTOCOL: SessionProtocol = {
+  stages: () => reviewStages(),
+  systemPrompt: reviewSystemPrompt,
+  stagePrompt: reviewPrompt,
+  closing: CLOSING_STAGE,
+  // A review always reads the repository it audits.
+  capability: () => 'read',
+  // The reconciliation has seen both the audit and the cross-examination;
+  // earlier stages are fallbacks for a session that ended early.
+  findingsFrom: ['Reconciliation', 'Cross-examination', 'Independent audit'],
+}
+
+export function protocolFor(kind: SessionKind): SessionProtocol {
+  return kind === 'debate' ? DEBATE_PROTOCOL : REVIEW_PROTOCOL
 }
 
 // ─── System prompts ──────────────────────────────────────────────────────────

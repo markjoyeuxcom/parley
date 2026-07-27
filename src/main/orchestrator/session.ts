@@ -7,15 +7,12 @@ import {
   type Turn,
 } from '@shared/domain'
 import {
-  CLOSING_STAGE,
-  debatePrompt,
-  debateSystemPrompt,
+  protocolFor,
   resolveActor,
-  reviewPrompt,
-  reviewSystemPrompt,
-  stagesFor,
+  resolveStageInput,
   verdictPrompt,
-  type StageSpec,
+  type EngineStage,
+  type SessionProtocol,
 } from '@shared/protocol'
 import { newId, type Repo } from '@main/store/repo'
 import type { AgentRegistry } from '@main/agents'
@@ -30,9 +27,15 @@ const NO_USABLE_VERDICT =
 /**
  * Runs one Parley session to a verdict.
  *
+ * The runner is an interpreter: everything that makes a debate a debate or a
+ * review a review — the schedule, the stances, the prompts, what each stage
+ * is shown, what a turn may touch — lives in the {@link SessionProtocol} it
+ * executes. The runner owns only what every protocol shares: turn mechanics,
+ * resume threading, whisper delivery, and the closing merge.
+ *
  * The cost property that makes this practical: each CLI keeps its own
  * conversation, resumed by vendor session id, so a turn's prompt carries only
- * the opponent's latest message. Token spend grows linearly with turns instead
+ * the stage's declared input. Token spend grows linearly with turns instead
  * of quadratically the way a replayed transcript would.
  */
 export class SessionRunner {
@@ -40,6 +43,8 @@ export class SessionRunner {
   private readonly repo: Repo
   private readonly registry: AgentRegistry
   private readonly emit: OrchestratorDeps['emit']
+  /** Selected by kind until protocols are data — the next phase's work. */
+  private readonly protocol: SessionProtocol
 
   constructor(
     private session: Session,
@@ -48,24 +53,15 @@ export class SessionRunner {
     this.repo = deps.repo
     this.registry = deps.registry
     this.emit = deps.emit
+    this.protocol = protocolFor(session.kind)
   }
 
   get id(): Id {
     return this.session.id
   }
 
-  /**
-   * Capability for this session's turns.
-   *
-   * A review always reads the repository. A debate reads only if one was
-   * attached; otherwise it runs entirely tool-free, which is both cheaper and
-   * removes any path to the filesystem for a session that has no business
-   * touching it. No session kind ever gets `write` — writing happens only in the
-   * audited pipeline, behind an approval.
-   */
   private capability(): Capability {
-    if (this.session.kind === 'review') return 'read'
-    return this.session.repoPath ? 'read' : 'none'
+    return this.protocol.capability(this.session.repoPath !== null)
   }
 
   private cwd(): string {
@@ -79,12 +75,11 @@ export class SessionRunner {
   }
 
   private systemPromptFor(seat: number): string {
-    const cfg = this.configFor(seat)
-    return this.session.kind === 'review' ? reviewSystemPrompt(seat, cfg) : debateSystemPrompt(seat, cfg)
+    return this.protocol.systemPrompt(seat, this.configFor(seat))
   }
 
   async run(): Promise<void> {
-    const stages = stagesFor(this.session.kind, this.session.maxTurns)
+    const stages = this.protocol.stages(this.session.maxTurns)
     this.setStatus('running')
 
     try {
@@ -94,11 +89,8 @@ export class SessionRunner {
         await this.gate.wait()
         if (this.gate.isStopped) return this.setStatus('cancelled')
 
-        // The schedule is still two-seat, so the counterparty is the other of
-        // seats 0 and 1. The role-selector redesign replaces this with "the
-        // stage's declared inputs" — until then a parley has one opponent.
-        const opponent = stage.seat === 0 ? 1 : 0
-        const turn = await this.runTurn(stage, index, lastBySeat.get(opponent) ?? null)
+        const message = resolveStageInput(stage.input, stage.seat, lastBySeat)
+        const turn = await this.runTurn(stage, index, message)
 
         if (turn.error) {
           // A missing turn corrupts the record this tool exists to produce, so
@@ -128,22 +120,20 @@ export class SessionRunner {
     }
   }
 
-  private async runTurn(stage: StageSpec, index: number, opponentMessage: string | null): Promise<Turn> {
+  private async runTurn(stage: EngineStage, index: number, opponentMessage: string | null): Promise<Turn> {
     const seat = stage.seat
     const cfg = this.configFor(seat)
     const adapter = this.registry.get(cfg.vendor)
 
     const interjections = this.repo.takeInterjections(this.session.id, seat).map((i) => i.text)
 
-    const promptInput = {
+    const prompt = this.protocol.stagePrompt({
       stage,
       matter: this.session.matter,
       repoPath: this.session.repoPath,
       opponentMessage,
       interjections,
-    }
-    const prompt =
-      this.session.kind === 'review' ? reviewPrompt(promptInput) : debatePrompt(promptInput)
+    })
 
     const turn: Turn = {
       id: newId(),
@@ -262,7 +252,7 @@ export class SessionRunner {
     // an optimisation — any ordering would invite convergence between however
     // many advisors there are, so they all answer at once, each blind to the
     // rest.
-    const seats = resolveActor(CLOSING_STAGE.actor, this.session.participants.length)
+    const seats = resolveActor(this.protocol.closing.actor, this.session.participants.length)
     const replies = await Promise.all(seats.map((seat, at) => ask(seat, startIndex + at)))
     // Slotted by seat, not by reply order: the merge labels dissent by array
     // index, and that must stay true under any selector, not only the dense
@@ -295,15 +285,17 @@ export class SessionRunner {
   }
 
   /**
-   * Findings come from the reconciliation turn, which is the only stage that has
-   * seen both the independent audit and the cross-examination. Earlier stages
-   * are searched only as a fallback for a session that ended early.
+   * Harvests findings from the stages the protocol names, in its preference
+   * order — for a review, the reconciliation first, since it is the only stage
+   * that has seen both the audit and the cross-examination, with earlier
+   * stages as fallbacks for a session that ended early. A protocol that names
+   * no stages records its outcome in the verdict alone.
    */
   private collectFindings(): Finding[] {
-    if (this.session.kind !== 'review') return []
+    if (this.protocol.findingsFrom.length === 0) return []
     const turns = this.repo.listTurns(this.session.id)
 
-    for (const stageName of ['Reconciliation', 'Cross-examination', 'Independent audit']) {
+    for (const stageName of this.protocol.findingsFrom) {
       const turn = [...turns].reverse().find((t) => t.stage === stageName && !t.error)
       if (!turn) continue
       const parsed = parseFindings(turn.text, this.session.id, turn.seat)

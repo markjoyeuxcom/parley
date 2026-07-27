@@ -2,13 +2,17 @@ import { describe, expect, it } from 'vitest'
 import {
   CLOSING_STAGE,
   CORRECTION_CONTRACT,
+  DEBATE_PROTOCOL,
   REVIEW_CONTRACT,
+  REVIEW_PROTOCOL,
   adoptReviewPrompt,
   debatePrompt,
   remediationPrompt,
   debateStages,
   executePrompt,
+  protocolFor,
   resolveActor,
+  resolveStageInput,
   reviewStages,
   stagesFor,
 } from './protocol'
@@ -62,6 +66,51 @@ describe('reviewStages', () => {
 
   it('ignores maxTurns, because the review protocol is fixed', () => {
     expect(stagesFor('review', 20)).toHaveLength(4)
+  })
+})
+
+describe('session protocols as values', () => {
+  it('declares what feeds each stage instead of leaving it to the runner', () => {
+    const debate = debateStages(6)
+    expect(debate[0]?.input).toEqual({ kind: 'none' })
+    for (const stage of debate.slice(1)) {
+      expect(stage.input, stage.id).toEqual({ kind: 'counterpartyLatest' })
+    }
+    const review = reviewStages()
+    expect(review[0]?.input).toEqual({ kind: 'none' })
+    for (const stage of review.slice(1)) {
+      expect(stage.input, stage.id).toEqual({ kind: 'counterpartyLatest' })
+    }
+  })
+
+  it('resolves declared inputs against what earlier stages produced', () => {
+    const latest = new Map([
+      [0, 'the position'],
+      [1, 'the challenge'],
+    ])
+    expect(resolveStageInput({ kind: 'none' }, 0, latest)).toBeNull()
+    expect(resolveStageInput({ kind: 'counterpartyLatest' }, 0, latest)).toBe('the challenge')
+    expect(resolveStageInput({ kind: 'counterpartyLatest' }, 1, latest)).toBe('the position')
+    expect(resolveStageInput({ kind: 'counterpartyLatest' }, 1, new Map())).toBeNull()
+  })
+
+  it('keeps each protocol whole in one value the runner interprets', () => {
+    expect(protocolFor('debate')).toBe(DEBATE_PROTOCOL)
+    expect(protocolFor('review')).toBe(REVIEW_PROTOCOL)
+
+    // The capability table the runner used to hardcode: a bare debate is
+    // tool-free, an attached one reads, a review always reads.
+    expect(DEBATE_PROTOCOL.capability(false)).toBe('none')
+    expect(DEBATE_PROTOCOL.capability(true)).toBe('read')
+    expect(REVIEW_PROTOCOL.capability(false)).toBe('read')
+    expect(REVIEW_PROTOCOL.capability(true)).toBe('read')
+
+    // Both close with every seat; only the review harvests findings, and the
+    // reconciliation — the one stage that saw everything — comes first.
+    expect(DEBATE_PROTOCOL.closing.actor).toEqual({ kind: 'each' })
+    expect(REVIEW_PROTOCOL.closing.actor).toEqual({ kind: 'each' })
+    expect(DEBATE_PROTOCOL.findingsFrom).toEqual([])
+    expect(REVIEW_PROTOCOL.findingsFrom[0]).toBe('Reconciliation')
   })
 })
 
