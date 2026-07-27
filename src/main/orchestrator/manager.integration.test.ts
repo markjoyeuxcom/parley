@@ -1486,8 +1486,8 @@ describe('plans and the approval gate', () => {
   })
 
   it('blocks a plan whose audit could not run instead of offering its unaudited milestones', async () => {
-    const { manager, repo, registry } = harness()
-    const repoPath = mkdtempSync(join(tmpdir(), 'parley-plan-audit-error-'))
+    const { manager, repo } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-plan-AUDIT_FAILS-'))
     const session = manager.startSession({
       kind: 'debate',
       matter: 'Bound the retry path',
@@ -1498,19 +1498,6 @@ describe('plans and the approval gate', () => {
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
-
-    const auditor = registry.get('codex')
-    const originalRun = auditor.run.bind(auditor)
-    auditor.run = async (request) =>
-      request.systemPrompt.includes('audit other engineers')
-        ? {
-            text: '',
-            usage: emptyUsage(),
-            resumeId: null,
-            exitCode: 1,
-            error: 'auditor unavailable',
-          }
-        : originalRun(request)
 
     const { plan } = await manager.createPlan({
       sessionId: session.id,
@@ -1530,6 +1517,78 @@ describe('plans and the approval gate', () => {
     expect(milestone.auditNote).toMatch(/execution is blocked/i)
     await expect(manager.runMilestone(milestone.id, approval.id)).rejects.toThrow(/status pair/i)
     expect(repo.listApprovals().find((item) => item.id === approval.id)?.consumedAt).toBeNull()
+  })
+
+  it('blocks a plan whose audit reply is unreadable instead of marking its milestones audited', async () => {
+    const { manager, repo } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-plan-AUDIT_UNREADABLE-'))
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'Bound the retry path',
+      project: '',
+      repoPath: null,
+      agentA: claude,
+      agentB: codex,
+      maxTurns: 2,
+    })
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+
+    const { plan } = await manager.createPlan({
+      sessionId: session.id,
+      kind: 'implementation',
+      repoPath,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+    })
+    await manager.whenPlanSettled(plan.id)
+    const milestones = repo.listMilestones(plan.id)
+
+    expect(repo.getPlan(plan.id)?.status).toBe('blocked')
+    expect(milestones.length).toBeGreaterThan(0)
+    expect(milestones.every((milestone) => milestone.status === 'planned')).toBe(true)
+    expect(milestones.every((milestone) => /reply could not be read/i.test(milestone.auditNote))).toBe(true)
+  })
+
+  it('does not block a parseable audit that found nothing', async () => {
+    const { manager, repo, registry } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-plan-clean-audit-'))
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'Bound the retry path',
+      project: '',
+      repoPath: null,
+      agentA: claude,
+      agentB: codex,
+      maxTurns: 2,
+    })
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+
+    const auditor = registry.get('codex')
+    const originalRun = auditor.run.bind(auditor)
+    auditor.run = async (request) =>
+      request.systemPrompt.includes('audit other engineers')
+        ? {
+            text: '```json\n{"verdict":"sound","dispositions":[],"blockingConcerns":[]}\n```',
+            usage: emptyUsage(),
+            resumeId: 'clean-audit',
+            exitCode: 0,
+            error: null,
+          }
+        : originalRun(request)
+
+    const { plan } = await manager.createPlan({
+      sessionId: session.id,
+      kind: 'implementation',
+      repoPath,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+    })
+    await manager.whenPlanSettled(plan.id)
+
+    expect(repo.getPlan(plan.id)?.status).toBe('ready')
+    expect(repo.listMilestones(plan.id).every((milestone) => milestone.status === 'audited')).toBe(true)
   })
 
   it('refuses a concurrent milestone start before spending its approval', async () => {

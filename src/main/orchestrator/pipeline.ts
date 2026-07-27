@@ -217,19 +217,21 @@ export class Pipeline {
     this.repo.addPlanUsage(plan.id, result.usage)
 
     if (result.error) {
-      // A failed audit must not silently become an approved plan.
-      for (const m of this.repo.listMilestones(plan.id)) {
-        const updated = this.repo.updateMilestone(m.id, {
-          auditNote: `The audit could not be completed: ${result.error}. Execution is blocked until the plan can be audited.`,
-        })
-        this.emit({ type: 'plan.milestone', milestone: updated })
-      }
-      this.setStatus(plan.id, 'blocked')
-      return this.repo.listMilestones(plan.id)
+      return this.parkUncertifiedAudit(
+        plan,
+        `The audit could not be completed: ${result.error}. Execution is blocked until the plan can be audited.`,
+      )
     }
 
+    const parsedAudit = parseAudit(result.text)
+    if (!parsedAudit) {
+      return this.parkUncertifiedAudit(
+        plan,
+        `The auditor's reply could not be read. Execution is blocked until the plan can be audited.`,
+      )
+    }
     const { audit, note: alignmentNote } = alignAudit(
-      parseAudit(result.text),
+      parsedAudit,
       this.repo.listMilestones(plan.id).length,
     )
     this.applyAudit(plan, audit)
@@ -246,6 +248,15 @@ export class Pipeline {
       { planText, auditText: result.text, auditorVendor, plannerResumeId, auditSummary },
       signal,
     )
+  }
+
+  private parkUncertifiedAudit(plan: WorkPlan, auditNote: string): Milestone[] {
+    for (const milestone of this.repo.listMilestones(plan.id)) {
+      const updated = this.repo.updateMilestone(milestone.id, { auditNote })
+      this.emit({ type: 'plan.milestone', milestone: updated })
+    }
+    this.setStatus(plan.id, 'blocked')
+    return this.repo.listMilestones(plan.id)
   }
 
   /**

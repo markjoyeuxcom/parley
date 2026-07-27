@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { verificationState } from './format'
+import { statusTone, verificationState } from './format'
+
+describe('statusTone', () => {
+  it('renders a blocked plan as caution rather than failure', () => {
+    expect(statusTone('blocked')).toEqual({ tone: 'chip--caution', label: 'blocked' })
+  })
+})
 
 describe('verificationState', () => {
   const base = { exitCode: 0, signal: null as string | null, timedOut: false }

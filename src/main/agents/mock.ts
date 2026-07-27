@@ -57,6 +57,16 @@ export class MockAdapter implements AgentAdapter {
       return { text: '', usage: emptyUsage(), resumeId: null, exitCode: -1, error: 'run was cancelled' }
     }
 
+    if (req.systemPrompt.includes('audit other engineers') && req.cwd.includes('AUDIT_FAILS')) {
+      return {
+        text: '',
+        usage: emptyUsage(),
+        resumeId: null,
+        exitCode: 1,
+        error: 'mock audit failure',
+      }
+    }
+
     const text = this.reply(req, n)
     for (const chunk of text.match(/.{1,80}/gs) ?? []) req.onDelta?.(chunk)
 
@@ -86,6 +96,10 @@ export class MockAdapter implements AgentAdapter {
    */
   private reply(req: RunRequest, n: number): string {
     const p = req.prompt
+
+    if (req.systemPrompt.includes('audit other engineers') && req.cwd.includes('AUDIT_UNREADABLE')) {
+      return `I inspected the plan, but this reply contains no structured audit.`
+    }
 
     // The mutation repair contract. Matched first because it is the only prompt
     // carrying whole file contents, which could contain any other marker.
