@@ -147,18 +147,18 @@ export class Manager {
     matter: string
     project: string
     repoPath: string | null
-    agentA: AgentConfig
-    agentB: AgentConfig
+    participants: AgentConfig[]
     maxTurns: number
   }): Session {
     const repoPath = input.repoPath ? validateRepoPath(input.repoPath) : null
     if (input.kind === 'review' && !repoPath) {
       throw new RequestError('a codebase review needs a repository')
     }
-
-    // The wire still speaks two sides; they take seats 0 and 1. The request
-    // surface generalises later in this series, once the runner can seat more.
-    const participants = [input.agentA, input.agentB]
+    // The schema enforces this at the IPC boundary; re-checked here because
+    // the Manager is also called directly, and a one-seat parley is not one.
+    if (input.participants.length < 2) {
+      throw new RequestError('a session needs at least two participants')
+    }
 
     const session = this.repo.createSession({
       id: newId(),
@@ -167,20 +167,19 @@ export class Manager {
       matter: input.matter,
       project: input.project,
       repoPath,
-      participants,
+      participants: input.participants,
       maxTurns: input.maxTurns,
       mock: this.registry.mock,
       createdAt: Date.now(),
     })
 
-    // Written over the array so it already holds whatever the seat count: a
-    // repeated vendor anywhere weakens the cross-check this is built for.
-    if (new Set(participants.map((seat) => seat.vendor)).size < participants.length) {
+    // A repeated vendor anywhere weakens the cross-check this is built for.
+    if (new Set(input.participants.map((seat) => seat.vendor)).size < input.participants.length) {
       this.emit({
         type: 'notice',
         level: 'warn',
         message:
-          'Both sides are the same vendor. They will share blind spots, which weakens the cross-check this is built for.',
+          'More than one seat runs the same vendor. Those seats will share blind spots, which weakens the cross-check this is built for.',
       })
     }
 

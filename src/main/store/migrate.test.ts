@@ -4,6 +4,9 @@ import { migrate, openDatabase, SCHEMA_VERSION } from './db'
 describe('schema migrations', () => {
   it('upgrades a populated version-8 database with its rows intact', () => {
     const db = openDatabase(':memory:')
+    // Reconstruct the era's pair columns, which v16 removed from head.
+    db.exec(`ALTER TABLE sessions ADD COLUMN agent_a TEXT`)
+    db.exec(`ALTER TABLE sessions ADD COLUMN agent_b TEXT`)
     db.run(
       `INSERT INTO sessions
        (id, kind, status, matter, project, repo_path, agent_a, agent_b, max_turns, usage, mock, created_at)

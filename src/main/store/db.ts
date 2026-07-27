@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 15
+export const SCHEMA_VERSION = 16
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -41,12 +41,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   matter     TEXT NOT NULL,
   project    TEXT NOT NULL DEFAULT '',
   repo_path  TEXT,
-  agent_a    TEXT NOT NULL,
-  agent_b    TEXT NOT NULL,
-  -- The participants in seat order, as a JSON array. Seats 0 and 1 mirror
-  -- agent_a/agent_b, which stay written as the legacy fallback: they are NOT
-  -- NULL in every deployed schema, and a database this build hands back to an
-  -- older one must still read as two-sided.
+  -- The participants in seat order, as a JSON array. Nullable for parity with
+  -- databases migrated up from the two-sided era, not because a session can
+  -- lack them; every writer sets the column, and v11 backfilled every old row.
   participants TEXT,
   max_turns  INTEGER NOT NULL,
   usage      TEXT NOT NULL,
@@ -65,10 +62,8 @@ CREATE TABLE IF NOT EXISTS turns (
   id         TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   idx        INTEGER NOT NULL,
-  -- The legacy side name, mirrored from the seat: NOT NULL in every deployed
-  -- schema and the read fallback for a database an older build opens.
-  side       TEXT NOT NULL,
   -- Which participant spoke, as an index into the session's seating order.
+  -- Nullable for parity with migrated databases; every writer sets it.
   seat       INTEGER,
   vendor     TEXT NOT NULL,
   model      TEXT NOT NULL DEFAULT '',
@@ -94,18 +89,14 @@ CREATE TABLE IF NOT EXISTS agent_threads (
 -- Delivery is tracked per seat, not once per row. An 'all' interjection has to
 -- reach each seat exactly once, and seats take their turns at different times,
 -- so a single delivered_at would let whichever seat read it first swallow the
--- message. The two per-side columns are the pre-seat stamps, still written as
--- mirrors for seats 0 and 1: an older build reads them to decide what was
--- delivered, and a NULL there would re-deliver.
+-- message. Old rows may still spell target as 'both'/'a'/'b'; reads map them.
 CREATE TABLE IF NOT EXISTS interjections (
   id             TEXT PRIMARY KEY,
   session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   target         TEXT NOT NULL,
   text           TEXT NOT NULL,
   at_turn_index  INTEGER NOT NULL,
-  created_at     INTEGER NOT NULL,
-  delivered_a_at INTEGER,
-  delivered_b_at INTEGER
+  created_at     INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_interject_session ON interjections(session_id, created_at);
 
@@ -405,6 +396,12 @@ export function migrate(db: Db): void {
   db.exec(SCHEMA)
   const row = db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'schema_version'`)
   const current = row ? Number(row.value) : 0
+
+  // A fresh database runs every block (current is 0), and since v16 removed
+  // the two-sided legacy columns from SCHEMA, any statement that reads one
+  // must first check the column exists — on a fresh database it never will.
+  const hasColumn = (table: string, column: string): boolean =>
+    db.get(`SELECT name FROM pragma_table_info(?) WHERE name = ?`, table, column) !== undefined
   if (current === SCHEMA_VERSION) return
   if (current > SCHEMA_VERSION) {
     throw new Error(
@@ -565,11 +562,13 @@ export function migrate(db: Db): void {
       } catch {
         // Already present, because SCHEMA above created the table fresh.
       }
-      db.exec(
-        `UPDATE sessions
-         SET participants = '[' || agent_a || ',' || agent_b || ']'
-         WHERE participants IS NULL`,
-      )
+      if (hasColumn('sessions', 'agent_a')) {
+        db.exec(
+          `UPDATE sessions
+           SET participants = '[' || agent_a || ',' || agent_b || ']'
+           WHERE participants IS NULL`,
+        )
+      }
     })
   }
   if (current < 12) {
@@ -584,11 +583,13 @@ export function migrate(db: Db): void {
       } catch {
         // Already present, because SCHEMA above created the table fresh.
       }
-      db.exec(
-        `UPDATE turns
-         SET seat = CASE side WHEN 'a' THEN 0 WHEN 'b' THEN 1 ELSE CAST(side AS INTEGER) END
-         WHERE seat IS NULL`,
-      )
+      if (hasColumn('turns', 'side')) {
+        db.exec(
+          `UPDATE turns
+           SET seat = CASE side WHEN 'a' THEN 0 WHEN 'b' THEN 1 ELSE CAST(side AS INTEGER) END
+           WHERE seat IS NULL`,
+        )
+      }
 
       const legacyThreads = db.get(
         `SELECT name FROM pragma_table_info('agent_threads') WHERE name = 'side'`,
@@ -634,17 +635,36 @@ export function migrate(db: Db): void {
   }
   if (current < 15) {
     // Whisper delivery becomes per-seat rows (SCHEMA created the table fresh).
-    // The two per-side stamps backfill as seats 0 and 1, and the columns stay
-    // written as mirrors so an older build still knows what was delivered.
+    // The two per-side stamps backfill as seats 0 and 1.
+    if (hasColumn('interjections', 'delivered_a_at')) {
+      db.transaction(() => {
+        db.exec(`
+          INSERT OR IGNORE INTO interjection_deliveries (interjection_id, seat, delivered_at)
+          SELECT id, 0, delivered_a_at FROM interjections WHERE delivered_a_at IS NOT NULL
+        `)
+        db.exec(`
+          INSERT OR IGNORE INTO interjection_deliveries (interjection_id, seat, delivered_at)
+          SELECT id, 1, delivered_b_at FROM interjections WHERE delivered_b_at IS NOT NULL
+        `)
+      })
+    }
+  }
+  if (current < 16) {
+    // The two-sided mirrors retire. They existed for older builds reading this
+    // database — but the version stamp below makes an older build refuse it
+    // outright, so from here they were columns nothing would ever read again.
+    // Their contents were backfilled into participants (v11), seat (v12) and
+    // interjection_deliveries (v15) before this runs.
     db.transaction(() => {
-      db.exec(`
-        INSERT OR IGNORE INTO interjection_deliveries (interjection_id, seat, delivered_at)
-        SELECT id, 0, delivered_a_at FROM interjections WHERE delivered_a_at IS NOT NULL
-      `)
-      db.exec(`
-        INSERT OR IGNORE INTO interjection_deliveries (interjection_id, seat, delivered_at)
-        SELECT id, 1, delivered_b_at FROM interjections WHERE delivered_b_at IS NOT NULL
-      `)
+      for (const [table, column] of [
+        ['sessions', 'agent_a'],
+        ['sessions', 'agent_b'],
+        ['turns', 'side'],
+        ['interjections', 'delivered_a_at'],
+        ['interjections', 'delivered_b_at'],
+      ] as const) {
+        if (hasColumn(table, column)) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`)
+      }
     })
   }
   db.run(

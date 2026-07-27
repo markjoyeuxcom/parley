@@ -74,8 +74,7 @@ describe('debate session, end to end', () => {
       matter: 'Should the ingest pipeline move to a queue?',
       project: 'Ledger',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 4,
     })
 
@@ -126,8 +125,7 @@ describe('debate session, end to end', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -144,8 +142,7 @@ describe('debate session, end to end', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 6,
     })
 
@@ -168,8 +165,7 @@ describe('debate session, end to end', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
 
@@ -184,8 +180,7 @@ describe('debate session, end to end', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: { ...claude },
+      participants: [claude, { ...claude }],
       maxTurns: 2,
     })
     const warning = events.find((e) => e.type === 'notice' && e.level === 'warn')
@@ -234,8 +229,7 @@ describe('debate session, end to end', () => {
         matter: 'audit it',
         project: '',
         repoPath: null,
-        agentA: claude,
-        agentB: codex,
+        participants: [claude, codex],
         maxTurns: 4,
       }),
     ).toThrow(RequestError)
@@ -249,8 +243,7 @@ describe('debate session, end to end', () => {
         matter: 'audit it',
         project: '',
         repoPath: './somewhere',
-        agentA: claude,
-        agentB: codex,
+        participants: [claude, codex],
         maxTurns: 4,
       }),
     ).toThrow(/absolute/i)
@@ -285,8 +278,7 @@ describe('the two-participant contract', () => {
       matter: 'Should the ingest pipeline move to a queue?',
       project: '',
       repoPath,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -382,8 +374,7 @@ describe('the two-participant contract', () => {
       matter: 'audit it',
       project: '',
       repoPath,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 4,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -414,8 +405,7 @@ describe('the two-participant contract', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 6,
     })
     manager.interject(session.id, 0, 'press harder on migration cost')
@@ -480,6 +470,41 @@ describe('the closing sequence asks every seat', () => {
     expect(verdict?.confidence).toBeCloseTo(0.67, 2)
   })
 
+  it('runs a jury through the Manager, wire shape to merged verdict', async () => {
+    // The surface is open: the same request path the renderer uses seats a
+    // third chair, and the whole session runs to a three-way merge.
+    const { manager, repo } = harness()
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'Should the ingest pipeline move to a queue?',
+      project: '',
+      repoPath: null,
+      participants: [claude, codex, { ...claude }],
+      maxTurns: 2,
+    })
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+
+    const verdictTurns = repo.listTurns(session.id).filter((turn) => turn.stage === 'Verdict')
+    expect(verdictTurns.map((turn) => turn.seat).sort()).toEqual([0, 1, 2])
+    expect(repo.getVerdict(session.id)).not.toBeNull()
+  })
+
+  it('refuses a one-seat session even when called directly', () => {
+    // The schema enforces the floor at the IPC boundary; the Manager re-checks
+    // because it is also called directly, and a parley needs a counterparty.
+    const { manager } = harness()
+    expect(() =>
+      manager.startSession({
+        kind: 'debate',
+        matter: 'x',
+        project: '',
+        repoPath: null,
+        participants: [claude],
+        maxTurns: 2,
+      }),
+    ).toThrow(/at least two participants/)
+  })
+
   it('lands a whisper to the third seat in its one speaking turn', async () => {
     // The third chair never speaks in the exchange, so its verdict is the only
     // turn a whisper can reach — which is exactly why verdict turns drain the
@@ -526,8 +551,7 @@ describe('review session, end to end', () => {
       matter: 'Audit correctness and error handling.',
       project: '',
       repoPath,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 4,
     })
 
@@ -794,8 +818,7 @@ describe('handing a rejection back to the executor', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -1042,8 +1065,7 @@ describe('adopting work that is already in the tree', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -1438,8 +1460,7 @@ describe('the planner answers its own audit', () => {
       matter: brief,
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -1642,8 +1663,7 @@ describe('a planner that needs a decision from the user', () => {
       matter: 'ASK_ME whether the cap is per host',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -1708,8 +1728,7 @@ describe('pre-flight before spending agent time', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -1795,8 +1814,7 @@ describe('a running milestone reports what it is doing', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -1844,8 +1862,7 @@ describe('a running milestone reports what it is doing', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -1887,8 +1904,7 @@ describe('mock runs are marked as such, permanently', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     expect(session.mock).toBe(true)
@@ -1906,8 +1922,7 @@ describe('mock runs are marked as such, permanently', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -1937,8 +1952,7 @@ describe('mock runs are marked as such, permanently', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -1968,8 +1982,7 @@ describe('mock runs are marked as such, permanently', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -2023,8 +2036,7 @@ describe('an executor that writes nothing', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -2087,8 +2099,7 @@ describe('plans and the approval gate', () => {
       matter: 'Bound the retry path',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -2115,8 +2126,7 @@ describe('plans and the approval gate', () => {
       matter: 'NO_VERDICT',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
 
@@ -2148,8 +2158,7 @@ describe('plans and the approval gate', () => {
       matter: 'Bound the retry path',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -2248,8 +2257,7 @@ describe('plans and the approval gate', () => {
       matter: 'Bound the retry path',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -2282,8 +2290,7 @@ describe('plans and the approval gate', () => {
       matter: 'Bound the retry path',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -2313,8 +2320,7 @@ describe('plans and the approval gate', () => {
       matter: 'Bound the retry path',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')
@@ -2375,8 +2381,7 @@ describe('a corrected plan replaces its draft', () => {
       matter: 'x',
       project: '',
       repoPath: null,
-      agentA: claude,
-      agentB: codex,
+      participants: [claude, codex],
       maxTurns: 2,
     })
     await waitFor(() => repo.getSession(session.id)?.status === 'complete')

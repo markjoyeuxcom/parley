@@ -78,9 +78,8 @@ export const api = {
     matter: string
     project: string
     repoPath: string | null
-    /** The wire still speaks two sides; they take seats 0 and 1. */
-    agentA: AgentConfig
-    agentB: AgentConfig
+    /** Seats in order: 0 and 1 hold the exchange, further seats assess. */
+    participants: AgentConfig[]
     maxTurns: number
   }): Promise<Session> => bridge().invoke('session.start', payload),
   listSessions: (includeArchived = false): Promise<{ sessions: Session[]; archivedCount: number }> =>

@@ -180,20 +180,15 @@ export class Repo {
       error: null,
       archivedAt: null,
     }
-    // agent_a and agent_b mirror seats 0 and 1: they are NOT NULL in every
-    // deployed schema, and they are the read fallback for a database an older
-    // build opens after this one wrote to it.
     this.db.run(
-      `INSERT INTO sessions (id, kind, status, matter, project, repo_path, agent_a, agent_b, participants, max_turns, usage, mock, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sessions (id, kind, status, matter, project, repo_path, participants, max_turns, usage, mock, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       session.id,
       session.kind,
       session.status,
       session.matter,
       session.project,
       session.repoPath,
-      json(session.participants[0]),
-      json(session.participants[1]),
       json(session.participants),
       session.maxTurns,
       json(session.usage),
@@ -211,11 +206,11 @@ export class Repo {
       matter: str(row['matter']),
       project: str(row['project']),
       repoPath: nullableStr(row['repo_path']),
-      // Rows older than the v11 backfill — or handed back by an older build —
-      // may carry no participants column; the legacy pair is the fallback.
+      // Every row has been seated since the v11 backfill; the default pair
+      // only guards a corrupt cell, the same way the other parses do.
       participants: parseJson<AgentConfig[] | null>(row['participants'], null) ?? [
-        parseJson<AgentConfig>(row['agent_a'], { vendor: 'claude', model: '', effort: 'medium', persona: '' }),
-        parseJson<AgentConfig>(row['agent_b'], { vendor: 'codex', model: '', effort: 'medium', persona: '' }),
+        { vendor: 'claude', model: '', effort: 'medium', persona: '' },
+        { vendor: 'codex', model: '', effort: 'medium', persona: '' },
       ],
       maxTurns: num(row['max_turns'], 6),
       usage: parseJson<Usage>(row['usage'], emptyUsage()),
@@ -387,17 +382,12 @@ export class Repo {
   // ─── Turns ─────────────────────────────────────────────────────────────────
 
   createTurn(turn: Turn): Turn {
-    // `side` mirrors the seat: NOT NULL in every deployed schema, and the read
-    // fallback for a database an older build opens. Seats beyond the first two
-    // have no side name and mirror as their number — unreachable until the
-    // request surface seats more, and retired with the mirror itself.
     this.db.run(
-      `INSERT INTO turns (id, session_id, idx, side, seat, vendor, model, stage, text, usage, started_at, ended_at, error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO turns (id, session_id, idx, seat, vendor, model, stage, text, usage, started_at, ended_at, error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       turn.id,
       turn.sessionId,
       turn.index,
-      turn.seat === 0 ? 'a' : turn.seat === 1 ? 'b' : String(turn.seat),
       turn.seat,
       turn.vendor,
       turn.model,
@@ -427,14 +417,9 @@ export class Repo {
       id: str(row['id']),
       sessionId: str(row['session_id']),
       index: num(row['idx']),
-      // Rows older than the v12 backfill carry only the side; a and b are
-      // seats 0 and 1.
-      seat:
-        typeof row['seat'] === 'number'
-          ? row['seat']
-          : str(row['side']) === 'b'
-            ? 1
-            : 0,
+      // Seated by the v12 backfill; the zero default only guards a corrupt
+      // cell, the same way the other parses do.
+      seat: num(row['seat'], 0),
       vendor: str(row['vendor']) as Turn['vendor'],
       model: str(row['model']),
       stage: str(row['stage']),
@@ -478,8 +463,8 @@ export class Repo {
   addInterjection(input: Omit<Interjection, 'id' | 'createdAt' | 'deliveredAt'>): Interjection {
     const record: Interjection = { ...input, id: newId(), createdAt: Date.now(), deliveredAt: null }
     this.db.run(
-      `INSERT INTO interjections (id, session_id, target, text, at_turn_index, created_at, delivered_a_at, delivered_b_at)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
+      `INSERT INTO interjections (id, session_id, target, text, at_turn_index, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       record.id,
       record.sessionId,
       String(record.target),
@@ -528,17 +513,12 @@ export class Repo {
       )
       const now = Date.now()
       for (const row of rows) {
-        const id = str(row['id'])
         this.db.run(
           `INSERT INTO interjection_deliveries (interjection_id, seat, delivered_at) VALUES (?, ?, ?)`,
-          id,
+          str(row['id']),
           seat,
           now,
         )
-        // The pre-seat stamps stay written for seats 0 and 1: an older build
-        // reads them to decide what was delivered, and a NULL would re-deliver.
-        if (seat === 0) this.db.run(`UPDATE interjections SET delivered_a_at = ? WHERE id = ?`, now, id)
-        if (seat === 1) this.db.run(`UPDATE interjections SET delivered_b_at = ? WHERE id = ?`, now, id)
       }
       const seatCount = this.sessionSeatCount(sessionId)
       return rows.map((row) => this.toInterjection(row, this.deliveriesFor(str(row['id'])), seatCount))

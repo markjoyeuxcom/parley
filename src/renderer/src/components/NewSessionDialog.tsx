@@ -1,11 +1,14 @@
 import { useState, type ReactNode } from 'react'
-import { FolderOpen } from 'lucide-react'
+import { FolderOpen, Plus, X } from 'lucide-react'
 import type { AgentConfig, Session, SessionKind } from '@shared/domain'
 import { api } from '../lib/api'
-import { shortPath } from '../lib/format'
+import { seatLabel, shortPath } from '../lib/format'
 import { useStore } from '../state'
 import { AgentPicker, defaultAgentA, defaultAgentB } from './AgentPicker'
 import { Dialog, Field } from './ui'
+
+/** The request schema's ceiling: two exchange seats plus at most two assessors. */
+const MAX_SEATS = 4
 
 export function NewSessionDialog({
   initialKind = 'debate',
@@ -22,13 +25,30 @@ export function NewSessionDialog({
   const [project, setProject] = useState('')
   const [repoPath, setRepoPath] = useState('')
   const [maxTurns, setMaxTurns] = useState(6)
-  const [agentA, setAgentA] = useState<AgentConfig>(defaultAgentA)
-  const [agentB, setAgentB] = useState<AgentConfig>(defaultAgentB)
+  const [participants, setParticipants] = useState<AgentConfig[]>([defaultAgentA, defaultAgentB])
   const [busy, setBusy] = useState(false)
 
-  const sameVendor = agentA.vendor === agentB.vendor
+  const repeatedVendor = new Set(participants.map((seat) => seat.vendor)).size < participants.length
   const needsRepo = kind === 'review'
   const canStart = matter.trim().length > 0 && (!needsRepo || repoPath.trim().length > 0) && !busy
+
+  const setSeat = (seat: number, config: AgentConfig): void => {
+    setParticipants((current) => current.map((existing, at) => (at === seat ? config : existing)))
+  }
+
+  // A new assessor takes the vendor the bench has fewer of, so the added
+  // cross-check starts diverse instead of doubling a blind spot.
+  const addSeat = (): void => {
+    setParticipants((current) => {
+      const claudes = current.filter((seat) => seat.vendor === 'claude').length
+      const template = claudes * 2 > current.length ? defaultAgentB : defaultAgentA
+      return [...current, { ...template, persona: '' }]
+    })
+  }
+
+  const removeSeat = (seat: number): void => {
+    setParticipants((current) => current.filter((_, at) => at !== seat))
+  }
 
   const start = async (): Promise<void> => {
     setBusy(true)
@@ -38,8 +58,7 @@ export function NewSessionDialog({
         matter: matter.trim(),
         project: project.trim(),
         repoPath: repoPath.trim() || null,
-        agentA,
-        agentB,
+        participants,
         maxTurns,
       }),
     )
@@ -55,10 +74,19 @@ export function NewSessionDialog({
     if (result?.path) setRepoPath(result.path)
   }
 
+  const exchangeLabel = (seat: number): string =>
+    kind === 'review'
+      ? seat === 0
+        ? 'Side A — Cartographer'
+        : 'Side B — Reviewer'
+      : seat === 0
+        ? 'Side A — affirmative'
+        : 'Side B — negative'
+
   return (
     <Dialog
       title="New session"
-      subtitle="Two CLIs from different model families work the question independently, then each records its own verdict."
+      subtitle="CLIs from different model families work the question independently, then every seat records its own verdict."
       onClose={onClose}
       wide
       footer={
@@ -91,7 +119,7 @@ export function NewSessionDialog({
         label={kind === 'review' ? 'Review brief' : 'The matter'}
         hint={
           kind === 'review'
-            ? 'What should the reviewers focus on? Both read the repository; neither can modify it.'
+            ? 'What should the reviewers focus on? Every seat reads the repository; none can modify it.'
             : 'State the decision to be made. A falsifiable question produces a sharper exchange than an open-ended one.'
         }
       >
@@ -124,7 +152,7 @@ export function NewSessionDialog({
           hint={
             needsRepo
               ? 'Read-only. Claude gets Read, Glob and Grep; Codex runs in its read-only sandbox.'
-              : 'Attach one to let both sides cite real code.'
+              : 'Attach one to let every seat cite real code.'
           }
         >
           <button className="btn" style={{ justifyContent: 'flex-start' }} onClick={() => void chooseFolder()}>
@@ -135,7 +163,7 @@ export function NewSessionDialog({
       </div>
 
       {kind === 'debate' ? (
-        <Field label={`Exchange length — ${maxTurns} turns`} hint="Plus one independent verdict from each side.">
+        <Field label={`Exchange length — ${maxTurns} turns`} hint="Plus one independent verdict from every seat.">
           <input
             type="range"
             min={2}
@@ -149,34 +177,67 @@ export function NewSessionDialog({
 
       <hr className="divider" />
 
-      <AgentPicker
-        label="Side A"
-        value={agentA}
-        onChange={setAgentA}
-        personaPlaceholder={kind === 'review' ? 'Cartographer persona (optional)' : 'e.g. pragmatic staff engineer'}
-      />
-      <AgentPicker
-        label="Side B"
-        value={agentB}
-        onChange={setAgentB}
-        personaPlaceholder={kind === 'review' ? 'Reviewer persona (optional)' : 'e.g. risk-first architect'}
-      />
+      {participants.map((seat, at) => (
+        <div key={at} style={{ position: 'relative' }}>
+          <AgentPicker
+            label={at < 2 ? exchangeLabel(at) : `${seatLabel(at)} — assessor`}
+            value={seat}
+            onChange={(config) => setSeat(at, config)}
+            personaPlaceholder={
+              at >= 2
+                ? 'e.g. security-first assessor (optional)'
+                : kind === 'review'
+                  ? at === 0
+                    ? 'Cartographer persona (optional)'
+                    : 'Reviewer persona (optional)'
+                  : at === 0
+                    ? 'e.g. pragmatic staff engineer'
+                    : 'e.g. risk-first architect'
+            }
+          />
+          {at >= 2 ? (
+            <button
+              className="btn btn--sm"
+              style={{ position: 'absolute', top: 0, right: 0 }}
+              title="Remove this assessor"
+              onClick={() => removeSeat(at)}
+            >
+              <X size={12} strokeWidth={2} />
+            </button>
+          ) : null}
+        </div>
+      ))}
 
-      {sameVendor ? (
+      {participants.length < MAX_SEATS ? (
+        <button className="btn" style={{ alignSelf: 'flex-start' }} onClick={addSeat}>
+          <Plus size={12} strokeWidth={2} />
+          Add an assessor
+        </button>
+      ) : null}
+
+      {participants.length > 2 ? (
+        <div className="field__hint">
+          Assessors do not speak in the exchange. Each one follows it and records its own
+          independent verdict at the close — disagreement among the bench lowers the recorded
+          confidence, exactly as it does between the two debaters.
+        </div>
+      ) : null}
+
+      {repeatedVendor ? (
         <div className="gate">
-          <div className="gate__title">Both sides are the same CLI</div>
+          <div className="gate__title">More than one seat runs the same CLI</div>
           <div className="gate__body">
-            Two instances of the same model family share the same blind spots, so the cross-check is
-            much weaker. Pair Claude against Codex unless you specifically want a same-model
-            comparison.
+            Instances of the same model family share the same blind spots, so their agreement is
+            weaker evidence than it looks. Mix Claude and Codex across the seats unless you
+            specifically want a same-model comparison.
           </div>
         </div>
       ) : null}
 
       {!needsRepo && !repoPath ? (
         <div className="field__hint">
-          With no repository attached both sides run entirely tool-free — cheaper, and they cannot
-          reach your filesystem at all.
+          With no repository attached every seat runs entirely tool-free — cheaper, and none of
+          them can reach your filesystem at all.
         </div>
       ) : null}
 

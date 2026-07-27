@@ -143,8 +143,8 @@ describe('interjection delivery', () => {
     const session = makeSession(repo)
     const db = (repo as unknown as { db: ReturnType<typeof openDatabase> }).db
     db.run(
-      `INSERT INTO interjections (id, session_id, target, text, at_turn_index, created_at, delivered_a_at, delivered_b_at)
-       VALUES ('legacy-1', ?, 'a', 'old whisper', 0, 1, NULL, NULL)`,
+      `INSERT INTO interjections (id, session_id, target, text, at_turn_index, created_at)
+       VALUES ('legacy-1', ?, 'a', 'old whisper', 0, 1)`,
       session.id,
     )
 
@@ -392,9 +392,17 @@ describe('migrating an older database', () => {
   /**
    * The v10 case: a database written before participants were an array. Every
    * two-sided session must come back as seats 0 and 1, minted from the pair it
-   * was recorded with.
+   * was recorded with. The era's pair columns are reconstructed, since v16
+   * removed them from the head schema.
    */
   function asVersion10(db: ReturnType<typeof openDatabase>): void {
+    db.exec(`ALTER TABLE sessions ADD COLUMN agent_a TEXT`)
+    db.exec(`ALTER TABLE sessions ADD COLUMN agent_b TEXT`)
+    db.run(
+      `UPDATE sessions SET agent_a = ?, agent_b = ?`,
+      JSON.stringify({ vendor: 'claude', model: '', effort: 'medium', persona: '' }),
+      JSON.stringify({ vendor: 'codex', model: '', effort: 'medium', persona: '' }),
+    )
     db.exec(`ALTER TABLE sessions DROP COLUMN participants`)
     db.run(`UPDATE meta SET value = '10' WHERE key = 'schema_version'`)
   }
@@ -419,8 +427,11 @@ describe('migrating an older database', () => {
   /**
    * The v11 case: a database from before turns and threads spoke seats. Turns
    * carried only a side name, and agent_threads was keyed (session_id, side).
+   * The era's side column is reconstructed, since v16 removed it from head.
    */
   function asVersion11(db: ReturnType<typeof openDatabase>): void {
+    db.exec(`ALTER TABLE turns ADD COLUMN side TEXT`)
+    db.exec(`UPDATE turns SET side = CASE seat WHEN 0 THEN 'a' ELSE 'b' END`)
     db.exec(`ALTER TABLE turns DROP COLUMN seat`)
     db.exec(`
       CREATE TABLE agent_threads_sided (
@@ -475,9 +486,25 @@ describe('migrating an older database', () => {
   })
 
   /**
-   * The v14 case: whisper delivery lived only in the two per-side stamps.
+   * The v14 case: whisper delivery lived only in the two per-side stamps. The
+   * era's stamp columns are reconstructed from the delivery rows, since v16
+   * removed them from the head schema.
    */
   function asVersion14(db: ReturnType<typeof openDatabase>): void {
+    db.exec(`ALTER TABLE interjections ADD COLUMN delivered_a_at INTEGER`)
+    db.exec(`ALTER TABLE interjections ADD COLUMN delivered_b_at INTEGER`)
+    db.exec(`
+      UPDATE interjections SET delivered_a_at = (
+        SELECT delivered_at FROM interjection_deliveries d
+        WHERE d.interjection_id = interjections.id AND d.seat = 0
+      )
+    `)
+    db.exec(`
+      UPDATE interjections SET delivered_b_at = (
+        SELECT delivered_at FROM interjection_deliveries d
+        WHERE d.interjection_id = interjections.id AND d.seat = 1
+      )
+    `)
     db.exec(`DROP TABLE interjection_deliveries`)
     db.run(`UPDATE meta SET value = '14' WHERE key = 'schema_version'`)
   }
@@ -502,10 +529,72 @@ describe('migrating an older database', () => {
     expect(restored.listInterjections(session.id)[0]?.deliveredAt).not.toBeNull()
   })
 
-  it('falls back to the legacy pair when a row has no participants', () => {
-    // A database an older build wrote into after this one created it: the
-    // participants column exists but the row is NULL. The legacy mirror
-    // columns are the truth then, and reading must not fail.
+  /**
+   * The v15 case: the four two-sided mirror columns still existed, unread.
+   */
+  function asVersion15(db: ReturnType<typeof openDatabase>): void {
+    db.exec(`ALTER TABLE sessions ADD COLUMN agent_a TEXT`)
+    db.exec(`ALTER TABLE sessions ADD COLUMN agent_b TEXT`)
+    db.exec(`ALTER TABLE turns ADD COLUMN side TEXT`)
+    db.exec(`ALTER TABLE interjections ADD COLUMN delivered_a_at INTEGER`)
+    db.exec(`ALTER TABLE interjections ADD COLUMN delivered_b_at INTEGER`)
+    db.run(`UPDATE meta SET value = '15' WHERE key = 'schema_version'`)
+  }
+
+  it('retires the two-sided mirror columns without touching the seated data', async () => {
+    const db = openDatabase(':memory:')
+    const repo = new Repo(db)
+    const session = makeSession(repo, { matter: 'mirrored era' })
+    repo.createTurn({
+      id: newId(),
+      sessionId: session.id,
+      index: 0,
+      seat: 1,
+      vendor: 'codex',
+      model: '',
+      stage: 'Challenge',
+      text: 'x',
+      usage: emptyUsage(),
+      startedAt: 1,
+      endedAt: 2,
+      error: null,
+    })
+    repo.addInterjection({ sessionId: session.id, target: 'all', text: 'note', atTurnIndex: 0 })
+    repo.takeInterjections(session.id, 0)
+    repo.takeInterjections(session.id, 1)
+
+    asVersion15(db)
+    const { migrate } = await import('./db')
+    expect(() => migrate(db)).not.toThrow()
+
+    // The columns are gone — nothing would ever read them again, since an
+    // older build refuses the version stamp outright.
+    const hasColumn = (table: string, column: string): boolean =>
+      db.get(`SELECT name FROM pragma_table_info(?) WHERE name = ?`, table, column) !== undefined
+    for (const [table, column] of [
+      ['sessions', 'agent_a'],
+      ['sessions', 'agent_b'],
+      ['turns', 'side'],
+      ['interjections', 'delivered_a_at'],
+      ['interjections', 'delivered_b_at'],
+    ] as const) {
+      expect(hasColumn(table, column), `${table}.${column}`).toBe(false)
+    }
+
+    // And the seated data reads exactly as before.
+    const restored = new Repo(db)
+    expect(restored.getSession(session.id)?.participants.map((seat) => seat.vendor)).toEqual([
+      'claude',
+      'codex',
+    ])
+    expect(restored.listTurns(session.id)[0]?.seat).toBe(1)
+    expect(restored.listInterjections(session.id)[0]?.deliveredAt).not.toBeNull()
+  })
+
+  it('falls back to a default pair when a row has no participants', () => {
+    // A corrupt or hand-edited row: the participants cell is NULL. Reading
+    // must not fail, and the guard is the classic pair — the same defensive
+    // default every other parse in the mapper uses.
     const repo = freshRepo()
     const session = makeSession(repo)
     const db = (repo as unknown as { db: ReturnType<typeof openDatabase> }).db

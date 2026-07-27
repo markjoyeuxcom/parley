@@ -36,8 +36,13 @@ export const StartSessionReq = z.object({
   matter: z.string().min(1).max(20_000),
   project: z.string().max(200).default(''),
   repoPath: z.string().nullable().default(null),
-  agentA: AgentConfig,
-  agentB: AgentConfig,
+  /**
+   * The seats, in order. Seats 0 and 1 hold the exchange; any further seat
+   * observes it and records an independent verdict. Capped at four: the
+   * exchange schedule is two-seat, so extra chairs are assessors, and a bench
+   * of more than two of them is spend without conversation.
+   */
+  participants: z.array(AgentConfig).min(2).max(4),
   maxTurns: z.number().int().min(2).max(40).default(6),
 })
 

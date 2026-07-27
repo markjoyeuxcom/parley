@@ -165,6 +165,27 @@ describe('invokeCommand routing', () => {
     await expect(invokeCommand(ctx, 'not even an object')).rejects.toThrow(/malformed request/i)
   })
 
+  it('rejects a session request outside the seat bounds, naming the field', async () => {
+    // The ceiling lives at the surface, exactly where the m2 note said it
+    // would arrive: the exchange is two-seat, extra chairs are assessors, and
+    // a bench of more than two of them is spend without conversation.
+    const { ctx } = harness()
+    const seat = { vendor: 'claude', model: '', effort: 'medium', persona: '' }
+
+    await expect(
+      invokeCommand(ctx, {
+        command: 'session.start',
+        payload: { kind: 'debate', matter: 'x', participants: [seat], maxTurns: 2 },
+      }),
+    ).rejects.toThrow(/invalid session\.start request at participants/i)
+    await expect(
+      invokeCommand(ctx, {
+        command: 'session.start',
+        payload: { kind: 'debate', matter: 'x', participants: [seat, seat, seat, seat, seat], maxTurns: 2 },
+      }),
+    ).rejects.toThrow(/invalid session\.start request at participants/i)
+  })
+
   it('rejects a payload its schema refuses, naming the offending field', async () => {
     const { ctx, repo } = harness()
     await expect(
