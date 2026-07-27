@@ -317,6 +317,32 @@ describe('loops, end to end', () => {
     expect(repo.listIterations(loop.id)).toHaveLength(2)
   })
 
+  it('charges review checks as usage without spending worker iterations', async () => {
+    const { manager, repo } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-loop-'))
+
+    const loop = manager.createLoop({
+      goal: 'never satisfiable in two checks',
+      repoPath,
+      worker: codex,
+      verifier: claude,
+      exit: { kind: 'review', command: '', criterion: 'the goal is complete' },
+      caps: { maxIterations: 2, maxSpendUsd: 0, maxWallClockMs: 60_000 },
+      capability: 'read',
+    })
+    manager.startLoop(loop.id, null)
+
+    await waitFor(() => repo.getLoop(loop.id)?.status === 'exhausted')
+
+    const final = repo.getLoop(loop.id)
+    const iterations = repo.listIterations(loop.id)
+    expect(final?.iterationCount).toBe(2)
+    expect(iterations).toHaveLength(2)
+    expect(final?.usage.inputTokens).toBeGreaterThan(
+      iterations.reduce((total, iteration) => total + iteration.usage.inputTokens, 0),
+    )
+  })
+
   it('refuses to start a write-capable loop without an approval', () => {
     const { manager, repo } = harness()
     const repoPath = mkdtempSync(join(tmpdir(), 'parley-loop-'))
@@ -333,6 +359,37 @@ describe('loops, end to end', () => {
 
     expect(() => manager.startLoop(loop.id, null)).toThrow(/needs an approval/i)
     expect(repo.getLoop(loop.id)?.status).toBe('idle')
+  })
+
+  it('persists the approval and starts the wall-clock budget when the loop starts', async () => {
+    const { manager, repo } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-loop-'))
+
+    const loop = manager.createLoop({
+      goal: 'fix it',
+      repoPath,
+      worker: codex,
+      verifier: claude,
+      exit: { kind: 'command', command: 'node --version', criterion: '' },
+      caps: { maxIterations: 1, maxSpendUsd: 0, maxWallClockMs: 10 },
+      capability: 'write',
+    })
+    const approval = repo.grantApproval('loop.write', loop.id, 'allow writes')
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const started = manager.startLoop(loop.id, approval.id)
+
+    expect(started.status).toBe('running')
+    expect(started.approvalId).toBe(approval.id)
+    expect(started.startedAt).toBeGreaterThan(loop.startedAt)
+    expect(repo.getLoop(loop.id)).toMatchObject({
+      status: 'running',
+      approvalId: approval.id,
+      startedAt: started.startedAt,
+    })
+
+    await waitFor(() => repo.getLoop(loop.id)?.status === 'succeeded')
+    expect(repo.listIterations(loop.id)).toHaveLength(1)
   })
 
   it('spends the approval on start, so restarting requires a fresh one', async () => {

@@ -101,8 +101,6 @@ export class LoopRunner {
   }
 
   async run(): Promise<LoopOutcome> {
-    this.setStatus('running')
-
     // Belt and braces alongside the store: a write-capable loop must carry a
     // consumed approval, and the adapter refuses without one.
     try {
@@ -253,7 +251,7 @@ export class LoopRunner {
       timeoutMs: ITERATION_TIMEOUT_MS,
     })
 
-    this.loop = this.repo.bumpLoop(this.loop.id, result.usage)
+    this.loop = this.repo.addLoopUsage(this.loop.id, result.usage)
 
     if (result.error) return { met: false, detail: `the verifier failed: ${result.error}` }
 

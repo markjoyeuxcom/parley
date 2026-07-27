@@ -468,19 +468,20 @@ export class Manager {
     const existing = this.repo.getLoop(loopId)
     if (!existing) throw new RequestError('no such loop')
     if (this.loops.has(loopId)) throw new RequestError('that loop is already running')
-    if (existing.status !== 'idle' && existing.status !== 'paused') {
+    if (existing.status !== 'idle') {
       throw new RequestError(`that loop has already run (${existing.status})`)
     }
 
-    let loop = existing
-    if (loop.capability === 'write') {
+    const loopApprovalId = existing.capability === 'write' ? approvalId : null
+    if (existing.capability === 'write') {
       if (!approvalId) throw new RequestError('a write-capable loop needs an approval before it can start')
       this.repo.consumeApproval(approvalId, 'loop.write', loopId)
-      loop = { ...loop, approvalId }
     }
 
+    const loop = this.repo.startLoop(loopId, loopApprovalId)
     const runner = new LoopRunner(loop, this.deps)
     this.loops.set(loop.id, runner)
+    this.emit({ type: 'loop.status', loopId: loop.id, status: 'running' })
     void runner
       .run()
       .catch((err: unknown): LoopOutcome => {

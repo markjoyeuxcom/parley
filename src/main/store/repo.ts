@@ -1124,6 +1124,21 @@ export class Repo {
     return this.db.all(`SELECT * FROM loops ORDER BY started_at DESC LIMIT ?`, limit).map((r) => this.toLoop(r))
   }
 
+  startLoop(id: Id, approvalId: Id | null): Loop {
+    const startedAt = Date.now()
+    const result = this.db.run(
+      `UPDATE loops SET status = 'running', approval_id = ?, started_at = ?
+       WHERE id = ? AND status = 'idle'`,
+      approvalId,
+      startedAt,
+      id,
+    )
+    if (result.changes !== 1) throw new Error(`loop ${id} is not idle`)
+    const loop = this.getLoop(id)
+    if (!loop) throw new Error(`loop ${id} disappeared`)
+    return loop
+  }
+
   setLoopStatus(id: Id, status: Loop['status'], stopReason = ''): void {
     const terminal = status === 'succeeded' || status === 'exhausted' || status === 'killed' || status === 'failed'
     this.db.run(
@@ -1142,6 +1157,14 @@ export class Repo {
     const count = loop.iterationCount + 1
     this.db.run(`UPDATE loops SET usage = ?, iteration_count = ? WHERE id = ?`, json(usage), count, id)
     return { ...loop, usage, iterationCount: count }
+  }
+
+  addLoopUsage(id: Id, delta: Usage): Loop {
+    const loop = this.getLoop(id)
+    if (!loop) throw new Error(`loop ${id} not found`)
+    const usage = addUsage(loop.usage, delta)
+    this.db.run(`UPDATE loops SET usage = ? WHERE id = ?`, json(usage), id)
+    return { ...loop, usage }
   }
 
   createIteration(it: LoopIteration): LoopIteration {
