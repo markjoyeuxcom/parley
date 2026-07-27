@@ -344,23 +344,30 @@ function SessionView(): ReactNode {
                   the normal case, not the exception. */}
               {plans.length ? (
                 <div className="segmented" role="tablist" aria-label="Plans in this session">
-                  {plans.map((plan) => {
-                    const isOpen = state.planDetail?.plan.id === plan.id
-                    return (
-                      <button
-                        key={plan.id}
-                        role="tab"
-                        aria-selected={isOpen}
-                        className={isOpen ? 'segmented__item is-active' : 'segmented__item'}
-                        onClick={() => void openPlan(plan.id)}
-                      >
-                        {plan.kind}
-                        {plan.status !== 'complete' ? (
-                          <span className="segmented__count">{plan.status}</span>
-                        ) : null}
-                      </button>
-                    )
-                  })}
+                  {/* Titled and numbered, oldest first — two plans of the same
+                      kind is the normal case (implementation, then another), and
+                      a row reading "implementation implementation" names neither. */}
+                  {[...plans]
+                    .sort((a, b) => a.createdAt - b.createdAt)
+                    .map((plan, index) => {
+                      const isOpen = state.planDetail?.plan.id === plan.id
+                      return (
+                        <button
+                          key={plan.id}
+                          role="tab"
+                          aria-selected={isOpen}
+                          className={isOpen ? 'segmented__item is-active' : 'segmented__item'}
+                          onClick={() => void openPlan(plan.id)}
+                          title={`${plan.title} — ${plan.kind}, ${plan.status}`}
+                        >
+                          <span className="tnum">{index + 1}</span>
+                          <span className="plan-tab__title">{plan.title}</span>
+                          {plan.status !== 'complete' ? (
+                            <span className="segmented__count">{plan.status}</span>
+                          ) : null}
+                        </button>
+                      )
+                    })}
                 </div>
               ) : null}
 

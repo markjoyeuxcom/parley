@@ -1474,3 +1474,11 @@
   min-width: 240px;
   font-size: var(--text-small);
 }
+
+/* Plan switcher tabs carry real titles; keep long ones from eating the row. */
+.plan-tab__title {
+  max-width: 20ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
