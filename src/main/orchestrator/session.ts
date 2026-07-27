@@ -30,6 +30,8 @@ import {
 
 /** How long a single turn may run before it is abandoned. */
 const TURN_TIMEOUT_MS = 25 * 60 * 1000
+const NO_USABLE_VERDICT =
+  'Neither advisor produced a usable structured verdict; the transcript is still recorded.'
 
 /**
  * Runs one Parley session to a verdict.
@@ -112,7 +114,11 @@ export class SessionRunner {
       await this.gate.wait()
       if (this.gate.isStopped) return this.setStatus('cancelled')
 
-      await this.recordVerdict(stages.length)
+      const recorded = await this.recordVerdict(stages.length)
+      if (!recorded) {
+        this.setStatus('failed', NO_USABLE_VERDICT)
+        return
+      }
       this.setStatus('complete')
     } catch (err) {
       if (this.gate.isStopped) {
@@ -195,7 +201,7 @@ export class SessionRunner {
    * the ordering invites the kind of convergence the whole exercise is designed
    * to avoid. Two independent verdicts that disagree are a real result.
    */
-  private async recordVerdict(startIndex: number): Promise<void> {
+  private async recordVerdict(startIndex: number): Promise<boolean> {
     const prompt = verdictPrompt(this.session.matter, this.session.kind)
 
     const ask = async (side: TurnSide, index: number): Promise<{ side: TurnSide; text: string }> => {
@@ -257,9 +263,9 @@ export class SessionRunner {
       this.emit({
         type: 'notice',
         level: 'warn',
-        message: 'Neither advisor produced a usable structured verdict; the transcript is still recorded.',
+        message: NO_USABLE_VERDICT,
       })
-      return
+      return false
     }
 
     const findings = this.collectFindings()
@@ -273,6 +279,7 @@ export class SessionRunner {
 
     this.repo.saveVerdict(verdict)
     this.emit({ type: 'session.verdict', verdict })
+    return true
   }
 
   /**

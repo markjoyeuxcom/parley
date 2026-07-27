@@ -138,6 +138,19 @@ describe('reconcileInterrupted', () => {
     expect(repo.getMilestone(milestone.id)?.status).toBe('audited')
   })
 
+  it('fails plans interrupted outside the correction stage', () => {
+    for (const status of ['drafting', 'auditing', 'running'] as const) {
+      const repo = freshRepo()
+      const { plan } = makePlanWithMilestone(repo, 'planned')
+      repo.setPlanStatus(plan.id, status)
+
+      const counts = repo.reconcileInterrupted()
+
+      expect(counts.plans, status).toBe(1)
+      expect(repo.getPlan(plan.id)?.status, status).toBe('failed')
+    }
+  })
+
   it('leaves settled milestones alone', () => {
     for (const status of ['planned', 'audited', 'complete', 'rejected', 'failed'] as const) {
       const repo = freshRepo()

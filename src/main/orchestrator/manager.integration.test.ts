@@ -1599,18 +1599,25 @@ describe('plans and the approval gate', () => {
     return { manager, repo, plan, milestone }
   }
 
-  it('refuses to plan from a session with no verdict', async () => {
-    const { manager } = harness()
+  it('fails a session with no usable verdict and refuses to plan from it', async () => {
+    const { manager, repo } = harness()
     const repoPath = mkdtempSync(join(tmpdir(), 'parley-plan-'))
     const session = manager.startSession({
       kind: 'debate',
-      matter: 'x',
+      matter: 'NO_VERDICT',
       project: '',
       repoPath: null,
       agentA: claude,
       agentB: codex,
       maxTurns: 2,
     })
+
+    await waitFor(() => repo.getSession(session.id)?.status === 'failed')
+
+    const failed = repo.getSession(session.id)
+    expect(failed?.error).toMatch(/neither advisor produced a usable structured verdict/i)
+    expect(repo.getVerdict(session.id)).toBeNull()
+    expect(repo.listTurns(session.id).filter((turn) => turn.stage === 'Verdict')).toHaveLength(2)
 
     await expect(
       manager.createPlan({

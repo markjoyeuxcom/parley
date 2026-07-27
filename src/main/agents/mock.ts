@@ -312,6 +312,9 @@ export class MockAdapter implements AgentAdapter {
     }
 
     if (p.includes('"decision"')) {
+      if (p.includes('NO_VERDICT')) {
+        return `I could not reduce this matter to the requested structured verdict.`
+      }
       const confidence = this.vendor === 'claude' ? 0.72 : 0.58
       return [
         `My verdict, recorded independently.`,
