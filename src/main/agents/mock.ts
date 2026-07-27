@@ -118,6 +118,38 @@ export class MockAdapter implements AgentAdapter {
     const p = req.prompt
     const correcting = req.systemPrompt.includes('correcting your own plan')
 
+    // Keyed on the system prompt, deliberately: the stow prompt embeds stage
+    // output whose own JSON fences would shadow any body marker (the same
+    // reason the repairs check below sits first among the body-keyed ones).
+    if (req.systemPrompt.includes('distill what this session learned')) {
+      return [
+        'Two items and two learnings worth keeping.',
+        '```json',
+        JSON.stringify(
+          {
+            items: [
+              {
+                title: 'Surface the retry ceiling to callers',
+                detail:
+                  'The cap exists but exhaustion is swallowed; callers cannot tell a give-up from a success.',
+              },
+              {
+                title: 'Cover retry exhaustion with a deterministic test',
+                detail: 'No test pins the behaviour at the ceiling.',
+              },
+            ],
+            learnings: [
+              'The retry helper is used by every network call site; changes there fan out widely.',
+              'The suite is deterministic and spends no tokens; run it freely.',
+            ],
+          },
+          null,
+          2,
+        ),
+        '```',
+      ].join('\n')
+    }
+
     if (req.systemPrompt.includes('audit other engineers') && req.cwd.includes('AUDIT_UNREADABLE')) {
       return `I inspected the plan, but this reply contains no structured audit.`
     }

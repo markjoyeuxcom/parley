@@ -18,6 +18,9 @@ import type { AppEvent } from '@shared/events'
 import type { Hold } from '@shared/holds'
 import type { AgentRegistry } from '@main/agents'
 import { isShellFree, shellMetacharsIn } from '@shared/command'
+import { extractJson, safeString } from '@shared/extract'
+import { protocolFor, STOW_CONTRACT } from '@shared/protocol'
+import { canonicalRepoPath } from '@main/util/repoPath'
 import { newId, type Repo } from '@main/store/repo'
 import { HoldsEngine } from './holds'
 import { LivenessWatchdog } from './liveness'
@@ -29,6 +32,9 @@ import { SessionRunner } from './session'
 import { RunGate, type OrchestratorDeps } from './types'
 
 export class RequestError extends Error {}
+
+/** A stow sweep is one look, not a stage: bounded well under a turn. */
+const STOW_TIMEOUT_MS = 5 * 60 * 1000
 
 /**
  * Validates a repository path coming from the renderer.
@@ -119,6 +125,8 @@ export class Manager {
    * run's gate.
    */
   private readonly milestoneRuns = new Map<Id, RunGate>()
+  /** In-flight stow sweeps — the same synchronous has-check discipline. */
+  private readonly stowRuns = new Set<Id>()
   private readonly loops = new Map<Id, LoopRunner>()
   private readonly pipeline: Pipeline
   private readonly deps: OrchestratorDeps
@@ -259,6 +267,120 @@ export class Manager {
     this.repo.setSessionStatus(sessionId, 'stopping')
     this.emit({ type: 'session.status', sessionId, status: 'stopping' })
     runner.gate.stop()
+  }
+
+  /**
+   * One read-only agent turn that distills a finished session into durable
+   * record: backlog items worth acting on later, learnings worth telling
+   * every future plan. Everything it drafts files as *proposed* — a human
+   * confirms or discards before any of it counts — and the input is composed
+   * and bounded (never verdict.report, which embeds the whole exchange).
+   * User-initiated, so failures surface; usage lands on the session.
+   */
+  async stowSession(
+    sessionId: Id,
+  ): Promise<{ filedItems: number; filedLearnings: number; duplicates: number }> {
+    const session = this.repo.getSession(sessionId)
+    if (!session) throw new RequestError('no such session')
+    if (!session.repoPath) {
+      throw new RequestError('this session has no repository, so there is nowhere to file what it learned')
+    }
+    const verdict = this.repo.getVerdict(sessionId)
+    if (!verdict) throw new RequestError('stow needs a saved verdict — let the session finish first')
+    if (this.stowRuns.has(sessionId)) {
+      throw new RequestError('a stow sweep for this session is already running')
+    }
+    this.stowRuns.add(sessionId)
+    try {
+      const findings = this.repo.listFindings(sessionId)
+      const protocol = protocolFor(session.kind)
+      const turns = this.repo.listTurns(sessionId).filter((turn) => !turn.error)
+      const relevant = protocol.findingsFrom.length
+        ? turns.filter((turn) => protocol.findingsFrom.includes(turn.stage))
+        : turns
+      // The bounded-snapshot philosophy: the closing stages' tails, never the
+      // whole transcript.
+      const exchange = relevant
+        .slice(-6)
+        .map((turn) => `[${turn.stage} — ${turn.vendor}]\n${turn.text.trim().slice(-4000)}`)
+
+      const seatZero = session.participants[0]
+      const vendor = this.registry.counterpart(seatZero?.vendor ?? 'claude')
+      const sweeper = this.registry.get(vendor)
+
+      const reply = await sweeper.run({
+        systemPrompt:
+          'You distill what this session learned into durable record: backlog items worth acting on later, and repository learnings worth telling every future plan. You are read-only. Propose only what the transcript actually supports.',
+        prompt: [
+          `THE MATTER:\n${session.matter}`,
+          `THE DECISION: ${verdict.decision}`,
+          verdict.rationale ? `RATIONALE: ${verdict.rationale}` : '',
+          verdict.dissent ? `UNRESOLVED DISSENT: ${verdict.dissent}` : '',
+          findings.length
+            ? `FINDINGS ALREADY RECORDED (do not re-propose these):\n${findings
+                .map((finding) => `- [${finding.priority} ${finding.status}] ${finding.title}`)
+                .join('\n')}`
+            : '',
+          exchange.length ? `THE CLOSING EXCHANGE (bounded):\n\n${exchange.join('\n\n———\n\n')}` : '',
+          STOW_CONTRACT,
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
+        cfg: { vendor, model: '', effort: 'medium', persona: '' },
+        capability: 'read',
+        cwd: session.repoPath,
+        timeoutMs: STOW_TIMEOUT_MS,
+      })
+      const usage = this.repo.addSessionUsage(sessionId, reply.usage)
+      this.emit({ type: 'session.usage', sessionId, usage })
+      if (reply.error) throw new RequestError(`the stow sweep failed: ${reply.error}`)
+
+      const parsed = extractJson<{ items?: unknown; learnings?: unknown }>(reply.text).data
+      if (!parsed) throw new RequestError('the stow sweep returned nothing parseable')
+      const rawItems = Array.isArray(parsed.items) ? parsed.items : []
+      const rawLearnings = Array.isArray(parsed.learnings) ? parsed.learnings : []
+
+      let filedItems = 0
+      let filedLearnings = 0
+      let duplicates = 0
+      for (const raw of rawItems.slice(0, 20)) {
+        const entry = raw as Record<string, unknown>
+        const title = safeString(entry?.['title']).trim()
+        if (!title) continue
+        const result = this.repo.fileBacklogItem({
+          repoPath: session.repoPath,
+          title,
+          detail: safeString(entry?.['detail']).trim(),
+          source: 'stow',
+          originSessionId: sessionId,
+          mock: session.mock,
+          state: 'proposed',
+          note: 'Proposed by a stow sweep.',
+        })
+        if (result.resighted) duplicates += 1
+        else filedItems += 1
+      }
+      for (const raw of rawLearnings.slice(0, 12)) {
+        const text = safeString(raw).trim()
+        if (!text) continue
+        const result = this.repo.fileLearning({
+          repoPath: session.repoPath,
+          text,
+          source: 'stow',
+          originSessionId: sessionId,
+          mock: session.mock,
+        })
+        if (result.duplicate) duplicates += 1
+        else filedLearnings += 1
+      }
+
+      if (filedItems + filedLearnings > 0) {
+        this.emit({ type: 'backlog.changed', repoPath: canonicalRepoPath(session.repoPath) })
+      }
+      return { filedItems, filedLearnings, duplicates }
+    } finally {
+      this.stowRuns.delete(sessionId)
+    }
   }
 
   // ─── Plans ─────────────────────────────────────────────────────────────────

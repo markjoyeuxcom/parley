@@ -219,6 +219,25 @@ function SessionView(): ReactNode {
     if (result?.saved && result.path) notify('info', `Saved to ${result.path}`)
   }
 
+  const stow = async (): Promise<void> => {
+    const result = await attempt(() => api.stowSession(session.id))
+    if (!result) return
+    const parts: string[] = []
+    if (result.filedItems) {
+      parts.push(`${result.filedItems} item${result.filedItems === 1 ? '' : 's'} proposed`)
+    }
+    if (result.filedLearnings) {
+      parts.push(`${result.filedLearnings} learning${result.filedLearnings === 1 ? '' : 's'} proposed`)
+    }
+    if (result.duplicates) parts.push(`${result.duplicates} already tracked`)
+    notify(
+      'info',
+      parts.length
+        ? `Stowed: ${parts.join(', ')}. Nothing counts until you confirm it.`
+        : 'Nothing new to stow — everything worth keeping is already recorded.',
+    )
+  }
+
   return (
     <>
       <div className="bar">
@@ -305,7 +324,13 @@ function SessionView(): ReactNode {
                 ) : null}
               </div>
 
-              {verdict ? <VerdictPanel verdict={verdict} onExport={() => void exportReport()} /> : null}
+              {verdict ? (
+                <VerdictPanel
+                  verdict={verdict}
+                  onExport={() => void exportReport()}
+                  onStow={session.repoPath ? () => void stow() : null}
+                />
+              ) : null}
               <FindingsPanel findings={findings} />
               <FindingsLedgerPanel
                 entries={ledger}

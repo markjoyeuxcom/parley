@@ -150,6 +150,8 @@ const HANDLERS: Record<CommandName, Handler> = {
     return { saved: true, path: result.filePath }
   },
 
+  'session.stow': (p, ctx) => ctx.manager.stowSession((p as { sessionId: string }).sessionId),
+
   // ── Finding ledger ────────────────────────────────────────────────────────
   'ledger.list': (p, ctx) => {
     const { sessionId } = p as { sessionId: string }

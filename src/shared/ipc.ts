@@ -188,6 +188,8 @@ export const LandPlanReq = z.object({ planId: Id, approvalId: Id })
 export const GetLoopReq = z.object({ loopId: Id })
 
 export const ExportReportReq = z.object({ sessionId: Id })
+/** One read-only sweep filing proposed backlog items and learnings. */
+export const StowSessionReq = z.object({ sessionId: Id })
 
 /**
  * The full command table. Keys are the wire command names; values are the
@@ -207,6 +209,7 @@ export const COMMANDS = {
   'session.resume': SessionControlReq,
   'session.stop': SessionControlReq,
   'session.export': ExportReportReq,
+  'session.stow': StowSessionReq,
   'ledger.list': ListLedgerReq,
   'ledger.dispose': DisposeLedgerFindingReq,
   'holds.list': null,

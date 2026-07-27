@@ -208,6 +208,26 @@ export const REVIEW_PROTOCOL: SessionProtocol = {
   findingsFrom: ['Reconciliation', 'Cross-examination', 'Independent audit'],
 }
 
+/**
+ * The stow sweep's output contract. Items are work worth doing later;
+ * learnings are durable facts about the repository, not tasks. "An empty
+ * array is honest" is load-bearing: a sweep pressured to produce something
+ * fills the backlog with paraphrased noise, which costs more attention than
+ * it saves.
+ */
+export const STOW_CONTRACT = `
+Reply with a fenced JSON block and nothing after it:
+\`\`\`json
+{
+  "items": [{ "title": "<imperative, one line>", "detail": "<why it matters and where it lives>" }],
+  "learnings": ["<one durable fact about this repository a future plan should know>"]
+}
+\`\`\`
+Items are work worth doing later; learnings are facts, not tasks. Propose at
+most a handful of each, only what the transcript actually supports, and skip
+anything already recorded as a finding. An empty array is honest when there
+is nothing.`.trim()
+
 export function protocolFor(kind: SessionKind): SessionProtocol {
   return kind === 'debate' ? DEBATE_PROTOCOL : REVIEW_PROTOCOL
 }

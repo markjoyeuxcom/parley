@@ -99,6 +99,11 @@ export const api = {
   stopSession: (sessionId: Id): Promise<unknown> => bridge().invoke('session.stop', { sessionId }),
   exportReport: (sessionId: Id): Promise<{ saved: boolean; path: string | null }> =>
     bridge().invoke('session.export', { sessionId }),
+  /** One read-only sweep; everything it drafts files as proposals. */
+  stowSession: (
+    sessionId: Id,
+  ): Promise<{ filedItems: number; filedLearnings: number; duplicates: number }> =>
+    bridge().invoke('session.stow', { sessionId }),
 
   // Finding ledger
   listLedger: (sessionId: Id): Promise<LedgerEntry[]> =>

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Download } from 'lucide-react'
+import { Archive, Download } from 'lucide-react'
 import type { Finding, ScoreDimension, Verdict } from '@shared/domain'
 import { seatLabel, seatSide } from '../lib/format'
 import { Chip, Meter, Panel } from './ui'
@@ -17,9 +17,12 @@ const ORDER: ScoreDimension[] = ['correctness', 'robustness', 'clarity', 'mainta
 export function VerdictPanel({
   verdict,
   onExport,
+  onStow,
 }: {
   verdict: Verdict
   onExport: () => void
+  /** Present only when the session has a repository to file into. */
+  onStow?: (() => void) | null
 }): ReactNode {
   const confidence = Math.round(verdict.confidence * 100)
   const tone = confidence >= 70 ? 'chip--pass' : confidence >= 40 ? 'chip--caution' : 'chip--fail'
@@ -33,6 +36,16 @@ export function VerdictPanel({
             {confidence}% confidence
           </Chip>
           <div className="spacer" />
+          {onStow ? (
+            <button
+              className="btn btn--sm"
+              onClick={onStow}
+              title="One read-only agent turn drafts backlog items and learnings from this session. Nothing counts until you confirm it."
+            >
+              <Archive size={12} strokeWidth={2} />
+              Stow
+            </button>
+          ) : null}
           <button className="btn btn--sm" onClick={onExport} title="Export the full report as Markdown">
             <Download size={12} strokeWidth={2} />
             Export
