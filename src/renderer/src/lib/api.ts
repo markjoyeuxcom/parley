@@ -19,6 +19,7 @@ import type {
   WorkPlan,
 } from '@shared/domain'
 import type { AppEvent, PtyChunk } from '@shared/events'
+import type { Hold } from '@shared/holds'
 import type { AppInfo, CliHealth, CommandName, LedgerEntry } from '@shared/ipc'
 
 /** The preload bridge. The only channel out of the renderer. */
@@ -106,6 +107,11 @@ export const api = {
     note: string,
   ): Promise<LedgerEntry> =>
     bridge().invoke('ledger.dispose', { sessionId, findingId, occurrenceId, state, note }),
+
+  // Decision holds
+  listHolds: (): Promise<Hold[]> => bridge().invoke('holds.list'),
+  /** Returns the updated queue. Refused for decision-class holds. */
+  ackHold: (holdId: Id): Promise<Hold[]> => bridge().invoke('holds.ack', { holdId }),
 
   // Plans
   createPlan: (payload: {

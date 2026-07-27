@@ -1,6 +1,7 @@
 import { type ReactNode } from 'react'
 import { Command, Repeat, Scale, Terminal } from 'lucide-react'
 import { useStore, type Surface, type ThemeChoice } from '../state'
+import { HoldsButton } from './HoldsPanel'
 import { Dot } from './ui'
 
 const SURFACES: Array<{ id: Surface; label: string; icon: ReactNode }> = [
@@ -50,6 +51,7 @@ export function Titlebar(): ReactNode {
 
       <div className="titlebar__right">
         <CliStatus />
+        <HoldsButton />
         <button
           className="btn btn--subtle btn--sm"
           onClick={() => dispatch({ type: 'palette', open: true })}

@@ -10,8 +10,10 @@ import {
 } from 'react'
 import type { Id, Loop, Pane, Session, Skill } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
+import type { Hold } from '@shared/holds'
 import type { CliHealth } from '@shared/ipc'
 import { api, type LoopDetail, type PlanDetail, type SessionDetail } from './lib/api'
+import { applyHoldsEvent } from './lib/holdsState'
 import { applyLedgerEvent } from './lib/ledgerState'
 
 export type Surface = 'grid' | 'parley' | 'loops'
@@ -68,6 +70,9 @@ interface State {
   skills: Skill[]
   notices: Notice[]
   paletteOpen: boolean
+  /** The open decision holds — everything currently waiting on the user. */
+  holds: Hold[]
+  holdsOpen: boolean
   /** Keyed by milestone id, then by loop id. Never persisted. */
   activity: Record<Id, ActivityLog>
 }
@@ -92,6 +97,8 @@ const initialState: State = {
   skills: [],
   notices: [],
   paletteOpen: false,
+  holds: [],
+  holdsOpen: false,
   activity: {},
 }
 
@@ -113,6 +120,8 @@ type Action =
   | { type: 'notice'; level: Notice['level']; message: string }
   | { type: 'dismissNotice'; id: number }
   | { type: 'palette'; open: boolean }
+  | { type: 'holds'; holds: Hold[] }
+  | { type: 'holdsPanel'; open: boolean }
   | { type: 'appEvent'; event: AppEvent }
 
 let noticeSeq = 0
@@ -168,6 +177,10 @@ function reducer(state: State, action: Action): State {
       return { ...state, notices: state.notices.filter((n) => n.id !== action.id) }
     case 'palette':
       return { ...state, paletteOpen: action.open }
+    case 'holds':
+      return { ...state, holds: action.holds }
+    case 'holdsPanel':
+      return { ...state, holdsOpen: action.open }
     case 'appEvent':
       return applyEvent(state, action.event)
     default:
@@ -405,6 +418,11 @@ function applyEvent(state: State, event: AppEvent): State {
         notices: [...state.notices, { id: noticeSeq, level: event.level, message: event.message }].slice(-4),
       }
 
+    case 'holds.changed': {
+      const holds = applyHoldsEvent(state.holds, event)
+      return holds === state.holds ? state : { ...state, holds }
+    }
+
     default:
       return state
   }
@@ -507,6 +525,11 @@ export function StoreProvider({ children }: { children: ReactNode }): ReactNode 
     })
     void attempt(() => api.health()).then((health) => {
       if (health) dispatch({ type: 'health', health })
+    })
+    // The event bus has no outbox: anything that parked while the window was
+    // closed only exists in this list, so hydrate it rather than wait for luck.
+    void attempt(() => api.listHolds()).then((holds) => {
+      if (holds) dispatch({ type: 'holds', holds })
     })
     void attempt(() => api.info()).then((info) => {
       if (info) {

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Titlebar } from './components/Titlebar'
 import { Notices } from './components/Notices'
+import { HoldsPopover } from './components/HoldsPanel'
+import { countActionable } from './lib/holdsState'
 import { CommandPalette, type PaletteAction } from './components/CommandPalette'
 import { NewSessionDialog } from './components/NewSessionDialog'
 import { GridSurface } from './surfaces/GridSurface'
@@ -74,6 +76,15 @@ export function App(): ReactNode {
         run: () => dispatch({ type: 'surface', surface: 'loops' }),
       },
       {
+        id: 'holds.open',
+        group: 'Go',
+        label:
+          countActionable(state.holds) > 0
+            ? `Holds — ${countActionable(state.holds)} waiting on you`
+            : 'Holds — nothing waiting',
+        run: () => dispatch({ type: 'holdsPanel', open: true }),
+      },
+      {
         id: 'theme.cycle',
         group: 'View',
         label: `Appearance — currently ${state.theme}`,
@@ -101,7 +112,7 @@ export function App(): ReactNode {
     }
 
     return list
-  }, [dispatch, openSession, state.sessions, state.theme])
+  }, [dispatch, openSession, state.holds, state.sessions, state.theme])
 
   return (
     <div className={state.mock ? 'app app--mock' : 'app'}>
@@ -138,6 +149,7 @@ export function App(): ReactNode {
       </div>
 
       <CommandPalette actions={actions} />
+      <HoldsPopover />
       <Notices />
 
       {quickSession ? (
