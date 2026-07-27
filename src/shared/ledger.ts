@@ -20,8 +20,10 @@ export function normaliseFindingText(text: string): string {
 /**
  * A synchronous SHA-256 implementation keeps finding identity deterministic in
  * both Electron processes without importing Node into this shared module.
+ * Exported because hold identity (shared/holds.ts) is built on the same
+ * property and must never diverge from the ledger's notion of "same content".
  */
-function sha256(text: string): string {
+export function sha256(text: string): string {
   const bytes = new TextEncoder().encode(text)
   const bitLength = bytes.length * 8
   const paddedLength = Math.ceil((bytes.length + 9) / 64) * 64
