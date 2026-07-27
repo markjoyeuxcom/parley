@@ -238,6 +238,187 @@ describe('debate session, end to end', () => {
   })
 })
 
+describe('the two-participant contract', () => {
+  /**
+   * Pinned ahead of the Participants series. These are the observable
+   * properties of a two-sided session that the N-participant rewrite must
+   * preserve exactly when N is two: what each side is told, what it is never
+   * told, how its conversation threads, and what it may touch. They assert
+   * behaviour through the adapters' recorded requests, not implementation, so
+   * the session runner can be rebuilt underneath them.
+   */
+  type Recorded = {
+    systemPrompt: string
+    prompt: string
+    capability: string
+    cwd: string
+    resumeId: string | null
+  }
+
+  function requestsOf(registry: AgentRegistry, vendor: 'claude' | 'codex'): Recorded[] {
+    return (registry.get(vendor) as unknown as { requests: Recorded[] }).requests
+  }
+
+  async function debate(maxTurns: number, repoPath: string | null = null) {
+    const { manager, repo, registry } = harness()
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'Should the ingest pipeline move to a queue?',
+      project: '',
+      repoPath,
+      agentA: claude,
+      agentB: codex,
+      maxTurns,
+    })
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+    return { manager, repo, registry, session }
+  }
+
+  it("relays only the opponent's latest message, never the transcript", async () => {
+    // Token cost stays linear because each side is resumed and handed one
+    // message. A six-turn debate gives each side several replies, so a prompt
+    // carrying an *older* opponent message is distinguishable from the latest.
+    const { registry } = await debate(6)
+    const codexRequests = requestsOf(registry, 'codex')
+    const claudeRequests = requestsOf(registry, 'claude')
+
+    // Codex's second exchange turn (attack 2) hears claude's second reply,
+    // not its opening position.
+    expect(codexRequests[1]?.prompt).toContain("The other advisor's latest message")
+    expect(codexRequests[1]?.prompt).toContain('(claude mock, turn 2)')
+    expect(codexRequests[1]?.prompt).not.toContain('(claude mock, turn 1)')
+
+    // Claude's third exchange turn hears codex's second reply only.
+    expect(claudeRequests[2]?.prompt).toContain('(codex mock, turn 2)')
+    expect(claudeRequests[2]?.prompt).not.toContain('(codex mock, turn 1)')
+  })
+
+  it('threads each side on its own resume id, never the other side\'s', async () => {
+    const { registry } = await debate(6)
+
+    for (const vendor of ['claude', 'codex'] as const) {
+      const requests = requestsOf(registry, vendor)
+      // First contact starts a fresh conversation; every later turn resumes
+      // the thread that first turn minted.
+      expect(requests[0]?.resumeId).toBeNull()
+      for (const request of requests.slice(1)) {
+        expect(request.resumeId).toBe(`mock-${vendor}-1`)
+      }
+      // And no side is ever resumed onto the other side's thread.
+      const other = vendor === 'claude' ? 'codex' : 'claude'
+      for (const request of requests) {
+        expect(request.resumeId ?? '').not.toContain(`mock-${other}`)
+      }
+    }
+  })
+
+  it('assigns the affirmative to side a and the negative to side b, verdicts included', async () => {
+    const { registry } = await debate(4)
+
+    for (const request of requestsOf(registry, 'claude')) {
+      expect(request.systemPrompt).toContain('You argue the affirmative')
+    }
+    for (const request of requestsOf(registry, 'codex')) {
+      expect(request.systemPrompt).toContain('You argue the negative')
+    }
+  })
+
+  it('keeps each verdict ask independent of the other side', async () => {
+    const { registry } = await debate(4)
+    const lastClaude = requestsOf(registry, 'claude').at(-1)
+    const lastCodex = requestsOf(registry, 'codex').at(-1)
+
+    expect(lastClaude?.prompt).toContain('Do not try to guess or match')
+    expect(lastCodex?.prompt).toContain('Do not try to guess or match')
+    // Neither verdict prompt carries anything the other side said — the
+    // exchange is over, and the ask is deliberately context-free beyond each
+    // side's own resumed conversation.
+    expect(lastClaude?.prompt).not.toContain('(codex mock')
+    expect(lastCodex?.prompt).not.toContain('(claude mock')
+  })
+
+  it('runs a repo-less debate tool-free and an attached one read-only', async () => {
+    const bare = await debate(2)
+    for (const vendor of ['claude', 'codex'] as const) {
+      for (const request of requestsOf(bare.registry, vendor)) {
+        expect(request.capability).toBe('none')
+      }
+    }
+
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-contract-'))
+    const attached = await debate(2, repoPath)
+    for (const vendor of ['claude', 'codex'] as const) {
+      for (const request of requestsOf(attached.registry, vendor)) {
+        expect(request.capability).toBe('read')
+        expect(request.cwd).toBe(repoPath)
+      }
+    }
+  })
+
+  it('runs a review read-only, cartographer on side a and reviewer on side b', async () => {
+    const { manager, repo, registry } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-contract-review-'))
+    const session = manager.startSession({
+      kind: 'review',
+      matter: 'audit it',
+      project: '',
+      repoPath,
+      agentA: claude,
+      agentB: codex,
+      maxTurns: 4,
+    })
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+
+    for (const request of requestsOf(registry, 'claude')) {
+      expect(request.capability).toBe('read')
+      expect(request.systemPrompt).toContain('Codebase Cartographer')
+    }
+    for (const request of requestsOf(registry, 'codex')) {
+      expect(request.capability).toBe('read')
+      expect(request.systemPrompt).toContain('Principal Reviewer')
+    }
+  })
+
+  it('never grants a session write capability, whatever the kind', async () => {
+    const { registry } = await debate(4, mkdtempSync(join(tmpdir(), 'parley-contract-')))
+    for (const vendor of ['claude', 'codex'] as const) {
+      for (const request of requestsOf(registry, vendor)) {
+        expect(request.capability).not.toBe('write')
+      }
+    }
+  })
+
+  it("delivers a whisper into the targeted side's prompt and no other", async () => {
+    const { manager, repo, registry } = harness()
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'x',
+      project: '',
+      repoPath: null,
+      agentA: claude,
+      agentB: codex,
+      maxTurns: 6,
+    })
+    manager.interject(session.id, 'a', 'press harder on migration cost')
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+
+    const claudePrompts = requestsOf(registry, 'claude').map((request) => request.prompt)
+    const codexPrompts = requestsOf(registry, 'codex').map((request) => request.prompt)
+    const delivered = claudePrompts.filter((prompt) =>
+      prompt.includes('press harder on migration cost'),
+    )
+    // Exactly once, framed as direction from the director — and side b's
+    // prompts never carry a trace of it. The other side must not even be able
+    // to infer the whisper happened.
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0]).toContain('DIRECTION FROM THE HUMAN DIRECTOR')
+    for (const prompt of codexPrompts) {
+      expect(prompt).not.toContain('press harder')
+      expect(prompt).not.toContain('DIRECTION FROM THE HUMAN DIRECTOR')
+    }
+  })
+})
+
 describe('review session, end to end', () => {
   it('produces findings and downgrades the unsupported one', async () => {
     const { manager, repo } = harness()

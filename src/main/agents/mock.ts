@@ -1,8 +1,17 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { emptyUsage, type Vendor } from '@shared/domain'
+import { emptyUsage, type Capability, type Vendor } from '@shared/domain'
 import type { CliHealth } from '@shared/ipc'
 import type { AgentAdapter, RunRequest, RunResult } from './types'
+
+/** The harness's side of one adapter call, kept for tests to assert against. */
+export interface RecordedRequest {
+  systemPrompt: string
+  prompt: string
+  capability: Capability
+  cwd: string
+  resumeId: string | null
+}
 
 /**
  * A deterministic stand-in for a real CLI.
@@ -17,6 +26,10 @@ export class MockAdapter implements AgentAdapter {
   /** Every prompt this adapter has been sent, for tests that assert on the
    * pipeline's side of the conversation rather than the mock's. */
   readonly prompts: string[] = []
+  /** The full request context per call — capability, stance, relay, resume.
+   * This is what lets the two-participant contract be pinned as behaviour
+   * rather than implementation, before the participant model changes. */
+  readonly requests: RecordedRequest[] = []
   private counter = 0
   private writes = 0
 
@@ -24,6 +37,13 @@ export class MockAdapter implements AgentAdapter {
 
   async run(req: RunRequest): Promise<RunResult> {
     this.prompts.push(req.prompt)
+    this.requests.push({
+      systemPrompt: req.systemPrompt,
+      prompt: req.prompt,
+      capability: req.capability,
+      cwd: req.cwd,
+      resumeId: req.resumeId ?? null,
+    })
     this.counter += 1
     const n = this.counter
     await new Promise((r) => setTimeout(r, 40))
