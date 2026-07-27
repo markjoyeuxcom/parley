@@ -1652,14 +1652,29 @@ export interface TreeState {
   statText: string
   untracked: string[]
   /**
-   * Contents of newly-created files.
+   * Contents of paths that differ from HEAD.
    *
-   * `git diff` shows nothing for untracked files, so without this a milestone
-   * that creates new files — the common case — reaches the reviewer as a list of
-   * filenames with no code in it. Bounded, because a new `node_modules` would
+   * The HEAD content distinguishes a path that became clean from one that was
+   * removed. Both sides are bounded, because a dirty `node_modules` would
    * otherwise be read into memory.
    */
-  newFiles: Array<{ path: string; text: string; truncated: boolean }>
+  files: TreeFileSnapshot[]
+}
+
+export interface TreeFileSnapshot {
+  path: string
+  text: string | null
+  truncated: boolean
+  exists: boolean
+  digest: string | null
+  /** False when the digest could not be established (a failed git spawn), which
+   * is different from the file being absent — unknown must not read as same. */
+  digestKnown: boolean
+  headText: string | null
+  headTruncated: boolean
+  headExists: boolean
+  headDigest: string | null
+  headDigestKnown: boolean
 }
 
 export async function readTree(repoPath: string, signal?: AbortSignal): Promise<TreeState> {
@@ -1673,15 +1688,20 @@ export async function readTree(repoPath: string, signal?: AbortSignal): Promise<
       stagedText: '',
       statText: '',
       untracked: [],
-      newFiles: [],
+      files: [],
     }
   }
 
-  const [full, staged, stagedStat, others] = await Promise.all([
-    capture('git', ['--no-pager', 'diff'], repoPath, 120_000, signal),
-    capture('git', ['--no-pager', 'diff', '--cached'], repoPath, 120_000, signal),
+  const [full, staged, stagedStat, others, unstagedNames, stagedNames] = await Promise.all([
+    // --no-renames on the content diffs as well as the name lists: a rename must
+    // reach the reviewer as a removal plus an addition with full content, not as
+    // two lines of content-free metadata.
+    capture('git', ['--no-pager', 'diff', '--no-renames'], repoPath, 120_000, signal),
+    capture('git', ['--no-pager', 'diff', '--no-renames', '--cached'], repoPath, 120_000, signal),
     capture('git', ['--no-pager', 'diff', '--cached', '--stat'], repoPath, 60_000, signal),
     capture('git', ['ls-files', '--others', '--exclude-standard'], repoPath, 60_000, signal),
+    capture('git', ['diff', '--no-renames', '--name-only', '-z'], repoPath, 60_000, signal),
+    capture('git', ['diff', '--cached', '--no-renames', '--name-only', '-z'], repoPath, 60_000, signal),
   ])
 
   const untracked = others.stdout.split('\n').map((l) => l.trim()).filter(Boolean)
@@ -1697,11 +1717,9 @@ export async function readTree(repoPath: string, signal?: AbortSignal): Promise<
     }
   })
 
-  const trackedPaths = new Set<string>()
-  for (const line of `${full.stdout}\n${staged.stdout}`.split('\n')) {
-    const match = /^diff --git a\/(.+?) b\//.exec(line)
-    if (match?.[1]) trackedPaths.add(match[1])
-  }
+  const trackedPaths = new Set(
+    `${unstagedNames.stdout}\0${stagedNames.stdout}`.split('\0').filter(Boolean),
+  )
 
   const signature = createHash('sha256')
     .update(full.stdout)
@@ -1711,48 +1729,132 @@ export async function readTree(repoPath: string, signal?: AbortSignal): Promise<
     .update(untrackedStamps.join('\n'))
     .digest('hex')
 
+  const paths = [...trackedPaths, ...untracked].sort()
+
   return {
     unknown: false,
     signature,
-    paths: [...trackedPaths, ...untracked].sort(),
+    paths,
     diffText: full.stdout,
     stagedText: staged.stdout,
     statText: [stat.stdout.trim(), stagedStat.stdout.trim()].filter(Boolean).join('\n'),
     untracked,
-    newFiles: readNewFiles(repoPath, untracked),
+    files: await readChangedFiles(repoPath, paths, signal),
   }
 }
 
-const MAX_NEW_FILES = 40
-const MAX_NEW_FILE_CHARS = 6000
+const MAX_CHANGED_FILES = 40
+const MAX_CHANGED_FILE_CHARS = 6000
 
-/** Reads untracked files so their content can reach the reviewer. */
-function readNewFiles(
+/** Reads dirty working-tree and HEAD content so their incremental delta can reach the reviewer. */
+async function readChangedFiles(
   repoPath: string,
-  untracked: string[],
-): Array<{ path: string; text: string; truncated: boolean }> {
-  const out: Array<{ path: string; text: string; truncated: boolean }> = []
-  for (const rel of untracked.slice(0, MAX_NEW_FILES)) {
-    try {
-      const full = join(repoPath, rel)
-      // Skip anything too large to be source, rather than reading it to throw
-      // most of it away.
-      if (statSync(full).size > 2 * MAX_NEW_FILE_CHARS * 4) {
-        out.push({ path: rel, text: '(file too large to show)', truncated: true })
-        continue
-      }
-      const text = readFileSync(full, 'utf8')
-      out.push({
-        path: rel,
-        text: text.slice(0, MAX_NEW_FILE_CHARS),
-        truncated: text.length > MAX_NEW_FILE_CHARS,
-      })
-    } catch {
-      // Binary, unreadable, or vanished between the listing and now.
-      out.push({ path: rel, text: '(unreadable)', truncated: false })
-    }
+  paths: string[],
+  signal?: AbortSignal,
+): Promise<TreeFileSnapshot[]> {
+  // Bounded fan-out. This used to Promise.all the whole path list with two git
+  // spawns each — a dirty node_modules meant tens of thousands of concurrent
+  // processes, and a spawn that failed under that load made the file read as
+  // absent on both sides, which sameContent then called unchanged.
+  const CONCURRENT = 8
+  const out: TreeFileSnapshot[] = []
+  for (let start = 0; start < paths.length; start += CONCURRENT) {
+    const batch = paths.slice(start, start + CONCURRENT)
+    const settled = await Promise.all(
+      batch.map((rel, offset) => readOneChangedFile(repoPath, rel, start + offset, signal)),
+    )
+    out.push(...settled)
   }
   return out
+}
+
+async function readOneChangedFile(
+  repoPath: string,
+  rel: string,
+  index: number,
+  signal?: AbortSignal,
+): Promise<TreeFileSnapshot> {
+  const object = `HEAD:${rel}`
+  // Absence is a filesystem fact, not a git exit code: hash-object fails the
+  // same way for a missing file and for a spawn that died, and those must land
+  // differently — absent is a real state, unhashable is unknown.
+  const exists = existsSync(join(repoPath, rel))
+  const [currentHash, headHash] = await Promise.all([
+    exists
+      ? capture('git', ['hash-object', `--path=${rel}`, '--', rel], repoPath, 60_000, signal)
+      : Promise.resolve(null),
+    capture('git', ['rev-parse', '--verify', object], repoPath, 60_000, signal),
+  ])
+  const digest = currentHash && currentHash.exitCode === 0 ? currentHash.stdout.trim() : null
+  const digestKnown = !exists || digest !== null
+  const headExists = headHash.exitCode === 0
+  let current = { text: null as string | null, truncated: false }
+  let head = { text: null as string | null, truncated: false }
+
+  if (index < MAX_CHANGED_FILES) {
+    current = readBoundedFile(join(repoPath, rel))
+    if (headExists) {
+      const size = await capture(
+        'git',
+        ['cat-file', '-s', headHash.stdout.trim()],
+        repoPath,
+        60_000,
+        signal,
+      )
+      const bytes = Number.parseInt(size.stdout.trim(), 10)
+      if (size.exitCode === 0 && Number.isFinite(bytes) && bytes <= 2 * MAX_CHANGED_FILE_CHARS * 4) {
+        const shown = await capture('git', ['show', object], repoPath, 60_000, signal)
+        if (shown.exitCode === 0) {
+          head = {
+            text: shown.stdout.slice(0, MAX_CHANGED_FILE_CHARS),
+            truncated: shown.stdout.length > MAX_CHANGED_FILE_CHARS,
+          }
+        }
+      } else {
+        head.truncated = true
+      }
+    }
+  } else {
+    current.truncated = exists
+    head.truncated = headExists
+  }
+
+  return {
+    path: rel,
+    text: current.text,
+    truncated: current.truncated,
+    exists,
+    digest,
+    digestKnown,
+    headText: head.text,
+    headTruncated: head.truncated,
+    headExists,
+    headDigest: headExists ? headHash.stdout.trim() : null,
+    // rev-parse failing for a path legitimately absent from HEAD and failing
+    // because the spawn died are indistinguishable; the conservative reading —
+    // treat it as a new file — over-attributes to the milestone rather than
+    // silently excusing it.
+    headDigestKnown: true,
+  }
+}
+
+function readBoundedFile(full: string): { text: string | null; truncated: boolean } {
+  try {
+    if (!existsSync(full)) return { text: null, truncated: false }
+    // Skip anything too large to be source, rather than reading it to throw
+    // most of it away.
+    if (statSync(full).size > 2 * MAX_CHANGED_FILE_CHARS * 4) {
+      return { text: null, truncated: true }
+    }
+    const text = readFileSync(full, 'utf8')
+    return {
+      text: text.slice(0, MAX_CHANGED_FILE_CHARS),
+      truncated: text.length > MAX_CHANGED_FILE_CHARS,
+    }
+  } catch {
+    // Binary, unreadable, or vanished between the listing and now.
+    return { text: '(unreadable)', truncated: false }
+  }
 }
 
 /**
@@ -1788,7 +1890,7 @@ export function emptyTree(): TreeState {
     stagedText: '',
     statText: '',
     untracked: [],
-    newFiles: [],
+    files: [],
   }
 }
 
@@ -1798,41 +1900,297 @@ export function treeUnchanged(before: TreeState, after: TreeState): boolean {
   return before.signature === after.signature
 }
 
+interface FileContent {
+  text: string | null
+  truncated: boolean
+  exists: boolean
+  digest: string | null
+  digestKnown: boolean
+}
+
+function contentAt(state: TreeState, other: TreeState, path: string): FileContent | undefined {
+  const own = state.files.find((file) => file.path === path)
+  if (own) {
+    return {
+      text: own.text,
+      truncated: own.truncated,
+      exists: own.exists,
+      digest: own.digest,
+      digestKnown: own.digestKnown,
+    }
+  }
+
+  if (state.paths.includes(path)) return undefined
+
+  const counterpart = other.files.find((file) => file.path === path)
+  if (!counterpart) return undefined
+  return {
+    text: counterpart.headText,
+    truncated: counterpart.headTruncated,
+    exists: counterpart.headExists,
+    digest: counterpart.headDigest,
+    digestKnown: counterpart.headDigestKnown,
+  }
+}
+
+function sameContent(left: FileContent, right: FileContent): boolean {
+  // Two genuinely absent sides are the one same-without-a-digest case. Anything
+  // else without both digests is UNKNOWN, and unknown must never read as
+  // unchanged: the failure mode this guards against is a git spawn failing under
+  // load, both sides reporting not-exists, and a file the milestone edited being
+  // filed under "NOT part of this milestone" because two failures compared equal.
+  if (!left.exists && !right.exists) return left.digestKnown && right.digestKnown
+  if (!left.exists || !right.exists) return false
+  return left.digest !== null && right.digest !== null && left.digest === right.digest
+}
+
+function contentPatch(path: string, before: FileContent, after: FileContent): string {
+  const oldLines = before.text?.split('\n') ?? []
+  const newLines = after.text?.split('\n') ?? []
+  if (oldLines.at(-1) === '') oldLines.pop()
+  if (newLines.at(-1) === '') newLines.pop()
+
+  // A real per-line diff, not a single prefix/suffix hunk. The collapse version
+  // rendered an edit at line 5 plus an edit at line 145 as one hunk that removed
+  // and re-added every line between them — attributing ~140 untouched lines to
+  // the milestone, which is the exact misattribution this renderer exists to end.
+  // Inputs are bounded snapshots (≤ MAX_CHANGED_FILE_CHARS), so quadratic LCS is
+  // a few hundred lines square at worst.
+  const ops = diffLines(oldLines, newLines)
+
+  const CONTEXT = 3
+  const hunks: string[][] = []
+  let current: string[] | null = null
+  let oldLine = 0
+  let newLine = 0
+  let hunkOldStart = 0
+  let hunkNewStart = 0
+  let hunkOldCount = 0
+  let hunkNewCount = 0
+  let trailingContext = 0
+
+  const flush = (): void => {
+    if (!current) return
+    // Trim context beyond CONTEXT lines at the hunk's tail.
+    while (trailingContext > CONTEXT) {
+      current.pop()
+      trailingContext -= 1
+      hunkOldCount -= 1
+      hunkNewCount -= 1
+    }
+    hunks.push([
+      `@@ -${hunkOldStart + 1},${hunkOldCount} +${hunkNewStart + 1},${hunkNewCount} @@`,
+      ...current,
+    ])
+    current = null
+  }
+
+  for (const op of ops) {
+    if (op.kind === 'same') {
+      if (current) {
+        current.push(` ${op.line}`)
+        trailingContext += 1
+        hunkOldCount += 1
+        hunkNewCount += 1
+        // Once enough context has accumulated after a change, the hunk can close;
+        // a later change opens a fresh one instead of dragging this one along.
+        if (trailingContext >= CONTEXT * 2) flush()
+      }
+      oldLine += 1
+      newLine += 1
+      continue
+    }
+    if (!current) {
+      const lead = Math.min(CONTEXT, oldLine, newLine)
+      hunkOldStart = oldLine - lead
+      hunkNewStart = newLine - lead
+      hunkOldCount = lead
+      hunkNewCount = lead
+      current = oldLines.slice(oldLine - lead, oldLine).map((line) => ` ${line}`)
+    }
+    trailingContext = 0
+    if (op.kind === 'del') {
+      current.push(`-${op.line}`)
+      hunkOldCount += 1
+      oldLine += 1
+    } else {
+      current.push(`+${op.line}`)
+      hunkNewCount += 1
+      newLine += 1
+    }
+  }
+  flush()
+
+  const body = hunks.flat()
+  if (before.truncated || after.truncated) body.push('[snapshot truncated]')
+  return [`--- a/${path}`, `+++ b/${path}`, ...body].join('\n')
+}
+
+/** Line-level LCS diff. Bounded inputs only — this is quadratic by design. */
+function diffLines(
+  oldLines: string[],
+  newLines: string[],
+): Array<{ kind: 'same' | 'del' | 'add'; line: string }> {
+  const n = oldLines.length
+  const m = newLines.length
+  // lcs[i][j] = longest common subsequence length of old[i..] and new[j..]
+  const lcs: Int32Array[] = Array.from({ length: n + 1 }, () => new Int32Array(m + 1))
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      lcs[i]![j] =
+        oldLines[i] === newLines[j]
+          ? lcs[i + 1]![j + 1]! + 1
+          : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!)
+    }
+  }
+  const ops: Array<{ kind: 'same' | 'del' | 'add'; line: string }> = []
+  let i = 0
+  let j = 0
+  while (i < n && j < m) {
+    if (oldLines[i] === newLines[j]) {
+      ops.push({ kind: 'same', line: oldLines[i]! })
+      i += 1
+      j += 1
+    } else if (lcs[i + 1]![j]! >= lcs[i]![j + 1]!) {
+      ops.push({ kind: 'del', line: oldLines[i]! })
+      i += 1
+    } else {
+      ops.push({ kind: 'add', line: newLines[j]! })
+      j += 1
+    }
+  }
+  while (i < n) ops.push({ kind: 'del', line: oldLines[i++]! })
+  while (j < m) ops.push({ kind: 'add', line: newLines[j++]! })
+  return ops
+}
+
+/** The paths dirty before execution whose observed contents did not change. */
+export function preExistingUntouched(before: TreeState, after: TreeState): string[] {
+  if (before.unknown || after.unknown) return []
+  return before.paths.filter((path) => {
+    const oldContent = contentAt(before, after, path)
+    const newContent = contentAt(after, before, path)
+    return oldContent !== undefined && newContent !== undefined && sameContent(oldContent, newContent)
+  })
+}
+
+/** A pure rendering of only the changes observed between two tree snapshots. */
+export function incrementalDelta(
+  before: TreeState,
+  after: TreeState,
+  scope?: ReadonlySet<string>,
+): string {
+  if (after.unknown) return ''
+
+  const sections: string[] = []
+  const paths = [...new Set([...before.paths, ...after.paths])]
+    .filter((path) => !scope || scope.has(path))
+    .sort()
+  for (const path of paths) {
+    const oldContent = contentAt(before, after, path)
+    const newContent = contentAt(after, before, path)
+    if (!oldContent || !newContent) {
+      if (!after.paths.includes(path)) {
+        sections.push(`--- removed file: ${path} ---\n(contents not shown)`)
+      } else if (!before.paths.includes(path)) {
+        sections.push(`--- new file: ${path} ---\n(contents not shown)`)
+      }
+      continue
+    }
+    if (sameContent(oldContent, newContent)) continue
+
+    if (!oldContent.exists) {
+      const detail = newContent.text === null
+        ? '(contents not shown — bounded snapshot unavailable)'
+        : contentPatch(path, oldContent, newContent)
+      sections.push(`--- new file: ${path} ---\n${detail}`)
+    } else if (!newContent.exists) {
+      const detail = oldContent.text === null
+        ? '(contents not shown — bounded snapshot unavailable)'
+        : contentPatch(path, oldContent, newContent)
+      sections.push(`--- removed file: ${path} ---\n${detail}`)
+    } else {
+      const detail = oldContent.text === null ||
+        newContent.text === null ||
+        (oldContent.text === newContent.text && (oldContent.truncated || newContent.truncated))
+        ? '(contents differ beyond the bounded snapshot)'
+        : contentPatch(path, oldContent, newContent)
+      sections.push(`--- changed file: ${path} ---\n${detail}`)
+    }
+  }
+  return sections.join('\n\n')
+}
+
 /**
  * Renders the diff for review, naming anything that predates the milestone.
  *
  * A reviewer told to judge "the diff" against a milestone's scope will otherwise
  * count unrelated pre-existing changes against it, or credit them to it.
  */
+/**
+ * The reviewer's evidence, in three layers that each do the one thing they are
+ * good at.
+ *
+ * Git's own diff is the primary channel: full hunks, up to the overall budget,
+ * for every tracked change — an edit deep in a 2,000-line file arrives as real
+ * code, which the first version of this renderer lost by replacing git's output
+ * with 6KB snapshots (a milestone editing this repo's own pipeline.ts reached
+ * its reviewer as "(contents differ beyond the bounded snapshot)" and nothing
+ * else). Untracked files, which git diff omits entirely, come from the bounded
+ * snapshots. The digest layer then does what git cannot: separate this
+ * milestone's work from dirt that predates it — the untouched list only ever
+ * names digest-verified paths, and pre-existing dirty paths the milestone DID
+ * touch get their own bounded incremental delta so the reviewer can tell which
+ * part of the combined diff is the milestone's.
+ */
 export function renderDiffForReview(after: TreeState, before: TreeState): string {
   if (after.unknown) {
     return '(no diff available — this directory is not a git repository, so the change could not be shown for review)'
   }
 
-  const preExisting = before.unknown ? [] : before.paths
+  const preExisting = preExistingUntouched(before, after)
   const sections: string[] = []
 
   if (preExisting.length) {
     sections.push(
-      `--- NOT part of this milestone ---\nThese paths were already modified before this milestone ran. ` +
+      `--- NOT part of this milestone ---\nThese paths were already modified before this milestone ran, and their content is byte-identical to before it ran. ` +
         `Do not attribute them to it:\n${preExisting.map((p) => `  ${p}`).join('\n')}`,
     )
   }
 
-  sections.push(`--- diffstat ---\n${after.statText || '(no tracked changes)'}`)
+  const statText = [after.statText].filter(Boolean).join('\n')
+  sections.push(`--- diffstat ---\n${statText || '(no tracked changes)'}`)
 
-  // New files in full, not just by name: `git diff` omits them entirely, and a
-  // reviewer cannot judge code it has not been shown.
-  for (const file of after.newFiles) {
-    sections.push(
-      `--- new file: ${file.path} ---\n${file.text}${file.truncated ? '\n[truncated]' : ''}`,
+  const trackedDiff = [after.diffText.trim(), after.stagedText.trim()].filter(Boolean).join('\n')
+  const preExistingDirty = new Set(
+    before.unknown ? [] : before.paths.filter((path) => !preExisting.includes(path)),
+  )
+  sections.push(
+    `--- combined diff vs HEAD (tracked files; includes pre-existing edits on any dirty paths listed above or below) ---\n${trackedDiff || '(empty)'}`,
+  )
+
+  // Untracked files never appear in git diff, so their content has to come from
+  // the snapshots. Only the milestone's own new files belong here — untracked
+  // paths that predate the milestone are covered by the delta section below.
+  const newFileSections: string[] = []
+  for (const file of after.files) {
+    if (!after.untracked.includes(file.path)) continue
+    if (preExistingDirty.has(file.path) || preExisting.includes(file.path)) continue
+    newFileSections.push(
+      `--- new file: ${file.path} ---\n${
+        file.text ?? '(contents not shown — too large or unreadable)'
+      }${file.truncated ? '\n[truncated]' : ''}`,
     )
   }
-  const unread = after.untracked.filter((p) => !after.newFiles.some((f) => f.path === p))
-  if (unread.length) {
-    sections.push(`--- further new files, not shown ---\n${unread.join('\n')}`)
+  sections.push(...newFileSections)
+
+  if (preExistingDirty.size) {
+    sections.push(
+      `--- this milestone's own changes to already-dirty paths ---\n${
+        incrementalDelta(before, after, preExistingDirty) || '(none — every already-dirty path is byte-identical)'
+      }`,
+    )
   }
-  sections.push(`--- diff ---\n${[after.diffText.trim(), after.stagedText.trim()].filter(Boolean).join('\n') || '(empty)'}`)
 
   const joined = sections.join('\n\n')
   return joined.length > MAX_DIFF_CHARS

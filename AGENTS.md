@@ -289,13 +289,21 @@ it checks whether they were met rather than forming a fresh opinion.
 The remediation prompt tells the executor to fix what was named and nothing else,
 and to argue an objection it disagrees with rather than silently ignoring it.
 
-## Show new files, not just their names
+## The reviewer's evidence: three layers
 
-`git diff` reports nothing for untracked files, so a milestone that *creates*
-files — the common case — would otherwise reach the reviewer as a list of
-filenames with no code in it. `readTree` reads their contents (bounded to 40
-files and 6000 characters each) and `renderDiffForReview` emits them as
-`--- new file: path ---` blocks.
+`renderDiffForReview` layers three sources, each doing the one thing it is good
+at. Git's own diff (with `--no-renames`, so a rename arrives as removal plus
+addition with content) is the primary channel — full hunks with no per-file
+bound, which is what lets an edit deep in a 2,000-line file arrive as real code.
+Untracked files, which `git diff` omits, come from bounded snapshots (40 files,
+6000 characters each) as `--- new file: path ---` blocks. And a digest layer
+(`git hash-object` against `HEAD`, computed for every dirty path regardless of
+size) does what git cannot: separate the milestone's work from dirt that
+predates it. Only digest-verified paths may appear under `--- NOT part of this
+milestone ---`, and pre-existing dirty paths the milestone did touch get a
+bounded incremental delta (`contentPatch`, a real multi-hunk line diff) so the
+reviewer can tell which part of the combined diff is the milestone's. An
+unknown digest — a failed git spawn — is never treated as unchanged.
 
 ## Adoption: verifying work Parley did not write
 

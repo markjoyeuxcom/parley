@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -21,8 +21,13 @@ import {
   summariseTests,
   withMutationApplied,
   readTree,
+  emptyTree,
+  incrementalDelta,
+  preExistingUntouched,
   renderDiffForReview,
   treeUnchanged,
+  type TreeFileSnapshot,
+  type TreeState,
 } from './pipeline'
 import { LoopConfigError, validateExitCommand } from './loop'
 import type { MutationResult, TestResult } from '@shared/domain'
@@ -288,12 +293,252 @@ describe('renderDiffForReview', () => {
     expect(rendered).toContain('new-work.ts')
   })
 
+  it('shows only the milestone edit to an already-modified tracked file', async () => {
+    const dir = gitRepo()
+    writeFileSync(join(dir, 'seed.txt'), 'dirty before\n')
+    writeFileSync(join(dir, 'untouched.txt'), 'leftover\n')
+    const before = await readTree(dir)
+
+    writeFileSync(join(dir, 'seed.txt'), 'dirty after\n')
+    const after = await readTree(dir)
+    const delta = incrementalDelta(before, after)
+
+    expect(delta).toContain('--- changed file: seed.txt ---')
+    expect(delta).toContain('-dirty before')
+    expect(delta).toContain('+dirty after')
+    expect(delta).not.toContain('-seed')
+    expect(preExistingUntouched(before, after)).toEqual(['untouched.txt'])
+    const rendered = renderDiffForReview(after, before)
+    // The untouched list may only name digest-verified paths — never the dirty
+    // file this milestone edited.
+    const untouchedSection = rendered.split('--- diffstat ---')[0]
+    expect(untouchedSection).toContain('untouched.txt')
+    expect(untouchedSection).not.toContain('seed.txt')
+    // And the milestone's own part of that file is isolated in the delta layer,
+    // while the combined git diff (labelled as combined) still carries full code.
+    expect(rendered).toContain("--- this milestone's own changes to already-dirty paths ---")
+    expect(rendered).toContain('+dirty after')
+  })
+
+  it('omits distant unchanged content from a dirty file milestone delta', async () => {
+    const dir = gitRepo()
+    const beforeLines = [
+      'PREEXISTING-DISTANT-START',
+      ...Array.from({ length: 8 }, (_, index) => `leading context ${index}`),
+      'milestone target before',
+      ...Array.from({ length: 8 }, (_, index) => `trailing context ${index}`),
+      'PREEXISTING-DISTANT-END',
+    ]
+    writeFileSync(join(dir, 'seed.txt'), `${beforeLines.join('\n')}\n`)
+    const before = await readTree(dir)
+
+    const afterLines = beforeLines.map((line) =>
+      line === 'milestone target before' ? 'milestone target after' : line,
+    )
+    writeFileSync(join(dir, 'seed.txt'), `${afterLines.join('\n')}\n`)
+    const delta = incrementalDelta(before, await readTree(dir))
+
+    expect(delta).toContain('-milestone target before')
+    expect(delta).toContain('+milestone target after')
+    expect(delta).not.toContain('PREEXISTING-DISTANT-START')
+    expect(delta).not.toContain('PREEXISTING-DISTANT-END')
+  })
+
+  it('shows only the milestone edit to an already-present untracked file', async () => {
+    const dir = gitRepo()
+    writeFileSync(join(dir, 'scratch.txt'), 'before\n')
+    const before = await readTree(dir)
+
+    writeFileSync(join(dir, 'scratch.txt'), 'after\n')
+    const delta = incrementalDelta(before, await readTree(dir))
+
+    expect(delta).toContain('--- changed file: scratch.txt ---')
+    expect(delta).toContain('-before')
+    expect(delta).toContain('+after')
+  })
+
+  it('names an edit beyond the truncated snapshot instead of calling it untouched', async () => {
+    const dir = gitRepo()
+    const committed = `${'a'.repeat(7000)}\n`
+    writeFileSync(join(dir, 'long.txt'), committed)
+    execFileSync('git', ['add', 'long.txt'], { cwd: dir, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-qm', 'long file'], { cwd: dir, stdio: 'ignore' })
+
+    writeFileSync(join(dir, 'long.txt'), `${committed.slice(0, 6500)}before${committed.slice(6506)}`)
+    const before = await readTree(dir)
+    writeFileSync(join(dir, 'long.txt'), `${committed.slice(0, 6500)}after!${committed.slice(6506)}`)
+    const after = await readTree(dir)
+    const rendered = renderDiffForReview(after, before)
+
+    expect(rendered).toContain('--- changed file: long.txt ---')
+    expect(rendered).toContain('(contents differ beyond the bounded snapshot)')
+    expect(preExistingUntouched(before, after)).not.toContain('long.txt')
+  })
+
+  it('names an edit to a file larger than the bounded read threshold', async () => {
+    const dir = gitRepo()
+    const committed = `${'a'.repeat(50_000)}\n`
+    writeFileSync(join(dir, 'large.txt'), committed)
+    execFileSync('git', ['add', 'large.txt'], { cwd: dir, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-qm', 'large file'], { cwd: dir, stdio: 'ignore' })
+
+    writeFileSync(join(dir, 'large.txt'), `${committed.slice(0, -2)}b\n`)
+    const before = await readTree(dir)
+    writeFileSync(join(dir, 'large.txt'), `${committed.slice(0, -2)}c\n`)
+    const after = await readTree(dir)
+    const rendered = renderDiffForReview(after, before)
+
+    expect(rendered).toContain('--- changed file: large.txt ---')
+    expect(rendered).toContain('(contents differ beyond the bounded snapshot)')
+    expect(preExistingUntouched(before, after)).not.toContain('large.txt')
+  })
+
+  it('names a changed path beyond the forty-file content bound', async () => {
+    const dir = gitRepo()
+    for (let index = 0; index <= 40; index += 1) {
+      writeFileSync(join(dir, `dirty-${String(index).padStart(2, '0')}.txt`), 'before\n')
+    }
+    const before = await readTree(dir)
+    writeFileSync(join(dir, 'dirty-40.txt'), 'after\n')
+    const after = await readTree(dir)
+    const rendered = renderDiffForReview(after, before)
+
+    expect(rendered).toContain('--- changed file: dirty-40.txt ---')
+    expect(rendered).toContain('(contents differ beyond the bounded snapshot)')
+    expect(preExistingUntouched(before, after)).not.toContain('dirty-40.txt')
+  })
+
+  it('reports a pre-existing tracked file removed by the milestone', async () => {
+    const dir = gitRepo()
+    writeFileSync(join(dir, 'seed.txt'), 'dirty before deletion\n')
+    const before = await readTree(dir)
+
+    unlinkSync(join(dir, 'seed.txt'))
+    const rendered = renderDiffForReview(await readTree(dir), before)
+
+    expect(rendered).toContain('--- removed file: seed.txt ---')
+    expect(rendered).toContain('-dirty before deletion')
+  })
+
+  it('reports a pre-existing untracked file removed by the milestone', async () => {
+    const dir = gitRepo()
+    writeFileSync(join(dir, 'scratch.txt'), 'temporary\n')
+    const before = await readTree(dir)
+
+    unlinkSync(join(dir, 'scratch.txt'))
+    const after = await readTree(dir)
+    const rendered = renderDiffForReview(after, before)
+
+    expect(rendered).toContain('--- removed file: scratch.txt ---')
+    expect(rendered).toContain('-temporary')
+    expect(preExistingUntouched(before, after)).toEqual([])
+  })
+
+  it('shows both sides of a staged rename', async () => {
+    const dir = gitRepo()
+    const before = await readTree(dir)
+    execFileSync('git', ['mv', 'seed.txt', 'renamed.txt'], { cwd: dir, stdio: 'ignore' })
+    const after = await readTree(dir)
+    const rendered = renderDiffForReview(after, before)
+
+    expect(after.paths).toEqual(['renamed.txt', 'seed.txt'])
+    // Decomposed by git itself (--no-renames on the content diffs): the removal
+    // and the addition both arrive with real content, not two lines of
+    // content-free rename metadata.
+    expect(rendered).toContain('deleted file mode')
+    expect(rendered).toMatch(/b\/renamed\.txt/)
+    expect(rendered).toContain('new file mode')
+  })
+
   it('omits the caveat when the tree started clean', async () => {
     const dir = gitRepo()
     const before = await readTree(dir)
     writeFileSync(join(dir, 'only-work.ts'), 'export const a = 1\n')
     const rendered = renderDiffForReview(await readTree(dir), before)
     expect(rendered).not.toMatch(/NOT part of this milestone/)
+    expect(rendered).toContain('--- new file: only-work.ts ---')
+    expect(rendered).toContain('export const a = 1')
+  })
+
+  it('carries a deep edit to a large tracked file as real hunks, not a bounded shrug', async () => {
+    const dir = gitRepo()
+    // Far larger than the per-file snapshot bound: the evidence must come from
+    // git's own diff, which has no per-file cap.
+    const big = Array.from({ length: 3000 }, (_, i) => `line ${i}`).join('\n')
+    writeFileSync(join(dir, 'big.txt'), `${big}\n`)
+    execFileSync('git', ['add', 'big.txt'], { cwd: dir, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-qm', 'big'], { cwd: dir, stdio: 'ignore' })
+
+    const before = await readTree(dir)
+    writeFileSync(join(dir, 'big.txt'), `${big.replace('line 2500', 'line 2500 EDITED-DEEP')}\n`)
+    const after = await readTree(dir)
+    const rendered = renderDiffForReview(after, before)
+
+    expect(rendered).toContain('EDITED-DEEP')
+    expect(rendered).not.toMatch(/NOT part of this milestone[\s\S]*big\.txt/)
+  })
+
+  it('renders two separated edits as two hunks without attributing the lines between', async () => {
+    const dir = gitRepo()
+    const lines = Array.from({ length: 60 }, (_, i) => `stable ${i}`)
+    writeFileSync(join(dir, 'seed.txt'), `${lines.join('\n')}\n`)
+    const before = await readTree(dir)
+
+    const edited = [...lines]
+    edited[5] = 'stable 5 CHANGED-TOP'
+    edited[54] = 'stable 54 CHANGED-BOTTOM'
+    writeFileSync(join(dir, 'seed.txt'), `${edited.join('\n')}\n`)
+    const after = await readTree(dir)
+    const delta = incrementalDelta(before, after)
+
+    expect(delta).toContain('+stable 5 CHANGED-TOP')
+    expect(delta).toContain('+stable 54 CHANGED-BOTTOM')
+    // The 40-odd untouched lines between the edits must not be rendered as
+    // removed-and-readded — that attributes pre-existing code to the milestone.
+    expect(delta).not.toContain('-stable 30')
+    expect(delta).not.toContain('+stable 30')
+    expect((delta.match(/@@ /g) ?? []).length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('never files an unknown digest under NOT part of this milestone', () => {
+    const snapshot = (over: Partial<TreeFileSnapshot>): TreeFileSnapshot => ({
+      path: 'x.txt',
+      text: null,
+      truncated: false,
+      exists: true,
+      digest: null,
+      digestKnown: false,
+      headText: null,
+      headTruncated: false,
+      headExists: true,
+      headDigest: null,
+      headDigestKnown: true,
+      ...over,
+    })
+    const state = (files: TreeFileSnapshot[]): TreeState => ({
+      unknown: false,
+      signature: 's',
+      paths: files.map((f) => f.path),
+      diffText: '',
+      stagedText: '',
+      statText: '',
+      untracked: [],
+      files,
+    })
+    // A failed git spawn leaves the digest unknown on both sides. Unknown must
+    // read as "cannot say", never as "untouched" — the poisoned failure mode was
+    // both sides reporting not-exists and comparing equal.
+    const before = state([snapshot({})])
+    const after = state([snapshot({})])
+    expect(preExistingUntouched(before, after)).toEqual([])
+  })
+
+  it('keeps the adoption baseline reviewable', async () => {
+    const dir = gitRepo()
+    writeFileSync(join(dir, 'seed.txt'), 'adopt this\n')
+    const after = await readTree(dir)
+
+    expect(incrementalDelta(emptyTree(), after)).toContain('+adopt this')
   })
 })
 
