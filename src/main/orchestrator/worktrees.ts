@@ -253,6 +253,69 @@ export async function commitMilestone(
 }
 
 /**
+ * Lands the plan branch on the origin's checked-out branch, fast-forward only.
+ *
+ * ff-only is the whole safety argument: git itself proves the checkout has not
+ * moved since the branch was cut, refuses to overwrite uncommitted changes,
+ * and never invents a merge commit on the user's behalf. Anything git refuses
+ * parks as the row's lastError — surfaced as a merge-blocked hold naming the
+ * branch, whose commits are preserved for landing by hand.
+ *
+ * Teardown happens only after a successful merge: the worktree directory is
+ * removed and the branch deleted with `-d`, which git only permits because it
+ * is fully merged. A dirty worktree refuses before the merge — uncommitted
+ * leftovers mean an interrupted attempt someone should adopt or discard first.
+ */
+export async function landWorktree(
+  repo: Repo,
+  worktree: Worktree,
+): Promise<{ landed: boolean; detail: string }> {
+  if (worktree.landedAt !== null) {
+    return { landed: false, detail: 'this branch has already landed' }
+  }
+  if (!existsSync(worktree.originPath)) {
+    return { landed: false, detail: `the origin repository is missing (${worktree.originPath})` }
+  }
+  const branchExists = await git(
+    ['rev-parse', '--verify', '--quiet', `refs/heads/${worktree.branch}`],
+    worktree.originPath,
+  )
+  if (!branchExists.ok) {
+    return { landed: false, detail: `the branch ${worktree.branch} no longer exists in the origin` }
+  }
+
+  if (existsSync(worktree.path)) {
+    const status = await git(['status', '--porcelain'], worktree.path)
+    if (status.ok && status.stdout) {
+      const detail =
+        'the worktree has uncommitted changes — adopt the milestone that left them, or discard them by hand, before landing'
+      repo.flagWorktree(worktree.planId, worktree.orphaned, detail)
+      return { landed: false, detail }
+    }
+  } else {
+    // The directory is gone but the branch survives; clear git's stale
+    // administrative entry so the merge and the branch delete can proceed.
+    await git(['worktree', 'prune'], worktree.originPath)
+  }
+
+  const merge = await git(['merge', '--ff-only', worktree.branch], worktree.originPath)
+  if (!merge.ok) {
+    const detail = trimmedFailure(merge)
+    repo.flagWorktree(worktree.planId, worktree.orphaned, detail)
+    return { landed: false, detail }
+  }
+
+  if (existsSync(worktree.path)) {
+    await git(['worktree', 'remove', worktree.path], worktree.originPath)
+  }
+  await git(['branch', '-d', worktree.branch], worktree.originPath)
+  repo.markWorktreeLanded(worktree.planId)
+
+  const head = await git(['rev-parse', 'HEAD'], worktree.originPath)
+  return { landed: true, detail: head.ok ? head.stdout : '' }
+}
+
+/**
  * Startup honesty for the registry: flags rows whose directory or origin
  * vanished, and lets git prune its own stale administrative entries. Never
  * deletes a row or a directory — an orphaned row still names a branch that

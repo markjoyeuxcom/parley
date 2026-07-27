@@ -346,6 +346,61 @@ Four properties are load-bearing:
 Adoption is refused when the tree is clean or none of the expected paths exist —
 there would be nothing to adopt, and saying otherwise would be false.
 
+## Holds are derived, never stored
+
+A hold is one thing currently waiting on a human — a parked question, an
+approvable milestone, a landable branch, a stopped run. `computeHolds`
+(orchestrator/holds.ts) recomputes the open set from the durable rows on every
+relevant transition; **there is no holds table to go stale**, and there cannot
+be one: "approvable" depends on the finding gate, and the gate moves with no
+plan or milestone transition at all (a review records an occurrence, a human
+records a disposition). Only two facts about a hold are written down —
+`hold_acks` and `hold_notifications`, both keyed by the content-addressed hold
+identity (`holdIdentity`, same sha256 as the ledger), which is what lets an
+ack and a notify-once stamp survive recomputation and restarts.
+
+Two rules are load-bearing. **Decision-class holds refuse acknowledgement in
+the main process**, not the UI — an ack-able "waiting on your answer" clears
+the badge while the plan stays parked, the exact silent stall the queue exists
+to kill. And **the stamp is written before any display attempt**, so a denied
+notification permission degrades to the badge without ever re-arming the
+banner. The engine wraps `deps.emit` in the Manager constructor; two mutations
+reach the database with no event (archiving, the ack itself) and call
+`Manager.holdsChanged()` explicitly. When you add a durable state a human must
+react to, add its derivation to `computeHolds` — do not mint another toast.
+
+## Worktree isolation: the checkout is never touched mid-run
+
+A plan created with `isolation: 'worktree'` executes every milestone in a
+per-plan git worktree on branch `parley/<kind>-<planId8>`, under
+`userData/worktrees/<repoBasename>--<planId8>` — the directory name embeds the
+origin basename **on purpose**, because mock-mode behavior keys on cwd
+substrings and the integration fixtures depend on those switches still
+tripping. Parley commits each passing milestone there (adoption commits too,
+or the landed branch would silently lack work its record claims); the agent
+still never commits. Landing is `git merge --ff-only`, human-initiated,
+refused by git itself when the checkout moved or dirt would be overwritten; a
+refusal parks as a `merge-blocked` hold naming the branch.
+
+The ordering inside `runMilestone` is deliberate and pinned by tests:
+refusal → finding gate → worktree ensure + health → **approval consumption** →
+baseline → execute. Setup (`npm ci` class, minutes, can fail) runs before the
+single-use approval is spent. The health check is **fail-closed** because
+`readTree` fails *open* — a broken directory reads as an unknown tree, which
+silently disables the changed-tree guard and blinds the reviewer. And the
+status refusal is re-checked in the same synchronous block as the spend: the
+ensure is an await, so two racing starts carrying two different approvals
+would otherwise both get through — the atomic spend only protects one
+approval against itself.
+
+Nothing in worktrees.ts deletes work. Reconciliation flags rows orphaned when
+their directory or origin vanished and never removes either; re-attachment
+(`git worktree add <path> <branch>`, never `-B`) recovers a vanished directory
+from its surviving branch; landing from an orphaned row still works, because
+it needs only the origin and the branch. Mock plans refuse to land outright —
+fast-forwarding a real branch onto mock commits would be invisible mock work,
+with no marking anywhere in git.
+
 ## Long runs must not be opaque
 
 A milestone can occupy half an hour between approval and verdict. The adapters

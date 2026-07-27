@@ -156,6 +156,8 @@ export const ListSessionsReq = z.object({ includeArchived: z.boolean().default(f
 /** Deleting is permanent. The impact query exists so it is never a blind click. */
 export const DeleteSessionReq = z.object({ sessionId: Id })
 export const GetPlanReq = z.object({ planId: Id })
+/** Lands a complete worktree plan's branch on the origin, fast-forward only. */
+export const LandPlanReq = z.object({ planId: Id })
 export const GetLoopReq = z.object({ loopId: Id })
 
 export const ExportReportReq = z.object({ sessionId: Id })
@@ -190,6 +192,7 @@ export const COMMANDS = {
   'plan.answer': AnswerPlanReq,
   'plan.setTestCommand': SetTestCommandReq,
   'plan.adoptMilestone': AdoptMilestoneReq,
+  'plan.land': LandPlanReq,
   'approval.grant': GrantApprovalReq,
   'approval.list': null,
   'loop.create': CreateLoopReq,

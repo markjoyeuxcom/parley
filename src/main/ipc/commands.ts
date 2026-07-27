@@ -169,8 +169,13 @@ const HANDLERS: Record<CommandName, Handler> = {
     const { planId } = p as { planId: string }
     const plan = ctx.manager.repo.getPlan(planId)
     if (!plan) throw new Error('no such plan')
-    return { plan, milestones: ctx.manager.repo.listMilestones(planId) }
+    return {
+      plan,
+      milestones: ctx.manager.repo.listMilestones(planId),
+      worktree: ctx.manager.repo.getWorktreeForPlan(planId),
+    }
   },
+  'plan.land': (p, ctx) => ctx.manager.landPlan((p as { planId: string }).planId),
   'plan.setTestCommand': (p, ctx) => {
     const { milestoneId, command } = p as { milestoneId: string; command: string }
     return ctx.manager.setMilestoneTestCommand(milestoneId, command)

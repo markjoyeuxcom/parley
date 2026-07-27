@@ -117,6 +117,17 @@ export function DeleteSessionDialog({
               </div>
             )}
 
+            {impact.unlandedWorktrees > 0 ? (
+              <div className="audit-note audit-note--reject">
+                <strong>
+                  {impact.unlandedWorktrees} worktree{' '}
+                  {impact.unlandedWorktrees === 1 ? 'branch' : 'branches'} never landed.
+                </strong>{' '}
+                Those commits exist nowhere else. Land the plan first, or the work is stranded on a
+                branch nothing remembers.
+              </div>
+            ) : null}
+
             {impact.retainedApprovals > 0 ? (
               <div className="field__hint">
                 {impact.retainedApprovals} spent{' '}

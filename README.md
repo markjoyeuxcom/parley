@@ -224,8 +224,18 @@ resumed so it receives a critique rather than a restatement. Bounded to two
 rounds; after that the note says a person is needed.
 
 Approval is per-milestone, recorded, and **spent the moment the run starts** — so
-re-running asks again. Nothing is ever committed. A milestone completes only if
-the tests are green *and* the independent reviewer passes it.
+re-running asks again. A milestone completes only if the tests are green *and*
+the independent reviewer passes it.
+
+**Where the work lands is a choice, made at plan creation.** In the default
+mode nothing is ever committed: milestones write into your checkout and the
+changes are left in the working tree for you. A plan can instead run with
+**worktree isolation**: every milestone executes in an isolated git worktree on
+a per-plan branch, Parley commits each passing milestone there, and your
+checkout is untouched until you **land** the branch — fast-forward only, one
+click, refused by git itself if your checkout moved. Nothing reaches your
+checkout without you. Isolation is what lets Parley work on a repository that
+is in use — including, eventually, its own.
 
 **Adopt & verify** handles work that already exists — usually from an interrupted
 run. It skips execution but keeps both checks that establish anything, and records
@@ -277,6 +287,28 @@ little room to subvert; for changes that matter, use the pipeline.
 Two smaller things: **exhausted is not success**, and the **spend cap barely
 bites** on subscriptions — Codex reports no cost and Claude reports a notional
 figure, so iterations and wall-clock are the caps doing the real work.
+
+---
+
+## Holds — what is waiting on you
+
+Everything that blocks on a human decision queues in one place: a planner's
+question, a milestone ready to approve, an approval gated by open findings, a
+branch ready to land, a failed milestone, an exhausted loop. The titlebar
+count is decisions only; each hold notifies **once, ever** — a macOS
+notification when it first appears, and never again, including across
+restarts.
+
+Two kinds, with different clearing rules. **Decision holds clear only by
+acting** — answering, approving, landing. They cannot be acknowledged away,
+and the app refuses the attempt: a dismissible "waiting on your answer" would
+clear the badge while the plan stays parked, which is the silent stall the
+queue exists to kill. **Notice holds** carry no pending action, so
+acknowledging them is the action.
+
+The queue is derived from the durable record, never stored beside it — it
+cannot drift, and it survives restarts. Park work, walk away, resolve the
+batch when you return.
 
 ---
 

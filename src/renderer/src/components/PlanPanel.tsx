@@ -237,10 +237,27 @@ export function PlanPanel({
   onRefresh: () => void
 }): ReactNode {
   const { plan, milestones } = detail
+  const worktree = detail.worktree ?? null
   const tone = statusTone(plan.status)
   const [pendingApproval, setPendingApproval] = useState<Milestone | null>(null)
   const [granting, setGranting] = useState(false)
+  const [landing, setLanding] = useState(false)
   const { attempt, notify } = useStore()
+
+  const land = async (): Promise<void> => {
+    setLanding(true)
+    const result = await attempt(() => api.landPlan(plan.id))
+    setLanding(false)
+    if (result) {
+      notify(
+        result.landed ? 'info' : 'warn',
+        result.landed
+          ? `Landed — ${shortPath(plan.repoPath)} fast-forwarded onto the plan branch.`
+          : `Landing refused: ${result.detail}`,
+      )
+    }
+    onRefresh()
+  }
 
   /**
    * Closes an approval dialog whose milestone has ceased to exist.
@@ -351,6 +368,43 @@ export function PlanPanel({
         */}
         {plan.status === 'awaiting-clarification' ? (
           <ClarificationPanel plan={plan} onAnswered={onRefresh} />
+        ) : null}
+
+        {/*
+          The one moment isolated work reaches the checkout, and it is always a
+          human's click. A refusal is shown verbatim: git's own reason is the
+          actionable text, and the branch name is what makes the work
+          recoverable by hand.
+        */}
+        {plan.status === 'complete' &&
+        plan.isolation === 'worktree' &&
+        worktree &&
+        worktree.landedAt === null ? (
+          <div style={{ padding: 'var(--s5) var(--s6)' }}>
+            <div className={worktree.lastError ? 'audit-note audit-note--reject' : 'audit-note'}>
+              {worktree.lastError ? (
+                <>
+                  <strong>Landing was refused.</strong> {worktree.lastError} The work is safe on{' '}
+                  <code>{worktree.branch}</code>.
+                </>
+              ) : (
+                <>
+                  Every milestone is committed on <code>{worktree.branch}</code>. Landing
+                  fast-forwards {shortPath(plan.repoPath)} — nothing else is touched, and git
+                  refuses if your checkout moved.
+                </>
+              )}
+              <div style={{ marginTop: 'var(--s3)' }}>
+                <button
+                  className="btn btn--primary btn--sm"
+                  disabled={landing}
+                  onClick={() => void land()}
+                >
+                  {landing ? 'Landing…' : worktree.lastError ? 'Retry landing' : 'Land the branch'}
+                </button>
+              </div>
+            </div>
+          </div>
         ) : null}
 
         {/* The planner's reply to the audit, so an approver can see which

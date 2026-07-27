@@ -277,9 +277,17 @@ export class Repo {
     let milestones = 0
     let completedMilestones = 0
     let retainedApprovals = 0
+    let unlandedWorktrees = 0
     const repos = new Set<string>()
 
     for (const plan of plans) {
+      // An unlanded worktree row names a branch whose commits exist nowhere
+      // else; deleting the session orphans it silently unless said up front.
+      const unlanded = this.db.get(
+        `SELECT COUNT(*) AS n FROM worktrees WHERE plan_id = ? AND landed_at IS NULL`,
+        str(plan['id']),
+      )
+      unlandedWorktrees += num(unlanded?.['n'])
       const rows = this.db.all(`SELECT id, status FROM milestones WHERE plan_id = ?`, str(plan['id']))
       milestones += rows.length
       for (const row of rows) {
@@ -315,6 +323,7 @@ export class Repo {
       completedMilestones,
       repos: [...repos],
       retainedApprovals,
+      unlandedWorktrees,
     }
   }
 

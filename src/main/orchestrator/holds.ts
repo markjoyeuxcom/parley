@@ -1,6 +1,6 @@
 import type { Hold, HoldKind } from '@shared/holds'
 import { HOLD_CLASS, holdIdentity } from '@shared/holds'
-import type { Loop, Milestone, WorkPlan } from '@shared/domain'
+import type { Loop, Milestone, WorkPlan, Worktree } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import { EXECUTABLE_PAIRS } from '@shared/execution'
 import type { Repo } from '@main/store/repo'
@@ -39,6 +39,17 @@ export function computeHolds(repo: Repo, acked: ReadonlySet<string>): Hold[] {
         holds.push(clarificationHold(session.id, plan))
       } else if (plan.status === 'blocked') {
         holds.push(planBlockedHold(session.id, plan))
+      }
+
+      // A complete worktree plan waits on exactly one more human act: landing
+      // its branch. Ready when git can fast-forward; blocked (with the branch
+      // named, since the commits survive) when a landing attempt was refused
+      // or the worktree lost its footing on disk.
+      if (plan.status === 'complete' && plan.isolation === 'worktree') {
+        const worktree = repo.getWorktreeForPlan(plan.id)
+        if (worktree && worktree.landedAt === null) {
+          holds.push(mergeHold(session.id, plan, worktree))
+        }
       }
 
       // Only these two plan statuses appear in EXECUTABLE_PAIRS, so no other
@@ -285,6 +296,34 @@ export class HoldsEngine {
       }
     }
   }
+}
+
+function mergeHold(sessionId: string, plan: WorkPlan, worktree: Worktree): Hold {
+  const blocked = worktree.orphaned || worktree.lastError !== ''
+  if (blocked) {
+    const reason = worktree.lastError || 'the worktree directory or origin is missing'
+    // The error text is the generation: a different refusal is new waiting.
+    return hold('merge-blocked', plan.id, `${worktree.branch}\0${reason}`, {
+      sessionId,
+      planId: plan.id,
+      milestoneId: null,
+      loopId: null,
+      title: 'Landing was refused',
+      detail: `${plan.title} — branch ${worktree.branch} still carries the work: ${reason}`,
+      sinceAt: worktree.createdAt,
+      mock: plan.mock,
+    })
+  }
+  return hold('merge-ready', plan.id, worktree.branch, {
+    sessionId,
+    planId: plan.id,
+    milestoneId: null,
+    loopId: null,
+    title: 'Ready to land',
+    detail: `${plan.title} — branch ${worktree.branch} fast-forwards ${plan.repoPath} when you land it.`,
+    sinceAt: worktree.createdAt,
+    mock: plan.mock,
+  })
 }
 
 function loopHold(loop: Loop): Hold {

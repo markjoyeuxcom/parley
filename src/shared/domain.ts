@@ -342,6 +342,11 @@ export interface SessionDeletionImpact {
    * than erasing the only evidence that permission was given.
    */
   retainedApprovals: number
+  /**
+   * Worktree branches that never landed. Their commits exist nowhere else, so
+   * deleting the session quietly strands them unless this is said up front.
+   */
+  unlandedWorktrees: number
 }
 
 /**

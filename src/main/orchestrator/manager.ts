@@ -18,6 +18,7 @@ import type { AgentRegistry } from '@main/agents'
 import { isShellFree, shellMetacharsIn } from '@shared/command'
 import { newId, type Repo } from '@main/store/repo'
 import { HoldsEngine } from './holds'
+import { landWorktree } from './worktrees'
 import { LoopRunner, validateExitCommand, type LoopOutcome } from './loop'
 import { missingExpectedPaths, Pipeline, readTree } from './pipeline'
 import { assertNoUnresolvedBlockingOccurrences } from './gate'
@@ -450,6 +451,39 @@ export class Manager {
    */
   async adoptMilestone(milestoneId: Id): Promise<Milestone> {
     return this.pipeline.adoptMilestone(milestoneId)
+  }
+
+  /**
+   * Lands a complete worktree plan's branch on the origin, fast-forward only.
+   *
+   * Human-initiated, always — this is the one moment isolated work reaches the
+   * user's checkout, and no pipeline stage may take it. Mock plans are refused
+   * outright: their commits are fabricated work, and fast-forwarding a real
+   * branch onto them would be mock output with no marking anywhere in git —
+   * the exact invisible-mock failure the banner and chips exist to prevent.
+   */
+  async landPlan(planId: Id): Promise<{ landed: boolean; detail: string }> {
+    const plan = this.repo.getPlan(planId)
+    if (!plan) throw new RequestError('no such plan')
+    if (plan.isolation !== 'worktree') {
+      throw new RequestError('this plan executed in the checkout; there is nothing to land')
+    }
+    if (plan.mock) {
+      throw new RequestError(
+        'mock work never lands: these commits were produced by the mock adapters and must not fast-forward a real branch',
+      )
+    }
+    if (plan.status !== 'complete') {
+      throw new RequestError(`the plan is ${plan.status}; only a complete plan lands`)
+    }
+    const worktree = this.repo.getWorktreeForPlan(planId)
+    if (!worktree) throw new RequestError('this plan has no worktree to land')
+
+    const result = await landWorktree(this.repo, worktree)
+    // Landing mutates the registry with no event on the bus; the queue must
+    // move either way — ready → gone on success, ready → blocked on refusal.
+    this.holdsChanged()
+    return result
   }
 
   /**

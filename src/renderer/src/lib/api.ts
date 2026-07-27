@@ -17,6 +17,7 @@ import type {
   Turn,
   Verdict,
   WorkPlan,
+  Worktree,
 } from '@shared/domain'
 import type { AppEvent, PtyChunk } from '@shared/events'
 import type { Hold } from '@shared/holds'
@@ -51,6 +52,8 @@ export interface SessionDetail {
 export interface PlanDetail {
   plan: WorkPlan
   milestones: Milestone[]
+  /** The plan's isolated checkout, when isolation is 'worktree'. */
+  worktree?: Worktree | null
 }
 
 export interface LoopDetail {
@@ -141,6 +144,9 @@ export const api = {
     bridge().invoke('plan.runMilestone', { milestoneId, approvalId }),
   adoptMilestone: (milestoneId: Id): Promise<Milestone> =>
     bridge().invoke('plan.adoptMilestone', { milestoneId }),
+  /** Fast-forwards the origin onto the plan branch. Human-initiated, always. */
+  landPlan: (planId: Id): Promise<{ landed: boolean; detail: string }> =>
+    bridge().invoke('plan.land', { planId }),
 
   // Approvals
   grantApproval: (
