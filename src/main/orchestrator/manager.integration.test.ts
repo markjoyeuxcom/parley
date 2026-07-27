@@ -2364,12 +2364,60 @@ describe('plans and the approval gate', () => {
     // staged once the status is actually there rather than assumed instantly.
     await waitFor(() => repo.getMilestone(milestone.id)?.status === 'executing')
 
+    // Two layers refuse this: the Manager's registry (synchronous, first) and
+    // the pipeline's own status re-check behind it. Either message satisfies
+    // the guarantee under test — refused before the approval is spent.
     await expect(manager.runMilestone(milestone.id, racingApproval.id)).rejects.toThrow(
-      /already executing/i,
+      /already (executing|running)/i,
     )
     expect(repo.listApprovals().find((item) => item.id === racingApproval.id)?.consumedAt).toBeNull()
 
     await firstRun
+  })
+
+  it('a stopped milestone records the stop honestly and stays resumable', async () => {
+    const { manager, repo, plan, milestone } = await readyPlan()
+    disposeOpenBlockingOccurrences(repo, plan.sessionId)
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'stop test')
+
+    const run = manager.runMilestone(milestone.id, approval.id)
+    await waitFor(() => repo.getMilestone(milestone.id)?.status === 'executing')
+    manager.stopMilestone(milestone.id)
+
+    const settled = await run
+    expect(settled.status).toBe('failed')
+    // The record says a person asked, not that something crashed — and says
+    // what survived, because that is the decision-relevant fact.
+    expect(settled.reviewNote).toMatch(/stopped by you/i)
+    expect(settled.reviewNote).toMatch(/resumed with a fresh approval/i)
+    expect(settled.reviewNote).not.toMatch(/run was cancelled/)
+    expect(repo.getMilestoneRunState(milestone.id)).not.toBeNull()
+    // The stop landed after the spend; single-use means the retry asks again.
+    expect(repo.listApprovals().find((a) => a.id === approval.id)?.consumedAt).not.toBeNull()
+  })
+
+  it('a refused second start does not orphan the live run’s stop gate', async () => {
+    const { manager, repo, plan, milestone } = await readyPlan()
+    disposeOpenBlockingOccurrences(repo, plan.sessionId)
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'first')
+    const racing = repo.grantApproval('milestone.execute', milestone.id, 'racing')
+
+    const run = manager.runMilestone(milestone.id, approval.id)
+    await waitFor(() => repo.getMilestone(milestone.id)?.status === 'executing')
+
+    // Refused synchronously at the registry, before any await — so its cleanup
+    // cannot delete the live run's gate on the way out.
+    await expect(manager.runMilestone(milestone.id, racing.id)).rejects.toThrow(/already running/i)
+
+    // The live gate must still work after the refusal.
+    manager.stopMilestone(milestone.id)
+    const settled = await run
+    expect(settled.reviewNote).toMatch(/stopped by you/i)
+  })
+
+  it('refuses to stop a milestone that is not running', async () => {
+    const { manager, milestone } = await readyPlan()
+    expect(() => manager.stopMilestone(milestone.id)).toThrow(/not running/i)
   })
 })
 

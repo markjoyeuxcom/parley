@@ -187,6 +187,10 @@ const HANDLERS: Record<CommandName, Handler> = {
   'plan.inspect': (p, ctx) => ctx.manager.inspectMilestone((p as { milestoneId: string }).milestoneId),
   'plan.adoptMilestone': (p, ctx) =>
     ctx.manager.adoptMilestone((p as { milestoneId: string }).milestoneId),
+  'plan.stopMilestone': (p, ctx) => {
+    ctx.manager.stopMilestone((p as { milestoneId: string }).milestoneId)
+    return { ok: true }
+  },
   'plan.runMilestone': (p, ctx) => {
     const { milestoneId, approvalId } = p as { milestoneId: string; approvalId: string }
     return ctx.manager.runMilestone(milestoneId, approvalId)

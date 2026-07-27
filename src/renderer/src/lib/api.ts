@@ -144,6 +144,9 @@ export const api = {
     bridge().invoke('plan.runMilestone', { milestoneId, approvalId }),
   adoptMilestone: (milestoneId: Id): Promise<Milestone> =>
     bridge().invoke('plan.adoptMilestone', { milestoneId }),
+  /** Stops at the next boundary; the run state is kept, so resume stays open. */
+  stopMilestone: (milestoneId: Id): Promise<unknown> =>
+    bridge().invoke('plan.stopMilestone', { milestoneId }),
   /** Fast-forwards the origin onto the plan branch. Human-initiated, always. */
   landPlan: (planId: Id): Promise<{ landed: boolean; detail: string }> =>
     bridge().invoke('plan.land', { planId }),

@@ -24,7 +24,7 @@ import { LoopRunner, validateExitCommand, type LoopOutcome } from './loop'
 import { missingExpectedPaths, Pipeline, readTree } from './pipeline'
 import { assertNoUnresolvedBlockingOccurrences } from './gate'
 import { SessionRunner } from './session'
-import type { OrchestratorDeps } from './types'
+import { RunGate, type OrchestratorDeps } from './types'
 
 export class RequestError extends Error {}
 
@@ -108,6 +108,15 @@ export class Manager {
    * so a caller that genuinely needs to wait — shutdown, tests — can.
    */
   private readonly planRuns = new Map<Id, Promise<void>>()
+  /**
+   * The in-flight milestone runs, by milestone id — execution and adoption
+   * share it, since the two are mutually exclusive per milestone. This map is
+   * both the stop button's handle and the concurrency guard: the has-check is
+   * synchronous and precedes every await, so a second start cannot slip in
+   * during worktree setup and cannot, on its refused way out, delete the live
+   * run's gate.
+   */
+  private readonly milestoneRuns = new Map<Id, RunGate>()
   private readonly loops = new Map<Id, LoopRunner>()
   private readonly pipeline: Pipeline
   private readonly deps: OrchestratorDeps
@@ -435,7 +444,28 @@ export class Manager {
   }
 
   async runMilestone(milestoneId: Id, approvalId: Id): Promise<Milestone> {
-    return this.pipeline.runMilestone(milestoneId, approvalId)
+    if (this.milestoneRuns.has(milestoneId)) {
+      throw new RequestError('that milestone is already running')
+    }
+    const gate = new RunGate()
+    this.milestoneRuns.set(milestoneId, gate)
+    try {
+      return await this.pipeline.runMilestone(milestoneId, approvalId, gate)
+    } finally {
+      this.milestoneRuns.delete(milestoneId)
+    }
+  }
+
+  /**
+   * Stops a running milestone at its next boundary — the in-flight CLI is
+   * killed, but a commit or a mutation restore already underway finishes
+   * (both are atomic on their own). The run state is kept, so a stopped
+   * milestone is resumable exactly like a crashed one.
+   */
+  stopMilestone(milestoneId: Id): void {
+    const gate = this.milestoneRuns.get(milestoneId)
+    if (!gate) throw new RequestError('that milestone is not running')
+    gate.stop()
   }
 
   grantMilestoneApproval(milestoneId: Id, summary: string): Approval {
@@ -454,7 +484,16 @@ export class Manager {
    * independent cross-vendor review still run.
    */
   async adoptMilestone(milestoneId: Id): Promise<Milestone> {
-    return this.pipeline.adoptMilestone(milestoneId)
+    if (this.milestoneRuns.has(milestoneId)) {
+      throw new RequestError('that milestone is already running')
+    }
+    const gate = new RunGate()
+    this.milestoneRuns.set(milestoneId, gate)
+    try {
+      return await this.pipeline.adoptMilestone(milestoneId, gate)
+    } finally {
+      this.milestoneRuns.delete(milestoneId)
+    }
   }
 
   /**

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { ChevronDown, ChevronRight, FolderOpen, Play, ShieldCheck } from 'lucide-react'
+import { ChevronDown, ChevronRight, FolderOpen, Play, ShieldCheck, Square } from 'lucide-react'
 import type {
   AgentConfig,
   Milestone,
@@ -577,6 +577,41 @@ function ClarificationPanel({
   )
 }
 
+/**
+ * Stops a running milestone at its next boundary.
+ *
+ * "Next boundary" is precise: the in-flight CLI is killed immediately, but a
+ * git commit or a mutation restore already underway finishes — both are
+ * atomic on their own, and interrupting either would tear state. The run
+ * state survives a stop exactly as it survives a crash, so this never costs
+ * more than the time already spent.
+ */
+function StopMilestoneControl({ milestone }: { milestone: Milestone }): ReactNode {
+  const { attempt, notify } = useStore()
+  const [stopping, setStopping] = useState(false)
+
+  return (
+    <div style={{ padding: 'var(--s2) var(--s6) 0' }}>
+      <button
+        className="btn btn--subtle btn--sm"
+        disabled={stopping}
+        title="Takes effect at the next boundary — an in-flight commit finishes first. The run state is kept, so this milestone stays resumable."
+        onClick={() => {
+          setStopping(true)
+          void attempt(() => api.stopMilestone(milestone.id)).then((result) => {
+            if (result) {
+              notify('info', `Stopping milestone ${milestone.index + 1} at the next boundary.`)
+            }
+          })
+        }}
+      >
+        <Square size={11} strokeWidth={2} />
+        {stopping ? 'Stopping…' : 'Stop this run'}
+      </button>
+    </div>
+  )
+}
+
 function MilestoneRow({
   plan,
   milestone,
@@ -654,6 +689,12 @@ function MilestoneRow({
       {!expanded ? null : (
         <>
       {milestone.intent ? <div className="milestone__intent">{milestone.intent}</div> : null}
+
+      {/* The stop sits beside the feed the user is watching when they want it.
+          It takes effect at the next boundary — an in-flight commit or mutation
+          restore finishes — and the run state survives, so stopping never
+          costs more than the time already spent. */}
+      {inFlight ? <StopMilestoneControl milestone={milestone} /> : null}
 
       {/* Live telemetry while the milestone runs, and its record immediately
           after, so a failure can be read against what actually happened. */}

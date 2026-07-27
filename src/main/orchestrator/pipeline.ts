@@ -39,7 +39,7 @@ import { newId, type Repo } from '@main/store/repo'
 import { assertCapability, type AgentRegistry } from '@main/agents'
 import { groupLedgerEntry } from '@main/ipc/ledger'
 import type { MilestonePhase } from '@shared/events'
-import type { OrchestratorDeps } from './types'
+import type { OrchestratorDeps, RunGate } from './types'
 import { assertNoUnresolvedBlockingOccurrences } from './gate'
 
 /**
@@ -86,6 +86,14 @@ export interface RunState {
   lastActivityAt: number | null
   lastInspection: { at: number; verdict: string; note: string } | null
 }
+
+/**
+ * The note a user-requested stop writes. One sentence for the act, one for
+ * what it left behind — the run state survives a stop exactly as it survives
+ * a crash, and the reader deciding what to do next needs to know that.
+ */
+const STOPPED_NOTE =
+  'Stopped by you. The run state was preserved, so this milestone can be resumed with a fresh approval.'
 
 /** What a stage parked on a question needs in order to pick up again. */
 type PendingStage =
@@ -560,7 +568,10 @@ export class Pipeline {
    * the user double-clicked, or a retry raced — the store refuses and nothing
    * is written.
    */
-  async runMilestone(milestoneId: Id, approvalId: Id, signal?: AbortSignal): Promise<Milestone> {
+  async runMilestone(milestoneId: Id, approvalId: Id, gate?: RunGate): Promise<Milestone> {
+    // The gate, not a bare signal, so every failure sink can tell a stop the
+    // user asked for from a run that died — the two must not share a note.
+    const signal = gate?.signal
     const milestone = this.repo.getMilestone(milestoneId)
     if (!milestone) throw new PipelineError('no such milestone')
 
@@ -752,7 +763,7 @@ export class Pipeline {
       if (execution.error) {
         current = this.repo.updateMilestone(milestoneId, {
           status: 'failed',
-          reviewNote: [...history, execution.error].join('\n\n'),
+          reviewNote: [...history, gate?.isStopped ? STOPPED_NOTE : execution.error].join('\n\n'),
         })
         this.emit({ type: 'plan.milestone', milestone: current })
         this.setStatus(plan.id, 'failed')
@@ -765,6 +776,7 @@ export class Pipeline {
         root,
         worktree,
         agentEnv,
+        gate,
         before,
         round,
         previousConcerns,
@@ -817,6 +829,12 @@ export class Pipeline {
     }
 
     let finalPassed = lastPassed
+    // A run the user stopped must say so, or the record narrates the stop as
+    // an unexplained failure and sends the reader hunting for a crash.
+    if (!finalPassed && gate?.isStopped) {
+      history.push(STOPPED_NOTE)
+      publishHistory()
+    }
     // A passing worktree milestone is committed by Parley — never per
     // remediation round (one baseline spans the rounds), and never by the
     // agent. If the commit fails, the milestone fails with it: a record that
@@ -875,6 +893,8 @@ export class Pipeline {
     root: string
     worktree: Worktree | null
     agentEnv?: Record<string, string>
+    /** Present so failure sinks can tell a requested stop from a crash. */
+    gate?: RunGate
     before: TreeState
     round: number
     previousConcerns: string[]
@@ -1079,7 +1099,13 @@ export class Pipeline {
         `The plan expected these paths, and they do not exist: ${missing.join(', ')}.`,
       )
     }
-    if (review.error) noteParts.push(`The review could not be completed: ${review.error}`)
+    if (review.error) {
+      noteParts.push(
+        input.gate?.isStopped
+          ? 'Stopped by you before the review completed.'
+          : `The review could not be completed: ${review.error}`,
+      )
+    }
     if (parsedReview?.note) noteParts.push(parsedReview.note)
     if (parsedReview?.blocking.length) {
       noteParts.push(`Blocking: ${parsedReview.blocking.join('; ')}`)
@@ -1153,7 +1179,8 @@ export class Pipeline {
    * "Approve and run" must stop "Adopt & verify" too, or adoption is a side
    * door around the ledger.
    */
-  async adoptMilestone(milestoneId: Id, signal?: AbortSignal): Promise<Milestone> {
+  async adoptMilestone(milestoneId: Id, gate?: RunGate): Promise<Milestone> {
+    const signal = gate?.signal
     const milestone = this.repo.getMilestone(milestoneId)
     if (!milestone) throw new PipelineError('no such milestone')
 
@@ -1362,6 +1389,7 @@ export class Pipeline {
         : `Not adopted. This work was already in the tree, so it was verified rather than written — and the verification did not pass.`,
     ]
     if (commitLine) noteParts.push(commitLine)
+    if (!passed && gate?.isStopped) noteParts.push(STOPPED_NOTE)
 
     // The gap an independent reviewer would otherwise have to notice for itself:
     // the verification command is scoped to the milestone, but adoption reviews
@@ -1374,7 +1402,13 @@ export class Pipeline {
       )
     }
     if (missing.length) noteParts.push(`Expected paths still absent: ${missing.join(', ')}.`)
-    if (review.error) noteParts.push(`The review could not be completed: ${review.error}`)
+    if (review.error) {
+      noteParts.push(
+        gate?.isStopped
+          ? 'Stopped by you before the review completed.'
+          : `The review could not be completed: ${review.error}`,
+      )
+    }
     if (parsedReview?.note) noteParts.push(parsedReview.note)
     if (parsedReview?.blocking.length) {
       noteParts.push(`Blocking: ${parsedReview.blocking.join('; ')}`)
