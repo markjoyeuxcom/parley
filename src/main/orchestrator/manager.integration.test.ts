@@ -2300,7 +2300,10 @@ describe('plans and the approval gate', () => {
     const racingApproval = repo.grantApproval('milestone.execute', milestone.id, 'racing start')
 
     const firstRun = manager.runMilestone(milestone.id, firstApproval.id)
-    expect(repo.getMilestone(milestone.id)?.status).toBe('executing')
+    // The run resolves its execution root (an async hop, even for checkout
+    // plans) before it marks the milestone executing, so the racing start is
+    // staged once the status is actually there rather than assumed instantly.
+    await waitFor(() => repo.getMilestone(milestone.id)?.status === 'executing')
 
     await expect(manager.runMilestone(milestone.id, racingApproval.id)).rejects.toThrow(
       /already executing/i,

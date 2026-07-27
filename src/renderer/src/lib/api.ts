@@ -122,6 +122,10 @@ export const api = {
     executor: WorkPlan['executor']
     reviewer: WorkPlan['reviewer']
     note?: string
+    /** Where milestones execute. Defaults to the live checkout. */
+    isolation?: WorkPlan['isolation']
+    /** Shell-free command run once at worktree creation (e.g. `npm ci`). */
+    setupCommand?: string
   }): Promise<PlanDetail> => bridge().invoke('plan.create', payload),
   listPlans: (): Promise<WorkPlan[]> => bridge().invoke('plan.list'),
   getPlan: (planId: Id): Promise<PlanDetail> => bridge().invoke('plan.get', { planId }),

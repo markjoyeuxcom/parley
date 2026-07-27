@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import {
   type AgentConfig,
@@ -233,6 +233,8 @@ export class Manager {
     reviewer: WorkPlan['reviewer']
     /** Optional operator brief, attributed separately in the plan's brief. */
     note?: string
+    isolation?: WorkPlan['isolation']
+    setupCommand?: string
   }): Promise<{ plan: WorkPlan; milestones: Milestone[] }> {
     const session = this.repo.getSession(input.sessionId)
     if (!session) throw new RequestError('no such session')
@@ -240,6 +242,19 @@ export class Manager {
     if (!verdict) throw new RequestError('that session has no verdict to plan from')
 
     const repoPath = validateRepoPath(input.repoPath)
+
+    // Worktree constraints bite at execution time, half an hour of agent work
+    // away — so anything checkable is refused now, at the dialog.
+    const isolation = input.isolation ?? 'checkout'
+    const setupCommand = (input.setupCommand ?? '').trim()
+    if (isolation === 'worktree' && !this.deps.worktreesRoot) {
+      throw new RequestError('worktree isolation is unavailable: no worktrees root is configured')
+    }
+    if (setupCommand && !isShellFree(setupCommand)) {
+      throw new RequestError(
+        `the setup command needs shell syntax (${shellMetacharsIn(setupCommand).join(' ')}), which Parley spawns without. Use a single command, or a script in the repository that does the rest.`,
+      )
+    }
 
     // Deliberately a warning, not a block. Planner and executor are both on the
     // produce side — the audit and the review still come from the counterpart, so
@@ -269,8 +284,8 @@ export class Manager {
       question: '',
       correctionNote: '',
       correctionDispositions: [],
-      isolation: 'checkout' as const,
-      setupCommand: '',
+      isolation,
+      setupCommand,
       usage: emptyUsage(),
       mock: this.registry.mock,
       createdAt: Date.now(),
@@ -454,9 +469,20 @@ export class Manager {
     const plan = this.repo.getPlan(milestone.planId)
     if (!plan) throw new RequestError('the plan for this milestone is missing')
 
-    const missing = missingExpectedPaths(plan.repoPath, milestone.expectedPaths)
+    // A worktree plan is inspected where it executes. Before the worktree
+    // exists (it is created at first approval) this reads the origin instead —
+    // an approximation, since origin dirt will not carry into the worktree,
+    // but the honest available answer rather than a refusal.
+    const worktree =
+      plan.isolation === 'worktree' ? this.repo.getWorktreeForPlan(plan.id) : null
+    const root =
+      worktree && worktree.landedAt === null && existsSync(worktree.path)
+        ? worktree.path
+        : plan.repoPath
+
+    const missing = missingExpectedPaths(root, milestone.expectedPaths)
     const missingSet = new Set(missing)
-    const tree = await readTree(plan.repoPath)
+    const tree = await readTree(root)
 
     return {
       existing: milestone.expectedPaths.filter((path) => !missingSet.has(path)),

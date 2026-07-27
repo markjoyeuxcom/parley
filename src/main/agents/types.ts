@@ -11,6 +11,13 @@ export interface RunRequest {
   /** Working directory for the process. Also the repository root when attached. */
   cwd: string
   /**
+   * Extra environment for the CLI process, merged over the app's own.
+   * Used for worktree runs (GIT_OPTIONAL_LOCKS=0 — a linked worktree's git
+   * metadata lives outside the sandbox's writable root, so optional locks
+   * would fail where they should simply be skipped). Never carries secrets.
+   */
+  env?: Record<string, string>
+  /**
    * Vendor session/thread id to resume. Resuming is what keeps cost linear:
    * the CLI retains its own history, so Parley relays only the opponent's last
    * message rather than replaying the transcript.

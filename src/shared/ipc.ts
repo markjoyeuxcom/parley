@@ -11,6 +11,7 @@ import {
   SessionKind,
   Skill,
   WorkPlanKind,
+  WorktreeIsolation,
   type FindingDisposition,
   type FindingOccurrence,
   type LedgerFinding,
@@ -48,6 +49,10 @@ export const InterjectReq = z.object({
 export const SessionControlReq = z.object({ sessionId: Id })
 
 export const CreatePlanReq = z.object({
+  /** Where milestones execute — see {@link WorktreeIsolation}. */
+  isolation: WorktreeIsolation.default('checkout'),
+  /** Shell-free command run once at worktree creation (e.g. `npm ci`). */
+  setupCommand: z.string().trim().max(400).default(''),
   sessionId: Id,
   kind: WorkPlanKind,
   repoPath: z.string().min(1),

@@ -164,6 +164,7 @@ export class ClaudeAdapter implements AgentAdapter {
       command: binary,
       args,
       cwd: req.cwd,
+      env: req.env,
       stdin: req.prompt,
       signal: req.signal,
       timeoutMs: req.timeoutMs,

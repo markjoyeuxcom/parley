@@ -157,6 +157,7 @@ export class CodexAdapter implements AgentAdapter {
       command: binary,
       args,
       cwd: req.cwd,
+      env: req.env,
       stdin: body,
       signal: req.signal,
       timeoutMs: req.timeoutMs,

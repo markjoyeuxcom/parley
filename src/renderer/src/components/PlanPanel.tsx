@@ -77,6 +77,8 @@ export function NewPlanDialog({
   })
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
+  const [isolation, setIsolation] = useState<WorkPlan['isolation']>('checkout')
+  const [setupCommand, setSetupCommand] = useState('')
 
   const reviewerVendor = planner.vendor === executor.vendor ? 'claude' : planner.vendor
   const create = async (): Promise<void> => {
@@ -92,6 +94,8 @@ export function NewPlanDialog({
         // The reviewer must not be the executor. Fixed here rather than offered
         // as an option, because a reviewer that wrote the diff is not a review.
         reviewer: { ...planner, vendor: reviewerVendor },
+        isolation,
+        setupCommand: isolation === 'worktree' ? setupCommand : '',
       }),
     )
     setBusy(false)
@@ -171,6 +175,38 @@ export function NewPlanDialog({
         </button>
       </Field>
 
+      <Field
+        label="Execution"
+        hint={
+          isolation === 'worktree'
+            ? 'Milestones run on an isolated branch; each pass is committed there. Nothing reaches this checkout until you land the branch, fast-forward only.'
+            : 'Milestones write into the checkout above and are left uncommitted, as before.'
+        }
+      >
+        <select
+          className="select"
+          value={isolation}
+          onChange={(event) => setIsolation(event.target.value as WorkPlan['isolation'])}
+        >
+          <option value="checkout">In the checkout — work appears in your tree</option>
+          <option value="worktree">In a worktree — isolated branch, landed by you</option>
+        </select>
+      </Field>
+
+      {isolation === 'worktree' ? (
+        <Field
+          label="Worktree setup command (optional)"
+          hint="Run once when the worktree is created — a fresh worktree has no node_modules, so without this the milestones' own test commands may not run. Shell-free, like a test command."
+        >
+          <input
+            className="input"
+            placeholder="npm ci"
+            value={setupCommand}
+            onChange={(event) => setSetupCommand(event.target.value)}
+          />
+        </Field>
+      ) : null}
+
       <hr className="divider" />
 
       <AgentPicker label="Planner — reads and plans, never writes" value={planner} onChange={setPlanner} />
@@ -236,9 +272,15 @@ export function PlanPanel({
    */
   const approveAndRun = async (milestone: Milestone): Promise<void> => {
     setGranting(true)
+    // The persisted record of what was authorised, so it must name the
+    // directory actually written: a worktree run never touches the checkout,
+    // and an approval claiming it did would be wrong in the durable record.
     const summary =
-      `Allow ${plan.executor.vendor} to write to ${plan.repoPath} for milestone ` +
-      `${milestone.index + 1}: ${milestone.title}`
+      plan.isolation === 'worktree'
+        ? `Allow ${plan.executor.vendor} to write to an isolated worktree of ${plan.repoPath} for milestone ` +
+          `${milestone.index + 1}: ${milestone.title}. Landing on the checkout is a separate decision.`
+        : `Allow ${plan.executor.vendor} to write to ${plan.repoPath} for milestone ` +
+          `${milestone.index + 1}: ${milestone.title}`
 
     const approval = await attempt(() => api.grantApproval('milestone.execute', milestone.id, summary))
     setGranting(false)

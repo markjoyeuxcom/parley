@@ -19,8 +19,10 @@ import {
   type TestResult,
   type Vendor,
   type WorkPlan,
+  type Worktree,
 } from '@shared/domain'
 import { executionRefusal } from '@shared/execution'
+import { commitMilestone, ensureWorktree, verifyWorktree } from './worktrees'
 import { occurrenceState } from '@shared/ledger'
 import {
   adoptReviewPrompt,
@@ -105,6 +107,7 @@ export class Pipeline {
   private readonly repo: Repo
   private readonly registry: AgentRegistry
   private readonly emit: OrchestratorDeps['emit']
+  private readonly worktreesRoot: string | null
   // `registry` is read for `.mock` as well as for adapters — see the unchanged-
   // tree branch in runMilestone.
 
@@ -112,6 +115,54 @@ export class Pipeline {
     this.repo = deps.repo
     this.registry = deps.registry
     this.emit = deps.emit
+    this.worktreesRoot = deps.worktreesRoot ?? null
+  }
+
+  /**
+   * Resolves where a milestone executes: the plan's worktree, or null for
+   * checkout isolation. Creating and health-checking happen here, before any
+   * approval is consumed — setup can take minutes and can fail, and a failure
+   * must not burn a single-use approval. Health is fail-closed on purpose:
+   * readTree fails *open* on a broken directory, which would silently disable
+   * the changed-tree guard and blind the reviewer.
+   */
+  private async executionWorktree(
+    plan: WorkPlan,
+    onActivity?: (text: string) => void,
+  ): Promise<Worktree | null> {
+    if (plan.isolation !== 'worktree') return null
+    if (!this.worktreesRoot) {
+      throw new PipelineError('this plan uses worktree isolation, but no worktrees root is configured')
+    }
+    try {
+      return await ensureWorktree(this.repo, this.worktreesRoot, plan, onActivity)
+    } catch (err) {
+      throw new PipelineError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  /**
+   * The already-existing worktree for adoption, verified. Adoption never
+   * creates one: it verifies work already present, and for a worktree plan
+   * "present" means present in the worktree — origin dirt is invisible to an
+   * isolated plan by design.
+   */
+  private async adoptionWorktree(plan: WorkPlan): Promise<Worktree | null> {
+    if (plan.isolation !== 'worktree') return null
+    const worktree = this.repo.getWorktreeForPlan(plan.id)
+    if (!worktree) {
+      throw new PipelineError(
+        'there is nothing to adopt — this worktree plan has not executed yet, so no worktree exists',
+      )
+    }
+    if (worktree.landedAt !== null) {
+      throw new PipelineError('this plan’s branch has already landed; nothing further can be adopted')
+    }
+    const health = await verifyWorktree(worktree)
+    if (!health.ok) {
+      throw new PipelineError(`the worktree for this plan is unhealthy: ${health.detail}`)
+    }
+    return worktree
   }
 
   /**
@@ -490,6 +541,26 @@ export class Pipeline {
 
     assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
 
+    const activity = (phase: MilestonePhase, text: string): void => {
+      this.emit({ type: 'plan.activity', milestoneId, phase, text })
+    }
+
+    // Resolved — and on the first milestone, created — before the approval is
+    // spent, so a broken or unbuildable worktree costs nothing but time.
+    const worktree = await this.executionWorktree(plan, (text) => activity('executing', text))
+    const root = worktree?.path ?? plan.repoPath
+    const agentEnv = worktree ? { GIT_OPTIONAL_LOCKS: '0' } : undefined
+
+    // Re-checked after the await above, in the same synchronous block as the
+    // spend: worktree setup can take minutes, and a racing start that entered
+    // first has already moved the status. Two starts carry two *different*
+    // approvals, so the atomic single-use spend alone cannot catch this race —
+    // the status refusal is what does.
+    const raced = this.repo.getMilestone(milestoneId)
+    if (!raced) throw new PipelineError('no such milestone')
+    const racedRefusal = executionRefusal(this.repo.getPlan(raced.planId) ?? plan, raced)
+    if (racedRefusal) throw new PipelineError(racedRefusal)
+
     // Spend the approval before anything can write. Throws if already spent.
     this.repo.consumeApproval(approvalId, 'milestone.execute', milestoneId)
     assertCapability('write', true)
@@ -510,12 +581,9 @@ export class Pipeline {
     // Baseline before a single byte is written. Everything downstream compares
     // against this rather than against "clean", because the repository is very
     // often not clean when a milestone starts.
-    const before = await readTree(plan.repoPath, signal)
+    const before = await readTree(root, signal)
 
     const executor = this.registry.get(plan.executor.vendor)
-    const activity = (phase: MilestonePhase, text: string): void => {
-      this.emit({ type: 'plan.activity', milestoneId, phase, text })
-    }
 
     const reviewerVendor =
       plan.reviewer.vendor === plan.executor.vendor
@@ -578,7 +646,7 @@ export class Pipeline {
         'executing',
         remediating
           ? `${plan.executor.vendor} addressing ${previousConcerns.length} objection${previousConcerns.length === 1 ? '' : 's'} — round ${round} of ${MAX_REMEDIATION_ROUNDS}`
-          : `${plan.executor.vendor} started on ${plan.repoPath}`,
+          : `${plan.executor.vendor} started on ${root}`,
       )
 
       const execution = await executor.run({
@@ -602,13 +670,14 @@ export class Pipeline {
               current.title,
               current.intent,
               current.expectedPaths,
-              plan.repoPath,
+              root,
               plan.correctionNote,
               current.testCommand,
             ),
         cfg: plan.executor,
         capability: 'write',
-        cwd: plan.repoPath,
+        cwd: root,
+        env: agentEnv,
         resumeId: executorResumeId,
         signal,
         timeoutMs: STAGE_TIMEOUT_MS,
@@ -632,6 +701,9 @@ export class Pipeline {
       const outcome = await this.verifyAndReview({
         milestoneId,
         plan,
+        root,
+        worktree,
+        agentEnv,
         before,
         round,
         previousConcerns,
@@ -679,7 +751,30 @@ export class Pipeline {
       round += 1
     }
 
-    const finalPassed = lastPassed
+    let finalPassed = lastPassed
+    // A passing worktree milestone is committed by Parley — never per
+    // remediation round (one baseline spans the rounds), and never by the
+    // agent. If the commit fails, the milestone fails with it: a record that
+    // says complete while the branch lacks the work would corrupt landing.
+    if (finalPassed && worktree) {
+      activity('reviewing', 'committing the milestone in the worktree')
+      const commit = await commitMilestone(
+        worktree,
+        `${plan.title} — milestone ${current.index + 1}: ${current.title}`,
+      )
+      if (commit.committed) {
+        history.push(
+          `Committed in the worktree as ${commit.sha.slice(0, 10)} on ${worktree.branch}. ` +
+            `Nothing reaches ${plan.repoPath} until the branch is landed.`,
+        )
+      } else {
+        finalPassed = false
+        history.push(
+          `The milestone passed verification and review, but committing it in the worktree failed: ${commit.detail}. ` +
+            'The record must match the branch, so it is marked failed.',
+        )
+      }
+    }
     current = this.repo.updateMilestone(milestoneId, {
       status: finalPassed ? 'complete' : 'failed',
       reviewNote: history.join('\n\n'),
@@ -707,6 +802,10 @@ export class Pipeline {
   private async verifyAndReview(input: {
     milestoneId: Id
     plan: WorkPlan
+    /** Where this milestone executes: the worktree path, or plan.repoPath. */
+    root: string
+    worktree: Worktree | null
+    agentEnv?: Record<string, string>
     before: TreeState
     round: number
     previousConcerns: string[]
@@ -717,7 +816,7 @@ export class Pipeline {
     signal?: AbortSignal
     firstExecutionText: string
   }): Promise<VerifyOutcome> {
-    const { milestoneId, plan, before, round, activity, signal } = input
+    const { milestoneId, plan, root, before, round, activity, signal } = input
     let current = this.repo.getMilestone(milestoneId)
     if (!current) throw new PipelineError('milestone disappeared mid-run')
 
@@ -728,8 +827,8 @@ export class Pipeline {
     // and a reviewer handed a diff containing none of the milestone's work has
     // nothing to object to. An executor that reports success while writing
     // nothing is a failure, not a pass.
-    const after = await readTree(plan.repoPath, signal)
-    const missing = missingExpectedPaths(plan.repoPath, current.expectedPaths)
+    const after = await readTree(root, signal)
+    const missing = missingExpectedPaths(root, current.expectedPaths)
 
     if (treeUnchanged(before, after)) {
       // Three genuinely different situations, which need three different
@@ -741,7 +840,9 @@ export class Pipeline {
         : missing.length === 0
           ? ` Every path the plan named already exists (${current.expectedPaths.join(', ')}). ` +
             'They were most likely left by an earlier attempt, and the executor declined to overwrite them. ' +
-            'Either commit or delete that work before retrying, so the executor has a clean slate.'
+            (input.worktree
+              ? 'They live in this plan’s worktree, so Adopt & verify can complete the milestone from them.'
+              : 'Either commit or delete that work before retrying, so the executor has a clean slate.')
           : missing.length === current.expectedPaths.length
             ? ` The plan expected it to create or modify ${current.expectedPaths.join(', ')}; none of those exist.`
             : ` The plan expected ${current.expectedPaths.join(', ')}; these do not exist: ${missing.join(', ')}.`
@@ -749,7 +850,7 @@ export class Pipeline {
       // executor does write a placeholder, so an unchanged tree here is no longer
       // explained by mock mode itself and usually means the path is not writable.
       const cause = this.registry.mock
-        ? ' Parley is running with PARLEY_MOCK=1. The mock executor writes one placeholder file, so an unchanged tree usually means the repository path is not writable rather than that mock mode cannot work.'
+        ? ` Parley is running with PARLEY_MOCK=1. The mock executor writes one placeholder file, so an unchanged tree usually means ${input.worktree ? 'the worktree' : 'the repository path'} is not writable rather than that mock mode cannot work.`
         : ` What it said: ${input.firstExecutionText.trim().slice(0, 600) || '(no report)'}`
       // If the work already exists, whether it *passes* is the thing the user
       // needs in order to decide between committing it and starting over. The
@@ -758,7 +859,7 @@ export class Pipeline {
       let existingWorkNote = ''
       if (missing.length === 0 && current.expectedPaths.length > 0 && current.testCommand) {
         activity('testing', `checking whether the existing work passes ${current.testCommand}`)
-        const existingResult = await this.runTests(current.testCommand, plan.repoPath, signal)
+        const existingResult = await this.runTests(current.testCommand, root, signal)
         if (existingResult) {
           current = this.repo.updateMilestone(milestoneId, { testResult: existingResult })
           existingWorkNote =
@@ -789,7 +890,7 @@ export class Pipeline {
       'testing',
       current.testCommand ? `running ${current.testCommand}` : 'no verification command defined',
     )
-    const testResult = await this.runTests(current.testCommand, plan.repoPath, signal)
+    const testResult = await this.runTests(current.testCommand, root, signal)
     if (testResult) {
       activity(
         'testing',
@@ -812,6 +913,8 @@ export class Pipeline {
         milestoneId,
         milestone: current,
         plan,
+        root,
+        agentEnv: input.agentEnv,
         reviewer: input.reviewer,
         reviewerVendor: input.reviewerVendor,
         reviewerResumeId: input.reviewerResumeId,
@@ -847,7 +950,8 @@ export class Pipeline {
       ),
       cfg: reviewerConfig(plan.reviewer, input.reviewerVendor),
       capability: 'read',
-      cwd: plan.repoPath,
+      cwd: root,
+      env: input.agentEnv,
       resumeId: input.reviewerResumeId,
       signal,
       timeoutMs: STAGE_TIMEOUT_MS,
@@ -994,14 +1098,20 @@ export class Pipeline {
     // has no approval step and so no gap — this call is its whole entry.
     assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
 
-    const tree = await readTree(plan.repoPath, signal)
+    // For a worktree plan the work being adopted lives in the worktree —
+    // usually leftovers from an interrupted run. Verified, never created here.
+    const worktree = await this.adoptionWorktree(plan)
+    const root = worktree?.path ?? plan.repoPath
+    const agentEnv = worktree ? { GIT_OPTIONAL_LOCKS: '0' } : undefined
+
+    const tree = await readTree(root, signal)
     if (!tree.unknown && tree.paths.length === 0) {
       throw new PipelineError(
         'there is nothing to adopt — the working tree is clean, so no existing work matches this milestone',
       )
     }
 
-    const missing = missingExpectedPaths(plan.repoPath, milestone.expectedPaths)
+    const missing = missingExpectedPaths(root, milestone.expectedPaths)
     if (missing.length === milestone.expectedPaths.length && milestone.expectedPaths.length > 0) {
       throw new PipelineError(
         `there is nothing to adopt — none of the paths this milestone expects exist: ${missing.join(', ')}`,
@@ -1041,7 +1151,7 @@ export class Pipeline {
 
     // ── Deterministic verification ───────────────────────────────────────────
     activity('testing', current.testCommand ? `running ${current.testCommand}` : 'no verification command defined')
-    const testResult = await this.runTests(current.testCommand, plan.repoPath, signal)
+    const testResult = await this.runTests(current.testCommand, root, signal)
     if (testResult) {
       activity(
         'testing',
@@ -1073,6 +1183,8 @@ export class Pipeline {
         milestoneId,
         milestone: current,
         plan,
+        root,
+        agentEnv,
         reviewer,
         reviewerVendor,
         reviewerResumeId: null,
@@ -1103,7 +1215,8 @@ export class Pipeline {
       ),
       cfg: reviewerConfig(plan.reviewer, reviewerVendor),
       capability: 'read',
-      cwd: plan.repoPath,
+      cwd: root,
+      env: agentEnv,
       signal,
       timeoutMs: STAGE_TIMEOUT_MS,
       onActivity: (text) => activity('reviewing', text),
@@ -1148,7 +1261,25 @@ export class Pipeline {
     } = milestoneVerdict(testResult, mutationResults)
     const testsPassed = testResult !== null && deterministicPassed
     const reviewPassed = parsedReview?.passed === true
-    const passed = missing.length === 0 && testsPassed && reviewPassed
+    let passed = missing.length === 0 && testsPassed && reviewPassed
+
+    // An adopted worktree milestone must be committed too, or the landed
+    // branch would silently lack its work — the record must match the branch.
+    let commitLine = ''
+    if (passed && worktree) {
+      const commit = await commitMilestone(
+        worktree,
+        `${plan.title} — milestone ${current.index + 1}: ${current.title} (adopted)`,
+      )
+      if (commit.committed) {
+        commitLine = `Committed in the worktree as ${commit.sha.slice(0, 10)} on ${worktree.branch}.`
+      } else {
+        passed = false
+        commitLine =
+          `The verification passed, but committing the adopted work in the worktree failed: ${commit.detail}. ` +
+          'The record must match the branch, so the milestone is not adopted.'
+      }
+    }
 
     // The opening line states the *mode*, then the outcome. Leading with
     // "Adopted" on a run that was rejected would claim the opposite of what
@@ -1158,6 +1289,7 @@ export class Pipeline {
         ? `Adopted, not executed: this work was already in the tree when Parley found it, so no agent authored it under supervision. It was verified, not written, and both checks passed.`
         : `Not adopted. This work was already in the tree, so it was verified rather than written — and the verification did not pass.`,
     ]
+    if (commitLine) noteParts.push(commitLine)
 
     // The gap an independent reviewer would otherwise have to notice for itself:
     // the verification command is scoped to the milestone, but adoption reviews
@@ -1385,18 +1517,21 @@ export class Pipeline {
     milestoneId: Id
     milestone: Milestone
     plan: WorkPlan
+    /** Where the milestone executes: the worktree path, or plan.repoPath. */
+    root: string
+    agentEnv?: Record<string, string>
     reviewer: ReturnType<AgentRegistry['get']>
     reviewerVendor: Vendor
     reviewerResumeId: string | null
     activity: (phase: MilestonePhase, text: string) => void
     signal?: AbortSignal
   }): Promise<{ milestone: Milestone; mutationResults: MutationResult[] }> {
-    const { milestone, plan, activity, signal } = input
+    const { milestone, plan, root, activity, signal } = input
     activity(
       'testing',
       `checking that the tests catch ${milestone.mutations.length} deliberate break${milestone.mutations.length === 1 ? '' : 's'}`,
     )
-    let mutationResults = await this.runMutations(milestone, plan.repoPath, signal)
+    let mutationResults = await this.runMutations(milestone, root, signal)
     // A stale anchor is expected — the planner wrote it before this code
     // existed — so it gets one chance to be re-resolved against the file rather
     // than being shrugged off as unchecked or blocking the milestone on a
@@ -1409,6 +1544,8 @@ export class Pipeline {
           reviewer: input.reviewer,
           reviewerVendor: input.reviewerVendor,
           reviewerResumeId: input.reviewerResumeId,
+          root,
+          agentEnv: input.agentEnv,
         },
         plan,
         activity,
@@ -1446,6 +1583,9 @@ export class Pipeline {
       reviewer: ReturnType<AgentRegistry['get']>
       reviewerVendor: Vendor
       reviewerResumeId: string | null
+      /** Where the milestone executes: the worktree path, or plan.repoPath. */
+      root: string
+      agentEnv?: Record<string, string>
     },
     plan: WorkPlan,
     activity: (phase: MilestonePhase, text: string) => void,
@@ -1472,7 +1612,7 @@ export class Pipeline {
     for (const { result, at } of stale) {
       const mutation = milestone.mutations[at]
       if (!mutation) continue
-      const target = join(plan.repoPath, mutation.file)
+      const target = join(input.root, mutation.file)
       // Nothing to re-anchor against if the file is not there; that is a different
       // failure and the existing skip reason already says so.
       if (!existsSync(target)) continue
@@ -1508,7 +1648,8 @@ export class Pipeline {
       prompt: mutationRepairPrompt(items),
       cfg: reviewerConfig(plan.reviewer, input.reviewerVendor),
       capability: 'read',
-      cwd: plan.repoPath,
+      cwd: input.root,
+      env: input.agentEnv,
       resumeId: input.reviewerResumeId,
       signal,
       timeoutMs: STAGE_TIMEOUT_MS,
@@ -1533,9 +1674,9 @@ export class Pipeline {
       if (!repair) continue
 
       const outcome = await withMutationApplied(
-        plan.repoPath,
+        input.root,
         { ...original, ...repair },
-        () => this.runTests(milestone.testCommand, plan.repoPath, signal),
+        () => this.runTests(milestone.testCommand, input.root, signal),
       )
       const judged = judgeMutation(original, outcome)
       merged[at] = judged.skipKind === 'unapplied'
