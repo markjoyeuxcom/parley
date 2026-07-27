@@ -2,6 +2,7 @@ import { homedir } from 'node:os'
 import { statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import {
+  type AgentConfig,
   type Approval,
   emptyUsage,
   type Id,
@@ -131,14 +132,18 @@ export class Manager {
     matter: string
     project: string
     repoPath: string | null
-    agentA: Session['agentA']
-    agentB: Session['agentB']
+    agentA: AgentConfig
+    agentB: AgentConfig
     maxTurns: number
   }): Session {
     const repoPath = input.repoPath ? validateRepoPath(input.repoPath) : null
     if (input.kind === 'review' && !repoPath) {
       throw new RequestError('a codebase review needs a repository')
     }
+
+    // The wire still speaks two sides; they take seats 0 and 1. The request
+    // surface generalises later in this series, once the runner can seat more.
+    const participants = [input.agentA, input.agentB]
 
     const session = this.repo.createSession({
       id: newId(),
@@ -147,14 +152,15 @@ export class Manager {
       matter: input.matter,
       project: input.project,
       repoPath,
-      agentA: input.agentA,
-      agentB: input.agentB,
+      participants,
       maxTurns: input.maxTurns,
       mock: this.registry.mock,
       createdAt: Date.now(),
     })
 
-    if (input.agentA.vendor === input.agentB.vendor) {
+    // Written over the array so it already holds whatever the seat count: a
+    // repeated vendor anywhere weakens the cross-check this is built for.
+    if (new Set(participants.map((seat) => seat.vendor)).size < participants.length) {
       this.emit({
         type: 'notice',
         level: 'warn',

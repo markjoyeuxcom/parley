@@ -38,8 +38,7 @@ function harness(): {
     matter: 'Should the retry path change?',
     project: '',
     repoPath: null,
-    agentA: claude,
-    agentB: codex,
+    participants: [claude, codex],
     maxTurns: 2,
     createdAt: Date.now(),
   } as Omit<Session, 'usage' | 'endedAt' | 'error' | 'archivedAt'>)

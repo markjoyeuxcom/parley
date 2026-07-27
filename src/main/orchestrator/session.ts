@@ -79,7 +79,11 @@ export class SessionRunner {
   }
 
   private configFor(side: TurnSide) {
-    return side === 'a' ? this.session.agentA : this.session.agentB
+    // Seats 0 and 1 are sides a and b — the transitional mapping while turns
+    // still speak sides. It dissolves when the runner schedules seats.
+    const seat = this.session.participants[side === 'a' ? 0 : 1]
+    if (!seat) throw new Error(`this session has no participant seated for side ${side}`)
+    return seat
   }
 
   private systemPromptFor(side: TurnSide): string {

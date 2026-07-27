@@ -172,17 +172,21 @@ export class Repo {
       error: null,
       archivedAt: null,
     }
+    // agent_a and agent_b mirror seats 0 and 1: they are NOT NULL in every
+    // deployed schema, and they are the read fallback for a database an older
+    // build opens after this one wrote to it.
     this.db.run(
-      `INSERT INTO sessions (id, kind, status, matter, project, repo_path, agent_a, agent_b, max_turns, usage, mock, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sessions (id, kind, status, matter, project, repo_path, agent_a, agent_b, participants, max_turns, usage, mock, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       session.id,
       session.kind,
       session.status,
       session.matter,
       session.project,
       session.repoPath,
-      json(session.agentA),
-      json(session.agentB),
+      json(session.participants[0]),
+      json(session.participants[1]),
+      json(session.participants),
       session.maxTurns,
       json(session.usage),
       session.mock ? 1 : 0,
@@ -199,8 +203,12 @@ export class Repo {
       matter: str(row['matter']),
       project: str(row['project']),
       repoPath: nullableStr(row['repo_path']),
-      agentA: parseJson<AgentConfig>(row['agent_a'], { vendor: 'claude', model: '', effort: 'medium', persona: '' }),
-      agentB: parseJson<AgentConfig>(row['agent_b'], { vendor: 'codex', model: '', effort: 'medium', persona: '' }),
+      // Rows older than the v11 backfill — or handed back by an older build —
+      // may carry no participants column; the legacy pair is the fallback.
+      participants: parseJson<AgentConfig[] | null>(row['participants'], null) ?? [
+        parseJson<AgentConfig>(row['agent_a'], { vendor: 'claude', model: '', effort: 'medium', persona: '' }),
+        parseJson<AgentConfig>(row['agent_b'], { vendor: 'codex', model: '', effort: 'medium', persona: '' }),
+      ],
       maxTurns: num(row['max_turns'], 6),
       usage: parseJson<Usage>(row['usage'], emptyUsage()),
       mock: num(row['mock']) === 1,

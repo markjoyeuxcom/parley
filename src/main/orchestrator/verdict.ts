@@ -249,9 +249,16 @@ export function renderReport(
   if (session.project) lines.push(`**Project** — ${session.project}`)
   if (session.repoPath) lines.push(`**Repository** — \`${session.repoPath}\``)
   lines.push(`**Opened** — ${when} UTC`)
+  // Seats render as the sides they are. When the closing sequence learns to
+  // seat more than two, this line grows with it.
   lines.push(
-    `**Advisors** — A: ${session.agentA.vendor}${session.agentA.model ? ` (${session.agentA.model})` : ''} · ` +
-      `B: ${session.agentB.vendor}${session.agentB.model ? ` (${session.agentB.model})` : ''}`,
+    `**Advisors** — ` +
+      session.participants
+        .map((seat, index) => {
+          const side = index === 0 ? 'A' : index === 1 ? 'B' : `${index + 1}`
+          return `${side}: ${seat.vendor}${seat.model ? ` (${seat.model})` : ''}`
+        })
+        .join(' · '),
   )
   lines.push('')
 

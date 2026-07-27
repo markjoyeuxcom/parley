@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 10
+export const SCHEMA_VERSION = 11
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   repo_path  TEXT,
   agent_a    TEXT NOT NULL,
   agent_b    TEXT NOT NULL,
+  -- The participants in seat order, as a JSON array. Seats 0 and 1 mirror
+  -- agent_a/agent_b, which stay written as the legacy fallback: they are NOT
+  -- NULL in every deployed schema, and a database this build hands back to an
+  -- older one must still read as two-sided.
+  participants TEXT,
   max_turns  INTEGER NOT NULL,
   usage      TEXT NOT NULL,
   mock       INTEGER NOT NULL DEFAULT 0,
@@ -497,6 +502,24 @@ export function migrate(db: Db): void {
         CREATE INDEX idx_ledger_dispositions_occurrence
         ON ledger_dispositions(occurrence_id, seq)
       `)
+    })
+  }
+  if (current < 11) {
+    // Participants become data: every existing two-sided session backfills as
+    // seats 0 and 1. agent_a and agent_b hold JSON objects, so concatenation
+    // builds the array without parsing them — and the columns stay in place as
+    // the legacy read fallback.
+    db.transaction(() => {
+      try {
+        db.exec(`ALTER TABLE sessions ADD COLUMN participants TEXT`)
+      } catch {
+        // Already present, because SCHEMA above created the table fresh.
+      }
+      db.exec(
+        `UPDATE sessions
+         SET participants = '[' || agent_a || ',' || agent_b || ']'
+         WHERE participants IS NULL`,
+      )
     })
   }
   db.run(

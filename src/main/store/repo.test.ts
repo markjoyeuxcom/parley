@@ -15,8 +15,10 @@ function makeSession(repo: Repo, overrides: Partial<Session> = {}): Session {
     matter: 'whether to adopt the narrower option',
     project: '',
     repoPath: null,
-    agentA: { vendor: 'claude', model: '', effort: 'medium', persona: '' },
-    agentB: { vendor: 'codex', model: '', effort: 'medium', persona: '' },
+    participants: [
+      { vendor: 'claude', model: '', effort: 'medium', persona: '' },
+      { vendor: 'codex', model: '', effort: 'medium', persona: '' },
+    ],
     maxTurns: 6,
     createdAt: Date.now(),
     ...overrides,
@@ -129,8 +131,7 @@ describe('session bookkeeping', () => {
     const loaded = repo.getSession(session.id)
     expect(loaded?.project).toBe('Ledger')
     expect(loaded?.repoPath).toBe('/tmp/x')
-    expect(loaded?.agentA.vendor).toBe('claude')
-    expect(loaded?.agentB.vendor).toBe('codex')
+    expect(loaded?.participants.map((seat) => seat.vendor)).toEqual(['claude', 'codex'])
   })
 })
 
@@ -332,6 +333,46 @@ describe('migrating an older database', () => {
     const migratedPlan = new Repo(db).getPlan(planId)
     expect(migratedPlan?.correctionNote).toMatch(/the cap belongs there/)
     expect(migratedPlan?.correctionDispositions).toEqual([])
+  })
+
+  /**
+   * The v10 case: a database written before participants were an array. Every
+   * two-sided session must come back as seats 0 and 1, minted from the pair it
+   * was recorded with.
+   */
+  function asVersion10(db: ReturnType<typeof openDatabase>): void {
+    db.exec(`ALTER TABLE sessions DROP COLUMN participants`)
+    db.run(`UPDATE meta SET value = '10' WHERE key = 'schema_version'`)
+  }
+
+  it('backfills participants from the recorded a/b pair', async () => {
+    const db = openDatabase(':memory:')
+    const repo = new Repo(db)
+    const session = makeSession(repo, { matter: 'seated before seats existed' })
+
+    asVersion10(db)
+    const { migrate } = await import('./db')
+    expect(() => migrate(db)).not.toThrow()
+
+    const after = new Repo(db).getSession(session.id)
+    expect(after?.participants.map((seat) => seat.vendor)).toEqual(['claude', 'codex'])
+    // Backfilled as data, not merely derived on read: the column itself holds
+    // the array, so consumers that query it directly see seated rows.
+    const row = db.get(`SELECT participants FROM sessions WHERE id = ?`, session.id)
+    expect(typeof row?.['participants']).toBe('string')
+  })
+
+  it('falls back to the legacy pair when a row has no participants', () => {
+    // A database an older build wrote into after this one created it: the
+    // participants column exists but the row is NULL. The legacy mirror
+    // columns are the truth then, and reading must not fail.
+    const repo = freshRepo()
+    const session = makeSession(repo)
+    const db = (repo as unknown as { db: ReturnType<typeof openDatabase> }).db
+    db.run(`UPDATE sessions SET participants = NULL WHERE id = ?`, session.id)
+
+    const loaded = repo.getSession(session.id)
+    expect(loaded?.participants.map((seat) => seat.vendor)).toEqual(['claude', 'codex'])
   })
 
   it('is safe to run twice', async () => {

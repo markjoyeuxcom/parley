@@ -26,8 +26,10 @@ function harness(): { ctx: IpcContext; repo: Repo; session: Session } {
     matter: 'Should the retry path change?',
     project: '',
     repoPath: null,
-    agentA: { vendor: 'claude', model: '', effort: 'medium', persona: '' },
-    agentB: { vendor: 'codex', model: '', effort: 'medium', persona: '' },
+    participants: [
+      { vendor: 'claude', model: '', effort: 'medium', persona: '' },
+      { vendor: 'codex', model: '', effort: 'medium', persona: '' },
+    ],
     maxTurns: 2,
     createdAt: Date.now(),
   } as Omit<Session, 'usage' | 'endedAt' | 'error' | 'archivedAt'>)

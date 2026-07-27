@@ -243,8 +243,17 @@ export const Session = z.object({
   project: z.string().default(''),
   /** Absolute path. Required for `review`, optional for `debate`. */
   repoPath: z.string().nullable().default(null),
-  agentA: AgentConfig,
-  agentB: AgentConfig,
+  /**
+   * The session's participants, in seat order.
+   *
+   * Seats 0 and 1 are today's sides a and b: the runner still schedules a
+   * two-sided exchange, and the stage and closing-sequence redesign that makes
+   * more seats meaningful arrives later in this series. Stored as an array now
+   * so every record is already the shape that work needs. Minimum two — a
+   * parley needs a counterparty; the ceiling arrives with the surface that
+   * lets anyone ask for more.
+   */
+  participants: z.array(AgentConfig).min(2),
   maxTurns: z.number().int().min(2).max(40).default(6),
   usage: Usage,
   /**

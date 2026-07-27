@@ -12,8 +12,10 @@ function session(id: string): Session {
     matter: 'Should this change ship?',
     project: '',
     repoPath: null,
-    agentA: { vendor: 'claude', model: '', effort: 'medium', persona: '' },
-    agentB: { vendor: 'codex', model: '', effort: 'medium', persona: '' },
+    participants: [
+      { vendor: 'claude', model: '', effort: 'medium', persona: '' },
+      { vendor: 'codex', model: '', effort: 'medium', persona: '' },
+    ],
     maxTurns: 6,
     usage: {
       inputTokens: 0,

@@ -20,8 +20,10 @@ function harness(): { repo: Repo; session: Session } {
     matter: 'Should this change ship?',
     project: '',
     repoPath: null,
-    agentA: { vendor: 'claude', model: '', effort: 'medium', persona: '' },
-    agentB: { vendor: 'codex', model: '', effort: 'medium', persona: '' },
+    participants: [
+      { vendor: 'claude', model: '', effort: 'medium', persona: '' },
+      { vendor: 'codex', model: '', effort: 'medium', persona: '' },
+    ],
     maxTurns: 6,
     createdAt: 1,
   } as Omit<Session, 'usage' | 'endedAt' | 'error' | 'archivedAt'>)
@@ -130,8 +132,10 @@ describe('ledger IPC operations', () => {
       matter: 'A different matter entirely.',
       project: '',
       repoPath: null,
-      agentA: { vendor: 'claude', model: '', effort: 'medium', persona: '' },
-      agentB: { vendor: 'codex', model: '', effort: 'medium', persona: '' },
+      participants: [
+        { vendor: 'claude', model: '', effort: 'medium', persona: '' },
+        { vendor: 'codex', model: '', effort: 'medium', persona: '' },
+      ],
       maxTurns: 6,
       createdAt: 2,
     } as Omit<Session, 'usage' | 'endedAt' | 'error' | 'archivedAt'>)

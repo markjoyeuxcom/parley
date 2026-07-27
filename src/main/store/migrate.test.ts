@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { migrate, openDatabase } from './db'
+import { migrate, openDatabase, SCHEMA_VERSION } from './db'
 
 describe('schema migrations', () => {
   it('upgrades a populated version-8 database with its rows intact', () => {
@@ -48,7 +48,9 @@ describe('schema migrations', () => {
     migrate(db)
 
     expect(db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'schema_version'`)?.value).toBe(
-      '10',
+      // The head version, never a literal - a hardcoded number fails on every
+      // future migration for a reason unrelated to what this test checks.
+      String(SCHEMA_VERSION),
     )
     expect(db.get<{ matter: string }>(`SELECT matter FROM sessions WHERE id = 'session-v8'`)?.matter).toBe(
       'history from schema 8',
@@ -150,7 +152,9 @@ describe('schema migrations', () => {
     migrate(db)
 
     expect(db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'schema_version'`)?.value).toBe(
-      '10',
+      // The head version, never a literal - a hardcoded number fails on every
+      // future migration for a reason unrelated to what this test checks.
+      String(SCHEMA_VERSION),
     )
     expect(
       db.all<{ entryKind: string; id: string; seq: number }>(

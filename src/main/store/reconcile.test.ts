@@ -27,8 +27,7 @@ function makeSession(repo: Repo, status: Session['status']): Session {
     matter: 'x',
     project: '',
     repoPath: null,
-    agentA: claude,
-    agentB: codex,
+    participants: [claude, codex],
     maxTurns: 4,
     createdAt: Date.now(),
   } as Omit<Session, 'usage' | 'endedAt' | 'error'>)

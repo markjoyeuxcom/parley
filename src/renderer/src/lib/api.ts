@@ -1,4 +1,5 @@
 import type {
+  AgentConfig,
   Approval,
   Finding,
   FindingDisposition,
@@ -72,8 +73,9 @@ export const api = {
     matter: string
     project: string
     repoPath: string | null
-    agentA: Session['agentA']
-    agentB: Session['agentB']
+    /** The wire still speaks two sides; they take seats 0 and 1. */
+    agentA: AgentConfig
+    agentB: AgentConfig
     maxTurns: number
   }): Promise<Session> => bridge().invoke('session.start', payload),
   listSessions: (includeArchived = false): Promise<{ sessions: Session[]; archivedCount: number }> =>
