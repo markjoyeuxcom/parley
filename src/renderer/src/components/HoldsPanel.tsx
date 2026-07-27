@@ -63,6 +63,13 @@ export function HoldsPopover(): ReactNode {
 
   const jump = (hold: Hold): void => {
     close()
+    // Backlog holds are repository-scoped: the control is the surface itself,
+    // opened on the repo whose proposals wait.
+    if (hold.kind === 'backlog-review') {
+      dispatch({ type: 'focusBacklogRepo', repoPath: hold.repoPath })
+      dispatch({ type: 'surface', surface: 'backlog' })
+      return
+    }
     if (hold.loopId) {
       dispatch({ type: 'surface', surface: 'loops' })
       void openLoop(hold.loopId)

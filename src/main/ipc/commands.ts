@@ -202,6 +202,22 @@ const HANDLERS: Record<CommandName, Handler> = {
     emit(ctx, { type: 'backlog.changed', repoPath: item.repoPath })
     return item
   },
+  'learnings.list': (p, ctx) => {
+    const { repoPath } = p as { repoPath?: string }
+    return ctx.manager.repo.listLearnings(repoPath ? { repoPath } : {})
+  },
+  'learnings.confirm': (p, ctx) => {
+    const { learningId } = p as { learningId: string }
+    const learning = ctx.manager.repo.transitionLearning(learningId, 'confirmed')
+    emit(ctx, { type: 'backlog.changed', repoPath: learning.repoPath })
+    return learning
+  },
+  'learnings.retire': (p, ctx) => {
+    const { learningId } = p as { learningId: string }
+    const learning = ctx.manager.repo.transitionLearning(learningId, 'retired')
+    emit(ctx, { type: 'backlog.changed', repoPath: learning.repoPath })
+    return learning
+  },
 
   // ── Plans ──────────────────────────────────────────────────────────────────
   'plan.create': (p, ctx) => ctx.manager.createPlan(p as never),

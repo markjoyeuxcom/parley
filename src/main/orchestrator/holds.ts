@@ -1,6 +1,6 @@
 import type { Hold, HoldKind } from '@shared/holds'
 import { HOLD_CLASS, holdIdentity, STALL_AFTER_MS } from '@shared/holds'
-import type { Loop, Milestone, WorkPlan, Worktree } from '@shared/domain'
+import type { BacklogItem, Loop, Milestone, WorkPlan, Worktree } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import { EXECUTABLE_PAIRS } from '@shared/execution'
 import type { Repo } from '@main/store/repo'
@@ -110,6 +110,18 @@ export function computeHolds(repo: Repo, acked: ReadonlySet<string>, now = Date.
     }
   }
 
+  // One hold per repository whose backlog carries proposals — stow drafts
+  // waiting to be confirmed or discarded, completions waiting to be closed or
+  // reopened. Iterated independently of the session loop above: proposals
+  // outlive and cross-cut the sessions that produced them.
+  for (const repoPath of repo.distinctBacklogRepos()) {
+    const pending = repo.listBacklogItems({
+      repoPath,
+      states: ['proposed', 'closure-proposed'],
+    })
+    if (pending.length) holds.push(backlogReviewHold(repoPath, pending))
+  }
+
   const open = holds.filter((hold) => !(HOLD_CLASS[hold.kind] === 'notice' && acked.has(hold.id)))
 
   // Decisions before notices; within a class, the longest-waiting first. The
@@ -132,12 +144,13 @@ function hold(
   kind: HoldKind,
   subjectId: string,
   generation: string,
-  fields: Omit<Hold, 'id' | 'kind' | 'actionable'>,
+  fields: Omit<Hold, 'id' | 'kind' | 'actionable' | 'repoPath'> & { repoPath?: string | null },
 ): Hold {
   return {
     id: holdIdentity(kind, subjectId, generation),
     kind,
     actionable: HOLD_CLASS[kind] === 'decision',
+    repoPath: null,
     ...fields,
   }
 }
@@ -242,6 +255,7 @@ const RECOMPUTES_ON: ReadonlySet<AppEvent['type']> = new Set([
   'plan.milestones',
   'loop.created',
   'loop.status',
+  'backlog.changed',
 ])
 
 /**
@@ -409,6 +423,36 @@ function loopStallHold(loop: Loop, stalledSince: number): Hold {
     detail: `${loop.goal} — no activity past the stall threshold. The kill switch remains yours; nothing stops automatically.`,
     sinceAt: stalledSince,
     mock: loop.mock,
+  })
+}
+
+/**
+ * The generation is the newest pending item's timestamp, not the count: a new
+ * batch arriving mints a fresh identity (one notification), while discarding
+ * or confirming part of a batch only ever falls back to an older timestamp —
+ * an identity that has already been stamped, so triage never renotifies.
+ * Count-based generations are the documented anti-pattern: 3 → 2 → 3 would
+ * re-mint an identity for the same waiting.
+ */
+function backlogReviewHold(repoPath: string, pending: BacklogItem[]): Hold {
+  const proposed = pending.filter((item) => item.state === 'proposed').length
+  const closures = pending.length - proposed
+  const parts: string[] = []
+  if (proposed) parts.push(`${proposed} proposed item${proposed === 1 ? '' : 's'}`)
+  if (closures) parts.push(`${closures} closure proposal${closures === 1 ? '' : 's'}`)
+  const newest = Math.max(...pending.map((item) => item.createdAt))
+  const oldest = Math.min(...pending.map((item) => item.createdAt))
+  return hold('backlog-review', repoPath, String(newest), {
+    sessionId: null,
+    planId: null,
+    milestoneId: null,
+    loopId: null,
+    repoPath,
+    title: 'Backlog proposals to review',
+    detail: `${repoPath} — ${parts.join(' and ')} waiting on your triage.`,
+    sinceAt: oldest,
+    // A single real item makes the waiting real; the chip must not launder it.
+    mock: pending.every((item) => item.mock),
   })
 }
 

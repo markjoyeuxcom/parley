@@ -369,6 +369,43 @@ reach the database with no event (archiving, the ack itself) and call
 `Manager.holdsChanged()` explicitly. When you add a durable state a human must
 react to, add its derivation to `computeHolds` — do not mint another toast.
 
+## The backlog: identity, provenance, one choke point
+
+The per-repository backlog (store tables `backlog_items` / `backlog_events` /
+`learnings`, logic in `orchestrator/backlog.ts`) is a projection of the
+record, not a second task system. Three rules are structural:
+
+- **Identity is a random id plus a content hash, never hash-as-key.** Dedupe
+  (`fileBacklogItem`) is read-then-insert in a transaction against **live
+  states only**; a collision appends a `resighted` event to the live item. A
+  terminal row must never block refiling — a `done` item whose problem comes
+  back deserves a fresh row with a fresh trail, not a silent reopen. The hash
+  reuses `normaliseFindingText` from shared/ledger.ts; do not invent a second
+  normalisation. Near-duplicate *wording* across fresh reviews is accepted —
+  semantic matching belongs to the delta-review work, and the mock adapters
+  emit byte-identical findings, so tests must not oversell what live dedupe
+  does.
+- **Mock provenance is invariant-level.** `mock` columns on items and
+  learnings, copied from the origin session or plan; chips on every surface
+  row; brief injection filtered to the running mode; `createPlan` refuses a
+  cross-mode selection. Mock ingestion is never skipped — PARLEY_MOCK=1 is the
+  sanctioned tokenless workflow and this surface must be exercisable in it.
+- **Every state change goes through `transitionBacklogItem`** — legality
+  table, column update, append-only event with a monotonic `seq`, one
+  transaction. The store test pins fold(events) === column over legal
+  sequences; a write path that bypasses the choke point breaks that proof.
+  Repo keying uses `canonicalRepoPath` (realpath + trailing-slash strip) on
+  the backlog tables only; `validateRepoPath` and the plans/worktrees rows are
+  deliberately untouched.
+
+Lifecycle hooks live in `backlog.ts` and are called as one-liners from
+session/pipeline/manager code. Completion **proposes** closure (worktree plans
+only at landing — completion without landing has not touched the checkout);
+planning death regresses planned items to open in the `createPlan`/
+`answerPlan` catch blocks; nothing ever auto-closes. The stow sweep is one
+gated read-only turn over a **composed, bounded** input — columns and
+tail-sliced turns, never `verdict.report`, which embeds the whole exchange.
+
 ## Worktree isolation: the checkout is never touched mid-run
 
 A plan created with `isolation: 'worktree'` executes every milestone in a

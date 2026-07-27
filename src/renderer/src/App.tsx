@@ -8,6 +8,7 @@ import { NewSessionDialog } from './components/NewSessionDialog'
 import { GridSurface } from './surfaces/GridSurface'
 import { ParleySurface } from './surfaces/ParleySurface'
 import { LoopsSurface } from './surfaces/LoopsSurface'
+import { BacklogSurface } from './surfaces/BacklogSurface'
 import { useStore, type Surface } from './state'
 
 export function App(): ReactNode {
@@ -23,9 +24,9 @@ export function App(): ReactNode {
       if (key === 'k') {
         event.preventDefault()
         dispatch({ type: 'palette', open: !state.paletteOpen })
-      } else if (key === '1' || key === '2' || key === '3') {
+      } else if (key === '1' || key === '2' || key === '3' || key === '4') {
         event.preventDefault()
-        const order: Surface[] = ['grid', 'parley', 'loops']
+        const order: Surface[] = ['grid', 'parley', 'loops', 'backlog']
         const next = order[Number(key) - 1]
         if (next) dispatch({ type: 'surface', surface: next })
       }
@@ -56,6 +57,20 @@ export function App(): ReactNode {
         label: 'Loops — autonomous runs',
         hint: '⌘3',
         run: () => dispatch({ type: 'surface', surface: 'loops' }),
+      },
+      {
+        id: 'surface.backlog',
+        group: 'Go',
+        label: (() => {
+          const pending = state.backlogItems.filter(
+            (i) => i.state === 'proposed' || i.state === 'closure-proposed',
+          ).length
+          return pending > 0
+            ? `Backlog — ${pending} proposal${pending === 1 ? '' : 's'} to review`
+            : 'Backlog — tracked work per repository'
+        })(),
+        hint: '⌘4',
+        run: () => dispatch({ type: 'surface', surface: 'backlog' }),
       },
       {
         id: 'new.debate',
@@ -112,7 +127,7 @@ export function App(): ReactNode {
     }
 
     return list
-  }, [dispatch, openSession, state.holds, state.sessions, state.theme])
+  }, [dispatch, openSession, state.backlogItems, state.holds, state.sessions, state.theme])
 
   return (
     <div className={state.mock ? 'app app--mock' : 'app'}>
@@ -146,6 +161,9 @@ export function App(): ReactNode {
       </div>
       <div style={{ display: state.surface === 'loops' ? 'contents' : 'none' }}>
         <LoopsSurface />
+      </div>
+      <div style={{ display: state.surface === 'backlog' ? 'contents' : 'none' }}>
+        <BacklogSurface />
       </div>
 
       <CommandPalette actions={actions} />

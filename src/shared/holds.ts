@@ -39,6 +39,8 @@ export type HoldKind =
   | 'merge-ready'
   /** Landing was refused — the checkout diverged or has conflicting dirt. */
   | 'merge-blocked'
+  /** A repository's backlog holds proposals waiting on human triage. */
+  | 'backlog-review'
 
 /**
  * Decision holds clear only by acting — answering, approving, landing. They
@@ -59,6 +61,9 @@ export const HOLD_CLASS: Record<HoldKind, HoldClass> = {
   'run-stalled': 'notice',
   'merge-ready': 'decision',
   'merge-blocked': 'notice',
+  // Proposals wait on a real yes/no: confirm into the backlog or discard,
+  // close or reopen. An ack would hide them while they stay proposed forever.
+  'backlog-review': 'decision',
 }
 
 export interface Hold {
@@ -70,6 +75,8 @@ export interface Hold {
   planId: Id | null
   milestoneId: Id | null
   loopId: Id | null
+  /** Set on backlog holds, which are repository-scoped rather than row-scoped. */
+  repoPath: string | null
   /** Short sentence naming what waits. */
   title: string
   /** The substance: the question text, the milestone, the stop reason. */

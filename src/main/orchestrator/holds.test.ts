@@ -397,3 +397,84 @@ describe('computeHolds', () => {
     expect(holds.find((h) => h.kind === 'loop-exhausted')?.mock).toBe(false)
   })
 })
+
+describe('the backlog-review hold', () => {
+  const file = (
+    repo: Repo,
+    repoPath: string,
+    title: string,
+    state: 'proposed' | 'open',
+    mock = true,
+  ) =>
+    repo.fileBacklogItem({ repoPath, title, source: 'manual', mock, state }).item
+
+  it('derives one decision hold per repository with pending proposals', () => {
+    const repo = freshRepo()
+    file(repo, '/tmp/repo-a', 'A stow proposal', 'proposed')
+    file(repo, '/tmp/repo-a', 'Another stow proposal', 'proposed')
+    file(repo, '/tmp/repo-a', 'Already triaged into the backlog', 'open')
+    file(repo, '/tmp/repo-b', 'Quiet repo, nothing pending', 'open')
+
+    const holds = computeHolds(repo, none)
+    const review = holds.filter((h) => h.kind === 'backlog-review')
+    expect(review).toHaveLength(1)
+    expect(review[0]).toMatchObject({
+      actionable: true,
+      repoPath: '/tmp/repo-a',
+      mock: true,
+    })
+    expect(review[0]?.detail).toContain('2 proposed items')
+  })
+
+  it('closure proposals count as pending triage too', () => {
+    const repo = freshRepo()
+    const session = makeSession(repo)
+    const plan = makePlan(repo, session.id, 'complete')
+    const item = file(repo, '/tmp/repo-c', 'Planned and completed', 'open')
+    repo.transitionBacklogItem(item.id, 'planned', { source: 'pipeline', planId: plan.id })
+    repo.transitionBacklogItem(item.id, 'closure-proposed', {
+      source: 'pipeline',
+      planId: plan.id,
+    })
+
+    const review = computeHolds(repo, none).filter((h) => h.kind === 'backlog-review')
+    expect(review).toHaveLength(1)
+    expect(review[0]?.detail).toContain('1 closure proposal')
+
+    // Closing it is the triage; the hold clears with nothing to ack.
+    repo.transitionBacklogItem(item.id, 'done', { source: 'human' })
+    expect(computeHolds(repo, none).some((h) => h.kind === 'backlog-review')).toBe(false)
+  })
+
+  it('a new batch mints a fresh identity; triage only falls back to stamped ones', () => {
+    const repo = freshRepo()
+    const first = file(repo, '/tmp/repo-d', 'The first proposal', 'proposed')
+    const soloId = computeHolds(repo, none).find((h) => h.kind === 'backlog-review')?.id
+
+    // A later arrival is new waiting: fresh identity, one fresh notification.
+    const db = repo as unknown as { db: { run: (sql: string, ...p: unknown[]) => unknown } }
+    const second = file(repo, '/tmp/repo-d', 'A later proposal', 'proposed')
+    db.db.run(
+      `UPDATE backlog_items SET created_at = ? WHERE id = ?`,
+      first.createdAt + 60_000,
+      second.id,
+    )
+    const batchId = computeHolds(repo, none).find((h) => h.kind === 'backlog-review')?.id
+    expect(batchId).toBeDefined()
+    expect(batchId).not.toBe(soloId)
+
+    // Discarding the newest falls back to the first item's identity — already
+    // stamped, so partial triage never renotifies.
+    repo.transitionBacklogItem(second.id, 'dropped', { source: 'human' })
+    const fallback = computeHolds(repo, none).find((h) => h.kind === 'backlog-review')?.id
+    expect(fallback).toBe(soloId)
+  })
+
+  it('a single real pending item makes the hold real', () => {
+    const repo = freshRepo()
+    file(repo, '/tmp/repo-e', 'Mock proposal', 'proposed')
+    file(repo, '/tmp/repo-e', 'Real proposal', 'proposed', false)
+    const review = computeHolds(repo, none).find((h) => h.kind === 'backlog-review')
+    expect(review?.mock).toBe(false)
+  })
+})

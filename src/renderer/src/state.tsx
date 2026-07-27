@@ -8,7 +8,7 @@ import {
   useRef,
   type ReactNode,
 } from 'react'
-import type { Id, Loop, Pane, Session, Skill } from '@shared/domain'
+import type { BacklogItem, Id, Learning, Loop, Pane, Session, Skill } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import type { Hold } from '@shared/holds'
 import type { CliHealth } from '@shared/ipc'
@@ -16,7 +16,7 @@ import { api, type LoopDetail, type PlanDetail, type SessionDetail } from './lib
 import { applyHoldsEvent } from './lib/holdsState'
 import { applyLedgerEvent } from './lib/ledgerState'
 
-export type Surface = 'grid' | 'parley' | 'loops'
+export type Surface = 'grid' | 'parley' | 'loops' | 'backlog'
 export type ThemeChoice = 'system' | 'light' | 'dark'
 
 export interface Notice {
@@ -80,6 +80,15 @@ interface State {
    * the panel; this is only the knock on its door.
    */
   focusMilestoneId: Id | null
+  /** Every repository's backlog; the surface groups and filters client-side. */
+  backlogItems: BacklogItem[]
+  learnings: Learning[]
+  /**
+   * A repository the holds queue wants the backlog surface opened on. Same
+   * shape as focusMilestoneId: set by the jump, consumed and cleared by the
+   * surface — the surface's own repo selection stays local to it.
+   */
+  focusBacklogRepo: string | null
   /** Keyed by milestone id, then by loop id. Never persisted. */
   activity: Record<Id, ActivityLog>
 }
@@ -107,6 +116,9 @@ const initialState: State = {
   holds: [],
   holdsOpen: false,
   focusMilestoneId: null,
+  backlogItems: [],
+  learnings: [],
+  focusBacklogRepo: null,
   activity: {},
 }
 
@@ -131,6 +143,8 @@ type Action =
   | { type: 'holds'; holds: Hold[] }
   | { type: 'holdsPanel'; open: boolean }
   | { type: 'focusMilestone'; milestoneId: Id | null }
+  | { type: 'backlog'; items: BacklogItem[]; learnings: Learning[] }
+  | { type: 'focusBacklogRepo'; repoPath: string | null }
   | { type: 'appEvent'; event: AppEvent }
 
 let noticeSeq = 0
@@ -192,6 +206,10 @@ function reducer(state: State, action: Action): State {
       return { ...state, holdsOpen: action.open }
     case 'focusMilestone':
       return { ...state, focusMilestoneId: action.milestoneId }
+    case 'backlog':
+      return { ...state, backlogItems: action.items, learnings: action.learnings }
+    case 'focusBacklogRepo':
+      return { ...state, focusBacklogRepo: action.repoPath }
     case 'appEvent':
       return applyEvent(state, action.event)
     default:
@@ -452,6 +470,7 @@ interface Store {
    */
   refreshSessions: (includeArchived?: boolean) => Promise<void>
   refreshLoops: () => Promise<void>
+  refreshBacklog: () => Promise<void>
   openSession: (sessionId: Id) => Promise<void>
   openLoop: (loopId: Id) => Promise<void>
   openPlan: (planId: Id) => Promise<void>
@@ -495,6 +514,16 @@ export function StoreProvider({ children }: { children: ReactNode }): ReactNode 
     if (loops) dispatch({ type: 'loops', loops })
   }, [attempt])
 
+  // Items and learnings travel together: every write path that touches either
+  // emits the same backlog.changed poke, and the surface shows both.
+  const refreshBacklog = useCallback(async () => {
+    const [items, learnings] = await Promise.all([
+      attempt(() => api.listBacklogItems()),
+      attempt(() => api.listLearnings()),
+    ])
+    if (items && learnings) dispatch({ type: 'backlog', items, learnings })
+  }, [attempt])
+
   const openSession = useCallback(
     async (sessionId: Id) => {
       dispatch({ type: 'activeSession', sessionId })
@@ -523,9 +552,15 @@ export function StoreProvider({ children }: { children: ReactNode }): ReactNode 
 
   // Subscribe once, for the lifetime of the app.
   useEffect(() => {
-    const off = api.onEvent((event) => dispatch({ type: 'appEvent', event }))
+    const off = api.onEvent((event) => {
+      dispatch({ type: 'appEvent', event })
+      // backlog.changed is deliberately a poke with no payload — ingestion can
+      // touch many rows across repos at once, so the honest response is a
+      // refetch rather than a patch.
+      if (event.type === 'backlog.changed') void refreshBacklog()
+    })
     return off
-  }, [])
+  }, [refreshBacklog])
 
   // Initial load.
   useEffect(() => {
@@ -542,12 +577,13 @@ export function StoreProvider({ children }: { children: ReactNode }): ReactNode 
     void attempt(() => api.listHolds()).then((holds) => {
       if (holds) dispatch({ type: 'holds', holds })
     })
+    void refreshBacklog()
     void attempt(() => api.info()).then((info) => {
       if (info) {
         dispatch({ type: 'mock', mock: info.mock, codexDefaultModel: info.codexDefaultModel })
       }
     })
-  }, [attempt, refreshSessions, refreshLoops])
+  }, [attempt, refreshSessions, refreshLoops, refreshBacklog])
 
   // Apply the theme choice to the document root, which the token layer reads.
   useEffect(() => {
@@ -575,11 +611,12 @@ export function StoreProvider({ children }: { children: ReactNode }): ReactNode 
       attempt,
       refreshSessions,
       refreshLoops,
+      refreshBacklog,
       openSession,
       openLoop,
       openPlan,
     }),
-    [state, notify, attempt, refreshSessions, refreshLoops, openSession, openLoop, openPlan],
+    [state, notify, attempt, refreshSessions, refreshLoops, refreshBacklog, openSession, openLoop, openPlan],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

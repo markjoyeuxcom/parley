@@ -14,6 +14,7 @@ API-key code path.
 | **Codebase review** | You need findings you can act on without re-verifying each one. |
 | **Loop** | "Done" is machine-checkable and the work converges. |
 | **Audited execution** | A change matters enough to want gates, tests and an independent reviewer between the agent and your repository. |
+| **Backlog** | You want what reviews found and sessions learned to outlive the session that produced them. |
 
 Each section below says when the surface earns its cost — and when it doesn't.
 
@@ -321,6 +322,43 @@ acknowledging them is the action.
 The queue is derived from the durable record, never stored beside it — it
 cannot drift, and it survives restarts. Park work, walk away, resolve the
 batch when you return.
+
+---
+
+## Backlog — the record remembers (⌘4)
+
+Work worth doing accumulates in a per-repository backlog, filed by the record
+itself rather than by anyone's discipline:
+
+- **A completed review's confirmed findings** become open items automatically,
+  with the evidence refs copied over. Past reviews are swept in at startup, so
+  the backlog opens already populated from everything Parley has seen.
+- **An accepted risk is not a resolved risk.** Dispositioning a finding as
+  accepted-risk files it against the repository it was accepted in — the
+  decision is honored today and remembered tomorrow.
+- **Stow** — a button on any finished session with a verdict — runs one
+  read-only pass by the counterpart vendor over the bounded record (matter,
+  verdict, findings, closing turns) and drafts backlog items and prose
+  learnings from what the structured record does not already say. Everything
+  it drafts is a **proposal**: nothing enters the working backlog until you
+  confirm it, and re-filed duplicates just re-sight the item they matched.
+
+Items move `proposed → open → planned → closure-proposed → done` (or are
+dropped), every transition a human act or a pipeline act on an append-only
+trail. Creating a plan lets you select open items; they ride the brief with
+their evidence, flip to planned, and — when the plan completes (for worktree
+plans, when it **lands**) — come back as closure proposals. The pipeline never
+closes its own work: it says "I believe this is done", and you agree or send
+the item back.
+
+**Learnings** are the prose counterpart: short lessons a stow sweep drafts and
+you confirm. Confirmed learnings ride every new plan brief for their
+repository — newest first, capped, attributed — so a hard-won constraint
+("the retry tests need a cold cache") stops being re-discovered by every
+agent. Retiring a learning is what stops it; write-time is never capped.
+
+Pending proposals surface as a decision hold per repository, so triage reaches
+you through the same queue as everything else.
 
 ---
 

@@ -174,6 +174,11 @@ export const CloseBacklogItemReq = z.object({
   itemId: Id,
   note: z.string().trim().max(2000).default(''),
 })
+export const ListLearningsReq = z.object({ repoPath: z.string().optional() })
+/** Confirms a proposed learning; confirmed learnings ride every new brief. */
+export const ConfirmLearningReq = z.object({ learningId: Id })
+/** Retires a learning so it stops riding briefs. Terminal — never deleted. */
+export const RetireLearningReq = z.object({ learningId: Id })
 export const DisposeLedgerFindingReq = z.object({
   sessionId: Id,
   findingId: Id,
@@ -229,6 +234,9 @@ export const COMMANDS = {
   'backlog.setBlockedBy': SetBacklogBlockedByReq,
   'backlog.confirm': ConfirmBacklogItemReq,
   'backlog.close': CloseBacklogItemReq,
+  'learnings.list': ListLearningsReq,
+  'learnings.confirm': ConfirmLearningReq,
+  'learnings.retire': RetireLearningReq,
   'plan.create': CreatePlanReq,
   'plan.get': GetPlanReq,
   'plan.list': null,

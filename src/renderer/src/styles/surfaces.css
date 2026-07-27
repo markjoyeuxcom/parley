@@ -1375,3 +1375,102 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ─── Backlog surface ──────────────────────────────────────────────────────── */
+
+.backlog-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(220px, 1fr));
+  gap: var(--s4);
+  align-items: start;
+}
+
+.backlog-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  min-width: 0;
+}
+
+.backlog-col__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding-bottom: var(--s1);
+  border-bottom: 1px solid var(--line-faint);
+}
+
+.backlog-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--line-faint);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+}
+
+.backlog-card.is-busy {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.backlog-card__title {
+  font-size: var(--text-small);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.backlog-card__detail {
+  margin: 0;
+  font-size: var(--text-tiny);
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.backlog-card__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.backlog-card__actions {
+  display: flex;
+  gap: var(--s2);
+}
+
+.backlog-card__blockers {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-faint);
+  border-radius: var(--r-md);
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.backlog-learnings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.backlog-learnings__row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.backlog-learnings__text {
+  flex: 1;
+  min-width: 240px;
+  font-size: var(--text-small);
+}

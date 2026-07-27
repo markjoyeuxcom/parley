@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react'
-import { Command, Repeat, Scale, Terminal } from 'lucide-react'
+import { Command, ListChecks, Repeat, Scale, Terminal } from 'lucide-react'
 import { useStore, type Surface, type ThemeChoice } from '../state'
 import { HoldsButton } from './HoldsPanel'
 import { Dot } from './ui'
@@ -8,6 +8,7 @@ const SURFACES: Array<{ id: Surface; label: string; icon: ReactNode }> = [
   { id: 'grid', label: 'Grid', icon: <Terminal size={13} strokeWidth={2} /> },
   { id: 'parley', label: 'Parley', icon: <Scale size={13} strokeWidth={2} /> },
   { id: 'loops', label: 'Loops', icon: <Repeat size={13} strokeWidth={2} /> },
+  { id: 'backlog', label: 'Backlog', icon: <ListChecks size={13} strokeWidth={2} /> },
 ]
 
 const THEME_ORDER: ThemeChoice[] = ['system', 'light', 'dark']
@@ -21,6 +22,11 @@ export function Titlebar(): ReactNode {
     grid: state.panes.filter((p) => p.status !== 'exited').length,
     parley: activeSessions,
     loops: activeLoops,
+    // Pending triage, matching the backlog-review hold: proposals in, human
+    // answer not yet given.
+    backlog: state.backlogItems.filter(
+      (i) => i.state === 'proposed' || i.state === 'closure-proposed',
+    ).length,
   }
 
   return (

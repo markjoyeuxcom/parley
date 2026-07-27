@@ -9,6 +9,7 @@ import type {
   Id,
   Interjection,
   InterjectionTarget,
+  Learning,
   Loop,
   LoopIteration,
   Milestone,
@@ -138,6 +139,14 @@ export const api = {
   /** Closes a closure-proposed item — the human half of the proposal. */
   closeBacklogItem: (itemId: Id, note = ''): Promise<BacklogItem> =>
     bridge().invoke('backlog.close', { itemId, note }),
+  listLearnings: (repoPath?: string): Promise<Learning[]> =>
+    bridge().invoke('learnings.list', repoPath ? { repoPath } : {}),
+  /** Confirms a proposed learning; confirmed learnings ride every new brief. */
+  confirmLearning: (learningId: Id): Promise<Learning> =>
+    bridge().invoke('learnings.confirm', { learningId }),
+  /** Retires a learning so it stops riding briefs. Terminal — never deleted. */
+  retireLearning: (learningId: Id): Promise<Learning> =>
+    bridge().invoke('learnings.retire', { learningId }),
 
   // Plans
   createPlan: (payload: {
