@@ -1784,3 +1784,35 @@
   color: var(--text-primary);
   border-bottom-color: var(--accent);
 }
+
+/* ─── Repo overview head + plan origin links ───────────────────────────────── */
+
+.repo-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  margin-bottom: var(--s4);
+}
+
+.repo-head__path {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--text-small);
+  font-weight: 600;
+}
+
+.plan-origin {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.plan-origin:hover {
+  text-decoration: underline;
+}
+
+.waiting-detail {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+}

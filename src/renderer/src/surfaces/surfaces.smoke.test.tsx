@@ -4,12 +4,14 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type {
   BacklogItem,
   ForemanProposal,
+  Milestone,
   Session,
   Turn,
   Usage,
   Verdict,
+  WorkPlan,
 } from '@shared/domain'
-import type { CommandName } from '@shared/ipc'
+import type { CommandName, LedgerEntry } from '@shared/ipc'
 import { useEffect, type ReactNode } from 'react'
 import { StoreProvider, useStore, type Surface } from '../state'
 import { ParleySurface } from './ParleySurface'
@@ -130,13 +132,81 @@ const proposal: ForemanProposal = {
   decisionNote: '',
 }
 
+const smokePlan: WorkPlan = {
+  id: 'e'.repeat(36),
+  sessionId: session.id,
+  kind: 'implementation',
+  title: 'Bound the retry path',
+  repoPath: '/tmp/smoke-repo',
+  planner: claude,
+  executor: codex,
+  reviewer: claude,
+  status: 'ready',
+  question: '',
+  correctionNote: '',
+  correctionDispositions: [],
+  isolation: 'checkout',
+  setupCommand: '',
+  usage,
+  mock: true,
+  createdAt: 1_700_000_000_000,
+}
+
+const smokeMilestone: Milestone = {
+  id: 'f'.repeat(36),
+  planId: smokePlan.id,
+  index: 0,
+  title: 'Add a retry ceiling',
+  intent: 'Cap retries and surface exhaustion.',
+  expectedPaths: [],
+  status: 'audited',
+  auditNote: '',
+  testCommand: 'true',
+  testResult: null,
+  mutations: [],
+  mutationResults: [],
+  reviewNote: '',
+  reviewBlocking: [],
+  reviewNotes: [],
+  reviewPassed: null,
+  adopted: false,
+  approvalId: null,
+  createdAt: 1_700_000_000_000,
+  completedAt: null,
+}
+
+/** One open blocking occurrence: the approval gate must show as blocked. */
+const blockingEntry: LedgerEntry = {
+  id: 'finding-smoke-1',
+  sessionId: session.id,
+  text: 'The retry ceiling is asserted against the imported constant.',
+  normalizedText: 'the retry ceiling is asserted against the imported constant',
+  createdAt: 1_700_000_000_000,
+  occurrences: [
+    {
+      id: 'occurrence-smoke-1',
+      findingId: 'finding-smoke-1',
+      planId: smokePlan.id,
+      milestoneId: null,
+      round: null,
+      kind: 'blocking',
+      source: 'audit',
+      seq: 1,
+      createdAt: 1_700_000_000_000,
+    },
+  ],
+  dispositions: [],
+}
+
 /**
  * The fake bridge: every command the mounted surfaces reach for, answered
  * with fixtures. An unlisted command resolves undefined, which the store's
  * attempt() guards tolerate — but list the ones under test explicitly so a
  * renamed command fails loudly here rather than passing vacuously.
  */
-function installBridge(): void {
+function installBridge(
+  overrides: Partial<Record<CommandName, (payload?: unknown) => unknown>> = {},
+): void {
   const handlers: Partial<Record<CommandName, (payload?: unknown) => unknown>> = {
     'app.info': () => ({ mock: true, codexDefaultModel: '' }),
     'health.probe': () => [],
@@ -151,14 +221,40 @@ function installBridge(): void {
       plans: [],
     }),
     'holds.list': () => [],
-    'ledger.list': () => [],
+    'ledger.list': () => [blockingEntry],
     'backlog.list': () => [openItem],
     'learnings.list': () => [],
     'foreman.list': () => [proposal],
-    'plan.list': () => [],
+    'plan.list': (payload) =>
+      (payload as { repoPath?: string } | undefined)?.repoPath === '/tmp/smoke-repo'
+        ? [smokePlan]
+        : [],
+    'plan.get': () => ({ plan: smokePlan, milestones: [smokeMilestone], worktree: null }),
+    'repos.list': () => [
+      {
+        repoPath: '/tmp/smoke-repo',
+        planCount: 1,
+        attentionPlans: 0,
+        openItems: 1,
+        pendingTriage: 0,
+        hasPendingProposal: true,
+      },
+      // A repository whose only records are plans — it must appear and get
+      // full tabs, or the surface dead-ends on exactly the repos it exists
+      // for.
+      {
+        repoPath: '/tmp/smoke-plans-only',
+        planCount: 2,
+        attentionPlans: 1,
+        openItems: 0,
+        pendingTriage: 0,
+        hasPendingProposal: false,
+      },
+    ],
     'loop.list': () => [],
     'skill.list': () => [],
     'pane.list': () => [],
+    ...overrides,
   }
   window.parley = {
     invoke: <T,>(command: CommandName, payload?: unknown): Promise<T> =>
@@ -224,6 +320,50 @@ describe('mounted-surface smoke', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: /Learnings/ }))
     expect(screen.queryByText('Closure proposed')).toBeNull()
+  })
+
+  it('a plan opens in place on the Plans tab, and the gate fails closed', async () => {
+    render(
+      <StoreProvider>
+        <OnSurface surface="backlog">
+          <BacklogSurface />
+        </OnSurface>
+      </StoreProvider>,
+    )
+
+    // A plans-only repo appears from the summaries and gets full tabs.
+    await screen.findByTitle('/tmp/smoke-plans-only')
+
+    fireEvent.click(await screen.findByTitle('/tmp/smoke-repo'))
+    fireEvent.click(await screen.findByRole('tab', { name: /Plans/ }))
+    fireEvent.click(await screen.findByText(smokePlan.title))
+
+    // The first mounted PlanPanel in the suite's history: the milestone
+    // renders, and its approval gate sees the blocking ledger fixture.
+    await screen.findByText(smokeMilestone.title)
+    fireEvent.click(await screen.findByText('Approve and run'))
+    await screen.findByText(/finding needs a disposition/)
+    await screen.findByText(blockingEntry.text)
+  })
+
+  it('an unavailable ledger disables the gate instead of un-gating it', async () => {
+    installBridge({ 'ledger.list': () => undefined })
+    render(
+      <StoreProvider>
+        <OnSurface surface="backlog">
+          <BacklogSurface />
+        </OnSurface>
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByTitle('/tmp/smoke-repo'))
+    fireEvent.click(await screen.findByRole('tab', { name: /Plans/ }))
+    fireEvent.click(await screen.findByText(smokePlan.title))
+    await screen.findByText(smokeMilestone.title)
+    fireEvent.click(await screen.findByText('Approve and run'))
+
+    // Null means unknown, and unknown fails CLOSED.
+    await screen.findByText(/ledger could not be loaded/)
   })
 
   it('the Loops surface mounts empty', async () => {

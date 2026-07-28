@@ -10,12 +10,16 @@ import type {
   Session,
   WorkPlan,
 } from '@shared/domain'
+import type { RepoSummary } from '@shared/ipc'
+import type { Hold } from '@shared/holds'
 import { api } from '../lib/api'
 import { compactNumber, relativeTime, shortPath, statusTone } from '../lib/format'
 import { useStore, type RepoTab } from '../state'
 import { AgentPicker } from '../components/AgentPicker'
-import { NewPlanDialog } from '../components/PlanPanel'
-import { Chip, Empty, Label, Spinner } from '../components/ui'
+import { NewPlanDialog, PlanPanel } from '../components/PlanPanel'
+import { NewSessionDialog } from '../components/NewSessionDialog'
+import { useHoldJump } from '../components/HoldsPanel'
+import { Chip, Dot, Empty, Label, Spinner } from '../components/ui'
 
 /**
  * The per-repository backlog: what Parley's own record says is worth doing.
@@ -40,7 +44,8 @@ const COLUMNS: Array<{ state: BacklogItemState; title: string; hint: string }> =
 ]
 
 export function BacklogSurface(): ReactNode {
-  const { state, dispatch, attempt, notify } = useStore()
+  const { state, dispatch, attempt, notify, openPlan, openSession, refreshSessions } = useStore()
+  const jumpToHold = useHoldJump()
   const [repo, setRepo] = useState<string | null>(null)
   // The per-repo tab, defaulting to Overview. Selecting a different repo
   // resets it — the tab is a place within a repo, not a global mode.
@@ -58,6 +63,8 @@ export function BacklogSurface(): ReactNode {
     proposal: ForemanProposal
     session: Session
   } | null>(null)
+  const [summaries, setSummaries] = useState<RepoSummary[]>([])
+  const [showReview, setShowReview] = useState(false)
 
   // The holds queue's knock: a repo-scoped hold opened this surface on a
   // specific repository — and on the exact tab that carries its control.
@@ -78,7 +85,11 @@ export function BacklogSurface(): ReactNode {
   useEffect(() => {
     if (state.surface !== 'backlog') return
     let cancelled = false
-    void attempt(() => api.listPlans()).then((all) => {
+    // Per-repo and uncapped when a repo is selected — the board chips, the
+    // In-flight card and the Plans table all read one snapshot, so a card
+    // and a table row can never disagree. The capped global list serves
+    // only the all-repos view.
+    void attempt(() => api.listPlans(repo ?? undefined)).then((all) => {
       if (all && !cancelled) setPlans(all)
     })
     // Proposals ride the same refetch rhythm: every foreman write emits
@@ -86,10 +97,13 @@ export function BacklogSurface(): ReactNode {
     void attempt(() => api.listForemanProposals()).then((all) => {
       if (all && !cancelled) setProposals(all)
     })
+    void attempt(() => api.listRepoSummaries()).then((all) => {
+      if (all && !cancelled) setSummaries(all)
+    })
     return () => {
       cancelled = true
     }
-  }, [attempt, state.backlogItems, state.surface])
+  }, [attempt, state.backlogItems, state.surface, repo, state.plansVersion])
 
   // Supersede racing the open dialog: if the proposal being accepted stops
   // being the pending one — a newer run replaced it, or it was decided
@@ -106,18 +120,20 @@ export function BacklogSurface(): ReactNode {
     }
   }, [proposals, acceptTarget, notify])
 
-  const repos = useMemo(() => {
-    const paths = new Set<string>()
-    for (const item of state.backlogItems) paths.add(item.repoPath)
-    for (const learning of state.learnings) paths.add(learning.repoPath)
-    return [...paths].sort()
-  }, [state.backlogItems, state.learnings])
+  // Summaries drive membership: the union of plan, backlog and learning
+  // repos — a repository whose only records are plans MUST appear, which
+  // the old backlog-derived memo could not deliver.
+  const repos = useMemo(() => summaries.map((s) => s.repoPath), [summaries])
+  const summaryFor = (path: string): RepoSummary | undefined =>
+    summaries.find((s) => s.repoPath === path)
 
   // A selected repo that lost its last row falls back to the all-repos view
-  // rather than filtering forever on nothing.
+  // rather than filtering forever on nothing. Guarded on the summaries
+  // having ARRIVED — bouncing the holds-jump selection before the first
+  // fetch resolves would eat the knock.
   useEffect(() => {
-    if (repo !== null && !repos.includes(repo)) setRepo(null)
-  }, [repo, repos])
+    if (repo !== null && summaries.length > 0 && !repos.includes(repo)) setRepo(null)
+  }, [repo, repos, summaries.length])
 
   const items = useMemo(
     () => (repo ? state.backlogItems.filter((i) => i.repoPath === repo) : state.backlogItems),
@@ -194,29 +210,32 @@ export function BacklogSurface(): ReactNode {
                   <span className="tnum">{state.backlogItems.length} items</span>
                 </div>
               </button>
-              {repos.map((path) => {
-                const pending = pendingCount(path)
-                return (
-                  <button
-                    key={path}
-                    className={`list-item ${repo === path ? 'is-active' : ''}`}
-                    onClick={() => selectRepo(path)}
-                    title={path}
-                  >
-                    <div className="list-item__top">
-                      <FolderGit2 size={13} strokeWidth={2} />
-                      <span className="list-item__title">{shortPath(path)}</span>
-                    </div>
-                    <div className="list-item__meta">
-                      {pendingFor(path) ? <Chip tone="chip--accent">proposal</Chip> : null}
-                      {pending > 0 ? <Chip tone="chip--accent">{pending} to review</Chip> : null}
-                      <span className="tnum">
-                        {state.backlogItems.filter((i) => i.repoPath === path).length} items
-                      </span>
-                    </div>
-                  </button>
-                )
-              })}
+              {summaries.map((summary) => (
+                <button
+                  key={summary.repoPath}
+                  className={`list-item ${repo === summary.repoPath ? 'is-active' : ''}`}
+                  onClick={() => selectRepo(summary.repoPath)}
+                  title={summary.repoPath}
+                >
+                  <div className="list-item__top">
+                    <FolderGit2 size={13} strokeWidth={2} />
+                    <span className="list-item__title">{shortPath(summary.repoPath)}</span>
+                  </div>
+                  <div className="list-item__meta">
+                    {summary.attentionPlans > 0 ? (
+                      <Chip tone="chip--fail">{summary.attentionPlans} plan{summary.attentionPlans === 1 ? '' : 's'} waiting</Chip>
+                    ) : null}
+                    {summary.hasPendingProposal ? <Chip tone="chip--accent">proposal</Chip> : null}
+                    {summary.pendingTriage > 0 ? (
+                      <Chip tone="chip--accent">{summary.pendingTriage} to review</Chip>
+                    ) : null}
+                    <span className="tnum">
+                      {summary.planCount} plan{summary.planCount === 1 ? '' : 's'} ·{' '}
+                      {summary.openItems} open
+                    </span>
+                  </div>
+                </button>
+              ))}
             </div>
           )}
         </div>
@@ -224,10 +243,10 @@ export function BacklogSurface(): ReactNode {
 
       <main className="main">
         <div className="scroll-y" style={{ padding: 'var(--s5)' }}>
-          {items.length === 0 && learnings.length === 0 ? (
+          {!repo && summaries.length === 0 && items.length === 0 && learnings.length === 0 ? (
             <Empty
-              title="The backlog opens from the record"
-              body="Run a review and its confirmed findings file here per repository. Accept a risk and it is remembered here. Stow a finished session and the agent's proposals wait here for your confirmation."
+              title="The record starts with a review"
+              body="Run a review and its repository appears here: confirmed findings file into the backlog, plans accumulate under it, and the foreman reads what gathers. Accept a risk and it is remembered; stow a finished session and its proposals wait for your confirmation."
             />
           ) : (
             <>
@@ -239,6 +258,7 @@ export function BacklogSurface(): ReactNode {
                     [
                       ['overview', 'Overview'],
                       ['backlog', 'Backlog'],
+                      ['plans', 'Plans'],
                       ['learnings', 'Learnings'],
                     ] as Array<[RepoTab, string]>
                   ).map(([tab, label]) => (
@@ -259,18 +279,70 @@ export function BacklogSurface(): ReactNode {
               ) : null}
 
               {repo && activeTab === 'overview' ? (
-                <ForemanPanel
-                  repo={repo}
-                  items={items}
-                  proposals={proposals.filter((p) => p.repoPath === repo)}
-                  mock={state.mock}
-                  busy={foremanBusy}
-                  onRun={askForeman}
-                  onAccept={acceptProposal}
-                  onReject={(id, note) =>
-                    act(id, () => api.rejectForemanProposal(id, note))
-                  }
-                />
+                <>
+                  <div className="repo-head">
+                    <FolderGit2 size={14} strokeWidth={2} />
+                    <span className="repo-head__path" title={repo}>
+                      {shortPath(repo)}
+                    </span>
+                    <span className="spacer" />
+                    <button className="btn btn--sm" onClick={() => setShowReview(true)}>
+                      New review
+                    </button>
+                  </div>
+
+                  <InFlightCard
+                    plans={plans}
+                    onOpen={(planId) => {
+                      void openPlan(planId)
+                      setActiveTab('plans')
+                    }}
+                  />
+
+                  <WaitingCard
+                    holds={state.holds.filter((h) => h.repoPath === repo)}
+                    onJump={jumpToHold}
+                  />
+
+                  <ForemanPanel
+                    repo={repo}
+                    items={items}
+                    proposals={proposals.filter((p) => p.repoPath === repo)}
+                    mock={state.mock}
+                    busy={foremanBusy}
+                    onRun={askForeman}
+                    onAccept={acceptProposal}
+                    onReject={(id, note) =>
+                      act(id, () => api.rejectForemanProposal(id, note))
+                    }
+                  />
+                </>
+              ) : null}
+
+              {repo && activeTab === 'plans' ? (
+                <PlansTab
+                  plans={plans}
+                  items={state.backlogItems}
+                  sessions={state.sessions}
+                  openPlanId={state.planDetail?.plan.id ?? null}
+                  onOpen={(planId) => void openPlan(planId)}
+                  onOpenSession={(sessionId) => {
+                    dispatch({ type: 'surface', surface: 'parley' })
+                    void openSession(sessionId)
+                  }}
+                >
+                  {state.planDetail && plans.some((p) => p.id === state.planDetail?.plan.id) ? (
+                    <PlanPanel
+                      detail={state.planDetail}
+                      ledger={state.planLedger}
+                      onRefresh={() => {
+                        const id = state.planDetail?.plan.id
+                        if (id) void openPlan(id)
+                      }}
+                      host="backlog"
+                    />
+                  ) : null}
+                </PlansTab>
               ) : null}
 
               {!repo || activeTab === 'backlog' ? (
@@ -339,7 +411,234 @@ export function BacklogSurface(): ReactNode {
           }}
         />
       ) : null}
+
+      {showReview && repo ? (
+        <NewSessionDialog
+          initialKind="review"
+          initialRepoPath={repo}
+          onClose={() => setShowReview(false)}
+          onStarted={(session) => {
+            setShowReview(false)
+            dispatch({ type: 'surface', surface: 'parley' })
+            void refreshSessions()
+            void openSession(session.id)
+          }}
+        />
+      ) : null}
     </div>
+  )
+}
+
+/**
+ * Every plan for the repository that is not settled-and-done: live stages,
+ * parked questions, failures with their retries, work waiting to land (which
+ * also sits in the Waiting card via its hold). Rows open the plan on the
+ * Plans tab — the panel there is the control; this card is the radar.
+ */
+function InFlightCard({
+  plans,
+  onOpen,
+}: {
+  plans: WorkPlan[]
+  onOpen: (planId: Id) => void
+}): ReactNode {
+  const inflight = plans.filter((plan) => plan.status !== 'complete')
+  return (
+    <section className="panel foreman-panel">
+      <header className="panel__header">
+        <Label>In flight</Label>
+        <span className="spacer" />
+        <span className="field__hint tnum">
+          {plans.length} plan{plans.length === 1 ? '' : 's'} all time
+        </span>
+      </header>
+      <div className="panel__body panel__body--flush">
+        {inflight.length === 0 ? (
+          <span className="field__hint" style={{ padding: 'var(--s4)', display: 'block' }}>
+            Nothing in flight. Every plan for this repository is complete.
+          </span>
+        ) : (
+          <div className="plan-list" style={{ maxHeight: 'none' }}>
+            {inflight.map((plan) => {
+              const tone = statusTone(plan.status)
+              const live = ['drafting', 'auditing', 'correcting', 'running'].includes(plan.status)
+              return (
+                <button
+                  key={plan.id}
+                  className="list-item"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => onOpen(plan.id)}
+                  title={`${plan.title} — ${plan.kind}, ${plan.status}`}
+                >
+                  <div className="list-item__top">
+                    <Dot tone={live ? 'dot--live' : tone.tone.replace('chip--', 'dot--')} />
+                    <span className="list-item__title">{plan.title}</span>
+                    <Chip tone={tone.tone}>{tone.label}</Chip>
+                    {plan.mock ? <Chip tone="chip--caution">mock</Chip> : null}
+                  </div>
+                  <div className="list-item__meta">
+                    <span>{plan.kind}</span>
+                    <span>·</span>
+                    <span>{plan.isolation}</span>
+                    <span>·</span>
+                    <span>{relativeTime(plan.createdAt)}</span>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+/** The holds queue filtered to this repository — same holds, scoped door. */
+function WaitingCard({
+  holds,
+  onJump,
+}: {
+  holds: Hold[]
+  onJump: (hold: Hold) => void
+}): ReactNode {
+  if (!holds.length) return null
+  return (
+    <section className="panel foreman-panel">
+      <header className="panel__header">
+        <Label>Waiting on you</Label>
+        <Chip tone="chip--accent">
+          {holds.length} decision{holds.length === 1 ? '' : 's'}
+        </Chip>
+      </header>
+      <div className="panel__body panel__body--flush">
+        <div className="plan-list" style={{ maxHeight: 'none' }}>
+          {holds.map((hold) => (
+            <button
+              key={hold.id}
+              className="list-item"
+              style={{ cursor: 'pointer' }}
+              onClick={() => onJump(hold)}
+            >
+              <div className="list-item__top">
+                <span className="list-item__title">{hold.title}</span>
+                {hold.mock ? <Chip tone="chip--caution">mock</Chip> : null}
+                <span className="spacer" />
+                <span className="field__hint">{relativeTime(hold.sinceAt)}</span>
+              </div>
+              <div className="list-item__meta">
+                <span className="waiting-detail">{hold.detail}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * Every plan that ever targeted this repository, across every session —
+ * numbered by creation for stable cross-reference, shown newest first. The
+ * origin session is a provenance link into the reading room (⌘2); the row
+ * itself opens the plan in place, hosted below the table.
+ */
+function PlansTab({
+  plans,
+  items,
+  sessions,
+  openPlanId,
+  onOpen,
+  onOpenSession,
+  children,
+}: {
+  plans: WorkPlan[]
+  items: BacklogItem[]
+  sessions: Session[]
+  openPlanId: Id | null
+  onOpen: (planId: Id) => void
+  onOpenSession: (sessionId: Id) => void
+  children?: ReactNode
+}): ReactNode {
+  const numbered = [...plans]
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((plan, index) => ({ plan, index }))
+    .reverse()
+  return (
+    <>
+      <section className="panel foreman-panel">
+        <header className="panel__header">
+          <Label>Plans</Label>
+          <span className="spacer" />
+          <span className="field__hint tnum">{plans.length} across all sessions</span>
+        </header>
+        <div className="panel__body panel__body--flush">
+          {plans.length === 0 ? (
+            <span className="field__hint" style={{ padding: 'var(--s4)', display: 'block' }}>
+              No plan has targeted this repository yet.
+            </span>
+          ) : (
+            <div className="plan-list" style={{ maxHeight: 'none' }}>
+              {numbered.map(({ plan, index }) => {
+                const tone = statusTone(plan.status)
+                const itemCount = items.filter((item) => item.planId === plan.id).length
+                const origin = sessions.find((s) => s.id === plan.sessionId)
+                return (
+                  <button
+                    key={plan.id}
+                    className={`list-item ${openPlanId === plan.id ? 'is-active' : ''}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => onOpen(plan.id)}
+                    title={`${plan.title} — ${plan.kind}, ${plan.status}`}
+                  >
+                    <div className="list-item__top">
+                      <span className="tnum dimmer">{index + 1}</span>
+                      <span className="list-item__title">{plan.title}</span>
+                      <Chip tone={tone.tone}>{tone.label}</Chip>
+                      {plan.mock ? <Chip tone="chip--caution">mock</Chip> : null}
+                    </div>
+                    <div className="list-item__meta">
+                      <span>{plan.kind}</span>
+                      <span>·</span>
+                      <span>{plan.isolation}</span>
+                      {itemCount > 0 ? (
+                        <>
+                          <span>·</span>
+                          <span>
+                            {itemCount} item{itemCount === 1 ? '' : 's'}
+                          </span>
+                        </>
+                      ) : null}
+                      <span>·</span>
+                      <span
+                        className="plan-origin"
+                        role="link"
+                        tabIndex={0}
+                        title={origin?.matter ?? plan.sessionId}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onOpenSession(plan.sessionId)
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.stopPropagation()
+                            onOpenSession(plan.sessionId)
+                          }
+                        }}
+                      >
+                        {origin ? `${origin.matter.slice(0, 32)}…` : 'origin session'} ↗
+                      </span>
+                      <span>·</span>
+                      <span>{relativeTime(plan.createdAt)}</span>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </section>
+      {children}
+    </>
   )
 }
 

@@ -44,25 +44,13 @@ export function HoldsButton(): ReactNode {
  * Notice holds offer Acknowledge, and the returned snapshot replaces local
  * state so the badge and a second window always agree.
  */
-export function HoldsPopover(): ReactNode {
-  const { state, dispatch, attempt, openSession, openPlan, openLoop } = useStore()
-  const [busyId, setBusyId] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!state.holdsOpen) return
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') dispatch({ type: 'holdsPanel', open: false })
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [dispatch, state.holdsOpen])
-
-  if (!state.holdsOpen) return null
-
-  const close = (): void => dispatch({ type: 'holdsPanel', open: false })
-
-  const jump = (hold: Hold): void => {
-    close()
+/**
+ * The jump to a hold's exact control, shared by the queue popover and the
+ * Repos Overview's waiting card — one routing table, two doors.
+ */
+export function useHoldJump(): (hold: Hold) => void {
+  const { dispatch, openSession, openPlan, openLoop } = useStore()
+  return (hold: Hold): void => {
     // Backlog and foreman holds are repository-scoped: the control is the
     // Repos surface, opened on the repo whose proposals wait — and on the
     // exact tab that carries the control.
@@ -92,6 +80,30 @@ export function HoldsPopover(): ReactNode {
         }
       })
     }
+  }
+}
+
+export function HoldsPopover(): ReactNode {
+  const { state, dispatch, attempt } = useStore()
+  const jumpToHold = useHoldJump()
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!state.holdsOpen) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') dispatch({ type: 'holdsPanel', open: false })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [dispatch, state.holdsOpen])
+
+  if (!state.holdsOpen) return null
+
+  const close = (): void => dispatch({ type: 'holdsPanel', open: false })
+
+  const jump = (hold: Hold): void => {
+    close()
+    jumpToHold(hold)
   }
 
   const acknowledge = async (hold: Hold): Promise<void> => {

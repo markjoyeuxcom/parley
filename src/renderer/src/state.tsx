@@ -103,6 +103,13 @@ interface State {
   focusRepoTab: RepoTab | null
   /** Keyed by milestone id, then by loop id. Never persisted. */
   activity: Record<Id, ActivityLog>
+  /**
+   * Bumped on every plan.created / plan.updated / plan.status event, so
+   * surfaces that FETCH plan lists (rather than patching an open detail)
+   * can key their refetch on it — one screen must never show three
+   * different statuses for the same plan.
+   */
+  plansVersion: number
 }
 
 const initialState: State = {
@@ -134,6 +141,7 @@ const initialState: State = {
   focusBacklogRepo: null,
   focusRepoTab: null,
   activity: {},
+  plansVersion: 0,
 }
 
 type Action =
@@ -339,8 +347,12 @@ function applyEvent(state: State, event: AppEvent): State {
 
     case 'plan.created':
       return state.sessionDetail?.session.id === event.plan.sessionId
-        ? { ...state, sessionDetail: { ...state.sessionDetail, plans: [event.plan, ...state.sessionDetail.plans] } }
-        : state
+        ? {
+            ...state,
+            plansVersion: state.plansVersion + 1,
+            sessionDetail: { ...state.sessionDetail, plans: [event.plan, ...state.sessionDetail.plans] },
+          }
+        : { ...state, plansVersion: state.plansVersion + 1 }
 
     // The full row replaces the loaded copies — the planner writes the real
     // title mid-draft, and a list hydrated at creation would otherwise show
@@ -357,7 +369,7 @@ function applyEvent(state: State, event: AppEvent): State {
         state.planDetail?.plan.id === event.plan.id
           ? { ...state.planDetail, plan: event.plan }
           : state.planDetail
-      return { ...state, sessionDetail, planDetail }
+      return { ...state, sessionDetail, planDetail, plansVersion: state.plansVersion + 1 }
     }
 
     case 'plan.status': {
@@ -381,11 +393,15 @@ function applyEvent(state: State, event: AppEvent): State {
           }
         : state.sessionDetail
 
-      if (state.planDetail?.plan.id !== event.planId) return { ...state, activity, sessionDetail }
+      const plansVersion = state.plansVersion + 1
+      if (state.planDetail?.plan.id !== event.planId) {
+        return { ...state, activity, sessionDetail, plansVersion }
+      }
       return {
         ...state,
         activity,
         sessionDetail,
+        plansVersion,
         planDetail: { ...state.planDetail, plan: { ...state.planDetail.plan, status: event.status } },
       }
     }
