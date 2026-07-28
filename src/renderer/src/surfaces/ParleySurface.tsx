@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { Archive, ArchiveRestore, Hammer, Pause, Play, Plus, Send, Square, Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Hammer, Pause, Play, Plus, Send, Square, Trash2 } from 'lucide-react'
 import type { AgentConfig, Id, InterjectionTarget, Session, Turn } from '@shared/domain'
 import { api } from '../lib/api'
 import { firstLine, formatTokens, relativeTime, seatLabel, seatSide, shortPath, statusTone, VENDOR_LABEL } from '../lib/format'
@@ -213,6 +213,14 @@ function SessionView(): ReactNode {
   const hasOutcome = Boolean(
     verdict || findings.length || ledger.length || plans.length || state.planDetail,
   )
+  // The exchange region's fold. Null = automatic: open while the session is
+  // live (the stream is the main event), folded once it settles with an
+  // outcome (the record and the work are what gets acted on). A click makes
+  // the choice explicit; switching sessions returns to automatic.
+  const [exchangeOpen, setExchangeOpen] = useState<boolean | null>(null)
+  useEffect(() => setExchangeOpen(null), [session.id])
+  const exchangeVisible = exchangeOpen ?? (active || !hasOutcome)
+  const exchangeFolded = !exchangeVisible
 
   const exportReport = async (): Promise<void> => {
     const result = await attempt(() => api.exportReport(session.id))
@@ -308,11 +316,36 @@ function SessionView(): ReactNode {
       <div
         className={`session__body ${hasOutcome ? 'session__body--split' : ''} ${
           hasOutcome && plans.length ? 'session__body--work' : ''
-        }`}
+        } ${exchangeFolded ? 'session__body--folded' : ''}`}
       >
         <div className="session__main">
-          <Transcript sessionId={session.id} turns={turns} streaming={state.streaming} />
-          {active ? <Composer sessionId={session.id} participants={session.participants} /> : null}
+          {!active && hasOutcome ? (
+            <button
+              className="exchange-bar"
+              onClick={() => setExchangeOpen(exchangeFolded)}
+              aria-expanded={exchangeVisible}
+            >
+              {exchangeVisible ? (
+                <ChevronDown size={13} strokeWidth={2} />
+              ) : (
+                <ChevronRight size={13} strokeWidth={2} />
+              )}
+              <span className="exchange-bar__title">Exchange</span>
+              <span className="dimmer">
+                {turns.length} turn{turns.length === 1 ? '' : 's'} · settled record
+              </span>
+              <span className="spacer" />
+              <span className="dimmer">{exchangeVisible ? 'Hide' : 'Show'}</span>
+            </button>
+          ) : null}
+          {exchangeVisible ? (
+            <>
+              <Transcript sessionId={session.id} turns={turns} streaming={state.streaming} />
+              {active ? (
+                <Composer sessionId={session.id} participants={session.participants} />
+              ) : null}
+            </>
+          ) : null}
         </div>
 
         {hasOutcome ? (

@@ -1644,3 +1644,91 @@
     max-width: none;
   }
 }
+
+/* ─── The exchange fold ────────────────────────────────────────────────────────
+ * Settled sessions lead with the record and the work; the exchange folds to a
+ * slim bar. Appended last: these rules must beat every --split/--work block
+ * above by source order.
+ */
+
+.exchange-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s3) var(--s6);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-sunken);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  text-align: left;
+  cursor: pointer;
+}
+
+.exchange-bar:hover {
+  color: var(--text-primary);
+}
+
+.exchange-bar__title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Folded: the exchange bar spans the top; record and work own the space. */
+.session__body--folded {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.session__body--folded .session__main {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
+.session__body--folded .session__inspector {
+  border-top: 0;
+  border-left: 0;
+}
+
+.session__body--folded .session__inspector-inner {
+  max-width: none;
+}
+
+.session__body--folded.session__body--work {
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.session__body--folded.session__body--work .session__inspector {
+  grid-column: 1 / -1;
+}
+
+.session__body--folded.session__body--work .session__work {
+  grid-column: 1 / -1;
+  border-left: 0;
+  border-top: 1px solid var(--line);
+}
+
+@media (min-width: 1280px) {
+  .session__body--folded.session__body--work {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .session__body--folded.session__body--work .session__main {
+    grid-row: 1;
+    grid-column: 1 / -1;
+  }
+
+  .session__body--folded.session__body--work .session__inspector {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .session__body--folded.session__body--work .session__work {
+    grid-column: 2;
+    grid-row: 2;
+    border-top: 0;
+    border-left: 1px solid var(--line);
+  }
+}
