@@ -55,6 +55,9 @@ interface State {
   mock: boolean
   /** The model this machine's codex is configured to use, if any. */
   codexDefaultModel: string
+  /** Parley's own checkout when running from source; null packaged. Advisory —
+   * the main process enforces the worktree-only rule regardless. */
+  selfRepoPath: string | null
   health: CliHealth[]
   sessions: Session[]
   /** How many are hidden by the archive filter, so the sidebar can offer them. */
@@ -117,6 +120,7 @@ const initialState: State = {
   theme: 'system',
   mock: false,
   codexDefaultModel: '',
+  selfRepoPath: null,
   health: [],
   sessions: [],
   archivedCount: 0,
@@ -148,7 +152,7 @@ type Action =
   | { type: 'surface'; surface: Surface }
   | { type: 'theme'; theme: ThemeChoice }
   | { type: 'health'; health: CliHealth[] }
-  | { type: 'mock'; mock: boolean; codexDefaultModel: string }
+  | { type: 'mock'; mock: boolean; codexDefaultModel: string; selfRepoPath: string | null }
   | { type: 'sessions'; sessions: Session[]; archivedCount: number }
   | { type: 'showArchived'; showArchived: boolean }
   | { type: 'activeSession'; sessionId: Id | null }
@@ -192,7 +196,12 @@ function reducer(state: State, action: Action): State {
     case 'health':
       return { ...state, health: action.health }
     case 'mock':
-      return { ...state, mock: action.mock, codexDefaultModel: action.codexDefaultModel }
+      return {
+        ...state,
+        mock: action.mock,
+        codexDefaultModel: action.codexDefaultModel,
+        selfRepoPath: action.selfRepoPath,
+      }
     case 'sessions':
       return { ...state, sessions: action.sessions, archivedCount: action.archivedCount }
     case 'showArchived':
@@ -654,7 +663,12 @@ export function StoreProvider({ children }: { children: ReactNode }): ReactNode 
     void refreshBacklog()
     void attempt(() => api.info()).then((info) => {
       if (info) {
-        dispatch({ type: 'mock', mock: info.mock, codexDefaultModel: info.codexDefaultModel })
+        dispatch({
+          type: 'mock',
+          mock: info.mock,
+          codexDefaultModel: info.codexDefaultModel,
+          selfRepoPath: info.selfRepoPath,
+        })
       }
     })
   }, [attempt, refreshSessions, refreshLoops, refreshBacklog])

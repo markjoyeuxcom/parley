@@ -7,8 +7,9 @@ import type { AppEvent } from '@shared/events'
 import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
 import { newId, Repo } from '@main/store/repo'
-import { emptyUsage, type Mutation } from '@shared/domain'
+import { emptyUsage, type Id, type Mutation } from '@shared/domain'
 import { occurrenceState } from '@shared/ledger'
+import { canonicalRepoPath } from '@main/util/repoPath'
 import { Manager, RequestError } from './manager'
 import { SessionRunner } from './session'
 
@@ -2496,5 +2497,142 @@ describe('a corrected plan replaces its draft', () => {
     const draftIds = new Set(sets[0]?.milestones.map((m) => m.id) ?? [])
     expect(draftIds.size).toBeGreaterThan(0)
     expect(stored.some((m) => draftIds.has(m.id))).toBe(false)
+  })
+})
+
+describe("Parley's own repository", () => {
+  /**
+   * The worktree-only rule for the self repo, both doors: createPlan refuses a
+   * checkout plan up front, and the pipeline's execution entry refuses one that
+   * already exists — a plan created before the rule (or with the rule dormant)
+   * must not bypass it forever just because its row predates the check.
+   *
+   * The fixtures pass the RAW mkdtemp path as selfRepoPath on purpose: on
+   * macOS that path goes through a /var → /private/var symlink, and the
+   * Manager canonicalising the injected value itself is exactly what makes
+   * canonical-to-canonical comparison hold. A fixture that pre-canonicalised
+   * would hide a regression in that step.
+   */
+  function selfHarness(selfRepoPath: string | null): {
+    manager: Manager
+    repo: Repo
+    events: AppEvent[]
+    registry: AgentRegistry
+  } {
+    const repo = new Repo(openDatabase(':memory:'))
+    const registry = new AgentRegistry(true)
+    const events: AppEvent[] = []
+    const manager = new Manager({
+      repo,
+      registry,
+      emit: (event) => events.push(event),
+      worktreesRoot: mkdtempSync(join(tmpdir(), 'parley-self-worktrees-')),
+      selfRepoPath,
+    })
+    return { manager, repo, events, registry }
+  }
+
+  async function verdictSession(manager: Manager, repo: Repo): Promise<Id> {
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'improve parley',
+      project: '',
+      repoPath: null,
+      participants: [claude, codex],
+      maxTurns: 2,
+    })
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+    return session.id
+  }
+
+  it('refuses checkout isolation at creation, allows a worktree plan', async () => {
+    const selfPath = mkdtempSync(join(tmpdir(), 'parley-selfrepo-'))
+    const { manager, repo } = selfHarness(selfPath)
+    const sessionId = await verdictSession(manager, repo)
+
+    // Explicit checkout and the implicit default both hit the refusal.
+    await expect(
+      manager.createPlan({
+        sessionId,
+        kind: 'implementation',
+        repoPath: selfPath,
+        planner: claude,
+        executor: codex,
+        reviewer: claude,
+        isolation: 'checkout',
+      }),
+    ).rejects.toThrow(/worktree only/)
+    await expect(
+      manager.createPlan({
+        sessionId,
+        kind: 'implementation',
+        repoPath: selfPath,
+        planner: claude,
+        executor: codex,
+        reviewer: claude,
+      }),
+    ).rejects.toThrow(/worktree only/)
+
+    // The rule narrows isolation, not the repository: a worktree plan is the
+    // sanctioned path and must go through.
+    const { plan } = await manager.createPlan({
+      sessionId,
+      kind: 'implementation',
+      repoPath: selfPath,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+      isolation: 'worktree',
+    })
+    expect(plan.isolation).toBe('worktree')
+    await manager.whenPlanSettled(plan.id)
+  })
+
+  it('refuses to execute a grandfathered checkout plan for the self repo', async () => {
+    const selfPath = mkdtempSync(join(tmpdir(), 'parley-selfrepo-old-'))
+
+    // Yesterday's app: no self identity, so the checkout plan is created
+    // legally. This is also the packaged-null dormancy proof — same path,
+    // same isolation, no refusal.
+    const { manager, repo, registry } = selfHarness(null)
+    const sessionId = await verdictSession(manager, repo)
+    const { plan } = await manager.createPlan({
+      sessionId,
+      kind: 'implementation',
+      repoPath: selfPath,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+      isolation: 'checkout',
+    })
+    expect(plan.isolation).toBe('checkout')
+    await manager.whenPlanSettled(plan.id)
+    const first = repo.listMilestones(plan.id)[0]
+    if (!first) throw new Error('expected a milestone')
+    disposeOpenBlockingOccurrences(repo, sessionId)
+    const approval = repo.grantApproval('milestone.execute', first.id, 'allow')
+
+    // Today's app: same database, but the process now knows which repo it is.
+    const upgraded = new Manager({
+      repo,
+      registry,
+      emit: () => {},
+      selfRepoPath: selfPath,
+    })
+    await expect(upgraded.runMilestone(first.id, approval.id)).rejects.toThrow(/worktree only/)
+
+    // The refusal must precede any execution: still at its post-audit resting
+    // state, not running, failed, or complete.
+    expect(repo.getMilestone(first.id)?.status).toBe('audited')
+  })
+
+  it('reports the canonical self path over IPC-visible state', () => {
+    const selfPath = mkdtempSync(join(tmpdir(), 'parley-selfrepo-info-'))
+    const { manager } = selfHarness(selfPath)
+    // Canonicalised by the Manager: on macOS the tmpdir fixture is reached
+    // through a symlink, so equality with the raw input would be the bug.
+    expect(manager.selfRepoPath).toBe(canonicalRepoPath(selfPath))
+    const { manager: packaged } = selfHarness(null)
+    expect(packaged.selfRepoPath).toBeNull()
   })
 })

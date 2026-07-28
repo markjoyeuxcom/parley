@@ -143,6 +143,23 @@ export function NewPlanDialog({
   const [isolation, setIsolation] = useState<WorkPlan['isolation']>(initialIsolation ?? 'checkout')
   const [setupCommand, setSetupCommand] = useState('')
 
+  // Advisory mirror of the main-process rule: plans on Parley's own checkout
+  // run in a worktree only. Trailing-slash-trimmed compare, not canonical —
+  // the server re-checks canonically at create and again at execute, so a
+  // miss here only costs a clearer error later, never a wider allowance.
+  const trimSlash = (path: string): string => path.replace(/\/+$/, '')
+  const isSelfRepo =
+    state.selfRepoPath !== null &&
+    repoPath.trim() !== '' &&
+    trimSlash(repoPath.trim()) === trimSlash(state.selfRepoPath)
+
+  // Flip rather than block: the moment the self repo is chosen, checkout stops
+  // being a valid selection, and leaving the select pointing at a disabled
+  // option would make the primary button fail server-side instead.
+  useEffect(() => {
+    if (isSelfRepo) setIsolation('worktree')
+  }, [isSelfRepo])
+
   const reviewerVendor = planner.vendor === executor.vendor ? 'claude' : planner.vendor
   const create = async (): Promise<void> => {
     setBusy(true)
@@ -243,9 +260,11 @@ export function NewPlanDialog({
       <Field
         label="Execution"
         hint={
-          isolation === 'worktree'
-            ? 'Milestones run on an isolated branch; each pass is committed there. Nothing reaches this checkout until you land the branch, fast-forward only.'
-            : 'Milestones write into the checkout above and are left uncommitted, as before.'
+          isSelfRepo
+            ? "This is Parley's own repository — plans here run in a worktree only. An agent writing into the live app's source under it is the one uncontrolled case."
+            : isolation === 'worktree'
+              ? 'Milestones run on an isolated branch; each pass is committed there. Nothing reaches this checkout until you land the branch, fast-forward only.'
+              : 'Milestones write into the checkout above and are left uncommitted, as before.'
         }
       >
         <select
@@ -253,7 +272,11 @@ export function NewPlanDialog({
           value={isolation}
           onChange={(event) => setIsolation(event.target.value as WorkPlan['isolation'])}
         >
-          <option value="checkout">In the checkout — work appears in your tree</option>
+          <option value="checkout" disabled={isSelfRepo}>
+            {isSelfRepo
+              ? 'In the checkout — unavailable for Parley itself'
+              : 'In the checkout — work appears in your tree'}
+          </option>
           <option value="worktree">In a worktree — isolated branch, landed by you</option>
         </select>
       </Field>

@@ -60,6 +60,7 @@ const HANDLERS: Record<CommandName, Handler> = {
   'app.info': (_p, ctx) => ({
     mock: ctx.manager.registry.mock,
     codexDefaultModel: readCodexDefaultModel(),
+    selfRepoPath: ctx.manager.selfRepoPath,
   }),
   'health.probe': (_p, ctx) => ctx.health(),
 

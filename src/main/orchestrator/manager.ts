@@ -169,6 +169,11 @@ export class Manager {
     })
     this.deps = {
       ...deps,
+      // Canonicalised ONCE here, so every self-repo comparison downstream —
+      // createPlan's refusal, the pipeline's execution gate, the landing
+      // hook — is canonical-to-canonical. A raw app.getAppPath() and a
+      // user-picked spelling of the same checkout must not fork the rule.
+      selfRepoPath: deps.selfRepoPath ? canonicalRepoPath(deps.selfRepoPath) : null,
       emit: (event) => {
         this.liveness.observe(event)
         this.holds.emit(event)
@@ -193,6 +198,11 @@ export class Manager {
    */
   emit(event: AppEvent): void {
     this.deps.emit(event)
+  }
+
+  /** The canonical path of the checkout this app runs from, or null when packaged. */
+  get selfRepoPath(): string | null {
+    return this.deps.selfRepoPath ?? null
   }
 
   private seedSkills(): void {
@@ -457,6 +467,15 @@ export class Manager {
     const setupCommand = (input.setupCommand ?? '').trim()
     if (isolation === 'worktree' && !this.deps.worktreesRoot) {
       throw new RequestError('worktree isolation is unavailable: no worktrees root is configured')
+    }
+    if (
+      isolation === 'checkout' &&
+      this.deps.selfRepoPath &&
+      canonicalRepoPath(repoPath) === this.deps.selfRepoPath
+    ) {
+      throw new RequestError(
+        "this is Parley's own repository — plans here run in a worktree only: an agent writing into the live app's source under it is the one uncontrolled case",
+      )
     }
     if (setupCommand && !isShellFree(setupCommand)) {
       throw new RequestError(

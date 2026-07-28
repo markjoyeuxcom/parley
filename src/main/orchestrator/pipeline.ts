@@ -38,6 +38,7 @@ import {
 } from '@shared/protocol'
 import { capture, isShellFree, splitCommand } from '@main/util/spawn'
 import { newId, type Repo } from '@main/store/repo'
+import { canonicalRepoPath } from '@main/util/repoPath'
 import { assertCapability, type AgentRegistry, type RunResult } from '@main/agents'
 import { groupLedgerEntry } from '@main/ipc/ledger'
 import type { MilestonePhase } from '@shared/events'
@@ -174,6 +175,8 @@ export class Pipeline {
   private readonly registry: AgentRegistry
   private readonly emit: OrchestratorDeps['emit']
   private readonly worktreesRoot: string | null
+  /** Canonical (the Manager canonicalises before constructing us), or null. */
+  private readonly selfRepoPath: string | null
   // `registry` is read for `.mock` as well as for adapters — see the unchanged-
   // tree branch in runMilestone.
 
@@ -182,6 +185,7 @@ export class Pipeline {
     this.registry = deps.registry
     this.emit = deps.emit
     this.worktreesRoot = deps.worktreesRoot ?? null
+    this.selfRepoPath = deps.selfRepoPath ?? null
   }
 
   /**
@@ -627,6 +631,24 @@ export class Pipeline {
    * the user double-clicked, or a retry raced — the store refuses and nothing
    * is written.
    */
+
+  /**
+   * The execution-entry refusal, combining the shared status legality with
+   * the self-repo rule: a checkout-isolation plan targeting the checkout this
+   * app runs from must never execute — grandfathered rows included, which is
+   * why this lives at the entry and not only in createPlan. Dormant when
+   * selfRepoPath is null (packaged, or tests that don't care).
+   */
+  private entryRefusal(plan: WorkPlan, milestone: Milestone): string | null {
+    const refusal = executionRefusal(plan, milestone)
+    if (refusal) return refusal
+    const self = this.selfRepoPath
+    if (self && plan.isolation === 'checkout' && canonicalRepoPath(plan.repoPath) === self) {
+      return "this is Parley's own repository — plans here run in a worktree only: an agent writing into the live app's source under it is the one uncontrolled case"
+    }
+    return null
+  }
+
   async runMilestone(milestoneId: Id, approvalId: Id, gate?: RunGate): Promise<Milestone> {
     // The gate, not a bare signal, so every failure sink can tell a stop the
     // user asked for from a run that died — the two must not share a note.
@@ -636,7 +658,7 @@ export class Pipeline {
 
     const plan = this.repo.getPlan(milestone.planId)
     if (!plan) throw new PipelineError('the plan for this milestone is missing')
-    const refusal = executionRefusal(plan, milestone)
+    const refusal = this.entryRefusal(plan, milestone)
     if (refusal) throw new PipelineError(refusal)
 
     assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
@@ -658,7 +680,7 @@ export class Pipeline {
     // the status refusal is what does.
     const raced = this.repo.getMilestone(milestoneId)
     if (!raced) throw new PipelineError('no such milestone')
-    const racedRefusal = executionRefusal(this.repo.getPlan(raced.planId) ?? plan, raced)
+    const racedRefusal = this.entryRefusal(this.repo.getPlan(raced.planId) ?? plan, raced)
     if (racedRefusal) throw new PipelineError(racedRefusal)
 
     // Spend the approval before anything can write. Throws if already spent.
@@ -741,7 +763,7 @@ export class Pipeline {
     if (!milestone) throw new PipelineError('no such milestone')
     const plan = this.repo.getPlan(milestone.planId)
     if (!plan) throw new PipelineError('the plan for this milestone is missing')
-    const refusal = executionRefusal(plan, milestone)
+    const refusal = this.entryRefusal(plan, milestone)
     if (refusal) throw new PipelineError(refusal)
 
     assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
@@ -764,7 +786,7 @@ export class Pipeline {
     // The synchronous block: re-checks and the spend, with no await between.
     const raced = this.repo.getMilestone(milestoneId)
     if (!raced) throw new PipelineError('no such milestone')
-    const racedRefusal = executionRefusal(this.repo.getPlan(raced.planId) ?? plan, raced)
+    const racedRefusal = this.entryRefusal(this.repo.getPlan(raced.planId) ?? plan, raced)
     if (racedRefusal) throw new PipelineError(racedRefusal)
     const state = this.repo.getMilestoneRunState<RunState>(milestoneId)
     if (!state) {
@@ -1499,7 +1521,7 @@ export class Pipeline {
 
     const plan = this.repo.getPlan(milestone.planId)
     if (!plan) throw new PipelineError('the plan for this milestone is missing')
-    const refusal = executionRefusal(plan, milestone)
+    const refusal = this.entryRefusal(plan, milestone)
     if (refusal) throw new PipelineError(refusal)
 
     // Checked once, not twice: execution re-checks at run because a finding can

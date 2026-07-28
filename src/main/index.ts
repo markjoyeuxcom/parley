@@ -102,6 +102,11 @@ async function bootstrap(): Promise<void> {
     registry,
     emit,
     worktreesRoot: join(app.getPath('userData'), 'worktrees'),
+    // Dev only: the checkout this process was built from is the repository
+    // Parley must treat as itself (worktree-only plans, the self-update gate).
+    // Packaged, getAppPath is inside the asar — not a repo — so null keeps
+    // every self rule dormant.
+    selfRepoPath: app.isPackaged ? null : app.getAppPath(),
     // One native banner per newly-appearing hold — the push half of the
     // attention queue. Supplementary by design: the stamp is written either
     // way, and the durable surface is the holds list itself, so a denied

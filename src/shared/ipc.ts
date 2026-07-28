@@ -331,6 +331,14 @@ export interface AppInfo {
    * install rather than a list baked in when the app was written.
    */
   codexDefaultModel: string
+  /**
+   * Canonical path of Parley's own checkout when running from source, null
+   * when packaged. The renderer uses it only to explain the worktree-only
+   * rule up front (greying the checkout option); the main process re-enforces
+   * it at plan creation and again at execution, so a stale or absent value
+   * here can never widen what is allowed.
+   */
+  selfRepoPath: string | null
 }
 
 /**

@@ -19,6 +19,13 @@ export interface OrchestratorDeps {
    * without it is a refusal, not a fallback to the live checkout.
    */
   worktreesRoot?: string
+  /**
+   * The checkout this running app was built from — the repository Parley
+   * must treat as itself. Null when packaged (or in tests that don't care):
+   * every self rule stays dormant. Injected raw; the Manager canonicalises
+   * it once, so every comparison is canonical-to-canonical.
+   */
+  selfRepoPath?: string | null
 }
 
 /**

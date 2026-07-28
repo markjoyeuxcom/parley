@@ -208,7 +208,7 @@ function installBridge(
   overrides: Partial<Record<CommandName, (payload?: unknown) => unknown>> = {},
 ): void {
   const handlers: Partial<Record<CommandName, (payload?: unknown) => unknown>> = {
-    'app.info': () => ({ mock: true, codexDefaultModel: '' }),
+    'app.info': () => ({ mock: true, codexDefaultModel: '', selfRepoPath: null }),
     'health.probe': () => [],
     'session.list': () => ({ sessions: [session], archivedCount: 0 }),
     'session.get': () => ({
