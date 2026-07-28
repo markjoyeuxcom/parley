@@ -1,10 +1,21 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { BookOpen, FolderGit2, Link2 } from 'lucide-react'
-import type { BacklogItem, BacklogItemState, Id, Learning, WorkPlan } from '@shared/domain'
+import { BookOpen, FolderGit2, HardHat, Link2 } from 'lucide-react'
+import type {
+  AgentConfig,
+  BacklogItem,
+  BacklogItemState,
+  ForemanProposal,
+  Id,
+  Learning,
+  Session,
+  WorkPlan,
+} from '@shared/domain'
 import { api } from '../lib/api'
-import { relativeTime, shortPath, statusTone } from '../lib/format'
+import { compactNumber, relativeTime, shortPath, statusTone } from '../lib/format'
 import { useStore } from '../state'
-import { Chip, Empty, Label } from '../components/ui'
+import { AgentPicker } from '../components/AgentPicker'
+import { NewPlanDialog } from '../components/PlanPanel'
+import { Chip, Empty, Label, Spinner } from '../components/ui'
 
 /**
  * The per-repository backlog: what Parley's own record says is worth doing.
@@ -29,11 +40,17 @@ const COLUMNS: Array<{ state: BacklogItemState; title: string; hint: string }> =
 ]
 
 export function BacklogSurface(): ReactNode {
-  const { state, dispatch, attempt } = useStore()
+  const { state, dispatch, attempt, notify } = useStore()
   const [repo, setRepo] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<Id | null>(null)
   const [editingBlockers, setEditingBlockers] = useState<Id | null>(null)
   const [plans, setPlans] = useState<WorkPlan[]>([])
+  const [proposals, setProposals] = useState<ForemanProposal[]>([])
+  const [foremanBusy, setForemanBusy] = useState(false)
+  const [acceptTarget, setAcceptTarget] = useState<{
+    proposal: ForemanProposal
+    session: Session
+  } | null>(null)
 
   // The holds queue's knock: a backlog-review hold opened this surface on a
   // specific repository. Consume and clear, same contract as focusMilestoneId.
@@ -55,10 +72,30 @@ export function BacklogSurface(): ReactNode {
     void attempt(() => api.listPlans()).then((all) => {
       if (all && !cancelled) setPlans(all)
     })
+    // Proposals ride the same refetch rhythm: every foreman write emits
+    // backlog.changed, which refreshes state.backlogItems, which re-runs this.
+    void attempt(() => api.listForemanProposals()).then((all) => {
+      if (all && !cancelled) setProposals(all)
+    })
     return () => {
       cancelled = true
     }
   }, [attempt, state.backlogItems, state.surface])
+
+  // Supersede racing the open dialog: if the proposal being accepted stops
+  // being the pending one — a newer run replaced it, or it was decided
+  // elsewhere — close the dialog with a notice rather than letting the
+  // create refuse half a form later (the stale-milestone-dialog precedent).
+  useEffect(() => {
+    if (!acceptTarget) return
+    const stillPending = proposals.some(
+      (p) => p.id === acceptTarget.proposal.id && p.state === 'proposed',
+    )
+    if (!stillPending) {
+      setAcceptTarget(null)
+      notify('warn', 'That foreman proposal changed while the dialog was open — review the fresh one.')
+    }
+  }, [proposals, acceptTarget, notify])
 
   const repos = useMemo(() => {
     const paths = new Set<string>()
@@ -93,6 +130,32 @@ export function BacklogSurface(): ReactNode {
     await attempt(work)
     setBusyId(null)
   }
+
+  const askForeman = async (cfg: AgentConfig): Promise<void> => {
+    if (!repo) return
+    setForemanBusy(true)
+    await attempt(() => api.runForeman(repo, cfg))
+    setForemanBusy(false)
+  }
+
+  const acceptProposal = async (proposal: ForemanProposal): Promise<void> => {
+    if (!proposal.anchorSessionId) {
+      notify('error', 'This proposal has no anchor session — reject it or re-run the foreman.')
+      return
+    }
+    const detail = await attempt(() => api.getSession(proposal.anchorSessionId as Id))
+    if (!detail) {
+      // attempt already surfaced the error; name the way out.
+      notify('error', 'The anchor session is gone — reject this proposal or re-run the foreman.')
+      return
+    }
+    setAcceptTarget({ proposal, session: detail.session })
+  }
+
+  const pendingFor = (path: string): ForemanProposal | null =>
+    proposals.find(
+      (p) => p.repoPath === path && p.state === 'proposed' && p.mock === state.mock,
+    ) ?? null
 
   const done = items.filter((i) => i.state === 'done').length
   const dropped = items.filter((i) => i.state === 'dropped').length
@@ -136,6 +199,7 @@ export function BacklogSurface(): ReactNode {
                       <span className="list-item__title">{shortPath(path)}</span>
                     </div>
                     <div className="list-item__meta">
+                      {pendingFor(path) ? <Chip tone="chip--accent">proposal</Chip> : null}
                       {pending > 0 ? <Chip tone="chip--accent">{pending} to review</Chip> : null}
                       <span className="tnum">
                         {state.backlogItems.filter((i) => i.repoPath === path).length} items
@@ -158,6 +222,21 @@ export function BacklogSurface(): ReactNode {
             />
           ) : (
             <>
+              {repo ? (
+                <ForemanPanel
+                  repo={repo}
+                  items={items}
+                  proposals={proposals.filter((p) => p.repoPath === repo)}
+                  mock={state.mock}
+                  busy={foremanBusy}
+                  onRun={askForeman}
+                  onAccept={acceptProposal}
+                  onReject={(id, note) =>
+                    act(id, () => api.rejectForemanProposal(id, note))
+                  }
+                />
+              ) : null}
+
               <div className="backlog-board">
                 {COLUMNS.map((column) => {
                   const inColumn = items.filter((item) => item.state === column.state)
@@ -199,7 +278,241 @@ export function BacklogSurface(): ReactNode {
           )}
         </div>
       </main>
+
+      {acceptTarget ? (
+        <NewPlanDialog
+          session={acceptTarget.session}
+          foremanProposalId={acceptTarget.proposal.id}
+          initialRepoPath={acceptTarget.proposal.repoPath}
+          initialItems={acceptTarget.proposal.itemIds}
+          initialIsolation={acceptTarget.proposal.isolation}
+          initialNote={
+            acceptTarget.proposal.note
+              ? `From the foreman’s proposal: ${acceptTarget.proposal.note}`
+              : ''
+          }
+          onClose={() => setAcceptTarget(null)}
+          onCreated={() => {
+            notify('info', 'Proposal accepted — the plan is drafting. Its items are now planned.')
+          }}
+        />
+      ) : null}
     </div>
+  )
+}
+
+/**
+ * The foreman's corner of the surface: at most one pending proposal per
+ * repository per mode, the running state while a read is in flight, and the
+ * way to ask for one. Everything renders from the record — selected and
+ * deferred items resolve to their live titles, and drift since the read is
+ * said out loud rather than discovered at accept.
+ */
+function ForemanPanel({
+  repo,
+  items,
+  proposals,
+  mock,
+  busy,
+  onRun,
+  onAccept,
+  onReject,
+}: {
+  repo: string
+  items: BacklogItem[]
+  proposals: ForemanProposal[]
+  mock: boolean
+  busy: boolean
+  onRun: (cfg: AgentConfig) => Promise<void>
+  onAccept: (proposal: ForemanProposal) => Promise<void>
+  onReject: (id: Id, note: string) => Promise<void>
+}): ReactNode {
+  const [askOpen, setAskOpen] = useState(false)
+  const [cfg, setCfg] = useState<AgentConfig>({
+    vendor: 'claude',
+    model: '',
+    effort: 'high',
+    persona: '',
+  })
+  const [rejecting, setRejecting] = useState(false)
+  const [rejectNote, setRejectNote] = useState('')
+
+  const pending = proposals.find((p) => p.state === 'proposed' && p.mock === mock) ?? null
+  const running = proposals.find((p) => p.state === 'running' && p.mock === mock) ?? null
+  const lastDecided = proposals
+    .filter((p) => !['proposed', 'running'].includes(p.state) && p.mock === mock)
+    .sort((a, b) => (b.decidedAt ?? b.createdAt) - (a.decidedAt ?? a.createdAt))[0]
+
+  const itemById = new Map(items.map((item) => [item.id, item]))
+  const liveOpen = items.filter((item) => item.state === 'open' && item.mock === mock)
+  const surviving = pending
+    ? pending.itemIds.filter((id) => itemById.get(id)?.state === 'open')
+    : []
+  const arrivedSince = pending
+    ? liveOpen.filter((item) => !pending.openSnapshot.includes(item.id))
+    : []
+  const arrivedTop = [...arrivedSince]
+    .map((item) => item.priority)
+    .filter((p): p is NonNullable<typeof p> => p !== null)
+    .sort()[0]
+
+  const resolveTitle = (id: Id): { title: string; open: boolean } => {
+    const item = itemById.get(id)
+    if (!item) return { title: 'an item no longer in this repository', open: false }
+    return { title: item.title, open: item.state === 'open' }
+  }
+
+  return (
+    <section className="panel foreman-panel">
+      <header className="panel__header">
+        <HardHat size={13} strokeWidth={2} />
+        <Label>Foreman</Label>
+        {pending?.mock ? <Chip tone="chip--caution">mock</Chip> : null}
+        <span className="spacer" />
+        {busy || running ? (
+          <span className="row row--tight">
+            <Spinner /> <span className="field__hint">reading the backlog…</span>
+          </span>
+        ) : (
+          <button className="btn btn--subtle btn--sm" onClick={() => setAskOpen(!askOpen)}>
+            Ask the foreman
+          </button>
+        )}
+      </header>
+      <div className="panel__body">
+        {askOpen && !busy && !running ? (
+          <div className="foreman-ask">
+            <AgentPicker label="Foreman — reads the backlog, proposes, never decides" value={cfg} onChange={setCfg} />
+            <div className="row">
+              <button
+                className="btn btn--primary btn--sm"
+                onClick={() => {
+                  setAskOpen(false)
+                  void onRun(cfg)
+                }}
+              >
+                Run one read
+              </button>
+              <span className="field__hint">
+                One read-only turn over {liveOpen.length} open item
+                {liveOpen.length === 1 ? '' : 's'}. The proposal waits for you.
+              </span>
+            </div>
+          </div>
+        ) : null}
+
+        {pending ? (
+          <article className="foreman-proposal">
+            <div className="backlog-card__head">
+              <strong className="backlog-card__title">{pending.title}</strong>
+            </div>
+            <div className="backlog-card__meta">
+              <Chip tone="chip--mono">{pending.isolation}</Chip>
+              <Chip tone="chip--mono">{pending.vendor}</Chip>
+              <span className="field__hint tnum">
+                {compactNumber(pending.usage.inputTokens)} in ·{' '}
+                {compactNumber(pending.usage.outputTokens)} out
+              </span>
+              <span className="spacer" />
+              <span className="field__hint">{relativeTime(pending.createdAt)}</span>
+            </div>
+            {pending.rationale ? (
+              <p className="backlog-card__detail foreman-proposal__rationale">{pending.rationale}</p>
+            ) : null}
+
+            <div className="foreman-proposal__items">
+              <Label>Selected</Label>
+              <ul>
+                {pending.itemIds.map((id) => {
+                  const resolved = resolveTitle(id)
+                  return (
+                    <li key={id} className={resolved.open ? '' : 'is-gone'}>
+                      {resolved.title}
+                      {!resolved.open ? (
+                        <Chip tone="chip--caution">no longer open</Chip>
+                      ) : null}
+                    </li>
+                  )
+                })}
+              </ul>
+              {pending.deferred.length ? (
+                <>
+                  <Label>Deferred</Label>
+                  <ul>
+                    {pending.deferred.map((entry) => (
+                      <li key={entry.itemId} className="foreman-proposal__deferred">
+                        {resolveTitle(entry.itemId).title}
+                        {entry.reason ? (
+                          <span className="field__hint"> — {entry.reason}</span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+            </div>
+
+            {arrivedSince.length ? (
+              <p className="field__hint foreman-proposal__stale">
+                {arrivedSince.length} item{arrivedSince.length === 1 ? '' : 's'} arrived after
+                this proposal{arrivedTop ? `, including one ${arrivedTop}` : ''} — it was read
+                against an older backlog.
+              </p>
+            ) : null}
+            {pending.decisionNote ? (
+              <p className="field__hint">{pending.decisionNote}</p>
+            ) : null}
+
+            {rejecting ? (
+              <div className="row">
+                <input
+                  className="input"
+                  placeholder="Why not — recorded on the proposal"
+                  value={rejectNote}
+                  onChange={(e) => setRejectNote(e.target.value)}
+                />
+                <button
+                  className="btn btn--sm"
+                  onClick={() => {
+                    setRejecting(false)
+                    void onReject(pending.id, rejectNote.trim())
+                    setRejectNote('')
+                  }}
+                >
+                  Reject it
+                </button>
+                <button className="btn btn--subtle btn--sm" onClick={() => setRejecting(false)}>
+                  Keep it
+                </button>
+              </div>
+            ) : (
+              <div className="backlog-card__actions">
+                <button
+                  className="btn btn--sm"
+                  disabled={surviving.length === 0}
+                  title={
+                    surviving.length === 0
+                      ? 'None of the selected items is still open — reject or re-run'
+                      : 'Opens the plan dialog prefilled; creating the plan is the acceptance'
+                  }
+                  onClick={() => void onAccept(pending)}
+                >
+                  Accept into a plan
+                </button>
+                <button className="btn btn--subtle btn--sm" onClick={() => setRejecting(true)}>
+                  Reject…
+                </button>
+              </div>
+            )}
+          </article>
+        ) : !running ? (
+          <span className="field__hint">
+            No proposal waiting. Ask the foreman for one read of {shortPath(repo)}&apos;s open
+            backlog{lastDecided ? ` — last one ${lastDecided.state} ${relativeTime(lastDecided.decidedAt ?? lastDecided.createdAt)}${lastDecided.state === 'failed' && lastDecided.decisionNote ? ` (${lastDecided.decisionNote})` : ''}` : ''}.
+          </span>
+        ) : null}
+      </div>
+    </section>
   )
 }
 

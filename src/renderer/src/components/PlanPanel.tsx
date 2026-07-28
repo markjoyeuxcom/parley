@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, FolderOpen, Play, ShieldCheck, Square } from 'lucide-react'
 import type {
   AgentConfig,
@@ -57,21 +57,40 @@ export function NewPlanDialog({
   session,
   onClose,
   onCreated,
+  foremanProposalId = null,
+  initialRepoPath,
+  initialItems,
+  initialIsolation,
+  initialNote,
 }: {
   session: Session
   onClose: () => void
   onCreated: (detail: PlanDetail) => void
+  /** A pending foreman proposal this creation accepts, atomically. */
+  foremanProposalId?: Id | null
+  /** Preferred over session.repoPath: an anchor session's repo can be null
+   * or a different repository entirely. */
+  initialRepoPath?: string
+  initialItems?: Id[]
+  initialIsolation?: WorkPlan['isolation']
+  initialNote?: string
 }): ReactNode {
   const { attempt, state } = useStore()
   const [kind, setKind] = useState<WorkPlanKind>('implementation')
-  const [repoPath, setRepoPath] = useState(session.repoPath ?? '')
+  const [repoPath, setRepoPath] = useState(initialRepoPath ?? session.repoPath ?? '')
   const [backlogChoices, setBacklogChoices] = useState<BacklogItem[]>([])
   const [selectedItems, setSelectedItems] = useState<ReadonlySet<Id>>(new Set())
+  // One-shot: the proposal's selection seeds the picker only after the
+  // choices arrive (unfetched ids would be invisible-but-submitted), and
+  // only once — a later repo edit means the human took over.
+  const seededItems = useRef(false)
 
   // The repo's open backlog, refetched when the target repo changes — and the
   // selection cleared with it, because a selection made against one repo must
   // not survive into another. Mock-matched: mock items are only plannable in
-  // mock mode, and offering the others would only ever error.
+  // mock mode, and offering the others would only ever error. The clear stays
+  // synchronous on purpose: a stale selection from the previous repo must
+  // never be submittable during the fetch.
   useEffect(() => {
     setSelectedItems(new Set())
     const path = repoPath.trim()
@@ -84,13 +103,20 @@ export function NewPlanDialog({
       .listBacklogItems(path)
       .then((items) => {
         if (cancelled) return
-        setBacklogChoices(items.filter((item) => item.state === 'open' && item.mock === state.mock))
+        const choices = items.filter((item) => item.state === 'open' && item.mock === state.mock)
+        setBacklogChoices(choices)
+        if (!seededItems.current && initialItems?.length) {
+          seededItems.current = true
+          setSelectedItems(
+            new Set(initialItems.filter((id) => choices.some((choice) => choice.id === id))),
+          )
+        }
       })
       .catch(() => setBacklogChoices([]))
     return () => {
       cancelled = true
     }
-  }, [repoPath, state.mock])
+  }, [repoPath, state.mock, initialItems])
 
   const toggleItem = (id: Id): void => {
     setSelectedItems((current) => {
@@ -113,8 +139,8 @@ export function NewPlanDialog({
     persona: '',
   })
   const [busy, setBusy] = useState(false)
-  const [note, setNote] = useState('')
-  const [isolation, setIsolation] = useState<WorkPlan['isolation']>('checkout')
+  const [note, setNote] = useState(initialNote ?? '')
+  const [isolation, setIsolation] = useState<WorkPlan['isolation']>(initialIsolation ?? 'checkout')
   const [setupCommand, setSetupCommand] = useState('')
 
   const reviewerVendor = planner.vendor === executor.vendor ? 'claude' : planner.vendor
@@ -134,6 +160,7 @@ export function NewPlanDialog({
         isolation,
         setupCommand: isolation === 'worktree' ? setupCommand : '',
         backlogItemIds: [...selectedItems],
+        foremanProposalId,
       }),
     )
     setBusy(false)

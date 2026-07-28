@@ -1482,3 +1482,52 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ─── Foreman panel ────────────────────────────────────────────────────────── */
+
+.foreman-panel {
+  margin-bottom: var(--s5);
+}
+
+.foreman-ask {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding-bottom: var(--s3);
+  margin-bottom: var(--s3);
+  border-bottom: 1px solid var(--line-faint);
+}
+
+.foreman-proposal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.foreman-proposal__rationale {
+  -webkit-line-clamp: 4;
+}
+
+.foreman-proposal__items ul {
+  list-style: none;
+  margin: 0 0 var(--s2);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  font-size: var(--text-small);
+}
+
+.foreman-proposal__items li.is-gone {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+}
+
+.foreman-proposal__items li .chip {
+  margin-left: var(--s2);
+  text-decoration: none;
+}
+
+.foreman-proposal__stale {
+  color: var(--caution, #b58a2e);
+}
