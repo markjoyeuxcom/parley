@@ -396,32 +396,42 @@ function SessionView(): ReactNode {
               </div>
 
               <div className="outcome-pane">
-                {/* Stays visible while a plan is open. It used to render only when
-                    nothing was open, so opening one plan hid the way to the other —
-                    and two plans per session (implementation, then remediation) is
-                    the normal case, not the exception. */}
-                <div className="segmented" role="tablist" aria-label="Plans in this session">
-                  {/* Titled and numbered, oldest first — two plans of the same
-                      kind is the normal case (implementation, then another), and
-                      a row reading "implementation implementation" names neither. */}
+                {/* A vertical list, because a horizontal strip stops working at
+                    the third plan and real sessions accumulate more — failed
+                    attempts, remediations, the one that landed. Numbered by
+                    creation (stable for cross-reference), shown newest first:
+                    the latest plan is almost always the one being worked.
+                    Stays visible while a plan is open, so opening one never
+                    hides the way to the others. */}
+                <div className="plan-list" role="tablist" aria-label="Plans in this session">
                   {[...plans]
                     .sort((a, b) => a.createdAt - b.createdAt)
-                    .map((plan, index) => {
+                    .map((plan, index) => ({ plan, index }))
+                    .reverse()
+                    .map(({ plan, index }) => {
                       const isOpen = state.planDetail?.plan.id === plan.id
+                      const tone = statusTone(plan.status)
                       return (
                         <button
                           key={plan.id}
                           role="tab"
                           aria-selected={isOpen}
-                          className={isOpen ? 'segmented__item is-active' : 'segmented__item'}
+                          className={isOpen ? 'list-item is-active' : 'list-item'}
                           onClick={() => void openPlan(plan.id)}
                           title={`${plan.title} — ${plan.kind}, ${plan.status}`}
                         >
-                          <span className="tnum">{index + 1}</span>
-                          <span className="plan-tab__title">{plan.title}</span>
-                          {plan.status !== 'complete' ? (
-                            <span className="segmented__count">{plan.status}</span>
-                          ) : null}
+                          <div className="list-item__top">
+                            <span className="tnum dimmer">{index + 1}</span>
+                            <span className="list-item__title">{plan.title}</span>
+                            <Chip tone={tone.tone}>{tone.label}</Chip>
+                          </div>
+                          <div className="list-item__meta">
+                            <span>{plan.kind}</span>
+                            <span>·</span>
+                            <span>{plan.isolation}</span>
+                            <span>·</span>
+                            <span>{relativeTime(plan.createdAt)}</span>
+                          </div>
                         </button>
                       )
                     })}

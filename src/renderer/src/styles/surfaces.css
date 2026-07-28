@@ -1732,3 +1732,16 @@
     border-left: 1px solid var(--line);
   }
 }
+
+/* The plan list in the work column: rows scale where tabs could not. */
+.plan-list {
+  display: flex;
+  flex-direction: column;
+  padding: var(--s2);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.plan-list .list-item {
+  cursor: pointer;
+}
