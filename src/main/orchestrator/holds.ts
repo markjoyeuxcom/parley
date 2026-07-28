@@ -531,7 +531,8 @@ function selfUpdateHold(repo: Repo, update: SelfUpdate): Hold {
     title: 'A new Parley build is verified',
     detail:
       `${plan ? `“${plan.title}” landed, and the` : 'A landed plan’s'} gate ran Parley's own verify and build on the result: green. ` +
-      'Relaunch to run the new build, or decline to keep this one. Relaunching quits this app — running panes close, and the terminal that ran `npm run dev` ends.',
+      'Relaunch to run the new build, or decline to keep this one. Relaunching quits this app — running panes close, and the terminal that ran `npm run dev` ends. ' +
+      'This updates the dev checkout only; an installed Parley.app stays on its old version until you run `npm run package:mac` and reinstall.',
     sinceAt: update.createdAt,
     // The gate only ever fires on real landings; mock plans never land.
     mock: false,

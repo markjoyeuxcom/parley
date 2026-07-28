@@ -38,7 +38,7 @@ Break any of these and the product stops being what it is.
 ## Commands
 
 ```bash
-npm run dev          # Electron dev app with HMR
+npm run dev          # Electron dev app; HMR is renderer-only (see the self-update section)
 npm run typecheck    # both projects — must pass clean
 npm test             # deterministic tests, no tokens spent
 npm run build        # production bundles into out/
@@ -503,6 +503,68 @@ from its surviving branch; landing from an orphaned row still works, because
 it needs only the origin and the branch. Mock plans refuse to land outright —
 fast-forwarding a real branch onto mock commits would be invisible mock work,
 with no marking anywhere in git.
+
+## The self repo: worktree-only, gate fail-closed, quit never exit
+
+`electron-vite dev` watches and hot-reloads the **renderer only**. The main
+and preload bundles are built once into `out/` at startup and never rebuilt
+while the app runs — so after a plan lands on Parley's own checkout, the
+running process is executing stale bytes *by construction*. That is the
+hazard this section exists for: not an uncontrolled restart, but a user who
+lands self-improvements and keeps running old code without realising.
+
+The rules, each enforced in main, none only in the renderer:
+
+- **Identity.** `OrchestratorDeps.selfRepoPath` is
+  `app.isPackaged ? null : app.getAppPath()`, canonicalised once by the
+  Manager. Null (packaged, or tests that don't care) leaves every rule here
+  dormant. The renderer's copy in `AppInfo` is advisory UI-greying only.
+- **Worktree-only, both doors.** createPlan refuses checkout isolation for
+  the self repo, and the pipeline's execution entry (`entryRefusal`, beside
+  the shared `executionRefusal` at every entry and raced re-check) refuses
+  grandfathered rows — a checkout plan created before the rule must not
+  bypass it forever. An agent writing into the live app's source under it is
+  the one uncontrolled case.
+- **The gate replaces the smoke check.** Landing a plan whose repo is the
+  self repo runs `npm run verify` then `npm run build` (the self-update
+  gate) INSTEAD OF the generic `verifyLanding` — two npm runs racing one
+  origin would fight over node_modules and out/. The gate **fails closed**,
+  in deliberate contrast to `verifyLanding`'s fail-open: that one is a
+  courtesy smoke test of someone else's repo; this one gates an offer to
+  restart the app into the bytes it produced, so every anomaly — spawn
+  error, timeout, abort, throw — is a red row, never a shrug. Its captures
+  use `killTree` (detached spawn, process-group signals), because a timeout
+  that only reaches npm leaves the build's grandchildren alive and writing
+  out/ behind the guard's back.
+- **Supersede at attempt, not at outcome.** Filing a new gate attempt
+  supersedes the previous green offer in the same transaction — the moment a
+  new gate can touch out/, no stale "verified" offer may survive it, or a
+  later failed build leaves green pointing at half-written bytes. One gate
+  per checkout (`Manager.selfGateRuns`); a second landing mid-gate is
+  announced and skipped, never queued; `disposeAll` aborts the controller so
+  a quitting app finalizes its own row red instead of stranding `running`.
+- **Relaunch is a recorded decision, decided before the quit.**
+  `selfupdate.relaunch` refuses while `busyWithRuns()` names anything in
+  flight, writes `relaunched`, and only then calls the injected
+  `IpcAppControl.relaunch` — a crash mid-restart must not resurrect an offer
+  already taken. The wrapper dedupes `--parley-fresh-build`, calls
+  `app.relaunch({args})` and then **`app.quit()` — NEVER `app.exit`**:
+  before-quit is what disposes agent CLIs and ptys, and skipping it orphans
+  paid runs that keep spending quota headless. index.ts deletes
+  `ELECTRON_RENDERER_URL` when the flag is present — deletion, not
+  ignoring, so the load, the navigation allowlist and every child spawn all
+  see a world without the dev server.
+- **The mock-walkability exception is deliberate.** Mock plans never land
+  (invariant above), and the gate hooks at landing, so the PARLEY_MOCK
+  walkthrough cannot exercise landing→gate→relaunch. The honest coverage is
+  the integration suite (real git, real npm, fake self checkouts), the
+  mounted smoke tests of the hold's inline controls, and the by-hand loop on
+  the real checkout. Do not "fix" this by making mock plans land.
+- **Two channels.** This loop upgrades the dev checkout — the factory. The
+  installed .dmg is a frozen snapshot updated by `npm run package:mac` and
+  reinstalling; packaged self-update (signing, asar, migrations, rollback)
+  is a separate, much later project. The hold's detail says so, so the UI
+  never implies the installed copy updated.
 
 ## Long runs must not be opaque
 

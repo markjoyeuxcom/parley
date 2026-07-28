@@ -418,6 +418,37 @@ landing — your role compresses to answering questions and resolving holds.
 
 ---
 
+## Self-update (dev mode)
+
+When you run Parley from its own checkout (`npm run dev`), it knows which
+repository it is: plans targeting that checkout are worktree-only — the
+dialog greys the in-checkout option, and the engine refuses it at creation
+and again at execution — because an agent writing into the live app's
+source under it is the one uncontrolled case. When such a plan lands,
+Parley automatically runs its own `npm run verify` and then `npm run
+build` on the result. Green means the landed bytes both pass their checks
+and now exist as a fresh build in `out/` — and that green is an offer in
+the holds queue, not an act: **Relaunch** quits the app and boots the
+version Parley just built of itself (the `npm run dev` terminal ends;
+running panes close), **Not now** records the decline and you keep
+running the old bytes deliberately. A red gate flags the landed plan
+through the existing landed-but-verification-failed hold instead. Every
+attempt, outcome and decision is a `self_updates` row — recorded like
+everything else.
+
+Two channels, deliberately distinct: this loop upgrades the **dev
+checkout** — the factory. An installed Parley.app from a .dmg is a frozen
+snapshot; it stays on its old version until you run `npm run package:mac`
+and reinstall. Packaged-app self-update (signing, asar, migration
+compatibility, rollback) is a separate, much later project.
+
+One honest gap: mock plans never land, and the gate hooks at landing, so
+the `PARLEY_MOCK=1` walkthrough cannot exercise this loop end to end.
+Integration tests drive the real thing against fake checkouts instead —
+see `AGENTS.md` for why that exception is deliberate.
+
+---
+
 ## Requirements
 
 - macOS on Apple Silicon
