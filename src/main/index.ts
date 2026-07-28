@@ -94,6 +94,7 @@ async function bootstrap(): Promise<void> {
   // Foreman attempts the last shutdown left `running` become recorded
   // failures; the pending proposal they never superseded stays as it was.
   repo.reconcileForemanAttempts()
+  repo.reconcileSelfUpdates()
 
   const registry = new AgentRegistry()
 

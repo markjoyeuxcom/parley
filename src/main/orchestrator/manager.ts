@@ -33,6 +33,7 @@ import {
 } from './backlog'
 import { LivenessWatchdog } from './liveness'
 import { runForeman } from './foreman'
+import { runSelfGate } from './selfupdate'
 import { landWorktree, preflightLand, verifyLanding } from './worktrees'
 import { LoopRunner, validateExitCommand, type LoopOutcome } from './loop'
 import { missingExpectedPaths, Pipeline, readTree } from './pipeline'
@@ -136,6 +137,13 @@ export class Manager {
   private readonly milestoneRuns = new Map<Id, RunGate>()
   /** In-flight stow sweeps — the same synchronous has-check discipline. */
   private readonly stowRuns = new Set<Id>()
+  /**
+   * In-flight self-update gates, keyed by the canonical self repo path (so
+   * ever at most one entry today, but the key states the invariant: one gate
+   * per checkout, because two concurrent builds would interleave writes into
+   * the same out/). Same synchronous has-check discipline as milestoneRuns.
+   */
+  private readonly selfGateRuns = new Map<string, AbortController>()
   /** In-flight foreman reads, keyed by canonical repo path. Same discipline. */
   private readonly foremanRuns = new Set<string>()
   private readonly loops = new Map<Id, LoopRunner>()
@@ -902,25 +910,96 @@ export class Manager {
         (event) => this.emit(event),
       )
       // Fire-and-forget by design: the renderer awaits landPlan, and holding
-      // its invoke open for a test run is the exact wart answerPlan shed. The
-      // last milestone's command is the plan's own definition of verified.
-      const lastCommand = this.repo
-        .listMilestones(planId)
-        .map((m) => m.testCommand.trim())
-        .filter(Boolean)
-        .at(-1)
-      if (lastCommand) {
-        void verifyLanding(worktree.originPath, lastCommand)
-          .then((verify) => {
-            if (verify.ok) return
-            this.repo.flagWorktree(planId, false, verify.detail)
-            this.holdsChanged()
-            this.emit({ type: 'notice', level: 'warn', message: verify.detail })
-          })
-          .catch(() => {})
+      // its invoke open for a test run is the exact wart answerPlan shed.
+      //
+      // Landing on Parley's own checkout takes the self-update gate INSTEAD
+      // OF the generic smoke check — `npm run verify` strictly supersedes the
+      // last milestone's command, and two npm runs racing in one origin would
+      // fight over the same node_modules and out/.
+      if (this.deps.selfRepoPath && canonicalRepoPath(plan.repoPath) === this.deps.selfRepoPath) {
+        this.launchSelfGate(planId)
+      } else {
+        // The last milestone's command is the plan's own definition of verified.
+        const lastCommand = this.repo
+          .listMilestones(planId)
+          .map((m) => m.testCommand.trim())
+          .filter(Boolean)
+          .at(-1)
+        if (lastCommand) {
+          void verifyLanding(worktree.originPath, lastCommand)
+            .then((verify) => {
+              if (verify.ok) return
+              this.repo.flagWorktree(planId, false, verify.detail)
+              this.holdsChanged()
+              this.emit({ type: 'notice', level: 'warn', message: verify.detail })
+            })
+            .catch(() => {})
+        }
       }
     }
     return result
+  }
+
+  /**
+   * Fires the self-update gate for a plan that just landed on Parley's own
+   * checkout. Public so tests exercise the guard directly — in the app the
+   * landing hook is the only caller until m3's manual path exists.
+   *
+   * At most one gate per checkout: a second landing while one runs is
+   * announced and skipped rather than queued — the running gate's build is
+   * already reading the origin that now contains both landings, and a queue
+   * of stale rebuilds would only churn out/ for no fresher answer. Returns
+   * whether a gate actually started.
+   */
+  launchSelfGate(planId: Id, opts: { timeoutMs?: number } = {}): boolean {
+    const self = this.deps.selfRepoPath
+    if (!self) return false
+    if (this.selfGateRuns.has(self)) {
+      this.emit({
+        type: 'notice',
+        level: 'warn',
+        message:
+          'A self-update gate is already running; this landing was not separately verified. The running gate builds from the origin, which now includes it.',
+      })
+      return false
+    }
+    const controller = new AbortController()
+    this.selfGateRuns.set(self, controller)
+    void runSelfGate(this.repo, self, planId, {
+      signal: controller.signal,
+      timeoutMs: opts.timeoutMs,
+    })
+      .then((row) => {
+        if (row.state === 'green') {
+          this.emit({
+            type: 'notice',
+            level: 'info',
+            message:
+              'Parley verified and rebuilt itself from the landed work. Relaunch when ready — the offer is in the holds queue.',
+          })
+        } else if (row.state === 'red') {
+          // The landed-but-broken hold already exists for exactly this shape
+          // of news; red rides it rather than inventing a second surface.
+          this.repo.flagWorktree(planId, false, row.detail)
+          this.emit({ type: 'notice', level: 'warn', message: row.detail })
+        }
+        this.holdsChanged()
+      })
+      .catch((error) => {
+        // Filing itself failed — there is no row to finalize, so the notice
+        // is the record's stand-in. Never swallowed: a silent catch here is
+        // how a gate "ran" without a trace.
+        const message = error instanceof Error ? error.message : String(error)
+        this.emit({
+          type: 'notice',
+          level: 'warn',
+          message: `The self-update gate could not run: ${message}`,
+        })
+      })
+      .finally(() => {
+        this.selfGateRuns.delete(self)
+      })
+    return true
   }
 
   /**
@@ -1091,6 +1170,10 @@ export class Manager {
     for (const runner of this.sessions.values()) runner.gate.stop()
     for (const runner of this.loops.values()) runner.gate.stop()
     for (const gate of this.milestoneRuns.values()) gate.stop()
+    // A quitting app interrupts its own gate: the abort turns the row red
+    // ('interrupted') from inside the still-live process, so the record never
+    // depends on the next boot noticing a stranded `running`.
+    for (const controller of this.selfGateRuns.values()) controller.abort()
     this.liveness.dispose()
   }
 

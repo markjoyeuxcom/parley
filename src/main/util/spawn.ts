@@ -175,6 +175,13 @@ export interface CaptureResult {
  * Used for the deterministic verification step: Parley runs the project's own
  * test command itself, so a green result is an observed fact rather than
  * something an agent reported about itself.
+ *
+ * `killTree` makes the child a process-group leader and signals the whole
+ * group on timeout or abort. Opt-in because it changes semantics: the default
+ * SIGTERM reaches only the direct child, and for `npm run` that leaves the
+ * actual script — npm's grandchild — alive to keep writing after the cut.
+ * The self-update gate must never let an orphaned build keep touching out/
+ * behind the guard's back.
  */
 export function capture(
   command: string,
@@ -182,10 +189,15 @@ export function capture(
   cwd: string,
   timeoutMs = 15 * 60 * 1000,
   signal?: AbortSignal,
+  opts: { killTree?: boolean } = {},
 ): Promise<CaptureResult> {
   const startedAt = Date.now()
   return new Promise((resolve) => {
-    const child = spawn(command, args, { cwd, env: process.env })
+    const child = spawn(command, args, {
+      cwd,
+      env: process.env,
+      detached: opts.killTree === true,
+    })
     let stdout = ''
     let stderr = ''
     let settled = false
@@ -207,10 +219,23 @@ export function capture(
       })
     }
 
+    const deliver = (sig: NodeJS.Signals) => {
+      if (opts.killTree && child.pid) {
+        try {
+          // Negative pid: the whole process group the detached child leads.
+          process.kill(-child.pid, sig)
+          return
+        } catch {
+          // The group is already gone, or the spawn failed before it led one;
+          // fall through so the direct child still gets the signal.
+        }
+      }
+      child.kill(sig)
+    }
     const kill = () => {
-      child.kill('SIGTERM')
+      deliver('SIGTERM')
       setTimeout(() => {
-        if (!settled) child.kill('SIGKILL')
+        if (!settled) deliver('SIGKILL')
       }, 3000).unref?.()
     }
     const onAbort = () => kill()

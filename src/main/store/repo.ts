@@ -34,6 +34,8 @@ import {
   type Mutation,
   type MutationResult,
   type ScoreDimension,
+  type SelfUpdate,
+  type SelfUpdateState,
   type Session,
   type SessionDeletionImpact,
   type SessionStatus,
@@ -1669,6 +1671,141 @@ export class Repo {
       }
       return plan
     })
+  }
+
+  // ─── Self-updates ──────────────────────────────────────────────────────────
+
+  /**
+   * Opens a gate attempt for a landed plan. Older green rows are superseded
+   * here, in the same transaction — the moment a new gate can touch out/, no
+   * stale "verified" offer may survive it: a later failed build would
+   * otherwise leave a green hold pointing at half-written bytes.
+   */
+  fileSelfUpdateAttempt(planId: Id): SelfUpdate {
+    return this.db.transaction(() => {
+      const now = Date.now()
+      this.db.run(
+        `UPDATE self_updates SET state = 'superseded', decided_at = ?,
+           detail = 'Superseded: a newer landing started its own gate.'
+         WHERE state = 'green'`,
+        now,
+      )
+      const attempt: SelfUpdate = {
+        id: newId(),
+        planId,
+        state: 'running',
+        detail: '',
+        createdAt: now,
+        decidedAt: null,
+      }
+      this.db.run(
+        `INSERT INTO self_updates (id, plan_id, state, detail, created_at, decided_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        attempt.id,
+        attempt.planId,
+        attempt.state,
+        attempt.detail,
+        attempt.createdAt,
+        attempt.decidedAt,
+      )
+      return attempt
+    })
+  }
+
+  /**
+   * Ends a gate run. Green stays undecided (decided_at null) — that absence
+   * is what "awaiting the human" means, and the hold derives from it. Red is
+   * terminal, so it takes its decision stamp here.
+   */
+  finalizeSelfUpdate(id: Id, state: 'green' | 'red', detail: string): SelfUpdate {
+    return this.db.transaction(() => {
+      const row = this.db.get(`SELECT * FROM self_updates WHERE id = ?`, id)
+      if (!row) throw new Error('no such self-update attempt')
+      const attempt = this.toSelfUpdate(row)
+      if (attempt.state !== 'running') {
+        throw new Error(`a ${attempt.state} self-update attempt cannot be finalized`)
+      }
+      this.db.run(
+        `UPDATE self_updates SET state = ?, detail = ?, decided_at = ? WHERE id = ?`,
+        state,
+        detail,
+        state === 'red' ? Date.now() : null,
+        id,
+      )
+      const updated = this.db.get(`SELECT * FROM self_updates WHERE id = ?`, id)
+      if (!updated) throw new Error('self-update attempt disappeared mid-finalize')
+      return this.toSelfUpdate(updated)
+    })
+  }
+
+  /** The human's call on a green row: boot the new build, or not. */
+  decideSelfUpdate(id: Id, to: 'relaunched' | 'declined'): SelfUpdate {
+    return this.db.transaction(() => {
+      const row = this.db.get(`SELECT * FROM self_updates WHERE id = ?`, id)
+      if (!row) throw new Error('no such self-update')
+      const attempt = this.toSelfUpdate(row)
+      if (attempt.state !== 'green') {
+        throw new Error(`a ${attempt.state} self-update cannot become ${to}`)
+      }
+      this.db.run(
+        `UPDATE self_updates SET state = ?, decided_at = ? WHERE id = ?`,
+        to,
+        Date.now(),
+        id,
+      )
+      const updated = this.db.get(`SELECT * FROM self_updates WHERE id = ?`, id)
+      if (!updated) throw new Error('self-update disappeared mid-decide')
+      return this.toSelfUpdate(updated)
+    })
+  }
+
+  /**
+   * The one live offer, if any. Supersede-at-attempt keeps green unique, but
+   * the ordering stays defensive rather than load-bearing.
+   */
+  getPendingSelfUpdate(): SelfUpdate | null {
+    const row = this.db.get(
+      `SELECT * FROM self_updates WHERE state = 'green'
+       ORDER BY created_at DESC, id ASC LIMIT 1`,
+    )
+    return row ? this.toSelfUpdate(row) : null
+  }
+
+  getSelfUpdate(id: Id): SelfUpdate | null {
+    const row = this.db.get(`SELECT * FROM self_updates WHERE id = ?`, id)
+    return row ? this.toSelfUpdate(row) : null
+  }
+
+  listSelfUpdates(limit = 50): SelfUpdate[] {
+    return this.db
+      .all(`SELECT * FROM self_updates ORDER BY created_at DESC, id ASC LIMIT ?`, limit)
+      .map((r) => this.toSelfUpdate(r))
+  }
+
+  /**
+   * Startup honesty for rows a dead process left `running`: this only ever
+   * runs before any new gate exists, so a surviving `running` row can only
+   * mean the app quit or crashed mid-gate. A LIVE process never calls this —
+   * its own catch finalizes red instead.
+   */
+  reconcileSelfUpdates(): number {
+    return this.db.run(
+      `UPDATE self_updates SET state = 'red', decided_at = ?,
+         detail = 'Interrupted when Parley last quit.'
+       WHERE state = 'running'`,
+      Date.now(),
+    ).changes
+  }
+
+  private toSelfUpdate(row: Row): SelfUpdate {
+    return {
+      id: str(row['id']),
+      planId: str(row['plan_id']),
+      state: str(row['state']) as SelfUpdateState,
+      detail: str(row['detail']),
+      createdAt: num(row['created_at']),
+      decidedAt: row['decided_at'] == null ? null : num(row['decided_at']),
+    }
   }
 
   private toForemanProposal(row: Row): ForemanProposal {

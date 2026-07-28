@@ -766,6 +766,44 @@ export const ForemanProposal = z.object({
 })
 export type ForemanProposal = z.infer<typeof ForemanProposal>
 
+// ─── Self-update (dev mode) ─────────────────────────────────────────────────
+
+export const SelfUpdateState = z.enum([
+  /** The gate is running its checks and build right now. */
+  'running',
+  /** Checks passed and the new bytes exist in out/ — awaiting the human. */
+  'green',
+  /** Anything else: failed checks, failed build, timeout, interruption. */
+  'red',
+  'declined',
+  'relaunched',
+  /** A newer landing filed a fresh attempt while this one sat undecided. */
+  'superseded',
+])
+export type SelfUpdateState = z.infer<typeof SelfUpdateState>
+
+/**
+ * One automatic verify-and-build run against Parley's own checkout, fired by
+ * landing a plan there. Green is a recorded observation — Parley ran its own
+ * checks on the landed bytes and they passed — and the relaunch decision that
+ * may follow is the human's, never the gate's.
+ */
+export const SelfUpdate = z.object({
+  id: Id,
+  /**
+   * Deliberately not a foreign key: session deletion cascades to plans, and
+   * the verified build in out/ exists regardless of whether the plan row that
+   * produced it still does. Same precedent as worktrees.
+   */
+  planId: Id,
+  state: SelfUpdateState,
+  /** Outcome text: durations when green; the failing tail and cause when red. */
+  detail: z.string().default(''),
+  createdAt: Timestamp,
+  decidedAt: Timestamp.nullable().default(null),
+})
+export type SelfUpdate = z.infer<typeof SelfUpdate>
+
 // ─── Finding ledger ─────────────────────────────────────────────────────────
 
 /**

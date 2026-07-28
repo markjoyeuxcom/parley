@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 19
+export const SCHEMA_VERSION = 20
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -417,6 +417,16 @@ CREATE TABLE IF NOT EXISTS foreman_proposals (
   decision_note     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_foreman_repo_state ON foreman_proposals(repo_path, state);
+
+CREATE TABLE IF NOT EXISTS self_updates (
+  id         TEXT PRIMARY KEY,
+  plan_id    TEXT NOT NULL,
+  state      TEXT NOT NULL,
+  detail     TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  decided_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_self_updates_state ON self_updates(state);
 `
 
 class NodeSqliteDb implements Db {
@@ -782,6 +792,11 @@ export function migrate(db: Db): void {
   if (current < 19) {
     // The foreman is additive: SCHEMA creates foreman_proposals fresh, and
     // no existing row changes shape.
+  }
+  if (current < 20) {
+    // Self-update is additive: SCHEMA creates self_updates fresh, and no
+    // existing row changes shape. plan_id is deliberately FK-less — session
+    // deletion cascades to plans, and the record must outlive its plan.
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)
