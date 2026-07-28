@@ -250,6 +250,8 @@ const RECOMPUTES_ON: ReadonlySet<AppEvent['type']> = new Set([
   'session.status',
   'session.ledger',
   'plan.created',
+  // Hold details embed the plan title; the rename mid-draft must reach them.
+  'plan.updated',
   'plan.status',
   'plan.milestone',
   'plan.milestones',

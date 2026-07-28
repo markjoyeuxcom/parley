@@ -10,6 +10,7 @@ function hold(overrides: Partial<Hold>): Hold {
     planId: 'plan-1',
     milestoneId: null,
     loopId: null,
+    repoPath: null,
     title: 'Waiting on your answer',
     detail: 'Which database?',
     sinceAt: 1_000,

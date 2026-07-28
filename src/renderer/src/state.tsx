@@ -308,6 +308,24 @@ function applyEvent(state: State, event: AppEvent): State {
         ? { ...state, sessionDetail: { ...state.sessionDetail, plans: [event.plan, ...state.sessionDetail.plans] } }
         : state
 
+    // The full row replaces the loaded copies — the planner writes the real
+    // title mid-draft, and a list hydrated at creation would otherwise show
+    // the placeholder forever.
+    case 'plan.updated': {
+      const sessionDetail =
+        state.sessionDetail?.session.id === event.plan.sessionId
+          ? {
+              ...state.sessionDetail,
+              plans: state.sessionDetail.plans.map((p) => (p.id === event.plan.id ? event.plan : p)),
+            }
+          : state.sessionDetail
+      const planDetail =
+        state.planDetail?.plan.id === event.plan.id
+          ? { ...state.planDetail, plan: event.plan }
+          : state.planDetail
+      return { ...state, sessionDetail, planDetail }
+    }
+
     case 'plan.status': {
       // Restart the clock on every stage change, so the elapsed time shown is
       // "how long has it been auditing" rather than "how long since I clicked".

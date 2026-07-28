@@ -350,6 +350,7 @@ export class Pipeline {
       throw new PipelineError('the planner did not produce a usable milestone list')
     }
     if (parsed.title) this.repo.setPlanTitle(plan.id, parsed.title)
+    this.emitPlanUpdated(plan.id)
     this.writeMilestones(plan.id, parsed)
 
     return this.runAudit(plan, drafted.text, drafted.resumeId ?? input.resumeId ?? null, greenfield, signal)
@@ -519,6 +520,7 @@ export class Pipeline {
         .join('\n\n'),
     )
     if (corrected.title) this.repo.setPlanTitle(plan.id, corrected.title)
+    this.emitPlanUpdated(plan.id)
 
     // The corrected plan supersedes the draft wholesale — milestones may have
     // been split, reordered or dropped, so patching them would be guesswork.
@@ -1858,6 +1860,12 @@ export class Pipeline {
       })
       this.emitLedgerEntry(plan.sessionId, occurrence.findingId)
     }
+  }
+
+  /** Re-broadcasts the full plan row after a non-status field changed. */
+  private emitPlanUpdated(planId: Id): void {
+    const plan = this.repo.getPlan(planId)
+    if (plan) this.emit({ type: 'plan.updated', plan })
   }
 
   private emitLedgerEntry(sessionId: Id, findingId: Id): void {

@@ -1677,6 +1677,18 @@ describe('the planner answers its own audit', () => {
     expect(repo.getPlan(plan.id)?.correctionNote).toMatch(/recorded no disposition/i)
     expect(repo.listMilestones(plan.id)).toHaveLength(2)
   })
+  it('the drafted title reaches the renderer as a full-row event', async () => {
+    // The row is created as "implementation plan" and the planner names it
+    // mid-draft. A list hydrated at creation would keep the placeholder
+    // forever unless the rename is re-broadcast — which once left a session
+    // showing three tabs called "implementation plan".
+    const { events, plan } = await planIn(mkdtempSync(join(tmpdir(), 'parley-title-')))
+    expect(plan?.title).toBe('Bound the retry path')
+    const updates = events.filter((e) => e.type === 'plan.updated')
+    expect(updates.length).toBeGreaterThan(0)
+    expect(updates.at(-1)).toMatchObject({ plan: { id: plan?.id, title: 'Bound the retry path' } })
+  })
+
 })
 
 describe('a planner that needs a decision from the user', () => {

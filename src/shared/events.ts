@@ -34,6 +34,12 @@ export type AppEvent =
   | { type: 'session.ledger'; entry: LedgerEntry }
   // Work plans
   | { type: 'plan.created'; plan: WorkPlan }
+  /**
+   * The full row, re-broadcast when a field outside `status` changes — today
+   * that is the title, which the planner writes mid-draft. Without this, a
+   * list hydrated at creation shows the "<kind> plan" placeholder forever.
+   */
+  | { type: 'plan.updated'; plan: WorkPlan }
   | { type: 'plan.status'; planId: Id; status: WorkPlan['status'] }
   | { type: 'plan.milestone'; milestone: Milestone }
   /**
