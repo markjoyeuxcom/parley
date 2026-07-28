@@ -15,6 +15,7 @@ import type {
   LoopIteration,
   Milestone,
   Pane,
+  SelfUpdate,
   Session,
   SessionDeletionImpact,
   Skill,
@@ -158,6 +159,13 @@ export const api = {
   /** Rejecting is its own act; accepting rides plan creation atomically. */
   rejectForemanProposal: (proposalId: Id, note = ''): Promise<ForemanProposal> =>
     bridge().invoke('foreman.reject', { proposalId, note }),
+
+  // Self-update (dev mode)
+  /** Decides the green offer, then quits into the freshly built out/. */
+  relaunchSelfUpdate: (updateId: Id): Promise<SelfUpdate> =>
+    bridge().invoke('selfupdate.relaunch', { updateId }),
+  declineSelfUpdate: (updateId: Id): Promise<SelfUpdate> =>
+    bridge().invoke('selfupdate.decline', { updateId }),
 
   // Plans
   createPlan: (payload: {

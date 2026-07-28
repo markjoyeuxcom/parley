@@ -12,6 +12,17 @@ import { PtyManager } from '@main/pty/manager'
 import { disposeIpc, registerIpc } from '@main/ipc/register'
 import { applyResolvedPath, preflightPty } from '@main/util/environment'
 
+/**
+ * The relaunch-into-fresh-build flag, handled before anything can read the
+ * env: `electron-vite dev` exports ELECTRON_RENDERER_URL and every child of
+ * that terminal inherits it — including this relaunched process. Deleting it
+ * here (not merely ignoring it at load) covers the window load, the
+ * navigation allowlist, and every child spawn in one move, so the new
+ * process runs the built out/ exactly as a packaged app would.
+ */
+const freshBuild = process.argv.includes('--parley-fresh-build')
+if (freshBuild) delete process.env['ELECTRON_RENDERER_URL']
+
 let mainWindow: BrowserWindow | null = null
 let pty: PtyManager | null = null
 let manager: Manager | null = null
@@ -142,6 +153,19 @@ async function bootstrap(): Promise<void> {
     // Wait for the renderer, or the notice lands before anyone can see it.
     mainWindow?.webContents.once('did-finish-load', () => {
       emit({ type: 'notice', level: 'error', message: ptyCheck.detail })
+    })
+  }
+
+  // The self-relaunch announces itself: without this line, a successful
+  // update is indistinguishable from an ordinary restart, and the user has
+  // no confirmation the bytes actually changed generation.
+  if (freshBuild) {
+    mainWindow?.webContents.once('did-finish-load', () => {
+      emit({
+        type: 'notice',
+        level: 'info',
+        message: 'Running the freshly landed build from out/.',
+      })
     })
   }
 

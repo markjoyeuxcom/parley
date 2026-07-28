@@ -45,6 +45,11 @@ function harness(): { ctx: IpcContext; repo: Repo; session: Session } {
       showOpenDialog: () => Promise.reject(new Error('dialogs must not be touched')),
       showSaveDialog: () => Promise.reject(new Error('dialogs must not be touched')),
     },
+    appControl: {
+      relaunch: () => {
+        throw new Error('appControl must not be touched')
+      },
+    },
   }
   return { ctx, repo, session }
 }
@@ -232,6 +237,11 @@ describe('handler emits and the attention queue', () => {
         showOpenDialog: () => Promise.reject(new Error('dialogs must not be touched')),
         showSaveDialog: () => Promise.reject(new Error('dialogs must not be touched')),
       },
+      appControl: {
+        relaunch: () => {
+          throw new Error('appControl must not be touched')
+        },
+      },
     }
     const lastHolds = () => {
       const event = events.filter((e) => e.type === 'holds.changed').at(-1)
@@ -331,5 +341,81 @@ describe('plan.list arms', () => {
       planCount: number
     }>
     expect(summaries.find((s) => s.repoPath === repoPath)?.planCount).toBe(205)
+  })
+})
+
+describe('self-update commands', () => {
+  it('decline records the decision and clears the offer', async () => {
+    const { ctx, repo } = harness()
+    const attempt = repo.fileSelfUpdateAttempt('plan-a')
+    repo.finalizeSelfUpdate(attempt.id, 'green', 'built')
+
+    const decided = (await invokeCommand(ctx, {
+      command: 'selfupdate.decline',
+      payload: { updateId: attempt.id },
+    })) as { state: string }
+    expect(decided.state).toBe('declined')
+    expect(repo.getPendingSelfUpdate()).toBeNull()
+  })
+
+  it('relaunch decides the row BEFORE the process control fires', async () => {
+    const { ctx, repo } = harness()
+    const attempt = repo.fileSelfUpdateAttempt('plan-a')
+    repo.finalizeSelfUpdate(attempt.id, 'green', 'built')
+
+    // The fake records what the database said at the moment the app would
+    // have gone down: a crash mid-restart must not resurrect the offer.
+    const seenAtRelaunch: string[] = []
+    ctx.appControl = {
+      relaunch: () => {
+        seenAtRelaunch.push(repo.getSelfUpdate(attempt.id)?.state ?? 'missing')
+      },
+    }
+    await invokeCommand(ctx, {
+      command: 'selfupdate.relaunch',
+      payload: { updateId: attempt.id },
+    })
+    expect(seenAtRelaunch).toEqual(['relaunched'])
+  })
+
+  it('relaunch refuses anything not green-undecided', async () => {
+    const { ctx, repo } = harness()
+    const red = repo.fileSelfUpdateAttempt('plan-a')
+    repo.finalizeSelfUpdate(red.id, 'red', 'broke')
+    await expect(
+      invokeCommand(ctx, { command: 'selfupdate.relaunch', payload: { updateId: red.id } }),
+    ).rejects.toThrow(/red/)
+
+    const green = repo.fileSelfUpdateAttempt('plan-b')
+    repo.finalizeSelfUpdate(green.id, 'green', 'built')
+    const superseded = repo.fileSelfUpdateAttempt('plan-c')
+    await expect(
+      invokeCommand(ctx, { command: 'selfupdate.relaunch', payload: { updateId: green.id } }),
+    ).rejects.toThrow(/superseded/)
+    // The still-running new attempt is not decidable either.
+    await expect(
+      invokeCommand(ctx, { command: 'selfupdate.relaunch', payload: { updateId: superseded.id } }),
+    ).rejects.toThrow(/running/)
+    await expect(
+      invokeCommand(ctx, { command: 'selfupdate.relaunch', payload: { updateId: newId() } }),
+    ).rejects.toThrow(/no such/)
+  })
+
+  it('relaunch refuses while runs are in flight, and the offer survives', async () => {
+    const { ctx, repo } = harness()
+    const attempt = repo.fileSelfUpdateAttempt('plan-a')
+    repo.finalizeSelfUpdate(attempt.id, 'green', 'built')
+
+    const original = ctx.manager.busyWithRuns.bind(ctx.manager)
+    ctx.manager.busyWithRuns = () => 'a milestone is executing'
+    try {
+      await expect(
+        invokeCommand(ctx, { command: 'selfupdate.relaunch', payload: { updateId: attempt.id } }),
+      ).rejects.toThrow(/while a milestone is executing/)
+    } finally {
+      ctx.manager.busyWithRuns = original
+    }
+    // Refused means undecided: the offer must still be there to take later.
+    expect(repo.getPendingSelfUpdate()?.id).toBe(attempt.id)
   })
 })

@@ -43,6 +43,8 @@ export type HoldKind =
   | 'backlog-review'
   /** The foreman filed a plan proposal a human must accept or reject. */
   | 'foreman-proposal'
+  /** A verified fresh build of Parley itself awaits relaunch or decline. */
+  | 'self-update'
 
 /**
  * Decision holds clear only by acting — answering, approving, landing. They
@@ -69,6 +71,10 @@ export const HOLD_CLASS: Record<HoldKind, HoldClass> = {
   // Same logic one level up: the foreman's proposal clears by accepting it
   // into a plan or rejecting it with a reason, never by dismissal.
   'foreman-proposal': 'decision',
+  // The offer clears by relaunching or declining — an ack-able "new build
+  // waiting" would leave the app running stale bytes with the badge dark,
+  // which is the exact hazard this series exists to kill.
+  'self-update': 'decision',
 }
 
 export interface Hold {

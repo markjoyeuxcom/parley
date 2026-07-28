@@ -173,8 +173,11 @@ describe('the manager guard', () => {
     })
     const { manager, repo, events } = guardHarness(self)
 
+    expect(manager.busyWithRuns()).toBeNull()
     expect(manager.launchSelfGate('plan-a')).toBe(true)
     await waitFor(() => repo.listSelfUpdates().length === 1)
+    // The gate itself counts as busy — relaunch consults exactly this.
+    expect(manager.busyWithRuns()).toContain('gate')
 
     // Second landing mid-gate: announced and skipped, never queued — the
     // running build already reads an origin that includes it.

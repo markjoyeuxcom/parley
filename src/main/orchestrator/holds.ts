@@ -1,6 +1,14 @@
 import type { Hold, HoldKind } from '@shared/holds'
 import { HOLD_CLASS, holdIdentity, STALL_AFTER_MS } from '@shared/holds'
-import type { BacklogItem, ForemanProposal, Loop, Milestone, WorkPlan, Worktree } from '@shared/domain'
+import type {
+  BacklogItem,
+  ForemanProposal,
+  Loop,
+  Milestone,
+  SelfUpdate,
+  WorkPlan,
+  Worktree,
+} from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import { EXECUTABLE_PAIRS } from '@shared/execution'
 import type { Repo } from '@main/store/repo'
@@ -130,6 +138,11 @@ export function computeHolds(repo: Repo, acked: ReadonlySet<string>, now = Date.
   for (const proposal of repo.listForemanProposals({ states: ['proposed'] })) {
     holds.push(foremanProposalHold(proposal))
   }
+
+  // At most one by construction: filing a new gate attempt supersedes the
+  // previous green offer in the same transaction.
+  const pendingSelfUpdate = repo.getPendingSelfUpdate()
+  if (pendingSelfUpdate) holds.push(selfUpdateHold(repo, pendingSelfUpdate))
 
   const open = holds.filter((hold) => !(HOLD_CLASS[hold.kind] === 'notice' && acked.has(hold.id)))
 
@@ -497,6 +510,31 @@ function foremanProposalHold(proposal: ForemanProposal): Hold {
     detail: `${proposal.repoPath} — “${proposal.title}”: ${n} item${n === 1 ? '' : 's'} selected${m ? `, ${m} deferred` : ''}. Accept it into a plan or reject it with a reason.`,
     sinceAt: proposal.createdAt,
     mock: proposal.mock,
+  })
+}
+
+/**
+ * The generation is the row id: every fresh gate attempt is a fresh row, so a
+ * superseding green renotifies once, while deciding simply removes the hold.
+ * The plan lookup tolerates deletion — the verified build in out/ exists
+ * regardless of whether the plan row that produced it still does, so the
+ * offer degrades to null plan fields rather than vanishing.
+ */
+function selfUpdateHold(repo: Repo, update: SelfUpdate): Hold {
+  const plan = repo.getPlan(update.planId)
+  return hold('self-update', update.planId, update.id, {
+    sessionId: null,
+    planId: plan ? update.planId : null,
+    milestoneId: null,
+    loopId: null,
+    repoPath: plan ? canonicalRepoPath(plan.repoPath) : null,
+    title: 'A new Parley build is verified',
+    detail:
+      `${plan ? `“${plan.title}” landed, and the` : 'A landed plan’s'} gate ran Parley's own verify and build on the result: green. ` +
+      'Relaunch to run the new build, or decline to keep this one. Relaunching quits this app — running panes close, and the terminal that ran `npm run dev` ends.',
+    sinceAt: update.createdAt,
+    // The gate only ever fires on real landings; mock plans never land.
+    mock: false,
   })
 }
 

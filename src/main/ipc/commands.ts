@@ -31,12 +31,23 @@ export interface IpcDialogs {
   ): Promise<{ canceled: boolean; filePath?: string }>
 }
 
+/**
+ * The one app-lifecycle control a handler may reach, injected by register.ts
+ * exactly as the dialogs are — commands.ts never loads Electron. The
+ * implementation must go through app.quit (never app.exit): before-quit is
+ * what disposes agent CLIs and ptys, and skipping it orphans paid runs.
+ */
+export interface IpcAppControl {
+  relaunch(): void
+}
+
 export interface IpcContext {
   manager: Manager
   pty: PtyManager
   window: () => BrowserWindow | null
   health: () => CliHealth[]
   dialogs: IpcDialogs
+  appControl: IpcAppControl
 }
 
 type Handler = (payload: unknown, ctx: IpcContext) => unknown | Promise<unknown>
@@ -234,6 +245,38 @@ const HANDLERS: Record<CommandName, Handler> = {
     // The hold must clear in the same breath as the decision.
     emit(ctx, { type: 'backlog.changed', repoPath: proposal.repoPath })
     return proposal
+  },
+
+  // ── Self-update (dev mode) ─────────────────────────────────────────────────
+  // Decide THEN relaunch: the decision must be durable before the process
+  // goes down, or a crash mid-restart would resurrect the offer for a build
+  // the user already chose.
+  'selfupdate.relaunch': (p, ctx) => {
+    const { updateId } = p as { updateId: string }
+    const row = ctx.manager.repo.getSelfUpdate(updateId)
+    if (!row) throw new Error('no such self-update')
+    if (row.state !== 'green') {
+      throw new Error(
+        row.state === 'superseded'
+          ? 'that build offer was superseded by a newer landing — a fresh gate decides again'
+          : `that build offer is ${row.state}, not awaiting a decision`,
+      )
+    }
+    const busy = ctx.manager.busyWithRuns()
+    if (busy) {
+      throw new Error(`relaunch refused while ${busy} — it would be killed mid-flight`)
+    }
+    const decided = ctx.manager.repo.decideSelfUpdate(updateId, 'relaunched')
+    ctx.manager.holdsChanged()
+    ctx.appControl.relaunch()
+    return decided
+  },
+  'selfupdate.decline': (p, ctx) => {
+    const { updateId } = p as { updateId: string }
+    const decided = ctx.manager.repo.decideSelfUpdate(updateId, 'declined')
+    // The hold must clear in the same breath as the decision.
+    ctx.manager.holdsChanged()
+    return decided
   },
 
   // ── Plans ──────────────────────────────────────────────────────────────────

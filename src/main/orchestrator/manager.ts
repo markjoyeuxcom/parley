@@ -1166,6 +1166,23 @@ export class Manager {
 
   // ─── Shutdown ──────────────────────────────────────────────────────────────
 
+  /**
+   * What relaunch would interrupt, or null when nothing runs. Every registry
+   * here self-prunes in a finally, so size is liveness, not history. Grid
+   * panes are deliberately absent — they are the user's own terminals, named
+   * in the confirm text instead of refused on their behalf.
+   */
+  busyWithRuns(): string | null {
+    if (this.milestoneRuns.size) return 'a milestone is executing'
+    if (this.planRuns.size) return 'a plan is being drafted or audited'
+    if (this.sessions.size) return 'a session is running'
+    if (this.loops.size) return 'a loop is running'
+    if (this.stowRuns.size) return 'a stow sweep is running'
+    if (this.foremanRuns.size) return 'the foreman is reading a backlog'
+    if (this.selfGateRuns.size) return 'the self-update gate itself is still running'
+    return null
+  }
+
   disposeAll(): void {
     for (const runner of this.sessions.values()) runner.gate.stop()
     for (const runner of this.loops.values()) runner.gate.stop()

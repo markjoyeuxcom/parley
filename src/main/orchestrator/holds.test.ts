@@ -3,6 +3,7 @@ import type { Loop, Milestone, Session, WorkPlan } from '@shared/domain'
 import { emptyUsage } from '@shared/domain'
 import { holdIdentity } from '@shared/holds'
 import { openDatabase } from '@main/store/db'
+import { canonicalRepoPath } from '@main/util/repoPath'
 import { newId, Repo } from '@main/store/repo'
 import { computeHolds } from './holds'
 
@@ -600,5 +601,57 @@ describe('holds carry their repository', () => {
     for (const hold of computeHolds(repo, none)) {
       if (hold.planId || hold.loopId) expect(hold.repoPath).not.toBeNull()
     }
+  })
+})
+
+describe('the self-update hold', () => {
+  it('derives one decision hold from the green offer, repo-stamped via the plan', () => {
+    const repo = freshRepo()
+    const session = makeSession(repo)
+    const plan = makePlan(repo, session.id, 'complete', { mock: false })
+    const attempt = repo.fileSelfUpdateAttempt(plan.id)
+
+    // Running is a gate in progress, not an offer.
+    expect(computeHolds(repo, none).some((h) => h.kind === 'self-update')).toBe(false)
+
+    repo.finalizeSelfUpdate(attempt.id, 'green', 'built')
+    const hold = computeHolds(repo, none).find((h) => h.kind === 'self-update')
+    expect(hold).toBeDefined()
+    expect(hold?.actionable).toBe(true)
+    expect(hold?.title).toBe('A new Parley build is verified')
+    expect(hold?.planId).toBe(plan.id)
+    expect(hold?.repoPath).toBe(canonicalRepoPath(plan.repoPath))
+    expect(hold?.detail).toContain('npm run dev')
+
+    // Clears only by deciding — the decision arms are the m3 commands.
+    repo.decideSelfUpdate(attempt.id, 'declined')
+    expect(computeHolds(repo, none).some((h) => h.kind === 'self-update')).toBe(false)
+  })
+
+  it('survives its plan being deleted, degraded to null plan fields', () => {
+    const repo = freshRepo()
+    const attempt = repo.fileSelfUpdateAttempt('plan-that-never-existed')
+    repo.finalizeSelfUpdate(attempt.id, 'green', 'built')
+
+    const hold = computeHolds(repo, none).find((h) => h.kind === 'self-update')
+    expect(hold).toBeDefined()
+    expect(hold?.planId).toBeNull()
+    expect(hold?.repoPath).toBeNull()
+    // The verified build is real regardless; the gate never runs for mock.
+    expect(hold?.mock).toBe(false)
+  })
+
+  it('a superseding attempt mints a fresh identity for its own green', () => {
+    const repo = freshRepo()
+    const first = repo.fileSelfUpdateAttempt('plan-a')
+    repo.finalizeSelfUpdate(first.id, 'green', 'built')
+    const firstId = computeHolds(repo, none).find((h) => h.kind === 'self-update')?.id
+
+    const second = repo.fileSelfUpdateAttempt('plan-a')
+    repo.finalizeSelfUpdate(second.id, 'green', 'built again')
+    const holds = computeHolds(repo, none).filter((h) => h.kind === 'self-update')
+    // One offer at a time, and its identity is new — notify-once fires again.
+    expect(holds).toHaveLength(1)
+    expect(holds[0]?.id).not.toBe(firstId)
   })
 })

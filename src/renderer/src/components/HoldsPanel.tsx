@@ -51,6 +51,14 @@ export function HoldsButton(): ReactNode {
 export function useHoldJump(): (hold: Hold) => void {
   const { dispatch, openSession, openPlan, openLoop } = useStore()
   return (hold: Hold): void => {
+    // The self-update controls live inline in the holds panel itself (m4), so
+    // both doors — the popover chip and the Repos WaitingCard — route there.
+    // Without this branch the interim state would fall through to the session
+    // arm and dead-end: the hold carries no sessionId.
+    if (hold.kind === 'self-update') {
+      dispatch({ type: 'holdsPanel', open: true })
+      return
+    }
     // Backlog and foreman holds are repository-scoped: the control is the
     // Repos surface, opened on the repo whose proposals wait — and on the
     // exact tab that carries the control.

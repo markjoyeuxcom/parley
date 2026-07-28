@@ -187,6 +187,10 @@ export const RejectForemanReq = z.object({
   proposalId: Id,
   note: z.string().trim().max(2000).default(''),
 })
+/** Boots the freshly built Parley: decides the green offer, then relaunches. */
+export const RelaunchSelfUpdateReq = z.object({ updateId: Id })
+/** Declines the offer; the app keeps running the bytes it started with. */
+export const DeclineSelfUpdateReq = z.object({ updateId: Id })
 /** Confirms a proposed learning; confirmed learnings ride every new brief. */
 export const ConfirmLearningReq = z.object({ learningId: Id })
 /** Retires a learning so it stops riding briefs. Terminal — never deleted. */
@@ -259,6 +263,8 @@ export const COMMANDS = {
   'foreman.run': RunForemanReq,
   'foreman.list': ListForemanReq,
   'foreman.reject': RejectForemanReq,
+  'selfupdate.relaunch': RelaunchSelfUpdateReq,
+  'selfupdate.decline': DeclineSelfUpdateReq,
   'plan.create': CreatePlanReq,
   'plan.get': GetPlanReq,
   'plan.list': ListPlansReq,
