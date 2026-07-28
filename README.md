@@ -5,6 +5,8 @@ and **Codex** through their own CLIs, so everything runs against the
 subscriptions you already pay for — Parley never asks for an API key and has no
 API-key code path.
 
+**Development status.** When run from its own checkout, Parley updates itself through its own pipeline — plan, worktree landing, an `npm run verify` plus `npm run build` gate, then an offered relaunch — as described in [Self-update (dev mode)](#self-update-dev-mode).
+
 ## Choosing a surface
 
 | | Use it when |
