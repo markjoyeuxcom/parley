@@ -5,6 +5,7 @@ import type {
   Finding,
   FindingDisposition,
   FindingOccurrence,
+  ForemanProposal,
   GridLayout,
   Id,
   Interjection,
@@ -147,6 +148,13 @@ export const api = {
   /** Retires a learning so it stops riding briefs. Terminal — never deleted. */
   retireLearning: (learningId: Id): Promise<Learning> =>
     bridge().invoke('learnings.retire', { learningId }),
+
+  // Foreman
+  /** One gated read of the repo's backlog; files a proposal a human decides. */
+  runForeman: (repoPath: string, cfg: AgentConfig): Promise<ForemanProposal> =>
+    bridge().invoke('foreman.run', { repoPath, cfg }),
+  listForemanProposals: (repoPath?: string): Promise<ForemanProposal[]> =>
+    bridge().invoke('foreman.list', repoPath ? { repoPath } : {}),
 
   // Plans
   createPlan: (payload: {

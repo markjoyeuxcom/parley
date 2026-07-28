@@ -91,6 +91,9 @@ async function bootstrap(): Promise<void> {
   const stranded = repo.reconcileInterrupted()
   const strandedTotal =
     stranded.sessions + stranded.loops + stranded.plans + stranded.milestones
+  // Foreman attempts the last shutdown left `running` become recorded
+  // failures; the pending proposal they never superseded stays as it was.
+  repo.reconcileForemanAttempts()
 
   const registry = new AgentRegistry()
 

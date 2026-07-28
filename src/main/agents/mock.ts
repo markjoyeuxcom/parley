@@ -154,6 +154,41 @@ export class MockAdapter implements AgentAdapter {
       return `I inspected the plan, but this reply contains no structured audit.`
     }
 
+    // The foreman branch is system-prompt keyed for the stow reason, doubled:
+    // its prompt embeds whole backlog records that could contain any body
+    // marker. The mock reads the item ids out of its own prompt — the record
+    // delimiter is `(id: <uuid>)` — takes the first two and defers the rest,
+    // so it stays deterministic at any backlog size, including one.
+    if (req.systemPrompt.includes('You are the foreman')) {
+      if (req.cwd.includes('FOREMAN_UNREADABLE')) {
+        return 'I read the backlog but could not settle on a batch.'
+      }
+      const ids = [
+        ...new Set([...p.matchAll(/\(id: ([0-9a-f-]{36})\)/g)].map((m) => String(m[1]))),
+      ]
+      const selected = ids.slice(0, 2)
+      const deferred = ids
+        .slice(2)
+        .map((id) => ({ itemId: id, reason: 'Blocked until the selected pair lands.' }))
+      return [
+        'Read the backlog records; proposing the smallest coherent batch.',
+        '```json',
+        JSON.stringify(
+          {
+            title: 'Bound the retry path',
+            rationale: 'The retry-path items gate everything else in this repository.',
+            itemIds: selected,
+            deferred,
+            isolation: 'worktree',
+            operatorNote: 'Land the cap before the test that asserts it.',
+          },
+          null,
+          2,
+        ),
+        '```',
+      ].join('\n')
+    }
+
     // The mutation repair contract. Matched first because it is the only prompt
     // carrying whole file contents, which could contain any other marker.
     if (p.includes('"repairs"')) {

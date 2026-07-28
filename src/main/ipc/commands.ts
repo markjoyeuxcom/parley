@@ -8,7 +8,7 @@ import type { BrowserWindow } from 'electron'
 import { z } from 'zod'
 import { COMMANDS, type CliHealth, type CommandName } from '@shared/ipc'
 import type { AppEvent } from '@shared/events'
-import { MAX_PANES, type ApprovalScope, type GridLayout, type Skill } from '@shared/domain'
+import { MAX_PANES, type AgentConfig, type ApprovalScope, type GridLayout, type Skill } from '@shared/domain'
 import { RequestError, type Manager } from '@main/orchestrator/manager'
 import { newId } from '@main/store/repo'
 import { readCodexDefaultModel } from '@main/util/environment'
@@ -221,6 +221,12 @@ const HANDLERS: Record<CommandName, Handler> = {
     emit(ctx, { type: 'backlog.changed', repoPath: learning.repoPath })
     return learning
   },
+  'foreman.run': (p, ctx) => {
+    const { repoPath, cfg } = p as { repoPath: string; cfg: AgentConfig }
+    return ctx.manager.runForeman(repoPath, cfg)
+  },
+  'foreman.list': (p, ctx) =>
+    ctx.manager.repo.listForemanProposals(p as { repoPath?: string }),
 
   // ── Plans ──────────────────────────────────────────────────────────────────
   'plan.create': (p, ctx) => ctx.manager.createPlan(p as never),

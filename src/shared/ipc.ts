@@ -175,6 +175,15 @@ export const CloseBacklogItemReq = z.object({
   note: z.string().trim().max(2000).default(''),
 })
 export const ListLearningsReq = z.object({ repoPath: z.string().optional() })
+/** One gated read of a repository's backlog by the chosen agent. */
+export const RunForemanReq = z.object({ repoPath: z.string().min(1), cfg: AgentConfig })
+export const ListForemanReq = z.object({ repoPath: z.string().optional() })
+/** Rejects a pending proposal with the reason. Accepting has no endpoint —
+ * it rides plan creation, atomically. */
+export const RejectForemanReq = z.object({
+  proposalId: Id,
+  note: z.string().trim().max(2000).default(''),
+})
 /** Confirms a proposed learning; confirmed learnings ride every new brief. */
 export const ConfirmLearningReq = z.object({ learningId: Id })
 /** Retires a learning so it stops riding briefs. Terminal — never deleted. */
@@ -237,6 +246,8 @@ export const COMMANDS = {
   'learnings.list': ListLearningsReq,
   'learnings.confirm': ConfirmLearningReq,
   'learnings.retire': RetireLearningReq,
+  'foreman.run': RunForemanReq,
+  'foreman.list': ListForemanReq,
   'plan.create': CreatePlanReq,
   'plan.get': GetPlanReq,
   'plan.list': null,

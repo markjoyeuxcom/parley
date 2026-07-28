@@ -4,6 +4,7 @@ import { isAbsolute } from 'node:path'
 import {
   type AgentConfig,
   type BacklogItem,
+  type ForemanProposal,
   type InterjectionTarget,
   type Approval,
   emptyUsage,
@@ -31,6 +32,7 @@ import {
   renderLearningsBlock,
 } from './backlog'
 import { LivenessWatchdog } from './liveness'
+import { runForeman } from './foreman'
 import { landWorktree, preflightLand, verifyLanding } from './worktrees'
 import { LoopRunner, validateExitCommand, type LoopOutcome } from './loop'
 import { missingExpectedPaths, Pipeline, readTree } from './pipeline'
@@ -134,6 +136,8 @@ export class Manager {
   private readonly milestoneRuns = new Map<Id, RunGate>()
   /** In-flight stow sweeps — the same synchronous has-check discipline. */
   private readonly stowRuns = new Set<Id>()
+  /** In-flight foreman reads, keyed by canonical repo path. Same discipline. */
+  private readonly foremanRuns = new Set<string>()
   private readonly loops = new Map<Id, LoopRunner>()
   private readonly pipeline: Pipeline
   private readonly deps: OrchestratorDeps
@@ -394,6 +398,31 @@ export class Manager {
       return { filedItems, filedLearnings, duplicates }
     } finally {
       this.stowRuns.delete(sessionId)
+    }
+  }
+
+  // ─── Foreman ───────────────────────────────────────────────────────────────
+
+  /**
+   * One gated read of a repository's backlog. The run itself lives in
+   * foreman.ts; what belongs here is the in-flight guard — synchronous
+   * has/add before the first await, delete in finally — because the guard's
+   * whole meaning is per-Manager.
+   */
+  async runForeman(repoPath: string, cfg: AgentConfig): Promise<ForemanProposal> {
+    const canonical = canonicalRepoPath(repoPath)
+    if (this.foremanRuns.has(canonical)) {
+      throw new RequestError('the foreman is already reading this repository')
+    }
+    this.foremanRuns.add(canonical)
+    try {
+      return await runForeman(
+        { repo: this.repo, registry: this.registry, emit: (event) => this.emit(event) },
+        canonical,
+        cfg,
+      )
+    } finally {
+      this.foremanRuns.delete(canonical)
     }
   }
 
