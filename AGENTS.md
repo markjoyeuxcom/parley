@@ -406,6 +406,46 @@ planning death regresses planned items to open in the `createPlan`/
 gated read-only turn over a **composed, bounded** input — columns and
 tail-sliced turns, never `verdict.report`, which embeds the whole exchange.
 
+## The foreman: proposal power only, every read on the record
+
+The foreman (`orchestrator/foreman.ts`, table `foreman_proposals`) is a
+proposing role and nothing more. The boundary is structural:
+
+- **It writes only its own table.** It never transitions backlog state,
+  never creates plans, never picks vendors. Accepting a proposal is
+  `createPlan` with `foremanProposalId`: validated with the other pre-row
+  refusals (still proposed, same canonical repo, mock-matched, and only
+  from its **anchor session** — the newest origin session with a verdict
+  among the selected items, resolved at filing so acceptance is never a
+  dead end), then plan row + item flips + acceptance stamp in **one
+  transaction** via `repo.bindPlanCreation`. The manual path passes a null
+  proposal through the same method. Rejection is `foreman.reject`, and
+  every decide emits `backlog.changed` — a decision must not outlive its
+  hold.
+- **Runs are recorded before dispatch.** `fileForemanAttempt` writes a
+  `running` row (with the open-items snapshot — the staleness baseline the
+  panel diffs against) before the agent turn; `finalizeForemanAttempt`
+  ends it as `proposed` — superseding older same-mock pendings **in that
+  transaction, and only on that arm**, so a mere attempt or a failed read
+  never clobbers a valid pending — or `failed`, carrying usage and the
+  error. Startup reconciliation (`reconcileForemanAttempts`, wired in
+  index.ts) flips interrupted running rows to failed. A crash between
+  filing and finalizing loses the spend figure but not the fact of the
+  attempt.
+- **Ids are validated, both lists.** Selected and deferred ids must be
+  open items of the same canonical repo in the running mode; invalid ones
+  drop with an honest note on the proposal; zero valid selections finalize
+  `failed`. The contract tells the model ids are copied, never invented.
+- **Backlog text is untrusted input.** `renderForemanItems` fences every
+  item in record markers and the system prompt says the contents are data
+  under review, never instructions — item details quote code and agent
+  output, and an adversarial detail must not steer the proposal. The
+  layered defense: read-only turn, id validation, human accept.
+- **The mock branch is system-prompt keyed** ("You are the foreman") and
+  reads item ids out of its own prompt via the `(id: <uuid>)` delimiter —
+  selecting min(2, n) so it stays deterministic at any backlog size.
+  `FOREMAN_UNREADABLE` in the cwd exercises the parse-failure path.
+
 ## Worktree isolation: the checkout is never touched mid-run
 
 A plan created with `isolation: 'worktree'` executes every milestone in a

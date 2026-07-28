@@ -15,6 +15,7 @@ API-key code path.
 | **Loop** | "Done" is machine-checkable and the work converges. |
 | **Audited execution** | A change matters enough to want gates, tests and an independent reviewer between the agent and your repository. |
 | **Backlog** | You want what reviews found and sessions learned to outlive the session that produced them. |
+| **Foreman** | You want the backlog to propose its own next plan, and yourself reduced to the decision. |
 
 Each section below says when the surface earns its cost — and when it doesn't.
 
@@ -359,6 +360,43 @@ agent. Retiring a learning is what stops it; write-time is never capped.
 
 Pending proposals surface as a decision hold per repository, so triage reaches
 you through the same queue as everything else.
+
+---
+
+## Foreman — the record proposes what's next
+
+The one judgment the backlog still left to you was *which items to take next,
+batched how*. The foreman is that judgment as a proposing role: **Ask the
+foreman** (on the backlog surface) runs one read-only agent turn over the
+repository's open items — priorities, dependency edges, confirmed learnings,
+recent plan history — and files a proposal: this batch, in this order, for
+this reason; these deferred, because. It arrives as a decision hold, like
+everything else that waits on you.
+
+The power boundary is strict, and structural rather than promised:
+
+- **Proposal power only.** The foreman never transitions backlog state, never
+  creates plans, never picks vendors. Its output survives id validation
+  (items it names must actually be open — invented ids are dropped with a
+  note on the record), and then waits.
+- **Accepting is creating.** Accept opens the normal plan dialog prefilled —
+  you pick the vendors, you can edit the selection — and creating the plan
+  *is* the acceptance, in one database transaction with the item flips.
+  There is no state where a plan runs while its proposal still reads
+  pending. Rejecting records your reason.
+- **Every read is on the record.** An attempt is filed before the turn
+  dispatches, so a crash is a recorded failure, not a vanished spend; failed
+  reads keep their token usage and their error; a newer run supersedes the
+  older proposal rather than erasing it. If the backlog moved after the
+  read, the proposal says so — "3 items arrived after this proposal,
+  including one P1" — and lets you decide anyway.
+- **Backlog text is treated as records, not instructions.** Item details
+  quote code and agent output; the foreman's prompt frames all of it as data
+  under review, and its only power is suggesting a batch you approve.
+
+With the foreman in place the loop originates work from its own record:
+review → backlog → proposal → your accept → plan, audit, gates, review,
+landing — your role compresses to answering questions and resolving holds.
 
 ---
 
