@@ -194,6 +194,14 @@ function SessionView(): ReactNode {
   const { state, attempt, notify, openPlan, dispatch } = useStore()
   const detail = state.sessionDetail
   const [showPlan, setShowPlan] = useState(false)
+  // The exchange region's fold. Null = automatic: open while the session is
+  // live (the stream is the main event), folded once it settles with an
+  // outcome (the record and the work are what gets acted on). A click makes
+  // the choice explicit; switching sessions returns to automatic. Hooks live
+  // ABOVE the !detail return — a hook below a conditional return crashes the
+  // renderer the moment the branch flips, which is exactly what it did.
+  const [exchangeOpen, setExchangeOpen] = useState<boolean | null>(null)
+  useEffect(() => setExchangeOpen(null), [state.activeSessionId])
 
   if (!detail) {
     return (
@@ -213,12 +221,6 @@ function SessionView(): ReactNode {
   const hasOutcome = Boolean(
     verdict || findings.length || ledger.length || plans.length || state.planDetail,
   )
-  // The exchange region's fold. Null = automatic: open while the session is
-  // live (the stream is the main event), folded once it settles with an
-  // outcome (the record and the work are what gets acted on). A click makes
-  // the choice explicit; switching sessions returns to automatic.
-  const [exchangeOpen, setExchangeOpen] = useState<boolean | null>(null)
-  useEffect(() => setExchangeOpen(null), [session.id])
   const exchangeVisible = exchangeOpen ?? (active || !hasOutcome)
   const exchangeFolded = !exchangeVisible
 
