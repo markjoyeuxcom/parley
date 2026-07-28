@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react'
-import { Command, ListChecks, Repeat, Scale, Terminal } from 'lucide-react'
+import { Command, FolderGit2, Repeat, Scale, Terminal } from 'lucide-react'
 import { useStore, type Surface, type ThemeChoice } from '../state'
 import { HoldsButton } from './HoldsPanel'
 import { Dot } from './ui'
@@ -8,7 +8,9 @@ const SURFACES: Array<{ id: Surface; label: string; icon: ReactNode }> = [
   { id: 'grid', label: 'Grid', icon: <Terminal size={13} strokeWidth={2} /> },
   { id: 'parley', label: 'Parley', icon: <Scale size={13} strokeWidth={2} /> },
   { id: 'loops', label: 'Loops', icon: <Repeat size={13} strokeWidth={2} /> },
-  { id: 'backlog', label: 'Backlog', icon: <ListChecks size={13} strokeWidth={2} /> },
+  // The id stays 'backlog' (⌘4, every literal, zero churn); only the face
+  // changed when the surface grew from a board into the repository home.
+  { id: 'backlog', label: 'Repos', icon: <FolderGit2 size={13} strokeWidth={2} /> },
 ]
 
 const THEME_ORDER: ThemeChoice[] = ['system', 'light', 'dark']

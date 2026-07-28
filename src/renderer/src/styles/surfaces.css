@@ -1752,3 +1752,35 @@
   border-radius: var(--r-md);
   background: var(--bg-raised);
 }
+
+/* ─── Repo tabs ────────────────────────────────────────────────────────────── */
+
+.repo-tabs {
+  display: flex;
+  gap: var(--s2);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--s5);
+}
+
+.repo-tabs__tab {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  padding: var(--s2) var(--s3) var(--s3);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.repo-tabs__tab:hover {
+  color: var(--text-primary);
+}
+
+.repo-tabs__tab.is-active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}

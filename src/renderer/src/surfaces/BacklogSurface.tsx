@@ -12,7 +12,7 @@ import type {
 } from '@shared/domain'
 import { api } from '../lib/api'
 import { compactNumber, relativeTime, shortPath, statusTone } from '../lib/format'
-import { useStore } from '../state'
+import { useStore, type RepoTab } from '../state'
 import { AgentPicker } from '../components/AgentPicker'
 import { NewPlanDialog } from '../components/PlanPanel'
 import { Chip, Empty, Label, Spinner } from '../components/ui'
@@ -42,6 +42,13 @@ const COLUMNS: Array<{ state: BacklogItemState; title: string; hint: string }> =
 export function BacklogSurface(): ReactNode {
   const { state, dispatch, attempt, notify } = useStore()
   const [repo, setRepo] = useState<string | null>(null)
+  // The per-repo tab, defaulting to Overview. Selecting a different repo
+  // resets it — the tab is a place within a repo, not a global mode.
+  const [activeTab, setActiveTab] = useState<RepoTab>('overview')
+  const selectRepo = (path: string | null): void => {
+    setRepo(path)
+    setActiveTab('overview')
+  }
   const [busyId, setBusyId] = useState<Id | null>(null)
   const [editingBlockers, setEditingBlockers] = useState<Id | null>(null)
   const [plans, setPlans] = useState<WorkPlan[]>([])
@@ -52,13 +59,15 @@ export function BacklogSurface(): ReactNode {
     session: Session
   } | null>(null)
 
-  // The holds queue's knock: a backlog-review hold opened this surface on a
-  // specific repository. Consume and clear, same contract as focusMilestoneId.
+  // The holds queue's knock: a repo-scoped hold opened this surface on a
+  // specific repository — and on the exact tab that carries its control.
+  // Consume and clear, same contract as focusMilestoneId.
   useEffect(() => {
     if (state.focusBacklogRepo === null) return
     setRepo(state.focusBacklogRepo)
+    setActiveTab(state.focusRepoTab ?? 'overview')
     dispatch({ type: 'focusBacklogRepo', repoPath: null })
-  }, [dispatch, state.focusBacklogRepo])
+  }, [dispatch, state.focusBacklogRepo, state.focusRepoTab])
 
   // Linked-plan status for planned and closure-proposed items. Fetched here
   // rather than held globally: only this surface renders the linkage, and a
@@ -176,7 +185,7 @@ export function BacklogSurface(): ReactNode {
             <div className="list">
               <button
                 className={`list-item ${repo === null ? 'is-active' : ''}`}
-                onClick={() => setRepo(null)}
+                onClick={() => selectRepo(null)}
               >
                 <div className="list-item__top">
                   <span className="list-item__title">All repositories</span>
@@ -191,7 +200,7 @@ export function BacklogSurface(): ReactNode {
                   <button
                     key={path}
                     className={`list-item ${repo === path ? 'is-active' : ''}`}
-                    onClick={() => setRepo(path)}
+                    onClick={() => selectRepo(path)}
                     title={path}
                   >
                     <div className="list-item__top">
@@ -222,7 +231,34 @@ export function BacklogSurface(): ReactNode {
             />
           ) : (
             <>
+              {/* Tabs exist only within a repository — the all-repos view is
+                  the cross-repo triage board it has always been. */}
               {repo ? (
+                <div className="repo-tabs" role="tablist" aria-label="Repository tabs">
+                  {(
+                    [
+                      ['overview', 'Overview'],
+                      ['backlog', 'Backlog'],
+                      ['learnings', 'Learnings'],
+                    ] as Array<[RepoTab, string]>
+                  ).map(([tab, label]) => (
+                    <button
+                      key={tab}
+                      role="tab"
+                      aria-selected={activeTab === tab}
+                      className={activeTab === tab ? 'repo-tabs__tab is-active' : 'repo-tabs__tab'}
+                      onClick={() => setActiveTab(tab)}
+                    >
+                      {label}
+                      {tab === 'backlog' && pendingCount(repo) > 0 ? (
+                        <span className="segmented__count tnum">{pendingCount(repo)}</span>
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
+              {repo && activeTab === 'overview' ? (
                 <ForemanPanel
                   repo={repo}
                   items={items}
@@ -237,6 +273,8 @@ export function BacklogSurface(): ReactNode {
                 />
               ) : null}
 
+              {!repo || activeTab === 'backlog' ? (
+              <>
               <div className="backlog-board">
                 {COLUMNS.map((column) => {
                   const inColumn = items.filter((item) => item.state === column.state)
@@ -272,8 +310,12 @@ export function BacklogSurface(): ReactNode {
                   them.
                 </p>
               ) : null}
+              </>
+              ) : null}
 
-              <LearningsPanel learnings={learnings} busyId={busyId} act={act} />
+              {!repo || activeTab === 'learnings' ? (
+                <LearningsPanel learnings={learnings} busyId={busyId} act={act} />
+              ) : null}
             </>
           )}
         </div>

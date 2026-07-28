@@ -64,9 +64,14 @@ export function HoldsPopover(): ReactNode {
   const jump = (hold: Hold): void => {
     close()
     // Backlog and foreman holds are repository-scoped: the control is the
-    // surface itself, opened on the repo whose proposals wait.
+    // Repos surface, opened on the repo whose proposals wait — and on the
+    // exact tab that carries the control.
     if (hold.kind === 'backlog-review' || hold.kind === 'foreman-proposal') {
-      dispatch({ type: 'focusBacklogRepo', repoPath: hold.repoPath })
+      dispatch({
+        type: 'focusBacklogRepo',
+        repoPath: hold.repoPath,
+        tab: hold.kind === 'backlog-review' ? 'backlog' : 'overview',
+      })
       dispatch({ type: 'surface', surface: 'backlog' })
       return
     }

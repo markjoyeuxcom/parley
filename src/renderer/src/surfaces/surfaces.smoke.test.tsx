@@ -204,11 +204,26 @@ describe('mounted-surface smoke', () => {
       </StoreProvider>,
     )
 
+    // All-repos view: the cross-repo board, no tabs.
     await screen.findByText(openItem.title)
-    // Selecting the repo mounts the ForemanPanel with the pending proposal.
+
+    // Selecting the repo lands on the Overview tab: the ForemanPanel with
+    // its pending proposal — and the board is genuinely elsewhere.
     fireEvent.click(await screen.findByTitle('/tmp/smoke-repo'))
     await screen.findByText(proposal.title)
     await screen.findByText('Accept into a plan')
+    // The board is genuinely elsewhere. Its column header is the marker —
+    // the item TITLE also appears in the foreman card's Selected list.
+    expect(screen.queryByText('Closure proposed')).toBeNull()
+
+    // The Backlog tab carries the board — asserted explicitly so the tab
+    // shell can never quietly render nothing while this suite stays green.
+    fireEvent.click(screen.getByRole('tab', { name: /Backlog/ }))
+    await screen.findByText('Closure proposed')
+    await screen.findByText(openItem.title)
+
+    fireEvent.click(screen.getByRole('tab', { name: /Learnings/ }))
+    expect(screen.queryByText('Closure proposed')).toBeNull()
   })
 
   it('the Loops surface mounts empty', async () => {

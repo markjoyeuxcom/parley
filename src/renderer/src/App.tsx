@@ -66,8 +66,8 @@ export function App(): ReactNode {
             (i) => i.state === 'proposed' || i.state === 'closure-proposed',
           ).length
           return pending > 0
-            ? `Backlog — ${pending} proposal${pending === 1 ? '' : 's'} to review`
-            : 'Backlog — tracked work per repository'
+            ? `Repos — ${pending} proposal${pending === 1 ? '' : 's'} to review`
+            : 'Repos — every repository Parley works'
         })(),
         hint: '⌘4',
         run: () => dispatch({ type: 'surface', surface: 'backlog' }),

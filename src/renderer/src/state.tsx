@@ -17,6 +17,8 @@ import { applyHoldsEvent } from './lib/holdsState'
 import { applyLedgerEvent, applyPlanLedgerEvent } from './lib/ledgerState'
 
 export type Surface = 'grid' | 'parley' | 'loops' | 'backlog'
+/** The Repos surface's per-repository tabs. */
+export type RepoTab = 'overview' | 'backlog' | 'plans' | 'learnings'
 export type ThemeChoice = 'system' | 'light' | 'dark'
 
 export interface Notice {
@@ -97,6 +99,8 @@ interface State {
    * surface — the surface's own repo selection stays local to it.
    */
   focusBacklogRepo: string | null
+  /** Which tab the knock should land on; consumed with focusBacklogRepo. */
+  focusRepoTab: RepoTab | null
   /** Keyed by milestone id, then by loop id. Never persisted. */
   activity: Record<Id, ActivityLog>
 }
@@ -128,6 +132,7 @@ const initialState: State = {
   backlogItems: [],
   learnings: [],
   focusBacklogRepo: null,
+  focusRepoTab: null,
   activity: {},
 }
 
@@ -154,7 +159,7 @@ type Action =
   | { type: 'holdsPanel'; open: boolean }
   | { type: 'focusMilestone'; milestoneId: Id | null }
   | { type: 'backlog'; items: BacklogItem[]; learnings: Learning[] }
-  | { type: 'focusBacklogRepo'; repoPath: string | null }
+  | { type: 'focusBacklogRepo'; repoPath: string | null; tab?: RepoTab }
   | { type: 'appEvent'; event: AppEvent }
 
 let noticeSeq = 0
@@ -229,7 +234,7 @@ function reducer(state: State, action: Action): State {
     case 'backlog':
       return { ...state, backlogItems: action.items, learnings: action.learnings }
     case 'focusBacklogRepo':
-      return { ...state, focusBacklogRepo: action.repoPath }
+      return { ...state, focusBacklogRepo: action.repoPath, focusRepoTab: action.tab ?? null }
     case 'appEvent':
       return applyEvent(state, action.event)
     default:
