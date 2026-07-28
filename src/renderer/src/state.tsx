@@ -11,10 +11,10 @@ import {
 import type { BacklogItem, Id, Learning, Loop, Pane, Session, Skill } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import type { Hold } from '@shared/holds'
-import type { CliHealth } from '@shared/ipc'
+import type { CliHealth, LedgerEntry } from '@shared/ipc'
 import { api, type LoopDetail, type PlanDetail, type SessionDetail } from './lib/api'
 import { applyHoldsEvent } from './lib/holdsState'
-import { applyLedgerEvent } from './lib/ledgerState'
+import { applyLedgerEvent, applyPlanLedgerEvent } from './lib/ledgerState'
 
 export type Surface = 'grid' | 'parley' | 'loops' | 'backlog'
 export type ThemeChoice = 'system' | 'light' | 'dark'
@@ -66,6 +66,14 @@ interface State {
   activeLoopId: Id | null
   loopDetail: LoopDetail | null
   planDetail: PlanDetail | null
+  /**
+   * The open plan's session ledger, fetched with the plan and dispatched
+   * atomically beside it. Null means UNKNOWN, and unknown fails closed: the
+   * approval gate disables rather than treating no-ledger as no-blockers.
+   * Only the Repos-hosted PlanPanel reads this — the session view keeps its
+   * own sessionDetail.ledger, which is strictly fresher there.
+   */
+  planLedger: LedgerEntry[] | null
   panes: Pane[]
   skills: Skill[]
   notices: Notice[]
@@ -109,6 +117,7 @@ const initialState: State = {
   activeLoopId: null,
   loopDetail: null,
   planDetail: null,
+  planLedger: null,
   panes: [],
   skills: [],
   notices: [],
@@ -135,6 +144,7 @@ type Action =
   | { type: 'activeLoop'; loopId: Id | null }
   | { type: 'loopDetail'; detail: LoopDetail | null }
   | { type: 'planDetail'; detail: PlanDetail | null }
+  | { type: 'planOpened'; detail: PlanDetail; ledger: LedgerEntry[] | null }
   | { type: 'panes'; panes: Pane[] }
   | { type: 'skills'; skills: Skill[] }
   | { type: 'notice'; level: Notice['level']; message: string }
@@ -175,7 +185,13 @@ function reducer(state: State, action: Action): State {
     case 'showArchived':
       return { ...state, showArchived: action.showArchived }
     case 'activeSession':
-      return { ...state, activeSessionId: action.sessionId, sessionDetail: null, planDetail: null }
+      return {
+        ...state,
+        activeSessionId: action.sessionId,
+        sessionDetail: null,
+        planDetail: null,
+        planLedger: null,
+      }
     case 'sessionDetail':
       return { ...state, sessionDetail: action.detail }
     case 'loops':
@@ -185,7 +201,11 @@ function reducer(state: State, action: Action): State {
     case 'loopDetail':
       return { ...state, loopDetail: action.detail }
     case 'planDetail':
-      return { ...state, planDetail: action.detail }
+      // A detail set without its ledger (plan creation flows) clears the
+      // paired ledger to unknown rather than leaving a stale one attached.
+      return { ...state, planDetail: action.detail, planLedger: null }
+    case 'planOpened':
+      return { ...state, planDetail: action.detail, planLedger: action.ledger }
     case 'panes':
       return { ...state, panes: action.panes }
     case 'skills':
@@ -299,8 +319,17 @@ function applyEvent(state: State, event: AppEvent): State {
       return { ...state, sessionDetail: { ...state.sessionDetail, verdict: event.verdict } }
 
     case 'session.ledger': {
+      // Both merges computed before any identity short-circuit: an early
+      // return on sessionDetail alone would drop exactly the Repos-host
+      // echo — a disposition recorded with no session view mounted.
       const sessionDetail = applyLedgerEvent(state.sessionDetail, event)
-      return sessionDetail === state.sessionDetail ? state : { ...state, sessionDetail }
+      const planLedger = applyPlanLedgerEvent(
+        state.planLedger,
+        state.planDetail?.plan.sessionId,
+        event,
+      )
+      if (sessionDetail === state.sessionDetail && planLedger === state.planLedger) return state
+      return { ...state, sessionDetail, planLedger: planLedger as LedgerEntry[] | null }
     }
 
     case 'plan.created':
@@ -563,7 +592,13 @@ export function StoreProvider({ children }: { children: ReactNode }): ReactNode 
   const openPlan = useCallback(
     async (planId: Id) => {
       const detail = await attempt(() => api.getPlan(planId))
-      if (detail) dispatch({ type: 'planDetail', detail })
+      if (!detail) return
+      // Fetched with the plan, dispatched atomically beside it: two rapid
+      // opens can never pair plan B with session A's ledger, and a failed
+      // ledger fetch arrives as null — unknown — which the gate treats as
+      // closed, never as clear.
+      const ledger = await attempt(() => api.listLedger(detail.plan.sessionId))
+      dispatch({ type: 'planOpened', detail, ledger: ledger ?? null })
     },
     [attempt],
   )

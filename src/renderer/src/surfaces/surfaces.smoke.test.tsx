@@ -151,6 +151,7 @@ function installBridge(): void {
       plans: [],
     }),
     'holds.list': () => [],
+    'ledger.list': () => [],
     'backlog.list': () => [openItem],
     'learnings.list': () => [],
     'foreman.list': () => [proposal],

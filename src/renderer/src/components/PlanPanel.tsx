@@ -16,7 +16,7 @@ import { formatDuration, shortPath, statusTone, verificationState } from '../lib
 import { approvalPermission } from '../lib/ledgerView'
 import { shellMetacharsIn } from '@shared/command'
 import { executionRefusal } from '@shared/execution'
-import { useStore } from '../state'
+import { useStore, type Surface } from '../state'
 import { AgentPicker } from './AgentPicker'
 import { BulkDispositionControl, OccurrenceDispositionControl } from './FindingsLedgerPanel'
 import { Chip, Dialog, Field, Label, Panel, Spinner } from './ui'
@@ -317,10 +317,19 @@ export function PlanPanel({
   detail,
   ledger,
   onRefresh,
+  host,
 }: {
   detail: PlanDetail
-  ledger: readonly LedgerEntry[]
+  /** Null means UNKNOWN — the gate fails closed on it, never open. */
+  ledger: readonly LedgerEntry[] | null
   onRefresh: () => void
+  /**
+   * Which surface hosts this instance. Every surface stays mounted
+   * permanently, so two PlanPanels can render the same open plan; without
+   * this, both consume the approval knock and the hidden one strands an
+   * invisible stale dialog whose Approve would spend a fresh approval.
+   */
+  host: Surface
 }): ReactNode {
   const { plan, milestones } = detail
   const worktree = detail.worktree ?? null
@@ -332,15 +341,17 @@ export function PlanPanel({
 
   // The holds queue's deep link: a jump that names one of this plan's
   // milestones opens its approval dialog directly. Consumed exactly once —
-  // cleared only when this panel actually owns the milestone, so a knock for
-  // another plan is left standing for that plan to answer.
+  // cleared only when this panel actually owns the milestone AND is the
+  // visible host, so a knock for another plan (or the other surface's
+  // instance) is left standing for its owner to answer.
   useEffect(() => {
+    if (state.surface !== host) return
     if (!state.focusMilestoneId) return
     const target = milestones.find((m) => m.id === state.focusMilestoneId)
     if (!target) return
     setPendingApproval(target)
     dispatch({ type: 'focusMilestone', milestoneId: null })
-  }, [state.focusMilestoneId, milestones, dispatch])
+  }, [state.focusMilestoneId, state.surface, host, milestones, dispatch])
 
   const land = async (): Promise<void> => {
     setLanding(true)
@@ -590,7 +601,7 @@ export function PlanPanel({
         ))}
       </Panel>
 
-      {pendingApproval ? (
+      {pendingApproval && state.surface === host ? (
         <ApprovalGateDialog
           plan={plan}
           milestone={pendingApproval}
@@ -1049,7 +1060,7 @@ function ApprovalGateDialog({
 }: {
   plan: WorkPlan
   milestone: Milestone
-  ledger: readonly LedgerEntry[]
+  ledger: readonly LedgerEntry[] | null
   busy: boolean
   onClose: () => void
   onConfirm: () => void
@@ -1057,7 +1068,14 @@ function ApprovalGateDialog({
   onResume: () => void
 }): ReactNode {
   const { attempt } = useStore()
-  const permission = approvalPermission(ledger)
+  // Null ledger = the gate's inputs are unknown. Unknown fails CLOSED: an
+  // empty permission would silently enable approval, and while main would
+  // refuse the run, the grant itself writes an approval row that is never
+  // consumed — an authorisation record for nothing.
+  const ledgerUnknown = ledger === null
+  const permission = ledgerUnknown
+    ? { allowed: false, unresolved: [] as ReturnType<typeof approvalPermission>['unresolved'] }
+    : approvalPermission(ledger)
   const [preflight, setPreflight] = useState<{
     existing: string[]
     missing: string[]
@@ -1155,7 +1173,17 @@ function ApprovalGateDialog({
         <div className="gate__body">{milestone.intent}</div>
       </div>
 
-      {!permission.allowed ? (
+      {ledgerUnknown ? (
+        <div className="gate gate--blocking">
+          <div className="gate__title">The findings ledger could not be loaded</div>
+          <div className="gate__body">
+            Approval stays disabled until the gate can see it. Reopen the plan to re-check —
+            an unknown ledger is treated as blocking, never as clear.
+          </div>
+        </div>
+      ) : null}
+
+      {!permission.allowed && !ledgerUnknown ? (
         <div className="gate gate--blocking">
           <div className="gate__title">
             {permission.unresolved.length}{' '}

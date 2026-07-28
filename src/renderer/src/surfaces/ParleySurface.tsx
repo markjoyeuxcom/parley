@@ -217,9 +217,16 @@ function SessionView(): ReactNode {
   const paused = session.status === 'paused'
   const active = running || paused || session.status === 'stopping'
 
+  // The open plan, but only when it belongs to THIS session. Both surfaces
+  // share the planDetail slot, and without the ownership check a plan opened
+  // from Repos would render into whatever session is on screen — gated by
+  // that session's ledger, which is the wrong gate entirely.
+  const ownPlanDetail =
+    state.planDetail && state.planDetail.plan.sessionId === session.id ? state.planDetail : null
+
   /** Whether there is anything to put in the inspector column yet. */
   const hasOutcome = Boolean(
-    verdict || findings.length || ledger.length || plans.length || state.planDetail,
+    verdict || findings.length || ledger.length || plans.length || ownPlanDetail,
   )
   const exchangeVisible = exchangeOpen ?? (active || !hasOutcome)
   const exchangeFolded = !exchangeVisible
@@ -377,7 +384,7 @@ function SessionView(): ReactNode {
                 <FindingsLedgerPanel
                   entries={ledger}
                   plans={plans}
-                  milestones={state.planDetail?.milestones}
+                  milestones={ownPlanDetail?.milestones}
                 />
               </div>
             </div>
@@ -409,7 +416,7 @@ function SessionView(): ReactNode {
                     .map((plan, index) => ({ plan, index }))
                     .reverse()
                     .map(({ plan, index }) => {
-                      const isOpen = state.planDetail?.plan.id === plan.id
+                      const isOpen = ownPlanDetail?.plan.id === plan.id
                       const tone = statusTone(plan.status)
                       return (
                         <button
@@ -437,11 +444,15 @@ function SessionView(): ReactNode {
                     })}
                 </div>
 
-                {state.planDetail ? (
+                {ownPlanDetail ? (
                   <PlanPanel
-                    detail={state.planDetail}
+                    detail={ownPlanDetail}
+                    // The session's own ledger, live-merged by session.ledger
+                    // events — strictly fresher here than planLedger, and
+                    // never null while this view renders.
                     ledger={ledger}
-                    onRefresh={() => void openPlan(state.planDetail!.plan.id)}
+                    onRefresh={() => void openPlan(ownPlanDetail.plan.id)}
+                    host="parley"
                   />
                 ) : null}
               </div>
