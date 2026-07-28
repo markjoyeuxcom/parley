@@ -293,3 +293,117 @@ describe('fast-forward landing', () => {
     expect(computeHolds(repo, none).filter((h) => h.planId === plan.id)).toEqual([])
   })
 })
+
+// ─── Landing on the self repo ───────────────────────────────────────────────
+
+/**
+ * Like completedWorktreePlan, but the origin is a fake Parley checkout: gate
+ * scripts committed BEFORE the branch is cut (committing them after would
+ * diverge the origin and the fast-forward would refuse), and the plan flipped
+ * real because landing rules key on the plan record.
+ */
+async function completedSelfRepoPlan(
+  prefix: string,
+  scripts: { verify: string; build: string },
+): Promise<{ repo: Repo; session: Session; plan: WorkPlan; origin: string }> {
+  const { pipeline, repo, session } = harness()
+  const origin = gitRepo(prefix)
+  writeFileSync(
+    join(origin, 'package.json'),
+    JSON.stringify({ name: 'fake-parley', version: '0.0.0', scripts }, null, 2),
+  )
+  execFileSync('git', ['add', '.'], { cwd: origin, stdio: 'ignore' })
+  execFileSync('git', ['commit', '-qm', 'gate scripts'], { cwd: origin, stdio: 'ignore' })
+  const plan = makePlan(repo, session.id, origin)
+  const milestone = makeMilestone(repo, plan.id)
+  const approval = repo.grantApproval('milestone.execute', milestone.id, 'test approval')
+  const run = await pipeline.runMilestone(milestone.id, approval.id)
+  if (run.status !== 'complete') throw new Error(`fixture milestone ended ${run.status}`)
+  const db = repo as unknown as { db: { run: (sql: string, ...p: unknown[]) => unknown } }
+  db.db.run(`UPDATE plans SET mock = 0 WHERE id = ?`, plan.id)
+  return { repo, session, plan, origin }
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error('timed out waiting for condition')
+}
+
+describe('landing on the self repo', () => {
+  it('takes the gate instead of the smoke check, and green becomes the offer', async () => {
+    const { repo, plan, origin } = await completedSelfRepoPlan('parley-land-selfok-', {
+      verify: `node -e "process.exit(0)"`,
+      build: `node -e "require('fs').writeFileSync('out.txt','built')"`,
+    })
+    const events: AppEvent[] = []
+    const manager = new Manager({
+      repo,
+      registry: new AgentRegistry(true),
+      emit: (event) => events.push(event),
+      worktreesRoot: mkdtempSync(join(tmpdir(), 'parley-landroot-')),
+      selfRepoPath: origin,
+    })
+
+    const approval = manager.grantLandApproval(plan.id, 'land it')
+    const landed = await manager.landPlan(plan.id, approval.id)
+    expect(landed.landed).toBe(true)
+
+    await waitUntil(() => repo.listSelfUpdates().some((row) => row.state === 'green'))
+    const row = repo.listSelfUpdates()[0]
+    expect(row?.planId).toBe(plan.id)
+    // Green means the gate genuinely built in the landed origin.
+    expect(existsSync(join(origin, 'out.txt'))).toBe(true)
+    // The gate ran INSTEAD of the generic smoke check: nothing flagged the row.
+    expect(repo.getWorktreeForPlan(plan.id)?.lastError ?? '').toBe('')
+
+    const hold = computeHolds(repo, none).find((h) => h.kind === 'self-update')
+    expect(hold).toBeDefined()
+    expect(hold?.actionable).toBe(true)
+    expect(hold?.planId).toBe(plan.id)
+    expect(
+      events.some(
+        (e) => e.type === 'notice' && e.level === 'info' && e.message.includes('Relaunch'),
+      ),
+    ).toBe(true)
+  }, 30_000)
+
+  it('a red gate flags the landed row so the existing hold carries it', async () => {
+    const { repo, plan, origin } = await completedSelfRepoPlan('parley-land-selfred-', {
+      verify: `node -e "console.error('typecheck exploded'); process.exit(1)"`,
+      build: `node -e "process.exit(0)"`,
+    })
+    const events: AppEvent[] = []
+    const manager = new Manager({
+      repo,
+      registry: new AgentRegistry(true),
+      emit: (event) => events.push(event),
+      worktreesRoot: mkdtempSync(join(tmpdir(), 'parley-landroot-')),
+      selfRepoPath: origin,
+    })
+
+    const approval = manager.grantLandApproval(plan.id, 'land it')
+    const landed = await manager.landPlan(plan.id, approval.id)
+    expect(landed.landed).toBe(true)
+
+    await waitUntil(() => repo.listSelfUpdates().some((row) => row.state === 'red'))
+    expect(repo.listSelfUpdates()[0]?.detail).toContain('typecheck exploded')
+
+    // flagWorktree lands in the fire-and-forget's then — after the finalize.
+    await waitUntil(() => Boolean(repo.getWorktreeForPlan(plan.id)?.lastError))
+    expect(repo.getWorktreeForPlan(plan.id)?.lastError).toContain('npm run verify')
+
+    const holds = computeHolds(repo, none).filter((h) => h.planId === plan.id)
+    expect(holds.some((h) => h.title === 'Landed, but verification failed')).toBe(true)
+    // A red gate is never an offer.
+    expect(computeHolds(repo, none).some((h) => h.kind === 'self-update')).toBe(false)
+    expect(
+      events.some(
+        (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('npm install'),
+      ),
+    ).toBe(true)
+  }, 30_000)
+})

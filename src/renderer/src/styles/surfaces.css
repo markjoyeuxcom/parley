@@ -1344,6 +1344,25 @@
   gap: var(--s1);
 }
 
+/* The inline relaunch confirm: it must read as part of its own row, and its
+   cost warning must never be clamped the way the detail line above it is. */
+.holds-item__confirm {
+  margin-top: var(--s2);
+  padding: var(--s2);
+  border: 1px solid var(--line-faint);
+  border-radius: var(--r-md);
+  background: var(--bg-secondary);
+}
+
+.holds-item__confirm .holds-item__detail {
+  -webkit-line-clamp: unset;
+  margin-bottom: var(--s2);
+}
+
+.holds-item__confirm .holds-item__actions {
+  flex-direction: row;
+}
+
 /* ─── Backlog picker in the plan dialog ────────────────────────────────────── */
 
 .backlog-pick {

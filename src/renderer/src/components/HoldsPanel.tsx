@@ -95,6 +95,13 @@ export function HoldsPopover(): ReactNode {
   const { state, dispatch, attempt } = useStore()
   const jumpToHold = useHoldJump()
   const [busyId, setBusyId] = useState<string | null>(null)
+  // The self-update confirm, bound to the row id resolved at click time — the
+  // hold's identity hashes the id away, so the offer is re-fetched rather
+  // than remembered, and a superseded chip can never relaunch a stale build.
+  const [relaunchConfirm, setRelaunchConfirm] = useState<{
+    holdId: string
+    updateId: string
+  } | null>(null)
 
   useEffect(() => {
     if (!state.holdsOpen) return
@@ -119,6 +126,44 @@ export function HoldsPopover(): ReactNode {
     const updated = await attempt(() => api.ackHold(hold.id))
     setBusyId(null)
     if (updated) dispatch({ type: 'holds', holds: updated })
+  }
+
+  const refreshHolds = async (): Promise<void> => {
+    const holds = await attempt(() => api.listHolds())
+    if (holds) dispatch({ type: 'holds', holds })
+  }
+
+  const beginRelaunch = async (hold: Hold): Promise<void> => {
+    setBusyId(hold.id)
+    const pending = await attempt(() => api.getPendingSelfUpdate())
+    setBusyId(null)
+    if (!pending) {
+      // The offer vanished under the chip (decided elsewhere, or a newer
+      // landing's gate is mid-run); show the truth instead of confirming
+      // against a ghost.
+      await refreshHolds()
+      return
+    }
+    setRelaunchConfirm({ holdId: hold.id, updateId: pending.id })
+  }
+
+  const confirmRelaunch = async (updateId: string): Promise<void> => {
+    setBusyId(updateId)
+    // On success the app quits out from under this call; reaching the lines
+    // below normally means a refusal, which attempt() surfaced already.
+    await attempt(() => api.relaunchSelfUpdate(updateId))
+    setBusyId(null)
+    setRelaunchConfirm(null)
+    await refreshHolds()
+  }
+
+  const declineUpdate = async (hold: Hold): Promise<void> => {
+    setBusyId(hold.id)
+    const pending = await attempt(() => api.getPendingSelfUpdate())
+    if (pending) await attempt(() => api.declineSelfUpdate(pending.id))
+    setBusyId(null)
+    setRelaunchConfirm(null)
+    await refreshHolds()
   }
 
   const decisions = countActionable(state.holds)
@@ -157,11 +202,56 @@ export function HoldsPopover(): ReactNode {
                     </time>
                   </div>
                   <p className="holds-item__detail">{hold.detail}</p>
+                  {relaunchConfirm?.holdId === hold.id ? (
+                    <div className="holds-item__confirm">
+                      <p className="holds-item__detail">
+                        This quits Parley and starts the freshly built version.
+                        Running panes close, and the terminal that ran{' '}
+                        <code>npm run dev</code> ends.
+                      </p>
+                      <div className="holds-item__actions">
+                        <button
+                          className="btn btn--primary btn--sm"
+                          disabled={busyId === relaunchConfirm.updateId}
+                          onClick={() => void confirmRelaunch(relaunchConfirm.updateId)}
+                        >
+                          Quit and relaunch
+                        </button>
+                        <button
+                          className="btn btn--subtle btn--sm"
+                          onClick={() => setRelaunchConfirm(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="holds-item__actions">
-                  <button className="btn btn--subtle btn--sm" onClick={() => jump(hold)}>
-                    Open
-                  </button>
+                  {hold.kind === 'self-update' ? (
+                    // The controls ARE this row — jumping anywhere else would
+                    // land on a surface that has none.
+                    <>
+                      <button
+                        className="btn btn--primary btn--sm"
+                        disabled={busyId === hold.id || relaunchConfirm !== null}
+                        onClick={() => void beginRelaunch(hold)}
+                      >
+                        Relaunch
+                      </button>
+                      <button
+                        className="btn btn--subtle btn--sm"
+                        disabled={busyId === hold.id}
+                        onClick={() => void declineUpdate(hold)}
+                      >
+                        Not now
+                      </button>
+                    </>
+                  ) : (
+                    <button className="btn btn--subtle btn--sm" onClick={() => jump(hold)}>
+                      Open
+                    </button>
+                  )}
                   {!hold.actionable ? (
                     <button
                       className="btn btn--subtle btn--sm"

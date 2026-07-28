@@ -161,6 +161,9 @@ export const api = {
     bridge().invoke('foreman.reject', { proposalId, note }),
 
   // Self-update (dev mode)
+  /** The one live offer, resolved at action time — holds don't carry row ids. */
+  getPendingSelfUpdate: (): Promise<SelfUpdate | null> =>
+    bridge().invoke('selfupdate.pending', {}),
   /** Decides the green offer, then quits into the freshly built out/. */
   relaunchSelfUpdate: (updateId: Id): Promise<SelfUpdate> =>
     bridge().invoke('selfupdate.relaunch', { updateId }),

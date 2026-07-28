@@ -263,6 +263,7 @@ export const COMMANDS = {
   'foreman.run': RunForemanReq,
   'foreman.list': ListForemanReq,
   'foreman.reject': RejectForemanReq,
+  'selfupdate.pending': null,
   'selfupdate.relaunch': RelaunchSelfUpdateReq,
   'selfupdate.decline': DeclineSelfUpdateReq,
   'plan.create': CreatePlanReq,

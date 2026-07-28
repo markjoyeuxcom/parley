@@ -12,8 +12,10 @@ import type {
   WorkPlan,
 } from '@shared/domain'
 import type { CommandName, LedgerEntry } from '@shared/ipc'
+import type { Hold } from '@shared/holds'
 import { useEffect, type ReactNode } from 'react'
 import { StoreProvider, useStore, type Surface } from '../state'
+import { HoldsPopover } from '../components/HoldsPanel'
 import { ParleySurface } from './ParleySurface'
 import { BacklogSurface } from './BacklogSurface'
 import { LoopsSurface } from './LoopsSurface'
@@ -373,5 +375,128 @@ describe('mounted-surface smoke', () => {
       </StoreProvider>,
     )
     await screen.findByText(/No loops yet/)
+  })
+})
+
+// ─── Self-update in the holds popover ───────────────────────────────────────
+
+const selfUpdateHold: Hold = {
+  id: 'hold-self-update-smoke',
+  kind: 'self-update',
+  sessionId: null,
+  planId: null,
+  milestoneId: null,
+  loopId: null,
+  repoPath: '/tmp/parley-checkout',
+  title: 'A new Parley build is verified',
+  detail: 'Relaunch to run the new build, or decline to keep this one.',
+  sinceAt: 1_700_000_000_000,
+  mock: false,
+  actionable: true,
+}
+
+const pendingUpdate = {
+  id: '9'.repeat(36),
+  planId: 'e'.repeat(36),
+  state: 'green' as const,
+  detail: 'built',
+  createdAt: 1_700_000_000_000,
+  decidedAt: null,
+}
+
+/** Opens the popover the way the titlebar chip would; the provider's own
+ * hydration supplies the holds from the bridge's stateful queue. */
+function OpenHolds(): ReactNode {
+  const { dispatch } = useStore()
+  useEffect(() => {
+    dispatch({ type: 'holdsPanel', open: true })
+  }, [dispatch])
+  return <HoldsPopover />
+}
+
+describe('the self-update hold in the popover', () => {
+  it('declines through the real command, resolved from the live offer', async () => {
+    const invoked: Array<{ command: string; payload: unknown }> = []
+    // Stateful on purpose: the provider hydrates from holds.list, so a static
+    // fixture would either race the seed or never clear after the decision.
+    let queue: Hold[] = [selfUpdateHold]
+    installBridge({
+      'holds.list': () => queue,
+      'selfupdate.pending': () => pendingUpdate,
+      'selfupdate.decline': (payload) => {
+        invoked.push({ command: 'selfupdate.decline', payload })
+        queue = []
+        return { ...pendingUpdate, state: 'declined' }
+      },
+    })
+    render(
+      <StoreProvider>
+        <OpenHolds />
+      </StoreProvider>,
+    )
+
+    // Inline controls, not a jump: this row has nowhere else to go.
+    await screen.findByText(selfUpdateHold.title)
+    expect(screen.queryByText('Open')).toBeNull()
+    await screen.findByText('Relaunch')
+
+    fireEvent.click(screen.getByText('Not now'))
+    // Declining resolves the CURRENT offer's id, then clears the queue.
+    await screen.findByText(/Nothing is waiting on you/)
+    expect(invoked).toEqual([
+      { command: 'selfupdate.decline', payload: { updateId: pendingUpdate.id } },
+    ])
+  })
+
+  it('relaunch confirms the costs first, then invokes by name', async () => {
+    const invoked: string[] = []
+    let queue: Hold[] = [selfUpdateHold]
+    installBridge({
+      'holds.list': () => queue,
+      'selfupdate.pending': () => pendingUpdate,
+      'selfupdate.relaunch': (payload) => {
+        invoked.push(`selfupdate.relaunch:${(payload as { updateId: string }).updateId}`)
+        queue = []
+        return { ...pendingUpdate, state: 'relaunched' }
+      },
+    })
+    render(
+      <StoreProvider>
+        <OpenHolds />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByText('Relaunch'))
+
+    // The confirm names the costs before anything quits.
+    await screen.findByText(/quits Parley/)
+    await screen.findByText(/npm run dev/)
+    expect(invoked).toEqual([])
+
+    fireEvent.click(screen.getByText('Quit and relaunch'))
+    await screen.findByText(/Nothing is waiting on you/)
+    expect(invoked).toEqual([`selfupdate.relaunch:${pendingUpdate.id}`])
+  })
+
+  it('a vanished offer refreshes the queue instead of confirming a ghost', async () => {
+    let queue: Hold[] = [selfUpdateHold]
+    installBridge({
+      'holds.list': () => queue,
+      // Decided elsewhere: the offer is gone, and so is its hold.
+      'selfupdate.pending': () => {
+        queue = []
+        return null
+      },
+    })
+    render(
+      <StoreProvider>
+        <OpenHolds />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByText('Relaunch'))
+    // No confirm — the stale chip resolves to nothing and the queue reloads.
+    await screen.findByText(/Nothing is waiting on you/)
+    expect(screen.queryByText(/quits Parley/)).toBeNull()
   })
 })

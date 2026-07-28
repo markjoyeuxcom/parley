@@ -248,6 +248,10 @@ const HANDLERS: Record<CommandName, Handler> = {
   },
 
   // ── Self-update (dev mode) ─────────────────────────────────────────────────
+  // The hold's identity hashes the row id away, so the renderer re-resolves
+  // the one live offer at action time — always the current truth, never a
+  // stale chip's memory of it.
+  'selfupdate.pending': (_p, ctx) => ctx.manager.repo.getPendingSelfUpdate(),
   // Decide THEN relaunch: the decision must be durable before the process
   // goes down, or a crash mid-restart would resurrect the offer for a build
   // the user already chose.
