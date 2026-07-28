@@ -324,60 +324,64 @@ function SessionView(): ReactNode {
                 ) : null}
               </div>
 
-              {verdict ? (
-                <VerdictPanel
-                  verdict={verdict}
-                  onExport={() => void exportReport()}
-                  onStow={session.repoPath ? () => void stow() : null}
+              {/* One pane, not a stack of floating cards: every block of the
+                  outcome shares a single border and separates by rule lines. */}
+              <div className="outcome-pane">
+                {verdict ? (
+                  <VerdictPanel
+                    verdict={verdict}
+                    onExport={() => void exportReport()}
+                    onStow={session.repoPath ? () => void stow() : null}
+                  />
+                ) : null}
+                <FindingsPanel findings={findings} />
+                <FindingsLedgerPanel
+                  entries={ledger}
+                  plans={plans}
+                  milestones={state.planDetail?.milestones}
                 />
-              ) : null}
-              <FindingsPanel findings={findings} />
-              <FindingsLedgerPanel
-                entries={ledger}
-                plans={plans}
-                milestones={state.planDetail?.milestones}
-              />
 
-              {/* Stays visible while a plan is open. It used to render only when
-                  nothing was open, so opening one plan hid the way to the other —
-                  and two plans per session (implementation, then remediation) is
-                  the normal case, not the exception. */}
-              {plans.length ? (
-                <div className="segmented" role="tablist" aria-label="Plans in this session">
-                  {/* Titled and numbered, oldest first — two plans of the same
-                      kind is the normal case (implementation, then another), and
-                      a row reading "implementation implementation" names neither. */}
-                  {[...plans]
-                    .sort((a, b) => a.createdAt - b.createdAt)
-                    .map((plan, index) => {
-                      const isOpen = state.planDetail?.plan.id === plan.id
-                      return (
-                        <button
-                          key={plan.id}
-                          role="tab"
-                          aria-selected={isOpen}
-                          className={isOpen ? 'segmented__item is-active' : 'segmented__item'}
-                          onClick={() => void openPlan(plan.id)}
-                          title={`${plan.title} — ${plan.kind}, ${plan.status}`}
-                        >
-                          <span className="tnum">{index + 1}</span>
-                          <span className="plan-tab__title">{plan.title}</span>
-                          {plan.status !== 'complete' ? (
-                            <span className="segmented__count">{plan.status}</span>
-                          ) : null}
-                        </button>
-                      )
-                    })}
-                </div>
-              ) : null}
+                {/* Stays visible while a plan is open. It used to render only when
+                    nothing was open, so opening one plan hid the way to the other —
+                    and two plans per session (implementation, then remediation) is
+                    the normal case, not the exception. */}
+                {plans.length ? (
+                  <div className="segmented" role="tablist" aria-label="Plans in this session">
+                    {/* Titled and numbered, oldest first — two plans of the same
+                        kind is the normal case (implementation, then another), and
+                        a row reading "implementation implementation" names neither. */}
+                    {[...plans]
+                      .sort((a, b) => a.createdAt - b.createdAt)
+                      .map((plan, index) => {
+                        const isOpen = state.planDetail?.plan.id === plan.id
+                        return (
+                          <button
+                            key={plan.id}
+                            role="tab"
+                            aria-selected={isOpen}
+                            className={isOpen ? 'segmented__item is-active' : 'segmented__item'}
+                            onClick={() => void openPlan(plan.id)}
+                            title={`${plan.title} — ${plan.kind}, ${plan.status}`}
+                          >
+                            <span className="tnum">{index + 1}</span>
+                            <span className="plan-tab__title">{plan.title}</span>
+                            {plan.status !== 'complete' ? (
+                              <span className="segmented__count">{plan.status}</span>
+                            ) : null}
+                          </button>
+                        )
+                      })}
+                  </div>
+                ) : null}
 
-              {state.planDetail ? (
-                <PlanPanel
-                  detail={state.planDetail}
-                  ledger={ledger}
-                  onRefresh={() => void openPlan(state.planDetail!.plan.id)}
-                />
-              ) : null}
+                {state.planDetail ? (
+                  <PlanPanel
+                    detail={state.planDetail}
+                    ledger={ledger}
+                    onRefresh={() => void openPlan(state.planDetail!.plan.id)}
+                  />
+                ) : null}
+              </div>
             </div>
           </aside>
         ) : null}
@@ -394,6 +398,9 @@ function SessionView(): ReactNode {
   )
 }
 
+/** A finished turn longer than this clamps behind an expander. */
+const CLAMP_CHARS = 1200
+
 function Transcript({
   sessionId,
   turns,
@@ -405,6 +412,7 @@ function Transcript({
 }): ReactNode {
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedToBottom = useRef(true)
+  const [expanded, setExpanded] = useState<ReadonlySet<Id>>(new Set())
 
   // Follow the stream only while the reader is already at the bottom. Yanking
   // the viewport while someone is reading an earlier turn is the fastest way to
@@ -441,6 +449,13 @@ function Transcript({
             const live = streaming[turn.id]
             const text = turn.text || live || ''
             const pending = !turn.endedAt && !turn.text
+            // Long finished turns — architecture maps, embedded JSON — are
+            // reference material, not reading material: clamp them behind an
+            // expander. A turn still streaming is never clamped; its tail is
+            // the signal that the session is alive.
+            const collapsible = !!turn.endedAt && !turn.error && text.length > CLAMP_CHARS
+            const isExpanded = expanded.has(turn.id)
+            const clamped = collapsible && !isExpanded
 
             return (
               <div className={`turn turn--${seatSide(turn.seat)}`} key={turn.id}>
@@ -461,10 +476,29 @@ function Transcript({
                       {turn.error}
                     </div>
                   ) : (
-                    <div className={`turn__body ${pending ? 'turn__body--pending' : ''}`}>
+                    <div
+                      className={`turn__body ${pending ? 'turn__body--pending' : ''} ${clamped ? 'turn__body--clamped' : ''}`}
+                    >
                       {text || 'Thinking…'}
                     </div>
                   )}
+                  {collapsible ? (
+                    <button
+                      className="turn__expand"
+                      onClick={() =>
+                        setExpanded((current) => {
+                          const next = new Set(current)
+                          if (next.has(turn.id)) next.delete(turn.id)
+                          else next.add(turn.id)
+                          return next
+                        })
+                      }
+                    >
+                      {isExpanded
+                        ? 'Collapse'
+                        : `Show all — ${text.split('\n').length} lines`}
+                    </button>
+                  ) : null}
                 </div>
               </div>
             )

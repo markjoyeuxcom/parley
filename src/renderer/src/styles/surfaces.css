@@ -1531,3 +1531,59 @@
 .foreman-proposal__stale {
   color: var(--caution, #b58a2e);
 }
+
+/* ─── Outcome pane: one bordered block, dividers instead of floating cards ── */
+
+.outcome-pane {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.outcome-pane:empty {
+  display: none;
+}
+
+.outcome-pane > * + * {
+  border-top: 1px solid var(--line);
+}
+
+.outcome-pane > .verdict,
+.outcome-pane > .panel {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.outcome-pane > .segmented {
+  margin: var(--s4) var(--s6);
+  align-self: flex-start;
+  border-top: 0;
+}
+
+/* ─── Clamped transcript turns ─────────────────────────────────────────────── */
+
+.turn__body--clamped {
+  max-height: 240px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, #000 72%, transparent);
+  mask-image: linear-gradient(180deg, #000 72%, transparent);
+}
+
+.turn__expand {
+  align-self: flex-start;
+  margin-top: var(--s1);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-tertiary);
+  font-size: var(--text-tiny);
+  cursor: pointer;
+}
+
+.turn__expand:hover {
+  color: var(--text-secondary);
+}
