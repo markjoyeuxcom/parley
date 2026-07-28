@@ -847,10 +847,38 @@ function ForemanPanel({
             )}
           </article>
         ) : !running ? (
-          <span className="field__hint">
-            No proposal waiting. Ask the foreman for one read of {shortPath(repo)}&apos;s open
-            backlog{lastDecided ? ` — last one ${lastDecided.state} ${relativeTime(lastDecided.decidedAt ?? lastDecided.createdAt)}${lastDecided.state === 'failed' && lastDecided.decisionNote ? ` (${lastDecided.decisionNote})` : ''}` : ''}.
-          </span>
+          <>
+            <span className="field__hint">
+              No proposal waiting. Ask the foreman for one read of {shortPath(repo)}&apos;s open
+              backlog{lastDecided ? ` — last one ${lastDecided.state} ${relativeTime(lastDecided.decidedAt ?? lastDecided.createdAt)}${lastDecided.state === 'failed' && lastDecided.decisionNote ? ` (${lastDecided.decisionNote})` : ''}` : ''}.
+            </span>
+            {lastDecided?.state === 'failed' &&
+            (lastDecided.rationale || lastDecided.deferred.length) ? (
+              // A no-plan read is still a read the user paid for: its verdict
+              // on each item — usually "already done, close it" — is the
+              // action, so it renders here instead of dying in a toast.
+              <div className="foreman-proposal__body">
+                {lastDecided.rationale ? (
+                  <p className="field__hint">{lastDecided.rationale}</p>
+                ) : null}
+                {lastDecided.deferred.length ? (
+                  <>
+                    <Label>Deferred, with its reasons</Label>
+                    <ul>
+                      {lastDecided.deferred.map((entry) => (
+                        <li key={entry.itemId} className="foreman-proposal__deferred">
+                          {resolveTitle(entry.itemId).title}
+                          {entry.reason ? (
+                            <span className="field__hint"> — {entry.reason}</span>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+          </>
         ) : null}
       </div>
     </section>
@@ -979,6 +1007,18 @@ function ItemCard({
           <>
             <button className="btn btn--subtle btn--sm" onClick={onToggleBlockers}>
               {editingBlockers ? 'Done' : 'Blocked by…'}
+            </button>
+            <button
+              className="btn btn--subtle btn--sm"
+              disabled={busy}
+              title="The work is already done — record it closed, not dropped"
+              onClick={() =>
+                void act(item.id, () =>
+                  api.closeBacklogItem(item.id, 'Closed from the board as already done.'),
+                )
+              }
+            >
+              Close
             </button>
             <button
               className="btn btn--subtle btn--sm"

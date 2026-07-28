@@ -207,6 +207,45 @@ describe('foreman proposal store', () => {
     expect(() => repo.decideForemanProposal(running.id, 'rejected')).toThrow(/cannot become/)
   })
 
+  it('a failed finalize can keep the rationale and deferrals the read produced', () => {
+    const repo = freshRepo()
+    const attempt = repo.fileForemanAttempt({
+      repoPath: '/tmp/foreman-keep',
+      vendor: 'claude',
+      mock: true,
+      openSnapshot: ['item-1'],
+    })
+    const failed = repo.finalizeForemanAttempt(attempt.id, {
+      state: 'failed',
+      error: 'the foreman selected no valid open items',
+      usage: emptyUsage(),
+      rationale: 'All open records describe work the last three plans already landed.',
+      deferred: [{ itemId: 'item-1', reason: 'Landed by plan 6. Close as verified.' }],
+    })
+    expect(failed.state).toBe('failed')
+    expect(failed.decisionNote).toMatch(/no valid open items/)
+    // The substance survives the failure — it is what the human acts on.
+    expect(failed.rationale).toContain('already landed')
+    expect(failed.deferred).toEqual([
+      { itemId: 'item-1', reason: 'Landed by plan 6. Close as verified.' },
+    ])
+
+    // Omitting them stays the old shape: nothing invented.
+    const bare = repo.fileForemanAttempt({
+      repoPath: '/tmp/foreman-keep',
+      vendor: 'claude',
+      mock: true,
+      openSnapshot: [],
+    })
+    const bareFailed = repo.finalizeForemanAttempt(bare.id, {
+      state: 'failed',
+      error: 'the foreman run crashed: boom',
+      usage: emptyUsage(),
+    })
+    expect(bareFailed.rationale).toBe('')
+    expect(bareFailed.deferred).toEqual([])
+  })
+
   it('reconcile flips interrupted running rows to failed and nothing else', () => {
     const repo = freshRepo()
     const item = openItem(repo, '/tmp/foreman-e', 'An item')

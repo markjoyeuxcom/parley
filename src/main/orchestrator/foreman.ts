@@ -77,8 +77,12 @@ export async function runForeman(
     .filter(Boolean)
     .join('\n\n')
 
-  const fail = (error: string, usage = emptyUsage()): never => {
-    repo.finalizeForemanAttempt(attempt.id, { state: 'failed', error, usage })
+  const fail = (
+    error: string,
+    usage = emptyUsage(),
+    kept: { rationale?: string; deferred?: ForemanDeferral[] } = {},
+  ): never => {
+    repo.finalizeForemanAttempt(attempt.id, { state: 'failed', error, usage, ...kept })
     emit({ type: 'backlog.changed', repoPath: canonical })
     throw new Error(error)
   }
@@ -134,10 +138,6 @@ export async function runForeman(
       `${droppedSelected} selected id${droppedSelected === 1 ? ' was' : 's were'} not an open item in this repository; dropped.`,
     )
   }
-  if (!selected.length) {
-    return fail('the foreman selected no valid open items', usage)
-  }
-
   const rawDeferred = Array.isArray(parsed.deferred) ? parsed.deferred : []
   const deferred: ForemanDeferral[] = []
   for (const raw of rawDeferred) {
@@ -146,6 +146,19 @@ export async function runForeman(
     if (!itemId || !validOpen(itemId) || selected.includes(itemId)) continue
     deferred.push({ itemId, reason: safeString(entry?.['reason']).trim() })
   }
+
+  if (!selected.length) {
+    // An honest "nothing worth a plan" — usually every open item deferred as
+    // already-done. Still a failure (the foreman must not file an empty
+    // proposal), but the read's substance survives on the failed row: the
+    // per-item reasoning is exactly what the human acts on, and discarding
+    // it made a second, equally failing ask the only way to see it again.
+    return fail('the foreman selected no valid open items', usage, {
+      rationale: safeString(parsed.rationale).trim(),
+      deferred,
+    })
+  }
+
   const droppedDeferred = rawDeferred.length - deferred.length
   if (droppedDeferred > 0) {
     dropNotes.push(

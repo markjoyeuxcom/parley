@@ -1184,7 +1184,11 @@ export class Repo {
   ): BacklogItem {
     const LEGAL: Record<BacklogItemState, ReadonlyArray<BacklogItemState>> = {
       proposed: ['open', 'dropped'],
-      open: ['planned', 'dropped'],
+      // open → done directly: work verified as already delivered — by a
+      // foreman read, or done outside Parley — must be closable as done.
+      // Forcing it through `dropped` records "won't do" against work that
+      // was in fact done, and the trail would lie about the outcome.
+      open: ['planned', 'done', 'dropped'],
       planned: ['closure-proposed', 'open'],
       'closure-proposed': ['done', 'open'],
       done: [],
@@ -1517,7 +1521,19 @@ export class Repo {
           /** Honest validation drops ("2 named items were unknown"), if any. */
           decisionNote?: string
         }
-      | { state: 'failed'; error: string; usage: Usage },
+      | {
+          state: 'failed'
+          error: string
+          usage: Usage
+          /**
+           * What the read produced before it failed to select. An honest
+           * "nothing to plan — these are done" still burns a read, and its
+           * per-item reasoning is the substance a human acts on; discarding
+           * it made a second (equally failing) ask the only way to see it.
+           */
+          rationale?: string
+          deferred?: ForemanDeferral[]
+        },
   ): ForemanProposal {
     return this.db.transaction(() => {
       const row = this.db.get(`SELECT * FROM foreman_proposals WHERE id = ?`, id)
@@ -1529,10 +1545,12 @@ export class Repo {
       const now = Date.now()
       if (outcome.state === 'failed') {
         this.db.run(
-          `UPDATE foreman_proposals SET state = 'failed', usage = ?, decided_at = ?, decision_note = ? WHERE id = ?`,
+          `UPDATE foreman_proposals SET state = 'failed', usage = ?, decided_at = ?, decision_note = ?, rationale = ?, deferred = ? WHERE id = ?`,
           json(outcome.usage),
           now,
           outcome.error,
+          outcome.rationale ?? '',
+          json(outcome.deferred ?? []),
           id,
         )
       } else {

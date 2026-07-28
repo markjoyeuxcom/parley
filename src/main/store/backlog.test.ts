@@ -112,6 +112,24 @@ describe('backlog items', () => {
     )
   })
 
+  it('an open item can close as done directly — verified work is not a drop', () => {
+    const repo = freshRepo()
+    const { item } = fileItem(repo, { state: 'proposed', source: 'stow' })
+    repo.transitionBacklogItem(item.id, 'open', { source: 'human' })
+
+    // The foreman's "already landed, close as verified" advice — or work done
+    // by hand outside Parley — needs this arc; `dropped` would record
+    // "won't do" against work that was in fact done.
+    const done = repo.transitionBacklogItem(item.id, 'done', {
+      source: 'human',
+      note: 'Closed from the board as already done.',
+    })
+    expect(done.state).toBe('done')
+    expect(() => repo.transitionBacklogItem(item.id, 'open', { source: 'human' })).toThrow(
+      /done backlog item cannot become open/,
+    )
+  })
+
   it('the event trail always folds to the state column', () => {
     const repo = freshRepo()
     const { item } = fileItem(repo, { state: 'proposed', source: 'stow' })
