@@ -155,6 +155,9 @@ export const api = {
     bridge().invoke('foreman.run', { repoPath, cfg }),
   listForemanProposals: (repoPath?: string): Promise<ForemanProposal[]> =>
     bridge().invoke('foreman.list', repoPath ? { repoPath } : {}),
+  /** Rejecting is its own act; accepting rides plan creation atomically. */
+  rejectForemanProposal: (proposalId: Id, note = ''): Promise<ForemanProposal> =>
+    bridge().invoke('foreman.reject', { proposalId, note }),
 
   // Plans
   createPlan: (payload: {
@@ -171,6 +174,8 @@ export const api = {
     setupCommand?: string
     /** Open backlog items this plan targets; they flip to planned. */
     backlogItemIds?: Id[]
+    /** A pending foreman proposal this creation accepts, atomically. */
+    foremanProposalId?: Id | null
   }): Promise<PlanDetail> => bridge().invoke('plan.create', payload),
   listPlans: (): Promise<WorkPlan[]> => bridge().invoke('plan.list'),
   getPlan: (planId: Id): Promise<PlanDetail> => bridge().invoke('plan.get', { planId }),

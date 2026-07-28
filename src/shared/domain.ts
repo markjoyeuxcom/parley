@@ -348,6 +348,12 @@ export interface SessionDeletionImpact {
    * deleting the session quietly strands them unless this is said up front.
    */
   unlandedWorktrees: number
+  /**
+   * Pending foreman proposals anchored to this session. Deleting it makes
+   * them unacceptable — acceptance requires the anchor's verdict — so the
+   * dialog says so rather than letting a dead proposal sit in the queue.
+   */
+  pendingForemanProposals: number
 }
 
 /**

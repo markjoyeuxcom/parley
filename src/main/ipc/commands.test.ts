@@ -252,3 +252,41 @@ describe('handler emits and the attention queue', () => {
     expect(lastHolds().some((h) => h.kind === 'backlog-review')).toBe(false)
   })
 })
+
+describe('foreman commands', () => {
+  it('foreman.reject decides the proposal through the validated table', async () => {
+    const { ctx, repo } = harness()
+    const item = repo.fileBacklogItem({
+      repoPath: '/tmp/ipc-foreman',
+      title: 'An open item',
+      source: 'manual',
+      mock: true,
+      state: 'open',
+    }).item
+    const attempt = repo.fileForemanAttempt({
+      repoPath: '/tmp/ipc-foreman',
+      vendor: 'claude',
+      mock: true,
+      openSnapshot: [item.id],
+    })
+    const proposal = repo.finalizeForemanAttempt(attempt.id, {
+      state: 'proposed',
+      title: 'Bound the retry path',
+      rationale: 'x',
+      itemIds: [item.id],
+      deferred: [],
+      isolation: 'worktree',
+      note: '',
+      anchorSessionId: newId(),
+      usage: emptyUsage(),
+    })
+
+    const rejected = (await invokeCommand(ctx, {
+      command: 'foreman.reject',
+      payload: { proposalId: proposal.id, note: 'Not this batch.' },
+    })) as { state: string; decisionNote: string }
+    expect(rejected.state).toBe('rejected')
+    expect(rejected.decisionNote).toMatch(/not this batch/i)
+    expect(repo.getPendingForemanProposal('/tmp/ipc-foreman', true)).toBeNull()
+  })
+})

@@ -368,6 +368,9 @@ export class Repo {
       repos: [...repos],
       retainedApprovals,
       unlandedWorktrees,
+      pendingForemanProposals: count(
+        `SELECT COUNT(*) AS n FROM foreman_proposals WHERE anchor_session_id = ? AND state = 'proposed'`,
+      ),
     }
   }
 

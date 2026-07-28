@@ -41,6 +41,8 @@ export type HoldKind =
   | 'merge-blocked'
   /** A repository's backlog holds proposals waiting on human triage. */
   | 'backlog-review'
+  /** The foreman filed a plan proposal a human must accept or reject. */
+  | 'foreman-proposal'
 
 /**
  * Decision holds clear only by acting — answering, approving, landing. They
@@ -64,6 +66,9 @@ export const HOLD_CLASS: Record<HoldKind, HoldClass> = {
   // Proposals wait on a real yes/no: confirm into the backlog or discard,
   // close or reopen. An ack would hide them while they stay proposed forever.
   'backlog-review': 'decision',
+  // Same logic one level up: the foreman's proposal clears by accepting it
+  // into a plan or rejecting it with a reason, never by dismissal.
+  'foreman-proposal': 'decision',
 }
 
 export interface Hold {

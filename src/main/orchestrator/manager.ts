@@ -441,6 +441,8 @@ export class Manager {
     setupCommand?: string
     /** Open backlog items this plan targets; they flip to planned. */
     backlogItemIds?: Id[]
+    /** A pending foreman proposal this creation accepts, atomically. */
+    foremanProposalId?: Id | null
   }): Promise<{ plan: WorkPlan; milestones: Milestone[] }> {
     const session = this.repo.getSession(input.sessionId)
     if (!session) throw new RequestError('no such session')
@@ -486,6 +488,38 @@ export class Manager {
       backlogItems.push(item)
     }
 
+    // A foreman proposal accepted by this creation is validated with the same
+    // pre-row refusals: nothing exists yet, so a stale or foreign proposal
+    // costs exactly nothing. The acceptance itself happens inside
+    // bindPlanCreation's transaction below — there is no separate accept
+    // endpoint, and so no window where a plan runs while its proposal reads
+    // pending.
+    let proposal: ForemanProposal | null = null
+    if (input.foremanProposalId) {
+      proposal = this.repo.getForemanProposal(input.foremanProposalId)
+      if (!proposal) throw new RequestError('no such foreman proposal')
+      if (proposal.state !== 'proposed') {
+        throw new RequestError(
+          proposal.state === 'superseded'
+            ? 'that foreman proposal was superseded by a newer run — review the fresh one instead'
+            : `that foreman proposal is ${proposal.state}, not pending`,
+        )
+      }
+      if (proposal.repoPath !== canonicalRepoPath(repoPath)) {
+        throw new RequestError('that foreman proposal belongs to a different repository')
+      }
+      if (proposal.mock !== this.registry.mock) {
+        throw new RequestError(
+          `that foreman proposal is ${proposal.mock ? 'mock' : 'real'} work; this app is running against ${this.registry.mock ? 'mock adapters' : 'real CLIs'}`,
+        )
+      }
+      if (proposal.anchorSessionId !== input.sessionId) {
+        throw new RequestError(
+          'a foreman proposal is accepted from its anchor session — the one whose verdict the plan builds on',
+        )
+      }
+    }
+
     // Deliberately a warning, not a block. Planner and executor are both on the
     // produce side — the audit and the review still come from the counterpart, so
     // nobody grades their own work. What this configuration costs is check
@@ -501,7 +535,11 @@ export class Manager {
       })
     }
 
-    const plan = this.repo.createPlan({
+    // One durable act, still in the same synchronous stretch as the
+    // validation above: the plan row, the selected items' flips, and — when
+    // accepting a foreman proposal — the acceptance stamp, in a single
+    // transaction. A crash cannot leave any two of those disagreeing.
+    const plan: WorkPlan = {
       id: newId(),
       sessionId: input.sessionId,
       kind: input.kind,
@@ -519,18 +557,14 @@ export class Manager {
       usage: emptyUsage(),
       mock: this.registry.mock,
       createdAt: Date.now(),
-    })
-    this.emit({ type: 'plan.created', plan })
-
-    // Still the same synchronous stretch as the validation above.
-    for (const item of backlogItems) {
-      this.repo.transitionBacklogItem(item.id, 'planned', {
-        source: 'human',
-        planId: plan.id,
-        note: 'Selected for this plan at creation.',
-      })
     }
-    if (backlogItems.length) {
+    this.repo.bindPlanCreation(
+      plan,
+      backlogItems.map((item) => item.id),
+      proposal?.id ?? null,
+    )
+    this.emit({ type: 'plan.created', plan })
+    if (backlogItems.length || proposal) {
       this.emit({ type: 'backlog.changed', repoPath: canonicalRepoPath(repoPath) })
     }
 

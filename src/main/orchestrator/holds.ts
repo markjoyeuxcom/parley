@@ -1,6 +1,6 @@
 import type { Hold, HoldKind } from '@shared/holds'
 import { HOLD_CLASS, holdIdentity, STALL_AFTER_MS } from '@shared/holds'
-import type { BacklogItem, Loop, Milestone, WorkPlan, Worktree } from '@shared/domain'
+import type { BacklogItem, ForemanProposal, Loop, Milestone, WorkPlan, Worktree } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import { EXECUTABLE_PAIRS } from '@shared/execution'
 import type { Repo } from '@main/store/repo'
@@ -120,6 +120,14 @@ export function computeHolds(repo: Repo, acked: ReadonlySet<string>, now = Date.
       states: ['proposed', 'closure-proposed'],
     })
     if (pending.length) holds.push(backlogReviewHold(repoPath, pending))
+  }
+
+  // Every pending foreman proposal waits on exactly one human decision:
+  // accept it into a plan, or reject it with a reason. At most one per repo
+  // per mode by construction (supersede-at-finalize), so a mock and a real
+  // pending can coexist — each wears its own flag.
+  for (const proposal of repo.listForemanProposals({ states: ['proposed'] })) {
+    holds.push(foremanProposalHold(proposal))
   }
 
   const open = holds.filter((hold) => !(HOLD_CLASS[hold.kind] === 'notice' && acked.has(hold.id)))
@@ -455,6 +463,29 @@ function backlogReviewHold(repoPath: string, pending: BacklogItem[]): Hold {
     sinceAt: oldest,
     // A single real item makes the waiting real; the chip must not launder it.
     mock: pending.every((item) => item.mock),
+  })
+}
+
+/**
+ * The generation is the proposal's id: a superseding run mints a fresh row —
+ * and so one fresh notification — while deciding the proposal simply removes
+ * the hold. createdAt would be the wrong generation here: a mock supersede
+ * can land within the same millisecond and would silently reuse the stamped
+ * identity.
+ */
+function foremanProposalHold(proposal: ForemanProposal): Hold {
+  const n = proposal.itemIds.length
+  const m = proposal.deferred.length
+  return hold('foreman-proposal', proposal.repoPath, proposal.id, {
+    sessionId: null,
+    planId: null,
+    milestoneId: null,
+    loopId: null,
+    repoPath: proposal.repoPath,
+    title: 'The foreman proposes a plan',
+    detail: `${proposal.repoPath} — “${proposal.title}”: ${n} item${n === 1 ? '' : 's'} selected${m ? `, ${m} deferred` : ''}. Accept it into a plan or reject it with a reason.`,
+    sinceAt: proposal.createdAt,
+    mock: proposal.mock,
   })
 }
 

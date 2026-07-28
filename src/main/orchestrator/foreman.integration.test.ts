@@ -240,3 +240,94 @@ describe('the foreman run', () => {
     expect(repo.getPendingForemanProposal(repoPath, true)?.id).toBe(pending.id)
   })
 })
+
+describe('atomic acceptance through plan creation', () => {
+  it('one act: plan created, items planned, proposal accepted, hold cleared', async () => {
+    const { repo, manager } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-foreman-accept-'))
+    await reviewedRepo(manager, repo, repoPath)
+    const proposal = await manager.runForeman(repoPath, claude)
+    expect(proposal.anchorSessionId).toBeTruthy()
+
+    const { plan } = await manager.createPlan({
+      sessionId: proposal.anchorSessionId as string,
+      kind: 'implementation',
+      repoPath,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+      backlogItemIds: proposal.itemIds,
+      foremanProposalId: proposal.id,
+    })
+
+    for (const itemId of proposal.itemIds) {
+      expect(repo.getBacklogItem(itemId)).toMatchObject({ state: 'planned', planId: plan.id })
+    }
+    expect(repo.getForemanProposal(proposal.id)).toMatchObject({
+      state: 'accepted',
+      planId: plan.id,
+    })
+    expect(repo.getPendingForemanProposal(repoPath, true)).toBeNull()
+    await manager.whenPlanSettled(plan.id)
+  })
+
+  it('a superseded proposal refuses before anything is created', async () => {
+    const { repo, manager } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-foreman-stale-'))
+    await reviewedRepo(manager, repo, repoPath)
+    const first = await manager.runForeman(repoPath, claude)
+    const second = await manager.runForeman(repoPath, codex)
+    const plansBefore = repo.listPlans().length
+
+    await expect(
+      manager.createPlan({
+        sessionId: first.anchorSessionId as string,
+        kind: 'implementation',
+        repoPath,
+        planner: claude,
+        executor: codex,
+        reviewer: claude,
+        backlogItemIds: first.itemIds,
+        foremanProposalId: first.id,
+      }),
+    ).rejects.toThrow(/superseded by a newer run/)
+
+    expect(repo.listPlans().length).toBe(plansBefore)
+    for (const itemId of first.itemIds) {
+      expect(repo.getBacklogItem(itemId)?.state).toBe('open')
+    }
+    expect(repo.getPendingForemanProposal(repoPath, true)?.id).toBe(second.id)
+  })
+
+  it('acceptance is refused from any session but the anchor', async () => {
+    const { repo, manager } = harness()
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-foreman-anchor-'))
+    await reviewedRepo(manager, repo, repoPath)
+    const proposal = await manager.runForeman(repoPath, claude)
+
+    // A different completed session, verdict and all.
+    const other = manager.startSession({
+      kind: 'debate',
+      matter: 'An unrelated decision.',
+      project: '',
+      repoPath: null,
+      participants: [claude, codex],
+      maxTurns: 2,
+    })
+    await waitFor(() => repo.getSession(other.id)?.status === 'complete')
+
+    await expect(
+      manager.createPlan({
+        sessionId: other.id,
+        kind: 'implementation',
+        repoPath,
+        planner: claude,
+        executor: codex,
+        reviewer: claude,
+        backlogItemIds: proposal.itemIds,
+        foremanProposalId: proposal.id,
+      }),
+    ).rejects.toThrow(/anchor session/)
+    expect(repo.getForemanProposal(proposal.id)?.state).toBe('proposed')
+  })
+})

@@ -227,6 +227,13 @@ const HANDLERS: Record<CommandName, Handler> = {
   },
   'foreman.list': (p, ctx) =>
     ctx.manager.repo.listForemanProposals(p as { repoPath?: string }),
+  'foreman.reject': (p, ctx) => {
+    const { proposalId, note } = p as { proposalId: string; note: string }
+    const proposal = ctx.manager.repo.decideForemanProposal(proposalId, 'rejected', { note })
+    // The hold must clear in the same breath as the decision.
+    emit(ctx, { type: 'backlog.changed', repoPath: proposal.repoPath })
+    return proposal
+  },
 
   // ── Plans ──────────────────────────────────────────────────────────────────
   'plan.create': (p, ctx) => ctx.manager.createPlan(p as never),

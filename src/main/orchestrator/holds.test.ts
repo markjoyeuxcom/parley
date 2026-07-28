@@ -478,3 +478,104 @@ describe('the backlog-review hold', () => {
     expect(review?.mock).toBe(false)
   })
 })
+
+describe('the foreman-proposal hold', () => {
+  const spent = {
+    inputTokens: 100,
+    cachedInputTokens: 0,
+    outputTokens: 40,
+    reasoningTokens: 0,
+    costUsd: 0,
+  }
+
+  function pendingProposal(repo: Repo, repoPath: string, mock = true) {
+    const item = repo.fileBacklogItem({
+      repoPath,
+      title: 'An open item',
+      source: 'manual',
+      mock,
+      state: 'open',
+    }).item
+    const session = makeSession(repo)
+    const attempt = repo.fileForemanAttempt({
+      repoPath,
+      vendor: 'claude',
+      mock,
+      openSnapshot: [item.id],
+    })
+    return repo.finalizeForemanAttempt(attempt.id, {
+      state: 'proposed',
+      title: 'Bound the retry path',
+      rationale: 'The retry items gate the rest.',
+      itemIds: [item.id],
+      deferred: [],
+      isolation: 'worktree',
+      note: '',
+      anchorSessionId: session.id,
+      usage: spent,
+    })
+  }
+
+  it('a pending proposal is one decision hold; deciding clears it', () => {
+    const repo = freshRepo()
+    const proposal = pendingProposal(repo, '/tmp/foreman-hold-a')
+
+    const derived = computeHolds(repo, none).filter((h) => h.kind === 'foreman-proposal')
+    expect(derived).toHaveLength(1)
+    expect(derived[0]).toMatchObject({
+      actionable: true,
+      repoPath: '/tmp/foreman-hold-a',
+      mock: true,
+    })
+    expect(derived[0]?.detail).toContain('Bound the retry path')
+
+    // A running attempt holds nothing — there is nothing to decide yet.
+    repo.fileForemanAttempt({
+      repoPath: '/tmp/foreman-hold-a',
+      vendor: 'codex',
+      mock: true,
+      openSnapshot: [],
+    })
+    expect(computeHolds(repo, none).filter((h) => h.kind === 'foreman-proposal')).toHaveLength(1)
+
+    repo.decideForemanProposal(proposal.id, 'rejected', { note: 'Not this batch.' })
+    expect(computeHolds(repo, none).some((h) => h.kind === 'foreman-proposal')).toBe(false)
+  })
+
+  it('a superseding run mints a fresh identity — one fresh notification', () => {
+    const repo = freshRepo()
+    const first = pendingProposal(repo, '/tmp/foreman-hold-b')
+    const firstHold = computeHolds(repo, none).find((h) => h.kind === 'foreman-proposal')
+
+    const second = pendingProposal(repo, '/tmp/foreman-hold-b')
+    expect(repo.getForemanProposal(first.id)?.state).toBe('superseded')
+    const secondHold = computeHolds(repo, none).find((h) => h.kind === 'foreman-proposal')
+    expect(secondHold?.id).toBeDefined()
+    expect(secondHold?.id).not.toBe(firstHold?.id)
+    expect(repo.getPendingForemanProposal('/tmp/foreman-hold-b', true)?.id).toBe(second.id)
+  })
+
+  it('coexists with the backlog-review hold on the same repository', () => {
+    const repo = freshRepo()
+    pendingProposal(repo, '/tmp/foreman-hold-c')
+    repo.fileBacklogItem({
+      repoPath: '/tmp/foreman-hold-c',
+      title: 'A stow proposal awaiting triage',
+      source: 'stow',
+      mock: true,
+      state: 'proposed',
+    })
+
+    const holds = computeHolds(repo, none)
+    const kinds = holds.filter((h) => h.repoPath === '/tmp/foreman-hold-c').map((h) => h.kind)
+    expect(kinds).toContain('foreman-proposal')
+    expect(kinds).toContain('backlog-review')
+  })
+
+  it('a real pending proposal wears no mock flag', () => {
+    const repo = freshRepo()
+    pendingProposal(repo, '/tmp/foreman-hold-d', false)
+    const derived = computeHolds(repo, none).find((h) => h.kind === 'foreman-proposal')
+    expect(derived?.mock).toBe(false)
+  })
+})

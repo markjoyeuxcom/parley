@@ -62,6 +62,9 @@ export const CreatePlanReq = z.object({
   setupCommand: z.string().trim().max(400).default(''),
   /** Open backlog items this plan targets. Capped by construction. */
   backlogItemIds: z.array(Id).max(12).default([]),
+  /** A pending foreman proposal this creation accepts — atomically, in the
+   * same transaction as the plan row and the item flips. */
+  foremanProposalId: Id.nullable().default(null),
   sessionId: Id,
   kind: WorkPlanKind,
   repoPath: z.string().min(1),
@@ -248,6 +251,7 @@ export const COMMANDS = {
   'learnings.retire': RetireLearningReq,
   'foreman.run': RunForemanReq,
   'foreman.list': ListForemanReq,
+  'foreman.reject': RejectForemanReq,
   'plan.create': CreatePlanReq,
   'plan.get': GetPlanReq,
   'plan.list': null,

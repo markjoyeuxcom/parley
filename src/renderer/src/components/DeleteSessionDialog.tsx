@@ -128,6 +128,18 @@ export function DeleteSessionDialog({
               </div>
             ) : null}
 
+            {impact.pendingForemanProposals > 0 ? (
+              <div className="audit-note audit-note--reject">
+                <strong>
+                  {impact.pendingForemanProposals} pending foreman proposal
+                  {impact.pendingForemanProposals === 1 ? '' : 's'} anchor
+                  {impact.pendingForemanProposals === 1 ? 's' : ''} to this session.
+                </strong>{' '}
+                Accepting a proposal needs its anchor&apos;s verdict — delete it and they can only
+                be rejected or re-run.
+              </div>
+            ) : null}
+
             {impact.retainedApprovals > 0 ? (
               <div className="field__hint">
                 {impact.retainedApprovals} spent{' '}
