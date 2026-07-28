@@ -10,7 +10,9 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    // .tsx carries the mounted-surface smoke tests; they opt into jsdom with
+    // a per-file @vitest-environment pragma, so main-process suites stay node.
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     // node-pty and electron are only loadable inside the Electron runtime.
     exclude: ['**/node_modules/**', 'out/**', 'dist/**'],
   },
