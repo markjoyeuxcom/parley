@@ -205,6 +205,13 @@ export const ListSessionsReq = z.object({ includeArchived: z.boolean().default(f
 export const DeleteSessionReq = z.object({ sessionId: Id })
 export const GetPlanReq = z.object({ planId: Id })
 /**
+ * Null repoPath lists globally (capped); a repoPath lists every plan for
+ * that repository, uncapped — history must not fall off a global limit.
+ */
+export const ListPlansReq = z.object({
+  repoPath: z.string().min(1).nullable().default(null),
+})
+/**
  * Lands a complete worktree plan's branch on the origin, fast-forward only.
  * Must reference an unconsumed `plan.land` approval — landing is the single
  * moment isolated work reaches the checkout, and it is recorded like every
@@ -254,7 +261,8 @@ export const COMMANDS = {
   'foreman.reject': RejectForemanReq,
   'plan.create': CreatePlanReq,
   'plan.get': GetPlanReq,
-  'plan.list': null,
+  'plan.list': ListPlansReq,
+  'repos.list': null,
   'plan.runMilestone': RunMilestoneReq,
   'plan.inspect': InspectMilestoneReq,
   'plan.answer': AnswerPlanReq,
@@ -323,6 +331,21 @@ export interface AppInfo {
    * install rather than a list baked in when the app was written.
    */
   codexDefaultModel: string
+}
+
+/**
+ * One repository as the Repos surface's sidebar sees it. Canonically keyed;
+ * item and proposal counts are scoped to the running mode (they drive action
+ * chips), plan counts are total.
+ */
+export interface RepoSummary {
+  repoPath: string
+  planCount: number
+  /** Plans needing a human: failed, parked, blocked, or complete-unlanded. */
+  attentionPlans: number
+  openItems: number
+  pendingTriage: number
+  hasPendingProposal: boolean
 }
 
 /** Result of probing for the two CLIs at startup. */

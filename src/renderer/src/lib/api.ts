@@ -25,7 +25,7 @@ import type {
 } from '@shared/domain'
 import type { AppEvent, PtyChunk } from '@shared/events'
 import type { Hold } from '@shared/holds'
-import type { AppInfo, CliHealth, CommandName, LedgerEntry } from '@shared/ipc'
+import type { AppInfo, CliHealth, CommandName, LedgerEntry, RepoSummary } from '@shared/ipc'
 
 /** The preload bridge. The only channel out of the renderer. */
 interface Bridge {
@@ -177,7 +177,12 @@ export const api = {
     /** A pending foreman proposal this creation accepts, atomically. */
     foremanProposalId?: Id | null
   }): Promise<PlanDetail> => bridge().invoke('plan.create', payload),
-  listPlans: (): Promise<WorkPlan[]> => bridge().invoke('plan.list'),
+  /** Null-ish repoPath lists globally (capped); a repoPath lists that repo's
+   * plans, uncapped. The empty-object payload is load-bearing: the schema is
+   * an object now, and undefined would fail it. */
+  listPlans: (repoPath?: string): Promise<WorkPlan[]> =>
+    bridge().invoke('plan.list', repoPath ? { repoPath } : {}),
+  listRepoSummaries: (): Promise<RepoSummary[]> => bridge().invoke('repos.list'),
   getPlan: (planId: Id): Promise<PlanDetail> => bridge().invoke('plan.get', { planId }),
   setTestCommand: (milestoneId: Id, command: string): Promise<Milestone> =>
     bridge().invoke('plan.setTestCommand', { milestoneId, command }),

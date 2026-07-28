@@ -47,6 +47,7 @@ import {
   type Worktree,
 } from '@shared/domain'
 import { findingIdentity, normaliseFindingText, sha256 } from '@shared/ledger'
+import type { RepoSummary } from '@shared/ipc'
 import { canonicalRepoPath } from '@main/util/repoPath'
 import type { Db, Row } from './db'
 
@@ -1750,6 +1751,77 @@ export class Repo {
 
   listPlans(limit = 200): WorkPlan[] {
     return this.db.all(`SELECT * FROM plans ORDER BY created_at DESC LIMIT ?`, limit).map((r) => this.toPlan(r))
+  }
+
+  /**
+   * Every plan that ever targeted the repository, newest first. Unlimited on
+   * purpose — "every plan for this repo" behind the global 200-cap would
+   * silently drop history. plans.repo_path is raw by design (validateRepoPath
+   * and existing rows are untouchable), so the filter canonicalises in
+   * memory, the same way the foreman's recent-plans block does.
+   */
+  listPlansForRepo(repoPath: string): WorkPlan[] {
+    const canonical = canonicalRepoPath(repoPath)
+    return this.db
+      .all(`SELECT * FROM plans ORDER BY created_at DESC`)
+      .map((r) => this.toPlan(r))
+      .filter((plan) => canonicalRepoPath(plan.repoPath) === canonical)
+  }
+
+  /**
+   * One row per repository Parley has ever worked — the union of plan,
+   * backlog and learning repos, canonically keyed. Item and proposal counts
+   * are scoped to the running mode (they drive action chips the surface can
+   * actually act on); plan counts are total, with mode visible per-row in
+   * the table itself.
+   */
+  listRepoSummaries(mock: boolean): RepoSummary[] {
+    const summaries = new Map<string, RepoSummary>()
+    const summaryFor = (repoPath: string): RepoSummary => {
+      const existing = summaries.get(repoPath)
+      if (existing) return existing
+      const created: RepoSummary = {
+        repoPath,
+        planCount: 0,
+        attentionPlans: 0,
+        openItems: 0,
+        pendingTriage: 0,
+        hasPendingProposal: false,
+      }
+      summaries.set(repoPath, created)
+      return created
+    }
+
+    const unlanded = new Set(
+      this.db
+        .all(`SELECT plan_id FROM worktrees WHERE landed_at IS NULL`)
+        .map((row) => str(row['plan_id'])),
+    )
+    for (const row of this.db.all(`SELECT * FROM plans`)) {
+      const plan = this.toPlan(row)
+      const summary = summaryFor(canonicalRepoPath(plan.repoPath))
+      summary.planCount += 1
+      const attention =
+        plan.status === 'failed' ||
+        plan.status === 'awaiting-clarification' ||
+        plan.status === 'blocked' ||
+        (plan.status === 'complete' && plan.isolation === 'worktree' && unlanded.has(plan.id))
+      if (attention) summary.attentionPlans += 1
+    }
+    for (const item of this.listBacklogItems()) {
+      const summary = summaryFor(item.repoPath)
+      if (item.mock !== mock) continue
+      if (item.state === 'open') summary.openItems += 1
+      if (item.state === 'proposed' || item.state === 'closure-proposed') {
+        summary.pendingTriage += 1
+      }
+    }
+    for (const learning of this.listLearnings()) summaryFor(learning.repoPath)
+    for (const summary of summaries.values()) {
+      summary.hasPendingProposal =
+        this.getPendingForemanProposal(summary.repoPath, mock) !== null
+    }
+    return [...summaries.values()].sort((a, b) => a.repoPath.localeCompare(b.repoPath))
   }
 
   listPlansForSession(sessionId: Id): WorkPlan[] {

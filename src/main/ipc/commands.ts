@@ -237,7 +237,13 @@ const HANDLERS: Record<CommandName, Handler> = {
 
   // ── Plans ──────────────────────────────────────────────────────────────────
   'plan.create': (p, ctx) => ctx.manager.createPlan(p as never),
-  'plan.list': (_p, ctx) => ctx.manager.repo.listPlans(),
+  'plan.list': (p, ctx) => {
+    const { repoPath } = p as { repoPath: string | null }
+    return repoPath
+      ? ctx.manager.repo.listPlansForRepo(repoPath)
+      : ctx.manager.repo.listPlans()
+  },
+  'repos.list': (_p, ctx) => ctx.manager.repo.listRepoSummaries(ctx.manager.registry.mock),
   'plan.get': (p, ctx) => {
     const { planId } = p as { planId: string }
     const plan = ctx.manager.repo.getPlan(planId)

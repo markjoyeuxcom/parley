@@ -290,3 +290,46 @@ describe('foreman commands', () => {
     expect(repo.getPendingForemanProposal('/tmp/ipc-foreman', true)).toBeNull()
   })
 })
+
+describe('plan.list arms', () => {
+  it('empty payload lists globally; a repoPath lists that repo uncapped', async () => {
+    const { ctx, repo, session } = harness()
+    const repoPath = '/tmp/ipc-plan-arms'
+    for (let i = 0; i < 205; i += 1) {
+      repo.createPlan({
+        id: newId(),
+        sessionId: session.id,
+        kind: 'implementation',
+        title: `Plan ${i}`,
+        repoPath,
+        planner: { vendor: 'claude', model: '', effort: 'medium', persona: '' },
+        executor: { vendor: 'codex', model: '', effort: 'medium', persona: '' },
+        reviewer: { vendor: 'claude', model: '', effort: 'medium', persona: '' },
+        status: 'ready',
+        question: '',
+        correctionNote: '',
+        correctionDispositions: [],
+        isolation: 'checkout',
+        setupCommand: '',
+        usage: emptyUsage(),
+        mock: true,
+        createdAt: Date.now() + i,
+      })
+    }
+
+    // The no-payload caller must keep working after the schema change.
+    const global = (await invokeCommand(ctx, { command: 'plan.list', payload: {} })) as unknown[]
+    expect(global).toHaveLength(200)
+    const scoped = (await invokeCommand(ctx, {
+      command: 'plan.list',
+      payload: { repoPath },
+    })) as unknown[]
+    expect(scoped).toHaveLength(205)
+
+    const summaries = (await invokeCommand(ctx, { command: 'repos.list' })) as Array<{
+      repoPath: string
+      planCount: number
+    }>
+    expect(summaries.find((s) => s.repoPath === repoPath)?.planCount).toBe(205)
+  })
+})

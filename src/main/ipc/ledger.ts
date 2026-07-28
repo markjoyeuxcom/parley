@@ -59,7 +59,10 @@ export function getSessionDetail(repo: Repo, sessionId: string) {
     verdict: repo.getVerdict(sessionId),
     findings: repo.listFindings(sessionId),
     ledger: groupLedgerEntries(repo, sessionId),
-    plans: repo.listPlans().filter((plan) => plan.sessionId === sessionId),
+    // listPlansForSession, not a filter over the capped global list: a
+    // session older than the newest 200 plans would show a partial (or
+    // empty) plan list while its plans still exist.
+    plans: repo.listPlansForSession(sessionId),
   }
 }
 

@@ -4,6 +4,7 @@ import type { BacklogItem, ForemanProposal, Loop, Milestone, WorkPlan, Worktree 
 import type { AppEvent } from '@shared/events'
 import { EXECUTABLE_PAIRS } from '@shared/execution'
 import type { Repo } from '@main/store/repo'
+import { canonicalRepoPath } from '@main/util/repoPath'
 import { unresolvedBlockingOccurrences } from './gate'
 
 /**
@@ -171,6 +172,7 @@ function clarificationHold(sessionId: string, plan: WorkPlan): Hold {
     planId: plan.id,
     milestoneId: null,
     loopId: null,
+    repoPath: canonicalRepoPath(plan.repoPath),
     title: 'Waiting on your answer',
     detail: plan.question,
     sinceAt: plan.createdAt,
@@ -188,6 +190,7 @@ function planBlockedHold(sessionId: string, plan: WorkPlan): Hold {
     planId: plan.id,
     milestoneId: null,
     loopId: null,
+    repoPath: canonicalRepoPath(plan.repoPath),
     title: 'Blocked before approval',
     detail: `${plan.title} — ${reason}`,
     sinceAt: plan.createdAt,
@@ -210,6 +213,7 @@ function approvalHold(
       planId: plan.id,
       milestoneId: milestone.id,
       loopId: null,
+    repoPath: canonicalRepoPath(plan.repoPath),
       title: 'Approval gated by open findings',
       detail: `${blockers} blocking finding${blockers === 1 ? '' : 's'} must be dispositioned before ${subject} can be approved.`,
       sinceAt: milestone.createdAt,
@@ -221,6 +225,7 @@ function approvalHold(
     planId: plan.id,
     milestoneId: milestone.id,
     loopId: null,
+    repoPath: canonicalRepoPath(plan.repoPath),
     title: 'Ready to approve',
     detail: `${plan.title} — ${subject}`,
     sinceAt: milestone.createdAt,
@@ -238,6 +243,7 @@ function milestoneFailedHold(sessionId: string, plan: WorkPlan, milestone: Miles
     planId: plan.id,
     milestoneId: milestone.id,
     loopId: null,
+    repoPath: canonicalRepoPath(plan.repoPath),
     title: 'A milestone failed',
     detail: `${plan.title} — milestone ${milestone.index + 1}: ${milestone.title}`,
     sinceAt: milestone.testResult?.ranAt ?? milestone.createdAt,
@@ -357,6 +363,7 @@ function mergeHold(sessionId: string, plan: WorkPlan, worktree: Worktree): Hold 
       planId: plan.id,
       milestoneId: null,
       loopId: null,
+    repoPath: canonicalRepoPath(plan.repoPath),
       title: 'Landing was refused',
       detail: `${plan.title} — branch ${worktree.branch} still carries the work: ${reason}`,
       sinceAt: worktree.createdAt,
@@ -368,6 +375,7 @@ function mergeHold(sessionId: string, plan: WorkPlan, worktree: Worktree): Hold 
     planId: plan.id,
     milestoneId: null,
     loopId: null,
+    repoPath: canonicalRepoPath(plan.repoPath),
     title: 'Ready to land',
     detail: `${plan.title} — branch ${worktree.branch} fast-forwards ${plan.repoPath} when you land it.`,
     sinceAt: worktree.createdAt,
@@ -398,6 +406,7 @@ function milestoneStallHold(
     planId: plan.id,
     milestoneId: milestone.id,
     loopId: null,
+    repoPath: canonicalRepoPath(plan.repoPath),
     title: 'A run looks stalled',
     detail: `${plan.title} — milestone ${milestone.index + 1}: ${milestone.title} has shown no activity past the stall threshold.${inspectionLine}`,
     sinceAt: stalledSince,
@@ -416,6 +425,7 @@ function landVerifyFailedHold(sessionId: string, plan: WorkPlan, worktree: Workt
     planId: plan.id,
     milestoneId: null,
     loopId: null,
+    repoPath: canonicalRepoPath(plan.repoPath),
     title: 'Landed, but verification failed',
     detail: `${plan.title} — the branch fast-forwarded, then the smoke check failed in ${plan.repoPath}: ${worktree.lastError}`,
     sinceAt: worktree.landedAt ?? worktree.createdAt,
@@ -429,6 +439,7 @@ function loopStallHold(loop: Loop, stalledSince: number): Hold {
     planId: null,
     milestoneId: null,
     loopId: loop.id,
+    repoPath: canonicalRepoPath(loop.repoPath),
     title: 'A loop looks stalled',
     detail: `${loop.goal} — no activity past the stall threshold. The kill switch remains yours; nothing stops automatically.`,
     sinceAt: stalledSince,
@@ -501,6 +512,7 @@ function loopHold(loop: Loop): Hold {
     planId: null,
     milestoneId: null,
     loopId: loop.id,
+    repoPath: canonicalRepoPath(loop.repoPath),
     title,
     detail: loop.stopReason ? `${loop.goal} — ${loop.stopReason}` : loop.goal,
     sinceAt: loop.endedAt ?? loop.startedAt,

@@ -80,7 +80,13 @@ export interface Hold {
   planId: Id | null
   milestoneId: Id | null
   loopId: Id | null
-  /** Set on backlog holds, which are repository-scoped rather than row-scoped. */
+  /**
+   * The repository the waiting belongs to, canonically keyed — set on every
+   * hold that has one (plan, milestone, loop, backlog, foreman); null only
+   * for holds with no repository at all. Deliberately OUTSIDE holdIdentity:
+   * adding it must never re-mint an identity, or every notify-once stamp
+   * would fire again.
+   */
   repoPath: string | null
   /** Short sentence naming what waits. */
   title: string

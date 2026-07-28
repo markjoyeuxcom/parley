@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Loop, Milestone, Session, WorkPlan } from '@shared/domain'
 import { emptyUsage } from '@shared/domain'
+import { holdIdentity } from '@shared/holds'
 import { openDatabase } from '@main/store/db'
 import { newId, Repo } from '@main/store/repo'
 import { computeHolds } from './holds'
@@ -577,5 +578,27 @@ describe('the foreman-proposal hold', () => {
     pendingProposal(repo, '/tmp/foreman-hold-d', false)
     const derived = computeHolds(repo, none).find((h) => h.kind === 'foreman-proposal')
     expect(derived?.mock).toBe(false)
+  })
+})
+
+describe('holds carry their repository', () => {
+  it('every plan- and loop-derived hold wears a canonical repoPath, outside its identity', () => {
+    const repo = freshRepo()
+    const session = makeSession(repo)
+    // A raw, uncanonical spelling: trailing slash survives in the plan row.
+    const plan = makePlan(repo, session.id, 'awaiting-clarification', {
+      repoPath: '/tmp/holds-repo/',
+      question: 'Which database?',
+    })
+
+    const derived = computeHolds(repo, none).find((h) => h.kind === 'clarification')
+    expect(derived?.repoPath).toBe('/tmp/holds-repo')
+    // The identity folds kind, subject and generation only — repoPath must
+    // never join it, or backfilling it would re-mint every notify-once stamp.
+    expect(derived?.id).toBe(holdIdentity('clarification', plan.id, plan.question))
+
+    for (const hold of computeHolds(repo, none)) {
+      if (hold.planId || hold.loopId) expect(hold.repoPath).not.toBeNull()
+    }
   })
 })
