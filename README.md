@@ -14,8 +14,7 @@ API-key code path.
 | **Codebase review** | You need findings you can act on without re-verifying each one. |
 | **Loop** | "Done" is machine-checkable and the work converges. |
 | **Audited execution** | A change matters enough to want gates, tests and an independent reviewer between the agent and your repository. |
-| **Backlog** | You want what reviews found and sessions learned to outlive the session that produced them. |
-| **Foreman** | You want the backlog to propose its own next plan, and yourself reduced to the decision. |
+| **Repos** | You want the repository — its backlog, its plans across every session, its foreman — answering for itself in one place. |
 
 Each section below says when the surface earns its cost — and when it doesn't.
 
@@ -326,7 +325,26 @@ batch when you return.
 
 ---
 
-## Backlog — the record remembers (⌘4)
+## Repos — the repository is the unit (⌘4)
+
+Sessions are how work happens; repositories are what the work is *about* —
+and the Repos surface makes the repository answer for itself. The sidebar
+lists every repo Parley has ever worked (plans, backlog or learnings — any
+record counts); selecting one opens four tabs:
+
+- **Overview** — the radar: every unsettled plan with its status and one
+  click to its controls, the holds queue filtered to this repo, and the
+  foreman. "What's happening in this repo right now" on one screen.
+- **Backlog** — the triage board described below.
+- **Plans** — every plan that ever targeted the repo, across every session,
+  numbered and newest first; a row opens the plan **in place**, and the
+  origin session is a provenance link into ⌘2, the reading room. Sessions
+  became links, not homes.
+- **Learnings** — the curated prose record.
+
+"All repositories" remains the cross-repo triage board.
+
+### The backlog
 
 Work worth doing accumulates in a per-repository backlog, filed by the record
 itself rather than by anyone's discipline:
@@ -363,11 +381,11 @@ you through the same queue as everything else.
 
 ---
 
-## Foreman — the record proposes what's next
+### The foreman
 
 The one judgment the backlog still left to you was *which items to take next,
 batched how*. The foreman is that judgment as a proposing role: **Ask the
-foreman** (on the backlog surface) runs one read-only agent turn over the
+foreman** (on the repo's Overview tab) runs one read-only agent turn over the
 repository's open items — priorities, dependency edges, confirmed learnings,
 recent plan history — and files a proposal: this batch, in this order, for
 this reason; these deferred, because. It arrives as a decision hold, like

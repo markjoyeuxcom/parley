@@ -446,6 +446,32 @@ proposing role and nothing more. The boundary is structural:
   selecting min(2, n) so it stays deterministic at any backlog size.
   `FOREMAN_UNREADABLE` in the cwd exercises the parse-failure path.
 
+## The Repos surface: three renderer rules
+
+The Repos surface (⌘4; the surface id stays `'backlog'` — only the face
+changed) hosts the same `PlanPanel` the session view mounts, which makes
+three rules load-bearing:
+
+- **`planLedger` fails closed.** `openPlan` fetches the plan and its
+  session's ledger together and dispatches one atomic `planOpened`;
+  `state.planLedger === null` means *unknown*, and the approval gate
+  disables on unknown rather than un-gating on an empty array — an empty
+  gate silently enables approval, and while main would refuse the run, the
+  grant itself writes an approval row that is never consumed. The session
+  view deliberately keeps `sessionDetail.ledger` (fresher there, never
+  null); only the Repos host reads `planLedger`.
+- **`host` gates the knock.** Every surface stays mounted permanently, so
+  two `PlanPanel` instances can render the same open plan. The
+  `focusMilestoneId` knock and the auto-opened approval dialog obey only
+  the instance whose `host` matches `state.surface` — otherwise both
+  consume the knock and the hidden one strands an invisible stale dialog.
+- **Canonical at the boundary; summaries drive membership.** Plan rows keep
+  raw `repo_path` (validateRepoPath untouched); `listPlansForRepo` and the
+  hold factories canonicalise, so filters compare canonical-to-canonical.
+  The sidebar and empty states key off `repos.list` summaries — the union
+  of plan, backlog and learning repos — never the backlog-derived memo,
+  or a plans-only repository dead-ends.
+
 ## Worktree isolation: the checkout is never touched mid-run
 
 A plan created with `isolation: 'worktree'` executes every milestone in a
