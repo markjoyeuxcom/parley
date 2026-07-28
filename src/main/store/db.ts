@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 18
+export const SCHEMA_VERSION = 19
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -390,6 +390,33 @@ CREATE TABLE IF NOT EXISTS learnings (
   created_at        INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_learnings_repo_state ON learnings(repo_path, state);
+
+-- One read of a repository's backlog by the foreman and the plan it argues
+-- for. Attempt rows are filed 'running' before the agent turn dispatches, so
+-- an interrupted run is a recorded fact; superseded rows are the history of
+-- every read, not just the surviving one. No CHECK constraints on state —
+-- validation is Zod-side, like the backlog tables.
+CREATE TABLE IF NOT EXISTS foreman_proposals (
+  id                TEXT PRIMARY KEY,
+  repo_path         TEXT NOT NULL,
+  state             TEXT NOT NULL,
+  title             TEXT NOT NULL DEFAULT '',
+  rationale         TEXT NOT NULL DEFAULT '',
+  item_ids          TEXT NOT NULL DEFAULT '[]',
+  deferred          TEXT NOT NULL DEFAULT '[]',
+  open_snapshot     TEXT NOT NULL DEFAULT '[]',
+  isolation         TEXT NOT NULL DEFAULT 'worktree',
+  note              TEXT NOT NULL DEFAULT '',
+  anchor_session_id TEXT,
+  plan_id           TEXT,
+  vendor            TEXT NOT NULL,
+  usage             TEXT NOT NULL,
+  mock              INTEGER NOT NULL DEFAULT 0,
+  created_at        INTEGER NOT NULL,
+  decided_at        INTEGER,
+  decision_note     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_foreman_repo_state ON foreman_proposals(repo_path, state);
 `
 
 class NodeSqliteDb implements Db {
@@ -751,6 +778,10 @@ export function migrate(db: Db): void {
   if (current < 18) {
     // The backlog is additive: SCHEMA creates backlog_items, backlog_events
     // and learnings fresh, and no existing row changes shape.
+  }
+  if (current < 19) {
+    // The foreman is additive: SCHEMA creates foreman_proposals fresh, and
+    // no existing row changes shape.
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

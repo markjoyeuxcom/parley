@@ -19,6 +19,9 @@ import {
   type BacklogItemSource,
   type BacklogItemState,
   type FindingPriority,
+  type ForemanDeferral,
+  type ForemanProposal,
+  type ForemanProposalState,
   type Interjection,
   type InterjectionTarget,
   type Learning,
@@ -38,6 +41,7 @@ import {
   type TestResult,
   type Turn,
   type Usage,
+  type Vendor,
   type Verdict,
   type WorkPlan,
   type Worktree,
@@ -1159,6 +1163,19 @@ export class Repo {
     to: Exclude<BacklogItemState, 'proposed'>,
     opts: { source: BacklogEventSource; note?: string; planId?: Id },
   ): BacklogItem {
+    return this.db.transaction(() => this.transitionBacklogItemCore(id, to, opts))
+  }
+
+  /**
+   * The transition body without its transaction, so composite writes —
+   * {@link bindPlanCreation} — can run it inside their own. The wrapper above
+   * is the public face; transactions here do not nest.
+   */
+  private transitionBacklogItemCore(
+    id: Id,
+    to: Exclude<BacklogItemState, 'proposed'>,
+    opts: { source: BacklogEventSource; note?: string; planId?: Id },
+  ): BacklogItem {
     const LEGAL: Record<BacklogItemState, ReadonlyArray<BacklogItemState>> = {
       proposed: ['open', 'dropped'],
       open: ['planned', 'dropped'],
@@ -1167,33 +1184,31 @@ export class Repo {
       done: [],
       dropped: [],
     }
-    return this.db.transaction(() => {
-      const row = this.db.get(`SELECT * FROM backlog_items WHERE id = ?`, id)
-      if (!row) throw new Error('no such backlog item')
-      const item = this.toBacklogItem(row)
-      if (!LEGAL[item.state].includes(to)) {
-        throw new Error(`a ${item.state} backlog item cannot become ${to}`)
-      }
-      let planId = item.planId
-      if (to === 'planned') {
-        if (!opts.planId) throw new Error('planning a backlog item requires the plan id')
-        planId = opts.planId
-      } else if (to === 'open') {
-        planId = null
-      }
-      const now = Date.now()
-      this.db.run(
-        `UPDATE backlog_items SET state = ?, plan_id = ?, updated_at = ? WHERE id = ?`,
-        to,
-        planId,
-        now,
-        id,
-      )
-      this.appendBacklogEvent(id, to, opts.note ?? '', opts.source)
-      const updated = this.db.get(`SELECT * FROM backlog_items WHERE id = ?`, id)
-      if (!updated) throw new Error('backlog item disappeared mid-transition')
-      return this.toBacklogItem(updated)
-    })
+    const row = this.db.get(`SELECT * FROM backlog_items WHERE id = ?`, id)
+    if (!row) throw new Error('no such backlog item')
+    const item = this.toBacklogItem(row)
+    if (!LEGAL[item.state].includes(to)) {
+      throw new Error(`a ${item.state} backlog item cannot become ${to}`)
+    }
+    let planId = item.planId
+    if (to === 'planned') {
+      if (!opts.planId) throw new Error('planning a backlog item requires the plan id')
+      planId = opts.planId
+    } else if (to === 'open') {
+      planId = null
+    }
+    const now = Date.now()
+    this.db.run(
+      `UPDATE backlog_items SET state = ?, plan_id = ?, updated_at = ? WHERE id = ?`,
+      to,
+      planId,
+      now,
+      id,
+    )
+    this.appendBacklogEvent(id, to, opts.note ?? '', opts.source)
+    const updated = this.db.get(`SELECT * FROM backlog_items WHERE id = ?`, id)
+    if (!updated) throw new Error('backlog item disappeared mid-transition')
+    return this.toBacklogItem(updated)
   }
 
   /**
@@ -1412,6 +1427,266 @@ export class Repo {
       originSessionId: nullableStr(row['origin_session_id']),
       mock: num(row['mock']) === 1,
       createdAt: num(row['created_at']),
+    }
+  }
+
+  // ─── Foreman proposals ─────────────────────────────────────────────────────
+
+  /**
+   * Files a `running` attempt before the agent turn dispatches, so an
+   * interrupted run is a recorded fact rather than a vanished spend. Never
+   * supersedes anything — only a successful finalize may, because a mere
+   * attempt must not clobber a valid pending proposal.
+   */
+  fileForemanAttempt(input: {
+    repoPath: string
+    vendor: Vendor
+    mock: boolean
+    openSnapshot: Id[]
+  }): ForemanProposal {
+    const attempt: ForemanProposal = {
+      id: newId(),
+      repoPath: canonicalRepoPath(input.repoPath),
+      state: 'running',
+      title: '',
+      rationale: '',
+      itemIds: [],
+      deferred: [],
+      openSnapshot: [...input.openSnapshot],
+      isolation: 'worktree',
+      note: '',
+      anchorSessionId: null,
+      planId: null,
+      vendor: input.vendor,
+      usage: emptyUsage(),
+      mock: input.mock,
+      createdAt: Date.now(),
+      decidedAt: null,
+      decisionNote: '',
+    }
+    this.db.run(
+      `INSERT INTO foreman_proposals (id, repo_path, state, title, rationale, item_ids, deferred, open_snapshot, isolation, note, anchor_session_id, plan_id, vendor, usage, mock, created_at, decided_at, decision_note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      attempt.id,
+      attempt.repoPath,
+      attempt.state,
+      attempt.title,
+      attempt.rationale,
+      json(attempt.itemIds),
+      json(attempt.deferred),
+      json(attempt.openSnapshot),
+      attempt.isolation,
+      attempt.note,
+      attempt.anchorSessionId,
+      attempt.planId,
+      attempt.vendor,
+      json(attempt.usage),
+      attempt.mock ? 1 : 0,
+      attempt.createdAt,
+      attempt.decidedAt,
+      attempt.decisionNote,
+    )
+    return attempt
+  }
+
+  /**
+   * Ends an attempt. The `proposed` arm supersedes prior same-mock pendings
+   * for the repository here, in this transaction — the one moment a new read
+   * replaces an old one. The `failed` arm records the error and the spend and
+   * touches nothing else.
+   */
+  finalizeForemanAttempt(
+    id: Id,
+    outcome:
+      | {
+          state: 'proposed'
+          title: string
+          rationale: string
+          itemIds: Id[]
+          deferred: ForemanDeferral[]
+          isolation: WorkPlan['isolation']
+          note: string
+          anchorSessionId: Id
+          usage: Usage
+          /** Honest validation drops ("2 named items were unknown"), if any. */
+          decisionNote?: string
+        }
+      | { state: 'failed'; error: string; usage: Usage },
+  ): ForemanProposal {
+    return this.db.transaction(() => {
+      const row = this.db.get(`SELECT * FROM foreman_proposals WHERE id = ?`, id)
+      if (!row) throw new Error('no such foreman attempt')
+      const attempt = this.toForemanProposal(row)
+      if (attempt.state !== 'running') {
+        throw new Error(`a ${attempt.state} foreman attempt cannot be finalized`)
+      }
+      const now = Date.now()
+      if (outcome.state === 'failed') {
+        this.db.run(
+          `UPDATE foreman_proposals SET state = 'failed', usage = ?, decided_at = ?, decision_note = ? WHERE id = ?`,
+          json(outcome.usage),
+          now,
+          outcome.error,
+          id,
+        )
+      } else {
+        this.db.run(
+          `UPDATE foreman_proposals SET state = 'superseded', decided_at = ?, decision_note = 'Superseded by a newer run.'
+           WHERE repo_path = ? AND state = 'proposed' AND mock = ? AND id != ?`,
+          now,
+          attempt.repoPath,
+          attempt.mock ? 1 : 0,
+          id,
+        )
+        this.db.run(
+          `UPDATE foreman_proposals SET state = 'proposed', title = ?, rationale = ?, item_ids = ?, deferred = ?, isolation = ?, note = ?, anchor_session_id = ?, usage = ?, decision_note = ? WHERE id = ?`,
+          outcome.title,
+          outcome.rationale,
+          json(outcome.itemIds),
+          json(outcome.deferred),
+          outcome.isolation,
+          outcome.note,
+          outcome.anchorSessionId,
+          json(outcome.usage),
+          outcome.decisionNote ?? '',
+          id,
+        )
+      }
+      const updated = this.db.get(`SELECT * FROM foreman_proposals WHERE id = ?`, id)
+      if (!updated) throw new Error('foreman attempt disappeared mid-finalize')
+      return this.toForemanProposal(updated)
+    })
+  }
+
+  /** The one live proposal for a repository in the given mode, if any. */
+  getPendingForemanProposal(repoPath: string, mock: boolean): ForemanProposal | null {
+    const row = this.db.get(
+      `SELECT * FROM foreman_proposals WHERE repo_path = ? AND state = 'proposed' AND mock = ?
+       ORDER BY created_at DESC, id ASC LIMIT 1`,
+      canonicalRepoPath(repoPath),
+      mock ? 1 : 0,
+    )
+    return row ? this.toForemanProposal(row) : null
+  }
+
+  getForemanProposal(id: Id): ForemanProposal | null {
+    const row = this.db.get(`SELECT * FROM foreman_proposals WHERE id = ?`, id)
+    return row ? this.toForemanProposal(row) : null
+  }
+
+  listForemanProposals(
+    filter: { repoPath?: string; states?: ForemanProposalState[] } = {},
+  ): ForemanProposal[] {
+    const where: string[] = []
+    const params: unknown[] = []
+    if (filter.repoPath) {
+      where.push('repo_path = ?')
+      params.push(canonicalRepoPath(filter.repoPath))
+    }
+    if (filter.states?.length) {
+      where.push(`state IN (${filter.states.map(() => '?').join(', ')})`)
+      params.push(...filter.states)
+    }
+    const clause = where.length ? ` WHERE ${where.join(' AND ')}` : ''
+    return this.db
+      .all(`SELECT * FROM foreman_proposals${clause} ORDER BY created_at DESC, id ASC`, ...params)
+      .map((r) => this.toForemanProposal(r))
+  }
+
+  decideForemanProposal(
+    id: Id,
+    to: 'accepted' | 'rejected',
+    opts: { planId?: Id; note?: string } = {},
+  ): ForemanProposal {
+    return this.db.transaction(() => this.decideForemanProposalCore(id, to, opts))
+  }
+
+  /** The decide body without its transaction — see {@link bindPlanCreation}. */
+  private decideForemanProposalCore(
+    id: Id,
+    to: 'accepted' | 'rejected',
+    opts: { planId?: Id; note?: string } = {},
+  ): ForemanProposal {
+    const row = this.db.get(`SELECT * FROM foreman_proposals WHERE id = ?`, id)
+    if (!row) throw new Error('no such foreman proposal')
+    const proposal = this.toForemanProposal(row)
+    if (proposal.state !== 'proposed') {
+      throw new Error(`a ${proposal.state} foreman proposal cannot become ${to}`)
+    }
+    if (to === 'accepted' && !opts.planId) {
+      throw new Error('accepting a foreman proposal requires the plan it created')
+    }
+    this.db.run(
+      `UPDATE foreman_proposals SET state = ?, plan_id = ?, decided_at = ?, decision_note = ? WHERE id = ?`,
+      to,
+      to === 'accepted' ? (opts.planId ?? null) : proposal.planId,
+      Date.now(),
+      opts.note ?? '',
+      id,
+    )
+    const updated = this.db.get(`SELECT * FROM foreman_proposals WHERE id = ?`, id)
+    if (!updated) throw new Error('foreman proposal disappeared mid-decide')
+    return this.toForemanProposal(updated)
+  }
+
+  /**
+   * Startup honesty for attempts the process did not live to finalize:
+   * `running` rows become `failed`, and the pending proposal they never got
+   * to supersede stays exactly as it was.
+   */
+  reconcileForemanAttempts(): number {
+    return this.db.run(
+      `UPDATE foreman_proposals SET state = 'failed', decided_at = ?, decision_note = 'Interrupted when Parley last quit.'
+       WHERE state = 'running'`,
+      Date.now(),
+    ).changes
+  }
+
+  /**
+   * Plan creation as one durable act: the plan row, the selected items'
+   * flips to `planned`, and — when the plan accepts a foreman proposal — the
+   * acceptance stamp, in a single transaction. A crash cannot leave a plan
+   * running while its proposal still reads pending, or items planned toward
+   * a plan that was never written. The manual path passes `proposalId` null
+   * and gets the same atomicity for its flips.
+   */
+  bindPlanCreation(plan: WorkPlan, itemIds: Id[], proposalId: Id | null): WorkPlan {
+    return this.db.transaction(() => {
+      this.createPlan(plan)
+      for (const itemId of itemIds) {
+        this.transitionBacklogItemCore(itemId, 'planned', {
+          source: 'human',
+          planId: plan.id,
+          note: 'Selected for this plan at creation.',
+        })
+      }
+      if (proposalId) {
+        this.decideForemanProposalCore(proposalId, 'accepted', { planId: plan.id })
+      }
+      return plan
+    })
+  }
+
+  private toForemanProposal(row: Row): ForemanProposal {
+    return {
+      id: str(row['id']),
+      repoPath: str(row['repo_path']),
+      state: str(row['state']) as ForemanProposalState,
+      title: str(row['title']),
+      rationale: str(row['rationale']),
+      itemIds: parseJson<Id[]>(row['item_ids'], []),
+      deferred: parseJson<ForemanDeferral[]>(row['deferred'], []),
+      openSnapshot: parseJson<Id[]>(row['open_snapshot'], []),
+      isolation: str(row['isolation']) as ForemanProposal['isolation'],
+      note: str(row['note']),
+      anchorSessionId: nullableStr(row['anchor_session_id']),
+      planId: nullableStr(row['plan_id']),
+      vendor: str(row['vendor']) as Vendor,
+      usage: parseJson<Usage>(row['usage'], emptyUsage()),
+      mock: num(row['mock']) === 1,
+      createdAt: num(row['created_at']),
+      decidedAt: row['decided_at'] == null ? null : num(row['decided_at']),
+      decisionNote: str(row['decision_note']),
     }
   }
 

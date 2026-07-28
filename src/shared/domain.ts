@@ -698,6 +698,68 @@ export const Learning = z.object({
 })
 export type Learning = z.infer<typeof Learning>
 
+// ─── Foreman proposals ──────────────────────────────────────────────────────
+
+/**
+ * `running` is the attempt row filed before the agent turn dispatches, so an
+ * interrupted run is a recorded fact rather than a vanished spend; startup
+ * reconciliation flips leftovers to `failed`. `superseded` is what a pending
+ * proposal becomes when a newer run finalizes — the record of every read the
+ * foreman ever took, not just the surviving one.
+ */
+export const ForemanProposalState = z.enum([
+  'running',
+  'proposed',
+  'accepted',
+  'rejected',
+  'superseded',
+  'failed',
+])
+export type ForemanProposalState = z.infer<typeof ForemanProposalState>
+
+/** An open item the foreman chose not to take, with its argument. */
+export const ForemanDeferral = z.object({
+  itemId: Id,
+  reason: z.string().default(''),
+})
+export type ForemanDeferral = z.infer<typeof ForemanDeferral>
+
+/**
+ * One read of a repository's backlog and the plan it argues for.
+ *
+ * Proposal power only: nothing here executes. Accepting routes through the
+ * normal plan-creation path in the same transaction that stamps `planId`;
+ * rejecting records the note. The foreman never transitions backlog state.
+ */
+export const ForemanProposal = z.object({
+  id: Id,
+  /** Canonicalised, like the backlog it reads. */
+  repoPath: z.string(),
+  state: ForemanProposalState,
+  title: z.string().default(''),
+  rationale: z.string().default(''),
+  /** The open items the proposal selects, validated at filing. */
+  itemIds: z.array(Id).default([]),
+  deferred: z.array(ForemanDeferral).default([]),
+  /** Every open item id the foreman was shown — the staleness baseline. */
+  openSnapshot: z.array(Id).default([]),
+  isolation: WorktreeIsolation,
+  /** Draft operator note, seeded into the accept dialog attributed to the foreman. */
+  note: z.string().default(''),
+  /** The session whose verdict anchors the plan this proposal argues for. */
+  anchorSessionId: Id.nullable().default(null),
+  /** Set when accepted — the plan the acceptance created. */
+  planId: Id.nullable().default(null),
+  vendor: Vendor,
+  usage: Usage,
+  mock: z.boolean().default(false),
+  createdAt: Timestamp,
+  decidedAt: Timestamp.nullable().default(null),
+  /** Rejection reason, failure error, or honest validation drops at filing. */
+  decisionNote: z.string().default(''),
+})
+export type ForemanProposal = z.infer<typeof ForemanProposal>
+
 // ─── Finding ledger ─────────────────────────────────────────────────────────
 
 /**

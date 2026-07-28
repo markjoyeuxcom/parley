@@ -228,6 +228,32 @@ most a handful of each, only what the transcript actually supports, and skip
 anything already recorded as a finding. An empty array is honest when there
 is nothing.`.trim()
 
+/**
+ * The foreman's output contract: which open items to take next, batched with
+ * an argument, and which to leave with an argument. Ids come from the record
+ * blocks in the prompt — inventing one is refused at filing, so the contract
+ * says so up front. Deferring is framed as honest for the same reason the
+ * stow contract blesses empty arrays: a foreman pressured to take everything
+ * proposes mush.
+ */
+export const FOREMAN_CONTRACT = `
+Reply with a fenced JSON block and nothing after it:
+\`\`\`json
+{
+  "title": "<what this plan is, one line>",
+  "rationale": "<why this batch, in this order, now>",
+  "itemIds": ["<id copied exactly from an OPEN ITEM record above>"],
+  "deferred": [{ "itemId": "<id copied exactly>", "reason": "<why not now>" }],
+  "isolation": "worktree" | "checkout",
+  "operatorNote": "<constraints the plan's planner should know, beyond the items themselves>"
+}
+\`\`\`
+Select at most 12 itemIds — a coherent batch beats an exhaustive one, and
+deferring with a reason is honest. Copy ids exactly from the records; never
+invent one. Respect blocked-by edges: a blocked item belongs in deferred
+until its blockers land. Prefer "worktree" unless the work is trivial and
+supervised.`.trim()
+
 export function protocolFor(kind: SessionKind): SessionProtocol {
   return kind === 'debate' ? DEBATE_PROTOCOL : REVIEW_PROTOCOL
 }

@@ -174,6 +174,21 @@ describe('schema migrations', () => {
     ])
   })
 
+  it('adds the foreman table when upgrading from version 18', () => {
+    const db = openDatabase(':memory:')
+    db.exec(`DROP TABLE foreman_proposals`)
+    db.run(`UPDATE meta SET value = '18' WHERE key = 'schema_version'`)
+
+    migrate(db)
+
+    expect(db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'schema_version'`)?.value).toBe(
+      String(SCHEMA_VERSION),
+    )
+    expect(
+      db.get(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'foreman_proposals'`),
+    ).toBeTruthy()
+  })
+
   it('adds the backlog tables when upgrading from version 17', () => {
     const db = openDatabase(':memory:')
     db.exec(`DROP TABLE backlog_events`)
