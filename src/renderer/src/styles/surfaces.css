@@ -1587,3 +1587,60 @@
 .turn__expand:hover {
   color: var(--text-secondary);
 }
+
+/* ─── The work column ──────────────────────────────────────────────────────────
+ * Appended last on purpose: these rules must win over the --split blocks
+ * above, including the 1800px one, purely by source order.
+ */
+
+.session__work {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  background: var(--bg-sunken);
+}
+
+/* Narrow: transcript, then the record, then the work, stacked. */
+.session__body--work {
+  grid-template-rows: minmax(0, 1fr) minmax(0, 30%) minmax(0, 30%);
+}
+
+/* Middle widths: one side column, record over work, each its own scroll. */
+@media (min-width: 1280px) {
+  .session__body--work {
+    grid-template-columns: minmax(0, 1fr) clamp(400px, 36%, 620px);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .session__body--work .session__main {
+    grid-row: 1 / span 2;
+  }
+
+  .session__body--work .session__work {
+    border-left: 1px solid var(--line);
+  }
+}
+
+/* Wide: the full four columns — sessions, transcript, record, work. */
+@media (min-width: 1650px) {
+  .session__body--work {
+    grid-template-columns:
+      minmax(0, 1fr)
+      clamp(340px, 24%, 540px)
+      clamp(400px, 30%, 660px);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .session__body--work .session__main {
+    grid-row: auto;
+  }
+
+  .session__body--work .session__work {
+    border-top: none;
+  }
+
+  .session__body--work .session__inspector-inner {
+    max-width: none;
+  }
+}

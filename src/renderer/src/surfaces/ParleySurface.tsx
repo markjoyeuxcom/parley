@@ -305,7 +305,11 @@ function SessionView(): ReactNode {
         ) : null}
       </div>
 
-      <div className={hasOutcome ? 'session__body session__body--split' : 'session__body'}>
+      <div
+        className={`session__body ${hasOutcome ? 'session__body--split' : ''} ${
+          hasOutcome && plans.length ? 'session__body--work' : ''
+        }`}
+      >
         <div className="session__main">
           <Transcript sessionId={session.id} turns={turns} streaming={state.streaming} />
           {active ? <Composer sessionId={session.id} participants={session.participants} /> : null}
@@ -340,39 +344,53 @@ function SessionView(): ReactNode {
                   plans={plans}
                   milestones={state.planDetail?.milestones}
                 />
+              </div>
+            </div>
+          </aside>
+        ) : null}
 
+        {/* The record and the work have different rhythms — the outcome is
+            read once, the plan is worked in — so on wide viewports the plan
+            area is its own column rather than a mile of scroll below the
+            verdict. Narrower windows stack it after the record. */}
+        {hasOutcome && plans.length ? (
+          <aside className="session__work">
+            <div className="session__inspector-inner">
+              <div className="session__inspector-head">
+                <Label>Work</Label>
+              </div>
+
+              <div className="outcome-pane">
                 {/* Stays visible while a plan is open. It used to render only when
                     nothing was open, so opening one plan hid the way to the other —
                     and two plans per session (implementation, then remediation) is
                     the normal case, not the exception. */}
-                {plans.length ? (
-                  <div className="segmented" role="tablist" aria-label="Plans in this session">
-                    {/* Titled and numbered, oldest first — two plans of the same
-                        kind is the normal case (implementation, then another), and
-                        a row reading "implementation implementation" names neither. */}
-                    {[...plans]
-                      .sort((a, b) => a.createdAt - b.createdAt)
-                      .map((plan, index) => {
-                        const isOpen = state.planDetail?.plan.id === plan.id
-                        return (
-                          <button
-                            key={plan.id}
-                            role="tab"
-                            aria-selected={isOpen}
-                            className={isOpen ? 'segmented__item is-active' : 'segmented__item'}
-                            onClick={() => void openPlan(plan.id)}
-                            title={`${plan.title} — ${plan.kind}, ${plan.status}`}
-                          >
-                            <span className="tnum">{index + 1}</span>
-                            <span className="plan-tab__title">{plan.title}</span>
-                            {plan.status !== 'complete' ? (
-                              <span className="segmented__count">{plan.status}</span>
-                            ) : null}
-                          </button>
-                        )
-                      })}
-                  </div>
-                ) : null}
+                <div className="segmented" role="tablist" aria-label="Plans in this session">
+                  {/* Titled and numbered, oldest first — two plans of the same
+                      kind is the normal case (implementation, then another), and
+                      a row reading "implementation implementation" names neither. */}
+                  {[...plans]
+                    .sort((a, b) => a.createdAt - b.createdAt)
+                    .map((plan, index) => {
+                      const isOpen = state.planDetail?.plan.id === plan.id
+                      return (
+                        <button
+                          key={plan.id}
+                          role="tab"
+                          aria-selected={isOpen}
+                          className={isOpen ? 'segmented__item is-active' : 'segmented__item'}
+                          onClick={() => void openPlan(plan.id)}
+                          title={`${plan.title} — ${plan.kind}, ${plan.status}`}
+                        >
+                          <span className="tnum">{index + 1}</span>
+                          <span className="plan-tab__title">{plan.title}</span>
+                          {plan.status !== 'complete' ? (
+                            <span className="segmented__count">{plan.status}</span>
+                          ) : null}
+                        </button>
+                      )
+                    })}
+                </div>
 
                 {state.planDetail ? (
                   <PlanPanel
