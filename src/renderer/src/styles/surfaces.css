@@ -1745,3 +1745,10 @@
 .plan-list .list-item {
   cursor: pointer;
 }
+
+/* The bulk half of the disposition gate — visually the "sign once" row. */
+.ledger-dispose--bulk {
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+}

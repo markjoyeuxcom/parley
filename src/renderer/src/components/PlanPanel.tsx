@@ -18,7 +18,7 @@ import { shellMetacharsIn } from '@shared/command'
 import { executionRefusal } from '@shared/execution'
 import { useStore } from '../state'
 import { AgentPicker } from './AgentPicker'
-import { OccurrenceDispositionControl } from './FindingsLedgerPanel'
+import { BulkDispositionControl, OccurrenceDispositionControl } from './FindingsLedgerPanel'
 import { Chip, Dialog, Field, Label, Panel, Spinner } from './ui'
 import { RunActivity } from './RunActivity'
 import { PlanProgress } from './PlanProgress'
@@ -1166,6 +1166,9 @@ function ApprovalGateDialog({
             human decision. Each control below settles only the occurrence it names.
           </div>
           <div className="ledger-dispose-list">
+            {permission.unresolved.length > 1 ? (
+              <BulkDispositionControl unresolved={permission.unresolved} />
+            ) : null}
             {permission.unresolved.map(({ entry, occurrence }) => (
               <OccurrenceDispositionControl
                 key={occurrence.id}

@@ -216,6 +216,91 @@ export function FindingsLedgerPanel({
   )
 }
 
+/**
+ * One deliberate signature across every remaining blocking occurrence.
+ *
+ * Exists because a real plan's audit produced thirteen cards wanting the
+ * identical "resolved by the planned work" click. This is still a human act —
+ * one chosen state, one required note — and it writes one immutable
+ * disposition row per occurrence through the exact same call the single
+ * control uses; there is no new write path. Sequential on purpose: the loop
+ * stops at the first failure rather than half-applying silently, and says
+ * how far it got.
+ */
+export function BulkDispositionControl({
+  unresolved,
+}: {
+  unresolved: ReadonlyArray<{ entry: LedgerEntry; occurrence: FindingOccurrence }>
+}): ReactNode {
+  const { attempt, dispatch, notify } = useStore()
+  const [state, setState] = useState<FindingDisposition['state']>('resolved')
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const recordAll = async (): Promise<void> => {
+    const explanation = note.trim()
+    if (!explanation) return
+    setBusy(true)
+    let recorded = 0
+    for (const { entry, occurrence } of unresolved) {
+      const updated = await attempt(() =>
+        api.disposeLedgerFinding(entry.sessionId, entry.id, occurrence.id, state, explanation),
+      )
+      if (!updated) break
+      dispatch({ type: 'appEvent', event: { type: 'session.ledger', entry: updated } })
+      recorded += 1
+    }
+    setBusy(false)
+    if (recorded > 0) {
+      notify(
+        recorded === unresolved.length ? 'info' : 'warn',
+        `Recorded ${recorded} of ${unresolved.length} dispositions in the findings ledger.`,
+      )
+    }
+  }
+
+  return (
+    <div className="ledger-dispose ledger-dispose--bulk">
+      <div className="ledger-dispose__finding">
+        One decision for all {unresolved.length} remaining
+      </div>
+      <div className="ledger-dispose__meta">
+        Applies the chosen disposition, with this note, to every occurrence below — each still
+        gets its own row in the ledger. Mixed judgments belong in the per-occurrence controls.
+      </div>
+      <div className="ledger-dispose__controls">
+        <select
+          className="select"
+          aria-label="Bulk disposition"
+          value={state}
+          disabled={busy}
+          onChange={(event) => setState(event.target.value as FindingDisposition['state'])}
+        >
+          <option value="resolved">Resolved by the planned work</option>
+          <option value="dismissed">Dismissed with explanation</option>
+          <option value="accepted-risk">Accept the risk</option>
+        </select>
+        <textarea
+          className="textarea"
+          rows={2}
+          aria-label="Bulk disposition explanation"
+          placeholder="Why these no longer block approval…"
+          value={note}
+          disabled={busy}
+          onChange={(event) => setNote(event.target.value)}
+        />
+        <button
+          className="btn btn--sm"
+          disabled={busy || !note.trim()}
+          onClick={() => void recordAll()}
+        >
+          {busy ? 'Recording…' : `Record for all ${unresolved.length}`}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function OccurrenceDispositionControl({
   entry,
   occurrence,
