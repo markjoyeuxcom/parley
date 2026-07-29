@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parley — Operator's Manual</title>
+<style>
+  :root {
+    --bg: #f6f6f7;
+    --bg-raised: #ffffff;
+    --bg-inset: #eeeef0;
+    --text: #1d1d1f;
+    --text-2: #4b4b50;
+    --text-3: #7a7a80;
+    --line: rgba(0, 0, 0, 0.12);
+    --line-faint: rgba(0, 0, 0, 0.07);
+    --accent: #3b5bdb;
+    --accent-soft: rgba(59, 91, 219, 0.09);
+    --warn: #9a6700;
+    --warn-soft: rgba(154, 103, 0, 0.08);
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #191919;
+      --bg-raised: #212123;
+      --bg-inset: #141415;
+      --text: #ececee;
+      --text-2: #b3b3b8;
+      --text-3: #7d7d84;
+      --line: rgba(255, 255, 255, 0.14);
+      --line-faint: rgba(255, 255, 255, 0.07);
+      --accent: #7c96ff;
+      --accent-soft: rgba(124, 150, 255, 0.12);
+      --warn: #d9a439;
+      --warn-soft: rgba(217, 164, 57, 0.1);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    display: grid;
+    grid-template-columns: 248px minmax(0, 1fr);
+    max-width: 1100px;
+    margin: 0 auto;
+    gap: 48px;
+    padding: 0 32px;
+  }
+
+  /* ── Sidebar ─────────────────────────────────────────────── */
+  nav {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 40px 0 40px;
+    border-right: 1px solid var(--line-faint);
+    font-size: 12.5px;
+  }
+  nav .brand {
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    font-size: 13px;
+    margin-bottom: 2px;
+  }
+  nav .brand-sub {
+    color: var(--text-3);
+    font-size: 11.5px;
+    margin-bottom: 22px;
+  }
+  nav ol {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  nav li { margin: 0; }
+  nav a {
+    display: block;
+    color: var(--text-2);
+    text-decoration: none;
+    padding: 3.5px 10px 3.5px 0;
+    border-radius: 5px;
+    line-height: 1.4;
+  }
+  nav a:hover { color: var(--text); }
+  nav .g {
+    margin: 14px 0 4px;
+    color: var(--text-3);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* ── Content ─────────────────────────────────────────────── */
+  main {
+    padding: 48px 0 120px;
+    max-width: 720px;
+  }
+  header.title {
+    margin-bottom: 48px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--line);
+  }
+  header.title h1 {
+    font-size: 30px;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    margin: 0 0 10px;
+    font-weight: 700;
+  }
+  header.title p {
+    margin: 0;
+    color: var(--text-2);
+    font-size: 16px;
+    max-width: 56ch;
+  }
+  header.title .meta {
+    margin-top: 14px;
+    font-size: 12px;
+    color: var(--text-3);
+  }
+
+  h2 {
+    font-size: 21px;
+    letter-spacing: -0.015em;
+    margin: 56px 0 12px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line-faint);
+    font-weight: 650;
+  }
+  main > section:first-of-type h2 { border-top: none; padding-top: 0; }
+  h3 {
+    font-size: 15.5px;
+    margin: 28px 0 8px;
+    font-weight: 650;
+  }
+  p { margin: 0 0 12px; }
+  p, li { color: var(--text); }
+  b, strong { font-weight: 650; }
+  ul, ol { padding-left: 22px; margin: 0 0 12px; }
+  li { margin-bottom: 5px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .dim { color: var(--text-2); }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--bg-inset);
+    border: 1px solid var(--line-faint);
+    border-radius: 4px;
+    padding: 0.08em 0.35em;
+  }
+  pre {
+    background: var(--bg-inset);
+    border: 1px solid var(--line-faint);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.6;
+    margin: 0 0 14px;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: inherit; }
+
+  kbd {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 1.5px 6px;
+    white-space: nowrap;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    margin: 0 0 16px;
+    font-variant-numeric: tabular-nums;
+  }
+  th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-3);
+    font-weight: 600;
+    padding: 0 12px 7px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  td {
+    padding: 8px 12px 8px 0;
+    border-bottom: 1px solid var(--line-faint);
+    vertical-align: top;
+  }
+  td:first-child { white-space: nowrap; }
+
+  .callout {
+    border: 1px solid var(--line-faint);
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 0 0 14px;
+    font-size: 14px;
+  }
+  .callout.warn {
+    border-left-color: var(--warn);
+    background: var(--warn-soft);
+  }
+  .callout p:last-child { margin-bottom: 0; }
+
+  .flow {
+    color: var(--text-2);
+  }
+  .flow b { color: var(--text); }
+
+  .inv {
+    counter-reset: inv;
+    list-style: none;
+    padding: 0;
+  }
+  .inv li {
+    counter-increment: inv;
+    position: relative;
+    padding: 10px 0 10px 40px;
+    border-bottom: 1px solid var(--line-faint);
+    margin: 0;
+  }
+  .inv li::before {
+    content: counter(inv);
+    position: absolute;
+    left: 0;
+    top: 10px;
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-2);
+    background: var(--bg-raised);
+  }
+
+  footer {
+    margin-top: 72px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    font-size: 12.5px;
+    color: var(--text-3);
+  }
+
+  @media (max-width: 880px) {
+    .shell { grid-template-columns: 1fr; gap: 0; padding: 0 20px; }
+    nav {
+      position: static;
+      height: auto;
+      border-right: none;
+      border-bottom: 1px solid var(--line-faint);
+      padding: 28px 0 16px;
+    }
+    main { padding-top: 8px; }
+  }
+  @media print {
+    nav { display: none; }
+    .shell { display: block; }
+    body { font-size: 11pt; }
+    h2 { break-after: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+<nav>
+  <div class="brand">PARLEY</div>
+  <div class="brand-sub">Operator's Manual</div>
+  <ol>
+    <li class="g">Orientation</li>
+    <li><a href="#what">1 · What Parley is</a></li>
+    <li><a href="#first-run">2 · First run</a></li>
+    <li><a href="#surfaces">3 · The four surfaces</a></li>
+    <li class="g">Working</li>
+    <li><a href="#grid">4 · Grid</a></li>
+    <li><a href="#sessions">5 · Debates &amp; reviews</a></li>
+    <li><a href="#ledger">6 · Findings &amp; the gate</a></li>
+    <li><a href="#plans">7 · Audited execution</a></li>
+    <li><a href="#worktrees">8 · Worktrees &amp; landing</a></li>
+    <li><a href="#loops">9 · Loops</a></li>
+    <li class="g">Staying oriented</li>
+    <li><a href="#holds">10 · Holds</a></li>
+    <li><a href="#repos">11 · Repos</a></li>
+    <li><a href="#foreman">12 · The foreman</a></li>
+    <li><a href="#selfupdate">13 · Self-update</a></li>
+    <li class="g">Reference</li>
+    <li><a href="#shortcuts">14 · Keyboard shortcuts</a></li>
+    <li><a href="#mock">15 · Mock mode</a></li>
+    <li><a href="#troubleshooting">16 · Troubleshooting</a></li>
+    <li><a href="#data">17 · Where your data lives</a></li>
+    <li><a href="#invariants">A · The ten invariants</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<header class="title">
+  <h1>Parley<br>Operator's Manual</h1>
+  <p>A local-first macOS workbench for governed agent work. Parley drives
+  <b>Claude&nbsp;Code</b> and <b>Codex</b> through their own CLIs — against the
+  subscriptions you already pay for — and puts structure, verification and a
+  permanent record around what they do.</p>
+  <div class="meta">Covers the development build · July 2026 · See <code>README.md</code> for per-surface rationale and <code>AGENTS.md</code> for the engineering guide</div>
+</header>
+
+<section id="what">
+<h2>1 · What Parley is</h2>
+<p>Parley is a workbench, not a chatbot. It runs the two agent CLIs you already
+have — <code>claude</code> and <code>codex</code> — and arranges them into
+shapes that produce things you can trust: adversarial debates that end in a
+recorded verdict, codebase reviews where findings are cross-examined against
+the code, execution pipelines where every write sits behind your recorded
+approval and every diff is reviewed by the vendor that didn't write it, and
+autonomous loops with caps an agent cannot see or talk past.</p>
+<p>Three commitments run through everything:</p>
+<ul>
+  <li><b>Your subscriptions, never an API key.</b> Every model call goes through
+  your local CLI, signed in to your own account. Parley has no API-key code
+  path at all.</li>
+  <li><b>Everything on the record.</b> Sessions, verdicts, dissent, findings,
+  dispositions, approvals, run activity, landings — all of it lands in a local
+  SQLite database and none of it leaves your machine.</li>
+  <li><b>No agent certifies its own work.</b> Tests are run by Parley itself and
+  read by exit code; reviews come from the model family that didn't write the
+  diff; disagreement lowers recorded confidence instead of being smoothed
+  away.</li>
+</ul>
+</section>
+
+<section id="first-run">
+<h2>2 · First run</h2>
+<h3>Requirements</h3>
+<ul>
+  <li>macOS on Apple Silicon</li>
+  <li><b>Claude Code</b> and/or <b>Codex CLI</b>, installed and signed in</li>
+  <li>Node 24+ to build</li>
+</ul>
+<h3>Build and start</h3>
+<pre><code>npm install        # also rebuilds node-pty against Electron's ABI
+npm run dev        # the development app
+npm run package:mac  # a signed-runtime .dmg for Apple Silicon</code></pre>
+<p>The toolbar shows each CLI's health at startup, because "installed but not
+signed in" is the most common reason a session produces nothing. macOS starts
+GUI apps with a minimal PATH; Parley reads your login shell's PATH at launch so
+Homebrew and <code>npm&nbsp;-g</code> installs are found.</p>
+<h3>Try it without spending anything</h3>
+<pre><code>PARLEY_MOCK=1 npm run dev</code></pre>
+<p>Deterministic mock adapters stand in for both CLIs — every flow is walkable,
+no quota is spent, and the app makes the substitution unmissable
+(<a href="#mock">§15</a>).</p>
+</section>
+
+<section id="surfaces">
+<h2>3 · The four surfaces</h2>
+<table>
+  <tr><th>Surface</th><th>Keys</th><th>Reach for it when</th></tr>
+  <tr><td><b>Grid</b></td><td><kbd>⌘1</kbd></td>
+      <td>You're driving. Live terminals, real CLI sessions, no governance.</td></tr>
+  <tr><td><b>Parley</b></td><td><kbd>⌘2</kbd></td>
+      <td>A decision needs a debate, or a codebase needs findings you can act
+      on without re-verifying each one. Plans live here too.</td></tr>
+  <tr><td><b>Loops</b></td><td><kbd>⌘3</kbd></td>
+      <td>"Done" is machine-checkable and the work converges.</td></tr>
+  <tr><td><b>Repos</b></td><td><kbd>⌘4</kbd></td>
+      <td>You want the repository — its backlog, its plans across every
+      session, its foreman — answering for itself in one place.</td></tr>
+</table>
+<p><kbd>⌘K</kbd> opens the command palette from anywhere: jump between
+surfaces, start a debate or review directly. The titlebar's
+<b>Auto&nbsp;/&nbsp;Light&nbsp;/&nbsp;Dark</b> control cycles appearance, and
+the inbox icon beside it is the holds queue (<a href="#holds">§10</a>).</p>
+</section>
+
+<section id="grid">
+<h2>4 · Grid <span class="dim">⌘1</span></h2>
+<p>Up to sixteen live terminals in a splittable, resizable layout. A pane is a
+shell or a real interactive <code>claude</code> / <code>codex</code> session —
+the actual CLI with its own prompts and TUI, not a re-hosted imitation.</p>
+<ul>
+  <li><b>Panes are multi-folder.</b> Each keeps the folder it started in; a
+  split inherits its neighbour's; the toolbar only decides where the
+  <i>next</i> pane opens. Working across two repositories at once is the
+  normal case.</li>
+  <li><b>Skills</b> are reusable prompt packs on the rail along the bottom.
+  Drag one onto an agent pane and it is typed into that live session, with all
+  the context the session already has.</li>
+  <li><b>Saved layouts</b> restore the arrangement — pane kinds, split tree,
+  folders. Shells reopen immediately; agent panes come back as one-click
+  placeholders, so no CLI session starts against your subscription without you
+  asking.</li>
+</ul>
+<div class="callout warn">
+<p><b>The Grid is ungoverned.</b> A pane has the CLI's own permission prompts
+and none of Parley's — no single-use approval, no deterministic verification,
+no independent review. Right for small edits you're watching; wrong for a
+change you'll ship. Nothing here persists except scrollback and the
+layout.</p>
+</div>
+</section>
+
+<section id="sessions">
+<h2>5 · Debates &amp; reviews <span class="dim">⌘2</span></h2>
+<p>Sessions are read-only by invariant — they argue, audit and record; they
+never write. Two agents from different model families hold the seats by
+default, and a session can seat up to four participants.</p>
+
+<h3>Debate</h3>
+<p>Put a decision to both vendors: one stakes a position, the other attacks the
+load-bearing assumption, they refine under pressure, then converge. What makes
+it more than asking one model twice:</p>
+<ul>
+  <li><b>Neither side writes the verdict.</b> Both record verdicts
+  independently and Parley merges them — and <b>disagreement lowers the
+  recorded confidence</b>. Two advisors at 90% certainty who score the option
+  ten points apart have not produced a confident answer, and the report says
+  so.</li>
+  <li><b>Dissent is preserved verbatim.</b> The losing side's objection is the
+  most perishable output of an adversarial session, so it is stored and shown
+  in full.</li>
+  <li><b>You can interject mid-session</b> — address both sides, or
+  <b>whisper</b> to one. The other side never learns it happened, which is how
+  you test whether a position survives private pressure.</li>
+</ul>
+<p>A low confidence score is a success: it tells you the decision is genuinely
+contested, which is exactly what one model's self-agreement cannot.</p>
+
+<h3>Codebase review</h3>
+<p>One agent maps the architecture, the other audits independently, then they
+cross-examine each other's findings. A finding only reaches
+<b>confirmed</b> if the <i>other</i> agent corroborated it against the code,
+and a confirmed claim with no file-and-line evidence is downgraded
+automatically. Dismissed findings are kept — "investigated and cleared" is
+worth as much as a finding.</p>
+<div class="callout">
+<p><b>Scope the brief, or it goes shallow.</b> "Audit error handling in the
+sync layer" produces findings worth having; "review this repository" produces
+breadth without depth. Reviews are read-only and have no memory of previous
+reviews — recurring work belongs to the backlog
+(<a href="#repos">§11</a>).</p>
+</div>
+<p>Confirmed findings don't stop at the report: they file automatically onto
+the repository's backlog as open items, with provenance back to the
+session.</p>
+</section>
+
+<section id="ledger">
+<h2>6 · Findings &amp; the gate</h2>
+<p>Every blocking finding recorded against a plan — by its audit, its
+milestone reviews, or a review session — lands in the <b>findings ledger</b>
+and stays open until a human disposes of it: <i>resolved</i>,
+<i>accepted&nbsp;risk</i>, or <i>not&nbsp;a&nbsp;finding</i>, each with a
+note.</p>
+<p>The ledger is a gate, not a list. While blocking findings are open, the
+approval dialog refuses to arm — it shows the findings with inline disposition
+controls (and a bulk control for a batch), so clearing the gate and recording
+your reasoning are the same motion. Accepted risks are ingested to the backlog
+rather than forgotten.</p>
+<div class="callout">
+<p><b>Fail-closed is deliberate.</b> If the ledger cannot be loaded, the gate
+disables rather than un-gates. Unknown is treated as blocking, never as
+clear.</p>
+</div>
+</section>
+
+<section id="plans">
+<h2>7 · Audited execution</h2>
+<p>A verdict can become work, through a pipeline whose roles are deliberately
+split:</p>
+<pre class="flow">plan <b>(read-only)</b>
+  → audited by the other vendor <b>(read-only)</b>
+    → the planner answers that audit, and corrects the plan
+      → <b>your approval, single-use</b>
+        → execute one milestone <b>(write)</b>
+          → deterministic tests, run by Parley itself
+            → the diff reviewed by the vendor that did not write it
+              → rejection handed back to the executor, up to twice</pre>
+<ul>
+  <li><b>The planner answers its own audit.</b> Every audit finding gets a
+  disposition and the plan is corrected before you ever approve — otherwise
+  what executes is the original draft with an unread critique attached.</li>
+  <li><b>Agents may ask, once.</b> A brief with a genuine fork stops on a
+  question instead of guessing; your answer (<kbd>⌘↵</kbd>) resumes the
+  planner, which still holds its own draft.</li>
+  <li><b>Approval is per-milestone, recorded, and spent the moment the run
+  starts.</b> Re-running asks again. Before you spend anything, the dialog
+  runs a preflight — if the files a milestone would create already exist
+  (usually a prior interrupted attempt), it says so and offers
+  <b>Adopt&nbsp;&amp;&nbsp;verify</b> instead.</li>
+  <li><b>Completion needs both checks.</b> Green tests <i>and</i> a pass from
+  the independent reviewer. A rejection goes back to the executor inside the
+  same run — it receives a critique, not a restatement — bounded to two
+  rounds before the plan says a person is needed.</li>
+  <li><b>Adopt &amp; verify</b> records honestly: verification and independent
+  review, but the trail marks the milestone <i>adopted</i>, never implying
+  Parley authored code it merely inspected.</li>
+</ul>
+<h3>Interruptions are cheap</h3>
+<p>A crashed or stopped milestone keeps its run state — the remediation round,
+the reviewer's critique, both agents' resumable sessions, the exact baseline —
+and can be <b>resumed</b> with a fresh approval: the executor continues from a
+critique instead of re-executing, and finished work is verified rather than
+redone. A running milestone has a stop button. A run that goes silent surfaces
+as a stalled hold with a read-only cross-vendor inspection attached; nothing
+is ever aborted automatically.</p>
+<p>Five post-verdict workflows: implementation, validation, remediation,
+migration, research.</p>
+</section>
+
+<section id="worktrees">
+<h2>8 · Worktrees &amp; landing</h2>
+<p>Where the work lands is a choice made at plan creation:</p>
+<ul>
+  <li><b>In the checkout</b> — milestones write into your tree and are left
+  uncommitted for you. Simple, visible, immediate.</li>
+  <li><b>In a worktree</b> — every milestone executes in an isolated git
+  worktree on a per-plan branch. Parley commits each passing milestone there
+  (the agent still never commits), and your checkout is untouched until you
+  <b>land</b> the branch.</li>
+</ul>
+<p>Landing is <b>fast-forward only</b>, behind its own recorded single-use
+approval, and git itself refuses if your checkout moved or dirt would be
+overwritten — a refusal parks as a <i>merge-blocked</i> hold naming the
+branch, whose commits are the surviving copy of the work. After a successful
+landing, the last milestone's test command runs once in your checkout as a
+smoke check; a red result flags the landed plan in the holds queue.</p>
+<p>Worktrees live under the app's own support directory, are reconciled at
+startup, and are never deleted by reconciliation — a vanished directory is
+recovered from its surviving branch. If a worktree needs dependencies, give
+the plan a <b>setup command</b> (for example <code>npm ci</code>); it runs
+once when the worktree is created, shell-free like every command Parley
+spawns.</p>
+</section>
+
+<section id="loops">
+<h2>9 · Loops <span class="dim">⌘3</span></h2>
+<p>Autonomous runs that stop for reasons you can check.</p>
+<ul>
+  <li><b>Caps are enforced by Parley before each iteration</b> — iterations,
+  wall-clock, and reported spend. The agent cannot see them or talk past
+  them. Hitting one is reported as <i>exhausted</i>, never as success.</li>
+  <li><b>The exit condition is never self-reported.</b> Either Parley runs a
+  real command and reads its exit code, or the <i>other vendor's</i> model
+  inspects the repository.</li>
+  <li><b>A kill switch</b> aborts the in-flight CLI immediately.</li>
+</ul>
+<div class="callout warn">
+<p><b>A write-capable loop is a weaker guarantee than a milestone.</b> The
+pipeline requires green tests and an independent review; a loop requires only
+its exit condition — and a writing agent whose exit is the test suite can in
+principle reach green by weakening a test. Prefer read-only loops; for changes
+that matter, use the pipeline. On subscriptions the spend cap barely bites, so
+iterations and wall-clock do the real work.</p>
+</div>
+</section>
+
+<section id="holds">
+<h2>10 · Holds — what is waiting on you</h2>
+<p>Everything that blocks on a human decision queues in one place: a planner's
+question, a milestone ready to approve, an approval gated by open findings, a
+branch ready to land, a failed milestone, a stalled run, an exhausted loop, a
+backlog with proposals to triage, a foreman proposal, a verified fresh build
+of Parley itself.</p>
+<ul>
+  <li><b>The titlebar count is decisions only.</b> Notices sit inside the
+  panel without wearing on the badge.</li>
+  <li><b>Each hold notifies once, ever</b> — one macOS notification when it
+  first appears, never again, including across restarts.</li>
+  <li><b>Opening a hold lands you at its exact control</b> — a milestone hold
+  opens the approval dialog itself, a backlog hold opens the right repository
+  on the right tab.</li>
+  <li><b>Decision holds clear only by acting</b> — answering, approving,
+  landing. The app refuses to acknowledge them away: a dismissible "waiting on
+  your answer" clears the badge while the plan stays parked, which is the
+  silent stall the queue exists to kill. Notice holds carry no pending action,
+  so acknowledging them is the action.</li>
+</ul>
+<p>The queue is derived from the durable record, never stored beside it — it
+cannot drift, and it survives restarts. Park work, walk away, resolve the
+batch when you return.</p>
+</section>
+
+<section id="repos">
+<h2>11 · Repos — the repository is the unit <span class="dim">⌘4</span></h2>
+<p>Every repository Parley has ever worked appears in the sidebar with honest
+counts — plans needing attention, open backlog items, proposals waiting. Four
+tabs per repository:</p>
+
+<h3>Overview</h3>
+<p>The repository's plans in flight, the holds waiting on you for this repo
+(each opens its exact control), the foreman (<a href="#foreman">§12</a>), and
+a <b>New review</b> button that starts a codebase review pre-aimed here.</p>
+
+<h3>Backlog</h3>
+<p>The repository's durable worklist. Items arrive three ways: confirmed
+review findings file directly as <b>open</b>; accepted risks are ingested from
+dispositions; and <b>Stow</b> — a gated sweep you trigger on a session —
+files softer material as <b>proposed</b> items and candidate learnings for
+your triage. The lifecycle:</p>
+<pre class="flow">proposed ─ Confirm ─→ open ─ selected into a plan ─→ planned
+                       │                                │
+                       │                     plan completes / lands
+                       │                                ↓
+                       ├─ Close ──────────────→ closure proposed ─ Close ─→ done
+                       └─ Drop → dropped                └─ Reopen → open</pre>
+<ul>
+  <li><b>Confirm / Discard</b> triage proposals; <b>Blocked&nbsp;by…</b>
+  records ordering between items.</li>
+  <li><b>Close</b> on an open item records work that is already done —
+  verified by a foreman read, or done outside Parley — without the trail lying
+  that it was "dropped".</li>
+  <li>Completing a plan never closes items silently: it files <b>closure
+  proposals</b> you confirm or reopen. Closed and dropped items stay on the
+  record with their full trails; a recurrence files fresh rather than
+  reopening them.</li>
+</ul>
+
+<h3>Plans</h3>
+<p>Every plan for this repository across all sessions, in one table. A plan
+opens <b>in place</b> — the full record: milestones, run activity, verify
+output, reviews, and the same approval gates you'd have in the session view,
+reading from the same ledger. The origin-session link (<b>↗</b>) jumps to the
+session that produced it; both surfaces keep their place.</p>
+
+<h3>Learnings</h3>
+<p>Repository-specific knowledge distilled by stow and confirmed by you —
+conventions, gotchas, decisions. <b>Confirmed learnings ride every new plan's
+brief</b> for that repository, so the planner starts warned. Retire a learning
+to stop it riding; it is never deleted.</p>
+</section>
+
+<section id="foreman">
+<h2>12 · The foreman</h2>
+<p>The proposing role: one gated read of a repository's open backlog that
+files a plan proposal for you to decide. The foreman has proposal power
+only — it decides nothing, and backlog text is framed to it as records under
+review, never as instructions.</p>
+<p><b>Ask the foreman</b> (on the repository's Overview) dispatches one read.
+The attempt is recorded before dispatch, so a crash is a recorded failure,
+not a vanished spend. The proposal that comes back carries:</p>
+<ul>
+  <li>a title and rationale, and the <b>selected items</b> — validated against
+  the live backlog, resolved to live titles;</li>
+  <li><b>deferrals with reasons</b> — items it read and chose not to batch,
+  each with why (often: "already landed — close as verified");</li>
+  <li>a <b>staleness line</b> if the backlog moved after the read — "3 items
+  arrived after this proposal" — so you decide with eyes open;</li>
+  <li>a draft operator note, attributed to the foreman.</li>
+</ul>
+<p><b>Accept into a plan</b> opens the plan dialog prefilled — repository,
+items, isolation, note, anchor session. Creating that plan <i>is</i> the
+acceptance: the plan row, the items' flip to planned, and the accepted stamp
+are one transaction, so there is no moment where a plan runs while its
+proposal still reads pending. <b>Reject…</b> records the reason. A newer run
+supersedes the older proposal rather than erasing it; failed reads keep their
+spend and their reasoning — a read that honestly concludes "nothing to plan"
+shows its per-item verdict under the panel's idle line instead of dying in a
+toast.</p>
+</section>
+
+<section id="selfupdate">
+<h2>13 · Self-update <span class="dim">dev mode</span></h2>
+<p>When Parley runs from its own checkout (<code>npm run dev</code>), it knows
+which repository it is — and the loop closes on itself.</p>
+<ul>
+  <li><b>Plans on Parley's own repo are worktree-only.</b> The dialog greys
+  the in-checkout option, and the engine refuses it at creation and again at
+  execution. An agent writing into the live app's source under it is the one
+  uncontrolled case.</li>
+  <li><b>Landing runs the gate.</b> When such a plan lands, Parley
+  automatically runs its own <code>npm run verify</code> and then
+  <code>npm run build</code> on the result. The gate fails closed: any
+  anomaly — failing checks, a timeout, a quit mid-run — is a red row, never a
+  shrug. Red flags the landed plan through the ordinary
+  landed-but-verification-failed hold.</li>
+  <li><b>Green is an offer, not an act.</b> "A new Parley build is verified"
+  joins the holds queue with inline controls: <b>Relaunch</b> confirms the
+  costs — the app quits and restarts into the fresh build, running panes
+  close, the <code>npm run dev</code> terminal ends — then boots the version
+  Parley just built of itself. <b>Not&nbsp;now</b> records the decline. Every
+  attempt, outcome and decision is a durable row.</li>
+</ul>
+<div class="callout">
+<p><b>Two channels, deliberately distinct.</b> This loop upgrades the dev
+checkout — the factory. An installed Parley.app from a .dmg is a frozen
+snapshot: it stays on its old version until you run
+<code>npm run package:mac</code> and reinstall. Packaged-app self-update is a
+separate, much later project.</p>
+</div>
+</section>
+
+<section id="shortcuts">
+<h2>14 · Keyboard shortcuts</h2>
+<table>
+  <tr><th>Keys</th><th>Where</th><th>Action</th></tr>
+  <tr><td><kbd>⌘K</kbd></td><td>Everywhere</td><td>Command palette — jump surfaces, start a debate or review</td></tr>
+  <tr><td><kbd>⌘1</kbd></td><td>Everywhere</td><td>Grid</td></tr>
+  <tr><td><kbd>⌘2</kbd></td><td>Everywhere</td><td>Parley — debates, reviews, plans</td></tr>
+  <tr><td><kbd>⌘3</kbd></td><td>Everywhere</td><td>Loops</td></tr>
+  <tr><td><kbd>⌘4</kbd></td><td>Everywhere</td><td>Repos</td></tr>
+  <tr><td><kbd>⌘D</kbd></td><td>Grid</td><td>Split the focused pane right</td></tr>
+  <tr><td><kbd>⌘⇧D</kbd></td><td>Grid</td><td>Split the focused pane down</td></tr>
+  <tr><td><kbd>⌘W</kbd></td><td>Grid</td><td>Close the focused pane</td></tr>
+  <tr><td><kbd>⌘]</kbd></td><td>Grid</td><td>Cycle pane focus</td></tr>
+  <tr><td><kbd>⌘↵</kbd></td><td>Plan question</td><td>Send your answer — the planner resumes, holding its draft</td></tr>
+  <tr><td><kbd>Esc</kbd></td><td>Popovers &amp; dialogs</td><td>Close</td></tr>
+</table>
+</section>
+
+<section id="mock">
+<h2>15 · Mock mode</h2>
+<p><code>PARLEY_MOCK=1 npm run dev</code> replaces both CLIs with
+deterministic mock adapters: every flow is walkable, nothing consults a model,
+no quota is spent. Because mock output is structurally identical to real
+output, the substitution is made unmissable — a hazard-striped banner under
+the toolbar, a <code>mock</code> tag on every session, plan and loop, and a
+<b>NOT&nbsp;REAL&nbsp;WORK</b> header on exported reports.</p>
+<p>Two honest caveats. Mock mode is not quite read-only: a write-capable
+milestone writes one placeholder file, so the pipeline's tree checks stay
+exercisable. And mock plans never land — by invariant — so the
+landing-and-self-update leg cannot be walked in mock mode; integration tests
+cover it instead.</p>
+</section>
+
+<section id="troubleshooting">
+<h2>16 · Troubleshooting</h2>
+<h3>Terminals will not start</h3>
+<p><code>posix_spawnp failed</code> on every pane — including a plain shell —
+means node-pty's <code>spawn-helper</code> binary is missing or not
+executable. Parley detects this at startup and says so. The fix:</p>
+<pre><code>npm run rebuild</code></pre>
+<h3>The CLIs are reported missing but work in Terminal</h3>
+<p>macOS starts GUI apps with a minimal PATH. Parley reads your login shell's
+PATH at startup to correct this; if your PATH is set somewhere the login shell
+doesn't read, launching Parley from Terminal once inherits the right
+environment.</p>
+<h3>A milestone reports "the working tree is byte-for-byte unchanged"</h3>
+<p>The files it was meant to create already exist — usually left by an earlier
+attempt — and the executor declined to overwrite them. The approval dialog's
+preflight warns about exactly this before you spend anything, and offers
+<b>Adopt&nbsp;&amp;&nbsp;verify</b> instead.</p>
+<h3>The Electron binary is damaged</h3>
+<pre><code>npm run fix:electron</code></pre>
+</section>
+
+<section id="data">
+<h2>17 · Where your data lives</h2>
+<p>Nowhere else. Sessions, verdicts, findings, dispositions, approvals, plans,
+loops, backlog, learnings, saved layouts and the whole audit trail live in
+SQLite under the app's own support directory
+(<code>~/Library/Application&nbsp;Support/parley/</code>), with execution
+worktrees beside it. There is no sync, no telemetry, and no remote service.
+The renderer runs sandboxed with no Node access and a content-security policy
+that permits no remote origins; everything privileged crosses one validated
+IPC channel.</p>
+</section>
+
+<section id="invariants">
+<h2>A · The ten invariants</h2>
+<p class="dim">The commitments the product is built around — break any of
+these and it stops being what it is. Stated in full in
+<code>AGENTS.md</code>.</p>
+<ol class="inv">
+  <li><b>Subscription CLIs only.</b> Every model call goes through your local
+  <code>claude</code> or <code>codex</code>, signed in to your account. No
+  API-key path, ever.</li>
+  <li><b>No <code>--dangerously-*</code> flag, ever.</b> The capability ladder
+  is none → read → write, and there is no rung above it.</li>
+  <li><b>Read-only is the default.</b> Sessions never write. Only the audited
+  pipeline and an explicitly write-capable loop can, behind an approval.</li>
+  <li><b>Approval is recorded and single-use.</b> Starting the run spends it;
+  running again needs a fresh one.</li>
+  <li><b>No agent certifies its own work.</b> The reviewer is never the vendor
+  that wrote the diff; a loop's verifier is a different family from its
+  worker.</li>
+  <li><b>Exit conditions are observed, not self-reported.</b> A real command's
+  exit code, or the other vendor's inspection. "The agent said it was done" is
+  not a termination condition.</li>
+  <li><b>Caps are enforced by Parley, before dispatch.</b> Hitting one is
+  exhausted, never succeeded.</li>
+  <li><b>Everything stays local.</b> SQLite on your machine. No sync, no
+  telemetry, no remote anything.</li>
+  <li><b>Dissent is preserved.</b> Disagreement lowers recorded confidence and
+  the objection is stored verbatim.</li>
+  <li><b>macOS-native restraint.</b> Hairline rules, small radii, one accent,
+  tabular numerals, system type. No gradients, no decorative AI tropes.</li>
+</ol>
+</section>
+
+<footer>
+Parley · local-first, subscription-native, on the record ·
+<code>README.md</code> for rationale · <code>AGENTS.md</code> for engineering
+</footer>
+
+</main>
+</div>
+</body>
+</html>
