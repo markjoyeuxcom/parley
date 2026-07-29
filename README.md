@@ -346,6 +346,12 @@ record counts); selecting one opens four tabs:
 
 "All repositories" remains the cross-repo triage board.
 
+Repositories can be archived only when they have no work requiring attention.
+Archived repositories stay in the local record but leave the sidebar and the
+global backlog until **Show N archived** reveals them; opening one there exposes
+the Restore control. New repository activity revives the sidebar projection
+automatically, while holds remain visible regardless of archival state.
+
 ### The backlog
 
 Work worth doing accumulates in a per-repository backlog, filed by the record

@@ -113,6 +113,12 @@ interface State {
    * different statuses for the same plan.
    */
   plansVersion: number
+  /**
+   * Bumped when repository-scoped work is created or changes status. Repo
+   * summaries are a projection across sessions, plans, loops and backlog, so
+   * their sidebar needs a refetch signal that is broader than plansVersion.
+   */
+  repoActivityVersion: number
 }
 
 const initialState: State = {
@@ -146,6 +152,7 @@ const initialState: State = {
   focusRepoTab: null,
   activity: {},
   plansVersion: 0,
+  repoActivityVersion: 0,
 }
 
 type Action =
@@ -269,7 +276,11 @@ function reducer(state: State, action: Action): State {
 function applyEvent(state: State, event: AppEvent): State {
   switch (event.type) {
     case 'session.created':
-      return { ...state, sessions: [event.session, ...state.sessions] }
+      return {
+        ...state,
+        sessions: [event.session, ...state.sessions],
+        repoActivityVersion: state.repoActivityVersion + 1,
+      }
 
     case 'session.status': {
       const sessions = state.sessions.map((s) =>
@@ -293,10 +304,16 @@ function applyEvent(state: State, event: AppEvent): State {
           ...state,
           sessions,
           sessionDetail: detail,
+          repoActivityVersion: state.repoActivityVersion + 1,
           notices: [...state.notices, failure].slice(-4),
         }
       }
-      return { ...state, sessions, sessionDetail: detail }
+      return {
+        ...state,
+        sessions,
+        sessionDetail: detail,
+        repoActivityVersion: state.repoActivityVersion + 1,
+      }
     }
 
     case 'session.turn.started':
@@ -359,9 +376,14 @@ function applyEvent(state: State, event: AppEvent): State {
         ? {
             ...state,
             plansVersion: state.plansVersion + 1,
+            repoActivityVersion: state.repoActivityVersion + 1,
             sessionDetail: { ...state.sessionDetail, plans: [event.plan, ...state.sessionDetail.plans] },
           }
-        : { ...state, plansVersion: state.plansVersion + 1 }
+        : {
+            ...state,
+            plansVersion: state.plansVersion + 1,
+            repoActivityVersion: state.repoActivityVersion + 1,
+          }
 
     // The full row replaces the loaded copies — the planner writes the real
     // title mid-draft, and a list hydrated at creation would otherwise show
@@ -378,7 +400,13 @@ function applyEvent(state: State, event: AppEvent): State {
         state.planDetail?.plan.id === event.plan.id
           ? { ...state.planDetail, plan: event.plan }
           : state.planDetail
-      return { ...state, sessionDetail, planDetail, plansVersion: state.plansVersion + 1 }
+      return {
+        ...state,
+        sessionDetail,
+        planDetail,
+        plansVersion: state.plansVersion + 1,
+        repoActivityVersion: state.repoActivityVersion + 1,
+      }
     }
 
     case 'plan.status': {
@@ -403,14 +431,16 @@ function applyEvent(state: State, event: AppEvent): State {
         : state.sessionDetail
 
       const plansVersion = state.plansVersion + 1
+      const repoActivityVersion = state.repoActivityVersion + 1
       if (state.planDetail?.plan.id !== event.planId) {
-        return { ...state, activity, sessionDetail, plansVersion }
+        return { ...state, activity, sessionDetail, plansVersion, repoActivityVersion }
       }
       return {
         ...state,
         activity,
         sessionDetail,
         plansVersion,
+        repoActivityVersion,
         planDetail: { ...state.planDetail, plan: { ...state.planDetail.plan, status: event.status } },
       }
     }
@@ -460,7 +490,11 @@ function applyEvent(state: State, event: AppEvent): State {
       }
 
     case 'loop.created':
-      return { ...state, loops: [event.loop, ...state.loops] }
+      return {
+        ...state,
+        loops: [event.loop, ...state.loops],
+        repoActivityVersion: state.repoActivityVersion + 1,
+      }
 
     case 'loop.status': {
       const loops = state.loops.map((l) =>
@@ -479,7 +513,12 @@ function applyEvent(state: State, event: AppEvent): State {
               },
             }
           : state.loopDetail
-      return { ...state, loops, loopDetail: detail }
+      return {
+        ...state,
+        loops,
+        loopDetail: detail,
+        repoActivityVersion: state.repoActivityVersion + 1,
+      }
     }
 
     case 'loop.iteration.started':
@@ -528,6 +567,9 @@ function applyEvent(state: State, event: AppEvent): State {
       const holds = applyHoldsEvent(state.holds, event)
       return holds === state.holds ? state : { ...state, holds }
     }
+
+    case 'backlog.changed':
+      return { ...state, repoActivityVersion: state.repoActivityVersion + 1 }
 
     default:
       return state

@@ -446,7 +446,7 @@ proposing role and nothing more. The boundary is structural:
   selecting min(2, n) so it stays deterministic at any backlog size.
   `FOREMAN_UNREADABLE` in the cwd exercises the parse-failure path.
 
-## The Repos surface: three renderer rules
+## The Repos surface: four renderer rules
 
 The Repos surface (⌘4; the surface id stays `'backlog'` — only the face
 changed) hosts the same `PlanPanel` the session view mounts, which makes
@@ -474,6 +474,13 @@ three rules load-bearing:
   The sidebar and empty states key off `repos.list` summaries — the union
   of plan, backlog and learning repos — never the backlog-derived memo,
   or a plans-only repository dead-ends.
+- **Archive is a reveal filter, not deletion or silence.** The sidebar mirrors
+  sessions with `Show N archived` / `Hide archived`; its Archive/Restore control
+  delegates every refusal to main and displays that refusal verbatim. A loaded
+  empty summary result clears a departed selection (`summariesLoaded`, never
+  `summaries.length`), and `repoActivityVersion` refetches the projection after
+  session, plan, loop or backlog activity. The global backlog and learnings
+  exclude archived repos, but named-repo views and holds remain unfiltered.
 
 ## Worktree isolation: the checkout is never touched mid-run
 

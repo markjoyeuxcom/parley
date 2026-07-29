@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { BookOpen, FolderGit2, HardHat, Link2 } from 'lucide-react'
+import { Archive, ArchiveRestore, BookOpen, FolderGit2, HardHat, Link2 } from 'lucide-react'
 import type {
   AgentConfig,
   BacklogItem,
@@ -64,6 +64,17 @@ export function BacklogSurface(): ReactNode {
     session: Session
   } | null>(null)
   const [summaries, setSummaries] = useState<RepoSummary[]>([])
+  const [archivedCount, setArchivedCount] = useState(0)
+  const [showArchivedRepos, setShowArchivedRepos] = useState(false)
+  const [summariesLoaded, setSummariesLoaded] = useState(false)
+  const [repoItems, setRepoItems] = useState<{
+    repoPath: string
+    rows: BacklogItem[]
+  } | null>(null)
+  const [repoLearnings, setRepoLearnings] = useState<{
+    repoPath: string
+    rows: Learning[]
+  } | null>(null)
   const [showReview, setShowReview] = useState(false)
 
   // The holds queue's knock: a repo-scoped hold opened this surface on a
@@ -71,6 +82,8 @@ export function BacklogSurface(): ReactNode {
   // Consume and clear, same contract as focusMilestoneId.
   useEffect(() => {
     if (state.focusBacklogRepo === null) return
+    setSummariesLoaded(false)
+    setShowArchivedRepos(true)
     setRepo(state.focusBacklogRepo)
     setActiveTab(state.focusRepoTab ?? 'overview')
     dispatch({ type: 'focusBacklogRepo', repoPath: null })
@@ -97,13 +110,44 @@ export function BacklogSurface(): ReactNode {
     void attempt(() => api.listForemanProposals()).then((all) => {
       if (all && !cancelled) setProposals(all)
     })
-    void attempt(() => api.listRepoSummaries()).then((result) => {
-      if (result && !cancelled) setSummaries(result.repos)
-    })
     return () => {
       cancelled = true
     }
   }, [attempt, state.backlogItems, state.surface, repo, state.plansVersion])
+
+  useEffect(() => {
+    if (state.surface !== 'backlog') return
+    let cancelled = false
+    void attempt(() => api.listRepoSummaries(showArchivedRepos)).then((result) => {
+      if (!result || cancelled) return
+      setSummaries(result.repos)
+      setArchivedCount(result.archivedCount)
+      setSummariesLoaded(true)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [attempt, showArchivedRepos, state.repoActivityVersion, state.surface])
+
+  useEffect(() => {
+    if (state.surface !== 'backlog' || repo === null) {
+      setRepoItems(null)
+      setRepoLearnings(null)
+      return
+    }
+    let cancelled = false
+    void Promise.all([
+      attempt(() => api.listBacklogItems(repo)),
+      attempt(() => api.listLearnings(repo)),
+    ]).then(([items, learnings]) => {
+      if (cancelled) return
+      if (items) setRepoItems({ repoPath: repo, rows: items })
+      if (learnings) setRepoLearnings({ repoPath: repo, rows: learnings })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [attempt, repo, state.repoActivityVersion, state.surface])
 
   // Supersede racing the open dialog: if the proposal being accepted stops
   // being the pending one — a newer run replaced it, or it was decided
@@ -126,22 +170,33 @@ export function BacklogSurface(): ReactNode {
   const repos = useMemo(() => summaries.map((s) => s.repoPath), [summaries])
   const summaryFor = (path: string): RepoSummary | undefined =>
     summaries.find((s) => s.repoPath === path)
+  const selectedSummary = repo ? summaryFor(repo) : undefined
 
   // A selected repo that lost its last row falls back to the all-repos view
   // rather than filtering forever on nothing. Guarded on the summaries
   // having ARRIVED — bouncing the holds-jump selection before the first
   // fetch resolves would eat the knock.
   useEffect(() => {
-    if (repo !== null && summaries.length > 0 && !repos.includes(repo)) setRepo(null)
-  }, [repo, repos, summaries.length])
+    if (repo !== null && summariesLoaded && !repos.includes(repo)) setRepo(null)
+  }, [repo, repos, summariesLoaded])
 
   const items = useMemo(
-    () => (repo ? state.backlogItems.filter((i) => i.repoPath === repo) : state.backlogItems),
-    [repo, state.backlogItems],
+    () =>
+      repo
+        ? (repoItems?.repoPath === repo
+            ? repoItems.rows
+            : state.backlogItems.filter((i) => i.repoPath === repo))
+        : state.backlogItems,
+    [repo, repoItems, state.backlogItems],
   )
   const learnings = useMemo(
-    () => (repo ? state.learnings.filter((l) => l.repoPath === repo) : state.learnings),
-    [repo, state.learnings],
+    () =>
+      repo
+        ? (repoLearnings?.repoPath === repo
+            ? repoLearnings.rows
+            : state.learnings.filter((l) => l.repoPath === repo))
+        : state.learnings,
+    [repo, repoLearnings, state.learnings],
   )
   const planById = useMemo(() => new Map(plans.map((p) => [p.id, p])), [plans])
 
@@ -161,6 +216,27 @@ export function BacklogSurface(): ReactNode {
     setForemanBusy(true)
     await attempt(() => api.runForeman(repo, cfg))
     setForemanBusy(false)
+  }
+
+  const archiveRepo = async (summary: RepoSummary): Promise<void> => {
+    const archived = !summary.archived
+    const done = await attempt(() => api.archiveRepo(summary.repoPath, archived))
+    if (!done) return
+    setSummariesLoaded(false)
+    const result = await attempt(() => api.listRepoSummaries(showArchivedRepos))
+    if (!result) return
+    setSummaries(result.repos)
+    setArchivedCount(result.archivedCount)
+    setSummariesLoaded(true)
+    notify(
+      'info',
+      archived ? 'Archived. Nothing was deleted — restore it any time.' : 'Restored.',
+    )
+  }
+
+  const toggleArchivedRepos = (): void => {
+    setSummariesLoaded(false)
+    setShowArchivedRepos((shown) => !shown)
   }
 
   const acceptProposal = async (proposal: ForemanProposal): Promise<void> => {
@@ -226,6 +302,7 @@ export function BacklogSurface(): ReactNode {
                       <Chip tone="chip--fail">{summary.attentionPlans} plan{summary.attentionPlans === 1 ? '' : 's'} waiting</Chip>
                     ) : null}
                     {summary.hasPendingProposal ? <Chip tone="chip--accent">proposal</Chip> : null}
+                    {summary.archived ? <Chip>archived</Chip> : null}
                     {summary.pendingTriage > 0 ? (
                       <Chip tone="chip--accent">{summary.pendingTriage} to review</Chip>
                     ) : null}
@@ -239,6 +316,14 @@ export function BacklogSurface(): ReactNode {
             </div>
           )}
         </div>
+        {archivedCount > 0 ? (
+          <button
+            className="sidebar__footer-btn"
+            onClick={toggleArchivedRepos}
+          >
+            {showArchivedRepos ? 'Hide archived' : `Show ${archivedCount} archived`}
+          </button>
+        ) : null}
       </aside>
 
       <main className="main">
@@ -286,6 +371,20 @@ export function BacklogSurface(): ReactNode {
                       {shortPath(repo)}
                     </span>
                     <span className="spacer" />
+                    {selectedSummary ? (
+                      <button
+                        className="btn btn--subtle btn--sm"
+                        onClick={() => void archiveRepo(selectedSummary)}
+                        aria-label={selectedSummary.archived ? 'Restore repository' : 'Archive repository'}
+                      >
+                        {selectedSummary.archived ? (
+                          <ArchiveRestore size={12} strokeWidth={2} />
+                        ) : (
+                          <Archive size={12} strokeWidth={2} />
+                        )}
+                        {selectedSummary.archived ? 'Restore' : 'Archive'}
+                      </button>
+                    ) : null}
                     <button className="btn btn--sm" onClick={() => setShowReview(true)}>
                       New review
                     </button>

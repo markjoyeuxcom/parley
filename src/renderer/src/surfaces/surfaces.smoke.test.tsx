@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import type {
   BacklogItem,
   ForemanProposal,
+  Learning,
   Milestone,
   Session,
   Turn,
@@ -11,6 +12,7 @@ import type {
   Verdict,
   WorkPlan,
 } from '@shared/domain'
+import type { AppEvent } from '@shared/events'
 import {
   toInvokeResult,
   unwrapInvokeResult,
@@ -296,6 +298,8 @@ const newerLedgerEntry: LedgerEntry = {
  * attempt() guards tolerate — but list the ones under test explicitly so a
  * renamed command fails loudly here rather than passing vacuously.
  */
+let appEventListener: ((event: AppEvent) => void) | null = null
+
 function installBridge(
   overrides: Partial<Record<CommandName, (payload?: unknown) => unknown>> = {},
   failures: Partial<Record<CommandName, string>> = {},
@@ -368,14 +372,22 @@ function installBridge(
           : { ok: false, error: failure }
       return unwrapInvokeResult(result)
     },
-    onEvent: () => () => {},
+    onEvent: (listener) => {
+      appEventListener = listener
+      return () => {
+        if (appEventListener === listener) appEventListener = null
+      }
+    },
     onPtyData: () => () => {},
     platform: 'darwin',
   }
 }
 
 beforeEach(() => installBridge())
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  appEventListener = null
+})
 
 async function assertLedgerGateActionsDisabled(invoked: CommandName[]): Promise<void> {
   const buttons = [
@@ -443,6 +455,200 @@ describe('mounted-surface smoke', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: /Learnings/ }))
     expect(screen.queryByText('Closure proposed')).toBeNull()
+  })
+
+  it('archives, hides, reveals and restores a repository from the mounted sidebar', async () => {
+    const archiveCalls: Array<{ repoPath: string; archived: boolean }> = []
+    let archived = false
+    installBridge({
+      'repos.list': (payload) => {
+        const includeArchived = (payload as { includeArchived: boolean }).includeArchived
+        return {
+          repos:
+            archived && !includeArchived
+              ? []
+              : [
+                  {
+                    repoPath: '/tmp/smoke-repo',
+                    archived,
+                    planCount: 1,
+                    attentionPlans: 0,
+                    openItems: 1,
+                    pendingTriage: 0,
+                    hasPendingProposal: false,
+                  },
+                ],
+          archivedCount: archived ? 1 : 0,
+        }
+      },
+      'repos.archive': (payload) => {
+        const request = payload as { repoPath: string; archived: boolean }
+        archiveCalls.push(request)
+        archived = request.archived
+        return { ok: true }
+      },
+    })
+    render(
+      <StoreProvider>
+        <OnSurface surface="backlog">
+          <BacklogSurface />
+        </OnSurface>
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByTitle('/tmp/smoke-repo'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Archive repository' }))
+
+    await screen.findByRole('button', { name: 'Show 1 archived' })
+    await waitFor(() => {
+      expect(screen.queryByTitle('/tmp/smoke-repo')).toBeNull()
+      expect(screen.queryByRole('tab', { name: /Overview/ })).toBeNull()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show 1 archived' }))
+    fireEvent.click(await screen.findByTitle('/tmp/smoke-repo'))
+    await screen.findByText('archived')
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore repository' }))
+
+    await waitFor(() => {
+      expect(screen.queryByText('archived')).toBeNull()
+    })
+    expect(archiveCalls).toEqual([
+      { repoPath: '/tmp/smoke-repo', archived: true },
+      { repoPath: '/tmp/smoke-repo', archived: false },
+    ])
+  })
+
+  it("never renders one repository's cached actions under another repository", async () => {
+    const repoB = '/tmp/smoke-repo-b'
+    const scopedItem = { ...openItem, title: 'Repo A scoped action' }
+    const scopedLearning: Learning = {
+      id: 'learning-smoke-a',
+      repoPath: openItem.repoPath,
+      text: 'Repo A scoped learning',
+      state: 'confirmed',
+      source: 'manual',
+      originSessionId: null,
+      mock: true,
+      createdAt: 1_700_000_000_000,
+    }
+    installBridge({
+      'backlog.list': (payload) => {
+        const repoPath = (payload as { repoPath?: string }).repoPath
+        if (repoPath === repoB) throw new Error('Repo B backlog unavailable.')
+        return repoPath === openItem.repoPath ? [scopedItem] : []
+      },
+      'learnings.list': (payload) => {
+        const repoPath = (payload as { repoPath?: string }).repoPath
+        if (repoPath === repoB) throw new Error('Repo B learnings unavailable.')
+        return repoPath === openItem.repoPath ? [scopedLearning] : []
+      },
+      'repos.list': () => ({
+        repos: [
+          {
+            repoPath: openItem.repoPath,
+            archived: false,
+            planCount: 1,
+            attentionPlans: 0,
+            openItems: 1,
+            pendingTriage: 0,
+            hasPendingProposal: false,
+          },
+          {
+            repoPath: repoB,
+            archived: false,
+            planCount: 0,
+            attentionPlans: 0,
+            openItems: 0,
+            pendingTriage: 0,
+            hasPendingProposal: false,
+          },
+        ],
+        archivedCount: 0,
+      }),
+    })
+    render(
+      <StoreProvider>
+        <OnSurface surface="backlog">
+          <BacklogSurface />
+        </OnSurface>
+        <Notices />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByTitle(openItem.repoPath))
+    fireEvent.click(screen.getByRole('tab', { name: /Backlog/ }))
+    await screen.findByText(scopedItem.title)
+    fireEvent.click(screen.getByRole('tab', { name: /Learnings/ }))
+    await screen.findByText(scopedLearning.text)
+
+    fireEvent.click(await screen.findByTitle(repoB))
+    fireEvent.click(screen.getByRole('tab', { name: /Backlog/ }))
+    await screen.findByText('Repo B backlog unavailable.')
+    expect(screen.queryByText(scopedItem.title)).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: /Learnings/ }))
+    await screen.findByText('Repo B learnings unavailable.')
+    expect(screen.queryByText(scopedLearning.text)).toBeNull()
+  })
+
+  it("surfaces a repository archive refusal verbatim", async () => {
+    installBridge({}, { 'repos.archive': 'Repository has a running milestone.' })
+    render(
+      <StoreProvider>
+        <OnSurface surface="backlog">
+          <BacklogSurface />
+        </OnSurface>
+        <Notices />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByTitle('/tmp/smoke-repo'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Archive repository' }))
+
+    await screen.findByText('Repository has a running milestone.')
+  })
+
+  it('refetches repository summaries after each repository activity family changes', async () => {
+    let summaryReads = 0
+    installBridge({
+      'repos.list': () => {
+        summaryReads += 1
+        return {
+          repos: [
+            {
+              repoPath: '/tmp/smoke-repo',
+              archived: false,
+              planCount: 1,
+              attentionPlans: 0,
+              openItems: 1,
+              pendingTriage: 0,
+              hasPendingProposal: false,
+            },
+          ],
+          archivedCount: 0,
+        }
+      },
+    })
+    render(
+      <StoreProvider>
+        <OnSurface surface="backlog">
+          <BacklogSurface />
+        </OnSurface>
+      </StoreProvider>,
+    )
+    await screen.findByTitle('/tmp/smoke-repo')
+
+    const events: AppEvent[] = [
+      { type: 'session.status', sessionId: session.id, status: 'complete' },
+      { type: 'plan.status', planId: smokePlan.id, status: 'ready' },
+      { type: 'loop.status', loopId: 'loop-smoke', status: 'succeeded' },
+      { type: 'backlog.changed', repoPath: '/tmp/smoke-repo' },
+    ]
+    for (const event of events) {
+      const before = summaryReads
+      act(() => appEventListener?.(event))
+      await waitFor(() => expect(summaryReads).toBeGreaterThan(before))
+    }
   })
 
   it('a plan opens in place on the Plans tab, and the gate fails closed', async () => {
