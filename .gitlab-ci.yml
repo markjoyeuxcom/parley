@@ -10,6 +10,13 @@ stages:
 - secret-detection
 sast:
   stage: test
+verify:
+  stage: test
+  image: node:24-bookworm
+  script:
+  - npm ci --ignore-scripts
+  - npm run verify
+  allow_failure: false
 include:
 - template: Security/SAST.gitlab-ci.yml
 - template: Security/Secret-Detection.gitlab-ci.yml
