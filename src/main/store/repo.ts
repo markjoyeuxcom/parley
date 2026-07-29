@@ -132,6 +132,55 @@ export interface Reconciliation {
 export class Repo {
   constructor(private readonly db: Db) {}
 
+  // ─── Repository activity and archives ─────────────────────────────────────
+
+  /**
+   * Appends one repository activity watermark. Deliberately a bare statement:
+   * callers own the transaction that pairs it with the write being recorded.
+   */
+  noteRepoActivity(path: string): void {
+    this.db.run(
+      `INSERT INTO repo_activity (seq, repo_path)
+       VALUES ((SELECT COALESCE(MAX(seq), 0) + 1 FROM repo_activity), ?)`,
+      canonicalRepoPath(path),
+    )
+  }
+
+  repoActivitySeq(path: string): number {
+    const row = this.db.get(
+      `SELECT COALESCE(MAX(seq), 0) AS seq FROM repo_activity WHERE repo_path = ?`,
+      canonicalRepoPath(path),
+    )
+    return num(row?.['seq'])
+  }
+
+  archiveRepo(path: string): void {
+    const repoPath = canonicalRepoPath(path)
+    this.db.transaction(() => {
+      const seq = this.repoActivitySeq(path)
+      this.db.run(
+        `INSERT INTO repo_archives (repo_path, archived_seq) VALUES (?, ?)
+         ON CONFLICT(repo_path) DO UPDATE SET archived_seq = excluded.archived_seq`,
+        repoPath,
+        seq,
+      )
+    })
+  }
+
+  restoreRepo(path: string): void {
+    this.noteRepoActivity(path)
+  }
+
+  archivedRepoPaths(): string[] {
+    return this.db
+      .all<{ repoPath: string; archivedSeq: number }>(
+        `SELECT repo_path AS repoPath, archived_seq AS archivedSeq
+         FROM repo_archives ORDER BY repo_path ASC`,
+      )
+      .filter((archive) => archive.archivedSeq >= this.repoActivitySeq(archive.repoPath))
+      .map((archive) => archive.repoPath)
+  }
+
   // ─── Crash recovery ────────────────────────────────────────────────────────
 
   /**
@@ -153,6 +202,19 @@ export class Repo {
     const now = Date.now()
 
     return this.db.transaction(() => {
+      const sessionRepos = this.db
+        .all(`SELECT repo_path FROM sessions WHERE status IN ('running', 'paused', 'stopping')`)
+        .map((row) => nullableStr(row['repo_path']))
+        .filter((path): path is string => path !== null)
+      const loopRepos = this.db
+        .all(`SELECT repo_path FROM loops WHERE status IN ('running', 'paused')`)
+        .map((row) => str(row['repo_path']))
+      const planRepos = this.db
+        .all(
+          `SELECT repo_path FROM plans
+           WHERE status IN ('drafting', 'auditing', 'correcting', 'running')`,
+        )
+        .map((row) => str(row['repo_path']))
       const sessions = this.db.run(
         `UPDATE sessions SET status = 'failed', error = ?, ended_at = ?
          WHERE status IN ('running', 'paused', 'stopping')`,
@@ -217,6 +279,9 @@ export class Repo {
         reason,
       ).changes
 
+      for (const repoPath of [...sessionRepos, ...loopRepos, ...planRepos]) {
+        this.noteRepoActivity(repoPath)
+      }
       return { sessions, loops, plans, milestones }
     })
   }
@@ -233,22 +298,25 @@ export class Repo {
       error: null,
       archivedAt: null,
     }
-    this.db.run(
-      `INSERT INTO sessions (id, kind, status, matter, project, repo_path, participants, max_turns, usage, mock, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      session.id,
-      session.kind,
-      session.status,
-      session.matter,
-      session.project,
-      session.repoPath,
-      json(session.participants),
-      session.maxTurns,
-      json(session.usage),
-      session.mock ? 1 : 0,
-      session.createdAt,
-    )
-    return session
+    return this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO sessions (id, kind, status, matter, project, repo_path, participants, max_turns, usage, mock, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        session.id,
+        session.kind,
+        session.status,
+        session.matter,
+        session.project,
+        session.repoPath,
+        json(session.participants),
+        session.maxTurns,
+        json(session.usage),
+        session.mock ? 1 : 0,
+        session.createdAt,
+      )
+      if (session.repoPath) this.noteRepoActivity(session.repoPath)
+      return session
+    })
   }
 
   private toSession(row: Row): Session {
@@ -306,14 +374,18 @@ export class Repo {
    * change is a timestamp, and nothing that references the session is touched.
    */
   setSessionArchived(id: Id, archived: boolean): Session {
-    this.db.run(
-      `UPDATE sessions SET archived_at = ? WHERE id = ?`,
-      archived ? Date.now() : null,
-      id,
-    )
-    const session = this.getSession(id)
-    if (!session) throw new Error('no such session')
-    return session
+    return this.db.transaction(() => {
+      const session = this.getSession(id)
+      if (!session) throw new Error('no such session')
+      const archivedAt = archived ? Date.now() : null
+      this.db.run(
+        `UPDATE sessions SET archived_at = ? WHERE id = ?`,
+        archivedAt,
+        id,
+      )
+      if (session.repoPath) this.noteRepoActivity(session.repoPath)
+      return { ...session, archivedAt }
+    })
   }
 
   /** Everything that would go with this session, for the confirmation dialog. */
@@ -389,10 +461,14 @@ export class Repo {
    */
   deleteSession(id: Id): void {
     this.db.transaction(() => {
-      for (const plan of this.db.all(`SELECT id FROM plans WHERE session_id = ?`, id)) {
+      const sessionRepoPath = nullableStr(
+        this.db.get(`SELECT repo_path FROM sessions WHERE id = ?`, id)?.['repo_path'],
+      )
+      for (const plan of this.db.all(`SELECT id, repo_path FROM plans WHERE session_id = ?`, id)) {
         const planId = str(plan['id'])
         this.db.run(`DELETE FROM milestones WHERE plan_id = ?`, planId)
         this.db.run(`DELETE FROM plans WHERE id = ?`, planId)
+        this.noteRepoActivity(str(plan['repo_path']))
       }
 
       // Deliberately not deleted: consumed approvals. Each records that a write
@@ -414,25 +490,35 @@ export class Repo {
       this.db.run(`DELETE FROM agent_threads WHERE session_id = ?`, id)
       // turns, interjections, verdicts and findings go with this by cascade.
       this.db.run(`DELETE FROM sessions WHERE id = ?`, id)
+      if (sessionRepoPath) this.noteRepoActivity(sessionRepoPath)
     })
   }
 
   setSessionStatus(id: Id, status: SessionStatus, error?: string | null): void {
-    const terminal = status === 'complete' || status === 'failed' || status === 'cancelled'
-    this.db.run(
-      `UPDATE sessions SET status = ?, error = ?, ended_at = ? WHERE id = ?`,
-      status,
-      error ?? null,
-      terminal ? Date.now() : null,
-      id,
-    )
+    this.db.transaction(() => {
+      const row = this.db.get(`SELECT repo_path FROM sessions WHERE id = ?`, id)
+      const terminal = status === 'complete' || status === 'failed' || status === 'cancelled'
+      const changes = this.db.run(
+        `UPDATE sessions SET status = ?, error = ?, ended_at = ? WHERE id = ?`,
+        status,
+        error ?? null,
+        terminal ? Date.now() : null,
+        id,
+      ).changes
+      const repoPath = nullableStr(row?.['repo_path'])
+      if (changes === 1 && repoPath) this.noteRepoActivity(repoPath)
+    })
   }
 
   addSessionUsage(id: Id, delta: Usage): Usage {
-    const row = this.db.get(`SELECT usage FROM sessions WHERE id = ?`, id)
-    const total = addUsage(parseJson<Usage>(row?.['usage'], emptyUsage()), delta)
-    this.db.run(`UPDATE sessions SET usage = ? WHERE id = ?`, json(total), id)
-    return total
+    return this.db.transaction(() => {
+      const row = this.db.get(`SELECT usage, repo_path FROM sessions WHERE id = ?`, id)
+      const total = addUsage(parseJson<Usage>(row?.['usage'], emptyUsage()), delta)
+      const changes = this.db.run(`UPDATE sessions SET usage = ? WHERE id = ?`, json(total), id).changes
+      const repoPath = nullableStr(row?.['repo_path'])
+      if (changes === 1 && repoPath) this.noteRepoActivity(repoPath)
+      return total
+    })
   }
 
   // ─── Turns ─────────────────────────────────────────────────────────────────
@@ -1173,6 +1259,7 @@ export class Repo {
         item.createdAt,
         item.updatedAt,
       )
+      this.noteRepoActivity(item.repoPath)
       this.appendBacklogEvent(item.id, state, input.note ?? `Filed (${input.source}).`, eventSource)
       return { item, resighted: false }
     })
@@ -1236,6 +1323,7 @@ export class Repo {
       now,
       id,
     )
+    this.noteRepoActivity(item.repoPath)
     this.appendBacklogEvent(id, to, opts.note ?? '', opts.source)
     const updated = this.db.get(`SELECT * FROM backlog_items WHERE id = ?`, id)
     if (!updated) throw new Error('backlog item disappeared mid-transition')
@@ -1280,6 +1368,7 @@ export class Repo {
         Date.now(),
         id,
       )
+      this.noteRepoActivity(item.repoPath)
       const updated = this.db.get(`SELECT * FROM backlog_items WHERE id = ?`, id)
       if (!updated) throw new Error('backlog item disappeared')
       return this.toBacklogItem(updated)
@@ -1379,24 +1468,28 @@ export class Repo {
         learning.mock ? 1 : 0,
         learning.createdAt,
       )
+      this.noteRepoActivity(learning.repoPath)
       return { learning, duplicate: false }
     })
   }
 
   transitionLearning(id: Id, to: 'confirmed' | 'retired'): Learning {
-    const LEGAL: Record<Learning['state'], ReadonlyArray<Learning['state']>> = {
-      proposed: ['confirmed', 'retired'],
-      confirmed: ['retired'],
-      retired: [],
-    }
-    const row = this.db.get(`SELECT * FROM learnings WHERE id = ?`, id)
-    if (!row) throw new Error('no such learning')
-    const learning = this.toLearning(row)
-    if (!LEGAL[learning.state].includes(to)) {
-      throw new Error(`a ${learning.state} learning cannot become ${to}`)
-    }
-    this.db.run(`UPDATE learnings SET state = ? WHERE id = ?`, to, id)
-    return { ...learning, state: to }
+    return this.db.transaction(() => {
+      const LEGAL: Record<Learning['state'], ReadonlyArray<Learning['state']>> = {
+        proposed: ['confirmed', 'retired'],
+        confirmed: ['retired'],
+        retired: [],
+      }
+      const row = this.db.get(`SELECT * FROM learnings WHERE id = ?`, id)
+      if (!row) throw new Error('no such learning')
+      const learning = this.toLearning(row)
+      if (!LEGAL[learning.state].includes(to)) {
+        throw new Error(`a ${learning.state} learning cannot become ${to}`)
+      }
+      this.db.run(`UPDATE learnings SET state = ? WHERE id = ?`, to, id)
+      this.noteRepoActivity(learning.repoPath)
+      return { ...learning, state: to }
+    })
   }
 
   listLearnings(filter: { repoPath?: string; states?: Array<Learning['state']> } = {}): Learning[] {
@@ -1495,29 +1588,32 @@ export class Repo {
       decidedAt: null,
       decisionNote: '',
     }
-    this.db.run(
-      `INSERT INTO foreman_proposals (id, repo_path, state, title, rationale, item_ids, deferred, open_snapshot, isolation, note, anchor_session_id, plan_id, vendor, usage, mock, created_at, decided_at, decision_note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      attempt.id,
-      attempt.repoPath,
-      attempt.state,
-      attempt.title,
-      attempt.rationale,
-      json(attempt.itemIds),
-      json(attempt.deferred),
-      json(attempt.openSnapshot),
-      attempt.isolation,
-      attempt.note,
-      attempt.anchorSessionId,
-      attempt.planId,
-      attempt.vendor,
-      json(attempt.usage),
-      attempt.mock ? 1 : 0,
-      attempt.createdAt,
-      attempt.decidedAt,
-      attempt.decisionNote,
-    )
-    return attempt
+    return this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO foreman_proposals (id, repo_path, state, title, rationale, item_ids, deferred, open_snapshot, isolation, note, anchor_session_id, plan_id, vendor, usage, mock, created_at, decided_at, decision_note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        attempt.id,
+        attempt.repoPath,
+        attempt.state,
+        attempt.title,
+        attempt.rationale,
+        json(attempt.itemIds),
+        json(attempt.deferred),
+        json(attempt.openSnapshot),
+        attempt.isolation,
+        attempt.note,
+        attempt.anchorSessionId,
+        attempt.planId,
+        attempt.vendor,
+        json(attempt.usage),
+        attempt.mock ? 1 : 0,
+        attempt.createdAt,
+        attempt.decidedAt,
+        attempt.decisionNote,
+      )
+      this.noteRepoActivity(attempt.repoPath)
+      return attempt
+    })
   }
 
   /**
@@ -1597,6 +1693,7 @@ export class Repo {
           id,
         )
       }
+      this.noteRepoActivity(attempt.repoPath)
       const updated = this.db.get(`SELECT * FROM foreman_proposals WHERE id = ?`, id)
       if (!updated) throw new Error('foreman attempt disappeared mid-finalize')
       return this.toForemanProposal(updated)
@@ -1669,6 +1766,7 @@ export class Repo {
       opts.note ?? '',
       id,
     )
+    this.noteRepoActivity(proposal.repoPath)
     const updated = this.db.get(`SELECT * FROM foreman_proposals WHERE id = ?`, id)
     if (!updated) throw new Error('foreman proposal disappeared mid-decide')
     return this.toForemanProposal(updated)
@@ -1680,11 +1778,18 @@ export class Repo {
    * to supersede stays exactly as it was.
    */
   reconcileForemanAttempts(): number {
-    return this.db.run(
-      `UPDATE foreman_proposals SET state = 'failed', decided_at = ?, decision_note = 'Interrupted when Parley last quit.'
-       WHERE state = 'running'`,
-      Date.now(),
-    ).changes
+    return this.db.transaction(() => {
+      const repoPaths = this.db
+        .all(`SELECT repo_path FROM foreman_proposals WHERE state = 'running'`)
+        .map((row) => str(row['repo_path']))
+      const changes = this.db.run(
+        `UPDATE foreman_proposals SET state = 'failed', decided_at = ?, decision_note = 'Interrupted when Parley last quit.'
+         WHERE state = 'running'`,
+        Date.now(),
+      ).changes
+      for (const repoPath of repoPaths) this.noteRepoActivity(repoPath)
+      return changes
+    })
   }
 
   /**
@@ -1697,7 +1802,7 @@ export class Repo {
    */
   bindPlanCreation(plan: WorkPlan, itemIds: Id[], proposalId: Id | null): WorkPlan {
     return this.db.transaction(() => {
-      this.createPlan(plan)
+      this.createPlanCore(plan)
       for (const itemId of itemIds) {
         this.transitionBacklogItemCore(itemId, 'planned', {
           source: 'human',
@@ -1900,6 +2005,10 @@ export class Repo {
   // ─── Plans and milestones ──────────────────────────────────────────────────
 
   createPlan(plan: WorkPlan): WorkPlan {
+    return this.db.transaction(() => this.createPlanCore(plan))
+  }
+
+  private createPlanCore(plan: WorkPlan): WorkPlan {
     this.db.run(
       `INSERT INTO plans (id, session_id, kind, title, repo_path, planner, executor, reviewer, status, usage, mock, question, correction_note, correction_dispositions, isolation, setup_command, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1921,6 +2030,7 @@ export class Repo {
       plan.setupCommand,
       plan.createdAt,
     )
+    this.noteRepoActivity(plan.repoPath)
     return plan
   }
 
@@ -2074,6 +2184,7 @@ export class Repo {
         throw new Error(`a ${plan.status} plan cannot be closed out — only failed or blocked`)
       }
       this.db.run(`UPDATE plans SET status = 'cancelled' WHERE id = ?`, id)
+      this.noteRepoActivity(plan.repoPath)
       const releasedItemIds: Id[] = []
       for (const itemRow of this.db.all(
         `SELECT id FROM backlog_items WHERE plan_id = ? AND state = 'planned'`,
@@ -2091,43 +2202,62 @@ export class Repo {
   }
 
   setPlanStatus(id: Id, status: WorkPlan['status']): void {
-    this.db.run(`UPDATE plans SET status = ? WHERE id = ?`, status, id)
+    this.db.transaction(() => {
+      const plan = this.getPlan(id)
+      const changes = this.db.run(`UPDATE plans SET status = ? WHERE id = ?`, status, id).changes
+      if (changes === 1 && plan) this.noteRepoActivity(plan.repoPath)
+    })
   }
 
   /** Parks a plan on a question, storing what the resumed stage will need. */
   askPlanQuestion(id: Id, question: string, pending: unknown): void {
-    this.db.run(
-      `UPDATE plans SET status = 'awaiting-clarification', question = ?, pending = ? WHERE id = ?`,
-      question,
-      json(pending),
-      id,
-    )
+    this.db.transaction(() => {
+      const plan = this.getPlan(id)
+      const changes = this.db.run(
+        `UPDATE plans SET status = 'awaiting-clarification', question = ?, pending = ? WHERE id = ?`,
+        question,
+        json(pending),
+        id,
+      ).changes
+      if (changes === 1 && plan) this.noteRepoActivity(plan.repoPath)
+    })
   }
 
   /** Reads and clears the parked state. Returns null when nothing is parked. */
   takePlanPending<T>(id: Id): T | null {
-    const row = this.db.get(`SELECT pending FROM plans WHERE id = ?`, id)
-    const raw = row?.['pending']
-    if (typeof raw !== 'string' || !raw) return null
-    this.db.run(`UPDATE plans SET pending = NULL, question = '' WHERE id = ?`, id)
-    try {
-      return JSON.parse(raw) as T
-    } catch {
-      return null
-    }
+    return this.db.transaction(() => {
+      const row = this.db.get(`SELECT pending, repo_path FROM plans WHERE id = ?`, id)
+      const raw = row?.['pending']
+      if (typeof raw !== 'string' || !raw) return null
+      this.db.run(`UPDATE plans SET pending = NULL, question = '' WHERE id = ?`, id)
+      this.noteRepoActivity(str(row['repo_path']))
+      try {
+        return JSON.parse(raw) as T
+      } catch {
+        return null
+      }
+    })
   }
 
   setPlanCorrectionNote(id: Id, note: string): void {
-    this.db.run(`UPDATE plans SET correction_note = ? WHERE id = ?`, note, id)
+    this.db.transaction(() => {
+      const plan = this.getPlan(id)
+      const changes = this.db.run(`UPDATE plans SET correction_note = ? WHERE id = ?`, note, id).changes
+      if (changes === 1 && plan) this.noteRepoActivity(plan.repoPath)
+    })
   }
 
   /** The same dispositions, structured, for the surface to table. */
   setPlanCorrectionDispositions(id: Id, dispositions: CorrectionDisposition[]): void {
-    this.db.run(
-      `UPDATE plans SET correction_dispositions = ? WHERE id = ?`,
-      json(dispositions),
-      id,
-    )
+    this.db.transaction(() => {
+      const plan = this.getPlan(id)
+      const changes = this.db.run(
+        `UPDATE plans SET correction_dispositions = ? WHERE id = ?`,
+        json(dispositions),
+        id,
+      ).changes
+      if (changes === 1 && plan) this.noteRepoActivity(plan.repoPath)
+    })
   }
 
   /** Milestones are replaced wholesale when a corrected plan supersedes them. */
@@ -2136,13 +2266,20 @@ export class Repo {
   }
 
   setPlanTitle(id: Id, title: string): void {
-    this.db.run(`UPDATE plans SET title = ? WHERE id = ?`, title, id)
+    this.db.transaction(() => {
+      const plan = this.getPlan(id)
+      const changes = this.db.run(`UPDATE plans SET title = ? WHERE id = ?`, title, id).changes
+      if (changes === 1 && plan) this.noteRepoActivity(plan.repoPath)
+    })
   }
 
   addPlanUsage(id: Id, delta: Usage): void {
-    const row = this.db.get(`SELECT usage FROM plans WHERE id = ?`, id)
-    const total = addUsage(parseJson<Usage>(row?.['usage'], emptyUsage()), delta)
-    this.db.run(`UPDATE plans SET usage = ? WHERE id = ?`, json(total), id)
+    this.db.transaction(() => {
+      const row = this.db.get(`SELECT usage, repo_path FROM plans WHERE id = ?`, id)
+      const total = addUsage(parseJson<Usage>(row?.['usage'], emptyUsage()), delta)
+      const changes = this.db.run(`UPDATE plans SET usage = ? WHERE id = ?`, json(total), id).changes
+      if (changes === 1 && row) this.noteRepoActivity(str(row['repo_path']))
+    })
   }
 
   createMilestone(m: Milestone): Milestone {
@@ -2295,28 +2432,31 @@ export class Repo {
   // ─── Loops ─────────────────────────────────────────────────────────────────
 
   createLoop(loop: Loop): Loop {
-    this.db.run(
-      `INSERT INTO loops (id, goal, repo_path, worker, verifier, exit_condition, caps, capability,
-                          approval_id, status, usage, iteration_count, mock, started_at, ended_at, stop_reason)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      loop.id,
-      loop.goal,
-      loop.repoPath,
-      json(loop.worker),
-      json(loop.verifier),
-      json(loop.exit),
-      json(loop.caps),
-      loop.capability,
-      loop.approvalId,
-      loop.status,
-      json(loop.usage),
-      loop.iterationCount,
-      loop.mock ? 1 : 0,
-      loop.startedAt,
-      loop.endedAt,
-      loop.stopReason,
-    )
-    return loop
+    return this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO loops (id, goal, repo_path, worker, verifier, exit_condition, caps, capability,
+                            approval_id, status, usage, iteration_count, mock, started_at, ended_at, stop_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        loop.id,
+        loop.goal,
+        loop.repoPath,
+        json(loop.worker),
+        json(loop.verifier),
+        json(loop.exit),
+        json(loop.caps),
+        loop.capability,
+        loop.approvalId,
+        loop.status,
+        json(loop.usage),
+        loop.iterationCount,
+        loop.mock ? 1 : 0,
+        loop.startedAt,
+        loop.endedAt,
+        loop.stopReason,
+      )
+      this.noteRepoActivity(loop.repoPath)
+      return loop
+    })
   }
 
   private toLoop(row: Row): Loop {
@@ -2352,51 +2492,70 @@ export class Repo {
   }
 
   startLoop(id: Id, approvalId: Id | null): Loop {
-    const startedAt = Date.now()
-    const result = this.db.run(
-      `UPDATE loops SET status = 'running', approval_id = ?, started_at = ?
-       WHERE id = ? AND status = 'idle'`,
-      approvalId,
-      startedAt,
-      id,
-    )
-    if (result.changes !== 1) throw new Error(`loop ${id} is not idle`)
-    const loop = this.getLoop(id)
-    if (!loop) throw new Error(`loop ${id} disappeared`)
-    return loop
+    return this.db.transaction(() => {
+      const before = this.getLoop(id)
+      const startedAt = Date.now()
+      const result = this.db.run(
+        `UPDATE loops SET status = 'running', approval_id = ?, started_at = ?
+         WHERE id = ? AND status = 'idle'`,
+        approvalId,
+        startedAt,
+        id,
+      )
+      if (result.changes !== 1) throw new Error(`loop ${id} is not idle`)
+      if (!before) throw new Error(`loop ${id} disappeared`)
+      this.noteRepoActivity(before.repoPath)
+      const loop = this.getLoop(id)
+      if (!loop) throw new Error(`loop ${id} disappeared`)
+      return loop
+    })
   }
 
   /** The liveness stamp. Written on real activity only (throttled), silently. */
   setLoopActivity(id: Id, at: number): void {
-    this.db.run(`UPDATE loops SET last_activity_at = ? WHERE id = ?`, at, id)
+    this.db.transaction(() => {
+      const loop = this.getLoop(id)
+      const changes = this.db.run(`UPDATE loops SET last_activity_at = ? WHERE id = ?`, at, id).changes
+      if (changes === 1 && loop) this.noteRepoActivity(loop.repoPath)
+    })
   }
 
   setLoopStatus(id: Id, status: Loop['status'], stopReason = ''): void {
-    const terminal = status === 'succeeded' || status === 'exhausted' || status === 'killed' || status === 'failed'
-    this.db.run(
-      `UPDATE loops SET status = ?, stop_reason = ?, ended_at = ? WHERE id = ?`,
-      status,
-      stopReason,
-      terminal ? Date.now() : null,
-      id,
-    )
+    this.db.transaction(() => {
+      const loop = this.getLoop(id)
+      const terminal = status === 'succeeded' || status === 'exhausted' || status === 'killed' || status === 'failed'
+      const changes = this.db.run(
+        `UPDATE loops SET status = ?, stop_reason = ?, ended_at = ? WHERE id = ?`,
+        status,
+        stopReason,
+        terminal ? Date.now() : null,
+        id,
+      ).changes
+      if (changes === 1 && loop) this.noteRepoActivity(loop.repoPath)
+    })
   }
 
   bumpLoop(id: Id, delta: Usage): Loop {
-    const loop = this.getLoop(id)
-    if (!loop) throw new Error(`loop ${id} not found`)
-    const usage = addUsage(loop.usage, delta)
-    const count = loop.iterationCount + 1
-    this.db.run(`UPDATE loops SET usage = ?, iteration_count = ? WHERE id = ?`, json(usage), count, id)
-    return { ...loop, usage, iterationCount: count }
+    return this.db.transaction(() => {
+      const loop = this.getLoop(id)
+      if (!loop) throw new Error(`loop ${id} not found`)
+      const usage = addUsage(loop.usage, delta)
+      const count = loop.iterationCount + 1
+      this.db.run(`UPDATE loops SET usage = ?, iteration_count = ? WHERE id = ?`, json(usage), count, id)
+      this.noteRepoActivity(loop.repoPath)
+      return { ...loop, usage, iterationCount: count }
+    })
   }
 
   addLoopUsage(id: Id, delta: Usage): Loop {
-    const loop = this.getLoop(id)
-    if (!loop) throw new Error(`loop ${id} not found`)
-    const usage = addUsage(loop.usage, delta)
-    this.db.run(`UPDATE loops SET usage = ? WHERE id = ?`, json(usage), id)
-    return { ...loop, usage }
+    return this.db.transaction(() => {
+      const loop = this.getLoop(id)
+      if (!loop) throw new Error(`loop ${id} not found`)
+      const usage = addUsage(loop.usage, delta)
+      this.db.run(`UPDATE loops SET usage = ? WHERE id = ?`, json(usage), id)
+      this.noteRepoActivity(loop.repoPath)
+      return { ...loop, usage }
+    })
   }
 
   createIteration(it: LoopIteration): LoopIteration {

@@ -189,6 +189,74 @@ describe('schema migrations', () => {
     ).toBeTruthy()
   })
 
+  it('adds repository activity tables to a populated version-20 database', () => {
+    const db = openDatabase(':memory:')
+    db.run(
+      `INSERT INTO plans
+       (id, session_id, kind, title, repo_path, planner, executor, reviewer, status, usage, mock,
+        question, correction_note, correction_dispositions, isolation, setup_command, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      'plan-v20',
+      'session-v20',
+      'implementation',
+      'Existing plan',
+      '/tmp/existing-plan-repo',
+      '{}',
+      '{}',
+      '{}',
+      'complete',
+      '{}',
+      0,
+      '',
+      '',
+      '[]',
+      'checkout',
+      '',
+      20,
+    )
+    db.run(
+      `INSERT INTO backlog_items
+       (id, repo_path, content_hash, title, detail, priority, state, source, origin_session_id,
+        plan_id, evidence, blocked_by, mock, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      'item-v20',
+      '/tmp/existing-backlog-repo',
+      'content-v20',
+      'Existing backlog item',
+      '',
+      null,
+      'open',
+      'manual',
+      null,
+      null,
+      '[]',
+      '[]',
+      0,
+      20,
+      20,
+    )
+    db.exec(`DROP TABLE repo_archives`)
+    db.exec(`DROP TABLE repo_activity`)
+    db.run(`UPDATE meta SET value = '20' WHERE key = 'schema_version'`)
+
+    migrate(db)
+
+    expect(db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'schema_version'`)?.value).toBe(
+      String(SCHEMA_VERSION),
+    )
+    expect(db.get<{ title: string }>(`SELECT title FROM plans WHERE id = 'plan-v20'`)?.title).toBe(
+      'Existing plan',
+    )
+    expect(
+      db.get<{ title: string }>(`SELECT title FROM backlog_items WHERE id = 'item-v20'`)?.title,
+    ).toBe('Existing backlog item')
+    for (const table of ['repo_activity', 'repo_archives']) {
+      expect(
+        db.get(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table),
+      ).toBeTruthy()
+    }
+  })
+
   it('adds the backlog tables when upgrading from version 17', () => {
     const db = openDatabase(':memory:')
     db.exec(`DROP TABLE backlog_events`)

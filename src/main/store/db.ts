@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 20
+export const SCHEMA_VERSION = 21
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -427,6 +427,22 @@ CREATE TABLE IF NOT EXISTS self_updates (
   decided_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_self_updates_state ON self_updates(state);
+
+-- A global append-only watermark for repository-scoped writes. The sequence
+-- is the ordering fact: timestamps can tie, and archive visibility depends on
+-- distinguishing work that happened before and after the archive record.
+CREATE TABLE IF NOT EXISTS repo_activity (
+  seq       INTEGER PRIMARY KEY,
+  repo_path TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_repo_activity_repo_seq ON repo_activity(repo_path, seq);
+
+-- Archiving is a watermark, not deletion. Later activity makes the repository
+-- visible again while retaining this record of the user's earlier decision.
+CREATE TABLE IF NOT EXISTS repo_archives (
+  repo_path    TEXT PRIMARY KEY,
+  archived_seq INTEGER NOT NULL
+);
 `
 
 class NodeSqliteDb implements Db {
@@ -797,6 +813,10 @@ export function migrate(db: Db): void {
     // Self-update is additive: SCHEMA creates self_updates fresh, and no
     // existing row changes shape. plan_id is deliberately FK-less — session
     // deletion cascades to plans, and the record must outlive its plan.
+  }
+  if (current < 21) {
+    // Repository activity and archive watermarks are additive. SCHEMA creates
+    // both tables before the stored version is read, preserving existing rows.
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)
