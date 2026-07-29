@@ -123,6 +123,14 @@ export interface Reconciliation {
   milestones: number
 }
 
+export interface DurableRepoAttention {
+  sessions: Session[]
+  loops: Loop[]
+  plans: WorkPlan[]
+  foreman: ForemanProposal[]
+  selfUpdates: Array<{ update: SelfUpdate; plan: WorkPlan }>
+}
+
 /**
  * Typed access to the local database.
  *
@@ -179,6 +187,48 @@ export class Repo {
       )
       .filter((archive) => archive.archivedSeq >= this.repoActivitySeq(archive.repoPath))
       .map((archive) => archive.repoPath)
+  }
+
+  /**
+   * Every durable row that says work is live for one repository. These reads
+   * are intentionally uncapped: archive safety cannot inherit the 200-row
+   * presentation limits used by the session, plan, and loop lists.
+   */
+  liveAttentionForRepo(path: string): DurableRepoAttention {
+    const canonical = canonicalRepoPath(path)
+    const belongsToRepo = (repoPath: string): boolean =>
+      canonicalRepoPath(repoPath) === canonical
+
+    const sessions = this.db
+      .all(`SELECT * FROM sessions WHERE status IN ('running', 'paused', 'stopping')`)
+      .map((row) => this.toSession(row))
+      .filter((session) => session.repoPath !== null && belongsToRepo(session.repoPath))
+    const loops = this.db
+      .all(`SELECT * FROM loops WHERE status IN ('running', 'paused')`)
+      .map((row) => this.toLoop(row))
+      .filter((loop) => belongsToRepo(loop.repoPath))
+    const plans = this.db
+      .all(`SELECT * FROM plans WHERE status IN ('drafting', 'auditing', 'correcting', 'running')`)
+      .map((row) => this.toPlan(row))
+      .filter((plan) => belongsToRepo(plan.repoPath))
+    const foreman = this.db
+      .all(`SELECT * FROM foreman_proposals WHERE state IN ('running', 'proposed')`)
+      .map((row) => this.toForemanProposal(row))
+      .filter((proposal) => belongsToRepo(proposal.repoPath))
+    const selfUpdates = this.db
+      .all<{ updateId: string; planId: string }>(
+        `SELECT self_updates.id AS updateId, self_updates.plan_id AS planId
+         FROM self_updates
+         JOIN plans ON plans.id = self_updates.plan_id
+         WHERE self_updates.state IN ('running', 'green')`,
+      )
+      .flatMap((row) => {
+        const update = this.getSelfUpdate(row.updateId)
+        const plan = this.getPlan(row.planId)
+        return update && plan && belongsToRepo(plan.repoPath) ? [{ update, plan }] : []
+      })
+
+    return { sessions, loops, plans, foreman, selfUpdates }
   }
 
   // ─── Crash recovery ────────────────────────────────────────────────────────

@@ -232,6 +232,86 @@ export class Manager {
     for (const skill of BUILT_IN_SKILLS) this.repo.upsertSkill({ ...skill, id: newId() })
   }
 
+  // ─── Repository archive ───────────────────────────────────────────────────
+
+  setRepoArchived(repoPath: string, archived: boolean): void {
+    const canonical = canonicalRepoPath(repoPath)
+    if (archived) {
+      const refusals = this.repoLiveAttention(canonical)
+      if (refusals.length) {
+        throw new RequestError(
+          `cannot archive this repository while it has live attention: ${refusals.join('; ')}`,
+        )
+      }
+      this.repo.archiveRepo(canonical)
+      return
+    }
+    this.repo.restoreRepo(canonical)
+  }
+
+  private repoLiveAttention(canonical: string): string[] {
+    const durable = this.repo.liveAttentionForRepo(canonical)
+    const refusals = [
+      ...durable.sessions.map(
+        (session) => `a session is ${session.status} (${session.id})`,
+      ),
+      ...durable.loops.map((loop) => `a loop is ${loop.status} (${loop.id})`),
+      ...durable.plans.map(
+        (plan) => `a plan is ${plan.status} (${plan.title || plan.id})`,
+      ),
+      ...durable.foreman.map((proposal) =>
+        proposal.state === 'running'
+          ? `a foreman attempt is running (${proposal.id})`
+          : `a foreman proposal is pending (${proposal.title || proposal.id})`,
+      ),
+      ...durable.selfUpdates.map(({ update }) =>
+        update.state === 'running'
+          ? `a self-update is running (${update.id})`
+          : `a self-update is awaiting a decision (${update.id})`,
+      ),
+      ...this.inProcessAttention(canonical),
+      ...this.listHolds()
+        .filter(
+          (hold) =>
+            hold.repoPath !== null && canonicalRepoPath(hold.repoPath) === canonical,
+        )
+        .map((hold) => `a hold needs attention (${hold.title})`),
+    ]
+    return refusals
+  }
+
+  private inProcessAttention(canonical: string): string[] {
+    const refusals: string[] = []
+
+    for (const sessionId of this.stowRuns) {
+      const session = this.repo.getSession(sessionId)
+      if (
+        session?.repoPath &&
+        canonicalRepoPath(session.repoPath) === canonical
+      ) {
+        refusals.push(`a stow sweep is running (${sessionId})`)
+      }
+    }
+    if (this.foremanRuns.has(canonical)) {
+      refusals.push('the foreman is reading this repository')
+    }
+    for (const milestoneId of this.milestoneRuns.keys()) {
+      const milestone = this.repo.getMilestone(milestoneId)
+      const plan = milestone ? this.repo.getPlan(milestone.planId) : null
+      if (plan && canonicalRepoPath(plan.repoPath) === canonical) {
+        refusals.push(`a milestone is running (${milestoneId})`)
+      }
+    }
+    if (this.selfGateRuns.has(canonical)) {
+      refusals.push('a self-update gate is running')
+    }
+    if (this.selfGateQueue.has(canonical)) {
+      refusals.push('a self-update gate is queued')
+    }
+
+    return refusals
+  }
+
   // ─── Sessions ──────────────────────────────────────────────────────────────
 
   startSession(input: {
