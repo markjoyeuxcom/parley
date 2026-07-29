@@ -1,6 +1,7 @@
 import { app, dialog, ipcMain } from 'electron'
 import { CH, type InvokeResult } from '@shared/ipc'
 import { invokeCommand, type IpcAppControl, type IpcContext, type IpcDialogs } from './commands'
+import { relaunchIntoFreshBuild } from './relaunch'
 
 /**
  * The Electron half of the IPC surface, and nothing else.
@@ -20,19 +21,7 @@ const dialogs: IpcDialogs = {
 }
 
 const appControl: IpcAppControl = {
-  relaunch: () => {
-    // Deduped before appending, so repeated self-relaunches never accumulate
-    // the flag. The next process sees it and drops ELECTRON_RENDERER_URL —
-    // that is what makes it load the freshly built out/ instead of the dev
-    // server the current process inherited.
-    const args = process.argv.slice(1).filter((arg) => arg !== '--parley-fresh-build')
-    args.push('--parley-fresh-build')
-    app.relaunch({ args })
-    // quit, NEVER exit: before-quit is what disposes agent CLIs and ptys,
-    // and app.exit skips it — orphaning paid runs that keep spending quota
-    // headless. Nothing in this app vetoes quit.
-    app.quit()
-  },
+  relaunch: () => relaunchIntoFreshBuild(app, process.argv),
 }
 
 /**
