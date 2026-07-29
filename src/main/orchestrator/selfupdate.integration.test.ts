@@ -1,13 +1,13 @@
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { AppEvent } from '@shared/events'
 import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
 import { Repo } from '@main/store/repo'
 import { Manager } from './manager'
-import { resolveOnPath, runSelfGate } from './selfupdate'
+import { runSelfGate } from './selfupdate'
 
 /**
  * The self-update gate against real npm in a fake self repo: package.json
@@ -105,17 +105,43 @@ describe('the gate, end to end', () => {
 
   it('goes red on a failing verify, with the output and the npm that ran', async () => {
     const self = fakeSelfRepo({
-      verify: `node -e "console.error('2 tests failed'); process.exit(1)"`,
+      verify: `node -e "process.exit(0)"`,
       build: `node -e "process.exit(0)"`,
+    })
+    const bin = mkdtempSync(join(tmpdir(), 'parley-fake-npm-'))
+    const fakeNpm = join(bin, 'npm')
+    writeFileSync(fakeNpm, '#!/bin/sh\necho "fake npm verify failed" >&2\nexit 1\n', {
+      mode: 0o755,
+    })
+    const originalPath = process.env['PATH']
+    try {
+      process.env['PATH'] = originalPath ? `${bin}${delimiter}${originalPath}` : bin
+      const repo = freshRepo()
+      const row = await runSelfGate(repo, self, 'plan-a')
+      expect(row.state).toBe('red')
+      expect(row.detail).toContain('npm run verify')
+      expect(row.detail).toContain('fake npm verify failed')
+      // Honest red details: which npm resolved, and the deps courtesy line.
+      expect(row.detail).toContain(fakeNpm)
+      expect(row.detail).toContain('npm install')
+    } finally {
+      if (originalPath === undefined) delete process.env['PATH']
+      else process.env['PATH'] = originalPath
+    }
+  }, 30_000)
+
+  it('goes red when verify passes but build exits 2, without a relaunch offer', async () => {
+    const self = fakeSelfRepo({
+      verify: `node -e "process.exit(0)"`,
+      build: `node -e "console.error('fixture build failed'); process.exit(2)"`,
     })
     const repo = freshRepo()
     const row = await runSelfGate(repo, self, 'plan-a')
     expect(row.state).toBe('red')
-    expect(row.detail).toContain('npm run verify')
-    expect(row.detail).toContain('2 tests failed')
-    // Honest red details: which npm resolved, and the deps courtesy line.
-    expect(row.detail).toContain(resolveOnPath('npm') ?? 'npm')
-    expect(row.detail).toContain('npm install')
+    expect(row.detail).toContain('npm run build')
+    expect(row.detail).toContain('exited 2')
+    expect(row.detail).toContain('fixture build failed')
+    expect(repo.getPendingSelfUpdate()).toBeNull()
   }, 30_000)
 
   it('times out red and the whole process tree dies with it', async () => {
