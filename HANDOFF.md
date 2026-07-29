@@ -119,12 +119,37 @@ improving *itself* through its own pipeline.
 
 ## Open threads (good next candidates)
 
-The self-building arc is COMPLETE: review → backlog → foreman proposal →
-accept → worktree plan → audit/gates/review → land → self-gate → relaunch
-into the build Parley made of itself. What remains is usage (the by-hand
-loops above) and, much later, the packaged-app updater (signing, asar,
-migrations, rollback — a separate project; the .dmg channel stays
+The self-building arc is COMPLETE and has run its **second lap
+(2026-07-29), fully self-originated**: Parley reviewed its own test suite
+(scoped brief: "what does the suite prove vs appear to prove"; 9 confirmed
+findings with two hitting the SelfUpdate tests themselves, 3 dismissed by
+cross-examination, dissent preserved at 77% confidence), the foreman
+batched five into "Make CI verify, and make four untested guards fail
+when broken" and deferred four with reasons, the plan landed as
+ddee145..0c23d57 (GitLab `verify` job — node:24-bookworm,
+`npm ci --ignore-scripts`, `allow_failure: false` — plus ci.test.ts
+pinning the yaml itself; the self-gate build-failure arm exercised; the
+npm-path test de-tautologised via a fake npm on PATH; verifyLanding
+tested for real, fabricated test replaced; the relaunch wrapper extracted
+to src/main/ipc/relaunch.ts as an injectable seam and tested), the gate
+went green in 33s, the relaunch was taken, and **the CI job's first run
+on GitLab passed** — every push is now verified, blocking. The repo lives
+at gitlab.com (origin configured); Parley never pushes — that stays a
+human act.
+
+What remains is usage, and much later the packaged-app updater (signing,
+asar, migrations, rollback — a separate project; the .dmg channel stays
 `npm run package:mac` + reinstall until then).
+
+Open findings from the self-review, deliberately deferred by the foreman
+(its stated next batch: the adapter fixtures):
+- CLI event parsing exercised only by skipped live tests — needs captured
+  Claude/Codex NDJSON fixtures through the production run methods.
+- Ledger smoke tests assert warnings but not disabled actions (renderer
+  harness; pairs with the deep-link item).
+- The holds approval deep link is dead under mounted tests (smoke helper
+  returns null for inactive surfaces — prerequisite of its own).
+- openPlan race (P3, behavior not coverage; stale visible selection only).
 
 Other candidates:
 - Delta re-reviews / recurring finding identity across review sessions:
