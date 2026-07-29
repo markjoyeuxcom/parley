@@ -398,7 +398,7 @@ describe('landing on the self repo', () => {
   it('takes the gate instead of the smoke check, and green becomes the offer', async () => {
     const { repo, plan, origin } = await completedSelfRepoPlan('parley-land-selfok-', {
       verify: `node -e "process.exit(0)"`,
-      build: `node -e "require('fs').writeFileSync('out.txt','built')"`,
+      build: `node -e "require('fs').mkdirSync('out',{recursive:true}); require('fs').writeFileSync('out/app.js','built')"`,
     })
     const events: AppEvent[] = []
     const manager = new Manager({
@@ -417,7 +417,7 @@ describe('landing on the self repo', () => {
     const row = repo.listSelfUpdates()[0]
     expect(row?.planId).toBe(plan.id)
     // Green means the gate genuinely built in the landed origin.
-    expect(existsSync(join(origin, 'out.txt'))).toBe(true)
+    expect(existsSync(join(origin, 'out', 'app.js'))).toBe(true)
     // The gate ran INSTEAD of the generic smoke check: nothing flagged the row.
     expect(repo.getWorktreeForPlan(plan.id)?.lastError ?? '').toBe('')
 

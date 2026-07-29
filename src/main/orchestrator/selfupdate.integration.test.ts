@@ -93,14 +93,66 @@ describe('the gate, end to end', () => {
   it('goes green when verify and build both pass, and the build actually ran', async () => {
     const self = fakeSelfRepo({
       verify: `node -e "process.exit(0)"`,
-      build: `node -e "require('fs').writeFileSync('out.txt','built')"`,
+      build: `node -e "require('fs').mkdirSync('out',{recursive:true}); require('fs').writeFileSync('out/app.js','built')"`,
     })
     const repo = freshRepo()
     const row = await runSelfGate(repo, self, 'plan-a')
     expect(row.state).toBe('green')
     expect(row.detail).toContain('build completed')
     // Green means the bytes exist, not merely that commands exited 0.
-    expect(readFileSync(join(self, 'out.txt'), 'utf8')).toBe('built')
+    expect(readFileSync(join(self, 'out', 'app.js'), 'utf8')).toBe('built')
+  }, 30_000)
+
+  it('goes red when a back-to-back build exits zero without changing the previous output', async () => {
+    const self = fakeSelfRepo({
+      verify: `node -e "process.exit(0)"`,
+      build: `node -e "const fs=require('fs'); if(!fs.existsSync('built-once')){fs.mkdirSync('out',{recursive:true}); fs.writeFileSync('out/app.js','built'); fs.writeFileSync('built-once','yes')}"`,
+    })
+    const repo = freshRepo()
+    const first = await runSelfGate(repo, self, 'plan-a')
+    expect(first.state).toBe('green')
+
+    const second = await runSelfGate(repo, self, 'plan-b')
+    expect(second.state).toBe('red')
+    expect(second.detail).toContain('did not change any files in out/')
+    expect(repo.getPendingSelfUpdate()).toBeNull()
+  }, 30_000)
+
+  it('goes green when a back-to-back build changes an existing file fingerprint', async () => {
+    const self = fakeSelfRepo({
+      verify: `node -e "process.exit(0)"`,
+      build: `node -e "const fs=require('fs'); const second=fs.existsSync('built-once'); fs.mkdirSync('out',{recursive:true}); fs.writeFileSync('out/app.js',second?'later':'first'); fs.utimesSync('out/app.js',second?2:1,second?2:1); fs.writeFileSync('built-once','yes')"`,
+    })
+    const repo = freshRepo()
+    const first = await runSelfGate(repo, self, 'plan-a')
+    expect(first.state).toBe('green')
+
+    const second = await runSelfGate(repo, self, 'plan-b')
+    expect(second.state).toBe('green')
+    expect(readFileSync(join(self, 'out', 'app.js'), 'utf8')).toBe('later')
+  }, 30_000)
+
+  it('goes red when a zero-exit build leaves out missing', async () => {
+    const self = fakeSelfRepo({
+      verify: `node -e "process.exit(0)"`,
+      build: `node -e "process.exit(0)"`,
+    })
+    const repo = freshRepo()
+    const row = await runSelfGate(repo, self, 'plan-a')
+    expect(row.state).toBe('red')
+    expect(row.detail).toContain('out/ is missing or contains no files')
+  }, 30_000)
+
+  it('inspects an explicit output directory', async () => {
+    const self = fakeSelfRepo({
+      verify: `node -e "process.exit(0)"`,
+      build: `node -e "require('fs').mkdirSync('dist',{recursive:true}); require('fs').writeFileSync('dist/app.js','built')"`,
+    })
+    const repo = freshRepo()
+    const row = await runSelfGate(repo, self, 'plan-a', { outputDir: 'dist' })
+    expect(row.state).toBe('green')
+    expect(row.detail).toContain('dist/ changed')
+    expect(readFileSync(join(self, 'dist', 'app.js'), 'utf8')).toBe('built')
   }, 30_000)
 
   it('goes red on a failing verify, with the output and the npm that ran', async () => {

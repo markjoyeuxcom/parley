@@ -1,5 +1,5 @@
-import { accessSync, constants } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { accessSync, constants, lstatSync, readdirSync } from 'node:fs'
+import { delimiter, join, relative, resolve } from 'node:path'
 import type { Id, SelfUpdate } from '@shared/domain'
 import type { Repo } from '@main/store/repo'
 import { capture, type CaptureResult } from '@main/util/spawn'
@@ -26,9 +26,59 @@ export interface SelfGateOptions {
   timeoutMs?: number
   /** Aborting flips the row red — a quitting app must not leave `running`. */
   signal?: AbortSignal
+  /** Build output to inspect, relative to the self repo unless absolute. */
+  outputDir?: string
 }
 
 const DEFAULT_STEP_TIMEOUT_MS = 20 * 60 * 1000
+const DEFAULT_OUTPUT_DIR = 'out'
+
+type OutputSnapshot = Map<string, string>
+
+function snapshotOutput(outputPath: string): OutputSnapshot {
+  const snapshot: OutputSnapshot = new Map()
+  const pending = [outputPath]
+
+  while (pending.length > 0) {
+    const directory = pending.pop()
+    if (!directory) continue
+
+    let entries
+    try {
+      entries = readdirSync(directory, { withFileTypes: true })
+    } catch (error) {
+      if (
+        directory === outputPath &&
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'ENOENT'
+      ) {
+        return snapshot
+      }
+      throw error
+    }
+
+    for (const entry of entries) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) {
+        pending.push(path)
+        continue
+      }
+      const stat = lstatSync(path)
+      snapshot.set(relative(outputPath, path), `${stat.size}:${stat.mtimeMs}`)
+    }
+  }
+
+  return snapshot
+}
+
+function sameSnapshot(left: OutputSnapshot, right: OutputSnapshot): boolean {
+  if (left.size !== right.size) return false
+  for (const [path, fingerprint] of left) {
+    if (right.get(path) !== fingerprint) return false
+  }
+  return true
+}
 
 /**
  * Where `npm` actually resolves on this process's PATH, for honest red
@@ -87,6 +137,8 @@ export async function runSelfGate(
 ): Promise<SelfUpdate> {
   const attempt = repo.fileSelfUpdateAttempt(planId)
   const timeoutMs = opts.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS
+  const outputDir = opts.outputDir ?? DEFAULT_OUTPUT_DIR
+  const outputPath = resolve(selfRepoPath, outputDir)
   try {
     // killTree on both: `npm run` interposes npm between us and the actual
     // script, and a timeout that only reaches npm leaves the build's own
@@ -106,6 +158,7 @@ export async function runSelfGate(
       return repo.finalizeSelfUpdate(attempt.id, 'red', redDetail('npm run verify', verify))
     }
 
+    const before = snapshotOutput(outputPath)
     const build = await capture(
       'npm',
       ['run', 'build'],
@@ -121,10 +174,26 @@ export async function runSelfGate(
       return repo.finalizeSelfUpdate(attempt.id, 'red', redDetail('npm run build', build))
     }
 
+    const after = snapshotOutput(outputPath)
+    if (after.size === 0) {
+      return repo.finalizeSelfUpdate(
+        attempt.id,
+        'red',
+        `\`npm run build\` exited 0, but ${outputDir}/ is missing or contains no files.`,
+      )
+    }
+    if (sameSnapshot(before, after)) {
+      return repo.finalizeSelfUpdate(
+        attempt.id,
+        'red',
+        `\`npm run build\` exited 0, but did not change any files in ${outputDir}/.`,
+      )
+    }
+
     return repo.finalizeSelfUpdate(
       attempt.id,
       'green',
-      `Checks passed in ${Math.round(verify.durationMs / 1000)}s and the build completed in ${Math.round(build.durationMs / 1000)}s. out/ now holds the landed bytes.`,
+      `Checks passed in ${Math.round(verify.durationMs / 1000)}s and the build completed in ${Math.round(build.durationMs / 1000)}s. ${outputDir}/ changed and contains ${after.size} inspected files.`,
     )
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

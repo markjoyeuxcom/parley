@@ -546,7 +546,10 @@ The rules, each enforced in main, none only in the renderer:
   error, timeout, abort, throw — is a red row, never a shrug. Its captures
   use `killTree` (detached spawn, process-group signals), because a timeout
   that only reaches npm leaves the build's grandchildren alive and writing
-  out/ behind the guard's back.
+  out/ behind the guard's back. Immediately before the build it snapshots
+  every output file as path → size:mtimeMs, then requires a non-empty,
+  changed snapshot after a zero exit. There is no clock grace: a no-op build
+  cannot inherit output from a previous gate.
 - **Supersede at attempt, not at outcome.** Filing a new gate attempt
   supersedes the previous green offer in the same transaction — the moment a
   new gate can touch out/, no stale "verified" offer may survive it, or a
