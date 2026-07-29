@@ -177,6 +177,18 @@ const smokeMilestone: Milestone = {
   completedAt: null,
 }
 
+const failedSmokeMilestone: Milestone = {
+  ...smokeMilestone,
+  expectedPaths: ['src/retry.ts'],
+  status: 'failed',
+  runState: {
+    startedAt: 1_700_000_000_000,
+    round: 1,
+    lastActivityAt: 1_700_000_050_000,
+    lastInspection: null,
+  },
+}
+
 /** One open blocking occurrence: the approval gate must show as blocked. */
 const blockingEntry: LedgerEntry = {
   id: 'finding-smoke-1',
@@ -232,6 +244,11 @@ function installBridge(
         ? [smokePlan]
         : [],
     'plan.get': () => ({ plan: smokePlan, milestones: [smokeMilestone], worktree: null }),
+    'plan.inspect': () => ({
+      existing: [...failedSmokeMilestone.expectedPaths],
+      missing: [],
+      dirtyPaths: [],
+    }),
     'repos.list': () => [
       {
         repoPath: '/tmp/smoke-repo',
@@ -269,6 +286,20 @@ function installBridge(
 
 beforeEach(installBridge)
 afterEach(cleanup)
+
+async function assertLedgerGateActionsDisabled(invoked: CommandName[]): Promise<void> {
+  const buttons = [
+    screen.getByRole('button', { name: 'Approve and run' }),
+    await screen.findByRole('button', { name: 'Resume from where it stopped' }),
+    await screen.findByRole('button', { name: 'Adopt & verify the existing work' }),
+  ]
+
+  for (const button of buttons) {
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(button)
+    expect(invoked).toEqual([])
+  }
+}
 
 describe('mounted-surface smoke', () => {
   it('the Parley surface survives a session opening, and the exchange folds', async () => {
@@ -325,6 +356,18 @@ describe('mounted-surface smoke', () => {
   })
 
   it('a plan opens in place on the Plans tab, and the gate fails closed', async () => {
+    const invoked: CommandName[] = []
+    installBridge({
+      'plan.get': () => ({
+        plan: smokePlan,
+        milestones: [failedSmokeMilestone],
+        worktree: null,
+      }),
+      'approval.grant': () => invoked.push('approval.grant'),
+      'plan.runMilestone': () => invoked.push('plan.runMilestone'),
+      'plan.resumeMilestone': () => invoked.push('plan.resumeMilestone'),
+      'plan.adoptMilestone': () => invoked.push('plan.adoptMilestone'),
+    })
     render(
       <StoreProvider>
         <OnSurface surface="backlog">
@@ -342,14 +385,27 @@ describe('mounted-surface smoke', () => {
 
     // The first mounted PlanPanel in the suite's history: the milestone
     // renders, and its approval gate sees the blocking ledger fixture.
-    await screen.findByText(smokeMilestone.title)
-    fireEvent.click(await screen.findByText('Approve and run'))
+    await screen.findByText(failedSmokeMilestone.title)
+    fireEvent.click(await screen.findByText('Approve and retry'))
     await screen.findByText(/finding needs a disposition/)
     await screen.findByText(blockingEntry.text)
+    await assertLedgerGateActionsDisabled(invoked)
   })
 
   it('an unavailable ledger disables the gate instead of un-gating it', async () => {
-    installBridge({ 'ledger.list': () => undefined })
+    const invoked: CommandName[] = []
+    installBridge({
+      'ledger.list': () => undefined,
+      'plan.get': () => ({
+        plan: smokePlan,
+        milestones: [failedSmokeMilestone],
+        worktree: null,
+      }),
+      'approval.grant': () => invoked.push('approval.grant'),
+      'plan.runMilestone': () => invoked.push('plan.runMilestone'),
+      'plan.resumeMilestone': () => invoked.push('plan.resumeMilestone'),
+      'plan.adoptMilestone': () => invoked.push('plan.adoptMilestone'),
+    })
     render(
       <StoreProvider>
         <OnSurface surface="backlog">
@@ -361,11 +417,12 @@ describe('mounted-surface smoke', () => {
     fireEvent.click(await screen.findByTitle('/tmp/smoke-repo'))
     fireEvent.click(await screen.findByRole('tab', { name: /Plans/ }))
     fireEvent.click(await screen.findByText(smokePlan.title))
-    await screen.findByText(smokeMilestone.title)
-    fireEvent.click(await screen.findByText('Approve and run'))
+    await screen.findByText(failedSmokeMilestone.title)
+    fireEvent.click(await screen.findByText('Approve and retry'))
 
     // Null means unknown, and unknown fails CLOSED.
     await screen.findByText(/ledger could not be loaded/)
+    await assertLedgerGateActionsDisabled(invoked)
   })
 
   it('the Loops surface mounts empty', async () => {
