@@ -15,6 +15,15 @@ import { applyResolvedPath, preflightPty } from '@main/util/environment'
 
 const freshBuild = applyFreshBuildFlag(process.argv, process.env)
 
+// Dev and packaged installs must never share a record. The dev checkout
+// migrates the schema ahead of any frozen .dmg — whose downgrade guard would
+// then refuse to start — and two instances over one database would each mark
+// the other's live runs interrupted at boot. Set before ANY userData read:
+// databasePath below computes at module load.
+if (!app.isPackaged) {
+  app.setPath('userData', join(app.getPath('appData'), 'parley-dev'))
+}
+
 let mainWindow: BrowserWindow | null = null
 let pty: PtyManager | null = null
 let manager: Manager | null = null

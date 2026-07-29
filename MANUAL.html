@@ -778,6 +778,11 @@ worktrees beside it. There is no sync, no telemetry, and no remote service.
 The renderer runs sandboxed with no Node access and a content-security policy
 that permits no remote origins; everything privileged crosses one validated
 IPC channel.</p>
+<p>Development builds keep a <b>separate record</b>: running from the checkout
+(<code>npm run dev</code>, marked by a <b>dev</b> chip in the titlebar) uses
+<code>~/Library/Application&nbsp;Support/parley-dev/</code>, so a dev build
+migrating the schema can never brick an installed Parley.app, and the two can
+run side by side.</p>
 </section>
 
 <section id="invariants">

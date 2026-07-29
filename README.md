@@ -521,5 +521,14 @@ whole audit trail live in SQLite under the app's own support directory. There is
 no sync, no telemetry, and no remote service. The renderer runs sandboxed with no
 Node access and a CSP that permits no remote origins.
 
+Development and packaged installs keep **separate records**: a build running
+from the checkout (`npm run dev` — it wears a `dev` chip in the titlebar) uses
+`~/Library/Application Support/parley-dev/`, while an installed Parley.app owns
+`~/Library/Application Support/parley/`. Deliberate, not incidental — the dev
+checkout migrates the schema ahead of any frozen .dmg, whose downgrade guard
+would otherwise refuse to start, and two instances sharing one database would
+each mark the other's live runs interrupted at boot. The two can run side by
+side safely.
+
 See [AGENTS.md](AGENTS.md) for the engineering guide and the invariants that hold
 this together.

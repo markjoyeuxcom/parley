@@ -37,6 +37,17 @@ export function Titlebar(): ReactNode {
         <div className="wordmark">
           Parley
         </div>
+        {state.selfRepoPath !== null ? (
+          // The instance marker: this build runs from the checkout, against
+          // the parley-dev record — a packaged install never shows it. One
+          // glance answers "which Parley is this window".
+          <span
+            className="chip chip--caution no-drag"
+            title={`Development build — running from ${state.selfRepoPath}; data in parley-dev`}
+          >
+            dev
+          </span>
+        ) : null}
       </div>
 
       <nav className="segmented no-drag" role="tablist" aria-label="Surface">
