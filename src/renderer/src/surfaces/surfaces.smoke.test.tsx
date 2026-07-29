@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type {
   BacklogItem,
   ForemanProposal,
@@ -15,7 +15,7 @@ import type { CommandName, LedgerEntry } from '@shared/ipc'
 import type { Hold } from '@shared/holds'
 import { useEffect, type ReactNode } from 'react'
 import { StoreProvider, useStore, type Surface } from '../state'
-import { HoldsPopover } from '../components/HoldsPanel'
+import { HoldsButton, HoldsPopover } from '../components/HoldsPanel'
 import { ParleySurface } from './ParleySurface'
 import { BacklogSurface } from './BacklogSurface'
 import { LoopsSurface } from './LoopsSurface'
@@ -28,6 +28,34 @@ function OnSurface({ surface, children }: { surface: Surface; children: ReactNod
     dispatch({ type: 'surface', surface })
   }, [dispatch, surface])
   return state.surface === surface ? children : null
+}
+
+function AppMountedSurfaces(): ReactNode {
+  const { state, dispatch } = useStore()
+  return (
+    <>
+      <button onClick={() => dispatch({ type: 'surface', surface: 'parley' })}>
+        Switch to Parley
+      </button>
+      <button onClick={() => dispatch({ type: 'surface', surface: 'backlog' })}>
+        Switch to Repos
+      </button>
+      <HoldsButton />
+      <div
+        data-testid="parley-host"
+        style={{ display: state.surface === 'parley' ? 'contents' : 'none' }}
+      >
+        <ParleySurface />
+      </div>
+      <div
+        data-testid="backlog-host"
+        style={{ display: state.surface === 'backlog' ? 'contents' : 'none' }}
+      >
+        <BacklogSurface />
+      </div>
+      <HoldsPopover />
+    </>
+  )
 }
 
 /**
@@ -175,6 +203,21 @@ const smokeMilestone: Milestone = {
   approvalId: null,
   createdAt: 1_700_000_000_000,
   completedAt: null,
+}
+
+const approvalWaitingHold: Hold = {
+  id: 'hold-approval-smoke',
+  kind: 'approval-waiting',
+  sessionId: session.id,
+  planId: smokePlan.id,
+  milestoneId: smokeMilestone.id,
+  loopId: null,
+  repoPath: smokePlan.repoPath,
+  title: 'Milestone 1 is ready for approval',
+  detail: 'Review the scope and approve the audited milestone.',
+  sinceAt: 1_700_000_000_000,
+  mock: true,
+  actionable: true,
 }
 
 const failedSmokeMilestone: Milestone = {
@@ -423,6 +466,60 @@ describe('mounted-surface smoke', () => {
     // Null means unknown, and unknown fails CLOSED.
     await screen.findByText(/ledger could not be loaded/)
     await assertLedgerGateActionsDisabled(invoked)
+  })
+
+  it('a holds deep link opens one approval gate across the two mounted hosts', async () => {
+    installBridge({
+      'session.get': () => ({
+        session,
+        turns: [turn],
+        interjections: [],
+        verdict,
+        findings: [],
+        ledger: [],
+        plans: [smokePlan],
+      }),
+      'holds.list': () => [approvalWaitingHold],
+    })
+    render(
+      <StoreProvider>
+        <AppMountedSurfaces />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByText(session.matter))
+    fireEvent.click(
+      await screen.findByTitle(`${smokePlan.title} — ${smokePlan.kind}, ${smokePlan.status}`),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to Repos' }))
+    const backlogHost = screen.getByTestId('backlog-host')
+    fireEvent.click(await within(backlogHost).findByTitle(smokePlan.repoPath))
+    fireEvent.click(await within(backlogHost).findByRole('tab', { name: /Plans/ }))
+    fireEvent.click(
+      await within(backlogHost).findByTitle(
+        `${smokePlan.title} — ${smokePlan.kind}, ${smokePlan.status}`,
+      ),
+    )
+    await waitFor(() => {
+      expect(within(backlogHost).getByText(smokeMilestone.title)).toBeTruthy()
+    })
+
+    fireEvent.click(screen.getByTitle('Holds — what is waiting on you'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open' }))
+
+    const parleyHost = screen.getByTestId('parley-host')
+    const approvalDialogs = (): NodeListOf<Element> =>
+      document.querySelectorAll('[role="dialog"][aria-label="Approve milestone 1"]')
+    await waitFor(() => {
+      expect(approvalDialogs()).toHaveLength(1)
+    })
+    expect(parleyHost.contains(approvalDialogs()[0])).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to Repos' }))
+    await waitFor(() => {
+      expect(approvalDialogs()).toHaveLength(0)
+    })
   })
 
   it('the Loops surface mounts empty', async () => {
