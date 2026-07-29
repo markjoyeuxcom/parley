@@ -155,18 +155,81 @@ adapter run methods in src/main/agents/events.test.ts with provenance in
 the header. Lesson recorded: live-CLI capture is a privileged act, like
 landing.
 
-Still open from the self-review: the openPlan race (P3, behavior not
-coverage; a stale visible selection only — plan and ledger stay paired).
+Laps three through six landed 2026-07-29/31, mixing self-review findings
+with the first debate-originated feature work (schema now **v21**):
+- The openPlan race fixed by its own plan; a third same-brief self-review
+  came back with ZERO P1s, none of the original nine recurring, and two
+  earlier repairs verified in its dismissed list.
+- "Close three P3 worktree and relaunch gaps" — landWorktree teardown
+  recorded, worktree origin-identity in the health check (recovered via
+  Adopt & verify after a **stale-position mutation** burned the
+  remediation budget: a declared break that matches its anchor textually
+  but is a semantic no-op against the executor's final code reads as
+  vacuous tests; amend the mutation, adopt — lesson on the record), and
+  the fresh-build flag behind a testable seam.
+- "Give the three untested boundaries real seams" — injectable Codex
+  config path, preflightPty probe seam, mounted-bridge invoke-envelope
+  rejection.
+- **Repository archiving** (the fourth-lap feature, debate-originated at
+  65% confidence with both dissent demands promoted to requirements):
+  repo_activity watermark + repo_archives at v21, noteRepoActivity
+  committed atomically with each durable write and proven complete by a
+  total-classification tripwire (unclassified table fails), archive
+  refuses live attention naming every reason, later durable activity
+  auto-revives, All-repositories toggle mirrors the sessions sidebar,
+  every milestone verified with full `npm run verify`.
 
-Other candidates:
-- Delta re-reviews / recurring finding identity across review sessions:
-  suggest-with-confirmation matching; a recurring accepted-risk reopens with
-  history attached (the within-session semantic already does this).
-- Smaller carried items: `approveAndRun`/`adoptExisting` still hold one IPC
-  invoke for a 30-minute run (holds and the stop button soften it;
-  fire-and-forget them like `answerPlan` eventually). Landing requires plan
-  status `complete` — partial landing deliberately deferred. Loop stalls get
-  no inspection (milestones only); loops already have a kill switch.
+**The queue (designs banked in the assistant's memory, each with
+pushbacks and verify-at-build lists):**
+1. **Packaging prep, next commit**: dev/packaged userData separation
+   (dev takes `parley-dev` BEFORE the module-level databasePath
+   computes; user copies the existing dir to keep dev history; titlebar
+   dev chip on non-packaged builds). Naming recommendation: productName
+   **Parley** plain, bundle id com.moomora.parley, "by Moomora" in
+   prose only — final before the first .dmg, since it names userData.
+2. **agy adapter series** (user directive): Antigravity CLI third
+   vendor — `agy -p --output-format stream-json`, conversation_id
+   resume, --effort low|medium|high, Google-account OAuth. v1 gemini-*
+   models ONLY (agy also serves Claude/GPT-OSS — vendor≠family trap);
+   `--dangerously-skip-permissions` joins the forbidden list.
+3. **Dev containers** (promoted by the user's real workload —
+   Terraform/K8s/EKS/ArgoCD/Go controllers): repo stays local, only
+   execution enters the container via `devcontainer exec` argv; `up`
+   only in write flows, never read-only reviews. Pairs with infra:
+   render attachments for briefs (helm template/kustomize build safe
+   tier), infra skill pack, kube-context/AWS-profile chips in Grid,
+   verification presets recorded as learnings.
+4. **Grid I** (lifecycle slot/process controls, maximize/swap,
+   git+worktree identity headers with plan chips, Grid-LOCAL status —
+   inferred states never enter the holds queue — and both bridges) then
+   **Grid II** comforts. Comparison mode parked as a PIPELINE feature.
+5. **Unattended runs**: envelope approval (bounds up front, per-
+   milestone approvals minted from it), fail-park at existing holds,
+   end at merge-ready always; foreman acceptance stays outside.
+6. **App Builder arc** (four series: workspace creator + foundation,
+   preview management, acceptance records + 'acceptance' ingestion
+   source, then the guided shell); readiness stage = disposition
+   ergonomics, never auto-disposition.
+7. **SSH/remote execution arc** after App Builder (execution-target
+   abstraction over the ~6 local-assuming touchpoints), composing with
+   unattended for overnight VM runs.
+
+Small UI batch (foreman-sized, slots anywhere): sessions organization —
+a group-by control on the ⌘2 sidebar (None | Project | Repository,
+collapsible headers, archived toggle unchanged), a **Sessions tab on
+the Repos surface** (the missing tab — a repository's reviews and
+debates are its record too, and the future delta re-review work needs
+this listing as its home), and recent-project suggestions in the
+new-session dialogs (datalist nudge; project stays free text — no
+project entity, no third organizing surface).
+
+Older carried items: delta re-reviews / recurring finding identity;
+`approveAndRun`/`adoptExisting` still hold one IPC invoke per run;
+partial landing deferred; loop stalls get no inspection. New from the
+laps: a survived mutation has no inspect-and-waive disposition (the
+stale-position gap above); side A's boot-sequence observation
+(src/main/index.ts has zero coverage) still lives only in a dissent —
+stow the second self-review to file it.
 
 ## Environment notes
 
