@@ -554,9 +554,13 @@ The rules, each enforced in main, none only in the renderer:
   supersedes the previous green offer in the same transaction — the moment a
   new gate can touch out/, no stale "verified" offer may survive it, or a
   later failed build leaves green pointing at half-written bytes. One gate
-  per checkout (`Manager.selfGateRuns`); a second landing mid-gate is
-  announced and skipped, never queued; `disposeAll` aborts the controller so
-  a quitting app finalizes its own row red instead of stranding `running`.
+  per checkout (`Manager.selfGateRuns`); landings that arrive mid-gate
+  coalesce to the newest in `selfGateQueue`, with no durable row until that
+  follow-up starts. A green gate with a queued successor supersedes its own
+  row before starting the follow-up, so even a failed filing cannot leave an
+  obsolete relaunch offer. `busyWithRuns` counts both states, and `disposeAll`
+  clears the queue before aborting the controller so a quitting app finalizes
+  only the live row red instead of starting more work or stranding `running`.
 - **Relaunch is a recorded decision, decided before the quit.**
   `selfupdate.relaunch` refuses while `busyWithRuns()` names anything in
   flight, writes `relaunched`, and only then calls the injected

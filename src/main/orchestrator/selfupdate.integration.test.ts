@@ -1,13 +1,14 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { AppEvent } from '@shared/events'
 import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
 import { Repo } from '@main/store/repo'
+import type { CaptureResult } from '@main/util/spawn'
 import { Manager } from './manager'
-import { runSelfGate } from './selfupdate'
+import { runSelfGate, type SelfGateOptions } from './selfupdate'
 
 /**
  * The self-update gate against real npm in a fake self repo: package.json
@@ -38,6 +39,17 @@ async function waitFor(predicate: () => boolean, timeoutMs = 20_000): Promise<vo
   throw new Error('timed out waiting for condition')
 }
 
+function captured(exitCode = 0): CaptureResult {
+  return {
+    exitCode,
+    signal: null,
+    stdout: '',
+    stderr: '',
+    durationMs: 1,
+    timedOut: false,
+  }
+}
+
 describe('the self-update record', () => {
   it('supersedes the previous green offer at the next attempt, not at its outcome', () => {
     const repo = freshRepo()
@@ -52,6 +64,18 @@ describe('the self-update record', () => {
     expect(repo.getSelfUpdate(first.id)?.state).toBe('superseded')
     expect(repo.getSelfUpdate(first.id)?.decidedAt).not.toBeNull()
     expect(repo.getPendingSelfUpdate()).toBeNull()
+  })
+
+  it('can retire one green offer before its queued successor files', () => {
+    const repo = freshRepo()
+    const first = repo.fileSelfUpdateAttempt('plan-a')
+    repo.finalizeSelfUpdate(first.id, 'green', 'built')
+
+    const superseded = repo.supersedeSelfUpdate(first.id)
+    expect(superseded.state).toBe('superseded')
+    expect(superseded.decidedAt).not.toBeNull()
+    expect(repo.getPendingSelfUpdate()).toBeNull()
+    expect(() => repo.supersedeSelfUpdate(first.id)).toThrow(/superseded/)
   })
 
   it('keeps green undecided and stamps decisions when the human makes them', () => {
@@ -240,11 +264,127 @@ describe('the manager guard', () => {
 
   it('stays dormant when packaged', () => {
     const { manager, repo } = guardHarness(null)
-    expect(manager.launchSelfGate('plan-a')).toBe(false)
+    expect(manager.launchSelfGate('plan-a')).toBe('dormant')
     expect(repo.listSelfUpdates()).toHaveLength(0)
   })
 
-  it('refuses a second gate while one runs, and disposeAll turns the first red', async () => {
+  it('coalesces queued landings and gates the newest after the active build', async () => {
+    const self = fakeSelfRepo({
+      verify: `node -e "process.exit(0)"`,
+      build: `node -e "process.exit(0)"`,
+    })
+    writeFileSync(join(self, 'landing.txt'), 'plan-a')
+    const buildsSaw: string[] = []
+    let releaseFirstBuild = (): void => {}
+    const firstBuildReleased = new Promise<void>((resolve) => {
+      releaseFirstBuild = resolve
+    })
+    let markFirstBuildStarted = (): void => {}
+    const firstBuildStarted = new Promise<void>((resolve) => {
+      markFirstBuildStarted = resolve
+    })
+    let builds = 0
+    const capture: NonNullable<SelfGateOptions['capture']> = async (_command, args, cwd) => {
+      if (args[1] === 'verify') return captured()
+      builds += 1
+      const source = readFileSync(join(cwd, 'landing.txt'), 'utf8')
+      buildsSaw.push(source)
+      if (builds === 1) {
+        markFirstBuildStarted()
+        await firstBuildReleased
+      }
+      mkdirSync(join(cwd, 'out'), { recursive: true })
+      writeFileSync(join(cwd, 'out', 'app.js'), source)
+      return captured()
+    }
+    const { manager, repo, events } = guardHarness(self)
+
+    expect(manager.launchSelfGate('plan-a', { capture })).toBe('started')
+    await firstBuildStarted
+    writeFileSync(join(self, 'landing.txt'), 'plan-b')
+    expect(manager.launchSelfGate('plan-b', { capture })).toBe('queued')
+    writeFileSync(join(self, 'landing.txt'), 'plan-c-newer')
+    expect(manager.launchSelfGate('plan-c', { capture })).toBe('queued')
+
+    // A queue entry is not a run and therefore has no durable attempt yet.
+    expect(repo.listSelfUpdates()).toHaveLength(1)
+    expect(manager.busyWithRuns()).toContain('queued')
+    releaseFirstBuild()
+
+    await waitFor(
+      () =>
+        repo.listSelfUpdates().length === 2 &&
+        repo.listSelfUpdates().every((row) => row.state !== 'running'),
+    )
+    expect(repo.listSelfUpdates().some((row) => row.planId === 'plan-b')).toBe(false)
+    expect(repo.listSelfUpdates().find((row) => row.planId === 'plan-a')?.state).toBe(
+      'superseded',
+    )
+    expect(repo.listSelfUpdates().find((row) => row.planId === 'plan-c')?.state).toBe('green')
+    expect(buildsSaw).toEqual(['plan-a', 'plan-c-newer'])
+    expect(
+      events.filter(
+        (event) =>
+          event.type === 'notice' &&
+          event.level === 'info' &&
+          event.message.includes('Relaunch'),
+      ),
+    ).toHaveLength(1)
+  })
+
+  it('retires green before a queued follow-up whose filing throws', async () => {
+    const self = fakeSelfRepo({
+      verify: `node -e "process.exit(0)"`,
+      build: `node -e "process.exit(0)"`,
+    })
+    let releaseBuild = (): void => {}
+    const buildReleased = new Promise<void>((resolve) => {
+      releaseBuild = resolve
+    })
+    let markBuildStarted = (): void => {}
+    const buildStarted = new Promise<void>((resolve) => {
+      markBuildStarted = resolve
+    })
+    const capture: NonNullable<SelfGateOptions['capture']> = async (_command, args, cwd) => {
+      if (args[1] === 'verify') return captured()
+      markBuildStarted()
+      await buildReleased
+      mkdirSync(join(cwd, 'out'), { recursive: true })
+      writeFileSync(join(cwd, 'out', 'app.js'), 'built')
+      return captured()
+    }
+    const { manager, repo, events } = guardHarness(self)
+
+    expect(manager.launchSelfGate('plan-a', { capture })).toBe('started')
+    await buildStarted
+    vi.spyOn(repo, 'fileSelfUpdateAttempt').mockImplementationOnce(() => {
+      throw new Error('fixture filing failed')
+    })
+    expect(manager.launchSelfGate('plan-b', { capture })).toBe('queued')
+    releaseBuild()
+
+    await waitFor(() =>
+      events.some(
+        (event) =>
+          event.type === 'notice' &&
+          event.level === 'warn' &&
+          event.message.includes('fixture filing failed'),
+      ),
+    )
+    expect(repo.listSelfUpdates()).toHaveLength(1)
+    expect(repo.listSelfUpdates()[0]?.state).toBe('superseded')
+    expect(repo.getPendingSelfUpdate()).toBeNull()
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'notice' &&
+          event.level === 'info' &&
+          event.message.includes('Relaunch'),
+      ),
+    ).toBe(false)
+  })
+
+  it('disposeAll clears a queued gate and turns the active one red', async () => {
     const self = fakeSelfRepo({
       verify: `node -e "setTimeout(function(){}, 120000)"`,
       build: `node -e "process.exit(0)"`,
@@ -252,18 +392,16 @@ describe('the manager guard', () => {
     const { manager, repo, events } = guardHarness(self)
 
     expect(manager.busyWithRuns()).toBeNull()
-    expect(manager.launchSelfGate('plan-a')).toBe(true)
+    expect(manager.launchSelfGate('plan-a')).toBe('started')
     await waitFor(() => repo.listSelfUpdates().length === 1)
     // The gate itself counts as busy — relaunch consults exactly this.
     expect(manager.busyWithRuns()).toContain('gate')
 
-    // Second landing mid-gate: announced and skipped, never queued — the
-    // running build already reads an origin that includes it.
-    expect(manager.launchSelfGate('plan-b')).toBe(false)
+    expect(manager.launchSelfGate('plan-b')).toBe('queued')
     expect(repo.listSelfUpdates()).toHaveLength(1)
     expect(
       events.some(
-        (e) => e.type === 'notice' && e.level === 'warn' && e.message.includes('already running'),
+        (e) => e.type === 'notice' && e.level === 'info' && e.message.includes('queued'),
       ),
     ).toBe(true)
 
@@ -271,9 +409,10 @@ describe('the manager guard', () => {
     manager.disposeAll()
     await waitFor(() => repo.listSelfUpdates()[0]?.state === 'red')
     expect(repo.listSelfUpdates()[0]?.detail).toContain('Interrupted')
+    expect(repo.listSelfUpdates().some((row) => row.planId === 'plan-b')).toBe(false)
 
     // The slot was released, so a later landing can gate again.
-    await waitFor(() => manager.launchSelfGate('plan-c'))
+    await waitFor(() => manager.launchSelfGate('plan-c') === 'started')
     await waitFor(() => repo.listSelfUpdates().some((row) => row.planId === 'plan-c'))
     manager.disposeAll()
     await waitFor(() =>

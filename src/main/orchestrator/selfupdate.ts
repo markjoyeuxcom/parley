@@ -2,7 +2,7 @@ import { accessSync, constants, lstatSync, readdirSync } from 'node:fs'
 import { delimiter, join, relative, resolve } from 'node:path'
 import type { Id, SelfUpdate } from '@shared/domain'
 import type { Repo } from '@main/store/repo'
-import { capture, type CaptureResult } from '@main/util/spawn'
+import { capture as captureProcess, type CaptureResult } from '@main/util/spawn'
 
 /**
  * The self-update gate: after a plan lands on Parley's own checkout, run the
@@ -28,6 +28,8 @@ export interface SelfGateOptions {
   signal?: AbortSignal
   /** Build output to inspect, relative to the self repo unless absolute. */
   outputDir?: string
+  /** Injectable process seam for orchestration tests that must hold a step open. */
+  capture?: typeof captureProcess
 }
 
 const DEFAULT_STEP_TIMEOUT_MS = 20 * 60 * 1000
@@ -139,6 +141,7 @@ export async function runSelfGate(
   const timeoutMs = opts.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS
   const outputDir = opts.outputDir ?? DEFAULT_OUTPUT_DIR
   const outputPath = resolve(selfRepoPath, outputDir)
+  const capture = opts.capture ?? captureProcess
   try {
     // killTree on both: `npm run` interposes npm between us and the actual
     // script, and a timeout that only reaches npm leaves the build's own

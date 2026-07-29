@@ -33,7 +33,7 @@ import {
 } from './backlog'
 import { LivenessWatchdog } from './liveness'
 import { runForeman } from './foreman'
-import { runSelfGate } from './selfupdate'
+import { runSelfGate, type SelfGateOptions } from './selfupdate'
 import { landWorktree, preflightLand, verifyLanding } from './worktrees'
 import { LoopRunner, validateExitCommand, type LoopOutcome } from './loop'
 import { missingExpectedPaths, Pipeline, readTree } from './pipeline'
@@ -45,6 +45,12 @@ export class RequestError extends Error {}
 
 /** A stow sweep is one look, not a stage: bounded well under a turn. */
 const STOW_TIMEOUT_MS = 5 * 60 * 1000
+
+export type SelfGateLaunch = 'started' | 'queued' | 'dormant'
+type QueuedSelfGate = {
+  planId: Id
+  opts: Omit<SelfGateOptions, 'signal'>
+}
 
 /**
  * Validates a repository path coming from the renderer.
@@ -144,6 +150,8 @@ export class Manager {
    * the same out/). Same synchronous has-check discipline as milestoneRuns.
    */
   private readonly selfGateRuns = new Map<string, AbortController>()
+  /** The newest landing waiting for each checkout's in-flight gate to finish. */
+  private readonly selfGateQueue = new Map<string, QueuedSelfGate>()
   /** In-flight foreman reads, keyed by canonical repo path. Same discipline. */
   private readonly foremanRuns = new Set<string>()
   private readonly loops = new Map<Id, LoopRunner>()
@@ -945,38 +953,53 @@ export class Manager {
    * checkout. Public so tests exercise the guard directly — in the app the
    * landing hook is the only caller until m3's manual path exists.
    *
-   * At most one gate per checkout: a second landing while one runs is
-   * announced and skipped rather than queued — the running gate's build is
-   * already reading the origin that now contains both landings, and a queue
-   * of stale rebuilds would only churn out/ for no fresher answer. Returns
-   * whether a gate actually started.
+   * At most one gate per checkout: a landing that arrives while one runs
+   * replaces that checkout's queued follow-up. No attempt row exists until
+   * the follow-up starts, because a queued intention is not an observed run.
    */
-  launchSelfGate(planId: Id, opts: { timeoutMs?: number } = {}): boolean {
+  launchSelfGate(
+    planId: Id,
+    opts: Omit<SelfGateOptions, 'signal'> = {},
+  ): SelfGateLaunch {
     const self = this.deps.selfRepoPath
-    if (!self) return false
+    if (!self) return 'dormant'
     if (this.selfGateRuns.has(self)) {
+      this.selfGateQueue.set(self, { planId, opts })
       this.emit({
         type: 'notice',
-        level: 'warn',
+        level: 'info',
         message:
-          'A self-update gate is already running; this landing was not separately verified. The running gate builds from the origin, which now includes it.',
+          'A self-update gate is already running; this landing is queued for a fresh gate when it finishes.',
       })
-      return false
+      return 'queued'
     }
+    this.startSelfGate(self, planId, opts)
+    return 'started'
+  }
+
+  private startSelfGate(
+    self: string,
+    planId: Id,
+    opts: Omit<SelfGateOptions, 'signal'>,
+  ): void {
     const controller = new AbortController()
     this.selfGateRuns.set(self, controller)
     void runSelfGate(this.repo, self, planId, {
+      ...opts,
       signal: controller.signal,
-      timeoutMs: opts.timeoutMs,
     })
       .then((row) => {
         if (row.state === 'green') {
-          this.emit({
-            type: 'notice',
-            level: 'info',
-            message:
-              'Parley verified and rebuilt itself from the landed work. Relaunch when ready — the offer is in the holds queue.',
-          })
+          if (this.selfGateQueue.has(self)) {
+            this.repo.supersedeSelfUpdate(row.id)
+          } else {
+            this.emit({
+              type: 'notice',
+              level: 'info',
+              message:
+                'Parley verified and rebuilt itself from the landed work. Relaunch when ready — the offer is in the holds queue.',
+            })
+          }
         } else if (row.state === 'red') {
           // The landed-but-broken hold already exists for exactly this shape
           // of news; red rides it rather than inventing a second surface.
@@ -998,8 +1021,12 @@ export class Manager {
       })
       .finally(() => {
         this.selfGateRuns.delete(self)
+        const queued = this.selfGateQueue.get(self)
+        if (queued) {
+          this.selfGateQueue.delete(self)
+          this.startSelfGate(self, queued.planId, queued.opts)
+        }
       })
-    return true
   }
 
   /**
@@ -1195,6 +1222,7 @@ export class Manager {
     if (this.loops.size) return 'a loop is running'
     if (this.stowRuns.size) return 'a stow sweep is running'
     if (this.foremanRuns.size) return 'the foreman is reading a backlog'
+    if (this.selfGateQueue.size) return 'a self-update gate is queued'
     if (this.selfGateRuns.size) return 'the self-update gate itself is still running'
     return null
   }
@@ -1206,6 +1234,7 @@ export class Manager {
     // A quitting app interrupts its own gate: the abort turns the row red
     // ('interrupted') from inside the still-live process, so the record never
     // depends on the next boot noticing a stranded `running`.
+    this.selfGateQueue.clear()
     for (const controller of this.selfGateRuns.values()) controller.abort()
     this.liveness.dispose()
   }

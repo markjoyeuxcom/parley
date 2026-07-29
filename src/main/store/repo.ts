@@ -1752,6 +1752,33 @@ export class Repo {
   }
 
   /**
+   * Retires one green offer when its gate finished after another landing had
+   * already queued a follow-up. Targeting the observed row matters: the
+   * follow-up has not filed yet, and must not be able to supersede anything
+   * else if filing later fails.
+   */
+  supersedeSelfUpdate(id: Id): SelfUpdate {
+    return this.db.transaction(() => {
+      const row = this.db.get(`SELECT * FROM self_updates WHERE id = ?`, id)
+      if (!row) throw new Error('no such self-update')
+      const attempt = this.toSelfUpdate(row)
+      if (attempt.state !== 'green') {
+        throw new Error(`a ${attempt.state} self-update cannot be superseded`)
+      }
+      this.db.run(
+        `UPDATE self_updates SET state = 'superseded', decided_at = ?,
+           detail = 'Superseded: a landing queued while this gate was running.'
+         WHERE id = ?`,
+        Date.now(),
+        id,
+      )
+      const updated = this.db.get(`SELECT * FROM self_updates WHERE id = ?`, id)
+      if (!updated) throw new Error('self-update disappeared mid-supersede')
+      return this.toSelfUpdate(updated)
+    })
+  }
+
+  /**
    * Ends a gate run. Green stays undecided (decided_at null) — that absence
    * is what "awaiting the human" means, and the hold derives from it. Red is
    * terminal, so it takes its decision stamp here.
