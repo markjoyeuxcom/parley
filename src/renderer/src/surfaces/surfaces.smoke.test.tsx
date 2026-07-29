@@ -514,7 +514,7 @@ describe('mounted-surface smoke', () => {
     await waitFor(() => {
       expect(approvalDialogs()).toHaveLength(1)
     })
-    expect(parleyHost.contains(approvalDialogs()[0])).toBe(true)
+    expect(parleyHost.contains(approvalDialogs()[0] ?? null)).toBe(true)
 
     fireEvent.click(screen.getByRole('button', { name: 'Switch to Repos' }))
     await waitFor(() => {

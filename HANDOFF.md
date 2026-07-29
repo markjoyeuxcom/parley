@@ -141,15 +141,22 @@ What remains is usage, and much later the packaged-app updater (signing,
 asar, migrations, rollback — a separate project; the .dmg channel stays
 `npm run package:mac` + reinstall until then).
 
-Open findings from the self-review, deliberately deferred by the foreman
-(its stated next batch: the adapter fixtures):
-- CLI event parsing exercised only by skipped live tests — needs captured
-  Claude/Codex NDJSON fixtures through the production run methods.
-- Ledger smoke tests assert warnings but not disabled actions (renderer
-  harness; pairs with the deep-link item).
-- The holds approval deep link is dead under mounted tests (smoke helper
-  returns null for inactive surfaces — prerequisite of its own).
-- openPlan race (P3, behavior not coverage; stale visible selection only).
+The deferred-findings batch closed 2026-07-29, with one honest asterisk:
+plan 3 ("Close the three deferred coverage gaps") completed its ledger-
+disabled and deep-link milestones, but milestone 3 failed EXACTLY as the
+guards intend — codex claimed completion with a byte-for-byte unchanged
+tree (capturing live CLI streams is impossible inside the executor's
+network-blocked sandbox), the tree guard and reviewer blocked it, and the
+plan stays failed on the record. The recovery was human-side: milestones
+1–2 cherry-picked from the surviving branch (bd2b7e1, 0ed9ea7), and the
+operator captured the fixtures outside the pipeline — real Claude 2.1.220
+and codex-cli 0.145.0 streams, scrubbed, replayed through the public
+adapter run methods in src/main/agents/events.test.ts with provenance in
+the header. Lesson recorded: live-CLI capture is a privileged act, like
+landing.
+
+Still open from the self-review: the openPlan race (P3, behavior not
+coverage; a stale visible selection only — plan and ledger stay paired).
 
 Other candidates:
 - Delta re-reviews / recurring finding identity across review sessions:
