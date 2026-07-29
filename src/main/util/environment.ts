@@ -178,6 +178,10 @@ function isExecutableFile(candidate: string): boolean {
   }
 }
 
+export function codexConfigPath(): string {
+  return join(homedir(), '.codex', 'config.toml')
+}
+
 /**
  * The model the user's own `codex` is configured to use.
  *
@@ -189,9 +193,9 @@ function isExecutableFile(candidate: string): boolean {
  * Claude needs no equivalent: its aliases (`opus`, `sonnet`, `haiku`, `fable`)
  * resolve to the latest of each family, so they never go stale.
  */
-export function readCodexDefaultModel(): string {
+export function readCodexDefaultModel(configPath = codexConfigPath()): string {
   try {
-    const text = readFileSync(join(homedir(), '.codex', 'config.toml'), 'utf8')
+    const text = readFileSync(configPath, 'utf8')
     for (const line of text.split('\n')) {
       const trimmed = line.trim()
       // Stop at the first table header: a `model` inside [projects.…] or a

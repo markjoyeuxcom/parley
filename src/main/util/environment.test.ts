@@ -2,7 +2,13 @@ import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { applyResolvedPath, findExecutable, preflightPty, readCodexDefaultModel } from './environment'
+import {
+  applyResolvedPath,
+  codexConfigPath,
+  findExecutable,
+  preflightPty,
+  readCodexDefaultModel,
+} from './environment'
 
 function scratch(): string {
   return mkdtempSync(join(tmpdir(), 'parley-env-'))
@@ -12,6 +18,12 @@ function writeExecutable(dir: string, name: string): string {
   const path = join(dir, name)
   writeFileSync(path, '#!/bin/sh\nexit 0\n')
   chmodSync(path, 0o755)
+  return path
+}
+
+function writeCodexConfig(text: string): string {
+  const path = join(scratch(), 'config.toml')
+  writeFileSync(path, text)
   return path
 }
 
@@ -141,53 +153,73 @@ describe('preflightPty', () => {
 })
 
 describe('readCodexDefaultModel', () => {
-  // The function reads a fixed path under $HOME, so these exercise the parser
-  // against the shapes a real config.toml takes.
-  const parse = (text: string): string => {
-    for (const line of text.split('\n')) {
-      const trimmed = line.trim()
-      if (trimmed.startsWith('[')) break
-      const match = /^model\s*=\s*["']([^"']+)["']/.exec(trimmed)
-      if (match?.[1]) return match[1]
-    }
-    return ''
-  }
-
   it('reads the top-level default', () => {
     // Verbatim shape from a real install.
     expect(
-      parse(`model = "gpt-5.6-sol"\nservice_tier = "default"\nmodel_reasoning_effort = "xhigh"`),
+      readCodexDefaultModel(
+        writeCodexConfig(
+          `model = "gpt-5.6-sol"\nservice_tier = "default"\nmodel_reasoning_effort = "xhigh"`,
+        ),
+      ),
     ).toBe('gpt-5.6-sol')
   })
 
   it('ignores a model set inside a table', () => {
     // A per-project or per-profile model is not the global default, and taking
     // it would suggest a model scoped to somewhere else entirely.
-    expect(parse(`[projects."/some/repo"]\nmodel = "gpt-5.6-luna"`)).toBe('')
+    expect(
+      readCodexDefaultModel(
+        writeCodexConfig(`[projects."/some/repo"]\nmodel = "gpt-5.6-luna"`),
+      ),
+    ).toBe('')
   })
 
   it('stops at the first table header', () => {
-    expect(parse(`model = "gpt-5.6-terra"\n\n[projects."/x"]\nmodel = "gpt-5.6-luna"`)).toBe(
-      'gpt-5.6-terra',
-    )
+    expect(
+      readCodexDefaultModel(
+        writeCodexConfig(
+          `model = "gpt-5.6-terra"\n\n[projects."/x"]\nmodel = "gpt-5.6-luna"`,
+        ),
+      ),
+    ).toBe('gpt-5.6-terra')
   })
 
   it('handles single quotes and loose spacing', () => {
-    expect(parse(`model   =   'gpt-5.6-sol'`)).toBe('gpt-5.6-sol')
+    expect(readCodexDefaultModel(writeCodexConfig(`model   =   'gpt-5.6-sol'`))).toBe(
+      'gpt-5.6-sol',
+    )
   })
 
   it('returns empty when no default is set', () => {
-    expect(parse(`service_tier = "default"`)).toBe('')
-    expect(parse('')).toBe('')
+    expect(readCodexDefaultModel(writeCodexConfig(`service_tier = "default"`))).toBe('')
+    expect(readCodexDefaultModel(writeCodexConfig(''))).toBe('')
   })
 
   it('is not fooled by a similarly named key', () => {
-    expect(parse(`model_reasoning_effort = "xhigh"`)).toBe('')
+    expect(readCodexDefaultModel(writeCodexConfig(`model_reasoning_effort = "xhigh"`))).toBe('')
   })
 
-  it('finds the real one on this machine, or nothing', () => {
-    // Whatever it returns must be a plausible id rather than a stray fragment.
-    const found = readCodexDefaultModel()
-    if (found) expect(found).toMatch(/^[\w.-]+$/)
+  it('returns empty when the config file is missing', () => {
+    expect(readCodexDefaultModel(join(scratch(), 'missing.toml'))).toBe('')
+  })
+
+  it('defaults to the user Codex config', () => {
+    const originalHome = process.env['HOME']
+    const home = scratch()
+    const configDir = join(home, '.codex')
+    mkdirSync(configDir)
+    writeFileSync(join(configDir, 'config.toml'), `model = "gpt-5.6-terra"`)
+
+    try {
+      process.env['HOME'] = home
+      expect(codexConfigPath()).toBe(join(home, '.codex', 'config.toml'))
+      expect(readCodexDefaultModel()).toBe('gpt-5.6-terra')
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env['HOME']
+      } else {
+        process.env['HOME'] = originalHome
+      }
+    }
   })
 })
