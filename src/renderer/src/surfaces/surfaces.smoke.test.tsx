@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type {
   BacklogItem,
   ForemanProposal,
@@ -54,6 +54,18 @@ function AppMountedSurfaces(): ReactNode {
         <BacklogSurface />
       </div>
       <HoldsPopover />
+    </>
+  )
+}
+
+function PlanOpenHarness(): ReactNode {
+  const { state, openPlan } = useStore()
+  return (
+    <>
+      <button onClick={() => void openPlan(smokePlan.id)}>Open earlier plan</button>
+      <button onClick={() => void openPlan(newerSmokePlan.id)}>Open newer plan</button>
+      <div>{state.planDetail?.plan.title ?? 'No plan open'}</div>
+      <div>{state.planLedger?.map((entry) => entry.text).join(', ') ?? 'Ledger unknown'}</div>
     </>
   )
 }
@@ -182,6 +194,13 @@ const smokePlan: WorkPlan = {
   createdAt: 1_700_000_000_000,
 }
 
+const newerSmokePlan: WorkPlan = {
+  ...smokePlan,
+  id: '1'.repeat(36),
+  sessionId: '2'.repeat(36),
+  title: 'Keep the newer plan selected',
+}
+
 const smokeMilestone: Milestone = {
   id: 'f'.repeat(36),
   planId: smokePlan.id,
@@ -253,6 +272,15 @@ const blockingEntry: LedgerEntry = {
     },
   ],
   dispositions: [],
+}
+
+const newerLedgerEntry: LedgerEntry = {
+  ...blockingEntry,
+  id: 'finding-smoke-2',
+  sessionId: newerSmokePlan.sessionId,
+  text: 'The newer plan ledger survives.',
+  normalizedText: 'the newer plan ledger survives',
+  occurrences: [],
 }
 
 /**
@@ -466,6 +494,55 @@ describe('mounted-surface smoke', () => {
     // Null means unknown, and unknown fails CLOSED.
     await screen.findByText(/ledger could not be loaded/)
     await assertLedgerGateActionsDisabled(invoked)
+  })
+
+  it('a slower earlier openPlan loses to the newer selection', async () => {
+    let resolveEarlierLedger!: (ledger: LedgerEntry[] | undefined) => void
+    let markEarlierLedgerStarted!: () => void
+    const earlierLedger = new Promise<LedgerEntry[] | undefined>((resolve) => {
+      resolveEarlierLedger = resolve
+    })
+    const earlierLedgerStarted = new Promise<void>((resolve) => {
+      markEarlierLedgerStarted = resolve
+    })
+
+    installBridge({
+      'plan.get': (payload) => {
+        const planId = (payload as { planId: string }).planId
+        return {
+          plan: planId === newerSmokePlan.id ? newerSmokePlan : smokePlan,
+          milestones: [smokeMilestone],
+          worktree: null,
+        }
+      },
+      'ledger.list': (payload) => {
+        const sessionId = (payload as { sessionId: string }).sessionId
+        if (sessionId === newerSmokePlan.sessionId) return [newerLedgerEntry]
+        markEarlierLedgerStarted()
+        return earlierLedger
+      },
+    })
+    render(
+      <StoreProvider>
+        <PlanOpenHarness />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open earlier plan' }))
+    await earlierLedgerStarted
+    fireEvent.click(screen.getByRole('button', { name: 'Open newer plan' }))
+    await screen.findByText(newerSmokePlan.title)
+    await screen.findByText(newerLedgerEntry.text)
+
+    await act(async () => {
+      resolveEarlierLedger(undefined)
+      await earlierLedger
+    })
+
+    expect(screen.getByText(newerSmokePlan.title)).toBeTruthy()
+    expect(screen.getByText(newerLedgerEntry.text)).toBeTruthy()
+    expect(screen.queryByText(smokePlan.title)).toBeNull()
+    expect(screen.queryByText('Ledger unknown')).toBeNull()
   })
 
   it('a holds deep link opens one approval gate across the two mounted hosts', async () => {

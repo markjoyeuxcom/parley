@@ -558,6 +558,7 @@ const StoreContext = createContext<Store | null>(null)
 export function StoreProvider({ children }: { children: ReactNode }): ReactNode {
   const [state, dispatch] = useReducer(reducer, initialState)
   const stateRef = useRef(state)
+  const planGenerationRef = useRef(0)
   stateRef.current = state
 
   const notify = useCallback((level: Notice['level'], message: string) => {
@@ -621,6 +622,7 @@ export function StoreProvider({ children }: { children: ReactNode }): ReactNode 
 
   const openPlan = useCallback(
     async (planId: Id) => {
+      const generation = ++planGenerationRef.current
       const detail = await attempt(() => api.getPlan(planId))
       if (!detail) return
       // Fetched with the plan, dispatched atomically beside it: two rapid
@@ -628,6 +630,7 @@ export function StoreProvider({ children }: { children: ReactNode }): ReactNode 
       // ledger fetch arrives as null — unknown — which the gate treats as
       // closed, never as clear.
       const ledger = await attempt(() => api.listLedger(detail.plan.sessionId))
+      if (generation !== planGenerationRef.current) return
       dispatch({ type: 'planOpened', detail, ledger: ledger ?? null })
     },
     [attempt],

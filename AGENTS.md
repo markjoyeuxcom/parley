@@ -454,6 +454,9 @@ three rules load-bearing:
 
 - **`planLedger` fails closed.** `openPlan` fetches the plan and its
   session's ledger together and dispatches one atomic `planOpened`;
+  opens are last-selection-wins, so a superseded open is dropped whole
+  just before that dispatch and a stale result never writes or clears the
+  winner's ledger.
   `state.planLedger === null` means *unknown*, and the approval gate
   disables on unknown rather than un-gating on an empty array — an empty
   gate silently enables approval, and while main would refuse the run, the
