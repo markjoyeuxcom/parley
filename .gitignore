@@ -1,7 +1,26 @@
+# Dependencies
 node_modules/
+
+# Build output — out/ is the running dev artifact, dist/ is electron-builder's
 out/
 dist/
-*.tsbuildinfo
-.DS_Store
 .vite/
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+
+# Local tool state — machine-specific permission grants, not project config
+.claude/settings.local.json
+
+# Environment files — Parley has no API-key path, and nothing secret belongs in git either
+.env
+.env.*
+
+# Editors and OS noise
+.DS_Store
+.idea/
+.vscode/
+
+# Logs
 *.log
