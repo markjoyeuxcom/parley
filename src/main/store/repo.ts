@@ -138,7 +138,7 @@ export class Repo {
    * Appends one repository activity watermark. Deliberately a bare statement:
    * callers own the transaction that pairs it with the write being recorded.
    */
-  noteRepoActivity(path: string): void {
+  noteRepoActivity(path: string, _source?: 'backlog' | 'milestone'): void {
     this.db.run(
       `INSERT INTO repo_activity (seq, repo_path)
        VALUES ((SELECT COALESCE(MAX(seq), 0) + 1 FROM repo_activity), ?)`,
@@ -1259,7 +1259,6 @@ export class Repo {
         item.createdAt,
         item.updatedAt,
       )
-      this.noteRepoActivity(item.repoPath)
       this.appendBacklogEvent(item.id, state, input.note ?? `Filed (${input.source}).`, eventSource)
       return { item, resighted: false }
     })
@@ -1323,7 +1322,6 @@ export class Repo {
       now,
       id,
     )
-    this.noteRepoActivity(item.repoPath)
     this.appendBacklogEvent(id, to, opts.note ?? '', opts.source)
     const updated = this.db.get(`SELECT * FROM backlog_items WHERE id = ?`, id)
     if (!updated) throw new Error('backlog item disappeared mid-transition')
@@ -1425,6 +1423,13 @@ export class Repo {
       source,
       Date.now(),
     )
+    this.noteRepoActivity(this.repoPathForItem(itemId), 'backlog')
+  }
+
+  private repoPathForItem(itemId: Id): string {
+    const row = this.db.get(`SELECT repo_path FROM backlog_items WHERE id = ?`, itemId)
+    if (!row) throw new Error('no such backlog item')
+    return str(row['repo_path'])
   }
 
   /** Live-duplicate check is exact text; learnings are short and curated. */
@@ -2376,57 +2381,78 @@ export class Repo {
   }
 
   updateMilestone(id: Id, patch: Partial<Milestone>): Milestone {
-    const columns: Record<keyof Milestone & string, string> = {
-      id: 'id',
-      planId: 'plan_id',
-      index: 'idx',
-      title: 'title',
-      intent: 'intent',
-      expectedPaths: 'expected_paths',
-      status: 'status',
-      auditNote: 'audit_note',
-      testCommand: 'test_command',
-      testResult: 'test_result',
-      reviewNote: 'review_note',
-      reviewBlocking: 'review_blocking',
-      reviewNotes: 'review_notes',
-      reviewPassed: 'review_passed',
-      adopted: 'adopted',
-      approvalId: 'approval_id',
-      createdAt: 'created_at',
-      completedAt: 'completed_at',
-      mutations: 'mutations',
-      mutationResults: 'mutation_results',
-      // Deliberately unwritable through a patch: the domain field is a derived
-      // summary, and the full blob has its own accessor (setMilestoneRunState).
-      runState: '',
-    }
-    const sets: string[] = []
-    const values: unknown[] = []
-    for (const [key, value] of Object.entries(patch)) {
-      const column = columns[key as keyof Milestone & string]
-      if (!column || column === 'id') continue
-      sets.push(`${column} = ?`)
-      if (
-        key === 'expectedPaths' ||
-        key === 'testResult' ||
-        key === 'mutations' ||
-        key === 'mutationResults' ||
-        key === 'reviewBlocking' ||
-        key === 'reviewNotes'
-      ) {
-        values.push(value === null ? null : json(value))
+    return this.db.transaction(() => {
+      const columns: Record<keyof Milestone & string, string> = {
+        id: 'id',
+        planId: 'plan_id',
+        index: 'idx',
+        title: 'title',
+        intent: 'intent',
+        expectedPaths: 'expected_paths',
+        status: 'status',
+        auditNote: 'audit_note',
+        testCommand: 'test_command',
+        testResult: 'test_result',
+        reviewNote: 'review_note',
+        reviewBlocking: 'review_blocking',
+        reviewNotes: 'review_notes',
+        reviewPassed: 'review_passed',
+        adopted: 'adopted',
+        approvalId: 'approval_id',
+        createdAt: 'created_at',
+        completedAt: 'completed_at',
+        mutations: 'mutations',
+        mutationResults: 'mutation_results',
+        // Deliberately unwritable through a patch: the domain field is a derived
+        // summary, and the full blob has its own accessor (setMilestoneRunState).
+        runState: '',
       }
-      else if (key === 'reviewPassed') values.push(value === null ? null : value ? 1 : 0)
-      else if (key === 'adopted') values.push(value ? 1 : 0)
-      else values.push(value as unknown)
-    }
-    if (sets.length) {
-      this.db.run(`UPDATE milestones SET ${sets.join(', ')} WHERE id = ?`, ...values, id)
-    }
-    const updated = this.getMilestone(id)
-    if (!updated) throw new Error(`milestone ${id} disappeared`)
-    return updated
+      const sets: string[] = []
+      const values: unknown[] = []
+      for (const [key, value] of Object.entries(patch)) {
+        const column = columns[key as keyof Milestone & string]
+        if (!column || column === 'id') continue
+        sets.push(`${column} = ?`)
+        if (
+          key === 'expectedPaths' ||
+          key === 'testResult' ||
+          key === 'mutations' ||
+          key === 'mutationResults' ||
+          key === 'reviewBlocking' ||
+          key === 'reviewNotes'
+        ) {
+          values.push(value === null ? null : json(value))
+        }
+        else if (key === 'reviewPassed') values.push(value === null ? null : value ? 1 : 0)
+        else if (key === 'adopted') values.push(value ? 1 : 0)
+        else values.push(value as unknown)
+      }
+      if (sets.length) {
+        const changes = this.db.run(
+          `UPDATE milestones SET ${sets.join(', ')} WHERE id = ?`,
+          ...values,
+          id,
+        ).changes
+        if (changes === 1) {
+          this.noteRepoActivity(this.repoPathForMilestone(id), 'milestone')
+        }
+      }
+      const updated = this.getMilestone(id)
+      if (!updated) throw new Error(`milestone ${id} disappeared`)
+      return updated
+    })
+  }
+
+  private repoPathForMilestone(id: Id): string {
+    const row = this.db.get(
+      `SELECT p.repo_path
+       FROM milestones m
+       JOIN plans p ON p.id = m.plan_id
+       WHERE m.id = ?`,
+      id,
+    )
+    if (!row) throw new Error(`milestone ${id} disappeared`)
+    return str(row['repo_path'])
   }
 
   // ─── Loops ─────────────────────────────────────────────────────────────────
