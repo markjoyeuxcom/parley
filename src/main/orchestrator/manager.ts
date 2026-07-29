@@ -51,6 +51,10 @@ type QueuedSelfGate = {
   planId: Id
   opts: Omit<SelfGateOptions, 'signal'>
 }
+type SelfGateFlag = {
+  planId: Id
+  detail: string
+}
 
 /**
  * Validates a repository path coming from the renderer.
@@ -152,6 +156,8 @@ export class Manager {
   private readonly selfGateRuns = new Map<string, AbortController>()
   /** The newest landing waiting for each checkout's in-flight gate to finish. */
   private readonly selfGateQueue = new Map<string, QueuedSelfGate>()
+  /** The last worktree error written by a red gate for each checkout. */
+  private readonly selfGateFlags = new Map<string, SelfGateFlag>()
   /** In-flight foreman reads, keyed by canonical repo path. Same discipline. */
   private readonly foremanRuns = new Set<string>()
   private readonly loops = new Map<Id, LoopRunner>()
@@ -990,6 +996,14 @@ export class Manager {
     })
       .then((row) => {
         if (row.state === 'green') {
+          const flag = this.selfGateFlags.get(self)
+          if (flag) {
+            this.selfGateFlags.delete(self)
+            const worktree = this.repo.getWorktreeForPlan(flag.planId)
+            if (worktree?.lastError === flag.detail) {
+              this.repo.flagWorktree(flag.planId, worktree.orphaned, '')
+            }
+          }
           if (this.selfGateQueue.has(self)) {
             this.repo.supersedeSelfUpdate(row.id)
           } else {
@@ -1003,7 +1017,11 @@ export class Manager {
         } else if (row.state === 'red') {
           // The landed-but-broken hold already exists for exactly this shape
           // of news; red rides it rather than inventing a second surface.
-          this.repo.flagWorktree(planId, false, row.detail)
+          const worktree = this.repo.getWorktreeForPlan(planId)
+          if (worktree) {
+            this.repo.flagWorktree(planId, worktree.orphaned, row.detail)
+          }
+          this.selfGateFlags.set(self, { planId, detail: row.detail })
           this.emit({ type: 'notice', level: 'warn', message: row.detail })
         }
         this.holdsChanged()

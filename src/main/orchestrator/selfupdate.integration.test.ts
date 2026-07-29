@@ -262,6 +262,21 @@ describe('the manager guard', () => {
     return { manager, repo, events }
   }
 
+  function landedWorktree(repo: Repo, planId: string, orphaned = false): void {
+    repo.createWorktree({
+      planId,
+      originPath: '/origin',
+      path: '/worktree',
+      branch: `parley/implementation-${planId}`,
+      baseBranch: 'main',
+      baseCommit: 'base',
+      createdAt: Date.now(),
+      landedAt: Date.now(),
+      lastError: '',
+      orphaned,
+    })
+  }
+
   it('stays dormant when packaged', () => {
     const { manager, repo } = guardHarness(null)
     expect(manager.launchSelfGate('plan-a')).toBe('dormant')
@@ -382,6 +397,79 @@ describe('the manager guard', () => {
           event.message.includes('Relaunch'),
       ),
     ).toBe(false)
+  })
+
+  it('clears a red gate flag when a later gate comes back green', async () => {
+    const self = fakeSelfRepo({
+      verify: `node -e "process.exit(0)"`,
+      build: `node -e "process.exit(0)"`,
+    })
+    const { manager, repo } = guardHarness(self)
+    landedWorktree(repo, 'plan-a', true)
+
+    const redCapture: NonNullable<SelfGateOptions['capture']> = async () => captured(1)
+    expect(manager.launchSelfGate('plan-a', { capture: redCapture })).toBe('started')
+    await waitFor(() => manager.busyWithRuns() === null)
+    const gateDetail = repo.listSelfUpdates()[0]?.detail
+    expect(repo.getWorktreeForPlan('plan-a')).toMatchObject({
+      lastError: gateDetail,
+      orphaned: true,
+    })
+
+    const greenCapture: NonNullable<SelfGateOptions['capture']> = async (
+      _command,
+      args,
+      cwd,
+    ) => {
+      if (args[1] === 'build') {
+        mkdirSync(join(cwd, 'out'), { recursive: true })
+        writeFileSync(join(cwd, 'out', 'app.js'), 'built')
+      }
+      return captured()
+    }
+    expect(manager.launchSelfGate('plan-b', { capture: greenCapture })).toBe('started')
+    await waitFor(() => manager.busyWithRuns() === null)
+    expect(
+      repo.listSelfUpdates().some((row) => row.planId === 'plan-b' && row.state === 'green'),
+    ).toBe(true)
+    expect(repo.getWorktreeForPlan('plan-a')).toMatchObject({
+      lastError: '',
+      orphaned: true,
+    })
+  })
+
+  it('leaves an unrelated worktree error when a later gate comes back green', async () => {
+    const self = fakeSelfRepo({
+      verify: `node -e "process.exit(0)"`,
+      build: `node -e "process.exit(0)"`,
+    })
+    const { manager, repo } = guardHarness(self)
+    landedWorktree(repo, 'plan-a')
+
+    const redCapture: NonNullable<SelfGateOptions['capture']> = async () => captured(1)
+    expect(manager.launchSelfGate('plan-a', { capture: redCapture })).toBe('started')
+    await waitFor(() => manager.busyWithRuns() === null)
+    repo.flagWorktree('plan-a', false, 'Landing cleanup left the branch behind.')
+
+    const greenCapture: NonNullable<SelfGateOptions['capture']> = async (
+      _command,
+      args,
+      cwd,
+    ) => {
+      if (args[1] === 'build') {
+        mkdirSync(join(cwd, 'out'), { recursive: true })
+        writeFileSync(join(cwd, 'out', 'app.js'), 'built')
+      }
+      return captured()
+    }
+    expect(manager.launchSelfGate('plan-b', { capture: greenCapture })).toBe('started')
+    await waitFor(() => manager.busyWithRuns() === null)
+    expect(
+      repo.listSelfUpdates().some((row) => row.planId === 'plan-b' && row.state === 'green'),
+    ).toBe(true)
+    expect(repo.getWorktreeForPlan('plan-a')?.lastError).toBe(
+      'Landing cleanup left the branch behind.',
+    )
   })
 
   it('disposeAll clears a queued gate and turns the active one red', async () => {
