@@ -256,20 +256,46 @@ describe('fast-forward landing', () => {
   })
 
   it('a red post-land smoke verification surfaces as a hold on the landed row', async () => {
-    const { repo, session, plan } = await completedWorktreePlan('parley-land-verify-')
-    const worktree = repo.getWorktreeForPlan(plan.id)
-    if (!worktree) throw new Error('expected a worktree')
+    const { repo, session, plan, origin } =
+      await completedWorktreePlan('parley-land-verify-')
+    const milestone = repo.listMilestones(plan.id)[0]
+    if (!milestone) throw new Error('expected a milestone')
+    const db = repo as unknown as { db: { run: (sql: string, ...p: unknown[]) => unknown } }
+    db.db.run(`UPDATE plans SET mock = 0 WHERE id = ?`, plan.id)
 
-    // Simulate the fire-and-forget verifier's red outcome landing after the
-    // fast-forward: the row is landed, and the failure is flagged onto it.
-    repo.markWorktreeLanded(plan.id)
-    repo.flagWorktree(plan.id, false, 'post-land verification failed: `true` exited 1 in the origin.')
+    writeFileSync(
+      join(origin, 'post-land-fail.cjs'),
+      "console.error('landed verification exploded')\nprocess.exit(3)\n",
+    )
+    const events: AppEvent[] = []
+    const manager = new Manager({
+      repo,
+      registry: new AgentRegistry(true),
+      emit: (event) => events.push(event),
+      worktreesRoot: mkdtempSync(join(tmpdir(), 'parley-landroot-')),
+    })
+    manager.setMilestoneTestCommand(milestone.id, 'node post-land-fail.cjs')
+
+    const approval = manager.grantLandApproval(plan.id, 'land it')
+    const landed = await manager.landPlan(plan.id, approval.id)
+    expect(landed.landed).toBe(true)
+
+    await waitUntil(() => Boolean(repo.getWorktreeForPlan(plan.id)?.lastError))
 
     const holds = computeHolds(repo, none).filter((h) => h.planId === plan.id)
     expect(holds).toHaveLength(1)
     expect(holds[0]).toMatchObject({ kind: 'merge-blocked', actionable: false, sessionId: session.id })
     expect(holds[0]?.title).toBe('Landed, but verification failed')
     expect(holds[0]?.detail).toContain('post-land verification failed')
+    expect(holds[0]?.detail).toContain('landed verification exploded')
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'notice' &&
+          event.level === 'warn' &&
+          event.message.includes('node post-land-fail.cjs'),
+      ),
+    ).toBe(true)
   })
 
   it('landing an orphaned row still works from the surviving branch', async () => {

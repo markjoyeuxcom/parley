@@ -10,6 +10,7 @@ import {
   commitMilestone,
   ensureWorktree,
   reconcileWorktrees,
+  verifyLanding,
   verifyWorktree,
   worktreeBranch,
   WorktreeError,
@@ -182,6 +183,67 @@ describe('verifyWorktree', () => {
     const sick = await verifyWorktree(created)
     expect(sick.ok).toBe(false)
     expect(sick.detail).toMatch(/somewhere-else/)
+  })
+})
+
+describe('verifyLanding', () => {
+  it('runs a red command in the origin and reports its command, exit code, and output', async () => {
+    const origin = gitRepo('parley-land-verify-red-')
+    writeFileSync(
+      join(origin, 'verify-red.cjs'),
+      [
+        "require('node:fs').writeFileSync('verify-ran.txt', 'ran in origin\\n')",
+        "console.log('verification stdout')",
+        "console.error('verification stderr')",
+        'process.exit(3)',
+        '',
+      ].join('\n'),
+    )
+
+    const result = await verifyLanding(origin, 'node verify-red.cjs')
+
+    expect(result.ok).toBe(false)
+    expect(result.detail).toContain('`node verify-red.cjs`')
+    expect(result.detail).toContain('exited 3')
+    expect(result.detail).toContain('verification stdout')
+    expect(result.detail).toContain('verification stderr')
+    expect(existsSync(join(origin, 'verify-ran.txt'))).toBe(true)
+  })
+
+  it('returns green when the command passes', async () => {
+    const origin = gitRepo('parley-land-verify-green-')
+    writeFileSync(
+      join(origin, 'verify-green.cjs'),
+      "require('node:fs').writeFileSync('verify-green.txt', 'passed\\n')\n",
+    )
+
+    const result = await verifyLanding(origin, 'node verify-green.cjs')
+
+    expect(result).toEqual({ ok: true, detail: '' })
+    expect(existsSync(join(origin, 'verify-green.txt'))).toBe(true)
+  })
+
+  it('fails open without spawning commands that need shell syntax or cannot be parsed', async () => {
+    const origin = gitRepo('parley-land-verify-refused-')
+    writeFileSync(
+      join(origin, 'shell-syntax.cjs'),
+      "require('node:fs').writeFileSync('shell-syntax-ran.txt', 'spawned\\n')\n",
+    )
+    writeFileSync(
+      join(origin, 'unparsable.cjs'),
+      "require('node:fs').writeFileSync('unparsable-ran.txt', 'spawned\\n')\n",
+    )
+
+    await expect(verifyLanding(origin, 'node shell-syntax.cjs && true')).resolves.toEqual({
+      ok: true,
+      detail: '',
+    })
+    await expect(verifyLanding(origin, 'node "unparsable.cjs')).resolves.toEqual({
+      ok: true,
+      detail: '',
+    })
+    expect(existsSync(join(origin, 'shell-syntax-ran.txt'))).toBe(false)
+    expect(existsSync(join(origin, 'unparsable-ran.txt'))).toBe(false)
   })
 })
 
