@@ -493,11 +493,12 @@ refusal → finding gate → worktree ensure + health → **approval consumption
 baseline → execute. Setup (`npm ci` class, minutes, can fail) runs before the
 single-use approval is spent. The health check is **fail-closed** because
 `readTree` fails *open* — a broken directory reads as an unknown tree, which
-silently disables the changed-tree guard and blinds the reviewer. And the
-status refusal is re-checked in the same synchronous block as the spend: the
-ensure is an await, so two racing starts carrying two different approvals
-would otherwise both get through — the atomic spend only protects one
-approval against itself.
+silently disables the changed-tree guard and blinds the reviewer. It also
+compares the worktree and origin repositories' canonical Git common directories;
+an unreadable identity or a different repository fails closed. And the status
+refusal is re-checked in the same synchronous block as the spend: the ensure is
+an await, so two racing starts carrying two different approvals would otherwise
+both get through — the atomic spend only protects one approval against itself.
 
 Nothing in worktrees.ts deletes work. Reconciliation flags rows orphaned when
 their directory or origin vanished and never removes either; re-attachment

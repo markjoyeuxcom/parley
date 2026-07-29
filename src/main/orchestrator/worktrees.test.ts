@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -13,6 +13,7 @@ import {
   verifyLanding,
   verifyWorktree,
   worktreeBranch,
+  worktreePath,
   WorktreeError,
 } from './worktrees'
 
@@ -126,6 +127,22 @@ describe('ensureWorktree', () => {
     expect(() => gitOut(origin, 'rev-parse', '--verify', `refs/heads/${worktreeBranch(plan)}`)).toThrow()
   })
 
+  it('does not adopt an unrelated repository at the deterministic path and branch', async () => {
+    const repo = freshRepo()
+    const origin = gitRepo('parley-wt-adopt-origin-')
+    const plan = makePlan(repo, origin)
+    const root = worktreesRoot()
+    const unrelated = gitRepo('parley-wt-adopt-unrelated-')
+    execFileSync('git', ['checkout', '-q', '-b', worktreeBranch(plan)], {
+      cwd: unrelated,
+      stdio: 'ignore',
+    })
+    renameSync(unrelated, worktreePath(root, plan))
+
+    await expect(ensureWorktree(repo, root, plan)).rejects.toThrow(/not this plan’s worktree/)
+    expect(repo.getWorktreeForPlan(plan.id)).toBeNull()
+  })
+
   it('re-attaches to a surviving branch when the directory vanished, keeping its commits', async () => {
     const repo = freshRepo()
     const origin = gitRepo('parley-wt-reattach-')
@@ -160,6 +177,58 @@ describe('ensureWorktree', () => {
 })
 
 describe('verifyWorktree', () => {
+  it('accepts a healthy worktree belonging to its recorded origin', async () => {
+    const repo = freshRepo()
+    const origin = gitRepo('parley-wt-healthy-')
+    const plan = makePlan(repo, origin)
+    const created = await ensureWorktree(repo, worktreesRoot(), plan)
+
+    await expect(verifyWorktree(created)).resolves.toEqual({ ok: true, detail: '' })
+  })
+
+  it('fails closed when an unrelated repository replaces the worktree on the expected branch', async () => {
+    const repo = freshRepo()
+    const origin = gitRepo('parley-wt-identity-')
+    const plan = makePlan(repo, origin)
+    const created = await ensureWorktree(repo, worktreesRoot(), plan)
+    const unrelated = gitRepo('parley-wt-unrelated-')
+    execFileSync('git', ['checkout', '-q', '-b', created.branch], {
+      cwd: unrelated,
+      stdio: 'ignore',
+    })
+    rmSync(created.path, { recursive: true, force: true })
+    renameSync(unrelated, created.path)
+
+    const sick = await verifyWorktree(created)
+    expect(sick.ok).toBe(false)
+    expect(sick.detail).toMatch(/different repository/)
+  })
+
+  it('accepts a symlinked spelling of the recorded origin', async () => {
+    const repo = freshRepo()
+    const origin = gitRepo('parley-wt-symlink-origin-')
+    const linkRoot = mkdtempSync(join(tmpdir(), 'parley-wt-origin-link-'))
+    const originLink = join(linkRoot, 'origin')
+    symlinkSync(origin, originLink)
+    const plan = makePlan(repo, originLink)
+    const created = await ensureWorktree(repo, worktreesRoot(), plan)
+
+    await expect(verifyWorktree(created)).resolves.toEqual({ ok: true, detail: '' })
+  })
+
+  it('fails closed when the recorded origin is no longer a repository', async () => {
+    const repo = freshRepo()
+    const origin = gitRepo('parley-wt-origin-valid-')
+    const plan = makePlan(repo, origin)
+    const created = await ensureWorktree(repo, worktreesRoot(), plan)
+    const formerOrigin = gitRepo('parley-wt-origin-former-')
+    rmSync(join(formerOrigin, '.git'), { recursive: true, force: true })
+
+    const sick = await verifyWorktree({ ...created, originPath: formerOrigin })
+    expect(sick.ok).toBe(false)
+    expect(sick.detail).toMatch(/could not establish/)
+  })
+
   it('fails closed when the directory is deleted', async () => {
     const repo = freshRepo()
     const origin = gitRepo('parley-wt-health-')

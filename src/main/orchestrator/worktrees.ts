@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import type { WorkPlan, Worktree } from '@shared/domain'
 import { isShellFree } from '@shared/command'
+import { canonicalRepoPath } from '@main/util/repoPath'
 import { capture, splitCommand } from '@main/util/spawn'
 import type { Repo } from '@main/store/repo'
 
@@ -58,11 +59,18 @@ function trimmedFailure(result: GitResult): string {
   return (result.stderr || result.stdout || 'git failed with no output').slice(0, 400)
 }
 
+async function gitCommonDir(cwd: string): Promise<string | null> {
+  const commonDir = await git(['rev-parse', '--git-common-dir'], cwd)
+  if (!commonDir.ok || !commonDir.stdout) return null
+  return canonicalRepoPath(resolve(cwd, commonDir.stdout))
+}
+
 /**
  * Fail-closed health: the directory exists, is a git worktree, and has the
- * recorded branch checked out. Everything downstream (baseline, diff, tests,
- * review) silently degrades on a broken tree, so this is checked before every
- * use — and before any approval is consumed.
+ * recorded branch checked out in the recorded origin repository. Everything
+ * downstream (baseline, diff, tests, review) silently degrades on a broken
+ * tree, so this is checked before every use — and before any approval is
+ * consumed.
  */
 export async function verifyWorktree(worktree: Worktree): Promise<{ ok: boolean; detail: string }> {
   if (!existsSync(worktree.originPath)) {
@@ -74,6 +82,22 @@ export async function verifyWorktree(worktree: Worktree): Promise<{ ok: boolean;
   const inside = await git(['rev-parse', '--git-dir'], worktree.path)
   if (!inside.ok) {
     return { ok: false, detail: `${worktree.path} is not a git worktree: ${trimmedFailure(inside)}` }
+  }
+  const [worktreeCommonDir, originCommonDir] = await Promise.all([
+    gitCommonDir(worktree.path),
+    gitCommonDir(worktree.originPath),
+  ])
+  if (!worktreeCommonDir || !originCommonDir) {
+    return {
+      ok: false,
+      detail: 'could not establish that the worktree belongs to its recorded origin repository',
+    }
+  }
+  if (worktreeCommonDir !== originCommonDir) {
+    return {
+      ok: false,
+      detail: 'the worktree belongs to a different repository than its recorded origin',
+    }
   }
   const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'], worktree.path)
   if (!branch.ok || branch.stdout !== worktree.branch) {
@@ -151,8 +175,18 @@ export async function ensureWorktree(
   if (existsSync(path)) {
     // A directory with no registry row: a crash between `worktree add` and the
     // insert. Adopt it if it is exactly what we would have created.
-    const onBranch = await git(['rev-parse', '--abbrev-ref', 'HEAD'], path)
-    if (!onBranch.ok || onBranch.stdout !== branch) {
+    const [onBranch, pathCommonDir, originCommonDir] = await Promise.all([
+      git(['rev-parse', '--abbrev-ref', 'HEAD'], path),
+      gitCommonDir(path),
+      gitCommonDir(origin),
+    ])
+    if (
+      !onBranch.ok ||
+      onBranch.stdout !== branch ||
+      !pathCommonDir ||
+      !originCommonDir ||
+      pathCommonDir !== originCommonDir
+    ) {
       throw new WorktreeError(
         `a directory already exists at ${path} and is not this plan’s worktree; move it aside`,
       )
