@@ -27,6 +27,20 @@ function writeCodexConfig(text: string): string {
   return path
 }
 
+function nodePtyFixture(container = scratch()): {
+  entry: string
+  helper: string
+  releaseDir: string
+} {
+  const packageDir = join(container, 'node_modules', 'node-pty')
+  const entry = join(packageDir, 'lib', 'index.js')
+  const releaseDir = join(packageDir, 'build', 'Release')
+  mkdirSync(join(packageDir, 'lib'), { recursive: true })
+  mkdirSync(releaseDir, { recursive: true })
+  writeFileSync(entry, '')
+  return { entry, helper: join(releaseDir, 'spawn-helper'), releaseDir }
+}
+
 describe('findExecutable', () => {
   it('finds a binary on the supplied PATH', () => {
     const dir = scratch()
@@ -129,26 +143,84 @@ describe('applyResolvedPath', () => {
 
 describe('preflightPty', () => {
   it('passes on platforms with no spawn-helper requirement', () => {
-    // spawn-helper is a mac-only binding.gyp target, so elsewhere there is
-    // nothing to check and the preflight must not invent a failure.
-    const result = preflightPty()
-    if (process.platform !== 'darwin') {
-      expect(result.ok).toBe(true)
-      expect(result.helperPath).toBeNull()
-    } else {
-      // On macOS it must reach a verdict about a concrete path.
-      expect(result.helperPath).toBeTruthy()
-      if (!result.ok) expect(result.detail).toMatch(/rebuild|chmod/i)
-    }
+    const result = preflightPty({
+      platform: 'linux',
+      resolveEntry: () => {
+        throw new Error('should not resolve node-pty')
+      },
+    })
+
+    expect(result).toEqual({ ok: true, detail: '', helperPath: null })
   })
 
-  it('always explains itself when it fails', () => {
-    const result = preflightPty()
-    if (!result.ok) {
-      expect(result.detail.length).toBeGreaterThan(20)
-      // The message has to name a fix, not just the symptom.
-      expect(result.detail).toMatch(/npm run rebuild|chmod/)
-    }
+  it('reports a node-pty module-load failure', () => {
+    const result = preflightPty({
+      platform: 'darwin',
+      resolveEntry: () => {
+        throw new Error('fixture load failure')
+      },
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      detail: 'node-pty could not be loaded (fixture load failure). Run "npm run rebuild".',
+      helperPath: null,
+    })
+  })
+
+  it('reports a missing spawn-helper', () => {
+    const fixture = nodePtyFixture()
+    const result = preflightPty({
+      platform: 'darwin',
+      resolveEntry: () => fixture.entry,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.helperPath).toBe(fixture.helper)
+    expect(result.detail).toMatch(/missing its spawn-helper.*npm run rebuild/)
+  })
+
+  it('reports a spawn-helper that is not executable', () => {
+    const fixture = nodePtyFixture()
+    writeFileSync(fixture.helper, '')
+    chmodSync(fixture.helper, 0o644)
+
+    const result = preflightPty({
+      platform: 'darwin',
+      resolveEntry: () => fixture.entry,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.helperPath).toBe(fixture.helper)
+    expect(result.detail).toMatch(/not executable.*chmod \+x/)
+  })
+
+  it('passes with a healthy spawn-helper', () => {
+    const fixture = nodePtyFixture()
+    writeExecutable(fixture.releaseDir, 'spawn-helper')
+
+    expect(
+      preflightPty({
+        platform: 'darwin',
+        resolveEntry: () => fixture.entry,
+      }),
+    ).toEqual({ ok: true, detail: '', helperPath: fixture.helper })
+  })
+
+  it.each(['app.asar', 'node_modules.asar'])('rewrites helpers outside %s', (archive) => {
+    const root = scratch()
+    const fixture = nodePtyFixture(join(root, archive))
+    const unpackedHelper = fixture.helper.replace(archive, `${archive}.unpacked`)
+    mkdirSync(join(unpackedHelper, '..'), { recursive: true })
+    writeFileSync(unpackedHelper, '')
+    chmodSync(unpackedHelper, 0o755)
+
+    expect(
+      preflightPty({
+        platform: 'darwin',
+        resolveEntry: () => fixture.entry,
+      }),
+    ).toEqual({ ok: true, detail: '', helperPath: unpackedHelper })
   })
 })
 

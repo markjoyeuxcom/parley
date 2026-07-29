@@ -217,6 +217,11 @@ export interface PtyPreflight {
   helperPath: string | null
 }
 
+export interface PtyPreflightProbe {
+  platform: NodeJS.Platform
+  resolveEntry: () => string
+}
+
 /**
  * Verifies node-pty can actually spawn before the user tries to open a pane.
  *
@@ -226,8 +231,13 @@ export interface PtyPreflight {
  * module imports fine) while `spawn-helper` is missing — and then every single
  * spawn fails with "posix_spawnp failed", pointing at nothing useful.
  */
-export function preflightPty(): PtyPreflight {
-  if (process.platform !== 'darwin') {
+export function preflightPty(
+  probe: PtyPreflightProbe = {
+    platform: process.platform,
+    resolveEntry: () => require.resolve('node-pty'),
+  },
+): PtyPreflight {
+  if (probe.platform !== 'darwin') {
     return { ok: true, detail: '', helperPath: null }
   }
 
@@ -235,7 +245,7 @@ export function preflightPty(): PtyPreflight {
   try {
     // Resolve through the package's own entry so this follows whatever layout
     // the installed version uses.
-    const entry = require.resolve('node-pty')
+    const entry = probe.resolveEntry()
     releaseDir = join(dirname(entry), '..', 'build', 'Release')
   } catch (err) {
     return {
