@@ -328,27 +328,32 @@ function installBridge(
       missing: [],
       dirtyPaths: [],
     }),
-    'repos.list': () => [
-      {
-        repoPath: '/tmp/smoke-repo',
-        planCount: 1,
-        attentionPlans: 0,
-        openItems: 1,
-        pendingTriage: 0,
-        hasPendingProposal: true,
-      },
-      // A repository whose only records are plans — it must appear and get
-      // full tabs, or the surface dead-ends on exactly the repos it exists
-      // for.
-      {
-        repoPath: '/tmp/smoke-plans-only',
-        planCount: 2,
-        attentionPlans: 1,
-        openItems: 0,
-        pendingTriage: 0,
-        hasPendingProposal: false,
-      },
-    ],
+    'repos.list': () => ({
+      repos: [
+        {
+          repoPath: '/tmp/smoke-repo',
+          archived: false,
+          planCount: 1,
+          attentionPlans: 0,
+          openItems: 1,
+          pendingTriage: 0,
+          hasPendingProposal: true,
+        },
+        // A repository whose only records are plans — it must appear and get
+        // full tabs, or the surface dead-ends on exactly the repos it exists
+        // for.
+        {
+          repoPath: '/tmp/smoke-plans-only',
+          archived: false,
+          planCount: 2,
+          attentionPlans: 1,
+          openItems: 0,
+          pendingTriage: 0,
+          hasPendingProposal: false,
+        },
+      ],
+      archivedCount: 0,
+    }),
     'loop.list': () => [],
     'skill.list': () => [],
     'pane.list': () => [],

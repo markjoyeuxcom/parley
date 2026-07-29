@@ -336,11 +336,136 @@ describe('plan.list arms', () => {
     })) as unknown[]
     expect(scoped).toHaveLength(205)
 
-    const summaries = (await invokeCommand(ctx, { command: 'repos.list' })) as Array<{
-      repoPath: string
-      planCount: number
-    }>
-    expect(summaries.find((s) => s.repoPath === repoPath)?.planCount).toBe(205)
+    const { repos, archivedCount } = (await invokeCommand(ctx, {
+      command: 'repos.list',
+      payload: {},
+    })) as {
+      repos: Array<{ repoPath: string; planCount: number }>
+      archivedCount: number
+    }
+    expect(repos.find((s) => s.repoPath === repoPath)?.planCount).toBe(205)
+    expect(archivedCount).toBe(0)
+  })
+})
+
+describe('repository archive list boundaries', () => {
+  it('hides archived repo work globally while scoped reads remain complete', async () => {
+    const { ctx, repo } = harness()
+    const archivedPath = '/tmp/ipc-archived-repo'
+    const visiblePath = '/tmp/ipc-visible-repo'
+
+    const archivedItem = repo.fileBacklogItem({
+      repoPath: archivedPath,
+      title: 'Settled archived work',
+      source: 'manual',
+      mock: true,
+      state: 'open',
+    }).item
+    repo.transitionBacklogItem(archivedItem.id, 'dropped', {
+      source: 'human',
+      note: 'Settled for archive.',
+    })
+    const visibleItem = repo.fileBacklogItem({
+      repoPath: visiblePath,
+      title: 'Visible work',
+      source: 'manual',
+      mock: true,
+      state: 'open',
+    }).item
+
+    const archivedLearning = repo.fileLearning({
+      repoPath: archivedPath,
+      text: 'Archived learning',
+      source: 'manual',
+      mock: true,
+    }).learning
+    repo.transitionLearning(archivedLearning.id, 'retired')
+    const visibleLearning = repo.fileLearning({
+      repoPath: visiblePath,
+      text: 'Visible learning',
+      source: 'manual',
+      mock: true,
+    }).learning
+
+    await invokeCommand(ctx, {
+      command: 'repos.archive',
+      payload: { repoPath: archivedPath, archived: true },
+    })
+
+    const hidden = (await invokeCommand(ctx, {
+      command: 'repos.list',
+      payload: {},
+    })) as {
+      repos: Array<{ repoPath: string; archived: boolean }>
+      archivedCount: number
+    }
+    expect(hidden.repos.map((summary) => summary.repoPath)).toEqual([visiblePath])
+    expect(hidden.archivedCount).toBe(1)
+
+    const revealed = (await invokeCommand(ctx, {
+      command: 'repos.list',
+      payload: { includeArchived: true },
+    })) as {
+      repos: Array<{ repoPath: string; archived: boolean }>
+      archivedCount: number
+    }
+    expect(revealed.repos).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ repoPath: archivedPath, archived: true }),
+        expect.objectContaining({ repoPath: visiblePath, archived: false }),
+      ]),
+    )
+    expect(revealed.archivedCount).toBe(1)
+
+    const globalItems = (await invokeCommand(ctx, {
+      command: 'backlog.list',
+      payload: {},
+    })) as Array<{ id: string }>
+    expect(globalItems.map((item) => item.id)).toEqual([visibleItem.id])
+    const allItems = (await invokeCommand(ctx, {
+      command: 'backlog.list',
+      payload: { includeArchived: true },
+    })) as Array<{ id: string }>
+    expect(allItems.map((item) => item.id)).toEqual(
+      expect.arrayContaining([archivedItem.id, visibleItem.id]),
+    )
+    const scopedItems = (await invokeCommand(ctx, {
+      command: 'backlog.list',
+      payload: { repoPath: archivedPath },
+    })) as Array<{ id: string }>
+    expect(scopedItems.map((item) => item.id)).toEqual([archivedItem.id])
+
+    const globalLearnings = (await invokeCommand(ctx, {
+      command: 'learnings.list',
+      payload: {},
+    })) as Array<{ id: string }>
+    expect(globalLearnings.map((learning) => learning.id)).toEqual([visibleLearning.id])
+    const allLearnings = (await invokeCommand(ctx, {
+      command: 'learnings.list',
+      payload: { includeArchived: true },
+    })) as Array<{ id: string }>
+    expect(allLearnings.map((learning) => learning.id)).toEqual(
+      expect.arrayContaining([archivedLearning.id, visibleLearning.id]),
+    )
+    const scopedLearnings = (await invokeCommand(ctx, {
+      command: 'learnings.list',
+      payload: { repoPath: archivedPath },
+    })) as Array<{ id: string }>
+    expect(scopedLearnings.map((learning) => learning.id)).toEqual([archivedLearning.id])
+
+    await invokeCommand(ctx, {
+      command: 'repos.archive',
+      payload: { repoPath: archivedPath, archived: false },
+    })
+    const restored = (await invokeCommand(ctx, {
+      command: 'repos.list',
+      payload: {},
+    })) as { repos: Array<{ repoPath: string }>; archivedCount: number }
+    expect(restored.repos.map((summary) => summary.repoPath)).toEqual([
+      archivedPath,
+      visiblePath,
+    ])
+    expect(restored.archivedCount).toBe(0)
   })
 })
 

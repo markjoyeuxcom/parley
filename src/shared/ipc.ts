@@ -162,7 +162,10 @@ export const ListLedgerReq = z.object({ sessionId: Id })
 /** Acknowledges a notice-class hold. Decision-class holds refuse — they clear by acting. */
 export const AckHoldReq = z.object({ holdId: Id })
 
-export const ListBacklogReq = z.object({ repoPath: z.string().optional() })
+export const ListBacklogReq = z.object({
+  repoPath: z.string().optional(),
+  includeArchived: z.boolean().default(false),
+})
 export const DropBacklogItemReq = z.object({
   itemId: Id,
   note: z.string().trim().max(2000).default(''),
@@ -177,7 +180,10 @@ export const CloseBacklogItemReq = z.object({
   itemId: Id,
   note: z.string().trim().max(2000).default(''),
 })
-export const ListLearningsReq = z.object({ repoPath: z.string().optional() })
+export const ListLearningsReq = z.object({
+  repoPath: z.string().optional(),
+  includeArchived: z.boolean().default(false),
+})
 /** One gated read of a repository's backlog by the chosen agent. */
 export const RunForemanReq = z.object({ repoPath: z.string().min(1), cfg: AgentConfig })
 export const ListForemanReq = z.object({ repoPath: z.string().optional() })
@@ -207,6 +213,11 @@ export const DisposeLedgerFindingReq = z.object({
 /** Archiving hides a session from the list. It is reversible and deletes nothing. */
 export const ArchiveSessionReq = z.object({ sessionId: Id, archived: z.boolean() })
 export const ListSessionsReq = z.object({ includeArchived: z.boolean().default(false) })
+export const ListReposReq = z.object({ includeArchived: z.boolean().default(false) })
+export const ArchiveRepoReq = z.object({
+  repoPath: z.string().min(1),
+  archived: z.boolean(),
+})
 /** Deleting is permanent. The impact query exists so it is never a blind click. */
 export const DeleteSessionReq = z.object({ sessionId: Id })
 export const GetPlanReq = z.object({ planId: Id })
@@ -272,7 +283,8 @@ export const COMMANDS = {
   'plan.get': GetPlanReq,
   'plan.list': ListPlansReq,
   'plan.cancel': CancelPlanReq,
-  'repos.list': null,
+  'repos.list': ListReposReq,
+  'repos.archive': ArchiveRepoReq,
   'plan.runMilestone': RunMilestoneReq,
   'plan.inspect': InspectMilestoneReq,
   'plan.answer': AnswerPlanReq,
@@ -371,6 +383,7 @@ export interface AppInfo {
  */
 export interface RepoSummary {
   repoPath: string
+  archived: boolean
   planCount: number
   /** Plans needing a human: failed, parked, blocked, or complete-unlanded. */
   attentionPlans: number

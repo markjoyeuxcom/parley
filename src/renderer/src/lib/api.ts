@@ -126,8 +126,8 @@ export const api = {
   ackHold: (holdId: Id): Promise<Hold[]> => bridge().invoke('holds.ack', { holdId }),
 
   // Backlog
-  listBacklogItems: (repoPath?: string): Promise<BacklogItem[]> =>
-    bridge().invoke('backlog.list', repoPath ? { repoPath } : {}),
+  listBacklogItems: (repoPath?: string, includeArchived = false): Promise<BacklogItem[]> =>
+    bridge().invoke('backlog.list', repoPath ? { repoPath, includeArchived } : { includeArchived }),
   dropBacklogItem: (itemId: Id, note = ''): Promise<BacklogItem> =>
     bridge().invoke('backlog.drop', { itemId, note }),
   /** Reopens a planned or closure-proposed item; the plan edge is cleared. */
@@ -141,8 +141,8 @@ export const api = {
   /** Closes a closure-proposed item — the human half of the proposal. */
   closeBacklogItem: (itemId: Id, note = ''): Promise<BacklogItem> =>
     bridge().invoke('backlog.close', { itemId, note }),
-  listLearnings: (repoPath?: string): Promise<Learning[]> =>
-    bridge().invoke('learnings.list', repoPath ? { repoPath } : {}),
+  listLearnings: (repoPath?: string, includeArchived = false): Promise<Learning[]> =>
+    bridge().invoke('learnings.list', repoPath ? { repoPath, includeArchived } : { includeArchived }),
   /** Confirms a proposed learning; confirmed learnings ride every new brief. */
   confirmLearning: (learningId: Id): Promise<Learning> =>
     bridge().invoke('learnings.confirm', { learningId }),
@@ -197,7 +197,12 @@ export const api = {
    * an object now, and undefined would fail it. */
   listPlans: (repoPath?: string): Promise<WorkPlan[]> =>
     bridge().invoke('plan.list', repoPath ? { repoPath } : {}),
-  listRepoSummaries: (): Promise<RepoSummary[]> => bridge().invoke('repos.list'),
+  listRepoSummaries: (
+    includeArchived = false,
+  ): Promise<{ repos: RepoSummary[]; archivedCount: number }> =>
+    bridge().invoke('repos.list', { includeArchived }),
+  archiveRepo: (repoPath: string, archived: boolean): Promise<{ ok: true }> =>
+    bridge().invoke('repos.archive', { repoPath, archived }),
   getPlan: (planId: Id): Promise<PlanDetail> => bridge().invoke('plan.get', { planId }),
   setTestCommand: (milestoneId: Id, command: string): Promise<Milestone> =>
     bridge().invoke('plan.setTestCommand', { milestoneId, command }),

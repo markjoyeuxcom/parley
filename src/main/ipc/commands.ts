@@ -181,8 +181,14 @@ const HANDLERS: Record<CommandName, Handler> = {
 
   // ── Backlog ───────────────────────────────────────────────────────────────
   'backlog.list': (p, ctx) => {
-    const { repoPath } = p as { repoPath?: string }
-    return ctx.manager.repo.listBacklogItems(repoPath ? { repoPath } : {})
+    const { repoPath, includeArchived } = p as {
+      repoPath?: string
+      includeArchived: boolean
+    }
+    const items = ctx.manager.repo.listBacklogItems(repoPath ? { repoPath } : {})
+    if (repoPath || includeArchived) return items
+    const hidden = new Set(ctx.manager.repo.archivedRepoPaths())
+    return items.filter((item) => !hidden.has(item.repoPath))
   },
   'backlog.drop': (p, ctx) => {
     const { itemId, note } = p as { itemId: string; note: string }
@@ -218,8 +224,14 @@ const HANDLERS: Record<CommandName, Handler> = {
     return item
   },
   'learnings.list': (p, ctx) => {
-    const { repoPath } = p as { repoPath?: string }
-    return ctx.manager.repo.listLearnings(repoPath ? { repoPath } : {})
+    const { repoPath, includeArchived } = p as {
+      repoPath?: string
+      includeArchived: boolean
+    }
+    const learnings = ctx.manager.repo.listLearnings(repoPath ? { repoPath } : {})
+    if (repoPath || includeArchived) return learnings
+    const hidden = new Set(ctx.manager.repo.archivedRepoPaths())
+    return learnings.filter((learning) => !hidden.has(learning.repoPath))
   },
   'learnings.confirm': (p, ctx) => {
     const { learningId } = p as { learningId: string }
@@ -295,7 +307,19 @@ const HANDLERS: Record<CommandName, Handler> = {
       ? ctx.manager.repo.listPlansForRepo(repoPath)
       : ctx.manager.repo.listPlans()
   },
-  'repos.list': (_p, ctx) => ctx.manager.repo.listRepoSummaries(ctx.manager.registry.mock),
+  'repos.list': (p, ctx) => {
+    const { includeArchived } = p as { includeArchived: boolean }
+    const hidden = new Set(ctx.manager.repo.archivedRepoPaths())
+    const repos = ctx.manager.repo
+      .listRepoSummaries(ctx.manager.registry.mock)
+      .filter((summary) => includeArchived || !summary.archived)
+    return { repos, archivedCount: hidden.size }
+  },
+  'repos.archive': (p, ctx) => {
+    const { repoPath, archived } = p as { repoPath: string; archived: boolean }
+    ctx.manager.setRepoArchived(repoPath, archived)
+    return { ok: true }
+  },
   'plan.get': (p, ctx) => {
     const { planId } = p as { planId: string }
     const plan = ctx.manager.repo.getPlan(planId)

@@ -2145,11 +2145,13 @@ export class Repo {
    */
   listRepoSummaries(mock: boolean): RepoSummary[] {
     const summaries = new Map<string, RepoSummary>()
+    const archived = new Set(this.archivedRepoPaths())
     const summaryFor = (repoPath: string): RepoSummary => {
       const existing = summaries.get(repoPath)
       if (existing) return existing
       const created: RepoSummary = {
         repoPath,
+        archived: archived.has(repoPath),
         planCount: 0,
         attentionPlans: 0,
         openItems: 0,

@@ -97,8 +97,8 @@ export function BacklogSurface(): ReactNode {
     void attempt(() => api.listForemanProposals()).then((all) => {
       if (all && !cancelled) setProposals(all)
     })
-    void attempt(() => api.listRepoSummaries()).then((all) => {
-      if (all && !cancelled) setSummaries(all)
+    void attempt(() => api.listRepoSummaries()).then((result) => {
+      if (result && !cancelled) setSummaries(result.repos)
     })
     return () => {
       cancelled = true
