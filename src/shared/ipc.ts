@@ -319,6 +319,19 @@ export interface LedgerEntry extends LedgerFinding {
 /** Uniform envelope so a thrown error in main never becomes an unhandled rejection. */
 export type InvokeResult<T> = { ok: true; value: T } | { ok: false; error: string }
 
+export async function toInvokeResult<T>(invoke: () => T | Promise<T>): Promise<InvokeResult<T>> {
+  try {
+    return { ok: true, value: await invoke() }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export function unwrapInvokeResult<T>(result: InvokeResult<T>): T {
+  if (!result.ok) throw new Error(result.error)
+  return result.value
+}
+
 export interface AppInfo {
   /**
    * True when the deterministic mock adapters are in use.

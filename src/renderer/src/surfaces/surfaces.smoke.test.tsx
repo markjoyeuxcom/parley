@@ -11,11 +11,18 @@ import type {
   Verdict,
   WorkPlan,
 } from '@shared/domain'
-import type { CommandName, LedgerEntry } from '@shared/ipc'
+import {
+  toInvokeResult,
+  unwrapInvokeResult,
+  type CommandName,
+  type InvokeResult,
+  type LedgerEntry,
+} from '@shared/ipc'
 import type { Hold } from '@shared/holds'
 import { useEffect, type ReactNode } from 'react'
 import { StoreProvider, useStore, type Surface } from '../state'
 import { HoldsButton, HoldsPopover } from '../components/HoldsPanel'
+import { Notices } from '../components/Notices'
 import { ParleySurface } from './ParleySurface'
 import { BacklogSurface } from './BacklogSurface'
 import { LoopsSurface } from './LoopsSurface'
@@ -291,6 +298,7 @@ const newerLedgerEntry: LedgerEntry = {
  */
 function installBridge(
   overrides: Partial<Record<CommandName, (payload?: unknown) => unknown>> = {},
+  failures: Partial<Record<CommandName, string>> = {},
 ): void {
   const handlers: Partial<Record<CommandName, (payload?: unknown) => unknown>> = {
     'app.info': () => ({ mock: true, codexDefaultModel: '', selfRepoPath: null }),
@@ -347,15 +355,21 @@ function installBridge(
     ...overrides,
   }
   window.parley = {
-    invoke: <T,>(command: CommandName, payload?: unknown): Promise<T> =>
-      Promise.resolve(handlers[command]?.(payload) as T),
+    invoke: async <T,>(command: CommandName, payload?: unknown): Promise<T> => {
+      const failure = failures[command]
+      const result: InvokeResult<T> =
+        failure === undefined
+          ? await toInvokeResult(() => handlers[command]?.(payload) as T | Promise<T>)
+          : { ok: false, error: failure }
+      return unwrapInvokeResult(result)
+    },
     onEvent: () => () => {},
     onPtyData: () => () => {},
     platform: 'darwin',
   }
 }
 
-beforeEach(installBridge)
+beforeEach(() => installBridge())
 afterEach(cleanup)
 
 async function assertLedgerGateActionsDisabled(invoked: CommandName[]): Promise<void> {
@@ -494,6 +508,58 @@ describe('mounted-surface smoke', () => {
     // Null means unknown, and unknown fails CLOSED.
     await screen.findByText(/ledger could not be loaded/)
     await assertLedgerGateActionsDisabled(invoked)
+  })
+
+  it("a rejected ledger keeps the gate closed and shows main's message", async () => {
+    const invoked: CommandName[] = []
+    installBridge(
+      {
+        'plan.get': () => ({
+          plan: smokePlan,
+          milestones: [failedSmokeMilestone],
+          worktree: null,
+        }),
+        'approval.grant': () => invoked.push('approval.grant'),
+        'plan.runMilestone': () => invoked.push('plan.runMilestone'),
+        'plan.resumeMilestone': () => invoked.push('plan.resumeMilestone'),
+        'plan.adoptMilestone': () => invoked.push('plan.adoptMilestone'),
+      },
+      { 'ledger.list': 'Main refused to read the findings ledger.' },
+    )
+    render(
+      <StoreProvider>
+        <OnSurface surface="backlog">
+          <BacklogSurface />
+        </OnSurface>
+        <Notices />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByTitle('/tmp/smoke-repo'))
+    fireEvent.click(await screen.findByRole('tab', { name: /Plans/ }))
+    fireEvent.click(await screen.findByText(smokePlan.title))
+    await screen.findByText(failedSmokeMilestone.title)
+    await screen.findByText('Main refused to read the findings ledger.')
+    fireEvent.click(await screen.findByText('Approve and retry'))
+
+    await screen.findByText(/ledger could not be loaded/)
+    await assertLedgerGateActionsDisabled(invoked)
+  })
+
+  it('a rejected plan.get leaves no plan open', async () => {
+    installBridge({}, { 'plan.get': 'Main refused to open this plan.' })
+    render(
+      <StoreProvider>
+        <PlanOpenHarness />
+        <Notices />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open earlier plan' }))
+
+    await screen.findByText('Main refused to open this plan.')
+    expect(screen.getByText('No plan open')).toBeTruthy()
+    expect(screen.queryByText(smokeMilestone.title)).toBeNull()
   })
 
   it('a slower earlier openPlan loses to the newer selection', async () => {

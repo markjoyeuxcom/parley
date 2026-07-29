@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { CH, type CommandName, type InvokeResult } from '@shared/ipc'
+import { CH, unwrapInvokeResult, type CommandName, type InvokeResult } from '@shared/ipc'
 import type { AppEvent, PtyChunk } from '@shared/events'
 
 /**
@@ -18,8 +18,7 @@ const api = {
    */
   async invoke<T = unknown>(command: CommandName, payload?: unknown): Promise<T> {
     const result = (await ipcRenderer.invoke(CH.invoke, { command, payload })) as InvokeResult<T>
-    if (!result.ok) throw new Error(result.error)
-    return result.value
+    return unwrapInvokeResult(result)
   },
 
   /** Subscribes to application events. Returns an unsubscribe function. */

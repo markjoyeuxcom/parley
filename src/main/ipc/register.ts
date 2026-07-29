@@ -1,5 +1,5 @@
 import { app, dialog, ipcMain } from 'electron'
-import { CH, type InvokeResult } from '@shared/ipc'
+import { CH, toInvokeResult, type InvokeResult } from '@shared/ipc'
 import { invokeCommand, type IpcAppControl, type IpcContext, type IpcDialogs } from './commands'
 import { relaunchIntoFreshBuild } from './relaunch'
 
@@ -33,13 +33,11 @@ const appControl: IpcAppControl = {
  */
 export function registerIpc(ctx: Omit<IpcContext, 'dialogs' | 'appControl'>): void {
   const full: IpcContext = { ...ctx, dialogs, appControl }
-  ipcMain.handle(CH.invoke, async (_event, raw: unknown): Promise<InvokeResult<unknown>> => {
-    try {
-      return { ok: true, value: await invokeCommand(full, raw) }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  })
+  ipcMain.handle(
+    CH.invoke,
+    (_event, raw: unknown): Promise<InvokeResult<unknown>> =>
+      toInvokeResult(() => invokeCommand(full, raw)),
+  )
 }
 
 export function disposeIpc(): void {
