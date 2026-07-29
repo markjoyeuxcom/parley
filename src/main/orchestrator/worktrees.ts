@@ -380,11 +380,29 @@ export async function landWorktree(
     return { landed: false, detail }
   }
 
+  const cleanupFailures: string[] = []
   if (existsSync(worktree.path)) {
-    await git(['worktree', 'remove', worktree.path], worktree.originPath)
+    const remove = await git(['worktree', 'remove', worktree.path], worktree.originPath)
+    if (!remove.ok) {
+      cleanupFailures.push(
+        `worktree directory ${worktree.path} could not be removed: ${trimmedFailure(remove)}`,
+      )
+    }
   }
-  await git(['branch', '-d', worktree.branch], worktree.originPath)
+  const deleteBranch = await git(['branch', '-d', worktree.branch], worktree.originPath)
+  if (!deleteBranch.ok) {
+    cleanupFailures.push(
+      `branch ${worktree.branch} could not be deleted: ${trimmedFailure(deleteBranch)}`,
+    )
+  }
   repo.markWorktreeLanded(worktree.planId)
+  if (cleanupFailures.length) {
+    repo.flagWorktree(
+      worktree.planId,
+      false,
+      `post-land cleanup left resources behind: ${cleanupFailures.join('; ')}`,
+    )
+  }
 
   const head = await git(['rev-parse', 'HEAD'], worktree.originPath)
   return { landed: true, detail: head.ok ? head.stdout : '' }

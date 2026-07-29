@@ -164,6 +164,40 @@ describe('fast-forward landing', () => {
     expect(computeHolds(repo, none).filter((h) => h.planId === plan.id)).toEqual([])
   })
 
+  it('lands but records both cleanup failures when the real worktree is locked', async () => {
+    const { repo, session, plan, origin } =
+      await completedWorktreePlan('parley-land-locked-')
+    const worktree = repo.getWorktreeForPlan(plan.id)
+    if (!worktree) throw new Error('expected a worktree')
+    const tip = gitOut(worktree.path, 'rev-parse', 'HEAD')
+
+    execFileSync('git', ['worktree', 'lock', worktree.path], { cwd: origin })
+
+    const result = await landWorktree(repo, worktree)
+    expect(result.landed).toBe(true)
+    expect(gitOut(origin, 'rev-parse', 'HEAD')).toBe(tip)
+
+    const landed = repo.getWorktreeForPlan(plan.id)
+    expect(landed?.landedAt).not.toBeNull()
+    expect(landed?.lastError).toContain(worktree.path)
+    expect(landed?.lastError).toContain(worktree.branch)
+    expect(landed?.lastError).toContain('could not be removed')
+    expect(landed?.lastError).toContain('could not be deleted')
+    expect(existsSync(worktree.path)).toBe(true)
+    expect(gitOut(origin, 'branch', '--list', worktree.branch)).toContain(worktree.branch)
+
+    const holds = computeHolds(repo, none).filter((h) => h.planId === plan.id)
+    expect(holds).toHaveLength(1)
+    expect(holds[0]).toMatchObject({
+      kind: 'merge-blocked',
+      actionable: false,
+      sessionId: session.id,
+      title: 'Landed, but follow-up failed',
+    })
+    expect(holds[0]?.detail).toContain(worktree.path)
+    expect(holds[0]?.detail).toContain(worktree.branch)
+  })
+
   it('a diverged origin parks as merge-blocked with the branch name, moving nothing', async () => {
     const { repo, plan, origin } = await completedWorktreePlan('parley-land-diverge-')
     const worktree = repo.getWorktreeForPlan(plan.id)
@@ -285,7 +319,8 @@ describe('fast-forward landing', () => {
     const holds = computeHolds(repo, none).filter((h) => h.planId === plan.id)
     expect(holds).toHaveLength(1)
     expect(holds[0]).toMatchObject({ kind: 'merge-blocked', actionable: false, sessionId: session.id })
-    expect(holds[0]?.title).toBe('Landed, but verification failed')
+    expect(holds[0]?.title).toBe('Landed, but follow-up failed')
+    expect(holds[0]?.detail).toContain('post-land work needs attention')
     expect(holds[0]?.detail).toContain('post-land verification failed')
     expect(holds[0]?.detail).toContain('landed verification exploded')
     expect(
@@ -423,7 +458,7 @@ describe('landing on the self repo', () => {
     expect(repo.getWorktreeForPlan(plan.id)?.lastError).toContain('npm run verify')
 
     const holds = computeHolds(repo, none).filter((h) => h.planId === plan.id)
-    expect(holds.some((h) => h.title === 'Landed, but verification failed')).toBe(true)
+    expect(holds.some((h) => h.title === 'Landed, but follow-up failed')).toBe(true)
     // A red gate is never an offer.
     expect(computeHolds(repo, none).some((h) => h.kind === 'self-update')).toBe(false)
     expect(

@@ -507,6 +507,13 @@ it needs only the origin and the branch. Mock plans refuse to land outright —
 fast-forwarding a real branch onto mock commits would be invisible mock work,
 with no marking anywhere in git.
 
+Landing teardown is best-effort only after the fast-forward. Both `git worktree
+remove` and `git branch -d` are checked; a refusal cannot undo the merge, so the
+row is marked landed first and then flagged with every leftover, naming the
+directory and branch. That ordering is load-bearing because
+`markWorktreeLanded` clears `last_error`; the landed-row hold covers both
+verification failures and cleanup litter.
+
 ## The self repo: worktree-only, gate fail-closed, quit never exit
 
 `electron-vite dev` watches and hot-reloads the **renderer only**. The main
