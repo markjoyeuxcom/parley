@@ -10,18 +10,10 @@ import { backfillBacklog } from '@main/orchestrator/backlog'
 import { reconcileWorktrees } from '@main/orchestrator/worktrees'
 import { PtyManager } from '@main/pty/manager'
 import { disposeIpc, registerIpc } from '@main/ipc/register'
+import { applyFreshBuildFlag } from '@main/ipc/relaunch'
 import { applyResolvedPath, preflightPty } from '@main/util/environment'
 
-/**
- * The relaunch-into-fresh-build flag, handled before anything can read the
- * env: `electron-vite dev` exports ELECTRON_RENDERER_URL and every child of
- * that terminal inherits it — including this relaunched process. Deleting it
- * here (not merely ignoring it at load) covers the window load, the
- * navigation allowlist, and every child spawn in one move, so the new
- * process runs the built out/ exactly as a packaged app would.
- */
-const freshBuild = process.argv.includes('--parley-fresh-build')
-if (freshBuild) delete process.env['ELECTRON_RENDERER_URL']
+const freshBuild = applyFreshBuildFlag(process.argv, process.env)
 
 let mainWindow: BrowserWindow | null = null
 let pty: PtyManager | null = null

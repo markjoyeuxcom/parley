@@ -561,10 +561,11 @@ The rules, each enforced in main, none only in the renderer:
   already taken. The wrapper dedupes `--parley-fresh-build`, calls
   `app.relaunch({args})` and then **`app.quit()` — NEVER `app.exit`**:
   before-quit is what disposes agent CLIs and ptys, and skipping it orphans
-  paid runs that keep spending quota headless. index.ts deletes
-  `ELECTRON_RENDERER_URL` when the flag is present — deletion, not
-  ignoring, so the load, the navigation allowlist and every child spawn all
-  see a world without the dev server.
+  paid runs that keep spending quota headless. `applyFreshBuildFlag` deletes
+  `ELECTRON_RENDERER_URL` when the flag is present — deletion, not assignment
+  or ignoring — and index.ts calls it before reading that environment key, so
+  the load, the navigation allowlist and every child spawn all see a world
+  without the dev server.
 - **The mock-walkability exception is deliberate.** Mock plans never land
   (invariant above), and the gate hooks at landing, so the PARLEY_MOCK
   walkthrough cannot exercise landing→gate→relaunch. The honest coverage is
