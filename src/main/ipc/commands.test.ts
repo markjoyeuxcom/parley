@@ -419,3 +419,52 @@ describe('self-update commands', () => {
     expect(repo.getPendingSelfUpdate()?.id).toBe(attempt.id)
   })
 })
+
+describe('plan close-out', () => {
+  it('cancels a failed plan, releases its planned items, and refuses the rest', async () => {
+    const { ctx, repo, session } = harness()
+    const { plan } = makeMilestone(repo, session.id)
+    const { item } = repo.fileBacklogItem({
+      repoPath: plan.repoPath,
+      title: 'A finding the failed plan claimed',
+      source: 'review-finding',
+      mock: true,
+    })
+    repo.transitionBacklogItem(item.id, 'planned', { source: 'human', planId: plan.id })
+    repo.setPlanStatus(plan.id, 'failed')
+
+    const cancelled = (await invokeCommand(ctx, {
+      command: 'plan.cancel',
+      payload: { planId: plan.id },
+    })) as WorkPlan
+    expect(cancelled.status).toBe('cancelled')
+
+    // The dead plan released its claim: the item is open again, unlinked.
+    const released = repo.getBacklogItem(item.id)
+    expect(released?.state).toBe('open')
+    expect(released?.planId).toBeNull()
+
+    // Close-out is terminal and narrow: cancelled, complete and ready all refuse.
+    await expect(
+      invokeCommand(ctx, { command: 'plan.cancel', payload: { planId: plan.id } }),
+    ).rejects.toThrow(/cancelled plan cannot/)
+    const { plan: fine } = makeMilestone(repo, session.id)
+    repo.setPlanStatus(fine.id, 'complete')
+    await expect(
+      invokeCommand(ctx, { command: 'plan.cancel', payload: { planId: fine.id } }),
+    ).rejects.toThrow(/complete plan cannot/)
+    const { plan: ready } = makeMilestone(repo, session.id)
+    await expect(
+      invokeCommand(ctx, { command: 'plan.cancel', payload: { planId: ready.id } }),
+    ).rejects.toThrow(/ready plan cannot/)
+
+    // Blocked is the other stuck state, and it closes out too.
+    const { plan: blocked } = makeMilestone(repo, session.id)
+    repo.setPlanStatus(blocked.id, 'blocked')
+    const closedBlocked = (await invokeCommand(ctx, {
+      command: 'plan.cancel',
+      payload: { planId: blocked.id },
+    })) as WorkPlan
+    expect(closedBlocked.status).toBe('cancelled')
+  })
+})

@@ -1003,6 +1003,22 @@ export class Manager {
   }
 
   /**
+   * Records a failed or blocked plan as closed out — cancelled on the record,
+   * gone from the in-flight and attention counts, its planned backlog items
+   * released back to open. The row and every milestone stay; close-out is a
+   * disposition, never an erasure.
+   */
+  closeOutPlan(planId: Id): WorkPlan {
+    const { plan, releasedItemIds } = this.repo.cancelPlan(planId)
+    this.emit({ type: 'plan.status', planId, status: 'cancelled' })
+    if (releasedItemIds.length) {
+      this.emit({ type: 'backlog.changed', repoPath: canonicalRepoPath(plan.repoPath) })
+    }
+    this.holdsChanged()
+    return plan
+  }
+
+  /**
    * Cheap look at the repository before a milestone is approved.
    *
    * Everything needed to predict the commonest dead end is already knowable up

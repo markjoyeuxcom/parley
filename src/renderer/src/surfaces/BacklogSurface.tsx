@@ -297,6 +297,9 @@ export function BacklogSurface(): ReactNode {
                       void openPlan(planId)
                       setActiveTab('plans')
                     }}
+                    onCloseOut={(planId) => {
+                      void attempt(() => api.closeOutPlan(planId))
+                    }}
                   />
 
                   <WaitingCard
@@ -438,11 +441,17 @@ export function BacklogSurface(): ReactNode {
 function InFlightCard({
   plans,
   onOpen,
+  onCloseOut,
 }: {
   plans: WorkPlan[]
   onOpen: (planId: Id) => void
+  onCloseOut: (planId: Id) => void
 }): ReactNode {
-  const inflight = plans.filter((plan) => plan.status !== 'complete')
+  // Cancelled is the closed-out disposition — the row stays on the Plans tab
+  // as record, but it is no longer "in flight" anywhere.
+  const inflight = plans.filter(
+    (plan) => plan.status !== 'complete' && plan.status !== 'cancelled',
+  )
   return (
     <section className="panel foreman-panel">
       <header className="panel__header">
@@ -462,28 +471,49 @@ function InFlightCard({
             {inflight.map((plan) => {
               const tone = statusTone(plan.status)
               const live = ['drafting', 'auditing', 'correcting', 'running'].includes(plan.status)
+              // Close-out is offered only where it is legal — the stuck
+              // terminal states. The server refuses everything else anyway.
+              const closable = plan.status === 'failed' || plan.status === 'blocked'
               return (
-                <button
-                  key={plan.id}
-                  className="list-item"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => onOpen(plan.id)}
-                  title={`${plan.title} — ${plan.kind}, ${plan.status}`}
-                >
-                  <div className="list-item__top">
-                    <Dot tone={live ? 'dot--live' : tone.tone.replace('chip--', 'dot--')} />
-                    <span className="list-item__title">{plan.title}</span>
-                    <Chip tone={tone.tone}>{tone.label}</Chip>
-                    {plan.mock ? <Chip tone="chip--caution">mock</Chip> : null}
-                  </div>
-                  <div className="list-item__meta">
-                    <span>{plan.kind}</span>
-                    <span>·</span>
-                    <span>{plan.isolation}</span>
-                    <span>·</span>
-                    <span>{relativeTime(plan.createdAt)}</span>
-                  </div>
-                </button>
+                <div key={plan.id}>
+                  <button
+                    className="list-item"
+                    style={{ cursor: 'pointer', width: '100%' }}
+                    onClick={() => onOpen(plan.id)}
+                    title={`${plan.title} — ${plan.kind}, ${plan.status}`}
+                  >
+                    <div className="list-item__top">
+                      <Dot tone={live ? 'dot--live' : tone.tone.replace('chip--', 'dot--')} />
+                      <span className="list-item__title">{plan.title}</span>
+                      <Chip tone={tone.tone}>{tone.label}</Chip>
+                      {plan.mock ? <Chip tone="chip--caution">mock</Chip> : null}
+                    </div>
+                    <div className="list-item__meta">
+                      <span>{plan.kind}</span>
+                      <span>·</span>
+                      <span>{plan.isolation}</span>
+                      <span>·</span>
+                      <span>{relativeTime(plan.createdAt)}</span>
+                    </div>
+                  </button>
+                  {closable ? (
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'flex-end',
+                        padding: '0 var(--s4) var(--s2)',
+                      }}
+                    >
+                      <button
+                        className="btn btn--subtle btn--sm"
+                        title="Record this plan as closed out — cancelled on the record; its planned backlog items return to open. Worktree commits survive on their branch."
+                        onClick={() => onCloseOut(plan.id)}
+                      >
+                        Close out
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               )
             })}
           </div>

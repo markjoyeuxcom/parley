@@ -160,6 +160,10 @@ export const api = {
   rejectForemanProposal: (proposalId: Id, note = ''): Promise<ForemanProposal> =>
     bridge().invoke('foreman.reject', { proposalId, note }),
 
+  /** Closes out a failed or blocked plan — cancelled on the record. */
+  closeOutPlan: (planId: Id): Promise<WorkPlan> =>
+    bridge().invoke('plan.cancel', { planId }),
+
   // Self-update (dev mode)
   /** The one live offer, resolved at action time — holds don't carry row ids. */
   getPendingSelfUpdate: (): Promise<SelfUpdate | null> =>

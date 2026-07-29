@@ -1072,10 +1072,14 @@ export class Repo {
   // agreement.
 
   /**
-   * Files an item, deduplicating by content against *live* items only. A
+   * Files an item, deduplicating by content against *live* items only — a
    * collision with a live item appends a `resighted` event rather than doing
-   * nothing — silence is the failure mode — and a terminal item never blocks
-   * a genuine recurrence from filing fresh.
+   * nothing, because silence there is the failure mode. A terminal item never
+   * blocks a genuine recurrence from filing fresh, with one carve-out: the
+   * SAME origin session replaying the same content is not a recurrence, it is
+   * an ingestion replay (the startup back-sweep, a repeated stow), and it is
+   * silently idempotent. Without the carve-out every relaunch resurrected
+   * every closed finding — done items re-filed as open, forever.
    */
   fileBacklogItem(input: {
     repoPath: string
@@ -1112,6 +1116,23 @@ export class Repo {
           eventSource,
         )
         return { item, resighted: true }
+      }
+
+      // Only terminal rows can match here — a live one was caught above. No
+      // resight event is appended: nothing new was observed, and stamping a
+      // settled trail on every replay is its own kind of spam.
+      if (input.originSessionId) {
+        const sameOrigin = this.db.get(
+          `SELECT * FROM backlog_items
+           WHERE repo_path = ? AND content_hash = ? AND origin_session_id = ?
+           LIMIT 1`,
+          repoPath,
+          contentHash,
+          input.originSessionId,
+        )
+        if (sameOrigin) {
+          return { item: this.toBacklogItem(sameOrigin), resighted: true }
+        }
       }
 
       const now = Date.now()
@@ -2008,6 +2029,38 @@ export class Repo {
       }
     }
     return findings
+  }
+
+  /**
+   * Closes out a plan that stopped without finishing. Only failed and blocked
+   * plans qualify: running work has a stop button, complete work lands or
+   * stands, and cancelling either would falsify the record. Backlog items
+   * still planned toward it are released to open in the same transaction —
+   * a dead plan must not keep its claim on the worklist.
+   */
+  cancelPlan(id: Id): { plan: WorkPlan; releasedItemIds: Id[] } {
+    return this.db.transaction(() => {
+      const row = this.db.get(`SELECT * FROM plans WHERE id = ?`, id)
+      if (!row) throw new Error('no such plan')
+      const plan = this.toPlan(row)
+      if (plan.status !== 'failed' && plan.status !== 'blocked') {
+        throw new Error(`a ${plan.status} plan cannot be closed out — only failed or blocked`)
+      }
+      this.db.run(`UPDATE plans SET status = 'cancelled' WHERE id = ?`, id)
+      const releasedItemIds: Id[] = []
+      for (const itemRow of this.db.all(
+        `SELECT id FROM backlog_items WHERE plan_id = ? AND state = 'planned'`,
+        id,
+      )) {
+        const itemId = str(itemRow['id'])
+        this.transitionBacklogItemCore(itemId, 'open', {
+          source: 'human',
+          note: 'Released: its plan was closed out.',
+        })
+        releasedItemIds.push(itemId)
+      }
+      return { plan: { ...plan, status: 'cancelled' as const }, releasedItemIds }
+    })
   }
 
   setPlanStatus(id: Id, status: WorkPlan['status']): void {

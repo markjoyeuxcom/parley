@@ -285,6 +285,10 @@ const HANDLERS: Record<CommandName, Handler> = {
 
   // ── Plans ──────────────────────────────────────────────────────────────────
   'plan.create': (p, ctx) => ctx.manager.createPlan(p as never),
+  'plan.cancel': (p, ctx) => {
+    const { planId } = p as { planId: string }
+    return ctx.manager.closeOutPlan(planId)
+  },
   'plan.list': (p, ctx) => {
     const { repoPath } = p as { repoPath: string | null }
     return repoPath

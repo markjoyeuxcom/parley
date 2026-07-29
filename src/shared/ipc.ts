@@ -187,6 +187,8 @@ export const RejectForemanReq = z.object({
   proposalId: Id,
   note: z.string().trim().max(2000).default(''),
 })
+/** Closes out a failed or blocked plan: cancelled on the record, items released. */
+export const CancelPlanReq = z.object({ planId: Id })
 /** Boots the freshly built Parley: decides the green offer, then relaunches. */
 export const RelaunchSelfUpdateReq = z.object({ updateId: Id })
 /** Declines the offer; the app keeps running the bytes it started with. */
@@ -269,6 +271,7 @@ export const COMMANDS = {
   'plan.create': CreatePlanReq,
   'plan.get': GetPlanReq,
   'plan.list': ListPlansReq,
+  'plan.cancel': CancelPlanReq,
   'repos.list': null,
   'plan.runMilestone': RunMilestoneReq,
   'plan.inspect': InspectMilestoneReq,

@@ -237,3 +237,49 @@ describe('learnings', () => {
     expect(again.duplicate).toBe(false)
   })
 })
+
+describe('ingestion replay vs recurrence', () => {
+  it('a same-session replay of a closed item is silently idempotent', () => {
+    const repo = freshRepo()
+    const { item } = fileItem(repo, { originSessionId: 'session-origin-1' })
+    repo.transitionBacklogItem(item.id, 'done', { source: 'human', note: 'Landed elsewhere.' })
+    const trailBefore = repo.listBacklogEvents(item.id).length
+
+    // The startup back-sweep replays the same session's ingestion after every
+    // relaunch. Before the same-origin carve-out this re-filed the finding as
+    // a fresh open item every time — closure resurrected on restart, forever.
+    const replay = fileItem(repo, { originSessionId: 'session-origin-1' })
+    expect(replay.resighted).toBe(true)
+    expect(replay.item.id).toBe(item.id)
+    expect(repo.listBacklogItems({ repoPath: '/tmp/example-repo' })).toHaveLength(1)
+    // Nothing new was observed: the settled trail is not stamped either.
+    expect(repo.listBacklogEvents(item.id)).toHaveLength(trailBefore)
+  })
+
+  it('a different session re-observing the same content is a genuine recurrence', () => {
+    const repo = freshRepo()
+    const { item } = fileItem(repo, { originSessionId: 'session-origin-1' })
+    repo.transitionBacklogItem(item.id, 'done', { source: 'human' })
+
+    const recurred = fileItem(repo, { originSessionId: 'session-origin-2' })
+    expect(recurred.resighted).toBe(false)
+    expect(recurred.item.id).not.toBe(item.id)
+    expect(recurred.item.state).toBe('open')
+
+    // And the second session's own replays are idempotent against its copy,
+    // even after that copy is dropped.
+    repo.transitionBacklogItem(recurred.item.id, 'dropped', { source: 'human' })
+    const replay = fileItem(repo, { originSessionId: 'session-origin-2' })
+    expect(replay.resighted).toBe(true)
+    expect(replay.item.id).toBe(recurred.item.id)
+  })
+
+  it('an item with no origin session keeps the old semantics: terminal never blocks fresh', () => {
+    const repo = freshRepo()
+    const { item } = fileItem(repo, { originSessionId: null })
+    repo.transitionBacklogItem(item.id, 'dropped', { source: 'human' })
+    const again = fileItem(repo, { originSessionId: null })
+    expect(again.resighted).toBe(false)
+    expect(again.item.id).not.toBe(item.id)
+  })
+})
