@@ -48,14 +48,21 @@ export function TerminalPane({
   paneId,
   focused,
   onFocus,
+  onOutput,
 }: {
   paneId: Id
   focused: boolean
   onFocus: () => void
+  /** Fires per output chunk — the deterministic unread signal's source. */
+  onOutput?: () => void
 }): ReactNode {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  // A ref so a changing callback never tears the terminal down — the mount
+  // effect must depend on paneId alone or scrollback dies with each render.
+  const onOutputRef = useRef(onOutput)
+  onOutputRef.current = onOutput
 
   useEffect(() => {
     const host = hostRef.current
@@ -113,7 +120,10 @@ export function TerminalPane({
       void api.writePane(paneId, data)
     })
 
-    const detach = attachPane(paneId, (data) => term.write(data))
+    const detach = attachPane(paneId, (data) => {
+      term.write(data)
+      onOutputRef.current?.()
+    })
 
     const observer = new ResizeObserver(() => syncSize())
     observer.observe(host)

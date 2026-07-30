@@ -1,4 +1,5 @@
 import { writeFile } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 // Type-only, so this module never loads Electron at runtime — which is the
 // point of its existence: the command table, its validation and its routing
 // can be exercised by tests, and vitest cannot load Electron. Everything that
@@ -6,12 +7,13 @@ import { writeFile } from 'node:fs/promises'
 // register.ts and reaches the handlers through the context.
 import type { BrowserWindow } from 'electron'
 import { z } from 'zod'
-import { COMMANDS, type CliHealth, type CommandName } from '@shared/ipc'
+import { COMMANDS, type CliHealth, type CommandName, type PaneIdentity } from '@shared/ipc'
 import type { AppEvent } from '@shared/events'
 import { MAX_PANES, type AgentConfig, type ApprovalScope, type GridLayout, type Skill } from '@shared/domain'
 import { RequestError, type Manager } from '@main/orchestrator/manager'
 import { newId } from '@main/store/repo'
 import { readCodexDefaultModel } from '@main/util/environment'
+import { gitIdentity } from '@main/util/gitIdentity'
 import type { PtyManager } from '@main/pty/manager'
 import { disposeLedgerFinding, getSessionDetail, listSessionLedger } from './ledger'
 
@@ -442,6 +444,32 @@ const HANDLERS: Record<CommandName, Handler> = {
   'pane.stop': (p, ctx) => {
     ctx.pty.stop((p as { paneId: string }).paneId)
     return { ok: true }
+  },
+  'pane.identity': async (p, ctx) => {
+    const { cwd } = p as { cwd: string }
+    const git = await gitIdentity(cwd)
+    let worktree: PaneIdentity['worktree'] = null
+    if (git) {
+      // Worktree paths are stored raw; the registry match must be realpath
+      // to realpath or a symlinked spelling would hide the plan chip.
+      const match = ctx.manager.repo.listWorktrees().find((w) => {
+        try {
+          return realpathSync(w.path) === git.root
+        } catch {
+          return false
+        }
+      })
+      if (match) {
+        worktree = {
+          planId: match.planId,
+          originPath: match.originPath,
+          branch: match.branch,
+          landed: match.landedAt !== null,
+          orphaned: match.orphaned,
+        }
+      }
+    }
+    return { git, worktree } satisfies PaneIdentity
   },
   'pane.list': (_p, ctx) => ctx.pty.list(),
 

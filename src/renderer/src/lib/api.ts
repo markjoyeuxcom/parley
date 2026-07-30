@@ -31,6 +31,7 @@ import type {
   CliHealth,
   CommandName,
   LedgerEntry,
+  PaneIdentity,
   RepoContainerStatus,
   RepoSummary,
 } from '@shared/ipc'
@@ -276,6 +277,7 @@ export const api = {
     bridge().invoke('pane.resize', { paneId, cols, rows }),
   closePane: (paneId: Id): Promise<unknown> => bridge().invoke('pane.close', { paneId }),
   stopPane: (paneId: Id): Promise<unknown> => bridge().invoke('pane.stop', { paneId }),
+  paneIdentity: (cwd: string): Promise<PaneIdentity> => bridge().invoke('pane.identity', { cwd }),
   listPanes: (): Promise<Pane[]> => bridge().invoke('pane.list'),
 
   // Saved layouts

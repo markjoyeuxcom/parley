@@ -8,6 +8,7 @@ import {
   type PaneKind,
   type Skill,
 } from '@shared/domain'
+import type { PaneIdentity } from '@shared/ipc'
 import { api } from '../lib/api'
 import { forgetPane } from '../lib/ptyBuffer'
 import {
@@ -54,7 +55,7 @@ const mintSlotId = (): Id => `slot-${Date.now().toString(36)}-${(slotSeq += 1)}`
  * be started.
  */
 export function GridSurface(): ReactNode {
-  const { state, dispatch, notify, attempt } = useStore()
+  const { state, dispatch, notify, attempt, openPlan } = useStore()
   const [layout, setLayout] = useState<LayoutNode | null>(null)
   const [slots, setSlots] = useState<Record<Id, Slot>>({})
   const [focusedSlot, setFocusedSlot] = useState<Id | null>(null)
@@ -65,6 +66,9 @@ export function GridSurface(): ReactNode {
   const [saving, setSaving] = useState(false)
   const [renaming, setRenaming] = useState<{ slotId: Id; value: string } | null>(null)
   const [maximizedSlot, setMaximizedSlot] = useState<Id | null>(null)
+  /** Keyed by folder — panes sharing a cwd share one identity line. */
+  const [identities, setIdentities] = useState<Record<string, PaneIdentity | null>>({})
+  const [unreadSlots, setUnreadSlots] = useState<Set<Id>>(new Set())
   const draggingSkill = useRef<Skill | null>(null)
 
   const slotCount = countSlots(layout)
@@ -87,6 +91,7 @@ export function GridSurface(): ReactNode {
   useEffect(() => {
     void refreshLayouts()
   }, [refreshLayouts])
+
 
   /**
    * Folders worth offering, newest intent first. Drawn from what the user is
@@ -119,6 +124,49 @@ export function GridSurface(): ReactNode {
     () => collectSlotIds(layout).filter((id) => slots[id]?.paneId),
     [layout, slots],
   )
+
+  const focusedRef = useRef(focusedSlot)
+  focusedRef.current = focusedSlot
+
+  const refreshIdentity = useCallback(async (dir: string): Promise<void> => {
+    const identity = await api.paneIdentity(dir).catch(() => null)
+    setIdentities((current) => ({ ...current, [dir]: identity }))
+  }, [])
+
+  // Every folder the grid spans gets an identity line once; the focused
+  // pane's folder refreshes on focus so a branch switch or commit shows up
+  // the next time you look at it — never on a timer.
+  useEffect(() => {
+    for (const dir of activeFolders) {
+      if (!(dir in identities)) void refreshIdentity(dir)
+    }
+  }, [activeFolders, identities, refreshIdentity])
+
+  useEffect(() => {
+    const dir = focusedSlot ? slots[focusedSlot]?.cwd : null
+    if (dir) void refreshIdentity(dir)
+    if (focusedSlot) {
+      setUnreadSlots((current) => {
+        if (!current.has(focusedSlot)) return current
+        const next = new Set(current)
+        next.delete(focusedSlot)
+        return next
+      })
+    }
+    // slots is deliberately not a dependency: focus is the refresh trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedSlot, refreshIdentity])
+
+  /** Output landing in an unfocused pane marks it unread until looked at. */
+  const markOutput = useCallback((slotId: Id) => {
+    if (focusedRef.current === slotId) return
+    setUnreadSlots((current) => {
+      if (current.has(slotId)) return current
+      const next = new Set(current)
+      next.add(slotId)
+      return next
+    })
+  }, [])
 
   /** Starts the process for a slot that has none. */
   const startSlot = useCallback(
@@ -238,6 +286,12 @@ export function GridSurface(): ReactNode {
       setLayout((current) => (current ? removeLeaf(current, slotId) : null))
       setFocusedSlot((current) => (current === slotId ? null : current))
       setMaximizedSlot((current) => (current === slotId ? null : current))
+      setUnreadSlots((current) => {
+        if (!current.has(slotId)) return current
+        const next = new Set(current)
+        next.delete(slotId)
+        return next
+      })
     },
     [slots],
   )
@@ -499,6 +553,24 @@ export function GridSurface(): ReactNode {
               return slotPaneExit(slot, slot?.paneId ? paneById.get(slot.paneId) : undefined)
             }}
             maximizedSlot={maximizedSlot}
+            paneIdentity={(id) => {
+              const dir = slots[id]?.cwd
+              return dir ? identities[dir] : null
+            }}
+            unread={(id) => unreadSlots.has(id)}
+            onOutput={markOutput}
+            onOpenPlan={(identity) => {
+              if (!identity.worktree) return
+              // The knock-and-consume pattern: the Repos surface owns the
+              // plan panel, opened on the worktree's origin repository.
+              dispatch({
+                type: 'focusBacklogRepo',
+                repoPath: identity.worktree.originPath,
+                tab: 'plans',
+              })
+              dispatch({ type: 'surface', surface: 'backlog' })
+              void openPlan(identity.worktree.planId)
+            }}
             paneMenu={(id) => {
               const slot = slots[id]
               if (!slot) return null
@@ -784,7 +856,11 @@ interface LayoutViewProps {
   paneStatus: (id: Id) => 'idle' | 'starting' | 'live' | 'exited'
   paneExit: (id: Id) => number | null
   paneMenu: (id: Id) => ReactNode
+  paneIdentity: (id: Id) => PaneIdentity | null | undefined
+  unread: (id: Id) => boolean
   maximizedSlot: Id | null
+  onOutput: (id: Id) => void
+  onOpenPlan: (identity: PaneIdentity) => void
   onFocus: (id: Id) => void
   onClose: (id: Id) => void
   onStart: (id: Id) => void
@@ -792,6 +868,47 @@ interface LayoutViewProps {
   onRatio: (path: SplitPath, ratio: number) => void
   onDropTarget: (id: Id | null) => void
   onSkillDrop: (id: Id) => void
+}
+
+/**
+ * The identity line: branch · dirty · drift from upstream, and — when the
+ * folder IS a registered plan worktree — a chip that says landed or unlanded
+ * and opens the plan. It never says "safe to remove"; landing is the plan's
+ * record, disposal is the human's call.
+ */
+function PaneIdentityChips({
+  identity,
+  onOpenPlan,
+}: {
+  identity: PaneIdentity | null | undefined
+  onOpenPlan: (identity: PaneIdentity) => void
+}): ReactNode {
+  if (!identity?.git) return null
+  const { git } = identity
+  const drift =
+    git.hasUpstream && (git.ahead || git.behind) ? ` ↑${git.ahead}↓${git.behind}` : ''
+  const state = git.dirty ? 'uncommitted changes' : 'clean'
+  const upstream = git.hasUpstream
+    ? `${git.ahead} ahead / ${git.behind} behind upstream`
+    : 'no upstream'
+  return (
+    <>
+      <Chip tone="chip--mono" title={`${git.root} — ${state}, ${upstream}`}>
+        {git.branch}
+        {git.dirty ? '±' : ''}
+        {drift}
+      </Chip>
+      {identity.worktree ? (
+        <button
+          className={`chip ${identity.worktree.landed ? '' : 'chip--accent'}`}
+          title={`A plan worktree of ${identity.worktree.originPath} — its branch has ${identity.worktree.landed ? 'landed' : 'NOT landed'}. Opens the plan.`}
+          onClick={() => onOpenPlan(identity)}
+        >
+          plan · {identity.worktree.landed ? 'landed' : 'unlanded'}
+        </button>
+      ) : null}
+    </>
+  )
 }
 
 function LayoutView(props: LayoutViewProps): ReactNode {
@@ -826,6 +943,13 @@ function LayoutView(props: LayoutViewProps): ReactNode {
           <span className="pane__title" title={slot?.cwd}>
             {props.paneTitle(id)}
           </span>
+          <PaneIdentityChips
+            identity={props.paneIdentity(id)}
+            onOpenPlan={props.onOpenPlan}
+          />
+          {props.unread(id) && !focused ? (
+            <Dot tone="dot--accent" title="new output since you last looked" />
+          ) : null}
           {status === 'exited' ? (
             <Chip tone={exitCode === 0 ? '' : 'chip--fail'}>exit {exitCode ?? '?'}</Chip>
           ) : null}
@@ -854,7 +978,12 @@ function LayoutView(props: LayoutViewProps): ReactNode {
         </div>
 
         {slot?.paneId ? (
-          <TerminalPane paneId={slot.paneId} focused={focused} onFocus={() => props.onFocus(id)} />
+          <TerminalPane
+            paneId={slot.paneId}
+            focused={focused}
+            onFocus={() => props.onFocus(id)}
+            onOutput={() => props.onOutput(id)}
+          />
         ) : (
           <div className="pane__idle">
             <div className="pane__idle-title">{slot ? KIND_LABEL[slot.kind] : 'Pane'} not started</div>

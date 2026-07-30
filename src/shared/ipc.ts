@@ -151,6 +151,7 @@ export const PaneResizeReq = z.object({
 })
 export const PaneCloseReq = z.object({ paneId: Id })
 export const PaneStopReq = z.object({ paneId: Id })
+export const PaneIdentityReq = z.object({ cwd: z.string().min(1) })
 
 export const RunSkillReq = z.object({ paneId: Id, skillId: Id })
 export const SaveSkillReq = Skill.omit({ builtIn: true })
@@ -321,6 +322,7 @@ export const COMMANDS = {
   'pane.resize': PaneResizeReq,
   'pane.close': PaneCloseReq,
   'pane.stop': PaneStopReq,
+  'pane.identity': PaneIdentityReq,
   'pane.list': null,
   'layout.save': SaveLayoutReq,
   'layout.list': null,
@@ -407,6 +409,29 @@ export interface RepoSummary {
   openItems: number
   pendingTriage: number
   hasPendingProposal: boolean
+}
+
+/**
+ * A pane header's identity line in one read. `git` is null outside a
+ * repository; `worktree` is set only when the folder IS a registered plan
+ * worktree — it says landed or not, and never "safe to remove".
+ */
+export interface PaneIdentity {
+  git: {
+    root: string
+    branch: string
+    dirty: boolean
+    ahead: number
+    behind: number
+    hasUpstream: boolean
+  } | null
+  worktree: {
+    planId: string
+    originPath: string
+    branch: string
+    landed: boolean
+    orphaned: boolean
+  } | null
 }
 
 /**
