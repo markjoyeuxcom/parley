@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 23
+export const SCHEMA_VERSION = 24
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -474,6 +474,21 @@ CREATE TABLE IF NOT EXISTS envelopes (
   ended_at       INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_envelopes_plan ON envelopes(plan_id, started_at DESC);
+
+-- Projects Parley scaffolded. Also the fourth source of repository
+-- membership: a brand-new project has no plan, backlog item or learning, so
+-- without this row the Repos surface would not know it exists.
+CREATE TABLE IF NOT EXISTS workspaces (
+  id          TEXT PRIMARY KEY,
+  repo_path   TEXT NOT NULL UNIQUE,
+  name        TEXT NOT NULL,
+  template_id TEXT NOT NULL,
+  state       TEXT NOT NULL,
+  detail      TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  ready_at    INTEGER,
+  mock        INTEGER NOT NULL DEFAULT 0
+);
 `
 
 class NodeSqliteDb implements Db {
@@ -863,6 +878,10 @@ export function migrate(db: Db): void {
   }
   if (current < 23) {
     // Envelopes are additive: SCHEMA creates the table fresh, and no
+    // existing row changes shape.
+  }
+  if (current < 24) {
+    // Workspaces are additive: SCHEMA creates the table fresh, and no
     // existing row changes shape.
   }
   db.run(

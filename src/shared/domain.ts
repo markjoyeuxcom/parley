@@ -101,6 +101,14 @@ export const ApprovalScope = z.enum([
    * approval, so the per-milestone record keeps its exact shape.
    */
   'plan.envelope',
+  /**
+   * Permits creating ONE new project workspace at a named path: a directory
+   * Parley makes, and files it writes, where none existed. Every other write
+   * in the app either edits something already there or goes to a location the
+   * user typed into a save dialog, so this is its own class and its own
+   * recorded decision.
+   */
+  'workspace.create',
 ])
 export type ApprovalScope = z.infer<typeof ApprovalScope>
 
@@ -650,6 +658,40 @@ export const Envelope = z.object({
   endedAt: Timestamp.nullable().default(null),
 })
 export type Envelope = z.infer<typeof Envelope>
+
+export const WorkspaceState = z.enum([
+  /** Being scaffolded, installed and verified. */
+  'building',
+  /** The harness ran green — safe ground for a first milestone. */
+  'ready',
+  /** Scaffolding, install or verification failed; the detail says which. */
+  'failed',
+])
+export type WorkspaceState = z.infer<typeof WorkspaceState>
+
+/**
+ * A project Parley created.
+ *
+ * The record exists for two reasons: it is the fourth source of repository
+ * membership (a brand-new project has no plan, no backlog item and no
+ * learning, so nothing else would make it visible), and it is the proof that
+ * the harness was green BEFORE any feature milestone ran — which is the whole
+ * point of scaffolding rather than letting an agent invent a project.
+ */
+export const Workspace = z.object({
+  id: Id,
+  repoPath: z.string(),
+  name: z.string(),
+  templateId: z.string(),
+  state: WorkspaceState,
+  /** Why it failed, or what the green verification actually ran. */
+  detail: z.string().default(''),
+  createdAt: Timestamp,
+  readyAt: Timestamp.nullable().default(null),
+  /** See {@link Session.mock}. */
+  mock: z.boolean().default(false),
+})
+export type Workspace = z.infer<typeof Workspace>
 
 export const Worktree = z.object({
   planId: Id,

@@ -78,6 +78,10 @@ const WRITE_EXEMPTIONS: Readonly<Record<string, string>> = {
     'The mint counter is internal cap bookkeeping; the milestone it authorised records the visible activity.',
   'reconcileEnvelopes:envelopes':
     'Startup reconciliation repairs durable envelope state before repository visibility is evaluated.',
+  'settleWorkspace:workspaces':
+    'The build outcome is recorded by createWorkspace’s activity; a workspace that never went ready is not repository work.',
+  'reconcileWorkspaces:workspaces':
+    'Startup reconciliation repairs durable workspace state before repository visibility is evaluated.',
 }
 
 function tableClassifications(db: Db): Map<string, Classification> {
@@ -281,6 +285,7 @@ describe('repository activity completeness', () => {
       'repo_archives',
       'repo_containers',
       'sessions',
+      'workspaces',
     ])
     expect(tables('child')).toEqual([
       'backlog_events',

@@ -108,6 +108,7 @@ async function bootstrap(): Promise<void> {
   repo.reconcileForemanAttempts()
   repo.reconcileSelfUpdates()
   repo.reconcileEnvelopes()
+  repo.reconcileWorkspaces()
 
   const registry = new AgentRegistry()
 

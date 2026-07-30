@@ -897,6 +897,71 @@ describe('gathering findings for a remediation plan', () => {
   })
 })
 
+describe('workspaces', () => {
+  function makeWorkspace(repo: Repo, repoPath: string, mock = false) {
+    return repo.createWorkspace({
+      id: newId(),
+      repoPath,
+      name: 'New app',
+      templateId: 'web-app',
+      state: 'building',
+      detail: '',
+      createdAt: Date.now(),
+      readyAt: null,
+      mock,
+    })
+  }
+
+  it('round-trips and is findable by path, whatever spelling created it', () => {
+    const repo = freshRepo()
+    const dir = mkdtempSync(join(tmpdir(), 'parley-ws-store-'))
+    const workspace = makeWorkspace(repo, `${dir}/`)
+
+    expect(repo.getWorkspace(workspace.id)?.templateId).toBe('web-app')
+    expect(repo.getWorkspaceByPath(realpathSync(dir))?.id).toBe(workspace.id)
+    expect(repo.getWorkspaceByPath(dir)?.id).toBe(workspace.id)
+    expect(repo.listWorkspaces().map((w) => w.id)).toEqual([workspace.id])
+  })
+
+  it('settles a building workspace exactly once', () => {
+    const repo = freshRepo()
+    const dir = mkdtempSync(join(tmpdir(), 'parley-ws-settle-'))
+    const workspace = makeWorkspace(repo, dir)
+
+    expect(repo.settleWorkspace(workspace.id, 'ready', 'npm run verify passed')).toBe(true)
+    expect(repo.settleWorkspace(workspace.id, 'failed', 'late story')).toBe(false)
+    const settled = repo.getWorkspace(workspace.id)
+    expect(settled?.state).toBe('ready')
+    expect(settled?.readyAt).not.toBeNull()
+  })
+
+  it('reconciles an interrupted build to failed at startup', () => {
+    const repo = freshRepo()
+    const dir = mkdtempSync(join(tmpdir(), 'parley-ws-recon-'))
+    const workspace = makeWorkspace(repo, dir)
+    expect(repo.reconcileWorkspaces()).toBe(1)
+    expect(repo.getWorkspace(workspace.id)?.state).toBe('failed')
+    expect(repo.getWorkspace(workspace.id)?.detail).toMatch(/interrupted/)
+    expect(repo.reconcileWorkspaces()).toBe(0)
+  })
+
+  it('makes a brand-new project visible on the Repos surface with nothing else in it', () => {
+    const repo = freshRepo()
+    const dir = mkdtempSync(join(tmpdir(), 'parley-ws-summary-'))
+    // No plan, no backlog item, no learning — the other three sources of
+    // repository membership are all empty.
+    expect(repo.listRepoSummaries(false)).toEqual([])
+
+    makeWorkspace(repo, dir)
+    const summaries = repo.listRepoSummaries(false)
+    expect(summaries.map((s) => s.repoPath)).toEqual([realpathSync(dir)])
+    expect(summaries[0]?.planCount).toBe(0)
+
+    // And mode-scoped like every other source: mock work stays in mock mode.
+    expect(repo.listRepoSummaries(true)).toEqual([])
+  })
+})
+
 describe('envelopes', () => {
   const caps = { maxMilestones: 5, maxWallClockMs: 3_600_000, maxSpendUsd: 0 }
   function makeEnvelope(repo: Repo, planId: string) {

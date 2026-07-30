@@ -46,6 +46,7 @@ import {
   type Vendor,
   type Verdict,
   type Envelope,
+  type Workspace,
   type WorkPlan,
   type Worktree,
 } from '@shared/domain'
@@ -1899,6 +1900,86 @@ export class Repo {
     })
   }
 
+  // ─── Workspaces ────────────────────────────────────────────────────────────
+
+  createWorkspace(workspace: Workspace): Workspace {
+    return this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO workspaces (id, repo_path, name, template_id, state, detail, created_at, ready_at, mock)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        workspace.id,
+        canonicalRepoPath(workspace.repoPath),
+        workspace.name,
+        workspace.templateId,
+        workspace.state,
+        workspace.detail,
+        workspace.createdAt,
+        workspace.readyAt,
+        workspace.mock ? 1 : 0,
+      )
+      this.noteRepoActivity(workspace.repoPath)
+      return workspace
+    })
+  }
+
+  getWorkspace(id: Id): Workspace | null {
+    const row = this.db.get(`SELECT * FROM workspaces WHERE id = ?`, id)
+    return row ? this.toWorkspace(row) : null
+  }
+
+  getWorkspaceByPath(repoPath: string): Workspace | null {
+    const row = this.db.get(
+      `SELECT * FROM workspaces WHERE repo_path = ?`,
+      canonicalRepoPath(repoPath),
+    )
+    return row ? this.toWorkspace(row) : null
+  }
+
+  listWorkspaces(): Workspace[] {
+    return this.db
+      .all(`SELECT * FROM workspaces ORDER BY created_at DESC`)
+      .map((row) => this.toWorkspace(row))
+  }
+
+  /**
+   * Settles a building workspace. Conditional on `building` for the same
+   * reason envelopes are conditional on `running`: a startup reconcile and a
+   * live builder must never both write an outcome.
+   */
+  settleWorkspace(id: Id, state: 'ready' | 'failed', detail: string): boolean {
+    const result = this.db.run(
+      `UPDATE workspaces SET state = ?, detail = ?, ready_at = ? WHERE id = ? AND state = 'building'`,
+      state,
+      detail,
+      state === 'ready' ? Date.now() : null,
+      id,
+    )
+    return result.changes === 1
+  }
+
+  /** A live process never startup-reconciles: `building` at boot was interrupted. */
+  reconcileWorkspaces(): number {
+    const result = this.db.run(
+      `UPDATE workspaces SET state = 'failed', detail = ? WHERE state = 'building'`,
+      'interrupted — the app stopped while this project was being created',
+    )
+    return result.changes
+  }
+
+  private toWorkspace(row: Row): Workspace {
+    return {
+      id: str(row['id']),
+      repoPath: str(row['repo_path']),
+      name: str(row['name']),
+      templateId: str(row['template_id']),
+      state: str(row['state']) as Workspace['state'],
+      detail: str(row['detail']),
+      createdAt: num(row['created_at']),
+      readyAt: nullableNum(row['ready_at']),
+      mock: num(row['mock']) === 1,
+    }
+  }
+
   // ─── Envelopes ─────────────────────────────────────────────────────────────
 
   createEnvelope(envelope: Envelope, repoPath: string): Envelope {
@@ -2325,6 +2406,13 @@ export class Repo {
       }
     }
     for (const learning of this.listLearnings()) summaryFor(learning.repoPath)
+    // The fourth source. A project Parley just created has no plan, no
+    // backlog item and no learning, so without this it would be invisible on
+    // the only surface that lists repositories.
+    for (const workspace of this.listWorkspaces()) {
+      if (workspace.mock !== mock) continue
+      summaryFor(canonicalRepoPath(workspace.repoPath))
+    }
     for (const summary of summaries.values()) {
       summary.hasPendingProposal =
         this.getPendingForemanProposal(summary.repoPath, mock) !== null
