@@ -603,6 +603,56 @@ The rules, each enforced in main, none only in the renderer:
   is a separate, much later project. The hold's detail says so, so the UI
   never implies the installed copy updated.
 
+## Dev containers: one seam, snapshots at creation, stated limits
+
+Parley's own deterministic project commands can run inside a repository's
+dev container. The rules that keep this narrow:
+
+- **One seam.** `runProjectCommand`/`ensureUp` in
+  `src/main/orchestrator/containers.ts` are the only way a project command
+  reaches `devcontainer`. Exactly five call sites: milestone verification
+  (`pipeline.runTests`, which also serves both mutation stages), worktree
+  setup, landing verification, and the loop's command exit. Git operations,
+  CLI probes and agent spawns never route through it — agents are
+  host-authenticated and write on the host by design.
+- **The argv contract is grounded, not assumed.** Probed live against
+  @devcontainers/cli 0.87.0: `exec --workspace-folder <ws> -- <argv>`
+  passes inner argv through verbatim (the CLI parses unknown options as
+  args and consumes `--`), inner exit codes flow back unchanged, the
+  command runs in the mapped workspace, and the default workspace mount is
+  a bind mount — the fact mutation testing depends on. A volume-cloned
+  `workspaceMount` would blind the mutation stage; that requirement is
+  documented, not detected.
+- **`up` only in write flows.** All five sites sit inside approved write
+  flows, so this is structural. The pipeline brings a workspace up once per
+  pipeline lifetime (same folder, same container); the loop runner once per
+  run. Audits, reviews and foreman runs execute no project commands and can
+  never trigger an image build.
+- **Snapshot at creation, canonical at rest.** `repo_containers` stores the
+  standing choice under the canonical path (the archives precedent);
+  `plans.container` and `loops.container` are filled at creation and never
+  re-read from the setting — an approval means what its row said. The self
+  repo is exempt at creation and again at execution (`containerFor`'s
+  belt): the gate builds host bytes for the host Electron.
+- **Failure follows each site's existing contract.** Worktree creation:
+  refuse, nothing half-made, approval unspent. Milestone verification: fail
+  closed with the reason in the test result — explicit contrast with
+  landing verification, which stays fail-open because the landing already
+  happened. Loop exit: exit-not-met with the cause in the iteration detail,
+  bounded by caps.
+- **Honest limits, stated in results.** Timeout/abort kills the host-side
+  CLI client; the in-container process may keep finishing. Containers are
+  never torn down here. Git inside the container does not work for our
+  worktrees (the CLI mounts the worktree common dir only for
+  `--relative-paths` worktrees, which ours are not).
+- **Testing.** `OrchestratorDeps.devcontainerBinary` injects an
+  argv-refusing shim — a fake CLI that exits 64 on any shape the real one
+  would not serve, then runs the inner command for real. The operator-run
+  acceptance is `PARLEY_LIVE_DEVCONTAINER=1 npx vitest run
+  src/main/orchestrator/worktree.integration.test.ts`, which completes a
+  real milestone whose verification reads `/etc/alpine-release` inside a
+  real container — a file that does not exist on the host.
+
 ## Long runs must not be opaque
 
 A milestone can occupy half an hour between approval and verdict. The adapters

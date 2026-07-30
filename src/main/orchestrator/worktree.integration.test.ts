@@ -353,3 +353,33 @@ describe('dev-container routing', () => {
     ])
   })
 })
+
+// Operator-run acceptance against the real @devcontainers/cli and a running
+// docker daemon: PARLEY_LIVE_DEVCONTAINER=1 npx vitest run <this file>.
+// Same discipline as the agents' PARLEY_LIVE arms — the shim proves the
+// plumbing on every run; this proves the actual container, when asked.
+const liveDevc = process.env['PARLEY_LIVE_DEVCONTAINER'] === '1'
+
+describe.skipIf(!liveDevc)('dev-container routing against the real CLI', () => {
+  it('a container plan verifies inside a real container, not on the host', async () => {
+    const { pipeline, repo, session } = harness()
+    const origin = gitRepo('parley-wtdevclive-')
+    mkdirSync(join(origin, '.devcontainer'), { recursive: true })
+    writeFileSync(join(origin, '.devcontainer', 'devcontainer.json'), '{"image":"alpine:3.20"}\n')
+    execFileSync('git', ['add', '.'], { cwd: origin, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-qm', 'devcontainer config'], { cwd: origin, stdio: 'ignore' })
+
+    const plan = makeWorktreePlan(repo, session.id, origin, { container: true })
+    // The proof the command ran INSIDE the container: this file does not
+    // exist on a Mac host, and its content names the pinned image.
+    const milestone = makeMilestone(repo, plan.id, 0, {
+      testCommand: 'cat /etc/alpine-release',
+    })
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'live acceptance')
+
+    const executed = await pipeline.runMilestone(milestone.id, approval.id)
+    expect(executed.status).toBe('complete')
+    expect(executed.testResult?.exitCode).toBe(0)
+    expect(executed.testResult?.stdout.trim()).toMatch(/^3\.20/)
+  }, 600_000)
+})

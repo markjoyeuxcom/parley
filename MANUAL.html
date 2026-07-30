@@ -683,8 +683,37 @@ shows its per-item verdict under the panel's idle line instead of dying in a
 toast.</p>
 </section>
 
+<section id="devcontainers">
+<h2>13 · Dev containers</h2>
+<p>When a repository&rsquo;s toolchain lives in a <code>.devcontainer/</code>
+image rather than on your Mac, Parley can run <strong>its own deterministic
+commands</strong> for that repository inside the container: milestone
+verification, worktree setup, the post-land smoke check, and a loop&rsquo;s
+command exit. Nothing else crosses &mdash; the repo and git stay local, and
+agents keep writing files on the host.</p>
+<ul>
+<li><strong>Turn it on per repository</strong> from the Repos Overview&rsquo;s
+<em>Dev container</em> card. Enabling needs a devcontainer configuration and
+the <code>devcontainer</code> CLI (<code>npm install -g
+@devcontainers/cli</code>); running needs a docker daemon.</li>
+<li><strong>Plans and loops snapshot the choice at creation.</strong>
+Flipping the toggle later never changes what an approval you already granted
+meant &mdash; the approval text names the container when it applies.</li>
+<li><strong>Failures are the shapes you know</strong>: a container that will
+not start refuses worktree creation with the approval unspent, fails
+verification closed with the reason, stays fail-open after a landing, and
+reads as exit-not-met in a loop.</li>
+<li><strong>Limits, stated</strong>: the first <code>up</code> may build an
+image; a timeout cuts the host-side client while the in-container process may
+finish; Parley never removes containers (<code>docker ps</code> is the
+lifecycle surface); git does not work inside the container for worktree
+plans; and Parley&rsquo;s own repository is exempt &mdash; its gate builds
+host bytes.</li>
+</ul>
+</section>
+
 <section id="selfupdate">
-<h2>13 · Self-update <span class="dim">dev mode</span></h2>
+<h2>14 · Self-update <span class="dim">dev mode</span></h2>
 <p>When Parley runs from its own checkout (<code>npm run dev</code>), it knows
 which repository it is — and the loop closes on itself.</p>
 <ul>
@@ -715,7 +744,7 @@ separate, much later project.</p>
 </section>
 
 <section id="shortcuts">
-<h2>14 · Keyboard shortcuts</h2>
+<h2>15 · Keyboard shortcuts</h2>
 <table>
   <tr><th>Keys</th><th>Where</th><th>Action</th></tr>
   <tr><td><kbd>⌘K</kbd></td><td>Everywhere</td><td>Command palette — jump surfaces, start a debate or review</td></tr>
@@ -733,7 +762,7 @@ separate, much later project.</p>
 </section>
 
 <section id="mock">
-<h2>15 · Mock mode</h2>
+<h2>16 · Mock mode</h2>
 <p><code>PARLEY_MOCK=1 npm run dev</code> replaces both CLIs with
 deterministic mock adapters: every flow is walkable, nothing consults a model,
 no quota is spent. Because mock output is structurally identical to real
@@ -748,7 +777,7 @@ cover it instead.</p>
 </section>
 
 <section id="troubleshooting">
-<h2>16 · Troubleshooting</h2>
+<h2>17 · Troubleshooting</h2>
 <h3>Terminals will not start</h3>
 <p><code>posix_spawnp failed</code> on every pane — including a plain shell —
 means node-pty's <code>spawn-helper</code> binary is missing or not
@@ -769,7 +798,7 @@ preflight warns about exactly this before you spend anything, and offers
 </section>
 
 <section id="data">
-<h2>17 · Where your data lives</h2>
+<h2>18 · Where your data lives</h2>
 <p>Nowhere else. Sessions, verdicts, findings, dispositions, approvals, plans,
 loops, backlog, learnings, saved layouts and the whole audit trail live in
 SQLite under the app's own support directory

@@ -426,6 +426,45 @@ landing — your role compresses to answering questions and resolving holds.
 
 ---
 
+## Dev containers
+
+Some repositories' toolchains live in a `.devcontainer/` image — Terraform,
+kubectl, a pinned Go — not on your Mac. Parley can run **its own
+deterministic commands** for such a repository inside that container: the
+milestone verification command, the worktree setup command, the post-land
+smoke check, and a loop's command exit. That is the whole surface. The
+repository and git stay on your machine, agents keep writing files on the
+host, and nothing else crosses — verification is the thing that must be
+true, so it is the thing that runs where the toolchain lives.
+
+Turn it on per repository from the Repos Overview — the **Dev container**
+card. Enabling requires a devcontainer configuration
+(`.devcontainer/devcontainer.json` or `.devcontainer.json`) and the
+`devcontainer` CLI (`npm install -g @devcontainers/cli`); execution
+additionally needs a running docker daemon, whose absence surfaces as an
+honest failure at run time, never as a silent fallback to the host. The
+choice is **snapshotted onto each plan and loop at creation** — flipping
+it later never changes what an already-granted approval meant, and the
+approval text names the container when it applies.
+
+Failure shapes are the ones you already know. A container that will not
+start refuses a worktree creation with nothing half-made and the approval
+unspent, fails a milestone verification closed with the reason in the
+test result, surfaces fail-open after a landing that already happened,
+and reads as exit-not-met in a loop's iteration detail, bounded by the
+loop's caps.
+
+Honest limits: the first `up` may build an image (it gets its own
+generous timeout, and its output rides the failure detail); a cancelled
+or timed-out command kills the host-side CLI client while the
+in-container process may keep finishing; Parley never tears containers
+down — `docker ps` is the lifecycle surface; git does not work *inside*
+the container for worktree plans, so container-routed commands must not
+need git; and mutation testing depends on the default bind mount — a
+volume-cloned workspace configuration would blind it. Parley's own
+repository is exempt permanently: its gate builds host bytes for the
+host Electron.
+
 ## Self-update (dev mode)
 
 When you run Parley from its own checkout (`npm run dev`), it knows which

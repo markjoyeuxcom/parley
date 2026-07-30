@@ -200,25 +200,39 @@ planner/executor/reviewer stay claude/codex until per-lineage grant
 validation (backlog item filed). Advise operators to keep
 `~/.gemini/antigravity-cli/settings.json` permissions.allow empty.
 
-1. **Dev containers** (promoted by the user's real workload —
-   Terraform/K8s/EKS/ArgoCD/Go controllers): repo stays local, only
-   execution enters the container via `devcontainer exec` argv; `up`
-   only in write flows, never read-only reviews. Pairs with infra:
-   render attachments for briefs (helm template/kustomize build safe
-   tier), infra skill pack, kube-context/AWS-profile chips in Grid,
-   verification presets recorded as learnings.
-2. **Grid I** (lifecycle slot/process controls, maximize/swap,
+**Dev containers: LANDED** (Containers m1–m4, schema 22). One seam
+(`orchestrator/containers.ts` runProjectCommand/ensureUp) routes exactly
+five sites — milestone verification incl. both mutation stages, worktree
+setup, landing verification, loop command exit; repo stays local, agents
+write on host. Per-repo choice on the Repos Overview card, refused
+without config/CLI/for the self repo; **snapshotted onto plans and loops
+at creation** (approval text names it). Failures follow each site's
+contract (refuse-unspent / fail-closed / fail-open post-land /
+exit-not-met under caps). Grounded live against @devcontainers/cli
+0.87.0: flagless `exec --ws -- argv`, exit codes flow, bind-mount edits
+visible in-container; operator acceptance arm
+`PARLEY_LIVE_DEVCONTAINER=1 npx vitest run
+src/main/orchestrator/worktree.integration.test.ts` completed a real
+milestone reading /etc/alpine-release inside a real container. Known
+limits documented (lingering containers, orphaned in-container work on
+timeout, no git-in-container for worktrees, bind-mount required for
+mutations). Follow-up chips: agents-in-container (runJsonl seam, auth
+question), container lifecycle/cleanup. The infra pairings (render
+attachments, skill pack, Grid kube-context chips, verification presets)
+remain future work.
+
+1. **Grid I** (lifecycle slot/process controls, maximize/swap,
    git+worktree identity headers with plan chips, Grid-LOCAL status —
    inferred states never enter the holds queue — and both bridges) then
    **Grid II** comforts. Comparison mode parked as a PIPELINE feature.
-3. **Unattended runs**: envelope approval (bounds up front, per-
+2. **Unattended runs**: envelope approval (bounds up front, per-
    milestone approvals minted from it), fail-park at existing holds,
    end at merge-ready always; foreman acceptance stays outside.
-4. **App Builder arc** (four series: workspace creator + foundation,
+3. **App Builder arc** (four series: workspace creator + foundation,
    preview management, acceptance records + 'acceptance' ingestion
    source, then the guided shell); readiness stage = disposition
    ergonomics, never auto-disposition.
-5. **SSH/remote execution arc** after App Builder (execution-target
+4. **SSH/remote execution arc** after App Builder (execution-target
    abstraction over the ~6 local-assuming touchpoints), composing with
    unattended for overnight VM runs.
 
