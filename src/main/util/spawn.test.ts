@@ -157,3 +157,48 @@ describe('runJsonl termination causes', () => {
     expect(result.timedOut).toBe(false)
   })
 })
+
+describe('runJsonl stdin delivery', () => {
+  const node = process.execPath
+
+  it('witnesses a prompt flushed through stdin', async () => {
+    const events: Record<string, unknown>[] = []
+    const result = await runJsonl({
+      command: node,
+      args: [
+        '-e',
+        'let body=""; process.stdin.setEncoding("utf8"); process.stdin.on("data", c => body += c); process.stdin.on("end", () => console.log(JSON.stringify({body})))',
+      ],
+      cwd: tmpdir(),
+      stdin: 'prompt only on stdin',
+      onEvent: (event) => events.push(event),
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdinDelivered).toBe(true)
+    expect(events).toEqual([{ body: 'prompt only on stdin' }])
+  })
+
+  it('does not claim delivery when the process could not be spawned', async () => {
+    const result = await runJsonl({
+      command: '/definitely-not-a-real-parley-command',
+      args: [],
+      cwd: tmpdir(),
+      stdin: 'undelivered prompt',
+      onEvent: () => {},
+    })
+    expect(result.exitCode).toBe(-1)
+    expect(result.stdinDelivered).toBe(false)
+  })
+
+  it('does not claim a large prompt was delivered when the child exits without draining it', async () => {
+    const result = await runJsonl({
+      command: node,
+      args: ['-e', 'process.stdin.destroy(); process.exit(2)'],
+      cwd: tmpdir(),
+      stdin: 'x'.repeat(1024 * 1024),
+      onEvent: () => {},
+    })
+    expect(result.exitCode).toBe(2)
+    expect(result.stdinDelivered).toBe(false)
+  })
+})

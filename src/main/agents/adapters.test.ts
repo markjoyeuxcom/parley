@@ -1,4 +1,14 @@
 import { describe, expect, it } from 'vitest'
+import {
+  agyEffortTier,
+  agyModelRefusal,
+  agyModelSlug,
+  agyPrintTimeout,
+  agyUsage,
+  buildAgyArgs,
+  isGeminiModel,
+  promptDeliveryRefusal,
+} from './agy'
 import { buildClaudeArgs, claudeUsage } from './claude'
 import { buildCodexArgs, codexEffort, codexSandbox, codexUsage } from './codex'
 import { assertCapability, CapabilityError } from './types'
@@ -102,6 +112,71 @@ describe('codex argument construction', () => {
   })
 })
 
+describe('agy argument construction', () => {
+  const available = [
+    'gemini-3-flash-low',
+    'gemini-3-flash-medium',
+    'gemini-3-flash-high',
+    'gemini-3-pro',
+  ] as const
+  const base = {
+    model: 'gemini-3-flash',
+    effort: 'medium' as const,
+    available,
+    timeoutMs: 180_000,
+  }
+
+  it('folds Parley effort onto Agy tiers without passing --effort', () => {
+    expect(agyEffortTier('low')).toBe('low')
+    expect(agyEffortTier('medium')).toBe('medium')
+    expect(agyEffortTier('high')).toBe('high')
+    expect(agyEffortTier('xhigh')).toBe('high')
+    expect(agyEffortTier('max')).toBe('high')
+
+    const args = buildAgyArgs(base)
+    expect(args).not.toContain('--effort')
+    expect(args[args.indexOf('--model') + 1]).toBe('gemini-3-flash-medium')
+  })
+
+  it('never fabricates a tiered model missing from discovery', () => {
+    expect(agyModelSlug('gemini-3-pro', 'high', available)).toBe('gemini-3-pro')
+    expect(agyModelSlug('gemini-3-flash-high', 'low', available)).toBe(
+      'gemini-3-flash-high',
+    )
+    expect(agyModelSlug('gemini-3-flash', 'high', [])).toBe('gemini-3-flash')
+  })
+
+  it('resumes with --conversation and never --continue', () => {
+    const args = buildAgyArgs({ ...base, resumeId: 'conversation-1' })
+    expect(args[args.indexOf('--conversation') + 1]).toBe('conversation-1')
+    expect(args).not.toContain('--continue')
+    expect(args).not.toContain('-c')
+  })
+
+  it('keeps the prompt off argv and formats the print deadline', () => {
+    const args = buildAgyArgs(base)
+    expect(args.slice(0, 3)).toEqual(['-p', '--output-format', 'stream-json'])
+    expect(args[args.indexOf('--print-timeout') + 1]).toBe('180s')
+    expect(agyPrintTimeout(1_001)).toBe('2s')
+    expect(args.join(' ')).not.toContain('prompt')
+  })
+
+  it('admits only explicit Gemini model slugs', () => {
+    expect(isGeminiModel(' gemini-3-flash-high ')).toBe(true)
+    expect(isGeminiModel('claude-sonnet-4-5')).toBe(false)
+    expect(isGeminiModel('gemini-')).toBe(false)
+    expect(agyModelRefusal('gemini-3-pro')).toBeNull()
+    expect(agyModelRefusal('gpt-oss-120b')).toContain('gemini-*')
+    expect(agyModelRefusal('')).toContain('explicit')
+  })
+
+  it('refuses a non-empty prompt that was not delivered to stdin', () => {
+    expect(promptDeliveryRefusal('make the case', true)).toBeNull()
+    expect(promptDeliveryRefusal('', false)).toBeNull()
+    expect(promptDeliveryRefusal('make the case', false)).toContain('stdin')
+  })
+})
+
 describe('usage mapping', () => {
   it('folds both claude cache counters into cachedInputTokens', () => {
     const usage = claudeUsage(
@@ -127,9 +202,25 @@ describe('usage mapping', () => {
     expect(usage.costUsd).toBe(0)
   })
 
+  it('reads Agy thinking and cache tokens from its terminal usage block', () => {
+    const usage = agyUsage({
+      input_tokens: 9824,
+      output_tokens: 35,
+      thinking_tokens: 29,
+      cache_read_tokens: 8140,
+      total_tokens: 9859,
+    })
+    expect(usage.inputTokens).toBe(9824)
+    expect(usage.cachedInputTokens).toBe(8140)
+    expect(usage.outputTokens).toBe(35)
+    expect(usage.reasoningTokens).toBe(29)
+    expect(usage.costUsd).toBe(0)
+  })
+
   it('survives a malformed or absent usage block', () => {
     expect(claudeUsage(undefined, undefined).inputTokens).toBe(0)
     expect(codexUsage('nonsense').outputTokens).toBe(0)
+    expect(agyUsage(null).reasoningTokens).toBe(0)
   })
 })
 

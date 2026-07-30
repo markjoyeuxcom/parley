@@ -29,6 +29,8 @@ export interface JsonlRunResult {
   exitCode: number
   signal: string | null
   stderr: string
+  /** True only when a supplied stdin body was flushed to the child process. */
+  stdinDelivered: boolean
   /** True when the run was cut short by abort or timeout rather than exiting. */
   terminated: boolean
   /**
@@ -64,15 +66,45 @@ export function runJsonl(opts: JsonlRunOptions): Promise<JsonlRunResult> {
     let settled = false
     let terminated = false
     let timedOut = false
+    let stdinDelivered = false
+    let stdinSettled = opts.stdin === undefined
+    let processFinished = false
+    let finishedExitCode = -1
+    let finishedSignal: string | null = null
+    let spawnConfirmed = false
+    let stdinFlushed = false
+
+    const resolveIfReady = () => {
+      if (settled || !processFinished || !stdinSettled) return
+      settled = true
+      resolve({
+        exitCode: finishedExitCode,
+        signal: finishedSignal,
+        stderr,
+        stdinDelivered,
+        terminated,
+        timedOut,
+      })
+    }
+
+    const settleStdin = (delivered: boolean) => {
+      if (stdinSettled) return
+      stdinSettled = true
+      stdinDelivered = delivered
+      resolveIfReady()
+    }
 
     const finish = (exitCode: number, signalName: string | null) => {
+      if (processFinished) return
+      processFinished = true
+      finishedExitCode = exitCode
+      finishedSignal = signalName
       if (settled) return
-      settled = true
       clearTimeout(timer)
       opts.signal?.removeEventListener('abort', onAbort)
       // Flush a trailing partial line — some CLIs omit the final newline.
       if (stdoutTail.trim()) handleLine(stdoutTail)
-      resolve({ exitCode, signal: signalName, stderr, terminated, timedOut })
+      resolveIfReady()
     }
 
     const handleLine = (line: string) => {
@@ -132,7 +164,13 @@ export function runJsonl(opts: JsonlRunOptions): Promise<JsonlRunResult> {
 
     child.on('error', (err) => {
       stderr += `\nspawn error: ${err.message}`
+      settleStdin(false)
       finish(-1, null)
+    })
+
+    child.on('spawn', () => {
+      spawnConfirmed = true
+      if (stdinFlushed) settleStdin(true)
     })
 
     child.on('close', (code, signalName) => finish(code ?? -1, signalName ?? null))
@@ -142,9 +180,22 @@ export function runJsonl(opts: JsonlRunOptions): Promise<JsonlRunResult> {
     if (child.stdin) {
       child.stdin.on('error', () => {
         // The child may exit before we finish writing; that surfaces via 'close'.
+        settleStdin(false)
       })
-      if (opts.stdin) child.stdin.write(opts.stdin)
-      child.stdin.end()
+      child.stdin.on('close', () => settleStdin(false))
+      if (opts.stdin !== undefined) {
+        child.stdin.end(opts.stdin, (error?: Error | null) => {
+          if (error) {
+            settleStdin(false)
+            return
+          }
+          stdinFlushed = true
+          if (spawnConfirmed) settleStdin(true)
+        })
+      }
+      else child.stdin.end()
+    } else if (opts.stdin !== undefined) {
+      settleStdin(false)
     }
 
     if (opts.signal?.aborted) kill()
