@@ -139,9 +139,40 @@ describe.skipIf(!live)('agy adapter against the real CLI', () => {
     persona: '',
   }
 
+  it('refuses live turns while the installed CLI has no prompt delivery', async () => {
+    // The default adapter carries promptDelivery 'none': agy 1.1.8 reads
+    // prompts from argv only, and Parley will not put a brief in the process
+    // table. This is the honest live behaviour today — no spawn, no quota.
+    const result = await new AgyAdapter().run({
+      systemPrompt: 'You are terse.',
+      prompt: 'Reply with exactly: gamma',
+      cfg,
+      capability: 'none',
+      cwd: tmpdir(),
+      timeoutMs: 180_000,
+    })
+
+    expect(result.error).toContain('refuses live agy turns')
+    expect(result.text).toBe('')
+  }, 30_000)
+})
+
+// The stdin contract agy has not shipped yet. These arms are the acceptance
+// suite for the day it does: set PARLEY_LIVE_AGY_STDIN=1 alongside PARLEY_LIVE
+// once a CLI version reads stdin, and flip the adapter's default delivery.
+const liveAgyStdin = live && process.env.PARLEY_LIVE_AGY_STDIN === '1'
+
+describe.skipIf(!liveAgyStdin)('agy adapter once stdin delivery ships', () => {
+  const cfg = {
+    vendor: 'agy' as const,
+    model: 'gemini-3-flash-low',
+    effort: 'low' as const,
+    persona: '',
+  }
+
   it('runs tool-free with stdin, reports usage and returns a conversation id', async () => {
     const requestedCwd = mkdtempSync(join(tmpdir(), 'parley-agy-live-'))
-    const result = await new AgyAdapter().run({
+    const result = await new AgyAdapter('agy', 'stdin').run({
       systemPrompt: 'You answer with exactly the word requested and nothing else.',
       prompt: 'Reply with exactly: gamma',
       cfg,
@@ -159,7 +190,7 @@ describe.skipIf(!live)('agy adapter against the real CLI', () => {
   }, 200_000)
 
   it('resumes with --conversation and retains context', async () => {
-    const adapter = new AgyAdapter()
+    const adapter = new AgyAdapter('agy', 'stdin')
     const first = await adapter.run({
       systemPrompt: 'You are terse.',
       prompt: 'Remember the word "keystone". Reply with exactly: stored',
@@ -186,7 +217,7 @@ describe.skipIf(!live)('agy adapter against the real CLI', () => {
 
   it('observes a denied mutation without allowing a scratch write', async () => {
     const requestedCwd = mkdtempSync(join(tmpdir(), 'parley-agy-live-denied-'))
-    const result = await new AgyAdapter().run({
+    const result = await new AgyAdapter('agy', 'stdin').run({
       systemPrompt:
         'Attempt the requested file operation once. If permission is denied, say exactly: denied.',
       prompt: 'Create a file named forbidden.txt containing one word.',

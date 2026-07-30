@@ -75,7 +75,7 @@ export function buildAgyArgs(req: {
   resumeId?: string | null
   timeoutMs?: number
 }): string[] {
-  const args = ['-p', '--output-format', 'stream-json']
+  const args = ['--output-format', 'stream-json']
   const model = agyModelSlug(req.model, req.effort, req.available)
 
   if (model) args.push('--model', model)
@@ -83,6 +83,14 @@ export function buildAgyArgs(req: {
   if (req.timeoutMs !== undefined) {
     args.push('--print-timeout', agyPrintTimeout(req.timeoutMs))
   }
+
+  // `-p` goes LAST, with nothing after it — recon-proven: bare `-p` swallows
+  // the next token as its prompt, which is how the first live seat ran agy
+  // with the literal prompt "--output-format", got plain text back, and
+  // reported "produced no output". In last position an accidental live spawn
+  // dies loudly at argv parse ("flag needs an argument") instead of silently
+  // answering a question nobody asked.
+  args.push('-p')
 
   return args
 }
@@ -128,10 +136,22 @@ function refused(error: string): RunResult {
 export class AgyAdapter implements AgentAdapter {
   readonly vendor = 'agy' as const
   readonly binary: string
+  /**
+   * How the prompt reaches the child. agy 1.1.8 reads prompts from argv only
+   * — the recon closed every stdin candidate — and briefs on argv would leak
+   * into the process table, so the default is 'none' and every live turn
+   * refuses up front. The stdin-shim tests construct with 'stdin' to keep the
+   * whole spawn-and-parse path proven for the day the CLI ships stdin
+   * delivery; flipping the default then (behind a version check) is the
+   * entire go-live change. The pipe-flush witness cannot carry this decision:
+   * it reports delivered even when the child never reads the pipe.
+   */
+  readonly promptDelivery: 'stdin' | 'none'
   private modelsPromise: Promise<string[]> | null = null
 
-  constructor(binary = 'agy') {
+  constructor(binary = 'agy', promptDelivery: 'stdin' | 'none' = 'none') {
     this.binary = binary
+    this.promptDelivery = promptDelivery
   }
 
   private locate(): string | null {
@@ -158,6 +178,12 @@ export class AgyAdapter implements AgentAdapter {
 
     const modelRefusal = agyModelRefusal(req.cfg.model)
     if (modelRefusal) return refused(modelRefusal)
+
+    if (this.promptDelivery !== 'stdin') {
+      return refused(
+        'agy 1.1.8 has no way to deliver a prompt off argv — a brief on argv would leak into the process table, so Parley refuses live agy turns until the CLI reads stdin. The seat is wired and waiting.',
+      )
+    }
 
     const binary = this.locate()
     if (!binary) {
@@ -277,15 +303,18 @@ export class AgyAdapter implements AgentAdapter {
       }
     }
 
-    const auth = await this.run({
-      systemPrompt: 'You answer with exactly the requested word and nothing else.',
-      prompt: 'Reply with exactly: ready',
-      cfg: { vendor: 'agy', model: 'gemini-3-flash-low', effort: 'low', persona: '' },
-      capability: 'none',
-      cwd: process.cwd(),
-      timeoutMs: 120_000,
-    })
-    const ok = auth.error === null && /ready/i.test(auth.text)
+    // The probe cannot go through run(): live turns refuse until stdin
+    // delivery exists. Its prompt is a fixed literal — no brief, nothing
+    // user-authored — so argv delivery is acceptable HERE and only here.
+    // "Use no tools" matters: agy's default agent reaches for tools on even
+    // trivial prompts, and a headless denial would read as not-signed-in.
+    const models = await this.models()
+    const probeArgs = ['--output-format', 'text', '--print-timeout', '120s']
+    const probeModel = models[0]
+    if (probeModel) probeArgs.push('--model', probeModel)
+    probeArgs.push('-p', 'Use no tools. Reply with exactly: ready')
+    const auth = await capture(binary, probeArgs, process.cwd(), 120_000)
+    const ok = auth.exitCode === 0 && /ready/i.test(auth.stdout)
     return {
       vendor: 'agy',
       present: true,
@@ -293,7 +322,8 @@ export class AgyAdapter implements AgentAdapter {
       authenticated: ok,
       detail: ok
         ? 'Signed in. Usage bills against your Google subscription.'
-        : auth.error || 'agy is installed but did not answer. Run `agy` once to sign in.',
+        : (auth.stderr.trim() || auth.stdout.trim()).slice(0, 300) ||
+          'agy is installed but did not answer. Run `agy` once to sign in.',
     }
   }
 }

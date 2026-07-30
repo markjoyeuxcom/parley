@@ -178,12 +178,32 @@ describe('agy argument construction', () => {
     expect(args).not.toContain('-c')
   })
 
-  it('keeps the prompt off argv and formats the print deadline', () => {
+  it('keeps the prompt off argv, puts -p last, and formats the print deadline', () => {
     const args = buildAgyArgs(base)
-    expect(args.slice(0, 3)).toEqual(['-p', '--output-format', 'stream-json'])
+    expect(args.slice(0, 2)).toEqual(['--output-format', 'stream-json'])
+    // Recon-proven: bare -p swallows the NEXT TOKEN as the prompt — the first
+    // live seat ran agy with the literal prompt "--output-format" this way.
+    // Last position with nothing after it means an accidental spawn fails
+    // loudly at argv parse instead of silently answering the wrong question.
+    expect(args.at(-1)).toBe('-p')
     expect(args[args.indexOf('--print-timeout') + 1]).toBe('180s')
     expect(agyPrintTimeout(1_001)).toBe('2s')
     expect(args.join(' ')).not.toContain('prompt')
+  })
+
+  it('refuses live turns before spawning while agy has no prompt delivery', async () => {
+    // Default delivery is 'none' — the binary path is deliberately absurd to
+    // prove the refusal fires before locate() ever looks for it.
+    const adapter = new AgyAdapter('/definitely/missing/agy')
+    const result = await adapter.run({
+      systemPrompt: 'irrelevant',
+      prompt: 'irrelevant',
+      cfg: { vendor: 'agy', model: 'gemini-3-flash-high', effort: 'high', persona: '' },
+      capability: 'none',
+      cwd: '/tmp',
+    })
+    expect(result.error).toContain('refuses live agy turns')
+    expect(result.error).not.toContain('not found on PATH')
   })
 
   it('admits only explicit Gemini model slugs', () => {

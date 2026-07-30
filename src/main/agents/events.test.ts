@@ -150,7 +150,7 @@ describe('captured Codex stream through CodexAdapter.run', () => {
 describe('captured Agy stream through AgyAdapter.run', () => {
   it('parses conversation id, delta, final text and usage through a stdin-requiring shim', async () => {
     const requestedCwd = mkdtempSync(join(tmpdir(), 'parley-agy-requested-'))
-    const adapter = new AgyAdapter(stdinShimFor(agyFixture))
+    const adapter = new AgyAdapter(stdinShimFor(agyFixture), 'stdin')
     const deltas: string[] = []
 
     const reply = await adapter.run({
@@ -179,7 +179,7 @@ describe('captured Agy stream through AgyAdapter.run', () => {
 
   it('fails a run that writes anything in its fresh scratch directory', async () => {
     const requestedCwd = mkdtempSync(join(tmpdir(), 'parley-agy-requested-'))
-    const adapter = new AgyAdapter(stdinShimFor(agyFixture, true))
+    const adapter = new AgyAdapter(stdinShimFor(agyFixture, true), 'stdin')
 
     const reply = await adapter.run({
       systemPrompt: 'You are a capture probe.',
@@ -195,7 +195,7 @@ describe('captured Agy stream through AgyAdapter.run', () => {
   })
 
   it('refuses repository capability before locating or spawning Agy', async () => {
-    const adapter = new AgyAdapter('/definitely/missing/agy')
+    const adapter = new AgyAdapter('/definitely/missing/agy', 'stdin')
     const reply = await adapter.run({
       systemPrompt: 'You are a capture probe.',
       prompt: 'Read package.json',
