@@ -354,6 +354,7 @@ function installBridge(
       plans: [],
     }),
     'holds.list': () => [],
+    'envelope.list': () => [],
     'repo.containerStatus': () => ({
       enabled: false,
       configPresent: true,
@@ -663,6 +664,76 @@ describe('mounted-surface smoke', () => {
     await waitFor(() => expect(invoked).toHaveLength(1))
     expect((invoked[0]?.payload as { cwd: string; kind: string }).cwd).toBe('/tmp/smoke-worktree')
     expect((invoked[0]?.payload as { cwd: string; kind: string }).kind).toBe('shell')
+  })
+
+  it('offers an unattended run on a worktree plan, states its bounds, and grants the envelope', async () => {
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    const worktreePlan = { ...smokePlan, isolation: 'worktree' as const }
+    installBridge({
+      'plan.get': () => ({ plan: worktreePlan, milestones: [smokeMilestone], worktree: null }),
+      'ledger.list': () => [],
+      'approval.grant': (payload) => {
+        invoked.push({ name: 'approval.grant', payload })
+        return { id: 'z'.repeat(36), scope: 'plan.envelope', subjectId: worktreePlan.id }
+      },
+      'envelope.start': (payload) => {
+        invoked.push({ name: 'envelope.start', payload })
+        return {
+          id: 'v'.repeat(36),
+          planId: worktreePlan.id,
+          state: 'running',
+          caps: { maxMilestones: 1, maxWallClockMs: 28_800_000, maxSpendUsd: 0 },
+          milestonesRun: 0,
+          startCostUsd: 0,
+          detail: '',
+          startedAt: Date.now(),
+          endedAt: null,
+        }
+      },
+    })
+
+    function EnvelopeHarness(): ReactNode {
+      const { state, openPlan } = useStore()
+      return (
+        <>
+          <button onClick={() => void openPlan(worktreePlan.id)}>Open the plan</button>
+          {state.planDetail ? (
+            <PlanPanel
+              detail={state.planDetail}
+              ledger={state.planLedger}
+              onRefresh={() => {}}
+              host="backlog"
+            />
+          ) : null}
+        </>
+      )
+    }
+    render(
+      <StoreProvider>
+        <EnvelopeHarness />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open the plan' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Run unattended…' }))
+
+    // The dialog states what it will NOT do — the part that makes the one
+    // click honest.
+    await screen.findByText(/never lands the branch|always ends before landing/i)
+    await screen.findByText(/continuing takes\s+a fresh envelope/i)
+    await screen.findByText(/Closing the lid still suspends the/i)
+
+    // Exact: the milestone row's own 'Approve and run' sits behind the dialog.
+    fireEvent.click(screen.getByRole('button', { name: 'Approve and run 1' }))
+
+    await waitFor(() => expect(invoked.map((i) => i.name)).toEqual(['approval.grant', 'envelope.start']))
+    const grant = invoked[0]?.payload as { scope: string; summary: string }
+    expect(grant.scope).toBe('plan.envelope')
+    // The durable summary names the bounds and the two hard limits.
+    expect(grant.summary).toMatch(/unattended in an isolated worktree/)
+    expect(grant.summary).toMatch(/never lands the branch/)
+    const start = invoked[1]?.payload as { caps: { maxMilestones: number } }
+    expect(start.caps.maxMilestones).toBe(1)
   })
 
   it('the dev-container card renders the choice and the toggle invokes by name', async () => {

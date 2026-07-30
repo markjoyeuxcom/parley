@@ -10,6 +10,7 @@ import {
 } from 'react'
 import type {
   BacklogItem,
+  Envelope,
   Id,
   Learning,
   Loop,
@@ -90,6 +91,11 @@ interface State {
    * own sessionDetail.ledger, which is strictly fresher there.
    */
   planLedger: LedgerEntry[] | null
+  /**
+   * Unattended-run records for the open plan, newest first. Upserted by
+   * envelope.changed, so a running band updates live without a refetch.
+   */
+  envelopes: Envelope[]
   panes: Pane[]
   skills: Skill[]
   notices: Notice[]
@@ -159,6 +165,7 @@ const initialState: State = {
   loopDetail: null,
   planDetail: null,
   planLedger: null,
+  envelopes: [],
   panes: [],
   skills: [],
   notices: [],
@@ -197,6 +204,7 @@ type Action =
   | { type: 'loopDetail'; detail: LoopDetail | null }
   | { type: 'planDetail'; detail: PlanDetail | null }
   | { type: 'planOpened'; detail: PlanDetail; ledger: LedgerEntry[] | null }
+  | { type: 'envelopes'; envelopes: Envelope[] }
   | { type: 'panes'; panes: Pane[] }
   | { type: 'skills'; skills: Skill[] }
   | { type: 'notice'; level: Notice['level']; message: string }
@@ -269,6 +277,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, planDetail: action.detail, planLedger: null }
     case 'planOpened':
       return { ...state, planDetail: action.detail, planLedger: action.ledger }
+    case 'envelopes':
+      return { ...state, envelopes: action.envelopes }
     case 'panes':
       return { ...state, panes: action.panes }
     case 'skills':
@@ -578,6 +588,11 @@ function applyEvent(state: State, event: AppEvent): State {
       return { ...state, loopDetail: { ...state.loopDetail, iterations } }
     }
 
+    case 'envelope.changed': {
+      const rest = state.envelopes.filter((e) => e.id !== event.envelope.id)
+      return { ...state, envelopes: [event.envelope, ...rest] }
+    }
+
     case 'pane.created':
       return { ...state, panes: [...state.panes, event.pane] }
 
@@ -712,8 +727,13 @@ export function StoreProvider({ children }: { children: ReactNode }): ReactNode 
       // ledger fetch arrives as null — unknown — which the gate treats as
       // closed, never as clear.
       const ledger = await attempt(() => api.listLedger(detail.plan.sessionId))
+      // Unattended-run records ride along: the band that offers Stop must not
+      // appear a frame after the plan it belongs to.
+      const envelopes = await api.listEnvelopes(planId).catch(() => [])
+      const known = Array.isArray(envelopes) ? envelopes : []
       if (generation !== planGenerationRef.current) return
       dispatch({ type: 'planOpened', detail, ledger: ledger ?? null })
+      dispatch({ type: 'envelopes', envelopes: known })
     },
     [attempt],
   )

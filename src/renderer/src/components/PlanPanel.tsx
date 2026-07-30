@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronDown, ChevronRight, FolderOpen, Play, ShieldCheck, Square } from 'lucide-react'
+import { ChevronDown, ChevronRight, FolderOpen, Moon, Play, ShieldCheck, Square } from 'lucide-react'
 import type {
   AgentConfig,
   BacklogItem,
@@ -11,11 +11,12 @@ import type {
   WorkPlanKind,
 } from '@shared/domain'
 import type { LedgerEntry } from '@shared/ipc'
+import type { Envelope, EnvelopeCaps } from '@shared/domain'
 import { api, type PlanDetail } from '../lib/api'
 import { formatDuration, shortPath, statusTone, verificationState } from '../lib/format'
 import { approvalPermission } from '../lib/ledgerView'
 import { shellMetacharsIn } from '@shared/command'
-import { executionRefusal } from '@shared/execution'
+import { EXECUTABLE_PAIRS, executionRefusal } from '@shared/execution'
 import { useStore, type Surface } from '../state'
 import { AgentPicker } from './AgentPicker'
 import { BulkDispositionControl, OccurrenceDispositionControl } from './FindingsLedgerPanel'
@@ -394,6 +395,25 @@ export function PlanPanel({
   const [landing, setLanding] = useState(false)
   const { attempt, notify, state, dispatch } = useStore()
 
+  const [offeringEnvelope, setOfferingEnvelope] = useState(false)
+
+  const envelopes = state.envelopes.filter((envelope) => envelope.planId === plan.id)
+  const runningEnvelope = envelopes.find((envelope) => envelope.state === 'running') ?? null
+  const lastEnvelope = envelopes[0] ?? null
+  /**
+   * Advisory mirror of the main-process rule: unattended runs are worktree-only
+   * and need something executable. The server re-checks at the grant and again
+   * at the start, so a miss here only costs a clearer message later.
+   */
+  const unattendable =
+    plan.isolation === 'worktree' &&
+    milestones.some((milestone) =>
+      EXECUTABLE_PAIRS.some(
+        ([planStatus, milestoneStatus]) =>
+          plan.status === planStatus && milestone.status === milestoneStatus,
+      ),
+    )
+
   // The holds queue's deep link: a jump that names one of this plan's
   // milestones opens its approval dialog directly. Consumed exactly once —
   // cleared only when this panel actually owns the milestone AND is the
@@ -463,6 +483,33 @@ export function PlanPanel({
    * continues after the dialog has gone; it lives here rather than in the dialog
    * so it is not tied to that component's lifetime.
    */
+  /**
+   * Grants the envelope and starts the run. Two calls, exactly as the
+   * per-milestone path does it: the grant is the recorded authorisation, the
+   * start is what spends it.
+   */
+  const startUnattended = async (caps: EnvelopeCaps): Promise<void> => {
+    setGranting(true)
+    const summary =
+      `Allow ${plan.executor.vendor} to run up to ${caps.maxMilestones} milestone` +
+      `${caps.maxMilestones === 1 ? '' : 's'} of “${plan.title}” unattended in an isolated ` +
+      `worktree of ${plan.repoPath}, within ${Math.round(caps.maxWallClockMs / 3_600_000)}h` +
+      `${caps.maxSpendUsd > 0 ? ` and $${caps.maxSpendUsd.toFixed(2)}` : ''}. ` +
+      `It stops at any blocking finding or failed milestone, and never lands the branch.`
+    const approval = await attempt(() => api.grantApproval('plan.envelope', plan.id, summary))
+    if (!approval) {
+      setGranting(false)
+      return
+    }
+    const envelope = await attempt(() => api.startEnvelope(plan.id, approval.id, caps))
+    setGranting(false)
+    setOfferingEnvelope(false)
+    if (envelope) {
+      notify('info', 'Unattended run started. The queue will hold anything that needs you.')
+      onRefresh()
+    }
+  }
+
   const approveAndRun = async (milestone: Milestone): Promise<void> => {
     setGranting(true)
     // The persisted record of what was authorised, so it must name the
@@ -572,9 +619,38 @@ export function PlanPanel({
             <Chip tone="chip--mono" title="Repository this plan changes">
               {shortPath(plan.repoPath)}
             </Chip>
+            {unattendable && !runningEnvelope ? (
+              <button
+                className="btn btn--sm"
+                onClick={() => setOfferingEnvelope(true)}
+                title="Approve the remaining milestones to run back to back"
+              >
+                <Moon size={12} strokeWidth={2} />
+                Run unattended…
+              </button>
+            ) : null}
           </>
         }
       >
+        {runningEnvelope ? (
+          <EnvelopeBand
+            envelope={runningEnvelope}
+            milestones={milestones}
+            plan={plan}
+            onStop={() => void attempt(() => api.stopEnvelope(plan.id))}
+          />
+        ) : lastEnvelope && lastEnvelope.state !== 'finished' ? (
+          <div style={{ padding: 'var(--s5) var(--s6) 0' }}>
+            <div className="audit-note">
+              <strong>
+                The unattended run {lastEnvelope.state === 'cancelled' ? 'was stopped' : lastEnvelope.state}
+                {lastEnvelope.state === 'parked' ? ' — it needs you' : ''}.
+              </strong>{' '}
+              {lastEnvelope.detail} Continuing takes a fresh envelope: re-entering an
+              autonomous run after an intervention is a new decision.
+            </div>
+          </div>
+        ) : null}
         {/*
           A question the planner could not answer for itself. Shown before the
           milestones because nothing below it is settled until it is answered.
@@ -695,6 +771,23 @@ export function PlanPanel({
         ))}
       </Panel>
 
+      {offeringEnvelope ? (
+        <EnvelopeDialog
+          plan={plan}
+          remaining={
+            milestones.filter((milestone) =>
+              EXECUTABLE_PAIRS.some(
+                ([planStatus, milestoneStatus]) =>
+                  plan.status === planStatus && milestone.status === milestoneStatus,
+              ),
+            ).length
+          }
+          busy={granting}
+          onClose={() => setOfferingEnvelope(false)}
+          onConfirm={(caps) => void startUnattended(caps)}
+        />
+      ) : null}
+
       {pendingApproval && state.surface === host ? (
         <ApprovalGateDialog
           plan={plan}
@@ -708,6 +801,163 @@ export function PlanPanel({
         />
       ) : null}
     </>
+  )
+}
+
+/**
+ * The live band for a running unattended run: how far it has got against
+ * every bound it was given, and the one control that ends it.
+ */
+function EnvelopeBand({
+  envelope,
+  milestones,
+  plan,
+  onStop,
+}: {
+  envelope: Envelope
+  milestones: Milestone[]
+  plan: WorkPlan
+  onStop: () => void
+}): ReactNode {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  const done = milestones.filter((milestone) => milestone.status === 'complete').length
+  const spent = Math.max(0, plan.usage.costUsd - envelope.startCostUsd)
+  const elapsed = now - envelope.startedAt
+
+  return (
+    <div style={{ padding: 'var(--s5) var(--s6) 0' }}>
+      <div className="audit-note">
+        <div className="row" style={{ gap: 'var(--s3)' }}>
+          <Spinner />
+          <strong>Running unattended.</strong>
+          <span className="spacer" />
+          <button className="btn btn--subtle btn--sm" onClick={onStop}>
+            <Square size={12} strokeWidth={2} />
+            Stop
+          </button>
+        </div>
+        <div style={{ marginTop: 'var(--s3)', fontSize: 'var(--text-small)' }}>
+          {done} of {milestones.length} milestone{milestones.length === 1 ? '' : 's'} complete ·{' '}
+          {envelope.milestonesRun} of {envelope.caps.maxMilestones} authorised ·{' '}
+          {formatDuration(elapsed)} of {formatDuration(envelope.caps.maxWallClockMs)}
+          {envelope.caps.maxSpendUsd > 0
+            ? ` · $${spent.toFixed(2)} of $${envelope.caps.maxSpendUsd.toFixed(2)}`
+            : ''}
+        </div>
+        <div style={{ marginTop: 'var(--s2)', fontSize: 'var(--text-small)', color: 'var(--text-tertiary)' }}>
+          It stops on its own at any blocking finding or failed milestone, and always
+          ends before landing — that stays yours.
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The one authorisation an unattended run rests on.
+ *
+ * Every bound is stated before it is granted, because this is the click that
+ * replaces the per-milestone ones. What it will NOT do is stated just as
+ * plainly: this is the dialog where a user decides how much autonomy to hand
+ * over, and a vague one would be the wrong kind of convenient.
+ */
+function EnvelopeDialog({
+  plan,
+  remaining,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  plan: WorkPlan
+  remaining: number
+  busy: boolean
+  onClose: () => void
+  onConfirm: (caps: EnvelopeCaps) => void
+}): ReactNode {
+  const [maxMilestones, setMaxMilestones] = useState(Math.max(1, remaining))
+  const [maxHours, setMaxHours] = useState(8)
+  const [maxSpendUsd, setMaxSpendUsd] = useState(0)
+
+  return (
+    <Dialog
+      title="Run unattended"
+      subtitle="One authorisation for the milestones below. Parley mints each milestone's own single-use approval from it, and records every one."
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            className="btn btn--primary"
+            disabled={busy}
+            onClick={() =>
+              onConfirm({
+                maxMilestones,
+                maxWallClockMs: maxHours * 3_600_000,
+                maxSpendUsd,
+              })
+            }
+          >
+            {busy ? 'Starting…' : `Approve and run ${maxMilestones}`}
+          </button>
+        </>
+      }
+    >
+      <div className="gate">
+        <Field label="Milestones" hint={`${remaining} can execute right now.`}>
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={50}
+            value={maxMilestones}
+            onChange={(event) => setMaxMilestones(Math.max(1, Number(event.target.value) || 1))}
+          />
+        </Field>
+        <Field label="Time limit (hours)" hint="Checked before each milestone starts — never mid-run.">
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={48}
+            value={maxHours}
+            onChange={(event) => setMaxHours(Math.max(1, Number(event.target.value) || 1))}
+          />
+        </Field>
+        <Field
+          label="Spend limit (USD)"
+          hint="0 means no spend cap. Subscription CLIs report no cost, so this only bites on vendors that do."
+        >
+          <input
+            className="input"
+            type="number"
+            min={0}
+            step={1}
+            value={maxSpendUsd}
+            onChange={(event) => setMaxSpendUsd(Math.max(0, Number(event.target.value) || 0))}
+          />
+        </Field>
+
+        <div className="audit-note">
+          <strong>What this run will not do.</strong> It writes only inside this plan&rsquo;s
+          isolated worktree, never {shortPath(plan.repoPath)} itself. It stops — and waits for
+          you — at the first blocking finding, failed milestone, or planner question. It
+          always ends before landing: the fast-forward onto your checkout stays a separate
+          decision. And it cannot be resumed: once it stops for any reason, continuing takes
+          a fresh envelope.
+        </div>
+        <div style={{ fontSize: 'var(--text-small)', color: 'var(--text-tertiary)' }}>
+          Parley holds off idle sleep while it runs. Closing the lid still suspends the
+          Mac — the run parks mid-milestone and resumes like any interrupted one.
+        </div>
+      </div>
+    </Dialog>
   )
 }
 
@@ -1246,9 +1496,12 @@ function ApprovalGateDialog({
     <Dialog
       title={`Approve milestone ${milestone.index + 1}`}
       subtitle={
+        // Deliberately not "the only point at which Parley writes": an
+        // envelope authorises several milestones from one click, and a
+        // sentence that is false in that case is worse than a longer one.
         plan.container
-          ? 'This is the only point at which Parley writes to your repository. Verification runs in the repository’s dev container.'
-          : 'This is the only point at which Parley writes to your repository.'
+          ? 'Authorises one milestone to write to your repository. Verification runs in the repository’s dev container.'
+          : 'Authorises one milestone to write to your repository.'
       }
       onClose={onClose}
       footer={
