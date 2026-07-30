@@ -23,6 +23,15 @@ describe('pane header derivations', () => {
     expect(slotPaneTitle(undefined, undefined)).toBe('pane')
   })
 
+  it('a human-given name outranks every derived title, and survives a restart', () => {
+    const named: Slot = { ...slot, title: 'auth spike' }
+    expect(slotPaneTitle(named, pane)).toBe('auth spike')
+    // A restarted slot has a fresh pane that knows nothing of the old name.
+    expect(slotPaneTitle(named, undefined)).toBe('auth spike')
+    // Whitespace is not a name.
+    expect(slotPaneTitle({ ...slot, title: '  ' }, pane)).toBe('claude — thing')
+  })
+
   it('separates idle (no process) from starting (spawned, unheard-from)', () => {
     expect(slotPaneStatus(idle, undefined)).toBe('idle')
     expect(slotPaneStatus(slot, undefined)).toBe('starting')

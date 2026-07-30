@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Columns2, FolderOpen, Layers, Play, Plus, Rows2, Terminal, X } from 'lucide-react'
+import { Columns2, FolderOpen, Layers, MoreHorizontal, Play, Plus, Rows2, Terminal, X } from 'lucide-react'
 import {
   MAX_PANES,
   type GridLayout,
@@ -35,6 +35,7 @@ import {
 } from '../lib/panes'
 
 const KIND_LABEL = PANE_KIND_LABEL
+const PANE_KINDS: PaneKind[] = ['shell', 'claude', 'codex']
 
 let slotSeq = 0
 const mintSlotId = (): Id => `slot-${Date.now().toString(36)}-${(slotSeq += 1)}`
@@ -60,6 +61,7 @@ export function GridSurface(): ReactNode {
   const [picked, setPicked] = useState<string[]>([])
   const [layouts, setLayouts] = useState<GridLayout[]>([])
   const [saving, setSaving] = useState(false)
+  const [renaming, setRenaming] = useState<{ slotId: Id; value: string } | null>(null)
   const draggingSkill = useRef<Skill | null>(null)
 
   const slotCount = countSlots(layout)
@@ -117,10 +119,10 @@ export function GridSurface(): ReactNode {
 
   /** Starts the process for a slot that has none. */
   const startSlot = useCallback(
-    async (slotId: Id): Promise<void> => {
+    async (slotId: Id, opts: { resume?: boolean } = {}): Promise<void> => {
       const slot = slots[slotId]
       if (!slot || slot.paneId) return
-      const pane = await attempt(() => api.openPane(slot.kind, slot.cwd, 80, 24))
+      const pane = await attempt(() => api.openPane(slot.kind, slot.cwd, 80, 24, opts.resume ?? false))
       if (!pane) return
       setSlots((current) => ({ ...current, [slotId]: { ...slot, paneId: pane.id } }))
       setFocusedSlot(slotId)
@@ -128,8 +130,62 @@ export function GridSurface(): ReactNode {
     [attempt, slots],
   )
 
+  const commitRename = (): void => {
+    if (!renaming) return
+    const { slotId, value } = renaming
+    setRenaming(null)
+    setSlots((current) => {
+      const slot = current[slotId]
+      if (!slot) return current
+      const title = value.trim()
+      const next = { ...slot }
+      if (title) next.title = title
+      else delete next.title
+      return { ...current, [slotId]: next }
+    })
+  }
+
+  /** Kills the process; the slot keeps its corpse and its exit code. */
+  const stopSlot = useCallback(
+    (slotId: Id) => {
+      const paneId = slots[slotId]?.paneId
+      if (paneId) void attempt(() => api.stopPane(paneId))
+    },
+    [attempt, slots],
+  )
+
+  /**
+   * One motion serves restart, reopen, replace-kind and resume: discard
+   * whatever process the slot holds — the slot itself survives — and spawn
+   * the next one into the same position. A failed spawn leaves the slot idle
+   * with its Start button, never half-attached to a dead pane id.
+   */
+  const relaunchSlot = useCallback(
+    async (slotId: Id, opts: { kind?: PaneKind; resume?: boolean } = {}): Promise<void> => {
+      const slot = slots[slotId]
+      if (!slot) return
+      if (slot.paneId) {
+        void api.closePane(slot.paneId).catch(() => undefined)
+        forgetPane(slot.paneId)
+      }
+      const kind = opts.kind ?? slot.kind
+      const pane = await attempt(() => api.openPane(kind, slot.cwd, 80, 24, opts.resume ?? false))
+      setSlots((current) => {
+        const existing = current[slotId]
+        if (!existing) return current
+        return { ...current, [slotId]: { ...existing, kind, paneId: pane ? pane.id : null } }
+      })
+      if (pane) setFocusedSlot(slotId)
+    },
+    [attempt, slots],
+  )
+
   const openPane = useCallback(
-    async (kind: PaneKind, splitFrom?: { slotId: Id; direction: 'row' | 'column' }) => {
+    async (
+      kind: PaneKind,
+      splitFrom?: { slotId: Id; direction: 'row' | 'column' },
+      title?: string,
+    ) => {
       if (slotCount >= MAX_PANES) {
         notify('warn', `The grid holds at most ${MAX_PANES} panes.`)
         return
@@ -147,7 +203,10 @@ export function GridSurface(): ReactNode {
       if (!pane) return
 
       const slotId = mintSlotId()
-      setSlots((current) => ({ ...current, [slotId]: { kind, cwd: dir, paneId: pane.id } }))
+      setSlots((current) => ({
+        ...current,
+        [slotId]: { kind, cwd: dir, paneId: pane.id, ...(title ? { title } : {}) },
+      }))
       setLayout((current) => {
         if (!current) return leaf(slotId)
         if (splitFrom) return splitLeaf(current, splitFrom.slotId, splitFrom.direction, slotId)
@@ -425,6 +484,75 @@ export function GridSurface(): ReactNode {
               const slot = slots[id]
               return slotPaneExit(slot, slot?.paneId ? paneById.get(slot.paneId) : undefined)
             }}
+            paneMenu={(id) => {
+              const slot = slots[id]
+              if (!slot) return null
+              const status = slotPaneStatus(slot, slot.paneId ? paneById.get(slot.paneId) : undefined)
+              const running = status === 'live' || status === 'starting'
+              const agent = slot.kind !== 'shell'
+              return (
+                <Menu label={<MoreHorizontal size={12} strokeWidth={2} />} title="Pane actions">
+                  {(close) => (
+                    <>
+                      <MenuSection>
+                        {running ? (
+                          <MenuItem onClick={() => { close(); stopSlot(id) }}>
+                            Stop — keep the pane
+                          </MenuItem>
+                        ) : null}
+                        {running ? (
+                          <MenuItem onClick={() => { close(); void relaunchSlot(id) }}>
+                            Restart
+                          </MenuItem>
+                        ) : null}
+                        {!running && slot.paneId ? (
+                          <MenuItem onClick={() => { close(); void relaunchSlot(id) }}>
+                            Reopen
+                          </MenuItem>
+                        ) : null}
+                        {!running && !slot.paneId ? (
+                          <MenuItem onClick={() => { close(); void startSlot(id) }}>
+                            Start
+                          </MenuItem>
+                        ) : null}
+                        {agent && !running ? (
+                          <MenuItem
+                            onClick={() => {
+                              close()
+                              // The CLI's own picker, in the pane. Governed
+                              // resume ids never reach the Grid.
+                              void (slot.paneId ? relaunchSlot(id, { resume: true }) : startSlot(id, { resume: true }))
+                            }}
+                          >
+                            Resume a session…
+                          </MenuItem>
+                        ) : null}
+                      </MenuSection>
+                      <MenuSection>
+                        <MenuItem
+                          onClick={() => { close(); setRenaming({ slotId: id, value: slot.title ?? '' }) }}
+                        >
+                          Rename…
+                        </MenuItem>
+                        <MenuItem
+                          onClick={() => { close(); void openPane(slot.kind, { slotId: id, direction: 'row' }, slot.title) }}
+                        >
+                          Duplicate
+                        </MenuItem>
+                        {PANE_KINDS.filter((kind) => kind !== slot.kind).map((kind) => (
+                          <MenuItem
+                            key={kind}
+                            onClick={() => { close(); void relaunchSlot(id, { kind }) }}
+                          >
+                            Replace with {KIND_LABEL[kind]}
+                          </MenuItem>
+                        ))}
+                      </MenuSection>
+                    </>
+                  )}
+                </Menu>
+              )
+            }}
             onFocus={setFocusedSlot}
             onClose={closeSlot}
             onStart={(id) => void startSlot(id)}
@@ -505,6 +633,35 @@ export function GridSurface(): ReactNode {
           Drag onto an agent pane
         </span>
       </div>
+
+      {renaming ? (
+        <Dialog
+          title="Rename pane"
+          onClose={() => setRenaming(null)}
+          footer={
+            <>
+              <button className="btn" onClick={() => setRenaming(null)}>
+                Cancel
+              </button>
+              <button className="btn btn--primary" onClick={commitRename}>
+                Rename
+              </button>
+            </>
+          }
+        >
+          <Field label="Name" hint="Empty restores the automatic kind-and-folder title. Names ride saved layouts.">
+            <input
+              className="input"
+              autoFocus
+              value={renaming.value}
+              onChange={(event) => setRenaming({ ...renaming, value: event.target.value })}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') commitRename()
+              }}
+            />
+          </Field>
+        </Dialog>
+      ) : null}
 
       {saving ? (
         <SaveLayoutDialog
@@ -592,6 +749,7 @@ interface LayoutViewProps {
   paneTitle: (id: Id) => string
   paneStatus: (id: Id) => 'idle' | 'starting' | 'live' | 'exited'
   paneExit: (id: Id) => number | null
+  paneMenu: (id: Id) => ReactNode
   onFocus: (id: Id) => void
   onClose: (id: Id) => void
   onStart: (id: Id) => void
@@ -636,6 +794,7 @@ function LayoutView(props: LayoutViewProps): ReactNode {
           {status === 'exited' ? (
             <Chip tone={exitCode === 0 ? '' : 'chip--fail'}>exit {exitCode ?? '?'}</Chip>
           ) : null}
+          {props.paneMenu(id)}
           <button
             className="btn btn--subtle btn--icon btn--sm"
             title="Split right (⌘D)"

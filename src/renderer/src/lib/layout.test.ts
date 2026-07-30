@@ -10,6 +10,7 @@ import {
   setRatio,
   splitLeaf,
   toSavedLayout,
+  type Slot,
 } from './layout'
 
 describe('pane layout tree', () => {
@@ -124,6 +125,21 @@ describe('saving and restoring a layout', () => {
     expect(ids).toHaveLength(3)
     expect(ids.map((id) => restoredSlots[id]?.kind)).toEqual(['shell', 'claude', 'codex'])
     expect(ids.map((id) => restoredSlots[id]?.cwd)).toEqual(['/repo/a', '/repo/a', '/repo/b'])
+  })
+
+  it('a human-given name rides the save and the restore; unnamed slots stay unnamed', () => {
+    const named: Record<string, Slot> = {
+      ...slots,
+      s2: { ...slots.s2, title: 'auth spike' },
+    }
+    const saved = toSavedLayout(tree(), named)
+    if (!saved) throw new Error('expected a saved tree')
+    expect(JSON.stringify(saved)).toContain('auth spike')
+
+    let n = 0
+    const { tree: restored, slots: restoredSlots } = fromSavedLayout(saved, () => `r${(n += 1)}`)
+    const ids = collectSlotIds(restored)
+    expect(ids.map((id) => restoredSlots[id]?.title)).toEqual([undefined, 'auth spike', undefined])
   })
 
   it('restores nothing running — the caller decides what to start', () => {

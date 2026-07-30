@@ -1030,7 +1030,7 @@ export const LayoutNode: z.ZodType<LayoutNode> = z.lazy(() =>
  * dead process ids.
  */
 export type SavedLayoutNode =
-  | { type: 'leaf'; kind: PaneKind; cwd: string }
+  | { type: 'leaf'; kind: PaneKind; cwd: string; title?: string }
   | {
       type: 'split'
       direction: 'row' | 'column'
@@ -1041,7 +1041,13 @@ export type SavedLayoutNode =
 
 export const SavedLayoutNode: z.ZodType<SavedLayoutNode> = z.lazy(() =>
   z.union([
-    z.object({ type: z.literal('leaf'), kind: PaneKind, cwd: z.string().min(1) }),
+    z.object({
+      type: z.literal('leaf'),
+      kind: PaneKind,
+      cwd: z.string().min(1),
+      /** A human-given pane name. Optional so pre-title layouts stay valid. */
+      title: z.string().optional(),
+    }),
     z.object({
       type: z.literal('split'),
       direction: z.enum(['row', 'column']),

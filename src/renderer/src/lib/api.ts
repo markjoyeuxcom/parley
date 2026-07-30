@@ -264,12 +264,18 @@ export const api = {
   killLoop: (loopId: Id): Promise<unknown> => bridge().invoke('loop.kill', { loopId }),
 
   // Grid
-  openPane: (kind: Pane['kind'], cwd: string, cols: number, rows: number): Promise<Pane> =>
-    bridge().invoke('pane.open', { kind, cwd, cols, rows }),
+  openPane: (
+    kind: Pane['kind'],
+    cwd: string,
+    cols: number,
+    rows: number,
+    resume = false,
+  ): Promise<Pane> => bridge().invoke('pane.open', { kind, cwd, cols, rows, resume }),
   writePane: (paneId: Id, data: string): Promise<unknown> => bridge().invoke('pane.write', { paneId, data }),
   resizePane: (paneId: Id, cols: number, rows: number): Promise<unknown> =>
     bridge().invoke('pane.resize', { paneId, cols, rows }),
   closePane: (paneId: Id): Promise<unknown> => bridge().invoke('pane.close', { paneId }),
+  stopPane: (paneId: Id): Promise<unknown> => bridge().invoke('pane.stop', { paneId }),
   listPanes: (): Promise<Pane[]> => bridge().invoke('pane.list'),
 
   // Saved layouts

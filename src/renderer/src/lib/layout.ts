@@ -95,6 +95,8 @@ export interface Slot {
   kind: PaneKind
   cwd: string
   paneId: Id | null
+  /** A human-given name. Survives restarts and rides saved layouts. */
+  title?: string
 }
 
 /**
@@ -112,7 +114,9 @@ export function toSavedLayout(
   if (node.type === 'leaf') {
     const slot = slots[node.slotId]
     if (!slot) return null
-    return { type: 'leaf', kind: slot.kind, cwd: slot.cwd }
+    return slot.title
+      ? { type: 'leaf', kind: slot.kind, cwd: slot.cwd, title: slot.title }
+      : { type: 'leaf', kind: slot.kind, cwd: slot.cwd }
   }
   const a = toSavedLayout(node.a, slots)
   const b = toSavedLayout(node.b, slots)
@@ -138,7 +142,7 @@ export function fromSavedLayout(
   const walk = (node: SavedLayoutNode): LayoutNode => {
     if (node.type === 'leaf') {
       const slotId = mintId()
-      slots[slotId] = { kind: node.kind, cwd: node.cwd, paneId: null }
+      slots[slotId] = { kind: node.kind, cwd: node.cwd, paneId: null, ...(node.title ? { title: node.title } : {}) }
       return { type: 'leaf', slotId }
     }
     return {

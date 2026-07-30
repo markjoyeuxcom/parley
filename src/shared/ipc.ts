@@ -136,6 +136,11 @@ export const OpenPaneReq = z.object({
   cwd: z.string().min(1),
   cols: z.number().int().min(2).max(2000),
   rows: z.number().int().min(2).max(1000),
+  /**
+   * Launch the CLI's OWN interactive session picker (`claude --resume`,
+   * `codex resume`) — never Parley's governed resume ids. Ignored for shells.
+   */
+  resume: z.boolean().default(false),
 })
 
 export const PaneWriteReq = z.object({ paneId: Id, data: z.string() })
@@ -145,6 +150,7 @@ export const PaneResizeReq = z.object({
   rows: z.number().int().min(2).max(1000),
 })
 export const PaneCloseReq = z.object({ paneId: Id })
+export const PaneStopReq = z.object({ paneId: Id })
 
 export const RunSkillReq = z.object({ paneId: Id, skillId: Id })
 export const SaveSkillReq = Skill.omit({ builtIn: true })
@@ -314,6 +320,7 @@ export const COMMANDS = {
   'pane.write': PaneWriteReq,
   'pane.resize': PaneResizeReq,
   'pane.close': PaneCloseReq,
+  'pane.stop': PaneStopReq,
   'pane.list': null,
   'layout.save': SaveLayoutReq,
   'layout.list': null,

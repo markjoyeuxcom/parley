@@ -59,12 +59,14 @@ function loginShell(): string {
  * own TUI, riding the user's subscription. Parley is not proxying or re-hosting
  * the agent here, just giving it a window.
  */
-function commandFor(kind: PaneKind): { file: string; args: string[] } {
+export function commandFor(kind: PaneKind, resume = false): { file: string; args: string[] } {
   switch (kind) {
     case 'claude':
-      return { file: 'claude', args: [] }
+      // `--resume` bare opens the CLI's OWN interactive session picker —
+      // Parley's governed resume ids never reach a pane.
+      return { file: 'claude', args: resume ? ['--resume'] : [] }
     case 'codex':
-      return { file: 'codex', args: [] }
+      return { file: 'codex', args: resume ? ['resume'] : [] }
     default:
       // -l so the shell reads the user's profile.
       return { file: loginShell(), args: ['-l'] }
@@ -93,14 +95,14 @@ export class PtyManager {
     return [...this.panes.values()].map((h) => h.pane)
   }
 
-  open(kind: PaneKind, cwd: string, cols: number, rows: number): Pane {
+  open(kind: PaneKind, cwd: string, cols: number, rows: number, resume = false): Pane {
     if (this.panes.size >= MAX_PANES) {
       throw new PaneLimitError(`the grid holds at most ${MAX_PANES} panes`)
     }
     const dir = cwd.trim() || homedir()
     assertUsableCwd(dir)
 
-    const { file, args } = commandFor(kind)
+    const { file, args } = commandFor(kind, resume)
 
     // Resolve to an absolute path first. This separates "the CLI is not
     // installed" from "the pty layer is broken" — two failures that produce the
@@ -201,6 +203,21 @@ export class PtyManager {
    * interactive session, not a separate spawn, so the agent keeps its context
    * and the user sees exactly what was sent.
    */
+  /**
+   * Kills the process but keeps the handle: the slot survives, the pane shows
+   * its corpse with the exit code, and Reopen can bring it back. Close is the
+   * only way a handle leaves the map.
+   */
+  stop(paneId: Id): void {
+    const handle = this.panes.get(paneId)
+    if (!handle || handle.pane.status === 'exited') return
+    try {
+      handle.proc.kill()
+    } catch {
+      // Already gone; the exit handler records it.
+    }
+  }
+
   submit(paneId: Id, text: string): void {
     const handle = this.panes.get(paneId)
     if (!handle || handle.pane.status === 'exited') return

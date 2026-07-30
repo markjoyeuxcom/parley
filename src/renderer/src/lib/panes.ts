@@ -16,6 +16,9 @@ export const KIND_LABEL: Record<PaneKind, string> = {
 
 export function slotPaneTitle(slot: Slot | undefined, pane: Pane | undefined): string {
   if (!slot) return 'pane'
+  // A human-given name outranks everything: renames must survive restarts,
+  // and a restart mints a fresh pane whose title knows nothing of the old.
+  if (slot.title?.trim()) return slot.title.trim()
   return pane?.title ?? `${KIND_LABEL[slot.kind]} — ${shortPath(slot.cwd)}`
 }
 

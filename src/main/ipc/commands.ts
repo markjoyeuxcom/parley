@@ -415,14 +415,15 @@ const HANDLERS: Record<CommandName, Handler> = {
 
   // ── Grid ───────────────────────────────────────────────────────────────────
   'pane.open': (p, ctx) => {
-    const { kind, cwd, cols, rows } = p as {
+    const { kind, cwd, cols, rows, resume } = p as {
       kind: 'shell' | 'claude' | 'codex'
       cwd: string
       cols: number
       rows: number
+      resume: boolean
     }
     if (ctx.pty.count >= MAX_PANES) throw new Error(`the grid holds at most ${MAX_PANES} panes`)
-    return ctx.pty.open(kind, cwd, cols, rows)
+    return ctx.pty.open(kind, cwd, cols, rows, resume)
   },
   'pane.write': (p, ctx) => {
     const { paneId, data } = p as { paneId: string; data: string }
@@ -436,6 +437,10 @@ const HANDLERS: Record<CommandName, Handler> = {
   },
   'pane.close': (p, ctx) => {
     ctx.pty.close((p as { paneId: string }).paneId)
+    return { ok: true }
+  },
+  'pane.stop': (p, ctx) => {
+    ctx.pty.stop((p as { paneId: string }).paneId)
     return { ok: true }
   },
   'pane.list': (_p, ctx) => ctx.pty.list(),
