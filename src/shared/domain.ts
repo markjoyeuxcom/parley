@@ -94,6 +94,13 @@ export const ApprovalScope = z.enum([
    * other authorisation to touch it.
    */
   'plan.land',
+  /**
+   * Permits one unattended run over a plan's remaining milestones, within the
+   * bounds stated on its envelope record. Consumed when the run starts; the
+   * driver then mints each milestone's own single-use `milestone.execute`
+   * approval, so the per-milestone record keeps its exact shape.
+   */
+  'plan.envelope',
 ])
 export type ApprovalScope = z.infer<typeof ApprovalScope>
 
@@ -592,6 +599,58 @@ export type WorkPlan = z.infer<typeof WorkPlan>
  * actually survives on disk. Rows are never deleted by reconciliation — a
  * branch can outlive its directory and still carry unlanded commits.
  */
+/**
+ * Bounds for one unattended run. Checked before every dispatch, never
+ * mid-milestone — a running milestone always finishes, the loops precedent.
+ */
+export const EnvelopeCaps = z.object({
+  /** How many milestone executions this envelope may mint. */
+  maxMilestones: z.number().int().min(1).max(50),
+  maxWallClockMs: z.number().int().min(60_000),
+  /** 0 disables the cap — subscription CLIs report notional or zero cost. */
+  maxSpendUsd: z.number().min(0),
+})
+export type EnvelopeCaps = z.infer<typeof EnvelopeCaps>
+
+export const EnvelopeState = z.enum([
+  'running',
+  /**
+   * Something needs a human: a failed milestone, a blocking finding, or an
+   * interrupted app. Terminal by design — continuing after the cause is
+   * fixed takes a FRESH envelope, because re-entering autonomy is a new
+   * authorisation, not a resumption.
+   */
+  'parked',
+  /** A cap was reached before the plan finished. The plan itself is fine. */
+  'exhausted',
+  /** Every milestone completed; the plan waits at merge-ready. */
+  'finished',
+  'cancelled',
+])
+export type EnvelopeState = z.infer<typeof EnvelopeState>
+
+/**
+ * The record of one unattended run: what was authorised, how far it got, and
+ * how it ended. `planId` deliberately carries no foreign key (the
+ * self_updates precedent) — session deletion cascades to plans, and an
+ * authorisation record must outlive its subject.
+ */
+export const Envelope = z.object({
+  id: Id,
+  planId: Id,
+  state: EnvelopeState,
+  caps: EnvelopeCaps,
+  /** Milestone executions minted so far. */
+  milestonesRun: z.number().int().nonnegative().default(0),
+  /** The plan's costUsd when the run started; the spend cap measures the delta. */
+  startCostUsd: z.number().default(0),
+  /** Why it parked or exhausted, and how far it got. */
+  detail: z.string().default(''),
+  startedAt: Timestamp,
+  endedAt: Timestamp.nullable().default(null),
+})
+export type Envelope = z.infer<typeof Envelope>
+
 export const Worktree = z.object({
   planId: Id,
   /** The repository the worktree was created from, and lands back into. */

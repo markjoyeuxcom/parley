@@ -21,6 +21,7 @@ import type { Hold } from '@shared/holds'
 import type { RepoContainerStatus } from '@shared/ipc'
 import type { AgentRegistry } from '@main/agents'
 import { isShellFree, shellMetacharsIn } from '@shared/command'
+import { EXECUTABLE_PAIRS } from '@shared/execution'
 import { seatingRefusals, type VendorSeat } from '@shared/vendors'
 import { extractJson, safeString } from '@shared/extract'
 import { protocolFor, STOW_CONTRACT } from '@shared/protocol'
@@ -978,6 +979,39 @@ export class Manager {
     if (!plan) throw new RequestError('the plan for this milestone is missing')
     assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
     return this.repo.grantApproval('milestone.execute', milestoneId, summary)
+  }
+
+  /**
+   * Authorises one unattended run over a plan's remaining milestones.
+   * Everything checkable is refused at the grant: an envelope that cannot
+   * run should cost a clear message now, not a parked record later.
+   */
+  grantEnvelopeApproval(planId: Id, summary: string): Approval {
+    const plan = this.repo.getPlan(planId)
+    if (!plan) throw new RequestError('no such plan')
+    if (plan.isolation !== 'worktree') {
+      throw new RequestError(
+        'unattended runs are worktree-only — an autonomous agent writing into the live checkout is the one uncontrolled case. Recreate the plan with worktree isolation.',
+      )
+    }
+    const executable = this.repo
+      .listMilestones(planId)
+      .some((milestone) =>
+        EXECUTABLE_PAIRS.some(
+          ([planStatus, milestoneStatus]) =>
+            plan.status === planStatus && milestone.status === milestoneStatus,
+        ),
+      )
+    if (!executable) {
+      throw new RequestError(
+        `nothing is ready to execute — the plan is ${plan.status} and no milestone is in an executable state`,
+      )
+    }
+    if (this.repo.getActiveEnvelopeForPlan(planId)) {
+      throw new RequestError('an envelope is already running for this plan')
+    }
+    assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
+    return this.repo.grantApproval('plan.envelope', planId, summary)
   }
 
   /**

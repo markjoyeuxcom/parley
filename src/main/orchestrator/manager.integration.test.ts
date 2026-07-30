@@ -2829,3 +2829,84 @@ describe("Parley's own repository", () => {
     expect(packaged.selfRepoPath).toBeNull()
   })
 })
+
+describe('the unattended envelope grant', () => {
+  function envelopeHarness(): { manager: Manager; repo: Repo } {
+    const repo = new Repo(openDatabase(':memory:'))
+    const manager = new Manager({
+      repo,
+      registry: new AgentRegistry(true),
+      emit: () => {},
+      worktreesRoot: mkdtempSync(join(tmpdir(), 'parley-envelope-worktrees-')),
+    })
+    return { manager, repo }
+  }
+
+  it('gates the envelope grant on isolation, executability, exclusivity and findings', async () => {
+    const { manager, repo } = envelopeHarness()
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'x',
+      project: '',
+      repoPath: null,
+      participants: [claude, codex],
+      maxTurns: 2,
+    })
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-envelope-grant-'))
+
+    // A checkout plan can never run unattended, whatever else is true.
+    const { plan: checkoutPlan } = await manager.createPlan({
+      sessionId: session.id,
+      kind: 'implementation',
+      repoPath,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+      isolation: 'checkout',
+    })
+    await manager.whenPlanSettled(checkoutPlan.id)
+    await expect(
+      Promise.resolve().then(() => manager.grantEnvelopeApproval(checkoutPlan.id, 'bounds')),
+    ).rejects.toThrow(/worktree-only/)
+
+    // A worktree plan with audited milestones: first the findings gate bites —
+    // the mock audit files blocking findings, exactly like a real one can.
+    const { plan } = await manager.createPlan({
+      sessionId: session.id,
+      kind: 'implementation',
+      repoPath,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+      isolation: 'worktree',
+    })
+    await manager.whenPlanSettled(plan.id)
+    expect(repo.listMilestones(plan.id).some((m) => m.status === 'audited')).toBe(true)
+    expect(() => manager.grantEnvelopeApproval(plan.id, 'bounds')).toThrow(/finding/i)
+
+    // Findings dispositioned: the grant goes through and records the scope.
+    disposeOpenBlockingOccurrences(repo, session.id)
+    const approval = manager.grantEnvelopeApproval(plan.id, 'run the rest, capped')
+    expect(approval.scope).toBe('plan.envelope')
+    expect(approval.subjectId).toBe(plan.id)
+    expect(approval.consumedAt).toBeNull()
+
+    // One envelope per plan at a time.
+    repo.createEnvelope(
+      {
+        id: newId(),
+        planId: plan.id,
+        state: 'running',
+        caps: { maxMilestones: 3, maxWallClockMs: 3_600_000, maxSpendUsd: 0 },
+        milestonesRun: 0,
+        startCostUsd: 0,
+        detail: '',
+        startedAt: Date.now(),
+        endedAt: null,
+      },
+      repoPath,
+    )
+    expect(() => manager.grantEnvelopeApproval(plan.id, 'again')).toThrow(/already running/)
+  })
+})

@@ -11,6 +11,9 @@ type Classification = 'direct' | 'child' | 'out-of-scope'
 const DECLARED_PARENTS: Readonly<Record<string, string>> = {
   ledger_findings: 'sessions',
   self_updates: 'plans',
+  // FK-less on purpose, like self_updates: an authorisation record outlives
+  // the plan a session deletion cascades away.
+  envelopes: 'plans',
 }
 
 const OUT_OF_SCOPE: Readonly<Record<string, string>> = {
@@ -69,6 +72,12 @@ const WRITE_EXEMPTIONS: Readonly<Record<string, string>> = {
     'Iteration detail is covered by its loop lifecycle activity.',
   'finishIteration:loop_iterations':
     'Iteration detail is covered by its loop lifecycle activity.',
+  'settleEnvelope:envelopes':
+    'An envelope ending is recorded by the milestone transitions it drove, and by the hold its outcome derives.',
+  'bumpEnvelopeMilestones:envelopes':
+    'The mint counter is internal cap bookkeeping; the milestone it authorised records the visible activity.',
+  'reconcileEnvelopes:envelopes':
+    'Startup reconciliation repairs durable envelope state before repository visibility is evaluated.',
 }
 
 function tableClassifications(db: Db): Map<string, Classification> {
@@ -275,6 +284,7 @@ describe('repository activity completeness', () => {
     ])
     expect(tables('child')).toEqual([
       'backlog_events',
+      'envelopes',
       'findings',
       'interjection_deliveries',
       'interjections',

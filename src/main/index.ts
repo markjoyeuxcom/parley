@@ -107,6 +107,7 @@ async function bootstrap(): Promise<void> {
   // failures; the pending proposal they never superseded stays as it was.
   repo.reconcileForemanAttempts()
   repo.reconcileSelfUpdates()
+  repo.reconcileEnvelopes()
 
   const registry = new AgentRegistry()
 

@@ -897,6 +897,69 @@ describe('gathering findings for a remediation plan', () => {
   })
 })
 
+describe('envelopes', () => {
+  const caps = { maxMilestones: 5, maxWallClockMs: 3_600_000, maxSpendUsd: 0 }
+  function makeEnvelope(repo: Repo, planId: string) {
+    return repo.createEnvelope(
+      {
+        id: newId(),
+        planId,
+        state: 'running',
+        caps,
+        milestonesRun: 0,
+        startCostUsd: 0,
+        detail: '',
+        startedAt: Date.now(),
+        endedAt: null,
+      },
+      '/tmp/envelope-repo',
+    )
+  }
+
+  it('round-trips, finds the active run, and counts minted milestones', () => {
+    const repo = freshRepo()
+    const envelope = makeEnvelope(repo, 'p'.repeat(36))
+    expect(repo.getEnvelope(envelope.id)?.caps).toEqual(caps)
+    expect(repo.getActiveEnvelopeForPlan(envelope.planId)?.id).toBe(envelope.id)
+    expect(repo.listActiveEnvelopes().map((e) => e.id)).toEqual([envelope.id])
+
+    repo.bumpEnvelopeMilestones(envelope.id)
+    repo.bumpEnvelopeMilestones(envelope.id)
+    expect(repo.getEnvelope(envelope.id)?.milestonesRun).toBe(2)
+  })
+
+  it('settles a running envelope exactly once — the reconcile-vs-driver race is unlosable', () => {
+    const repo = freshRepo()
+    const envelope = makeEnvelope(repo, 'p'.repeat(36))
+
+    expect(repo.settleEnvelope(envelope.id, 'finished', 'every milestone completed')).toBe(true)
+    // A second ending — whatever it claims — changes nothing.
+    expect(repo.settleEnvelope(envelope.id, 'parked', 'late crash story')).toBe(false)
+    const settled = repo.getEnvelope(envelope.id)
+    expect(settled?.state).toBe('finished')
+    expect(settled?.detail).toBe('every milestone completed')
+    expect(settled?.endedAt).not.toBeNull()
+    expect(repo.getActiveEnvelopeForPlan(envelope.planId)).toBeNull()
+
+    // A settled envelope stops counting mints too.
+    repo.bumpEnvelopeMilestones(envelope.id)
+    expect(repo.getEnvelope(envelope.id)?.milestonesRun).toBe(0)
+  })
+
+  it('reconciles interrupted envelopes to parked at startup', () => {
+    const repo = freshRepo()
+    const a = makeEnvelope(repo, 'p'.repeat(36))
+    const b = makeEnvelope(repo, 'q'.repeat(36))
+    repo.settleEnvelope(b.id, 'cancelled', 'stopped by you')
+
+    expect(repo.reconcileEnvelopes()).toBe(1)
+    expect(repo.getEnvelope(a.id)?.state).toBe('parked')
+    expect(repo.getEnvelope(a.id)?.detail).toMatch(/interrupted/)
+    expect(repo.getEnvelope(b.id)?.state).toBe('cancelled')
+    expect(repo.reconcileEnvelopes()).toBe(0)
+  })
+})
+
 describe('repository dev-container choice', () => {
   it('round-trips under any spelling of the same repository, and defaults to off', () => {
     const repo = freshRepo()

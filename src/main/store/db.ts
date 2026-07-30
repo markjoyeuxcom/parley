@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 22
+export const SCHEMA_VERSION = 23
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -458,6 +458,22 @@ CREATE TABLE IF NOT EXISTS repo_containers (
   enabled    INTEGER NOT NULL DEFAULT 0,
   decided_at INTEGER NOT NULL
 );
+
+-- One unattended run's authorisation bounds and outcome. plan_id carries no
+-- FK deliberately (the self_updates precedent): session deletion cascades to
+-- plans, and an authorisation record must outlive its subject.
+CREATE TABLE IF NOT EXISTS envelopes (
+  id             TEXT PRIMARY KEY,
+  plan_id        TEXT NOT NULL,
+  state          TEXT NOT NULL,
+  caps           TEXT NOT NULL,
+  milestones_run INTEGER NOT NULL DEFAULT 0,
+  start_cost_usd REAL NOT NULL DEFAULT 0,
+  detail         TEXT NOT NULL DEFAULT '',
+  started_at     INTEGER NOT NULL,
+  ended_at       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_envelopes_plan ON envelopes(plan_id, started_at DESC);
 `
 
 class NodeSqliteDb implements Db {
@@ -844,6 +860,10 @@ export function migrate(db: Db): void {
         // Already present, because SCHEMA above created the table fresh.
       }
     }
+  }
+  if (current < 23) {
+    // Envelopes are additive: SCHEMA creates the table fresh, and no
+    // existing row changes shape.
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

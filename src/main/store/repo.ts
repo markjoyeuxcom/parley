@@ -45,6 +45,7 @@ import {
   type Usage,
   type Vendor,
   type Verdict,
+  type Envelope,
   type WorkPlan,
   type Worktree,
 } from '@shared/domain'
@@ -1896,6 +1897,115 @@ export class Repo {
       }
       return plan
     })
+  }
+
+  // ─── Envelopes ─────────────────────────────────────────────────────────────
+
+  createEnvelope(envelope: Envelope, repoPath: string): Envelope {
+    return this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO envelopes (id, plan_id, state, caps, milestones_run, start_cost_usd, detail, started_at, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        envelope.id,
+        envelope.planId,
+        envelope.state,
+        json(envelope.caps),
+        envelope.milestonesRun,
+        envelope.startCostUsd,
+        envelope.detail,
+        envelope.startedAt,
+        envelope.endedAt,
+      )
+      this.noteRepoActivity(repoPath)
+      return envelope
+    })
+  }
+
+  getEnvelope(id: Id): Envelope | null {
+    const row = this.db.get(`SELECT * FROM envelopes WHERE id = ?`, id)
+    return row ? this.toEnvelope(row) : null
+  }
+
+  getActiveEnvelopeForPlan(planId: Id): Envelope | null {
+    const row = this.db.get(
+      `SELECT * FROM envelopes WHERE plan_id = ? AND state = 'running' ORDER BY started_at DESC LIMIT 1`,
+      planId,
+    )
+    return row ? this.toEnvelope(row) : null
+  }
+
+  listEnvelopesForPlan(planId: Id): Envelope[] {
+    return this.db
+      .all(`SELECT * FROM envelopes WHERE plan_id = ? ORDER BY started_at DESC`, planId)
+      .map((row) => this.toEnvelope(row))
+  }
+
+  /** Every running envelope, for the in-flight view and the startup sweep. */
+  listActiveEnvelopes(): Envelope[] {
+    return this.db
+      .all(`SELECT * FROM envelopes WHERE state = 'running' ORDER BY started_at ASC`)
+      .map((row) => this.toEnvelope(row))
+  }
+
+  /**
+   * Ends a running envelope. The conditional update is the discipline: only
+   * `running` can settle, so a crash-reconcile and a live driver can never
+   * both write an ending — the same shape as approval consumption.
+   */
+  settleEnvelope(
+    id: Id,
+    state: 'parked' | 'exhausted' | 'finished' | 'cancelled',
+    detail: string,
+  ): boolean {
+    const result = this.db.run(
+      `UPDATE envelopes SET state = ?, detail = ?, ended_at = ? WHERE id = ? AND state = 'running'`,
+      state,
+      detail,
+      Date.now(),
+      id,
+    )
+    return result.changes === 1
+  }
+
+  /** Records one more minted milestone execution on the running envelope. */
+  bumpEnvelopeMilestones(id: Id): void {
+    this.db.run(
+      `UPDATE envelopes SET milestones_run = milestones_run + 1 WHERE id = ? AND state = 'running'`,
+      id,
+    )
+  }
+
+  /**
+   * A live process never startup-reconciles: any envelope still `running` at
+   * boot was interrupted, and the honest record is a park — the milestone
+   * beneath it has its own preserved run state and recovery controls.
+   */
+  reconcileEnvelopes(): number {
+    const result = this.db.run(
+      `UPDATE envelopes SET state = 'parked', detail = ?, ended_at = ?
+       WHERE state = 'running'`,
+      'interrupted — the app stopped while this envelope was running',
+      Date.now(),
+    )
+    return result.changes
+  }
+
+  private toEnvelope(row: Row): Envelope {
+    return {
+      id: str(row['id']),
+      planId: str(row['plan_id']),
+      state: str(row['state']) as Envelope['state'],
+      caps: parseJson<Envelope['caps']>(row['caps'], {
+        maxMilestones: 1,
+        maxWallClockMs: 60_000,
+        maxSpendUsd: 0,
+      }),
+      milestonesRun: num(row['milestones_run']),
+      startCostUsd: num(row['start_cost_usd']),
+      detail: str(row['detail']),
+      startedAt: num(row['started_at']),
+      endedAt: nullableNum(row['ended_at']),
+    }
   }
 
   // ─── Self-updates ──────────────────────────────────────────────────────────

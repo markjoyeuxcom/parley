@@ -383,6 +383,8 @@ const HANDLERS: Record<CommandName, Handler> = {
         return ctx.manager.grantMilestoneApproval(subjectId, summary)
       case 'plan.land':
         return ctx.manager.grantLandApproval(subjectId, summary)
+      case 'plan.envelope':
+        return ctx.manager.grantEnvelopeApproval(subjectId, summary)
       case 'loop.write':
         return ctx.manager.repo.grantApproval(scope, subjectId, summary)
     }
