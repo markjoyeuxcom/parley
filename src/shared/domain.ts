@@ -18,11 +18,11 @@ const Timestamp = z.number().int().nonnegative()
 // ─── Agents ──────────────────────────────────────────────────────────────────
 
 /**
- * The two CLI vendors Parley drives. Both are invoked through the user's own
+ * The CLI vendors Parley drives. All are invoked through the user's own
  * logged-in CLI, so all usage bills against their existing subscription. Parley
  * never reads or accepts an API key.
  */
-export const Vendor = z.enum(['claude', 'codex'])
+export const Vendor = z.enum(['claude', 'codex', 'agy'])
 export type Vendor = z.infer<typeof Vendor>
 
 /** Claude's `--effort`. Codex maps this onto `model_reasoning_effort`. */

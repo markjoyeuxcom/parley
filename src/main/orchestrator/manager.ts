@@ -20,6 +20,7 @@ import type { AppEvent } from '@shared/events'
 import type { Hold } from '@shared/holds'
 import type { AgentRegistry } from '@main/agents'
 import { isShellFree, shellMetacharsIn } from '@shared/command'
+import { seatingRefusals, type VendorSeat } from '@shared/vendors'
 import { extractJson, safeString } from '@shared/extract'
 import { protocolFor, STOW_CONTRACT } from '@shared/protocol'
 import { canonicalRepoPath } from '@main/util/repoPath'
@@ -42,6 +43,11 @@ import { SessionRunner } from './session'
 import { RunGate, type OrchestratorDeps } from './types'
 
 export class RequestError extends Error {}
+
+function assertValidSeating(seats: readonly VendorSeat[]): void {
+  const refusals = seatingRefusals(seats)
+  if (refusals.length) throw new RequestError(refusals.join('; '))
+}
 
 /** A stow sweep is one look, not a stage: bounded well under a turn. */
 const STOW_TIMEOUT_MS = 5 * 60 * 1000
@@ -323,6 +329,13 @@ export class Manager {
     maxTurns: number
   }): Session {
     const repoPath = input.repoPath ? validateRepoPath(input.repoPath) : null
+    assertValidSeating(
+      input.participants.map((participant) => ({
+        vendor: participant.vendor,
+        role: input.kind === 'debate' ? 'debate-seat' : 'review-seat',
+        toolFree: input.kind === 'debate' && repoPath === null,
+      })),
+    )
     if (input.kind === 'review' && !repoPath) {
       throw new RequestError('a codebase review needs a repository')
     }
@@ -534,6 +547,7 @@ export class Manager {
    * whole meaning is per-Manager.
    */
   async runForeman(repoPath: string, cfg: AgentConfig): Promise<ForemanProposal> {
+    assertValidSeating([{ vendor: cfg.vendor, role: 'foreman', toolFree: false }])
     const canonical = canonicalRepoPath(repoPath)
     if (this.foremanRuns.has(canonical)) {
       throw new RequestError('the foreman is already reading this repository')
@@ -568,6 +582,11 @@ export class Manager {
     /** A pending foreman proposal this creation accepts, atomically. */
     foremanProposalId?: Id | null
   }): Promise<{ plan: WorkPlan; milestones: Milestone[] }> {
+    assertValidSeating([
+      { vendor: input.planner.vendor, role: 'planner', toolFree: false },
+      { vendor: input.executor.vendor, role: 'executor', toolFree: false },
+      { vendor: input.reviewer.vendor, role: 'reviewer', toolFree: false },
+    ])
     const session = this.repo.getSession(input.sessionId)
     if (!session) throw new RequestError('no such session')
     const verdict = this.repo.getVerdict(input.sessionId)
@@ -1213,6 +1232,10 @@ export class Manager {
     caps: Loop['caps']
     capability: Loop['capability']
   }): Loop {
+    assertValidSeating([
+      { vendor: input.worker.vendor, role: 'loop-worker', toolFree: false },
+      { vendor: input.verifier.vendor, role: 'loop-verifier', toolFree: false },
+    ])
     const repoPath = validateRepoPath(input.repoPath)
 
     // Fail on an unusable exit command now rather than after the first

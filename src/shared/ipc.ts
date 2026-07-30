@@ -14,6 +14,7 @@ import {
   Skill,
   WorkPlanKind,
   WorktreeIsolation,
+  type Vendor,
   type FindingDisposition,
   type FindingOccurrence,
   type LedgerFinding,
@@ -392,9 +393,9 @@ export interface RepoSummary {
   hasPendingProposal: boolean
 }
 
-/** Result of probing for the two CLIs at startup. */
+/** Result of probing for a governed CLI at startup. */
 export interface CliHealth {
-  vendor: 'claude' | 'codex'
+  vendor: Vendor
   present: boolean
   version: string
   /** True when the CLI reports a logged-in subscription session. */

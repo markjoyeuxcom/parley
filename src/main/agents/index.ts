@@ -1,11 +1,14 @@
 import type { Vendor } from '@shared/domain'
 import type { CliHealth } from '@shared/ipc'
+import { pickCounterpart } from '@shared/vendors'
+import { AgyAdapter } from './agy'
 import { ClaudeAdapter } from './claude'
 import { CodexAdapter } from './codex'
 import { MockAdapter } from './mock'
 import type { AgentAdapter } from './types'
 
 export * from './types'
+export { AgyAdapter } from './agy'
 export { ClaudeAdapter } from './claude'
 export { CodexAdapter } from './codex'
 export { MockAdapter } from './mock'
@@ -33,8 +36,12 @@ export class AgentRegistry {
   constructor(mock = process.env['PARLEY_MOCK'] === '1') {
     this.mock = mock
     this.adapters = mock
-      ? { claude: new MockAdapter('claude'), codex: new MockAdapter('codex') }
-      : { claude: new ClaudeAdapter(), codex: new CodexAdapter() }
+      ? {
+          claude: new MockAdapter('claude'),
+          codex: new MockAdapter('codex'),
+          agy: new MockAdapter('agy'),
+        }
+      : { claude: new ClaudeAdapter(), codex: new CodexAdapter(), agy: new AgyAdapter() }
   }
 
   get(vendor: Vendor): AgentAdapter {
@@ -48,10 +55,14 @@ export class AgentRegistry {
    * shares a model family with the thing it reviews shares its blind spots.
    */
   counterpart(from: Vendor): Vendor {
-    return from === 'claude' ? 'codex' : 'claude'
+    return pickCounterpart(from)
   }
 
   async probeAll(): Promise<CliHealth[]> {
-    return Promise.all([this.adapters.claude.probe(), this.adapters.codex.probe()])
+    return Promise.all([
+      this.adapters.claude.probe(),
+      this.adapters.codex.probe(),
+      this.adapters.agy.probe(),
+    ])
   }
 }

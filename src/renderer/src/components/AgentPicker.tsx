@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react'
+import { useEffect, useMemo, type ReactNode } from 'react'
 import type { AgentConfig, Effort, Vendor } from '@shared/domain'
+import { seatingRefusals, type SeatingRole } from '@shared/vendors'
 import { useStore } from '../state'
 import { Field } from './ui'
 
@@ -24,23 +25,52 @@ import { Field } from './ui'
 const MODEL_HINTS: Record<Vendor, string[]> = {
   claude: ['opus', 'sonnet', 'haiku', 'fable'],
   codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
+  agy: [
+    'gemini-3-pro',
+    'gemini-3-flash-high',
+    'gemini-3-flash-medium',
+    'gemini-3-flash-low',
+  ],
 }
 
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+const VENDORS = [
+  { vendor: 'claude', label: 'Claude Code' },
+  { vendor: 'codex', label: 'Codex' },
+  { vendor: 'agy', label: 'Agy' },
+] as const satisfies ReadonlyArray<{ vendor: Vendor; label: string }>
 
 export function AgentPicker({
   label,
   value,
   onChange,
   personaPlaceholder,
+  role,
+  toolFree = false,
 }: {
   label: string
   value: AgentConfig
   onChange: (next: AgentConfig) => void
   personaPlaceholder?: string
+  role: SeatingRole
+  toolFree?: boolean
 }): ReactNode {
   const { state } = useStore()
   const listId = `models-${value.vendor}`
+  const eligibleVendors = useMemo(
+    () =>
+      VENDORS.filter(
+        ({ vendor }) => !seatingRefusals([{ vendor, role, toolFree }]).length,
+      ),
+    [role, toolFree],
+  )
+  const eligible = eligibleVendors.some(({ vendor }) => vendor === value.vendor)
+
+  useEffect(() => {
+    if (eligible) return
+    const fallback = eligibleVendors[0]?.vendor
+    if (fallback) onChange({ ...value, vendor: fallback, model: '' })
+  }, [eligible, eligibleVendors, onChange, value])
 
   // The configured model leads, so the first thing offered is one this machine
   // demonstrably accepts.
@@ -61,8 +91,11 @@ export function AgentPicker({
             value={value.vendor}
             onChange={(event) => onChange({ ...value, vendor: event.target.value as Vendor, model: '' })}
           >
-            <option value="claude">Claude Code</option>
-            <option value="codex">Codex</option>
+            {eligibleVendors.map(({ vendor, label: vendorLabel }) => (
+              <option key={vendor} value={vendor}>
+                {vendorLabel}
+              </option>
+            ))}
           </select>
         </Field>
 
@@ -71,6 +104,8 @@ export function AgentPicker({
           hint={
             value.vendor === 'claude'
               ? 'Aliases track the latest of each family.'
+              : value.vendor === 'agy'
+                ? 'An explicit Gemini model is required.'
               : configured
                 ? `Your codex default is ${configured}.`
                 : undefined
@@ -79,7 +114,9 @@ export function AgentPicker({
           <input
             className="input"
             list={listId}
-            placeholder={configured || 'CLI default'}
+            placeholder={
+              value.vendor === 'agy' ? 'Required Gemini model' : configured || 'CLI default'
+            }
             value={value.model}
             onChange={(event) => onChange({ ...value, model: event.target.value })}
           />

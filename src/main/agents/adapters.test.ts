@@ -8,6 +8,7 @@ import {
   buildAgyArgs,
   isGeminiModel,
   promptDeliveryRefusal,
+  scratchViolation,
 } from './agy'
 import { buildClaudeArgs, claudeUsage } from './claude'
 import { buildCodexArgs, codexEffort, codexSandbox, codexUsage } from './codex'
@@ -174,6 +175,11 @@ describe('agy argument construction', () => {
     expect(promptDeliveryRefusal('make the case', true)).toBeNull()
     expect(promptDeliveryRefusal('', false)).toBeNull()
     expect(promptDeliveryRefusal('make the case', false)).toContain('stdin')
+  })
+
+  it('fails closed when the isolated scratch directory is not empty', () => {
+    expect(scratchViolation([])).toBeNull()
+    expect(scratchViolation(['created.txt', 'nested'])).toContain('created.txt, nested')
   })
 })
 

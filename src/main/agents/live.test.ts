@@ -1,5 +1,8 @@
+import { mkdtempSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { AgyAdapter } from './agy'
 import { ClaudeAdapter } from './claude'
 import { CodexAdapter } from './codex'
 
@@ -128,9 +131,84 @@ describe.skipIf(!live)('codex adapter against the real CLI', () => {
   }, 500_000)
 })
 
+describe.skipIf(!live)('agy adapter against the real CLI', () => {
+  const cfg = {
+    vendor: 'agy' as const,
+    model: 'gemini-3-flash-low',
+    effort: 'low' as const,
+    persona: '',
+  }
+
+  it('runs tool-free with stdin, reports usage and returns a conversation id', async () => {
+    const requestedCwd = mkdtempSync(join(tmpdir(), 'parley-agy-live-'))
+    const result = await new AgyAdapter().run({
+      systemPrompt: 'You answer with exactly the word requested and nothing else.',
+      prompt: 'Reply with exactly: gamma',
+      cfg,
+      capability: 'none',
+      cwd: requestedCwd,
+      timeoutMs: 180_000,
+    })
+
+    expect(result.error).toBeNull()
+    expect(result.exitCode).toBe(0)
+    expect(result.text.toLowerCase()).toContain('gamma')
+    expect(result.resumeId).toBeTruthy()
+    expect(result.usage.outputTokens).toBeGreaterThan(0)
+    expect(readdirSync(requestedCwd)).toEqual([])
+  }, 200_000)
+
+  it('resumes with --conversation and retains context', async () => {
+    const adapter = new AgyAdapter()
+    const first = await adapter.run({
+      systemPrompt: 'You are terse.',
+      prompt: 'Remember the word "keystone". Reply with exactly: stored',
+      cfg,
+      capability: 'none',
+      cwd: tmpdir(),
+      timeoutMs: 180_000,
+    })
+    expect(first.resumeId).toBeTruthy()
+
+    const second = await adapter.run({
+      systemPrompt: 'You are terse.',
+      prompt: 'What word did I ask you to remember? Reply with just that word.',
+      cfg,
+      capability: 'none',
+      cwd: tmpdir(),
+      resumeId: first.resumeId,
+      timeoutMs: 180_000,
+    })
+
+    expect(second.error).toBeNull()
+    expect(second.text.toLowerCase()).toContain('keystone')
+  }, 400_000)
+
+  it('observes a denied mutation without allowing a scratch write', async () => {
+    const requestedCwd = mkdtempSync(join(tmpdir(), 'parley-agy-live-denied-'))
+    const result = await new AgyAdapter().run({
+      systemPrompt:
+        'Attempt the requested file operation once. If permission is denied, say exactly: denied.',
+      prompt: 'Create a file named forbidden.txt containing one word.',
+      cfg,
+      capability: 'none',
+      cwd: requestedCwd,
+      timeoutMs: 180_000,
+    })
+
+    expect(result.error).toBeNull()
+    expect(result.text.toLowerCase()).toContain('denied')
+    expect(readdirSync(requestedCwd)).toEqual([])
+  }, 200_000)
+})
+
 describe.skipIf(!live)('cli health probes', () => {
-  it('detects both CLIs as present and signed in', async () => {
-    const [claude, codex] = await Promise.all([new ClaudeAdapter().probe(), new CodexAdapter().probe()])
+  it('detects all CLIs as present and signed in', async () => {
+    const [claude, codex, agy] = await Promise.all([
+      new ClaudeAdapter().probe(),
+      new CodexAdapter().probe(),
+      new AgyAdapter().probe(),
+    ])
 
     expect(claude.present).toBe(true)
     expect(claude.authenticated).toBe(true)
@@ -139,5 +217,9 @@ describe.skipIf(!live)('cli health probes', () => {
     expect(codex.present).toBe(true)
     expect(codex.authenticated).toBe(true)
     expect(codex.version).toBeTruthy()
+
+    expect(agy.present).toBe(true)
+    expect(agy.authenticated).toBe(true)
+    expect(agy.version).toBeTruthy()
   }, 400_000)
 })

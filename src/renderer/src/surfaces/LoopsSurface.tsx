@@ -522,8 +522,18 @@ function NewLoopDialog({
 
       <hr className="divider" />
 
-      <AgentPicker label="Worker — does the work" value={worker} onChange={setWorker} />
-      <AgentPicker label="Verifier — decides whether the goal is met" value={verifier} onChange={setVerifier} />
+      <AgentPicker
+        label="Worker — does the work"
+        value={worker}
+        onChange={setWorker}
+        role="loop-worker"
+      />
+      <AgentPicker
+        label="Verifier — decides whether the goal is met"
+        value={verifier}
+        onChange={setVerifier}
+        role="loop-verifier"
+      />
 
       {worker.vendor === verifier.vendor && exitKind === 'review' ? (
         <div className="gate">

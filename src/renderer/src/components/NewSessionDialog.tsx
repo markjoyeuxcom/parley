@@ -186,6 +186,8 @@ export function NewSessionDialog({
             label={at < 2 ? exchangeLabel(at) : `${seatLabel(at)} — assessor`}
             value={seat}
             onChange={(config) => setSeat(at, config)}
+            role={kind === 'debate' ? 'debate-seat' : 'review-seat'}
+            toolFree={kind === 'debate' && !repoPath.trim()}
             personaPlaceholder={
               at >= 2
                 ? 'e.g. security-first assessor (optional)'

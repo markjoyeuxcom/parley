@@ -65,6 +65,83 @@ async function waitFor(predicate: () => boolean, timeoutMs = 15_000): Promise<vo
 
 const claude = { vendor: 'claude' as const, model: 'opus', effort: 'high' as const, persona: '' }
 const codex = { vendor: 'codex' as const, model: '', effort: 'high' as const, persona: '' }
+const agy = {
+  vendor: 'agy' as const,
+  model: 'gemini-3-flash-high',
+  effort: 'high' as const,
+  persona: '',
+}
+
+describe('tool-less vendor seating', () => {
+  it('admits Agy only to a repository-free debate seat', async () => {
+    const { manager, repo } = harness()
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'Should this remain local?',
+      project: '',
+      repoPath: null,
+      participants: [agy, claude],
+      maxTurns: 2,
+    })
+
+    expect(repo.getSession(session.id)?.participants[0]?.vendor).toBe('agy')
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+
+    expect(() =>
+      manager.startSession({
+        kind: 'debate',
+        matter: 'Should this inspect a repository?',
+        project: '',
+        repoPath: tmpdir(),
+        participants: [agy, claude],
+        maxTurns: 2,
+      }),
+    ).toThrow(/tool-free debate seat/)
+  })
+
+  it('refuses Agy from every durable non-debate workflow before creation', async () => {
+    const { manager, repo } = harness()
+
+    for (const [role, configs] of [
+      ['planner', { planner: agy, executor: codex, reviewer: claude }],
+      ['executor', { planner: claude, executor: agy, reviewer: codex }],
+      ['reviewer', { planner: claude, executor: codex, reviewer: agy }],
+    ] as const) {
+      await expect(
+        manager.createPlan({
+          sessionId: newId(),
+          kind: 'implementation',
+          repoPath: tmpdir(),
+          ...configs,
+        }),
+      ).rejects.toThrow(new RegExp(`cannot serve as ${role}`))
+    }
+    expect(repo.listPlans()).toEqual([])
+
+    for (const [role, worker, verifier] of [
+      ['loop worker', agy, codex],
+      ['loop verifier', claude, agy],
+    ] as const) {
+      expect(() =>
+        manager.createLoop({
+          goal: 'Keep trying',
+          repoPath: tmpdir(),
+          worker,
+          verifier,
+          exit: { kind: 'command', command: 'true', criterion: '' },
+          caps: { maxIterations: 1, maxSpendUsd: 0, maxWallClockMs: 60_000 },
+          capability: 'none',
+        }),
+      ).toThrow(new RegExp(`cannot serve as ${role}`))
+    }
+    expect(repo.listLoops()).toEqual([])
+
+    await expect(manager.runForeman(tmpdir(), agy)).rejects.toThrow(
+      /cannot serve as foreman/,
+    )
+    expect(repo.listForemanProposals({ repoPath: tmpdir() })).toEqual([])
+  })
+})
 
 describe('debate session, end to end', () => {
   it('runs every stage, merges two independent verdicts, and writes a report', async () => {

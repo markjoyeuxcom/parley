@@ -852,7 +852,12 @@ function ForemanPanel({
       <div className="panel__body">
         {askOpen && !busy && !running ? (
           <div className="foreman-ask">
-            <AgentPicker label="Foreman — reads the backlog, proposes, never decides" value={cfg} onChange={setCfg} />
+            <AgentPicker
+              label="Foreman — reads the backlog, proposes, never decides"
+              value={cfg}
+              onChange={setCfg}
+              role="foreman"
+            />
             <div className="row">
               <button
                 className="btn btn--primary btn--sm"

@@ -2,6 +2,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { emptyUsage, type Capability, type Vendor } from '@shared/domain'
 import type { CliHealth } from '@shared/ipc'
+import { agyModelRefusal } from './agy'
 import type { AgentAdapter, RunRequest, RunResult } from './types'
 
 /** The harness's side of one adapter call, kept for tests to assert against. */
@@ -36,6 +37,28 @@ export class MockAdapter implements AgentAdapter {
   constructor(readonly vendor: Vendor) {}
 
   async run(req: RunRequest): Promise<RunResult> {
+    if (this.vendor === 'agy' && req.capability !== 'none') {
+      return {
+        text: '',
+        usage: emptyUsage(),
+        resumeId: null,
+        exitCode: -1,
+        error: 'Agy is tool-less in Parley and refuses repository capability above none.',
+      }
+    }
+    if (this.vendor === 'agy') {
+      const refusal = agyModelRefusal(req.cfg.model)
+      if (refusal) {
+        return {
+          text: '',
+          usage: emptyUsage(),
+          resumeId: null,
+          exitCode: -1,
+          error: refusal,
+        }
+      }
+    }
+
     this.prompts.push(req.prompt)
     this.requests.push({
       systemPrompt: req.systemPrompt,

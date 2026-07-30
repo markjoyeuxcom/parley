@@ -318,11 +318,17 @@ export function NewPlanDialog({
 
       <hr className="divider" />
 
-      <AgentPicker label="Planner — reads and plans, never writes" value={planner} onChange={setPlanner} />
+      <AgentPicker
+        label="Planner — reads and plans, never writes"
+        value={planner}
+        onChange={setPlanner}
+        role="planner"
+      />
       <AgentPicker
         label="Executor — writes, only after you approve"
         value={executor}
         onChange={setExecutor}
+        role="executor"
       />
 
       <div className="audit-note">

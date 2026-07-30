@@ -9,8 +9,8 @@ sessions, and capped autonomous loops.
 Break any of these and the product stops being what it is.
 
 1. **Subscription CLIs only.** Every model call goes through the user's local
-   `claude` or `codex` binary, against the account it is already signed in to.
-   Never add an API-key path, not even as a fallback.
+   `claude`, `codex` or `agy` binary, against the account it is already signed
+   in to. Never add an API-key path, not even as a fallback.
 2. **No `--dangerously-*` flag, ever.** Not `--dangerously-skip-permissions`, not
    `--allow-dangerously-skip-permissions`, not
    `--dangerously-bypass-approvals-and-sandbox`, not `danger-full-access`. The
@@ -114,6 +114,17 @@ These cost real time to find. Changing them will break things quietly.
 - `exec` emits no text deltas — the reply arrives whole in `item.completed`.
 - It always prints `Reading additional input from stdin...` to stderr. That is
   noise, not an error, and is filtered.
+
+**agy**
+
+- Agy is tool-less in Parley. It is eligible only for a repository-free debate
+  seat and every adapter call above `none` capability is refused.
+- The prompt goes on stdin and `--conversation <id>` resumes a conversation.
+- Every run ignores the requested working directory and spawns in a fresh empty
+  temporary directory. Anything written there fails the run.
+- Only explicit `gemini-*` model names are accepted. Parley never passes
+  `--effort`; a discovered tiered model slug carries the selected tier.
+- Never pass `--dangerously-skip-permissions`.
 
 ## Native modules
 
