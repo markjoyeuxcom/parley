@@ -463,6 +463,40 @@ describe('mounted-surface smoke', () => {
     })
   })
 
+  it('pane events drive the ⌘1 count: created counts, exited stops counting, closed removes', async () => {
+    installBridge()
+    render(
+      <StoreProvider>
+        <Titlebar />
+      </StoreProvider>,
+    )
+    const pane = {
+      id: 'p'.repeat(36),
+      kind: 'shell' as const,
+      title: 'shell — smoke',
+      cwd: '/tmp',
+      status: 'live' as const,
+      exitCode: null,
+      createdAt: 1_700_000_000_000,
+    }
+
+    // Born: the Grid tab counts it.
+    act(() => appEventListener?.({ type: 'pane.created', pane }))
+    await screen.findByText('1')
+
+    // Exited: the row survives (the pane shows its corpse) but the count of
+    // running panes drops — exit is a status, not a removal.
+    act(() =>
+      appEventListener?.({ type: 'pane.status', paneId: pane.id, status: 'exited', exitCode: 1 }),
+    )
+    await waitFor(() => expect(screen.queryByText('1')).toBeNull())
+
+    // Closed by the user: the row itself is gone.
+    act(() => appEventListener?.({ type: 'pane.closed', paneId: pane.id }))
+    act(() => appEventListener?.({ type: 'pane.created', pane: { ...pane, id: 'q'.repeat(36) } }))
+    await screen.findByText('1')
+  })
+
   it('a missing agy gets the neutral dot while a missing required CLI stays red', async () => {
     installBridge({
       'health.probe': () => [

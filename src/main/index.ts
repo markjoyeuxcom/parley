@@ -134,7 +134,8 @@ async function bootstrap(): Promise<void> {
     // thousands of chunks a second and schema-parsing each one would dominate
     // the frame budget for no safety gain — it is opaque bytes either way.
     onData: (paneId, data) => send(CH.ptyData, { paneId, data } satisfies PtyChunk),
-    onExit: (paneId) => emit({ type: 'pane.closed', paneId }),
+    onCreated: (pane) => emit({ type: 'pane.created', pane }),
+    onClosed: (paneId) => emit({ type: 'pane.closed', paneId }),
     onStatus: (paneId, status, exitCode) => emit({ type: 'pane.status', paneId, status, exitCode }),
   })
 

@@ -27,12 +27,14 @@ import { shortPath } from '../lib/format'
 import { useStore } from '../state'
 import { TerminalPane } from '../components/TerminalPane'
 import { Chip, Dialog, Dot, Empty, Field, Menu, MenuItem, MenuSection } from '../components/ui'
+import {
+  KIND_LABEL as PANE_KIND_LABEL,
+  slotPaneExit,
+  slotPaneStatus,
+  slotPaneTitle,
+} from '../lib/panes'
 
-const KIND_LABEL: Record<PaneKind, string> = {
-  shell: 'Shell',
-  claude: 'Claude',
-  codex: 'Codex',
-}
+const KIND_LABEL = PANE_KIND_LABEL
 
 let slotSeq = 0
 const mintSlotId = (): Id => `slot-${Date.now().toString(36)}-${(slotSeq += 1)}`
@@ -49,7 +51,7 @@ const mintSlotId = (): Id => `slot-${Date.now().toString(36)}-${(slotSeq += 1)}`
  * be started.
  */
 export function GridSurface(): ReactNode {
-  const { state, notify, attempt } = useStore()
+  const { state, dispatch, notify, attempt } = useStore()
   const [layout, setLayout] = useState<LayoutNode | null>(null)
   const [slots, setSlots] = useState<Record<Id, Slot>>({})
   const [focusedSlot, setFocusedSlot] = useState<Id | null>(null)
@@ -67,6 +69,15 @@ export function GridSurface(): ReactNode {
     const saved = await attempt(() => api.listLayouts())
     if (saved) setLayouts(saved)
   }, [attempt])
+
+  // Reconcile the pane registry once at mount: events cover everything after
+  // this moment, and the one-shot list covers panes born before the surface
+  // was ready to hear about them.
+  useEffect(() => {
+    void attempt(() => api.listPanes()).then((panes) => {
+      if (panes) dispatch({ type: 'panes', panes })
+    })
+  }, [attempt, dispatch])
 
   useEffect(() => {
     void refreshLayouts()
@@ -404,18 +415,15 @@ export function GridSurface(): ReactNode {
             dropTarget={dropTarget}
             paneTitle={(id) => {
               const slot = slots[id]
-              if (!slot) return 'pane'
-              const pane = slot.paneId ? paneById.get(slot.paneId) : undefined
-              return pane?.title ?? `${KIND_LABEL[slot.kind]} — ${shortPath(slot.cwd)}`
+              return slotPaneTitle(slot, slot?.paneId ? paneById.get(slot.paneId) : undefined)
             }}
             paneStatus={(id) => {
               const slot = slots[id]
-              if (!slot?.paneId) return 'idle'
-              return paneById.get(slot.paneId)?.status ?? 'starting'
+              return slotPaneStatus(slot, slot?.paneId ? paneById.get(slot.paneId) : undefined)
             }}
             paneExit={(id) => {
               const slot = slots[id]
-              return slot?.paneId ? (paneById.get(slot.paneId)?.exitCode ?? null) : null
+              return slotPaneExit(slot, slot?.paneId ? paneById.get(slot.paneId) : undefined)
             }}
             onFocus={setFocusedSlot}
             onClose={closeSlot}

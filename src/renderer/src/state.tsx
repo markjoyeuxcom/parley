@@ -564,7 +564,9 @@ function applyEvent(state: State, event: AppEvent): State {
       }
 
     case 'pane.closed':
-      return state
+      // The handle is gone — user close, never process exit. An exit arrives
+      // as pane.status 'exited' and the row survives to show the corpse.
+      return { ...state, panes: state.panes.filter((p) => p.id !== event.paneId) }
 
     case 'notice':
       noticeSeq += 1

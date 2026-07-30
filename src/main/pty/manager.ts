@@ -24,7 +24,14 @@ export interface PaneHandle {
 
 export interface PtyManagerCallbacks {
   onData(paneId: Id, data: string): void
-  onExit(paneId: Id, exitCode: number): void
+  /** A pane now exists. The renderer's pane registry is fed from this. */
+  onCreated(pane: Pane): void
+  /**
+   * The handle is GONE — user close only. A process *exit* is a status
+   * (`'exited'`, with the code) and the pane row survives it so the UI can
+   * show the corpse; conflating the two was how exit chips stayed unreachable.
+   */
+  onClosed(paneId: Id): void
   onStatus(paneId: Id, status: Pane['status'], exitCode: number | null): void
 }
 
@@ -163,11 +170,11 @@ export class PtyManager {
       handle.pane.status = 'exited'
       handle.pane.exitCode = exitCode
       this.cb.onStatus(id, 'exited', exitCode)
-      this.cb.onExit(id, exitCode)
       // The handle stays in the map so the UI can show the final scrollback and
       // the exit code until the user closes the pane themselves.
     })
 
+    this.cb.onCreated(pane)
     return pane
   }
 
@@ -213,6 +220,7 @@ export class PtyManager {
         // Already gone.
       }
     }
+    this.cb.onClosed(paneId)
   }
 
   /** Kills every pane. Called on window close and app quit. */
