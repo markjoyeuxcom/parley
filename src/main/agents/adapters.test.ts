@@ -5,6 +5,7 @@ import {
   agyModelRefusal,
   agyModelSlug,
   agyPrintTimeout,
+  agyToolViolation,
   agyUsage,
   buildAgyArgs,
   isGeminiModel,
@@ -178,32 +179,25 @@ describe('agy argument construction', () => {
     expect(args).not.toContain('-c')
   })
 
-  it('keeps the prompt off argv, puts -p last, and formats the print deadline', () => {
+  it('passes no print flag at all — piped stdin is the delivery', () => {
     const args = buildAgyArgs(base)
     expect(args.slice(0, 2)).toEqual(['--output-format', 'stream-json'])
-    // Recon-proven: bare -p swallows the NEXT TOKEN as the prompt — the first
-    // live seat ran agy with the literal prompt "--output-format" this way.
-    // Last position with nothing after it means an accidental spawn fails
-    // loudly at argv parse instead of silently answering the wrong question.
-    expect(args.at(-1)).toBe('-p')
+    // Bare -p swallows the next token as its prompt (the first live seat
+    // answered the literal question "--output-format" that way), and -p with
+    // a value puts the brief in the process table. Flagless with a non-TTY
+    // stdin, agy runs headless and reads the prompt from the pipe.
+    expect(args).not.toContain('-p')
+    expect(args).not.toContain('--print')
     expect(args[args.indexOf('--print-timeout') + 1]).toBe('180s')
     expect(agyPrintTimeout(1_001)).toBe('2s')
     expect(args.join(' ')).not.toContain('prompt')
   })
 
-  it('refuses live turns before spawning while agy has no prompt delivery', async () => {
-    // Default delivery is 'none' — the binary path is deliberately absurd to
-    // prove the refusal fires before locate() ever looks for it.
-    const adapter = new AgyAdapter('/definitely/missing/agy')
-    const result = await adapter.run({
-      systemPrompt: 'irrelevant',
-      prompt: 'irrelevant',
-      cfg: { vendor: 'agy', model: 'gemini-3-flash-high', effort: 'high', persona: '' },
-      capability: 'none',
-      cwd: '/tmp',
-    })
-    expect(result.error).toContain('refuses live agy turns')
-    expect(result.error).not.toContain('not found on PATH')
+  it('fails a turn in which agy executed any tool, naming each once', () => {
+    expect(agyToolViolation([])).toBeNull()
+    const refusal = agyToolViolation(['run_command', 'run_command', 'write_to_file'])
+    expect(refusal).toContain('run_command, write_to_file')
+    expect(refusal).toContain('permissions.allow')
   })
 
   it('admits only explicit Gemini model slugs', () => {

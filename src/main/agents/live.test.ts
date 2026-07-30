@@ -132,47 +132,18 @@ describe.skipIf(!live)('codex adapter against the real CLI', () => {
 })
 
 describe.skipIf(!live)('agy adapter against the real CLI', () => {
+  // Delivery is flagless piped stdin — probed working on 1.1.8. Slugs here
+  // track `agy models` output and may need updating as Google rotates them.
   const cfg = {
     vendor: 'agy' as const,
-    model: 'gemini-3-flash-low',
-    effort: 'low' as const,
-    persona: '',
-  }
-
-  it('refuses live turns while the installed CLI has no prompt delivery', async () => {
-    // The default adapter carries promptDelivery 'none': agy 1.1.8 reads
-    // prompts from argv only, and Parley will not put a brief in the process
-    // table. This is the honest live behaviour today — no spawn, no quota.
-    const result = await new AgyAdapter().run({
-      systemPrompt: 'You are terse.',
-      prompt: 'Reply with exactly: gamma',
-      cfg,
-      capability: 'none',
-      cwd: tmpdir(),
-      timeoutMs: 180_000,
-    })
-
-    expect(result.error).toContain('refuses live agy turns')
-    expect(result.text).toBe('')
-  }, 30_000)
-})
-
-// The stdin contract agy has not shipped yet. These arms are the acceptance
-// suite for the day it does: set PARLEY_LIVE_AGY_STDIN=1 alongside PARLEY_LIVE
-// once a CLI version reads stdin, and flip the adapter's default delivery.
-const liveAgyStdin = live && process.env.PARLEY_LIVE_AGY_STDIN === '1'
-
-describe.skipIf(!liveAgyStdin)('agy adapter once stdin delivery ships', () => {
-  const cfg = {
-    vendor: 'agy' as const,
-    model: 'gemini-3-flash-low',
+    model: 'gemini-3.6-flash-low',
     effort: 'low' as const,
     persona: '',
   }
 
   it('runs tool-free with stdin, reports usage and returns a conversation id', async () => {
     const requestedCwd = mkdtempSync(join(tmpdir(), 'parley-agy-live-'))
-    const result = await new AgyAdapter('agy', 'stdin').run({
+    const result = await new AgyAdapter().run({
       systemPrompt: 'You answer with exactly the word requested and nothing else.',
       prompt: 'Reply with exactly: gamma',
       cfg,
@@ -190,7 +161,7 @@ describe.skipIf(!liveAgyStdin)('agy adapter once stdin delivery ships', () => {
   }, 200_000)
 
   it('resumes with --conversation and retains context', async () => {
-    const adapter = new AgyAdapter('agy', 'stdin')
+    const adapter = new AgyAdapter()
     const first = await adapter.run({
       systemPrompt: 'You are terse.',
       prompt: 'Remember the word "keystone". Reply with exactly: stored',
@@ -215,9 +186,15 @@ describe.skipIf(!liveAgyStdin)('agy adapter once stdin delivery ships', () => {
     expect(second.text.toLowerCase()).toContain('keystone')
   }, 400_000)
 
-  it('observes a denied mutation without allowing a scratch write', async () => {
+  it('never lets a tempted mutation slip through as a clean result', async () => {
+    // The outcome depends on the operator's global agy settings. With no
+    // permissions.allow rules, headless agy denies the tool and the model
+    // reports the denial. With an allow rule present, agy actually executes —
+    // and the adapter must fail the turn via the tool-step witness. Either
+    // way the run never passes as a quiet success, and the requested cwd
+    // stays untouched (agy runs in its own scratch, never here).
     const requestedCwd = mkdtempSync(join(tmpdir(), 'parley-agy-live-denied-'))
-    const result = await new AgyAdapter('agy', 'stdin').run({
+    const result = await new AgyAdapter().run({
       systemPrompt:
         'Attempt the requested file operation once. If permission is denied, say exactly: denied.',
       prompt: 'Create a file named forbidden.txt containing one word.',
@@ -227,8 +204,11 @@ describe.skipIf(!liveAgyStdin)('agy adapter once stdin delivery ships', () => {
       timeoutMs: 180_000,
     })
 
-    expect(result.error).toBeNull()
-    expect(result.text.toLowerCase()).toContain('denied')
+    if (result.error === null) {
+      expect(result.text.toLowerCase()).toContain('denied')
+    } else {
+      expect(result.error).toMatch(/executed tools|scratch directory/)
+    }
     expect(readdirSync(requestedCwd)).toEqual([])
   }, 200_000)
 })

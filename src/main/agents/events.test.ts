@@ -31,7 +31,14 @@ import { CodexAdapter } from './codex'
  *  • agy-stream.ndjson: operator-captured against Antigravity CLI 1.1.8
  *    with `agy -p --output-format stream-json`; its prompt was delivered on
  *    stdin. The fixture was committed before the adapter and is replayed here
- *    unchanged.
+ *    unchanged. (Production argv later dropped `-p` entirely — flagless
+ *    piped stdin is the delivery — but the event stream is identical.)
+ *  • agy-tool-stream.ndjson: operator-captured 2026-07-30 against the same
+ *    CLI via flagless piped stdin, with a permissions.allow command rule in
+ *    the operator's global settings and a prompt asking agy to run `ls` —
+ *    the recording where headless agy actually executes run_command. It
+ *    pins the `step_type: "tool"` discriminator and `tool_info.name` that
+ *    the tool-less refusal keys on.
  *  • Scrubbing: machine paths were rewritten to /scrubbed/… by walking every
  *    JSON string, and the input_json_delta fragments (which stream the tool
  *    input in path-splitting chunks) were emptied — the parser ignores that
@@ -49,6 +56,7 @@ import { CodexAdapter } from './codex'
 const claudeFixture = fileURLToPath(new URL('./fixtures/claude-stream.ndjson', import.meta.url))
 const codexFixture = fileURLToPath(new URL('./fixtures/codex-exec.ndjson', import.meta.url))
 const agyFixture = fileURLToPath(new URL('./fixtures/agy-stream.ndjson', import.meta.url))
+const agyToolFixture = fileURLToPath(new URL('./fixtures/agy-tool-stream.ndjson', import.meta.url))
 
 /** An executable that ignores its arguments and stdin and replays a recording. */
 function shimFor(fixture: string): string {
@@ -150,7 +158,7 @@ describe('captured Codex stream through CodexAdapter.run', () => {
 describe('captured Agy stream through AgyAdapter.run', () => {
   it('parses conversation id, delta, final text and usage through a stdin-requiring shim', async () => {
     const requestedCwd = mkdtempSync(join(tmpdir(), 'parley-agy-requested-'))
-    const adapter = new AgyAdapter(stdinShimFor(agyFixture), 'stdin')
+    const adapter = new AgyAdapter(stdinShimFor(agyFixture))
     const deltas: string[] = []
 
     const reply = await adapter.run({
@@ -179,7 +187,7 @@ describe('captured Agy stream through AgyAdapter.run', () => {
 
   it('fails a run that writes anything in its fresh scratch directory', async () => {
     const requestedCwd = mkdtempSync(join(tmpdir(), 'parley-agy-requested-'))
-    const adapter = new AgyAdapter(stdinShimFor(agyFixture, true), 'stdin')
+    const adapter = new AgyAdapter(stdinShimFor(agyFixture, true))
 
     const reply = await adapter.run({
       systemPrompt: 'You are a capture probe.',
@@ -194,8 +202,33 @@ describe('captured Agy stream through AgyAdapter.run', () => {
     expect(readdirSync(requestedCwd)).toEqual([])
   })
 
+  it('fails a recorded turn in which headless agy executed a tool', async () => {
+    // The recording is real: with a command allow rule in the operator's
+    // global settings, headless agy ran `ls` without prompting — in agy's own
+    // scratch, invisible to the adapter's scratch check. The stream's tool
+    // steps are the only witness, so they must fail the run closed even
+    // though the terminal status is SUCCESS with a plausible response.
+    const adapter = new AgyAdapter(stdinShimFor(agyToolFixture))
+    const activity: string[] = []
+
+    const reply = await adapter.run({
+      systemPrompt: 'You are a capture probe.',
+      prompt: 'Run the shell command `ls` and reply with exactly its output.',
+      cfg: { ...cfg, vendor: 'agy', model: 'gemini-3.6-flash-low' },
+      capability: 'none',
+      cwd: tmpdir(),
+      onActivity: (line) => activity.push(line),
+    })
+
+    expect(reply.error).toContain('Agy executed tools (run_command)')
+    expect(reply.error).toContain('permissions.allow')
+    expect(activity).toContain('agy ran run_command')
+    // The parse still happened — refusal does not blind the record.
+    expect(reply.resumeId).toBe('2bc9eada-d040-4c58-85b1-398c7309fb3f')
+  })
+
   it('refuses repository capability before locating or spawning Agy', async () => {
-    const adapter = new AgyAdapter('/definitely/missing/agy', 'stdin')
+    const adapter = new AgyAdapter('/definitely/missing/agy')
     const reply = await adapter.run({
       systemPrompt: 'You are a capture probe.',
       prompt: 'Read package.json',

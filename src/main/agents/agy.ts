@@ -75,6 +75,16 @@ export function buildAgyArgs(req: {
   resumeId?: string | null
   timeoutMs?: number
 }): string[] {
+  // No print flag at all — that absence IS the prompt delivery. agy 1.1.8's
+  // `-p` demands its value on argv (bare `-p` swallows the next token; the
+  // first live seat answered the literal question "--output-format" that
+  // way), and a brief on argv would leak into the process table. But with no
+  // print flag and a non-TTY stdin, agy detects the pipe and runs headless,
+  // reading the whole prompt from stdin — probed 2026-07-30: full stream-json
+  // events, --conversation resume, and --print-timeout all honoured. If a
+  // future version stops reading the pipe there is no wrong-prompt failure
+  // mode left: nothing on argv means it can only stall or error, both of
+  // which surface honestly.
   const args = ['--output-format', 'stream-json']
   const model = agyModelSlug(req.model, req.effort, req.available)
 
@@ -83,14 +93,6 @@ export function buildAgyArgs(req: {
   if (req.timeoutMs !== undefined) {
     args.push('--print-timeout', agyPrintTimeout(req.timeoutMs))
   }
-
-  // `-p` goes LAST, with nothing after it — recon-proven: bare `-p` swallows
-  // the next token as its prompt, which is how the first live seat ran agy
-  // with the literal prompt "--output-format", got plain text back, and
-  // reported "produced no output". In last position an accidental live spawn
-  // dies loudly at argv parse ("flag needs an argument") instead of silently
-  // answering a question nobody asked.
-  args.push('-p')
 
   return args
 }
@@ -123,6 +125,21 @@ export function scratchViolation(entries: readonly string[]): string | null {
   return `Agy wrote to its isolated scratch directory (${entries.join(', ')}); refusing the run`
 }
 
+/**
+ * Refuses a turn in which agy executed any tool. Parley's agy seats are
+ * tool-less by contract, but headless agy honours `permissions.allow` rules
+ * from the user's global ~/.gemini settings without prompting — a broad rule
+ * like command(*) turns a debate seat into arbitrary command execution, and
+ * agy's run_command shell works out of agy's OWN scratch, which Parley's
+ * scratch-directory check never sees. The stream's tool steps are the only
+ * honest witness, so any of them fails the run closed.
+ */
+export function agyToolViolation(tools: readonly string[]): string | null {
+  if (!tools.length) return null
+  const named = [...new Set(tools)].join(', ')
+  return `Agy executed tools (${named}) during a tool-less turn — a permissions.allow rule in ~/.gemini/antigravity-cli/settings.json grants headless runs real capabilities. Remove that rule; refusing the result.`
+}
+
 function refused(error: string): RunResult {
   return {
     text: '',
@@ -136,22 +153,10 @@ function refused(error: string): RunResult {
 export class AgyAdapter implements AgentAdapter {
   readonly vendor = 'agy' as const
   readonly binary: string
-  /**
-   * How the prompt reaches the child. agy 1.1.8 reads prompts from argv only
-   * — the recon closed every stdin candidate — and briefs on argv would leak
-   * into the process table, so the default is 'none' and every live turn
-   * refuses up front. The stdin-shim tests construct with 'stdin' to keep the
-   * whole spawn-and-parse path proven for the day the CLI ships stdin
-   * delivery; flipping the default then (behind a version check) is the
-   * entire go-live change. The pipe-flush witness cannot carry this decision:
-   * it reports delivered even when the child never reads the pipe.
-   */
-  readonly promptDelivery: 'stdin' | 'none'
   private modelsPromise: Promise<string[]> | null = null
 
-  constructor(binary = 'agy', promptDelivery: 'stdin' | 'none' = 'none') {
+  constructor(binary = 'agy') {
     this.binary = binary
-    this.promptDelivery = promptDelivery
   }
 
   private locate(): string | null {
@@ -179,12 +184,6 @@ export class AgyAdapter implements AgentAdapter {
     const modelRefusal = agyModelRefusal(req.cfg.model)
     if (modelRefusal) return refused(modelRefusal)
 
-    if (this.promptDelivery !== 'stdin') {
-      return refused(
-        'agy 1.1.8 has no way to deliver a prompt off argv — a brief on argv would leak into the process table, so Parley refuses live agy turns until the CLI reads stdin. The seat is wired and waiting.',
-      )
-    }
-
     const binary = this.locate()
     if (!binary) {
       return refused(
@@ -210,6 +209,7 @@ export class AgyAdapter implements AgentAdapter {
       let streamed = ''
       let usage = emptyUsage()
       let errorText: string | null = null
+      const toolSteps: string[] = []
 
       const result = await runJsonl({
         command: binary,
@@ -234,6 +234,12 @@ export class AgyAdapter implements AgentAdapter {
               streamed += update['text_delta']
               req.onDelta?.(update['text_delta'])
             }
+            if (update?.['step_type'] === 'tool') {
+              const info = update['tool_info'] as Record<string, unknown> | undefined
+              const name = typeof info?.['name'] === 'string' ? info['name'] : 'an unnamed tool'
+              toolSteps.push(name)
+              req.onActivity?.(`agy ran ${name}`)
+            }
             return
           }
 
@@ -253,6 +259,7 @@ export class AgyAdapter implements AgentAdapter {
       })
 
       errorText ??= promptDeliveryRefusal(body, result.stdinDelivered)
+      errorText ??= agyToolViolation(toolSteps)
 
       if (result.exitCode !== 0 && !errorText) {
         errorText = result.terminated
@@ -303,18 +310,23 @@ export class AgyAdapter implements AgentAdapter {
       }
     }
 
-    // The probe cannot go through run(): live turns refuse until stdin
-    // delivery exists. Its prompt is a fixed literal — no brief, nothing
-    // user-authored — so argv delivery is acceptable HERE and only here.
-    // "Use no tools" matters: agy's default agent reaches for tools on even
-    // trivial prompts, and a headless denial would read as not-signed-in.
+    // The probe exercises the real delivery path — the same flagless piped
+    // stdin every seat uses. Slug from discovery, cheapest tier first: the
+    // hardcoded fallback only matters when `agy models` itself failed, and
+    // then the run's own error is the diagnostic. "Use no tools" matters:
+    // agy's default agent reaches for tools on even trivial prompts, and a
+    // tool step would fail the probe's turn.
     const models = await this.models()
-    const probeArgs = ['--output-format', 'text', '--print-timeout', '120s']
-    const probeModel = models[0]
-    if (probeModel) probeArgs.push('--model', probeModel)
-    probeArgs.push('-p', 'Use no tools. Reply with exactly: ready')
-    const auth = await capture(binary, probeArgs, process.cwd(), 120_000)
-    const ok = auth.exitCode === 0 && /ready/i.test(auth.stdout)
+    const probeModel = models.find((m) => m.endsWith('-low')) ?? models[0] ?? 'gemini-3.6-flash-low'
+    const auth = await this.run({
+      systemPrompt: 'Use no tools. You answer with exactly the requested word and nothing else.',
+      prompt: 'Reply with exactly: ready',
+      cfg: { vendor: 'agy', model: probeModel, effort: 'low', persona: '' },
+      capability: 'none',
+      cwd: process.cwd(),
+      timeoutMs: 120_000,
+    })
+    const ok = auth.error === null && /ready/i.test(auth.text)
     return {
       vendor: 'agy',
       present: true,
@@ -322,8 +334,7 @@ export class AgyAdapter implements AgentAdapter {
       authenticated: ok,
       detail: ok
         ? 'Signed in. Usage bills against your Google subscription.'
-        : (auth.stderr.trim() || auth.stdout.trim()).slice(0, 300) ||
-          'agy is installed but did not answer. Run `agy` once to sign in.',
+        : auth.error || 'agy is installed but did not answer. Run `agy` once to sign in.',
     }
   }
 }
