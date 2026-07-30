@@ -308,12 +308,14 @@
     <li><a href="#holds">10 · Holds</a></li>
     <li><a href="#repos">11 · Repos</a></li>
     <li><a href="#foreman">12 · The foreman</a></li>
-    <li><a href="#selfupdate">13 · Self-update</a></li>
+    <li><a href="#unattended">13 · Unattended runs</a></li>
+    <li><a href="#devcontainers">14 · Dev containers</a></li>
+    <li><a href="#selfupdate">15 · Self-update</a></li>
     <li class="g">Reference</li>
-    <li><a href="#shortcuts">14 · Keyboard shortcuts</a></li>
-    <li><a href="#mock">15 · Mock mode</a></li>
-    <li><a href="#troubleshooting">16 · Troubleshooting</a></li>
-    <li><a href="#data">17 · Where your data lives</a></li>
+    <li><a href="#shortcuts">16 · Keyboard shortcuts</a></li>
+    <li><a href="#mock">17 · Mock mode</a></li>
+    <li><a href="#troubleshooting">18 · Troubleshooting</a></li>
+    <li><a href="#data">19 · Where your data lives</a></li>
     <li><a href="#invariants">A · The ten invariants</a></li>
   </ol>
 </nav>
@@ -700,8 +702,35 @@ shows its per-item verdict under the panel's idle line instead of dying in a
 toast.</p>
 </section>
 
+<section id="unattended">
+<h2>13 · Unattended runs</h2>
+<p>Five milestones normally cost five approval clicks. An <b>envelope</b>
+replaces them with one: state the bounds up front, and Parley mints each
+milestone&rsquo;s own single-use approval from it as the run proceeds &mdash;
+so the per-milestone record keeps exactly the shape it always had.</p>
+<ul>
+<li><b>Start it</b> from <i>Run unattended&hellip;</i> on any worktree plan
+with something ready to execute. The dialog states every bound and, just as
+plainly, what the run will not do.</li>
+<li><b>It parks, it never presses on.</b> A blocking finding, a failed
+milestone or a planner question ends the run and leaves the normal hold to
+surface it. <b>Parked is terminal</b> &mdash; after you fix the cause,
+continuing takes a fresh envelope.</li>
+<li><b>It ends at merge-ready.</b> Landing is never inside the envelope.</li>
+<li><b>Caps are checked before each milestone</b>, never mid-run. Reaching
+one ends the run as <i>exhausted</i>, with the plan unharmed.</li>
+<li><b>Overnight</b>: Parley holds off idle sleep while a run is live.
+Closing the lid still suspends the Mac &mdash; the run parks mid-milestone
+and resumes like any interrupted one.</li>
+</ul>
+<p>Your morning briefing is the holds queue. The <b>In flight</b> popover
+beside it answers the other question &mdash; what is running now, each
+capped run shown against the bounds you set, every row opening where its
+work lives.</p>
+</section>
+
 <section id="devcontainers">
-<h2>13 · Dev containers</h2>
+<h2>14 · Dev containers</h2>
 <p>When a repository&rsquo;s toolchain lives in a <code>.devcontainer/</code>
 image rather than on your Mac, Parley can run <strong>its own deterministic
 commands</strong> for that repository inside the container: milestone
@@ -730,7 +759,7 @@ host bytes.</li>
 </section>
 
 <section id="selfupdate">
-<h2>14 · Self-update <span class="dim">dev mode</span></h2>
+<h2>15 · Self-update <span class="dim">dev mode</span></h2>
 <p>When Parley runs from its own checkout (<code>npm run dev</code>), it knows
 which repository it is — and the loop closes on itself.</p>
 <ul>
@@ -761,7 +790,7 @@ separate, much later project.</p>
 </section>
 
 <section id="shortcuts">
-<h2>15 · Keyboard shortcuts</h2>
+<h2>16 · Keyboard shortcuts</h2>
 <table>
   <tr><th>Keys</th><th>Where</th><th>Action</th></tr>
   <tr><td><kbd>⌘K</kbd></td><td>Everywhere</td><td>Command palette — jump surfaces, start a debate or review</td></tr>
@@ -779,7 +808,7 @@ separate, much later project.</p>
 </section>
 
 <section id="mock">
-<h2>16 · Mock mode</h2>
+<h2>17 · Mock mode</h2>
 <p><code>PARLEY_MOCK=1 npm run dev</code> replaces both CLIs with
 deterministic mock adapters: every flow is walkable, nothing consults a model,
 no quota is spent. Because mock output is structurally identical to real
@@ -794,7 +823,7 @@ cover it instead.</p>
 </section>
 
 <section id="troubleshooting">
-<h2>17 · Troubleshooting</h2>
+<h2>18 · Troubleshooting</h2>
 <h3>Terminals will not start</h3>
 <p><code>posix_spawnp failed</code> on every pane — including a plain shell —
 means node-pty's <code>spawn-helper</code> binary is missing or not
@@ -815,7 +844,7 @@ preflight warns about exactly this before you spend anything, and offers
 </section>
 
 <section id="data">
-<h2>18 · Where your data lives</h2>
+<h2>19 · Where your data lives</h2>
 <p>Nowhere else. Sessions, verdicts, findings, dispositions, approvals, plans,
 loops, backlog, learnings, saved layouts and the whole audit trail live in
 SQLite under the app's own support directory

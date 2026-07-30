@@ -636,6 +636,53 @@ The rules, each enforced in main, none only in the renderer:
   is a separate, much later project. The hold's detail says so, so the UI
   never implies the installed copy updated.
 
+## The envelope: batch the authorisation, never the authority
+
+An unattended run rests on one recorded approval (`plan.envelope`) from
+which the driver mints each milestone's own single-use `milestone.execute`
+approval. Keep that shape. A single envelope-wide approval spent by many
+milestones would break two things at once: `milestones.approval_id`, and
+the `milestone-failed` hold's generation, which folds that id — a second
+failure after an ack would stop being a fresh hold.
+
+- **The driver adds no power.** `driveEnvelope` loops over the same
+  `runMilestone` a human drives; every gate still runs, including the
+  findings check before each mint. It lives in `orchestrator/envelope.ts`
+  with an injected `runMilestone`, so the whole loop is testable without
+  the pipeline — the `runSelfGate` precedent.
+- **Caps bound dispatch, never a running milestone.** Checked before each
+  mint (milestones, wall clock, spend since the envelope started, with 0
+  disabling the spend cap). A milestone already executing always finishes,
+  exactly as loop iterations do.
+- **Fail-park, and parked is TERMINAL.** Anything a human would have to
+  answer ends the run; the existing hold surfaces it and the envelope's
+  detail says how far it got. Continuing takes a fresh envelope. Do not
+  add auto-resume — re-entering autonomy after an intervention is a new
+  authorisation, and quietly reusing the old one is authorisation drift.
+- **Order matters at the end of a milestone.** Read the gate BEFORE the
+  result: a milestone stopped by the user returns non-complete, and
+  reading the result first files the user's own Stop as a park — as
+  something needing their attention. There is a test pinned on exactly
+  this.
+- **Never throws.** Every exit is a recorded state; a driver that threw
+  would leave the row `running` forever, the one outcome an authorisation
+  record must not have. `settleEnvelope` is conditional on `running`, so
+  a startup reconcile and a live driver cannot both write an ending.
+- **Worktree-only, and it ends at merge-ready.** Both are refusals at the
+  grant, not conventions. Landing stays outside the envelope.
+- **`keepAwake` is injected** (like `notifyUser`) so the orchestrator
+  stays Electron-free. Its limit is stated wherever it is offered: it
+  defers idle sleep, and a closed lid still suspends the machine.
+
+## In flight is derived, never stored
+
+`computeInFlight` reads the durable record — not the Manager's run
+registries. Those registries are liveness for refusals; this is a view,
+and a view that disagreed with the record would be worse than none.
+Startup reconciliation already settles what a crash stranded. Same rules
+as holds: oldest-first, every row openable, mock marked as mock, and a
+consumption bar only where a cap actually exists.
+
 ## Dev containers: one seam, snapshots at creation, stated limits
 
 Parley's own deterministic project commands can run inside a repository's

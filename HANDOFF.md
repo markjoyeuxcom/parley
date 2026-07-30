@@ -243,14 +243,30 @@ added, save-dialog IPC mirroring session.export); AGENTS.md carries the
 new Grid rules. **Grid II comforts** follow usage; comparison mode
 stays parked as a PIPELINE feature.
 
-1. **Unattended runs**: envelope approval (bounds up front, per-
-   milestone approvals minted from it), fail-park at existing holds,
-   end at merge-ready always; foreman acceptance stays outside.
-2. **App Builder arc** (four series: workspace creator + foundation,
+**Unattended runs: LANDED** (Envelope m1–m5, schema 23). `plan.envelope`
+approval scope routed through the grant switch's typecheck tripwire;
+`envelopes` table (FK-less, conditional settle so reconcile and driver
+cannot both end a run); `orchestrator/envelope.ts` driver loops over the
+SAME runMilestone, minting each milestone's own single-use approval
+whose summary names the parent envelope — milestones.approval_id and
+the milestone-failed generation keep their exact shape. Caps bound
+dispatch only (0 spend = disabled, the loops rule). Fail-park at the
+EXISTING holds; **parked is terminal** (a fresh envelope to continue —
+do not add auto-resume). Worktree-only and ends-at-merge-ready are
+refusals at the grant. Defect the integration arm caught and pinned:
+read the gate BEFORE a non-complete milestone result, or the user's own
+Stop files as a park. keepAwake injected like notifyUser (idle sleep
+only — a closed lid still parks the run). Plus **In flight**: a
+titlebar popover, derived from the record not the run registries,
+oldest-first, every row openable, bars only where a cap exists.
+**Still to do: the by-hand acceptance** — grant an envelope on a small
+real worktree plan and come back to merge-ready.
+
+1. **App Builder arc** (four series: workspace creator + foundation,
    preview management, acceptance records + 'acceptance' ingestion
    source, then the guided shell); readiness stage = disposition
    ergonomics, never auto-disposition.
-3. **SSH/remote execution arc** after App Builder (execution-target
+2. **SSH/remote execution arc** after App Builder (execution-target
    abstraction over the ~6 local-assuming touchpoints), composing with
    unattended for overnight VM runs.
 

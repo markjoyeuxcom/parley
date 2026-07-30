@@ -453,6 +453,43 @@ landing — your role compresses to answering questions and resolving holds.
 
 ---
 
+## Unattended runs
+
+Five milestones normally cost five approval clicks with dead time between
+each. An **envelope** replaces them with one: you state the bounds up
+front — how many milestones, how many hours, optionally a spend ceiling —
+and Parley mints each milestone's own single-use approval from it as the
+run proceeds. The per-milestone record keeps exactly the shape it always
+had; every minted approval names the envelope it came from.
+
+It adds no new power. The driver loops over the same machinery you drive
+by hand, and every gate still applies: the findings check before each
+milestone, the single-use approval, the deterministic verification, the
+independent cross-vendor review.
+
+Three rules make it safe to leave alone:
+
+- **Worktree-only.** An envelope refuses a checkout plan. Unattended work
+  happens in the plan's isolated branch or not at all.
+- **It parks, it never presses on.** A blocking finding, a failed
+  milestone, or a planner question ends the run and leaves the existing
+  hold to surface it — with a record of how far it got. **Parked is
+  terminal**: after you fix the cause, continuing takes a fresh envelope,
+  because re-entering autonomy is a new decision, not a resumption.
+- **It ends at merge-ready.** Landing is never inside the envelope. The
+  fast-forward onto your checkout stays a separate, human click.
+
+Caps are checked before each milestone starts, never mid-run — a
+milestone already executing always finishes. Reaching one ends the run as
+`exhausted` with the plan unharmed. Parley holds off idle sleep while a
+run is live; **closing the lid still suspends the Mac**, and the run
+parks mid-milestone to be resumed like any interrupted one.
+
+The morning briefing is the holds queue — whatever needs you is already
+there. The **In flight** popover beside it answers the other question:
+what is running right now, with each capped run's consumption shown
+against the bounds you set, and every row opening where its work lives.
+
 ## Dev containers
 
 Some repositories' toolchains live in a `.devcontainer/` image — Terraform,
