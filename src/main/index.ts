@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, nativeTheme, Notification, shell } from 'electron'
+import { app, BrowserWindow, nativeTheme, Notification, powerSaveBlocker, shell } from 'electron'
 import type { AppEvent, PtyChunk } from '@shared/events'
 import { CH, type CliHealth } from '@shared/ipc'
 import { AgentRegistry } from '@main/agents'
@@ -127,6 +127,15 @@ async function bootstrap(): Promise<void> {
     // notification permission degrades to the in-app badge, silently.
     notifyUser: (title, body) => {
       if (Notification.isSupported()) new Notification({ title, body }).show()
+    },
+    // 'prevent-app-suspension' defers IDLE sleep so an overnight run is not
+    // stranded mid-milestone. It cannot defeat a closed lid — the docs say so
+    // and so do we, everywhere the user is offered an unattended run.
+    keepAwake: () => {
+      const id = powerSaveBlocker.start('prevent-app-suspension')
+      return () => {
+        if (powerSaveBlocker.isStarted(id)) powerSaveBlocker.stop(id)
+      }
     },
   })
 

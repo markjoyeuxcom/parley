@@ -2,6 +2,8 @@ import type {
   AgentConfig,
   Approval,
   BacklogItem,
+  Envelope,
+  EnvelopeCaps,
   Finding,
   FindingDisposition,
   FindingOccurrence,
@@ -171,6 +173,13 @@ export const api = {
   /** Closes out a failed or blocked plan — cancelled on the record. */
   closeOutPlan: (planId: Id): Promise<WorkPlan> =>
     bridge().invoke('plan.cancel', { planId }),
+
+  // Unattended runs
+  /** Returns immediately with the record; the run itself reports by events. */
+  startEnvelope: (planId: Id, approvalId: Id, caps: EnvelopeCaps): Promise<Envelope> =>
+    bridge().invoke('envelope.start', { planId, approvalId, caps }),
+  stopEnvelope: (planId: Id): Promise<unknown> => bridge().invoke('envelope.stop', { planId }),
+  listEnvelopes: (planId: Id): Promise<Envelope[]> => bridge().invoke('envelope.list', { planId }),
 
   // Self-update (dev mode)
   /** The one live offer, resolved at action time — holds don't carry row ids. */

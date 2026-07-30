@@ -13,6 +13,14 @@ export interface OrchestratorDeps {
    */
   notifyUser?: (title: string, body: string) => void
   /**
+   * Holds off idle sleep while unattended work runs, injected for the same
+   * Electron-free reason as notifyUser. Returns a release function. Honest
+   * limit, stated where users read it: this defers IDLE sleep only — a
+   * closed lid still suspends the machine, and the run parks for the
+   * recovery machinery to pick up on wake.
+   */
+  keepAwake?: (reason: string) => () => void
+  /**
    * Where per-plan execution worktrees live — under userData in the app, a
    * tmpdir in tests. Injected for the same Electron-free reason as notifyUser.
    * Optional because only worktree-isolation plans need it; running one

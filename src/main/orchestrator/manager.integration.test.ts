@@ -2830,17 +2830,222 @@ describe("Parley's own repository", () => {
   })
 })
 
-describe('the unattended envelope grant', () => {
-  function envelopeHarness(): { manager: Manager; repo: Repo } {
+describe('unattended runs', () => {
+  function envelopeHarness(): {
+    manager: Manager
+    repo: Repo
+    events: AppEvent[]
+    awake: { held: number; released: number }
+  } {
     const repo = new Repo(openDatabase(':memory:'))
+    const events: AppEvent[] = []
+    const awake = { held: 0, released: 0 }
     const manager = new Manager({
       repo,
       registry: new AgentRegistry(true),
-      emit: () => {},
+      emit: (event) => events.push(event),
       worktreesRoot: mkdtempSync(join(tmpdir(), 'parley-envelope-worktrees-')),
+      keepAwake: () => {
+        awake.held += 1
+        return () => {
+          awake.released += 1
+        }
+      },
     })
-    return { manager, repo }
+    return { manager, repo, events, awake }
   }
+
+  function gitSeeded(prefix: string): string {
+    const repoPath = mkdtempSync(join(tmpdir(), prefix))
+    const git = (...args: string[]): void => {
+      execFileSync('git', args, { cwd: repoPath, stdio: 'ignore' })
+    }
+    git('init', '-q')
+    git('config', 'user.email', 't@e.invalid')
+    git('config', 'user.name', 't')
+    writeFileSync(join(repoPath, 'seed.txt'), 'seed\n')
+    git('add', '.')
+    git('commit', '-qm', 'seed')
+    return repoPath
+  }
+
+  /**
+   * Builds a ready plan with N audited milestones directly.
+   *
+   * The mock planner's own output is not what these tests are about: its
+   * audit always objects, so its correction stage reissues a ONE-milestone
+   * plan, and its test command is `npm test` — neither exercises the thing
+   * under test, which is the driver advancing across milestones. The rows
+   * built here are exactly the state the pipeline leaves behind.
+   */
+  function readyPlan(
+    repo: Repo,
+    repoPath: string,
+    milestoneCount: number,
+  ): { planId: string; sessionId: string } {
+    const session = repo.createSession({
+      id: newId(),
+      kind: 'debate',
+      status: 'complete',
+      matter: 'unattended',
+      project: '',
+      repoPath: null,
+      participants: [claude, codex],
+      maxTurns: 2,
+      mock: true,
+      createdAt: Date.now(),
+    })
+    const plan = repo.createPlan({
+      id: newId(),
+      sessionId: session.id,
+      kind: 'implementation',
+      title: 'Overnight work',
+      repoPath,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+      status: 'ready',
+      question: '',
+      correctionNote: '',
+      correctionDispositions: [],
+      isolation: 'worktree',
+      setupCommand: '',
+      container: false,
+      usage: emptyUsage(),
+      mock: true,
+      createdAt: Date.now(),
+    })
+    for (let index = 0; index < milestoneCount; index += 1) {
+      repo.createMilestone({
+        id: newId(),
+        planId: plan.id,
+        index,
+        title: `Milestone ${index + 1}`,
+        intent: 'Write the mock work file.',
+        expectedPaths: ['parley-mock-work.txt'],
+        status: 'audited',
+        auditNote: '',
+        testCommand: 'true',
+        testResult: null,
+        mutations: [],
+        mutationResults: [],
+        reviewNote: '',
+        reviewBlocking: [],
+        reviewNotes: [],
+        reviewPassed: null,
+        adopted: false,
+        approvalId: null,
+        createdAt: Date.now(),
+        completedAt: null,
+      })
+    }
+    return { planId: plan.id, sessionId: session.id }
+  }
+
+  it('runs a whole plan on one authorisation and stops at merge-ready', async () => {
+    const { manager, repo, events, awake } = envelopeHarness()
+    const repoPath = gitSeeded('parley-envelope-live-')
+    // One milestone: the mock executor writes a single fixed file, so a second
+    // clean execution in a row is impossible by construction — its identical
+    // write is a no-op tree. The driver's advance across many milestones is
+    // proven deterministically in envelope.test.ts.
+    const { planId } = readyPlan(repo, repoPath, 1)
+
+    const approval = manager.grantEnvelopeApproval(planId, 'run every milestone, capped')
+    const envelope = manager.startEnvelope(planId, approval.id, {
+      maxMilestones: 10,
+      maxWallClockMs: 3_600_000,
+      maxSpendUsd: 0,
+    })
+    // The call returns immediately — an unattended run may take hours, and no
+    // IPC invoke may be held open across it.
+    expect(envelope.state).toBe('running')
+    expect(repo.listApprovals().find((a) => a.id === approval.id)?.consumedAt).not.toBeNull()
+
+    await waitFor(() => repo.getEnvelope(envelope.id)?.state !== 'running', 120_000)
+
+    const settled = repo.getEnvelope(envelope.id)
+    expect(settled?.state).toBe('finished')
+    expect(settled?.detail).toMatch(/merge-ready/)
+    expect(settled?.milestonesRun).toBe(1)
+    expect(repo.listMilestones(planId).every((m) => m.status === 'complete')).toBe(true)
+    expect(repo.getPlan(planId)?.status).toBe('complete')
+
+    // Every milestone spent its OWN minted single-use approval, each naming
+    // the envelope it came from.
+    const minted = repo
+      .listApprovals()
+      .filter((a) => a.scope === 'milestone.execute' && a.summary.includes(envelope.id.slice(0, 8)))
+    expect(minted).toHaveLength(1)
+    expect(minted.every((a) => a.consumedAt !== null)).toBe(true)
+
+    // The branch is NOT landed: an unattended run always ends at the human.
+    expect(repo.getWorktreeForPlan(planId)?.landedAt).toBeNull()
+    expect(manager.listHolds().some((hold) => hold.kind === 'merge-ready')).toBe(true)
+
+    // Idle sleep was held for exactly the run's lifetime.
+    expect(awake).toEqual({ held: 1, released: 1 })
+    expect(events.filter((e) => e.type === 'envelope.changed').length).toBeGreaterThanOrEqual(2)
+  }, 180_000)
+
+  it('parks on a failed milestone, leaving the rest of the plan unrun', async () => {
+    const { manager, repo } = envelopeHarness()
+    // Milestone 1 completes; milestone 2's identical mock write leaves the
+    // tree unchanged, which the pipeline fails for a real reason. A genuine
+    // failure from the real machinery, not a synthetic one.
+    const repoPath = gitSeeded('parley-envelope-park-')
+    const { planId } = readyPlan(repo, repoPath, 3)
+
+    const approval = manager.grantEnvelopeApproval(planId, 'try the lot')
+    const envelope = manager.startEnvelope(planId, approval.id, {
+      maxMilestones: 10,
+      maxWallClockMs: 3_600_000,
+      maxSpendUsd: 0,
+    })
+    await waitFor(() => repo.getEnvelope(envelope.id)?.state !== 'running', 120_000)
+
+    const settled = repo.getEnvelope(envelope.id)
+    expect(settled?.state).toBe('parked')
+    expect(settled?.detail).toMatch(/milestone 2 ended/)
+    expect(settled?.milestonesRun).toBe(2)
+
+    const milestones = repo.listMilestones(planId)
+    expect(milestones[0]?.status).toBe('complete')
+    // The run stopped rather than pressing on: milestone 3 was never minted.
+    expect(milestones[2]?.status).toBe('audited')
+    expect(
+      repo.listApprovals().filter((a) => a.scope === 'milestone.execute'),
+    ).toHaveLength(2)
+  }, 180_000)
+
+  it('refuses a second envelope while one runs, and reports it as busy', async () => {
+    const { manager, repo } = envelopeHarness()
+    const repoPath = gitSeeded('parley-envelope-busy-')
+    const { planId } = readyPlan(repo, repoPath, 3)
+
+    const first = manager.grantEnvelopeApproval(planId, 'first')
+    const second = manager.grantEnvelopeApproval(planId, 'second')
+    const envelope = manager.startEnvelope(planId, first.id, {
+      maxMilestones: 10,
+      maxWallClockMs: 3_600_000,
+      maxSpendUsd: 0,
+    })
+
+    expect(() =>
+      manager.startEnvelope(planId, second.id, {
+        maxMilestones: 1,
+        maxWallClockMs: 60_000,
+        maxSpendUsd: 0,
+      }),
+    ).toThrow(/already running/)
+    expect(manager.busyWithRuns()).toBe('an unattended run is in progress')
+
+    manager.stopEnvelope(planId)
+    await waitFor(() => repo.getEnvelope(envelope.id)?.state !== 'running', 120_000)
+    expect(repo.getEnvelope(envelope.id)?.state).toBe('cancelled')
+    // The unspent second approval survives for a deliberate retry.
+    expect(repo.listApprovals().find((a) => a.id === second.id)?.consumedAt).toBeNull()
+  }, 180_000)
 
   it('gates the envelope grant on isolation, executability, exclusivity and findings', async () => {
     const { manager, repo } = envelopeHarness()

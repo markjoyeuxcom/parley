@@ -9,6 +9,8 @@ import {
   type Approval,
   emptyUsage,
   type Id,
+  type Envelope,
+  type EnvelopeCaps,
   type Loop,
   type Milestone,
   type Session,
@@ -36,6 +38,7 @@ import {
 } from './backlog'
 import { LivenessWatchdog } from './liveness'
 import { runForeman } from './foreman'
+import { driveEnvelope, newEnvelope } from './envelope'
 import { runSelfGate, type SelfGateOptions } from './selfupdate'
 import { devcontainerProbe, hasDevcontainerConfig } from './containers'
 import { landWorktree, preflightLand, verifyLanding } from './worktrees'
@@ -154,6 +157,8 @@ export class Manager {
    * run's gate.
    */
   private readonly milestoneRuns = new Map<Id, RunGate>()
+  /** One unattended run per plan, keyed by plan id. Self-prunes in a finally. */
+  private readonly envelopeRuns = new Map<Id, RunGate>()
   /** In-flight stow sweeps — the same synchronous has-check discipline. */
   private readonly stowRuns = new Set<Id>()
   /**
@@ -972,6 +977,77 @@ export class Manager {
     gate.stop()
   }
 
+  /**
+   * Starts one unattended run and returns its record immediately — the driver
+   * runs for hours, and no IPC invoke may be held open across it. Progress
+   * arrives as events, exactly as a loop's does.
+   *
+   * The envelope approval is consumed HERE, in the same synchronous block as
+   * the guard and the record: single-use means the click that authorised this
+   * run cannot authorise another.
+   */
+  startEnvelope(planId: Id, approvalId: Id, caps: EnvelopeCaps): Envelope {
+    if (this.envelopeRuns.has(planId)) {
+      throw new RequestError('an envelope is already running for this plan')
+    }
+    const plan = this.repo.getPlan(planId)
+    if (!plan) throw new RequestError('no such plan')
+    if (plan.isolation !== 'worktree') {
+      throw new RequestError(
+        'unattended runs are worktree-only — an autonomous agent writing into the live checkout is the one uncontrolled case',
+      )
+    }
+    if (this.repo.getActiveEnvelopeForPlan(planId)) {
+      throw new RequestError('an envelope is already running for this plan')
+    }
+    // Re-checked against the gap between the grant and this call, the same
+    // reasoning the milestone gate uses: a finding can land in between.
+    assertNoUnresolvedBlockingOccurrences(this.repo, plan.sessionId)
+    this.repo.consumeApproval(approvalId, 'plan.envelope', planId)
+
+    const envelope = this.repo.createEnvelope(
+      newEnvelope(planId, caps, plan.usage.costUsd),
+      plan.repoPath,
+    )
+    const gate = new RunGate()
+    this.envelopeRuns.set(planId, gate)
+    this.emit({ type: 'envelope.changed', envelope })
+
+    // Idle sleep would silently strand an overnight run mid-milestone.
+    const release = this.deps.keepAwake?.(`unattended run on ${plan.title}`)
+
+    void driveEnvelope(
+      {
+        repo: this.repo,
+        emit: (event) => this.emit(event),
+        runMilestone: (milestoneId, mintedApprovalId) =>
+          this.runMilestone(milestoneId, mintedApprovalId),
+      },
+      envelope.id,
+      gate,
+    ).finally(() => {
+      this.envelopeRuns.delete(planId)
+      release?.()
+      this.holdsChanged()
+    })
+
+    return envelope
+  }
+
+  /**
+   * Ends a running envelope at its next boundary. The milestone in flight is
+   * stopped too — its run state is preserved, so it stays resumable exactly
+   * like a crashed one.
+   */
+  stopEnvelope(planId: Id): void {
+    const gate = this.envelopeRuns.get(planId)
+    if (!gate) throw new RequestError('no envelope is running for this plan')
+    gate.stop()
+    for (const milestone of this.repo.listMilestones(planId)) {
+      this.milestoneRuns.get(milestone.id)?.stop()
+    }
+  }
+
   grantMilestoneApproval(milestoneId: Id, summary: string): Approval {
     const milestone = this.repo.getMilestone(milestoneId)
     if (!milestone) throw new RequestError('no such milestone')
@@ -1435,6 +1511,7 @@ export class Manager {
    * in the confirm text instead of refused on their behalf.
    */
   busyWithRuns(): string | null {
+    if (this.envelopeRuns.size) return 'an unattended run is in progress'
     if (this.milestoneRuns.size) return 'a milestone is executing'
     if (this.planRuns.size) return 'a plan is being drafted or audited'
     if (this.sessions.size) return 'a session is running'
@@ -1449,6 +1526,9 @@ export class Manager {
   disposeAll(): void {
     for (const runner of this.sessions.values()) runner.gate.stop()
     for (const runner of this.loops.values()) runner.gate.stop()
+    // Envelope gates first: the driver checks its gate before each dispatch,
+    // so stopping here means a quitting app never mints one more milestone.
+    for (const gate of this.envelopeRuns.values()) gate.stop()
     for (const gate of this.milestoneRuns.values()) gate.stop()
     // A quitting app interrupts its own gate: the abort turns the row red
     // ('interrupted') from inside the still-live process, so the record never

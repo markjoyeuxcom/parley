@@ -1,4 +1,5 @@
 import type {
+  Envelope,
   Finding,
   Id,
   Loop,
@@ -70,6 +71,7 @@ export type AppEvent =
    */
   | { type: 'plan.stage'; planId: Id; stage: WorkPlan['status']; text: string }
   // Loops
+  | { type: 'envelope.changed'; envelope: Envelope }
   | { type: 'loop.created'; loop: Loop }
   | { type: 'loop.status'; loopId: Id; status: Loop['status']; stopReason?: string }
   | { type: 'loop.iteration.started'; iteration: LoopIteration }

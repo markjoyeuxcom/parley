@@ -9,7 +9,14 @@ import type { BrowserWindow } from 'electron'
 import { z } from 'zod'
 import { COMMANDS, type CliHealth, type CommandName, type PaneIdentity } from '@shared/ipc'
 import type { AppEvent } from '@shared/events'
-import { MAX_PANES, type AgentConfig, type ApprovalScope, type GridLayout, type Skill } from '@shared/domain'
+import {
+  MAX_PANES,
+  type AgentConfig,
+  type ApprovalScope,
+  type EnvelopeCaps,
+  type GridLayout,
+  type Skill,
+} from '@shared/domain'
 import { RequestError, type Manager } from '@main/orchestrator/manager'
 import { newId } from '@main/store/repo'
 import { readCodexDefaultModel } from '@main/util/environment'
@@ -390,6 +397,22 @@ const HANDLERS: Record<CommandName, Handler> = {
     }
   },
   'approval.list': (_p, ctx) => ctx.manager.repo.listApprovals(),
+
+  // ── Unattended runs ────────────────────────────────────────────────────────
+  'envelope.start': (p, ctx) => {
+    const { planId, approvalId, caps } = p as {
+      planId: string
+      approvalId: string
+      caps: EnvelopeCaps
+    }
+    return ctx.manager.startEnvelope(planId, approvalId, caps)
+  },
+  'envelope.stop': (p, ctx) => {
+    ctx.manager.stopEnvelope((p as { planId: string }).planId)
+    return { ok: true }
+  },
+  'envelope.list': (p, ctx) =>
+    ctx.manager.repo.listEnvelopesForPlan((p as { planId: string }).planId),
 
   // ── Loops ──────────────────────────────────────────────────────────────────
   'loop.create': (p, ctx) => ctx.manager.createLoop(p as never),

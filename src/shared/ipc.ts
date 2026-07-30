@@ -7,6 +7,7 @@ import {
   Id,
   InterjectionTarget,
   LoopCaps,
+  EnvelopeCaps,
   LoopExitCondition,
   PaneKind,
   SavedLayoutNode,
@@ -208,6 +209,14 @@ export const RejectForemanReq = z.object({
 })
 /** Closes out a failed or blocked plan: cancelled on the record, items released. */
 export const CancelPlanReq = z.object({ planId: Id })
+/** Starts one unattended run within the bounds the human approved. */
+export const StartEnvelopeReq = z.object({
+  planId: Id,
+  /** Must reference an unconsumed `plan.envelope` approval for this plan. */
+  approvalId: Id,
+  caps: EnvelopeCaps,
+})
+export const EnvelopePlanReq = z.object({ planId: Id })
 /** Boots the freshly built Parley: decides the green offer, then relaunches. */
 export const RelaunchSelfUpdateReq = z.object({ updateId: Id })
 /** Declines the offer; the app keeps running the bytes it started with. */
@@ -301,6 +310,9 @@ export const COMMANDS = {
   'plan.get': GetPlanReq,
   'plan.list': ListPlansReq,
   'plan.cancel': CancelPlanReq,
+  'envelope.start': StartEnvelopeReq,
+  'envelope.stop': EnvelopePlanReq,
+  'envelope.list': EnvelopePlanReq,
   'repos.list': ListReposReq,
   'repos.archive': ArchiveRepoReq,
   'repo.containerStatus': RepoContainerStatusReq,
