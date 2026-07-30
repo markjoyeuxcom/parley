@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   AgyAdapter,
@@ -16,6 +18,8 @@ import {
 import { buildClaudeArgs, claudeUsage } from './claude'
 import { buildCodexArgs, codexEffort, codexSandbox, codexUsage } from './codex'
 import { assertCapability, CapabilityError } from './types'
+
+const agyModelsFixture = fileURLToPath(new URL('./fixtures/agy-models.txt', import.meta.url))
 
 describe('claude argument construction', () => {
   const base = { systemPrompt: 'be terse', model: 'opus', effort: 'high', repoAttached: false }
@@ -130,19 +134,28 @@ describe('agy argument construction', () => {
     timeoutMs: 180_000,
   }
 
-  it('keeps only discovered Gemini entries, in CLI order without duplicates', () => {
+  it('keeps only the Gemini entries of a real `agy models` listing, in CLI order', () => {
+    // fixtures/agy-models.txt is a recording (Antigravity CLI 1.1.8,
+    // 2026-07-30). The real table carries Claude and GPT-OSS rows — the
+    // vendor≠family trap the gemini-only rule exists for — so the recording
+    // itself proves the exclusion.
+    const listing = readFileSync(agyModelsFixture, 'utf8')
+    expect(parseAgyModels(listing)).toEqual([
+      'gemini-3.6-flash-high',
+      'gemini-3.6-flash-medium',
+      'gemini-3.6-flash-low',
+      'gemini-3.5-flash-high',
+      'gemini-3.5-flash-medium',
+      'gemini-3.5-flash-low',
+      'gemini-3.1-pro-high',
+      'gemini-3.1-pro-low',
+    ])
+  })
+
+  it('drops duplicates and prefixed near-misses the recording does not contain', () => {
     expect(
-      parseAgyModels(
-        [
-          'MODEL                         DESCRIPTION',
-          'gemini-3-pro                  Gemini 3 Pro',
-          'claude-sonnet-4-5             Claude Sonnet',
-          'gemini-3-flash-high           Gemini 3 Flash',
-          'gemini-3-pro                  duplicate',
-          'not-gemini-3-flash-low        ineligible',
-        ].join('\n'),
-      ),
-    ).toEqual(['gemini-3-pro', 'gemini-3-flash-high'])
+      parseAgyModels(['gemini-3-pro', 'gemini-3-pro', 'not-gemini-3-flash-low'].join('\n')),
+    ).toEqual(['gemini-3-pro'])
   })
 
   it('memoises model discovery on the adapter', async () => {
