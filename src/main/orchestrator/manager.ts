@@ -21,6 +21,7 @@ import {
 import type { AppEvent } from '@shared/events'
 import type { Hold } from '@shared/holds'
 import type { RepoContainerStatus } from '@shared/ipc'
+import type { InFlightRow } from '@shared/inflight'
 import type { AgentRegistry } from '@main/agents'
 import { isShellFree, shellMetacharsIn } from '@shared/command'
 import { EXECUTABLE_PAIRS } from '@shared/execution'
@@ -38,6 +39,7 @@ import {
 } from './backlog'
 import { LivenessWatchdog } from './liveness'
 import { runForeman } from './foreman'
+import { computeInFlight } from './inflight'
 import { driveEnvelope, newEnvelope } from './envelope'
 import { runSelfGate, type SelfGateOptions } from './selfupdate'
 import { devcontainerProbe, hasDevcontainerConfig } from './containers'
@@ -1510,6 +1512,11 @@ export class Manager {
    * panes are deliberately absent — they are the user's own terminals, named
    * in the confirm text instead of refused on their behalf.
    */
+  /** Everything running right now, derived from the record. */
+  listInFlight(): InFlightRow[] {
+    return computeInFlight(this.repo)
+  }
+
   busyWithRuns(): string | null {
     if (this.envelopeRuns.size) return 'an unattended run is in progress'
     if (this.milestoneRuns.size) return 'a milestone is executing'

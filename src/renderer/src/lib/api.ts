@@ -28,6 +28,7 @@ import type {
 } from '@shared/domain'
 import type { AppEvent, PtyChunk } from '@shared/events'
 import type { Hold } from '@shared/holds'
+import type { InFlightRow } from '@shared/inflight'
 import type {
   AppInfo,
   CliHealth,
@@ -132,6 +133,8 @@ export const api = {
 
   // Decision holds
   listHolds: (): Promise<Hold[]> => bridge().invoke('holds.list'),
+  /** Everything running right now — derived, never stored. */
+  listInFlight: (): Promise<InFlightRow[]> => bridge().invoke('inflight.list'),
   /** Returns the updated queue. Refused for decision-class holds. */
   ackHold: (holdId: Id): Promise<Hold[]> => bridge().invoke('holds.ack', { holdId }),
 

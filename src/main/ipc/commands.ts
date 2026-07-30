@@ -188,6 +188,7 @@ const HANDLERS: Record<CommandName, Handler> = {
 
   // ── Decision holds ────────────────────────────────────────────────────────
   'holds.list': (_p, ctx) => ctx.manager.listHolds(),
+  'inflight.list': (_p, ctx) => ctx.manager.listInFlight(),
   'holds.ack': (p, ctx) => ctx.manager.ackHold((p as { holdId: string }).holdId),
 
   // ── Backlog ───────────────────────────────────────────────────────────────

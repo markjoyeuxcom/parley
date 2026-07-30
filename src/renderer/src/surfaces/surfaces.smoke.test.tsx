@@ -355,6 +355,7 @@ function installBridge(
     }),
     'holds.list': () => [],
     'envelope.list': () => [],
+    'inflight.list': () => [],
     'repo.containerStatus': () => ({
       enabled: false,
       configPresent: true,
@@ -498,6 +499,55 @@ describe('mounted-surface smoke', () => {
     act(() => appEventListener?.({ type: 'pane.closed', paneId: pane.id }))
     act(() => appEventListener?.({ type: 'pane.created', pane: { ...pane, id: 'q'.repeat(36) } }))
     await screen.findByText('1')
+  })
+
+  it('the in-flight popover badges what is running and opens a row at its home', async () => {
+    installBridge({
+      'inflight.list': () => [
+        {
+          id: 'envelope:v',
+          kind: 'envelope',
+          title: 'Unattended: Bound the retry path',
+          detail: '1 of 4 milestones authorised',
+          startedAt: Date.now() - 60_000,
+          repoPath: '/tmp/smoke-repo',
+          jump: { to: 'plan', planId: smokePlan.id },
+          progress: [
+            { label: 'milestones', value: 0.25 },
+            { label: 'time', value: 0.1 },
+          ],
+          mock: true,
+        },
+      ],
+    })
+
+    function InFlightHarness(): ReactNode {
+      const { state } = useStore()
+      return (
+        <>
+          <Titlebar />
+          <div data-testid="active-surface">{state.surface}</div>
+        </>
+      )
+    }
+    render(
+      <StoreProvider>
+        <InFlightHarness />
+      </StoreProvider>,
+    )
+
+    // The badge counts what is running, without the popover being open.
+    const button = await screen.findByRole('button', { name: /In flight/ })
+    await waitFor(() => expect(within(button).getByText('1')).toBeTruthy())
+
+    fireEvent.click(button)
+    await screen.findByText('Unattended: Bound the retry path')
+    await screen.findByText(/1 of 4 milestones authorised/)
+
+    // Every row opens where its work lives — a status you cannot act on is
+    // decoration.
+    fireEvent.click(screen.getByText('Unattended: Bound the retry path'))
+    await waitFor(() => expect(screen.getByTestId('active-surface').textContent).toBe('backlog'))
   })
 
   it('a missing agy gets the neutral dot while a missing required CLI stays red', async () => {

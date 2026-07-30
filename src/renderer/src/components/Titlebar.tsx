@@ -1,8 +1,9 @@
-import { type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Command, FolderGit2, Repeat, Scale, Terminal } from 'lucide-react'
 import { isToolless } from '@shared/vendors'
 import { useStore, type Surface, type ThemeChoice } from '../state'
 import { HoldsButton } from './HoldsPanel'
+import { InFlightButton, InFlightPopover, useInFlight } from './InFlightPanel'
 import { Dot } from './ui'
 
 const SURFACES: Array<{ id: Surface; label: string; icon: ReactNode }> = [
@@ -18,6 +19,11 @@ const THEME_ORDER: ThemeChoice[] = ['system', 'light', 'dark']
 
 export function Titlebar(): ReactNode {
   const { state, dispatch } = useStore()
+  // Polled while open, once otherwise: the badge should be right when you
+  // glance at it, without a timer running all day for a number nobody is
+  // looking at.
+  const [inFlightOpen, setInFlightOpen] = useState(false)
+  const inFlight = useInFlight(inFlightOpen)
 
   const activeSessions = state.sessions.filter((s) => s.status === 'running' || s.status === 'paused').length
   const activeLoops = state.loops.filter((l) => l.status === 'running' || l.status === 'paused').length
@@ -69,8 +75,17 @@ export function Titlebar(): ReactNode {
         ))}
       </nav>
 
+      {inFlightOpen ? (
+        <InFlightPopover rows={inFlight} onClose={() => setInFlightOpen(false)} />
+      ) : null}
+
       <div className="titlebar__right">
         <CliStatus />
+        <InFlightButton
+          open={inFlightOpen}
+          onToggle={() => setInFlightOpen((open) => !open)}
+          count={inFlight.length}
+        />
         <HoldsButton />
         <button
           className="btn btn--subtle btn--sm"

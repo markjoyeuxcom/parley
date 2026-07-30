@@ -290,6 +290,7 @@ export const COMMANDS = {
   'ledger.list': ListLedgerReq,
   'ledger.dispose': DisposeLedgerFindingReq,
   'holds.list': null,
+  'inflight.list': null,
   'holds.ack': AckHoldReq,
   'backlog.list': ListBacklogReq,
   'backlog.drop': DropBacklogItemReq,
