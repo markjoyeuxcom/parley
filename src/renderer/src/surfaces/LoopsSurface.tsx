@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { FolderOpen, Pause, Play, Plus, ShieldCheck, Square } from 'lucide-react'
 import type { AgentConfig, Capability, Loop, LoopExitKind } from '@shared/domain'
 import { api } from '../lib/api'
@@ -355,6 +355,23 @@ function NewLoopDialog({
   const { attempt } = useStore()
   const [goal, setGoal] = useState('')
   const [repoPath, setRepoPath] = useState('')
+  // Advisory mirror of the creation-time snapshot; failures stay quiet.
+  const [containerOn, setContainerOn] = useState(false)
+  useEffect(() => {
+    const chosen = repoPath.trim()
+    setContainerOn(false)
+    if (!chosen) return
+    let live = true
+    void api
+      .repoContainerStatus(chosen)
+      .then((status) => {
+        if (live) setContainerOn(status.enabled)
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [repoPath])
   const [worker, setWorker] = useState<AgentConfig>({ vendor: 'codex', model: '', effort: 'high', persona: '' })
   const [verifier, setVerifier] = useState<AgentConfig>({ vendor: 'claude', model: '', effort: 'high', persona: '' })
   const [exitKind, setExitKind] = useState<LoopExitKind>('command')
@@ -435,6 +452,13 @@ function NewLoopDialog({
           {repoPath ? shortPath(repoPath) : 'Choose folder'}
         </button>
       </Field>
+
+      {containerOn ? (
+        <p style={{ fontSize: 'var(--text-small)', color: 'var(--text-tertiary)', margin: 0 }}>
+          The loop’s exit command runs in this repository’s dev container — snapshotted when the
+          loop is created.
+        </p>
+      ) : null}
 
       <hr className="divider" />
 

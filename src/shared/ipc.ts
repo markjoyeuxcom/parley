@@ -219,6 +219,11 @@ export const ArchiveRepoReq = z.object({
   repoPath: z.string().min(1),
   archived: z.boolean(),
 })
+export const RepoContainerStatusReq = z.object({ repoPath: z.string().min(1) })
+export const SetRepoContainerReq = z.object({
+  repoPath: z.string().min(1),
+  enabled: z.boolean(),
+})
 /** Deleting is permanent. The impact query exists so it is never a blind click. */
 export const DeleteSessionReq = z.object({ sessionId: Id })
 export const GetPlanReq = z.object({ planId: Id })
@@ -286,6 +291,8 @@ export const COMMANDS = {
   'plan.cancel': CancelPlanReq,
   'repos.list': ListReposReq,
   'repos.archive': ArchiveRepoReq,
+  'repo.containerStatus': RepoContainerStatusReq,
+  'repo.setContainer': SetRepoContainerReq,
   'plan.runMilestone': RunMilestoneReq,
   'plan.inspect': InspectMilestoneReq,
   'plan.answer': AnswerPlanReq,
@@ -393,6 +400,18 @@ export interface RepoSummary {
   openItems: number
   pendingTriage: number
   hasPendingProposal: boolean
+}
+
+/**
+ * The Repos Overview's dev-container section in one read: the standing
+ * choice, whether the repository declares a configuration, and whether the
+ * devcontainer CLI is installed. The cli probe is fresh on every read — a
+ * stale "missing" after an install would be worse than the probe's cost.
+ */
+export interface RepoContainerStatus {
+  enabled: boolean
+  configPresent: boolean
+  cli: { present: boolean; version: string; detail: string }
 }
 
 /** Result of probing for a governed CLI at startup. */

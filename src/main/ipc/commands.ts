@@ -322,6 +322,12 @@ const HANDLERS: Record<CommandName, Handler> = {
     ctx.manager.setRepoArchived(repoPath, archived)
     return { ok: true }
   },
+  'repo.containerStatus': (p, ctx) =>
+    ctx.manager.repoContainerStatus((p as { repoPath: string }).repoPath),
+  'repo.setContainer': (p, ctx) => {
+    const { repoPath, enabled } = p as { repoPath: string; enabled: boolean }
+    return ctx.manager.setRepoContainer(repoPath, enabled)
+  },
   'plan.get': (p, ctx) => {
     const { planId } = p as { planId: string }
     const plan = ctx.manager.repo.getPlan(planId)

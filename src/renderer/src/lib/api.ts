@@ -26,7 +26,14 @@ import type {
 } from '@shared/domain'
 import type { AppEvent, PtyChunk } from '@shared/events'
 import type { Hold } from '@shared/holds'
-import type { AppInfo, CliHealth, CommandName, LedgerEntry, RepoSummary } from '@shared/ipc'
+import type {
+  AppInfo,
+  CliHealth,
+  CommandName,
+  LedgerEntry,
+  RepoContainerStatus,
+  RepoSummary,
+} from '@shared/ipc'
 
 /** The preload bridge. The only channel out of the renderer. */
 interface Bridge {
@@ -203,6 +210,10 @@ export const api = {
     bridge().invoke('repos.list', { includeArchived }),
   archiveRepo: (repoPath: string, archived: boolean): Promise<{ ok: true }> =>
     bridge().invoke('repos.archive', { repoPath, archived }),
+  repoContainerStatus: (repoPath: string): Promise<RepoContainerStatus> =>
+    bridge().invoke('repo.containerStatus', { repoPath }),
+  setRepoContainer: (repoPath: string, enabled: boolean): Promise<RepoContainerStatus> =>
+    bridge().invoke('repo.setContainer', { repoPath, enabled }),
   getPlan: (planId: Id): Promise<PlanDetail> => bridge().invoke('plan.get', { planId }),
   setTestCommand: (milestoneId: Id, command: string): Promise<Milestone> =>
     bridge().invoke('plan.setTestCommand', { milestoneId, command }),

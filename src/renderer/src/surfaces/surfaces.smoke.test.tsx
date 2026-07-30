@@ -352,6 +352,11 @@ function installBridge(
       plans: [],
     }),
     'holds.list': () => [],
+    'repo.containerStatus': () => ({
+      enabled: false,
+      configPresent: true,
+      cli: { present: true, version: '0.87.0-smoke', detail: '/smoke/devcontainer' },
+    }),
     'ledger.list': () => [blockingEntry],
     'backlog.list': () => [openItem],
     'learnings.list': () => [],
@@ -556,6 +561,45 @@ describe('mounted-surface smoke', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: /Learnings/ }))
     expect(screen.queryByText('Closure proposed')).toBeNull()
+  })
+
+  it('the dev-container card renders the choice and the toggle invokes by name', async () => {
+    const invoked: CommandName[] = []
+    let enabled = false
+    installBridge({
+      'repo.containerStatus': () => ({
+        enabled,
+        configPresent: true,
+        cli: { present: true, version: '0.87.0-smoke', detail: '/smoke/devcontainer' },
+      }),
+      'repo.setContainer': (payload) => {
+        invoked.push('repo.setContainer')
+        enabled = (payload as { enabled: boolean }).enabled
+        return {
+          enabled,
+          configPresent: true,
+          cli: { present: true, version: '0.87.0-smoke', detail: '/smoke/devcontainer' },
+        }
+      },
+    })
+    render(
+      <StoreProvider>
+        <OnSurface surface="backlog">
+          <BacklogSurface />
+        </OnSurface>
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByTitle('/tmp/smoke-repo'))
+    await screen.findByText('Dev container')
+    // Off: the hint names the machine and the available CLI.
+    await screen.findByText(/devcontainer 0.87.0-smoke is available/)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }))
+    await waitFor(() => expect(invoked).toEqual(['repo.setContainer']))
+    // On: the card reports the routed state and the snapshot rule.
+    await screen.findByText(/run in its dev container/)
+    await screen.findByRole('button', { name: 'Disable' })
   })
 
   it('archives, hides, reveals and restores a repository from the mounted sidebar', async () => {

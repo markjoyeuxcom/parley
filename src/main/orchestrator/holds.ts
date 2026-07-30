@@ -240,7 +240,7 @@ function approvalHold(
     loopId: null,
     repoPath: canonicalRepoPath(plan.repoPath),
     title: 'Ready to approve',
-    detail: `${plan.title} — ${subject}`,
+    detail: `${plan.title} — ${subject}${plan.container ? ' — verification runs in the dev container' : ''}`,
     sinceAt: milestone.createdAt,
     mock: plan.mock,
   })

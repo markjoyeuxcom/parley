@@ -142,6 +142,25 @@ export function NewPlanDialog({
   const [note, setNote] = useState(initialNote ?? '')
   const [isolation, setIsolation] = useState<WorkPlan['isolation']>(initialIsolation ?? 'checkout')
   const [setupCommand, setSetupCommand] = useState('')
+  // Advisory: the plan will snapshot the repository's dev-container choice at
+  // creation, and the person clicking Draft should see that before, not
+  // after. Lookup failures stay quiet — the server snapshot is authoritative.
+  const [containerOn, setContainerOn] = useState(false)
+  useEffect(() => {
+    const chosen = repoPath.trim()
+    setContainerOn(false)
+    if (!chosen) return
+    let live = true
+    void api
+      .repoContainerStatus(chosen)
+      .then((status) => {
+        if (live) setContainerOn(status.enabled)
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [repoPath])
 
   // Advisory mirror of the main-process rule: plans on Parley's own checkout
   // run in a worktree only. Trailing-slash-trimmed compare, not canonical —
@@ -280,6 +299,13 @@ export function NewPlanDialog({
           <option value="worktree">In a worktree — isolated branch, landed by you</option>
         </select>
       </Field>
+
+      {containerOn ? (
+        <p className="dialog__note" style={{ fontSize: 'var(--text-small)', color: 'var(--text-tertiary)', margin: 0 }}>
+          Verification commands run in this repository’s dev container — snapshotted onto the
+          plan when you draft it.
+        </p>
+      ) : null}
 
       {backlogChoices.length ? (
         <Field
@@ -442,12 +468,15 @@ export function PlanPanel({
     // The persisted record of what was authorised, so it must name the
     // directory actually written: a worktree run never touches the checkout,
     // and an approval claiming it did would be wrong in the durable record.
+    const containerNote = plan.container
+      ? ' Verification commands run in the repository’s dev container.'
+      : ''
     const summary =
-      plan.isolation === 'worktree'
+      (plan.isolation === 'worktree'
         ? `Allow ${plan.executor.vendor} to write to an isolated worktree of ${plan.repoPath} for milestone ` +
           `${milestone.index + 1}: ${milestone.title}. Landing on the checkout is a separate decision.`
         : `Allow ${plan.executor.vendor} to write to ${plan.repoPath} for milestone ` +
-          `${milestone.index + 1}: ${milestone.title}`
+          `${milestone.index + 1}: ${milestone.title}`) + containerNote
 
     const approval = await attempt(() => api.grantApproval('milestone.execute', milestone.id, summary))
     setGranting(false)
@@ -1180,7 +1209,11 @@ function ApprovalGateDialog({
   return (
     <Dialog
       title={`Approve milestone ${milestone.index + 1}`}
-      subtitle="This is the only point at which Parley writes to your repository."
+      subtitle={
+        plan.container
+          ? 'This is the only point at which Parley writes to your repository. Verification runs in the repository’s dev container.'
+          : 'This is the only point at which Parley writes to your repository.'
+      }
       onClose={onClose}
       footer={
         <>

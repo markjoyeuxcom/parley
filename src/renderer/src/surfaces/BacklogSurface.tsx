@@ -10,7 +10,7 @@ import type {
   Session,
   WorkPlan,
 } from '@shared/domain'
-import type { RepoSummary } from '@shared/ipc'
+import type { RepoContainerStatus, RepoSummary } from '@shared/ipc'
 import type { Hold } from '@shared/holds'
 import { api } from '../lib/api'
 import { compactNumber, relativeTime, shortPath, statusTone } from '../lib/format'
@@ -418,6 +418,8 @@ export function BacklogSurface(): ReactNode {
                       act(id, () => api.rejectForemanProposal(id, note))
                     }
                   />
+
+                  <ContainerCard repo={repo} />
                 </>
               ) : null}
 
@@ -623,6 +625,69 @@ function InFlightCard({
 }
 
 /** The holds queue filtered to this repository — same holds, scoped door. */
+/**
+ * The repository's standing dev-container choice. The toggle is a recorded
+ * decision, and the hint says the part that surprises people: plans snapshot
+ * it at creation, so flipping it never changes work already approved.
+ */
+function ContainerCard({ repo }: { repo: string }): ReactNode {
+  const { attempt } = useStore()
+  const [status, setStatus] = useState<RepoContainerStatus | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    setStatus(null)
+    let cancelled = false
+    void attempt(() => api.repoContainerStatus(repo)).then((next) => {
+      if (!cancelled && next) setStatus(next)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [attempt, repo])
+
+  if (!status) return null
+
+  const toggle = async (): Promise<void> => {
+    setBusy(true)
+    const next = await attempt(() => api.setRepoContainer(repo, !status.enabled))
+    setBusy(false)
+    if (next) setStatus(next)
+  }
+  // Everything checkable is disabled at the control, with the reason as the
+  // hint — the server refuses too, but a button that cannot work should say so.
+  const blocked = !status.enabled && (!status.configPresent || !status.cli.present)
+  const hint = status.enabled
+    ? 'Parley’s verification commands for this repository run in its dev container. Plans and loops snapshot this at creation.'
+    : !status.configPresent
+      ? 'No dev container configuration — this repository has neither .devcontainer/devcontainer.json nor .devcontainer.json.'
+      : !status.cli.present
+        ? status.cli.detail
+        : `Verification commands run on this machine. devcontainer ${status.cli.version} is available.`
+
+  return (
+    <section className="panel foreman-panel">
+      <header className="panel__header">
+        <Label>Dev container</Label>
+        {status.enabled ? <Chip tone="chip--accent">on</Chip> : null}
+        <span className="spacer" />
+        <button
+          className="btn btn--subtle btn--sm"
+          disabled={busy || blocked}
+          onClick={() => void toggle()}
+        >
+          {busy ? 'Saving…' : status.enabled ? 'Disable' : 'Enable'}
+        </button>
+      </header>
+      <div className="panel__body">
+        <p style={{ margin: 0, fontSize: 'var(--text-small)', color: 'var(--text-tertiary)' }}>
+          {hint}
+        </p>
+      </div>
+    </section>
+  )
+}
+
 function WaitingCard({
   holds,
   onJump,

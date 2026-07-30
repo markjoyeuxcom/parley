@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { AppEvent } from '@shared/events'
@@ -2722,6 +2722,63 @@ describe("Parley's own repository", () => {
     }
     expect(manager.createLoop({ ...base, repoPath: otherRepo }).container).toBe(true)
     expect(manager.createLoop({ ...base, repoPath: selfPath }).container).toBe(false)
+  })
+
+  it('refuses to enable containers without a config, without a CLI, or for the self repo', async () => {
+    const selfPath = mkdtempSync(join(tmpdir(), 'parley-selfrepo-devcset-'))
+    const bare = mkdtempSync(join(tmpdir(), 'parley-devcset-bare-'))
+    const { manager } = selfHarness(selfPath)
+
+    // Nothing to run in: the repository declares no configuration.
+    await expect(manager.setRepoContainer(bare, true)).rejects.toThrow(
+      /no dev container configuration/,
+    )
+
+    // Configuration present, CLI absent — the refusal carries the install hint.
+    mkdirSync(join(bare, '.devcontainer'), { recursive: true })
+    writeFileSync(join(bare, '.devcontainer', 'devcontainer.json'), '{"image":"alpine"}')
+    const noCli = new Manager({
+      repo: new Repo(openDatabase(':memory:')),
+      registry: new AgentRegistry(true),
+      emit: () => {},
+      devcontainerBinary: '/definitely/missing/devcontainer',
+    })
+    await expect(noCli.setRepoContainer(bare, true)).rejects.toThrow(/not found on PATH/)
+
+    // The self repo refuses regardless of configuration: the gate builds
+    // host bytes for the host Electron.
+    mkdirSync(join(selfPath, '.devcontainer'), { recursive: true })
+    writeFileSync(join(selfPath, '.devcontainer', 'devcontainer.json'), '{"image":"alpine"}')
+    await expect(manager.setRepoContainer(selfPath, true)).rejects.toThrow(
+      /never runs its gate in a container/,
+    )
+  })
+
+  it('records the choice and reports it, and disabling needs no preconditions', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'parley-devcset-ok-'))
+    mkdirSync(join(repoDir, '.devcontainer'), { recursive: true })
+    writeFileSync(join(repoDir, '.devcontainer', 'devcontainer.json'), '{"image":"alpine"}')
+
+    const cliDir = mkdtempSync(join(tmpdir(), 'parley-devc-cli-'))
+    const cliPath = join(cliDir, 'devcontainer')
+    writeFileSync(cliPath, '#!/bin/sh\n[ "$1" = "--version" ] && { echo 0.87.0-test; exit 0; }\nexit 64\n')
+    chmodSync(cliPath, 0o755)
+
+    const manager = new Manager({
+      repo: new Repo(openDatabase(':memory:')),
+      registry: new AgentRegistry(true),
+      emit: () => {},
+      devcontainerBinary: cliPath,
+    })
+
+    const enabled = await manager.setRepoContainer(repoDir, true)
+    expect(enabled).toEqual({
+      enabled: true,
+      configPresent: true,
+      cli: { present: true, version: '0.87.0-test', detail: cliPath },
+    })
+    expect((await manager.repoContainerStatus(repoDir)).enabled).toBe(true)
+    expect((await manager.setRepoContainer(repoDir, false)).enabled).toBe(false)
   })
 
   it('refuses to execute a grandfathered checkout plan for the self repo', async () => {

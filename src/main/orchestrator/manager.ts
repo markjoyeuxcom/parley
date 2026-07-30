@@ -18,6 +18,7 @@ import {
 } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import type { Hold } from '@shared/holds'
+import type { RepoContainerStatus } from '@shared/ipc'
 import type { AgentRegistry } from '@main/agents'
 import { isShellFree, shellMetacharsIn } from '@shared/command'
 import { seatingRefusals, type VendorSeat } from '@shared/vendors'
@@ -35,6 +36,7 @@ import {
 import { LivenessWatchdog } from './liveness'
 import { runForeman } from './foreman'
 import { runSelfGate, type SelfGateOptions } from './selfupdate'
+import { devcontainerProbe, hasDevcontainerConfig } from './containers'
 import { landWorktree, preflightLand, verifyLanding } from './worktrees'
 import { LoopRunner, validateExitCommand, type LoopOutcome } from './loop'
 import { missingExpectedPaths, Pipeline, readTree } from './pipeline'
@@ -253,6 +255,40 @@ export class Manager {
       return
     }
     this.repo.restoreRepo(canonical)
+  }
+
+  async repoContainerStatus(repoPath: string): Promise<RepoContainerStatus> {
+    const canonical = canonicalRepoPath(validateRepoPath(repoPath))
+    return {
+      enabled: this.repo.getRepoContainer(canonical),
+      configPresent: hasDevcontainerConfig(canonical),
+      cli: await devcontainerProbe(this.deps.devcontainerBinary ?? 'devcontainer'),
+    }
+  }
+
+  /**
+   * Records the standing dev-container choice. Everything checkable is
+   * refused at the click: enabling without a configuration or a CLI would
+   * only ever surface half an hour later as a failed milestone.
+   */
+  async setRepoContainer(repoPath: string, enabled: boolean): Promise<RepoContainerStatus> {
+    const canonical = canonicalRepoPath(validateRepoPath(repoPath))
+    if (enabled) {
+      if (this.deps.selfRepoPath && canonical === this.deps.selfRepoPath) {
+        throw new RequestError(
+          "Parley's own repository never runs its gate in a container — the gate builds host bytes for the host Electron.",
+        )
+      }
+      if (!hasDevcontainerConfig(canonical)) {
+        throw new RequestError(
+          'no dev container configuration was found — this repository has neither .devcontainer/devcontainer.json nor .devcontainer.json',
+        )
+      }
+      const cli = await devcontainerProbe(this.deps.devcontainerBinary ?? 'devcontainer')
+      if (!cli.present) throw new RequestError(cli.detail)
+    }
+    this.repo.setRepoContainer(canonical, enabled)
+    return this.repoContainerStatus(canonical)
   }
 
   private repoLiveAttention(canonical: string): string[] {
