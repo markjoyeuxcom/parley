@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
 import { Archive, Download } from 'lucide-react'
-import type { Finding, ScoreDimension, Verdict } from '@shared/domain'
-import { seatLabel, seatSide } from '../lib/format'
+import type { Finding, Id, ScoreDimension, Verdict } from '@shared/domain'
+import { relativeTime, seatLabel, seatSide } from '../lib/format'
+import { useStore } from '../state'
 import { Chip, Meter, Panel } from './ui'
 
 const DIMENSION_LABEL: Record<ScoreDimension, string> = {
@@ -18,14 +19,32 @@ export function VerdictPanel({
   verdict,
   onExport,
   onStow,
+  sessionId,
 }: {
   verdict: Verdict
   onExport: () => void
   /** Present only when the session has a repository to file into. */
   onStow?: (() => void) | null
+  /** Lets the Stow button remember: stow-sourced rows with this origin mean
+   * the session was already swept, and the label should say so. */
+  sessionId?: Id
 }): ReactNode {
+  const { state } = useStore()
   const confidence = Math.round(verdict.confidence * 100)
   const tone = confidence >= 70 ? 'chip--pass' : confidence >= 40 ? 'chip--caution' : 'chip--fail'
+
+  // Derived, never stored — the same discipline as the holds queue. Any
+  // stow-sourced item or learning with this session's origin proves a sweep
+  // already ran; the newest stamp gives the label its honesty.
+  const stowedAt =
+    onStow && sessionId
+      ? [...state.backlogItems, ...state.learnings]
+          .filter((row) => row.originSessionId === sessionId && row.source === 'stow')
+          .reduce<number | null>(
+            (last, row) => (last === null || row.createdAt > last ? row.createdAt : last),
+            null,
+          )
+      : null
 
   return (
     <div className="verdict">
@@ -40,10 +59,14 @@ export function VerdictPanel({
             <button
               className="btn btn--sm"
               onClick={onStow}
-              title="One read-only agent turn drafts backlog items and learnings from this session. Nothing counts until you confirm it."
+              title={
+                stowedAt
+                  ? `Last stowed ${relativeTime(stowedAt)}. The sweep is shown what is already tracked, so a re-run proposes only what is genuinely new.`
+                  : 'One read-only agent turn drafts backlog items and learnings from this session. Nothing counts until you confirm it.'
+              }
             >
               <Archive size={12} strokeWidth={2} />
-              Stow
+              {stowedAt ? 'Stow again' : 'Stow'}
             </button>
           ) : null}
           <button className="btn btn--sm" onClick={onExport} title="Export the full report as Markdown">

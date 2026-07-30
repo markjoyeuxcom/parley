@@ -378,6 +378,7 @@ function SessionView(): ReactNode {
                     verdict={verdict}
                     onExport={() => void exportReport()}
                     onStow={session.repoPath ? () => void stow() : null}
+                    sessionId={session.id}
                   />
                 ) : null}
                 <FindingsPanel findings={findings} />

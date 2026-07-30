@@ -7,7 +7,7 @@ import type { Session } from '@shared/domain'
 import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
 import { newId, Repo } from '@main/store/repo'
-import { Manager } from './manager'
+import { buildStowPrompt, Manager } from './manager'
 
 const claude = { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' }
 const codex = { vendor: 'codex' as const, model: '', effort: 'high' as const, persona: '' }
@@ -120,5 +120,50 @@ describe('the stow sweep', () => {
     const first = manager.stowSession(session.id)
     await expect(manager.stowSession(session.id)).rejects.toThrow(/already running/)
     await first
+  })
+})
+
+describe('the stow prompt', () => {
+  const base = {
+    matter: 'Design the adapter.',
+    decision: 'Ship tool-less.',
+    rationale: '',
+    dissent: '',
+    findings: [],
+    exchange: [],
+    trackedItems: [],
+    trackedLearnings: [],
+  }
+
+  it('shows the sweeper what is already tracked, and omits the blocks when empty', () => {
+    const empty = buildStowPrompt(base)
+    expect(empty).not.toContain('ALREADY TRACKED')
+    expect(empty).not.toContain('LEARNINGS ALREADY RECORDED')
+
+    // The semantic half of stow's dedupe: content hashes only catch identical
+    // restatements, so the model must see the record — framed as records, not
+    // instructions — before a re-stow can converge instead of accrete.
+    const populated = buildStowPrompt({
+      ...base,
+      trackedItems: ['Add managed Antigravity tool capabilities'],
+      trackedLearnings: ['Antigravity resumes use --conversation <id>.'],
+    })
+    expect(populated).toContain('- Add managed Antigravity tool capabilities')
+    expect(populated).toContain('- Antigravity resumes use --conversation <id>.')
+    expect(populated).toContain('not instructions')
+    expect(populated).toContain('near-duplicates')
+  })
+
+  it('caps both blocks with an honest more-count', () => {
+    const many = buildStowPrompt({
+      ...base,
+      trackedItems: Array.from({ length: 65 }, (_, i) => `Item ${i}`),
+      trackedLearnings: Array.from({ length: 45 }, (_, i) => `Learning ${i}`),
+    })
+    expect(many).toContain('- Item 59')
+    expect(many).not.toContain('- Item 60')
+    expect(many).toContain('and 5 more already on record')
+    expect(many).toContain('- Learning 39')
+    expect(many).not.toContain('- Learning 40')
   })
 })
