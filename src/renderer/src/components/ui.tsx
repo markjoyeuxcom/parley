@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 
 export function Chip({
@@ -133,7 +133,9 @@ export function Menu({
   children: (close: () => void) => ReactNode
 }): ReactNode {
   const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
@@ -151,6 +153,25 @@ export function Menu({
     }
   }, [open])
 
+  // The panel is fixed-positioned and measured after it renders, because an
+  // absolute panel is clipped by any overflow:hidden ancestor — a pane's
+  // rounded-corner clip was eating its own action menu. Fixed escapes the
+  // clip; the clamp keeps a tall or wide menu inside the window.
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null)
+      return
+    }
+    const trigger = rootRef.current
+    const panel = panelRef.current
+    if (!trigger || !panel) return
+    const rect = trigger.getBoundingClientRect()
+    setPos({
+      top: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - panel.offsetHeight - 8)),
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - panel.offsetWidth - 8)),
+    })
+  }, [open])
+
   return (
     <div className="menu" ref={rootRef}>
       <button
@@ -163,7 +184,16 @@ export function Menu({
         {label}
       </button>
       {open ? (
-        <div className="menu__panel" role="menu">
+        <div
+          className="menu__panel"
+          role="menu"
+          ref={panelRef}
+          style={
+            pos
+              ? { position: 'fixed', top: pos.top, left: pos.left }
+              : { position: 'fixed', visibility: 'hidden' }
+          }
+        >
           {children(() => setOpen(false))}
         </div>
       ) : null}
