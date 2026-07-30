@@ -21,6 +21,7 @@ export { MockAdapter } from './mock'
  */
 export class AgentRegistry {
   private readonly adapters: Record<Vendor, AgentAdapter>
+  private readonly agyAdapter: AgyAdapter | null
 
   /**
    * True when the deterministic adapters are in use.
@@ -35,13 +36,12 @@ export class AgentRegistry {
 
   constructor(mock = process.env['PARLEY_MOCK'] === '1') {
     this.mock = mock
-    this.adapters = mock
-      ? {
-          claude: new MockAdapter('claude'),
-          codex: new MockAdapter('codex'),
-          agy: new MockAdapter('agy'),
-        }
-      : { claude: new ClaudeAdapter(), codex: new CodexAdapter(), agy: new AgyAdapter() }
+    this.agyAdapter = mock ? null : new AgyAdapter()
+    this.adapters = {
+      claude: mock ? new MockAdapter('claude') : new ClaudeAdapter(),
+      codex: mock ? new MockAdapter('codex') : new CodexAdapter(),
+      agy: mock ? new MockAdapter('agy') : this.agyAdapter!,
+    }
   }
 
   get(vendor: Vendor): AgentAdapter {
@@ -56,6 +56,18 @@ export class AgentRegistry {
    */
   counterpart(from: Vendor): Vendor {
     return pickCounterpart(from)
+  }
+
+  agyModels(): Promise<string[]> {
+    if (this.mock) {
+      return Promise.resolve([
+        'gemini-3-pro',
+        'gemini-3-flash-high',
+        'gemini-3-flash-medium',
+        'gemini-3-flash-low',
+      ])
+    }
+    return this.agyAdapter!.models()
   }
 
   async probeAll(): Promise<CliHealth[]> {

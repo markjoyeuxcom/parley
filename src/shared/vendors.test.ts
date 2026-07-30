@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isToolless, pickCounterpart, seatingRefusals } from './vendors'
+import { eligibleVendors, isToolless, pickCounterpart, seatingRefusals } from './vendors'
 
 describe('vendor governance', () => {
   it('marks only Agy as tool-less', () => {
@@ -37,6 +37,13 @@ describe('vendor governance', () => {
         expect.stringContaining(role.replaceAll('-', ' ')),
       ])
     }
+  })
+
+  it('offers exactly the vendors the role-aware refusal policy admits', () => {
+    expect(eligibleVendors('debate-seat', true)).toEqual(['claude', 'codex', 'agy'])
+    expect(eligibleVendors('debate-seat', false)).toEqual(['claude', 'codex'])
+    expect(eligibleVendors('review-seat', true)).toEqual(['claude', 'codex'])
+    expect(eligibleVendors('loop-worker', true)).toEqual(['claude', 'codex'])
   })
 
   it('does not refuse tool-capable vendors in any role', () => {

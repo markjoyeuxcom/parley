@@ -41,6 +41,7 @@ function harness(): { ctx: IpcContext; repo: Repo; session: Session } {
     pty: new Proxy({}, { get: () => () => { throw new Error('pty must not be touched') } }) as PtyManager,
     window: () => null,
     health: () => [],
+    agyModels: () => registry.agyModels(),
     dialogs: {
       showOpenDialog: () => Promise.reject(new Error('dialogs must not be touched')),
       showSaveDialog: () => Promise.reject(new Error('dialogs must not be touched')),
@@ -233,6 +234,7 @@ describe('handler emits and the attention queue', () => {
       pty: new Proxy({}, { get: () => () => { throw new Error('pty must not be touched') } }) as PtyManager,
       window: () => null,
       health: () => [],
+      agyModels: () => Promise.resolve([]),
       dialogs: {
         showOpenDialog: () => Promise.reject(new Error('dialogs must not be touched')),
         showSaveDialog: () => Promise.reject(new Error('dialogs must not be touched')),
@@ -298,6 +300,46 @@ describe('foreman commands', () => {
     expect(rejected.state).toBe('rejected')
     expect(rejected.decisionNote).toMatch(/not this batch/i)
     expect(repo.getPendingForemanProposal('/tmp/ipc-foreman', true)).toBeNull()
+  })
+})
+
+describe('app.info', () => {
+  it('returns the deterministic Gemini list in mock mode', async () => {
+    const { ctx } = harness()
+    await expect(
+      invokeCommand(ctx, { command: 'app.info', payload: undefined }),
+    ).resolves.toMatchObject({
+      mock: true,
+      agyModels: [
+        'gemini-3-pro',
+        'gemini-3-flash-high',
+        'gemini-3-flash-medium',
+        'gemini-3-flash-low',
+      ],
+    })
+  })
+
+  it('awaits late Agy model discovery so the renderer receives the result', async () => {
+    const { ctx } = harness()
+    let release!: (models: string[]) => void
+    ctx.agyModels = () =>
+      new Promise<string[]>((resolve) => {
+        release = resolve
+      })
+
+    const pending = invokeCommand(ctx, { command: 'app.info', payload: undefined })
+    let settled = false
+    void pending.then(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    release(['gemini-3-pro', 'gemini-3-flash-high'])
+    await expect(pending).resolves.toMatchObject({
+      mock: true,
+      agyModels: ['gemini-3-pro', 'gemini-3-flash-high'],
+    })
   })
 })
 

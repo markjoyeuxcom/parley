@@ -46,6 +46,7 @@ export interface IpcContext {
   pty: PtyManager
   window: () => BrowserWindow | null
   health: () => CliHealth[]
+  agyModels: () => Promise<string[]>
   dialogs: IpcDialogs
   appControl: IpcAppControl
 }
@@ -68,9 +69,10 @@ function emit(ctx: IpcContext, event: AppEvent): void {
  * rejected before it gets here.
  */
 const HANDLERS: Record<CommandName, Handler> = {
-  'app.info': (_p, ctx) => ({
+  'app.info': async (_p, ctx) => ({
     mock: ctx.manager.registry.mock,
     codexDefaultModel: readCodexDefaultModel(),
+    agyModels: await ctx.agyModels(),
     selfRepoPath: ctx.manager.selfRepoPath,
   }),
   'health.probe': (_p, ctx) => ctx.health(),

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AgyAdapter,
   agyEffortTier,
   agyModelRefusal,
   agyModelSlug,
@@ -7,6 +8,7 @@ import {
   agyUsage,
   buildAgyArgs,
   isGeminiModel,
+  parseAgyModels,
   promptDeliveryRefusal,
   scratchViolation,
 } from './agy'
@@ -126,6 +128,28 @@ describe('agy argument construction', () => {
     available,
     timeoutMs: 180_000,
   }
+
+  it('keeps only discovered Gemini entries, in CLI order without duplicates', () => {
+    expect(
+      parseAgyModels(
+        [
+          'MODEL                         DESCRIPTION',
+          'gemini-3-pro                  Gemini 3 Pro',
+          'claude-sonnet-4-5             Claude Sonnet',
+          'gemini-3-flash-high           Gemini 3 Flash',
+          'gemini-3-pro                  duplicate',
+          'not-gemini-3-flash-low        ineligible',
+        ].join('\n'),
+      ),
+    ).toEqual(['gemini-3-pro', 'gemini-3-flash-high'])
+  })
+
+  it('memoises model discovery on the adapter', async () => {
+    const adapter = new AgyAdapter('/definitely/missing/agy')
+    const first = adapter.models()
+    expect(adapter.models()).toBe(first)
+    await expect(first).resolves.toEqual([])
+  })
 
   it('folds Parley effort onto Agy tiers without passing --effort', () => {
     expect(agyEffortTier('low')).toBe('low')

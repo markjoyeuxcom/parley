@@ -55,6 +55,8 @@ interface State {
   mock: boolean
   /** The model this machine's codex is configured to use, if any. */
   codexDefaultModel: string
+  /** Gemini model ids reported by the installed Agy CLI. */
+  agyModels: string[]
   /** Parley's own checkout when running from source; null packaged. Advisory —
    * the main process enforces the worktree-only rule regardless. */
   selfRepoPath: string | null
@@ -126,6 +128,7 @@ const initialState: State = {
   theme: 'system',
   mock: false,
   codexDefaultModel: '',
+  agyModels: [],
   selfRepoPath: null,
   health: [],
   sessions: [],
@@ -159,7 +162,13 @@ type Action =
   | { type: 'surface'; surface: Surface }
   | { type: 'theme'; theme: ThemeChoice }
   | { type: 'health'; health: CliHealth[] }
-  | { type: 'mock'; mock: boolean; codexDefaultModel: string; selfRepoPath: string | null }
+  | {
+      type: 'mock'
+      mock: boolean
+      codexDefaultModel: string
+      agyModels: string[]
+      selfRepoPath: string | null
+    }
   | { type: 'sessions'; sessions: Session[]; archivedCount: number }
   | { type: 'showArchived'; showArchived: boolean }
   | { type: 'activeSession'; sessionId: Id | null }
@@ -207,6 +216,7 @@ function reducer(state: State, action: Action): State {
         ...state,
         mock: action.mock,
         codexDefaultModel: action.codexDefaultModel,
+        agyModels: action.agyModels,
         selfRepoPath: action.selfRepoPath,
       }
     case 'sessions':
@@ -712,6 +722,7 @@ export function StoreProvider({ children }: { children: ReactNode }): ReactNode 
           type: 'mock',
           mock: info.mock,
           codexDefaultModel: info.codexDefaultModel,
+          agyModels: info.agyModels,
           selfRepoPath: info.selfRepoPath,
         })
       }

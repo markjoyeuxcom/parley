@@ -412,7 +412,7 @@ export function renderReport(
   lines.push('')
   lines.push(
     `Tokens: ${u.inputTokens.toLocaleString()} in (${u.cachedInputTokens.toLocaleString()} cached) · ` +
-      `${u.outputTokens.toLocaleString()} out. Run through the local \`claude\` and \`codex\` CLIs against your own subscriptions.`,
+      `${u.outputTokens.toLocaleString()} out. Run through the local \`claude\`, \`codex\` and \`agy\` CLIs against your own subscriptions.`,
   )
 
   return lines.join('\n')

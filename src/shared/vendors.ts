@@ -24,7 +24,7 @@ export function pickCounterpart(
   throw new Error('no tool-capable vendor is available')
 }
 
-export type SeatingRole =
+export type SeatRole =
   | 'debate-seat'
   | 'review-seat'
   | 'planner'
@@ -36,7 +36,7 @@ export type SeatingRole =
 
 export interface VendorSeat {
   vendor: Vendor
-  role: SeatingRole
+  role: SeatRole
   /** True only when this exact seat will be dispatched at capability `none`. */
   toolFree: boolean
 }
@@ -56,4 +56,11 @@ export function seatingRefusals(seats: readonly VendorSeat[]): string[] {
       const label = role.replaceAll('-', ' ')
       return `${vendor} is tool-less in Parley and cannot serve as ${label}; it is available only for a tool-free debate seat`
     })
+}
+
+/** Vendors the selected workflow can actually dispatch for this seat. */
+export function eligibleVendors(role: SeatRole, toolFree: boolean): Vendor[] {
+  return VENDORS.filter(
+    (vendor) => seatingRefusals([{ vendor, role, toolFree }]).length === 0,
+  )
 }

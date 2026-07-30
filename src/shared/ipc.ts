@@ -367,6 +367,8 @@ export interface AppInfo {
    * install rather than a list baked in when the app was written.
    */
   codexDefaultModel: string
+  /** Gemini model ids reported by this machine's `agy models` command. */
+  agyModels: string[]
   /**
    * Canonical path of Parley's own checkout when running from source, null
    * when packaged. The renderer uses it only to explain the worktree-only

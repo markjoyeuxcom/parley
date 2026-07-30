@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type {
+  AgentConfig,
   BacklogItem,
   ForemanProposal,
   Learning,
@@ -21,8 +22,10 @@ import {
   type LedgerEntry,
 } from '@shared/ipc'
 import type { Hold } from '@shared/holds'
-import { useEffect, type ReactNode } from 'react'
+import type { SeatRole } from '@shared/vendors'
+import { useEffect, useState, type ReactNode } from 'react'
 import { StoreProvider, useStore, type Surface } from '../state'
+import { AgentPicker } from '../components/AgentPicker'
 import { HoldsButton, HoldsPopover } from '../components/HoldsPanel'
 import { Notices } from '../components/Notices'
 import { ParleySurface } from './ParleySurface'
@@ -75,6 +78,30 @@ function PlanOpenHarness(): ReactNode {
       <button onClick={() => void openPlan(newerSmokePlan.id)}>Open newer plan</button>
       <div>{state.planDetail?.plan.title ?? 'No plan open'}</div>
       <div>{state.planLedger?.map((entry) => entry.text).join(', ') ?? 'Ledger unknown'}</div>
+    </>
+  )
+}
+
+function AgentPickerHarness({
+  initial = claude,
+  role = 'debate-seat',
+  toolFree = true,
+}: {
+  initial?: AgentConfig
+  role?: SeatRole
+  toolFree?: boolean
+}): ReactNode {
+  const [config, setConfig] = useState<AgentConfig>(initial)
+  return (
+    <>
+      <AgentPicker
+        label="Debater"
+        value={config}
+        onChange={setConfig}
+        role={role}
+        toolFree={toolFree}
+      />
+      <output data-testid="picker-config">{`${config.vendor}:${config.model}`}</output>
     </>
   )
 }
@@ -305,7 +332,12 @@ function installBridge(
   failures: Partial<Record<CommandName, string>> = {},
 ): void {
   const handlers: Partial<Record<CommandName, (payload?: unknown) => unknown>> = {
-    'app.info': () => ({ mock: true, codexDefaultModel: '', selfRepoPath: null }),
+    'app.info': () => ({
+      mock: true,
+      codexDefaultModel: '',
+      agyModels: ['gemini-real-pro', 'gemini-real-flash-high'],
+      selfRepoPath: null,
+    }),
     'health.probe': () => [],
     'session.list': () => ({ sessions: [session], archivedCount: 0 }),
     'session.get': () => ({
@@ -404,6 +436,48 @@ async function assertLedgerGateActionsDisabled(invoked: CommandName[]): Promise<
 }
 
 describe('mounted-surface smoke', () => {
+  it('offers Agy only with models discovered through app.info', async () => {
+    render(
+      <StoreProvider>
+        <AgentPickerHarness />
+      </StoreProvider>,
+    )
+
+    const vendor = screen.getAllByRole('combobox')[0] as HTMLSelectElement
+    expect(within(vendor).getByRole('option', { name: 'Agy' })).toBeTruthy()
+    fireEvent.change(vendor, { target: { value: 'agy' } })
+
+    await screen.findByPlaceholderText('Required Gemini model')
+    await waitFor(() => {
+      const values = Array.from(document.querySelectorAll('datalist option')).map(
+        (option) => (option as HTMLOptionElement).value,
+      )
+      expect(values).toEqual(['gemini-real-pro', 'gemini-real-flash-high'])
+    })
+  })
+
+  it('hides Agy for an executor seat and replaces an ineligible preset', async () => {
+    render(
+      <StoreProvider>
+        <AgentPickerHarness
+          initial={{
+            vendor: 'agy',
+            model: 'gemini-real-pro',
+            effort: 'high',
+            persona: '',
+          }}
+          role="executor"
+        />
+      </StoreProvider>,
+    )
+
+    const vendor = screen.getAllByRole('combobox')[0] as HTMLSelectElement
+    expect(within(vendor).queryByRole('option', { name: 'Agy' })).toBeNull()
+    await waitFor(() => {
+      expect(screen.getByTestId('picker-config').textContent).toBe('claude:')
+    })
+  })
+
   it('the Parley surface survives a session opening, and the exchange folds', async () => {
     render(
       <StoreProvider>

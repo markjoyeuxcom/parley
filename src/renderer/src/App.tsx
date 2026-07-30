@@ -143,7 +143,7 @@ export function App(): ReactNode {
         <div className="mock-banner" role="alert">
           Mock mode — no real work
           <span className="mock-banner__detail">
-            Nothing is sent to Claude or Codex. Approving a milestone does write one
+            Nothing is sent to Claude, Codex or Agy. Approving a milestone does write one
             placeholder file into the repository, so the pipeline can be exercised.
             Restart without PARLEY_MOCK=1 to use the real CLIs.
           </span>

@@ -44,6 +44,16 @@ export function isGeminiModel(model: string): boolean {
   return /^gemini-.+/i.test(model.trim())
 }
 
+/** Reads the model ids printed by `agy models`, preserving CLI order. */
+export function parseAgyModels(stdout: string): string[] {
+  const models: string[] = []
+  for (const match of stdout.matchAll(/(?<![a-z0-9._-])gemini-[a-z0-9][a-z0-9._-]*/gi)) {
+    const model = match[0]
+    if (!models.includes(model)) models.push(model)
+  }
+  return models
+}
+
 export function agyModelRefusal(model: string): string | null {
   if (isGeminiModel(model)) return null
   return model.trim()
@@ -118,16 +128,27 @@ function refused(error: string): RunResult {
 export class AgyAdapter implements AgentAdapter {
   readonly vendor = 'agy' as const
   readonly binary: string
+  private modelsPromise: Promise<string[]> | null = null
 
-  constructor(
-    binary = 'agy',
-    private readonly availableModels: readonly string[] = [],
-  ) {
+  constructor(binary = 'agy') {
     this.binary = binary
   }
 
   private locate(): string | null {
     return findExecutable(this.binary)
+  }
+
+  models(): Promise<string[]> {
+    if (this.modelsPromise) return this.modelsPromise
+    this.modelsPromise = this.discoverModels()
+    return this.modelsPromise
+  }
+
+  private async discoverModels(): Promise<string[]> {
+    const binary = this.locate()
+    if (!binary) return []
+    const result = await capture(binary, ['models'], process.cwd(), 20_000)
+    return result.exitCode === 0 ? parseAgyModels(result.stdout) : []
   }
 
   async run(req: RunRequest): Promise<RunResult> {
@@ -150,7 +171,7 @@ export class AgyAdapter implements AgentAdapter {
       const args = buildAgyArgs({
         model: req.cfg.model,
         effort: req.cfg.effort,
-        available: this.availableModels,
+        available: await this.models(),
         resumeId: req.resumeId ?? null,
         timeoutMs: req.timeoutMs,
       })

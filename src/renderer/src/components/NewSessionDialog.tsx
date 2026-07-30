@@ -154,7 +154,7 @@ export function NewSessionDialog({
           label={needsRepo ? 'Repository (required)' : 'Repository (optional)'}
           hint={
             needsRepo
-              ? 'Read-only. Claude gets Read, Glob and Grep; Codex runs in its read-only sandbox.'
+              ? 'Read-only through the selected CLI’s governed read capability.'
               : 'Attach one to let every seat cite real code.'
           }
         >
@@ -233,7 +233,7 @@ export function NewSessionDialog({
           <div className="gate__title">More than one seat runs the same CLI</div>
           <div className="gate__body">
             Instances of the same model family share the same blind spots, so their agreement is
-            weaker evidence than it looks. Mix Claude and Codex across the seats unless you
+            weaker evidence than it looks. Mix different CLIs across the seats unless you
             specifically want a same-model comparison.
           </div>
         </div>
@@ -247,9 +247,9 @@ export function NewSessionDialog({
       ) : null}
 
       <div className="field__hint">
-        Runs through your local <span className="mono">claude</span> and{' '}
-        <span className="mono">codex</span> CLIs, against the subscriptions they are already signed
-        in to. Parley never asks for an API key.
+        Runs through your local <span className="mono">claude</span>,{' '}
+        <span className="mono">codex</span> and <span className="mono">agy</span> CLIs, against the
+        subscriptions they are already signed in to. Parley never asks for an API key.
       </div>
     </Dialog>
   )

@@ -143,6 +143,7 @@ async function bootstrap(): Promise<void> {
     pty,
     window: () => mainWindow,
     health: () => health,
+    agyModels: () => registry.agyModels(),
   })
 
   createWindow()

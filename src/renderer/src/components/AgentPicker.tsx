@@ -1,13 +1,13 @@
 import { useEffect, useMemo, type ReactNode } from 'react'
 import type { AgentConfig, Effort, Vendor } from '@shared/domain'
-import { seatingRefusals, type SeatingRole } from '@shared/vendors'
+import { eligibleVendors, type SeatRole } from '@shared/vendors'
 import { useStore } from '../state'
 import { Field } from './ui'
 
 /**
  * Model suggestions per vendor.
  *
- * The two CLIs need opposite treatment:
+ * Claude and Codex need opposite treatment:
  *
  * **Claude** names families, not versions — `opus` resolves to whatever the
  * latest Opus is (currently `claude-opus-5`). These never go stale, so a fixed
@@ -19,18 +19,17 @@ import { Field } from './ui'
  * is offered first, read from their `~/.codex/config.toml`, and the fixed
  * entries are only a fallback for someone who has never set one.
  *
- * Either way this is a datalist, not a closed dropdown: anything the CLI accepts
- * can be typed, and blank means "let the CLI choose".
+ * **Agy** model ids are discovered from the installed CLI, and only eligible
+ * `gemini-*` entries reach the datalist.
+ *
+ * This is a datalist, not a closed dropdown: anything the CLI accepts can be
+ * typed. Blank means "let the CLI choose" except for Agy, which requires an
+ * explicit Gemini model.
  */
 const MODEL_HINTS: Record<Vendor, string[]> = {
   claude: ['opus', 'sonnet', 'haiku', 'fable'],
   codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
-  agy: [
-    'gemini-3-pro',
-    'gemini-3-flash-high',
-    'gemini-3-flash-medium',
-    'gemini-3-flash-low',
-  ],
+  agy: [],
 }
 
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -52,32 +51,30 @@ export function AgentPicker({
   value: AgentConfig
   onChange: (next: AgentConfig) => void
   personaPlaceholder?: string
-  role: SeatingRole
+  role: SeatRole
   toolFree?: boolean
 }): ReactNode {
   const { state } = useStore()
   const listId = `models-${value.vendor}`
-  const eligibleVendors = useMemo(
-    () =>
-      VENDORS.filter(
-        ({ vendor }) => !seatingRefusals([{ vendor, role, toolFree }]).length,
-      ),
+  const eligible = useMemo(
+    () => eligibleVendors(role, toolFree),
     [role, toolFree],
   )
-  const eligible = eligibleVendors.some(({ vendor }) => vendor === value.vendor)
+  const vendorEligible = eligible.includes(value.vendor)
 
   useEffect(() => {
-    if (eligible) return
-    const fallback = eligibleVendors[0]?.vendor
+    if (vendorEligible) return
+    const fallback = eligible[0]
     if (fallback) onChange({ ...value, vendor: fallback, model: '' })
-  }, [eligible, eligibleVendors, onChange, value])
+  }, [eligible, onChange, value, vendorEligible])
 
   // The configured model leads, so the first thing offered is one this machine
   // demonstrably accepts.
   const configured = value.vendor === 'codex' ? state.codexDefaultModel : ''
+  const discovered = value.vendor === 'agy' ? state.agyModels : MODEL_HINTS[value.vendor]
   const suggestions = [
     ...(configured ? [configured] : []),
-    ...(MODEL_HINTS[value.vendor] ?? []).filter((m) => m !== configured),
+    ...discovered.filter((m) => m !== configured),
   ]
 
   return (
@@ -91,9 +88,9 @@ export function AgentPicker({
             value={value.vendor}
             onChange={(event) => onChange({ ...value, vendor: event.target.value as Vendor, model: '' })}
           >
-            {eligibleVendors.map(({ vendor, label: vendorLabel }) => (
-              <option key={vendor} value={vendor}>
-                {vendorLabel}
+            {VENDORS.filter(({ vendor }) => eligible.includes(vendor)).map((option) => (
+              <option key={option.vendor} value={option.vendor}>
+                {option.label}
               </option>
             ))}
           </select>
