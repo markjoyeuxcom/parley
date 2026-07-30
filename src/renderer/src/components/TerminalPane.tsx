@@ -5,6 +5,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import type { Id } from '@shared/domain'
 import { api } from '../lib/api'
 import { attachPane } from '../lib/ptyBuffer'
+import { registerSelection } from '../lib/termSelection'
 
 /**
  * Reads the xterm palette out of the app's own CSS custom properties.
@@ -124,6 +125,7 @@ export function TerminalPane({
       term.write(data)
       onOutputRef.current?.()
     })
+    const unregisterSelection = registerSelection(paneId, () => term.getSelection())
 
     const observer = new ResizeObserver(() => syncSize())
     observer.observe(host)
@@ -131,6 +133,7 @@ export function TerminalPane({
     return () => {
       observer.disconnect()
       detach()
+      unregisterSelection()
       dataSub.dispose()
       term.dispose()
       termRef.current = null

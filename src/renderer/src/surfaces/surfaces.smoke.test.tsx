@@ -31,6 +31,8 @@ import { HoldsButton, HoldsPopover } from '../components/HoldsPanel'
 import { Notices } from '../components/Notices'
 import { ParleySurface } from './ParleySurface'
 import { BacklogSurface } from './BacklogSurface'
+import { GridSurface } from './GridSurface'
+import { PlanPanel } from '../components/PlanPanel'
 import { LoopsSurface } from './LoopsSurface'
 
 /** Activates a surface the way the titlebar would — some surfaces only fetch
@@ -595,6 +597,72 @@ describe('mounted-surface smoke', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: /Learnings/ }))
     expect(screen.queryByText('Closure proposed')).toBeNull()
+  })
+
+  it('a worktree plan offers its Grid door, and the knock spawns at the worktree path', async () => {
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    const worktreePlan = { ...smokePlan, isolation: 'worktree' as const, status: 'ready' as const }
+    installBridge({
+      'plan.get': () => ({
+        plan: worktreePlan,
+        milestones: [smokeMilestone],
+        worktree: {
+          planId: worktreePlan.id,
+          originPath: '/tmp/smoke-repo',
+          path: '/tmp/smoke-worktree',
+          branch: 'parley/plan-x',
+          baseBranch: 'main',
+          baseCommit: 'c'.repeat(40),
+          createdAt: 1_700_000_000_000,
+          landedAt: null,
+          lastError: '',
+          orphaned: false,
+        },
+      }),
+      'ledger.list': () => [],
+      'pane.open': (payload) => {
+        invoked.push({ name: 'pane.open', payload })
+        throw new Error('no pty in the smoke harness')
+      },
+    })
+
+    function GridDoorHarness(): ReactNode {
+      const { state, openPlan } = useStore()
+      return (
+        <>
+          <button onClick={() => void openPlan(worktreePlan.id)}>Open the plan</button>
+          <div data-testid="active-surface">{state.surface}</div>
+          {state.planDetail ? (
+            <PlanPanel
+              detail={state.planDetail}
+              ledger={state.planLedger}
+              onRefresh={() => {}}
+              host="backlog"
+            />
+          ) : null}
+          <div style={{ display: state.surface === 'grid' ? 'contents' : 'none' }}>
+            <GridSurface />
+          </div>
+        </>
+      )
+    }
+    render(
+      <StoreProvider>
+        <GridDoorHarness />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open the plan' }))
+    // Mid-run worktree plans get the door too, not only landed-waiting ones.
+    const door = await screen.findByRole('button', { name: 'Open worktree in Grid' })
+    fireEvent.click(door)
+
+    // The knock switched surfaces and the Grid consumed it: a shell spawn was
+    // requested at the worktree's own path.
+    await waitFor(() => expect(screen.getByTestId('active-surface').textContent).toBe('grid'))
+    await waitFor(() => expect(invoked).toHaveLength(1))
+    expect((invoked[0]?.payload as { cwd: string; kind: string }).cwd).toBe('/tmp/smoke-worktree')
+    expect((invoked[0]?.payload as { cwd: string; kind: string }).kind).toBe('shell')
   })
 
   it('the dev-container card renders the choice and the toggle invokes by name', async () => {

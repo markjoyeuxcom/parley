@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Columns2, FolderOpen, Layers, MoreHorizontal, Play, Plus, Rows2, Terminal, X } from 'lucide-react'
+import { Columns2, FolderOpen, Layers, MoreHorizontal, Play, Plus, Radio, Rows2, Terminal, X } from 'lucide-react'
 import {
   MAX_PANES,
   type GridLayout,
@@ -27,6 +27,7 @@ import {
   type SplitPath,
 } from '../lib/layout'
 import { shortPath } from '../lib/format'
+import { paneSelection } from '../lib/termSelection'
 import { useStore } from '../state'
 import { TerminalPane } from '../components/TerminalPane'
 import { Chip, Dialog, Dot, Empty, Field, Menu, MenuItem, MenuSection } from '../components/ui'
@@ -65,6 +66,7 @@ export function GridSurface(): ReactNode {
   const [layouts, setLayouts] = useState<GridLayout[]>([])
   const [saving, setSaving] = useState(false)
   const [renaming, setRenaming] = useState<{ slotId: Id; value: string } | null>(null)
+  const [broadcasting, setBroadcasting] = useState(false)
   const [maximizedSlot, setMaximizedSlot] = useState<Id | null>(null)
   /** Keyed by folder — panes sharing a cwd share one identity line. */
   const [identities, setIdentities] = useState<Record<string, PaneIdentity | null>>({})
@@ -124,6 +126,20 @@ export function GridSurface(): ReactNode {
     () => collectSlotIds(layout).filter((id) => slots[id]?.paneId),
     [layout, slots],
   )
+
+  /** Running agent panes — the broadcast audience. */
+  const agentPanes = useMemo(
+    () =>
+      liveSlots
+        .map((id) => slots[id])
+        .filter((slot): slot is Slot => !!slot && slot.kind !== 'shell' && !!slot.paneId)
+        .filter((slot) => {
+          const pane = slot.paneId ? paneById.get(slot.paneId) : undefined
+          return !pane || pane.status !== 'exited'
+        }),
+    [liveSlots, slots, paneById],
+  )
+  const agentPaneCount = agentPanes.length
 
   const focusedRef = useRef(focusedSlot)
   focusedRef.current = focusedSlot
@@ -236,6 +252,7 @@ export function GridSurface(): ReactNode {
       kind: PaneKind,
       splitFrom?: { slotId: Id; direction: 'row' | 'column' },
       title?: string,
+      dirOverride?: string,
     ) => {
       if (slotCount >= MAX_PANES) {
         notify('warn', `The grid holds at most ${MAX_PANES} panes.`)
@@ -243,9 +260,10 @@ export function GridSurface(): ReactNode {
       }
       // A split inherits the folder of the pane it grew out of. Using the
       // toolbar's target instead would silently drop you into a different
-      // repository than the pane you were just working in.
+      // repository than the pane you were just working in. An explicit
+      // override wins over both — that's the cross-surface door.
       const inherited = splitFrom ? slots[splitFrom.slotId]?.cwd : null
-      const dir = (inherited ?? cwd).trim()
+      const dir = (dirOverride ?? inherited ?? cwd).trim()
       if (!dir) {
         notify('warn', 'Choose a folder first.')
         return
@@ -270,6 +288,15 @@ export function GridSurface(): ReactNode {
     },
     [attempt, cwd, focusedSlot, notify, slotCount, slots],
   )
+
+  // Consume the cross-surface knock: another surface asked for a pane here.
+  // Guarded on visibility so the hidden Grid never spawns behind your back.
+  useEffect(() => {
+    const spawn = state.focusGridSpawn
+    if (!spawn || state.surface !== 'grid') return
+    dispatch({ type: 'focusGridSpawn', spawn: null })
+    void openPane(spawn.kind, undefined, undefined, spawn.cwd)
+  }, [state.focusGridSpawn, state.surface, dispatch, openPane])
 
   const closeSlot = useCallback(
     (slotId: Id) => {
@@ -472,6 +499,17 @@ export function GridSurface(): ReactNode {
           </button>
         ))}
 
+        {agentPaneCount > 0 ? (
+          <button
+            className="btn btn--sm"
+            onClick={() => setBroadcasting(true)}
+            title="Type one prompt into every running agent pane"
+          >
+            <Radio size={12} strokeWidth={2} />
+            Broadcast
+          </button>
+        ) : null}
+
         <div className="divider" style={{ width: 1, height: 18, background: 'var(--line)' }} />
 
         <Menu
@@ -654,6 +692,25 @@ export function GridSurface(): ReactNode {
                           </MenuItem>
                         ))}
                       </MenuSection>
+                      <MenuSection>
+                        <MenuItem
+                          onClick={() => {
+                            close()
+                            // Selected terminal text rides along as the brief's
+                            // starting matter; nothing selected still opens the
+                            // dialog on this pane's repository.
+                            const matter = slot.paneId ? paneSelection(slot.paneId) : ''
+                            const dir = slots[id]?.cwd ?? slot.cwd
+                            const repoRoot = identities[dir]?.git?.root ?? dir
+                            dispatch({
+                              type: 'focusNewSession',
+                              request: { kind: 'review', repoPath: repoRoot, matter },
+                            })
+                          }}
+                        >
+                          Review this in Parley…
+                        </MenuItem>
+                      </MenuSection>
                     </>
                   )}
                 </Menu>
@@ -739,6 +796,24 @@ export function GridSurface(): ReactNode {
           Drag onto an agent pane
         </span>
       </div>
+
+      {broadcasting ? (
+        <BroadcastDialog
+          count={agentPaneCount}
+          onClose={() => setBroadcasting(false)}
+          onSend={(text) => {
+            setBroadcasting(false)
+            // The same keystrokes-into-the-session shape as a Skill: flattened
+            // newlines, one carriage return, into every running agent pane.
+            for (const slot of agentPanes) {
+              if (slot.paneId) {
+                void api.writePane(slot.paneId, `${text.replace(/\r?\n/g, ' ')}\r`)
+              }
+            }
+            notify('info', `Sent to ${agentPaneCount} agent pane${agentPaneCount === 1 ? '' : 's'}.`)
+          }}
+        />
+      ) : null}
 
       {renaming ? (
         <Dialog
@@ -868,6 +943,49 @@ interface LayoutViewProps {
   onRatio: (path: SplitPath, ratio: number) => void
   onDropTarget: (id: Id | null) => void
   onSkillDrop: (id: Id) => void
+}
+
+function BroadcastDialog({
+  count,
+  onClose,
+  onSend,
+}: {
+  count: number
+  onClose: () => void
+  onSend: (text: string) => void
+}): ReactNode {
+  const [text, setText] = useState('')
+  return (
+    <Dialog
+      title="Broadcast to agent panes"
+      subtitle={`Types one prompt into all ${count} running agent pane${count === 1 ? '' : 's'} and submits it — exactly as if you had typed it in each.`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn btn--primary"
+            disabled={!text.trim()}
+            onClick={() => onSend(text.trim())}
+          >
+            Send to {count}
+          </button>
+        </>
+      }
+    >
+      <Field label="Prompt" hint="Newlines are flattened — the CLIs treat them as submit.">
+        <textarea
+          className="input"
+          rows={4}
+          autoFocus
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+        />
+      </Field>
+    </Dialog>
+  )
 }
 
 /**

@@ -8,7 +8,16 @@ import {
   useRef,
   type ReactNode,
 } from 'react'
-import type { BacklogItem, Id, Learning, Loop, Pane, Session, Skill } from '@shared/domain'
+import type {
+  BacklogItem,
+  Id,
+  Learning,
+  Loop,
+  Pane,
+  PaneKind,
+  Session,
+  Skill,
+} from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import type { Hold } from '@shared/holds'
 import type { CliHealth, LedgerEntry } from '@shared/ipc'
@@ -106,6 +115,14 @@ interface State {
   focusBacklogRepo: string | null
   /** Which tab the knock should land on; consumed with focusBacklogRepo. */
   focusRepoTab: RepoTab | null
+  /** A pane the Grid should spawn on arrival — the worktree door's knock. */
+  focusGridSpawn: { cwd: string; kind: PaneKind } | null
+  /** A session dialog another surface asked for, with its prefill. */
+  focusNewSession: {
+    kind: 'debate' | 'review'
+    repoPath: string | null
+    matter: string
+  } | null
   /** Keyed by milestone id, then by loop id. Never persisted. */
   activity: Record<Id, ActivityLog>
   /**
@@ -152,6 +169,8 @@ const initialState: State = {
   backlogItems: [],
   learnings: [],
   focusBacklogRepo: null,
+  focusGridSpawn: null,
+  focusNewSession: null,
   focusRepoTab: null,
   activity: {},
   plansVersion: 0,
@@ -188,6 +207,11 @@ type Action =
   | { type: 'focusMilestone'; milestoneId: Id | null }
   | { type: 'backlog'; items: BacklogItem[]; learnings: Learning[] }
   | { type: 'focusBacklogRepo'; repoPath: string | null; tab?: RepoTab }
+  | { type: 'focusGridSpawn'; spawn: { cwd: string; kind: PaneKind } | null }
+  | {
+      type: 'focusNewSession'
+      request: { kind: 'debate' | 'review'; repoPath: string | null; matter: string } | null
+    }
   | { type: 'appEvent'; event: AppEvent }
 
 let noticeSeq = 0
@@ -269,6 +293,10 @@ function reducer(state: State, action: Action): State {
       return { ...state, backlogItems: action.items, learnings: action.learnings }
     case 'focusBacklogRepo':
       return { ...state, focusBacklogRepo: action.repoPath, focusRepoTab: action.tab ?? null }
+    case 'focusGridSpawn':
+      return { ...state, focusGridSpawn: action.spawn }
+    case 'focusNewSession':
+      return { ...state, focusNewSession: action.request }
     case 'appEvent':
       return applyEvent(state, action.event)
     default:

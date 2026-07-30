@@ -13,7 +13,19 @@ import { useStore, type Surface } from './state'
 
 export function App(): ReactNode {
   const { state, dispatch, openSession, refreshSessions } = useStore()
-  const [quickSession, setQuickSession] = useState<'debate' | 'review' | null>(null)
+  const [quickSession, setQuickSession] = useState<{
+    kind: 'debate' | 'review'
+    repoPath?: string | null
+    matter?: string
+  } | null>(null)
+
+  // Another surface knocked for a session dialog (the Grid's "Review this in
+  // Parley"); consume the request and open the one instance App owns.
+  useEffect(() => {
+    if (!state.focusNewSession) return
+    setQuickSession(state.focusNewSession)
+    dispatch({ type: 'focusNewSession', request: null })
+  }, [state.focusNewSession, dispatch])
 
   // ⌘K opens the palette; ⌘1/2/3 jump between surfaces. Registered once at the
   // app level so shortcuts work regardless of which surface has focus.
@@ -76,13 +88,13 @@ export function App(): ReactNode {
         id: 'new.debate',
         group: 'New',
         label: 'Debate — argue a decision to a verdict',
-        run: () => setQuickSession('debate'),
+        run: () => setQuickSession({ kind: 'debate' }),
       },
       {
         id: 'new.review',
         group: 'New',
         label: 'Codebase review — evidence-led audit',
-        run: () => setQuickSession('review'),
+        run: () => setQuickSession({ kind: 'review' }),
       },
       {
         id: 'new.loop',
@@ -172,7 +184,9 @@ export function App(): ReactNode {
 
       {quickSession ? (
         <NewSessionDialog
-          initialKind={quickSession}
+          initialKind={quickSession.kind}
+          initialRepoPath={quickSession.repoPath ?? undefined}
+          initialMatter={quickSession.matter}
           onClose={() => setQuickSession(null)}
           onStarted={(session) => {
             dispatch({ type: 'surface', surface: 'parley' })

@@ -607,7 +607,7 @@ export function PlanPanel({
                   refuses if your checkout moved.
                 </>
               )}
-              <div style={{ marginTop: 'var(--s3)' }}>
+              <div style={{ marginTop: 'var(--s3)', display: 'flex', gap: 'var(--s3)' }}>
                 <button
                   className="btn btn--primary btn--sm"
                   disabled={landing}
@@ -615,8 +615,44 @@ export function PlanPanel({
                 >
                   {landing ? 'Landing…' : worktree.lastError ? 'Retry landing' : 'Land the branch'}
                 </button>
+                <button
+                  className="btn btn--sm"
+                  title={`Opens a shell pane in ${worktree.path}`}
+                  onClick={() => {
+                    dispatch({
+                      type: 'focusGridSpawn',
+                      spawn: { cwd: worktree.path, kind: 'shell' },
+                    })
+                    dispatch({ type: 'surface', surface: 'grid' })
+                  }}
+                >
+                  Open worktree in Grid
+                </button>
               </div>
             </div>
+          </div>
+        ) : null}
+
+        {/* The worktree door for every other stage: mid-run inspection is a
+            legitimate need, and the pane header will say landed or not. */}
+        {plan.status !== 'complete' &&
+        plan.isolation === 'worktree' &&
+        worktree &&
+        !worktree.orphaned ? (
+          <div style={{ padding: '0 var(--s6) var(--s4)' }}>
+            <button
+              className="btn btn--subtle btn--sm"
+              title={`Opens a shell pane in ${worktree.path}`}
+              onClick={() => {
+                dispatch({
+                  type: 'focusGridSpawn',
+                  spawn: { cwd: worktree.path, kind: 'shell' },
+                })
+                dispatch({ type: 'surface', surface: 'grid' })
+              }}
+            >
+              Open worktree in Grid
+            </button>
           </div>
         ) : null}
 

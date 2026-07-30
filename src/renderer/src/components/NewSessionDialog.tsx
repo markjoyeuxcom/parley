@@ -13,18 +13,21 @@ const MAX_SEATS = 4
 export function NewSessionDialog({
   initialKind = 'debate',
   initialRepoPath,
+  initialMatter,
   onClose,
   onStarted,
 }: {
   initialKind?: SessionKind
   /** Prefill for callers that already know the repository — the Repos surface. */
   initialRepoPath?: string
+  /** Prefill for the matter — the Grid's promoted terminal selection. */
+  initialMatter?: string
   onClose: () => void
   onStarted: (session: Session) => void
 }): ReactNode {
   const { attempt } = useStore()
   const [kind, setKind] = useState<SessionKind>(initialKind)
-  const [matter, setMatter] = useState('')
+  const [matter, setMatter] = useState(initialMatter ?? '')
   const [project, setProject] = useState('')
   const [repoPath, setRepoPath] = useState(initialRepoPath ?? '')
   const [maxTurns, setMaxTurns] = useState(6)
