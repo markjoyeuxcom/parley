@@ -279,6 +279,7 @@ describe('backlog items in plan briefs and their lifecycle', () => {
       correctionDispositions: [],
       isolation: 'checkout',
       setupCommand: '',
+      container: false,
       usage: emptyUsage(),
       mock: true,
       createdAt: Date.now(),

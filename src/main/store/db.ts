@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 21
+export const SCHEMA_VERSION = 22
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -195,6 +195,9 @@ CREATE TABLE IF NOT EXISTS plans (
   -- behavior) or 'worktree' (an isolated per-plan branch, landed by a human).
   isolation  TEXT NOT NULL DEFAULT 'checkout',
   setup_command TEXT NOT NULL DEFAULT '',
+  -- Snapshot of the repository's dev-container choice at creation time, so
+  -- what the approval said is what the execution does.
+  container  INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_plans_created ON plans(created_at DESC);
@@ -252,6 +255,8 @@ CREATE TABLE IF NOT EXISTS loops (
   exit_condition  TEXT NOT NULL,
   caps            TEXT NOT NULL,
   capability      TEXT NOT NULL,
+  -- Snapshot of the repository's dev-container choice at creation time.
+  container       INTEGER NOT NULL DEFAULT 0,
   approval_id     TEXT,
   status          TEXT NOT NULL,
   usage           TEXT NOT NULL,
@@ -442,6 +447,16 @@ CREATE INDEX IF NOT EXISTS idx_repo_activity_repo_seq ON repo_activity(repo_path
 CREATE TABLE IF NOT EXISTS repo_archives (
   repo_path    TEXT PRIMARY KEY,
   archived_seq INTEGER NOT NULL
+);
+
+-- The standing per-repository choice to run Parley's own deterministic
+-- commands (milestone tests, worktree setup, landing verification, loop
+-- exits) inside the repo's dev container. Plans and loops snapshot this at
+-- creation, so flipping it never silently changes what an approval meant.
+CREATE TABLE IF NOT EXISTS repo_containers (
+  repo_path  TEXT PRIMARY KEY,
+  enabled    INTEGER NOT NULL DEFAULT 0,
+  decided_at INTEGER NOT NULL
 );
 `
 
@@ -817,6 +832,18 @@ export function migrate(db: Db): void {
   if (current < 21) {
     // Repository activity and archive watermarks are additive. SCHEMA creates
     // both tables before the stored version is read, preserving existing rows.
+  }
+  if (current < 22) {
+    // repo_containers is additive (SCHEMA creates it fresh). The snapshot
+    // columns join two existing tables; every pre-existing row keeps host
+    // execution, which is what its approval meant.
+    for (const table of ['plans', 'loops']) {
+      try {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN container INTEGER NOT NULL DEFAULT 0`)
+      } catch {
+        // Already present, because SCHEMA above created the table fresh.
+      }
+    }
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

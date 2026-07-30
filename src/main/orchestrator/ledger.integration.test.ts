@@ -80,6 +80,7 @@ function makePlan(
     correctionDispositions: [],
     isolation: 'checkout' as const,
     setupCommand: '',
+    container: false,
     usage: emptyUsage(),
     mock: true,
     createdAt: Date.now(),

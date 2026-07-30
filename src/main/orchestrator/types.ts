@@ -26,6 +26,12 @@ export interface OrchestratorDeps {
    * it once, so every comparison is canonical-to-canonical.
    */
   selfRepoPath?: string | null
+  /**
+   * The devcontainer CLI to route container-snapshot commands through — a
+   * shim in tests, omitted in the app so PATH resolution applies. Injected
+   * because the routing must be provable without docker.
+   */
+  devcontainerBinary?: string
 }
 
 /**

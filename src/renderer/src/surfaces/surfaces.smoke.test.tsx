@@ -226,6 +226,7 @@ const smokePlan: WorkPlan = {
   correctionDispositions: [],
   isolation: 'checkout',
   setupCommand: '',
+  container: false,
   usage,
   mock: true,
   createdAt: 1_700_000_000_000,

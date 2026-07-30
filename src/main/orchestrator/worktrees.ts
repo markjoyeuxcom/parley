@@ -4,6 +4,7 @@ import type { WorkPlan, Worktree } from '@shared/domain'
 import { isShellFree } from '@shared/command'
 import { canonicalRepoPath } from '@main/util/repoPath'
 import { capture, splitCommand } from '@main/util/spawn'
+import { ensureUp, runProjectCommand } from './containers'
 import type { Repo } from '@main/store/repo'
 
 /**
@@ -124,6 +125,7 @@ export async function ensureWorktree(
   worktreesRoot: string,
   plan: WorkPlan,
   onActivity?: (text: string) => void,
+  devcontainerBinary?: string,
 ): Promise<Worktree> {
   const existing = repo.getWorktreeForPlan(plan.id)
   if (existing) {
@@ -152,7 +154,7 @@ export async function ensureWorktree(
         if (!attach.ok) {
           throw new WorktreeError(`could not re-attach the worktree: ${trimmedFailure(attach)}`)
         }
-        await runSetup(plan, existing.path, onActivity)
+        await runSetup(plan, existing.path, onActivity, devcontainerBinary)
         repo.flagWorktree(plan.id, false, '')
         return { ...existing, orphaned: false, lastError: '' }
       }
@@ -206,7 +208,7 @@ export async function ensureWorktree(
   }
 
   try {
-    await runSetup(plan, path, onActivity)
+    await runSetup(plan, path, onActivity, devcontainerBinary)
   } catch (err) {
     // Leave nothing half-made: a failed setup removes the worktree and its
     // fresh branch so the retry starts clean. The branch is deleted only on
@@ -234,7 +236,20 @@ async function runSetup(
   plan: WorkPlan,
   path: string,
   onActivity?: (text: string) => void,
+  devcontainerBinary?: string,
 ): Promise<void> {
+  // The worktree's container comes up before setup — worktree creation only
+  // happens inside an approved write flow, and setup is the first command
+  // that needs the toolchain. A container that will not start fails the
+  // worktree creation the same way a failed setup does: nothing half-made.
+  if (plan.container) {
+    const up = await ensureUp(path, { binary: devcontainerBinary })
+    if (up.exitCode !== 0) {
+      throw new WorktreeError(
+        `the dev container failed to start: ${`${up.stderr}\n${up.stdout}`.trim().slice(0, 600)}`,
+      )
+    }
+  }
   const command = plan.setupCommand.trim()
   if (!command) return
   if (!isShellFree(command)) {
@@ -245,7 +260,11 @@ async function runSetup(
     throw new WorktreeError('the setup command could not be parsed')
   }
   onActivity?.(`setup: ${command}`)
-  const result = await capture(argv[0] ?? '', argv.slice(1), path, SETUP_TIMEOUT_MS)
+  const result = await runProjectCommand(argv, path, {
+    container: plan.container,
+    binary: devcontainerBinary,
+    timeoutMs: SETUP_TIMEOUT_MS,
+  })
   if (result.exitCode !== 0) {
     const output = `${result.stderr}\n${result.stdout}`.trim().slice(0, 600)
     throw new WorktreeError(
@@ -345,12 +364,29 @@ export async function preflightLand(
 export async function verifyLanding(
   originPath: string,
   testCommand: string,
+  opts: { container?: boolean; binary?: string } = {},
 ): Promise<{ ok: boolean; detail: string }> {
   const argv = splitCommand(testCommand.trim())
   if (!argv || argv.length === 0 || !isShellFree(testCommand)) {
     return { ok: true, detail: '' }
   }
-  const result = await capture(argv[0] ?? '', argv.slice(1), originPath, LAND_VERIFY_TIMEOUT_MS)
+  // The plan ran in the worktree's container; the origin's may not exist yet.
+  // Its failure keeps this check's contract — surfaced, never blocking a
+  // landing that already happened.
+  if (opts.container) {
+    const up = await ensureUp(originPath, { binary: opts.binary })
+    if (up.exitCode !== 0) {
+      return {
+        ok: false,
+        detail: `post-land verification could not start the origin's dev container: ${`${up.stderr}\n${up.stdout}`.trim().slice(0, 400)}`,
+      }
+    }
+  }
+  const result = await runProjectCommand(argv, originPath, {
+    container: opts.container === true,
+    binary: opts.binary,
+    timeoutMs: LAND_VERIFY_TIMEOUT_MS,
+  })
   if (result.exitCode === 0) return { ok: true, detail: '' }
   const output = `${result.stderr}\n${result.stdout}`.trim().slice(0, 400)
   return {

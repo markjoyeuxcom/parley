@@ -2665,6 +2665,65 @@ describe("Parley's own repository", () => {
     await manager.whenPlanSettled(plan.id)
   })
 
+  it('snapshots the container choice at creation, immune to flips, never for the self repo', async () => {
+    const selfPath = mkdtempSync(join(tmpdir(), 'parley-selfrepo-devc-'))
+    const otherRepo = mkdtempSync(join(tmpdir(), 'parley-devc-other-'))
+    const { manager, repo } = selfHarness(selfPath)
+    const sessionId = await verdictSession(manager, repo)
+
+    // An ordinary repository: the standing choice lands on the row.
+    repo.setRepoContainer(otherRepo, true)
+    const { plan } = await manager.createPlan({
+      sessionId,
+      kind: 'implementation',
+      repoPath: otherRepo,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+    })
+    expect(plan.container).toBe(true)
+    await manager.whenPlanSettled(plan.id)
+
+    // Flipping the repository setting afterwards changes nothing recorded:
+    // the approval the user grants later means what the row says.
+    repo.setRepoContainer(otherRepo, false)
+    expect(repo.getPlan(plan.id)?.container).toBe(true)
+
+    // The self repo is exempt no matter what its settings row claims — the
+    // gate builds host bytes for a host Electron.
+    repo.setRepoContainer(selfPath, true)
+    const { plan: selfPlan } = await manager.createPlan({
+      sessionId,
+      kind: 'implementation',
+      repoPath: selfPath,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+      isolation: 'worktree',
+    })
+    expect(selfPlan.container).toBe(false)
+    await manager.whenPlanSettled(selfPlan.id)
+  })
+
+  it('loops snapshot the container choice under the same self exemption', async () => {
+    const selfPath = mkdtempSync(join(tmpdir(), 'parley-selfrepo-devcloop-'))
+    const otherRepo = mkdtempSync(join(tmpdir(), 'parley-devcloop-other-'))
+    const { manager, repo } = selfHarness(selfPath)
+    repo.setRepoContainer(otherRepo, true)
+    repo.setRepoContainer(selfPath, true)
+
+    const base = {
+      goal: 'keep the build green',
+      worker: claude,
+      verifier: codex,
+      exit: { kind: 'command' as const, command: 'true', criterion: '' },
+      caps: { maxIterations: 1, maxSpendUsd: 0, maxWallClockMs: 60_000 },
+      capability: 'read' as const,
+    }
+    expect(manager.createLoop({ ...base, repoPath: otherRepo }).container).toBe(true)
+    expect(manager.createLoop({ ...base, repoPath: selfPath }).container).toBe(false)
+  })
+
   it('refuses to execute a grandfathered checkout plan for the self repo', async () => {
     const selfPath = mkdtempSync(join(tmpdir(), 'parley-selfrepo-old-'))
 

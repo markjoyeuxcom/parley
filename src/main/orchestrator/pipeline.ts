@@ -36,7 +36,8 @@ import {
   mutationRepairPrompt,
   reviewDiffPrompt,
 } from '@shared/protocol'
-import { capture, isShellFree, splitCommand } from '@main/util/spawn'
+import { capture, isShellFree, splitCommand, type CaptureResult } from '@main/util/spawn'
+import { ensureUp, runProjectCommand } from './containers'
 import { newId, type Repo } from '@main/store/repo'
 import { canonicalRepoPath } from '@main/util/repoPath'
 import { assertCapability, type AgentRegistry, type RunResult } from '@main/agents'
@@ -177,6 +178,9 @@ export class Pipeline {
   private readonly worktreesRoot: string | null
   /** Canonical (the Manager canonicalises before constructing us), or null. */
   private readonly selfRepoPath: string | null
+  private readonly devcontainerBinary: string | undefined
+  /** Workspaces whose container this pipeline already brought up. */
+  private readonly containerUp = new Set<string>()
   // `registry` is read for `.mock` as well as for adapters — see the unchanged-
   // tree branch in runMilestone.
 
@@ -186,6 +190,37 @@ export class Pipeline {
     this.emit = deps.emit
     this.worktreesRoot = deps.worktreesRoot ?? null
     this.selfRepoPath = deps.selfRepoPath ?? null
+    this.devcontainerBinary = deps.devcontainerBinary
+  }
+
+  /**
+   * The plan's dev-container snapshot, with the permanent self-repo belt on
+   * top of createPlan's: a hand-edited row must not put Parley's own gate in
+   * a container that cannot build host bytes.
+   */
+  private containerFor(plan: WorkPlan): boolean {
+    return (
+      plan.container &&
+      (this.selfRepoPath === null || canonicalRepoPath(plan.repoPath) !== this.selfRepoPath)
+    )
+  }
+
+  /**
+   * Brings the workspace's container up once per pipeline lifetime — the same
+   * folder is the same container, so later milestones and mutation rounds
+   * reuse it. Returns null when ready, the failed capture otherwise; callers
+   * turn that into their own honest failure. Only ever reached from approved
+   * write flows.
+   */
+  private async ensureContainerUp(
+    workspace: string,
+    signal?: AbortSignal,
+  ): Promise<CaptureResult | null> {
+    if (this.containerUp.has(workspace)) return null
+    const up = await ensureUp(workspace, { binary: this.devcontainerBinary, signal })
+    if (up.exitCode !== 0) return up
+    this.containerUp.add(workspace)
+    return null
   }
 
   /**
@@ -205,7 +240,13 @@ export class Pipeline {
       throw new PipelineError('this plan uses worktree isolation, but no worktrees root is configured')
     }
     try {
-      return await ensureWorktree(this.repo, this.worktreesRoot, plan, onActivity)
+      return await ensureWorktree(
+        this.repo,
+        this.worktreesRoot,
+        plan,
+        onActivity,
+        this.devcontainerBinary,
+      )
     } catch (err) {
       throw new PipelineError(err instanceof Error ? err.message : String(err))
     }
@@ -1280,7 +1321,7 @@ export class Pipeline {
       let existingWorkNote = ''
       if (missing.length === 0 && current.expectedPaths.length > 0 && current.testCommand) {
         activity('testing', `checking whether the existing work passes ${current.testCommand}`)
-        const existingResult = await this.runTests(current.testCommand, root, signal)
+        const existingResult = await this.runTests(current.testCommand, root, { container: this.containerFor(plan), signal })
         if (existingResult) {
           current = this.repo.updateMilestone(milestoneId, { testResult: existingResult })
           existingWorkNote =
@@ -1311,7 +1352,7 @@ export class Pipeline {
       'testing',
       current.testCommand ? `running ${current.testCommand}` : 'no verification command defined',
     )
-    const testResult = await this.runTests(current.testCommand, root, signal)
+    const testResult = await this.runTests(current.testCommand, root, { container: this.containerFor(plan), signal })
     if (testResult) {
       activity(
         'testing',
@@ -1585,7 +1626,7 @@ export class Pipeline {
 
     // ── Deterministic verification ───────────────────────────────────────────
     activity('testing', current.testCommand ? `running ${current.testCommand}` : 'no verification command defined')
-    const testResult = await this.runTests(current.testCommand, root, signal)
+    const testResult = await this.runTests(current.testCommand, root, { container: this.containerFor(plan), signal })
     if (testResult) {
       activity(
         'testing',
@@ -1903,7 +1944,7 @@ export class Pipeline {
   private async runTests(
     command: string,
     cwd: string,
-    signal?: AbortSignal,
+    opts: { container: boolean; signal?: AbortSignal },
   ): Promise<TestResult | null> {
     const trimmed = command.trim()
     if (!trimmed) return null
@@ -1935,8 +1976,31 @@ export class Pipeline {
       }
     }
 
-    const [file, ...args] = argv
-    const result = await capture(file as string, args, cwd, TEST_TIMEOUT_MS, signal)
+    // A container that will not start is a verification that never ran —
+    // fail closed with the reason, in explicit contrast to verifyLanding's
+    // fail-open smoke check.
+    if (opts.container) {
+      const up = await this.ensureContainerUp(cwd, opts.signal)
+      if (up) {
+        return {
+          command: trimmed,
+          exitCode: up.exitCode,
+          signal: up.signal,
+          timedOut: up.timedOut,
+          stdout: '',
+          stderr: `the dev container failed to start: ${tail(`${up.stderr}\n${up.stdout}`.trim(), 8000)}`,
+          durationMs: up.durationMs,
+          ranAt: Date.now(),
+        }
+      }
+    }
+
+    const result = await runProjectCommand(argv, cwd, {
+      container: opts.container,
+      binary: this.devcontainerBinary,
+      timeoutMs: TEST_TIMEOUT_MS,
+      signal: opts.signal,
+    })
     return {
       command: trimmed,
       exitCode: result.exitCode,
@@ -1978,7 +2042,7 @@ export class Pipeline {
       'testing',
       `checking that the tests catch ${milestone.mutations.length} deliberate break${milestone.mutations.length === 1 ? '' : 's'}`,
     )
-    let mutationResults = await this.runMutations(milestone, root, signal)
+    let mutationResults = await this.runMutations(milestone, root, this.containerFor(plan), signal)
     // A stale anchor is expected — the planner wrote it before this code
     // existed — so it gets one chance to be re-resolved against the file rather
     // than being shrugged off as unchecked or blocking the milestone on a
@@ -2123,7 +2187,7 @@ export class Pipeline {
       const outcome = await withMutationApplied(
         input.root,
         { ...original, ...repair },
-        () => this.runTests(milestone.testCommand, input.root, signal),
+        () => this.runTests(milestone.testCommand, input.root, { container: this.containerFor(plan), signal }),
       )
       const judged = judgeMutation(original, outcome)
       merged[at] = judged.skipKind === 'unapplied'
@@ -2163,12 +2227,13 @@ export class Pipeline {
   private async runMutations(
     milestone: Milestone,
     repoPath: string,
+    container: boolean,
     signal?: AbortSignal,
   ): Promise<MutationResult[]> {
     const results: MutationResult[] = []
     for (const mutation of milestone.mutations) {
       const outcome = await withMutationApplied(repoPath, mutation, () =>
-        this.runTests(milestone.testCommand, repoPath, signal),
+        this.runTests(milestone.testCommand, repoPath, { container, signal }),
       )
       results.push(judgeMutation(mutation, outcome))
     }

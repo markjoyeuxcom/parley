@@ -1,7 +1,8 @@
 import { extractJson, safeString } from '@shared/extract'
 import { emptyUsage, type Id, type Loop, type LoopIteration } from '@shared/domain'
 import { loopVerifyPrompt, loopWorkPrompt } from '@shared/protocol'
-import { capture, isShellFree, splitCommand } from '@main/util/spawn'
+import { isShellFree, splitCommand } from '@main/util/spawn'
+import { ensureUp, runProjectCommand } from './containers'
 import { newId, type Repo } from '@main/store/repo'
 import type { AgentRegistry } from '@main/agents'
 import { assertCapability } from '@main/agents'
@@ -63,6 +64,9 @@ export class LoopRunner {
   private readonly repo: Repo
   private readonly registry: AgentRegistry
   private readonly emit: OrchestratorDeps['emit']
+  private readonly devcontainerBinary: string | undefined
+  /** The loop's container came up already; one `up` serves every iteration. */
+  private containerReady = false
 
   constructor(
     private loop: Loop,
@@ -71,6 +75,7 @@ export class LoopRunner {
     this.repo = deps.repo
     this.registry = deps.registry
     this.emit = deps.emit
+    this.devcontainerBinary = deps.devcontainerBinary
   }
 
   get id(): Id {
@@ -205,14 +210,28 @@ export class LoopRunner {
   private async checkExit(workerReport: string): Promise<{ met: boolean; detail: string }> {
     if (this.loop.exit.kind === 'command') {
       const argv = validateExitCommand(this.loop.exit.command)
-      const [file, ...args] = argv
-      const result = await capture(
-        file as string,
-        args,
-        this.loop.repoPath,
-        COMMAND_TIMEOUT_MS,
-        this.gate.signal,
-      )
+      // A container that will not start reads as exit-not-met with the cause
+      // in front of the human — the caps bound how long a broken daemon can
+      // burn iterations, and the detail names what to fix.
+      if (this.loop.container && !this.containerReady) {
+        const up = await ensureUp(this.loop.repoPath, {
+          binary: this.devcontainerBinary,
+          signal: this.gate.signal,
+        })
+        if (up.exitCode !== 0) {
+          return {
+            met: false,
+            detail: `the dev container failed to start: ${`${up.stderr}\n${up.stdout}`.trim().slice(0, 600)}`,
+          }
+        }
+        this.containerReady = true
+      }
+      const result = await runProjectCommand(argv, this.loop.repoPath, {
+        container: this.loop.container,
+        binary: this.devcontainerBinary,
+        timeoutMs: COMMAND_TIMEOUT_MS,
+        signal: this.gate.signal,
+      })
       if (result.timedOut) {
         return { met: false, detail: `the exit command timed out after ${Math.round(COMMAND_TIMEOUT_MS / 60000)} minutes` }
       }

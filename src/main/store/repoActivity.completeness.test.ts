@@ -200,6 +200,7 @@ function makePlan(repoPath: string): WorkPlan {
     correctionDispositions: [],
     isolation: 'worktree',
     setupCommand: '',
+    container: false,
     usage: emptyUsage(),
     mock: true,
     createdAt: Date.now(),
@@ -269,6 +270,7 @@ describe('repository activity completeness', () => {
       'plans',
       'repo_activity',
       'repo_archives',
+      'repo_containers',
       'sessions',
     ])
     expect(tables('child')).toEqual([

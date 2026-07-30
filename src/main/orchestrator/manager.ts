@@ -616,6 +616,14 @@ export class Manager {
       )
     }
 
+    // The dev-container choice is snapshotted here, not read at execution:
+    // the approval the user grants later must mean exactly what this row
+    // says. The self repo is exempt permanently — its gate builds host bytes
+    // for a host Electron.
+    const container =
+      this.repo.getRepoContainer(repoPath) &&
+      !(this.deps.selfRepoPath && canonicalRepoPath(repoPath) === this.deps.selfRepoPath)
+
     // Selected backlog items are validated before the plan row exists, so a
     // bad selection costs nothing. The flip to `planned` happens after the
     // row is created, in the same synchronous stretch — no await between
@@ -706,6 +714,7 @@ export class Manager {
       correctionDispositions: [],
       isolation,
       setupCommand,
+      container,
       usage: emptyUsage(),
       mock: this.registry.mock,
       createdAt: Date.now(),
@@ -1051,7 +1060,10 @@ export class Manager {
           .filter(Boolean)
           .at(-1)
         if (lastCommand) {
-          void verifyLanding(worktree.originPath, lastCommand)
+          void verifyLanding(worktree.originPath, lastCommand, {
+            container: plan.container,
+            binary: this.deps.devcontainerBinary,
+          })
             .then((verify) => {
               if (verify.ok) return
               this.repo.flagWorktree(planId, false, verify.detail)
@@ -1266,6 +1278,10 @@ export class Manager {
       exit: input.exit,
       caps: input.caps,
       capability: input.capability,
+      // Same snapshot-at-creation rule as plans; same permanent self exemption.
+      container:
+        this.repo.getRepoContainer(repoPath) &&
+        !(this.deps.selfRepoPath && canonicalRepoPath(repoPath) === this.deps.selfRepoPath),
       approvalId: null,
       status: 'idle',
       usage: emptyUsage(),

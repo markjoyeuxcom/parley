@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -15,7 +15,7 @@ import { worktreeBranch } from './worktrees'
 const claude = { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' }
 const codex = { vendor: 'codex' as const, model: '', effort: 'high' as const, persona: '' }
 
-function harness(): {
+function harness(devcontainerBinary?: string): {
   pipeline: Pipeline
   repo: Repo
   registry: AgentRegistry
@@ -27,7 +27,13 @@ function harness(): {
   const registry = new AgentRegistry(true)
   const events: AppEvent[] = []
   const worktreesRoot = mkdtempSync(join(tmpdir(), 'parley-wtroot-'))
-  const pipeline = new Pipeline({ repo, registry, emit: (event) => events.push(event), worktreesRoot })
+  const pipeline = new Pipeline({
+    repo,
+    registry,
+    emit: (event) => events.push(event),
+    worktreesRoot,
+    devcontainerBinary,
+  })
   const session = repo.createSession({
     id: newId(),
     kind: 'debate',
@@ -82,6 +88,7 @@ function makeWorktreePlan(
     correctionDispositions: [],
     isolation: 'worktree',
     setupCommand: '',
+    container: false,
     usage: emptyUsage(),
     mock: true,
     createdAt: Date.now(),
@@ -89,7 +96,12 @@ function makeWorktreePlan(
   })
 }
 
-function makeMilestone(repo: Repo, planId: string, index: number): Milestone {
+function makeMilestone(
+  repo: Repo,
+  planId: string,
+  index: number,
+  overrides: Partial<Milestone> = {},
+): Milestone {
   return repo.createMilestone({
     id: newId(),
     planId,
@@ -113,7 +125,46 @@ function makeMilestone(repo: Repo, planId: string, index: number): Milestone {
     approvalId: null,
     createdAt: Date.now(),
     completedAt: null,
+    ...overrides,
   })
+}
+
+/**
+ * A fake devcontainer CLI that logs every routed call and refuses argv shapes
+ * the real 0.87.0 would not serve, then runs the inner command for real — so
+ * routed verifications produce true exit codes and the log proves the route.
+ */
+function devcontainerShim(): { binary: string; log: string; failUp: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'parley-devc-route-'))
+  const binary = join(dir, 'devcontainer')
+  writeFileSync(
+    binary,
+    `#!/bin/sh
+log="$(dirname "$0")/log"
+cmd="$1"; shift
+case "$cmd" in
+  up)
+    [ "$1" = "--workspace-folder" ] && [ -n "$2" ] || exit 64
+    echo "up $2" >> "$log"
+    if [ -f "$(dirname "$0")/up-fail" ]; then echo "docker daemon unreachable" >&2; exit 1; fi
+    echo '{"outcome":"success"}'; exit 0;;
+  exec)
+    [ "$1" = "--workspace-folder" ] && [ -n "$2" ] || exit 64
+    ws="$2"; shift 2
+    [ "$1" = "--" ] || exit 64
+    shift
+    echo "exec $ws $*" >> "$log"
+    cd "$ws" && exec "$@";;
+  *) exit 64;;
+esac
+`,
+  )
+  chmodSync(binary, 0o755)
+  return {
+    binary,
+    log: join(dir, 'log'),
+    failUp: () => writeFileSync(join(dir, 'up-fail'), ''),
+  }
 }
 
 describe('worktree execution', () => {
@@ -223,5 +274,82 @@ describe('worktree execution', () => {
     const stored = repo.listApprovals().find((a) => a.id === approval2.id)
     expect(stored?.consumedAt).toBeNull()
     expect(repo.getMilestone(second.id)?.status).toBe('audited')
+  })
+})
+
+describe('dev-container routing', () => {
+  it('a container plan brings the worktree container up and verifies through it', async () => {
+    const shim = devcontainerShim()
+    const { pipeline, repo, session } = harness(shim.binary)
+    const origin = gitRepo('parley-wtdevc-')
+
+    const plan = makeWorktreePlan(repo, session.id, origin, { container: true })
+    const milestone = makeMilestone(repo, plan.id, 0)
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'test approval')
+
+    const executed = await pipeline.runMilestone(milestone.id, approval.id)
+    expect(executed.status).toBe('complete')
+    expect(executed.testResult?.exitCode).toBe(0)
+
+    const worktree = repo.getWorktreeForPlan(plan.id)
+    if (!worktree) throw new Error('expected a worktree')
+    const log = readFileSync(shim.log, 'utf8')
+    // The container came up for the worktree — never the origin — and the
+    // milestone's own command ran through exec in that same workspace.
+    expect(log).toContain(`up ${worktree.path}`)
+    expect(log).toContain(`exec ${worktree.path} true`)
+    expect(log).not.toContain(origin)
+  })
+
+  it('a container that will not start refuses the run with nothing half-made', async () => {
+    const shim = devcontainerShim()
+    shim.failUp()
+    const { pipeline, repo, session } = harness(shim.binary)
+    const origin = gitRepo('parley-wtdevcfail-')
+
+    const plan = makeWorktreePlan(repo, session.id, origin, { container: true })
+    const milestone = makeMilestone(repo, plan.id, 0)
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'test approval')
+
+    await expect(pipeline.runMilestone(milestone.id, approval.id)).rejects.toThrow(
+      /dev container failed to start/,
+    )
+    // Same contract as a failing setup command: the worktree is unwound and
+    // the approval survives for the retry after the daemon is fixed.
+    expect(repo.getWorktreeForPlan(plan.id)).toBeNull()
+    const stored = repo.listApprovals().find((a) => a.id === approval.id)
+    expect(stored?.consumedAt).toBeNull()
+  })
+
+  it('a mutation applied on the host is caught by the suite running through the container', async () => {
+    const shim = devcontainerShim()
+    const { pipeline, repo, session } = harness(shim.binary)
+    const origin = gitRepo('parley-wtdevcmut-')
+    writeFileSync(join(origin, 'guard.txt'), 'sentinel-A\n')
+    execFileSync('git', ['add', '.'], { cwd: origin, stdio: 'ignore' })
+    execFileSync('git', ['commit', '-qm', 'guard'], { cwd: origin, stdio: 'ignore' })
+
+    const plan = makeWorktreePlan(repo, session.id, origin, { container: true })
+    const milestone = makeMilestone(repo, plan.id, 0, {
+      testCommand: 'grep -q sentinel-A guard.txt',
+      mutations: [
+        {
+          file: 'guard.txt',
+          find: 'sentinel-A',
+          replace: 'sentinel-B',
+          describes: 'flips the guard the suite exists to pin',
+        },
+      ],
+    })
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'test approval')
+
+    const executed = await pipeline.runMilestone(milestone.id, approval.id)
+    expect(executed.status).toBe('complete')
+    // The mutation stage edits the file on the HOST; the verification ran
+    // inside the (shimmed) container and still saw the break — the plumbing
+    // the real bind mount depends on, proven end to end.
+    expect(executed.mutationResults).toEqual([
+      expect.objectContaining({ file: 'guard.txt', caught: true }),
+    ])
   })
 })

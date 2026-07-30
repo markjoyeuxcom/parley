@@ -63,6 +63,7 @@ function makeFailedPlan(repo: Repo, sessionId: string, repoPath: string): WorkPl
     correctionDispositions: [],
     isolation: 'checkout',
     setupCommand: '',
+    container: false,
     usage: emptyUsage(),
     mock: true,
     createdAt: Date.now(),

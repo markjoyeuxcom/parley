@@ -179,6 +179,32 @@ export class Repo {
     this.noteRepoActivity(path)
   }
 
+  /**
+   * Records the repository's standing dev-container choice. Plans and loops
+   * snapshot this at creation — the row governs future work only, never work
+   * an approval already covered.
+   */
+  setRepoContainer(path: string, enabled: boolean): void {
+    this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO repo_containers (repo_path, enabled, decided_at) VALUES (?, ?, ?)
+         ON CONFLICT(repo_path) DO UPDATE SET enabled = excluded.enabled, decided_at = excluded.decided_at`,
+        canonicalRepoPath(path),
+        enabled ? 1 : 0,
+        Date.now(),
+      )
+      this.noteRepoActivity(path)
+    })
+  }
+
+  getRepoContainer(path: string): boolean {
+    const row = this.db.get(
+      `SELECT enabled FROM repo_containers WHERE repo_path = ?`,
+      canonicalRepoPath(path),
+    )
+    return num(row?.['enabled']) === 1
+  }
+
   archivedRepoPaths(): string[] {
     return this.db
       .all<{ repoPath: string; archivedSeq: number }>(
@@ -2065,8 +2091,8 @@ export class Repo {
 
   private createPlanCore(plan: WorkPlan): WorkPlan {
     this.db.run(
-      `INSERT INTO plans (id, session_id, kind, title, repo_path, planner, executor, reviewer, status, usage, mock, question, correction_note, correction_dispositions, isolation, setup_command, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO plans (id, session_id, kind, title, repo_path, planner, executor, reviewer, status, usage, mock, question, correction_note, correction_dispositions, isolation, setup_command, container, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       plan.id,
       plan.sessionId,
       plan.kind,
@@ -2083,6 +2109,7 @@ export class Repo {
       json(plan.correctionDispositions),
       plan.isolation,
       plan.setupCommand,
+      plan.container ? 1 : 0,
       plan.createdAt,
     )
     this.noteRepoActivity(plan.repoPath)
@@ -2107,6 +2134,7 @@ export class Repo {
       usage: parseJson<Usage>(row['usage'], emptyUsage()),
       isolation: str(row['isolation'], 'checkout') === 'worktree' ? 'worktree' : 'checkout',
       setupCommand: str(row['setup_command']),
+      container: num(row['container']) === 1,
       mock: num(row['mock']) === 1,
       createdAt: num(row['created_at']),
     }
@@ -2513,8 +2541,8 @@ export class Repo {
     return this.db.transaction(() => {
       this.db.run(
         `INSERT INTO loops (id, goal, repo_path, worker, verifier, exit_condition, caps, capability,
-                            approval_id, status, usage, iteration_count, mock, started_at, ended_at, stop_reason)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            container, approval_id, status, usage, iteration_count, mock, started_at, ended_at, stop_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         loop.id,
         loop.goal,
         loop.repoPath,
@@ -2523,6 +2551,7 @@ export class Repo {
         json(loop.exit),
         json(loop.caps),
         loop.capability,
+        loop.container ? 1 : 0,
         loop.approvalId,
         loop.status,
         json(loop.usage),
@@ -2548,6 +2577,7 @@ export class Repo {
       exit: parseJson<Loop['exit']>(row['exit_condition'], { kind: 'command', command: '', criterion: '' }),
       caps: parseJson<Loop['caps']>(row['caps'], { maxIterations: 1, maxSpendUsd: 0, maxWallClockMs: 60_000 }),
       capability: str(row['capability']) as Loop['capability'],
+      container: num(row['container']) === 1,
       approvalId: nullableStr(row['approval_id']),
       status: str(row['status']) as Loop['status'],
       usage: parseJson<Usage>(row['usage'], emptyUsage()),

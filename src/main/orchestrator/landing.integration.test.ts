@@ -83,6 +83,7 @@ function makePlan(
     correctionDispositions: [],
     isolation: 'worktree',
     setupCommand: '',
+    container: false,
     usage: emptyUsage(),
     mock: true,
     createdAt: Date.now(),

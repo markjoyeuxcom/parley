@@ -50,6 +50,7 @@ function makePlan(
     correctionDispositions: [],
     isolation: 'checkout',
     setupCommand: '',
+    container: false,
     usage: emptyUsage(),
     mock: true,
     createdAt: Date.now(),

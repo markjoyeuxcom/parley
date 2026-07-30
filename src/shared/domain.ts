@@ -571,6 +571,13 @@ export const WorkPlan = z.object({
    * its own test commands. Meaningless (and unused) for checkout isolation.
    */
   setupCommand: z.string().default(''),
+  /**
+   * Snapshot of the repository's dev-container choice at creation time.
+   * Parley's own deterministic commands for this plan run inside the repo's
+   * container when true. A snapshot, never a live lookup: flipping the repo
+   * setting must not change what an already-granted approval meant.
+   */
+  container: z.boolean().default(false),
   /** See {@link Session.mock}. */
   mock: z.boolean().default(false),
   createdAt: Timestamp,
@@ -952,6 +959,8 @@ export const Loop = z.object({
   exit: LoopExitCondition,
   caps: LoopCaps,
   capability: Capability,
+  /** Snapshot of the repository's dev-container choice at creation time. */
+  container: z.boolean().default(false),
   approvalId: Id.nullable().default(null),
   status: LoopStatus,
   usage: Usage,

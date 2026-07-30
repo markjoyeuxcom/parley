@@ -85,6 +85,7 @@ function makePlan(repo: Repo, sessionId: string, repoPath: string): WorkPlan {
     correctionDispositions: [],
     isolation: 'checkout',
     setupCommand: '',
+    container: false,
     usage: emptyUsage(),
     mock: true,
     createdAt: Date.now(),

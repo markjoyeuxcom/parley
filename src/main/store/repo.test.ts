@@ -1,3 +1,6 @@
+import { mkdtempSync, realpathSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { openDatabase } from './db'
 import { ApprovalError, Repo, newId } from './repo'
@@ -347,6 +350,7 @@ describe('migrating an older database', () => {
       correctionDispositions: [],
       isolation: 'checkout' as const,
       setupCommand: '',
+      container: false,
       usage: emptyUsage(),
       mock: false,
       createdAt: Date.now(),
@@ -651,6 +655,7 @@ describe('deleting a session', () => {
       correctionDispositions: [],
       isolation: 'checkout' as const,
       setupCommand: '',
+      container: false,
       usage: emptyUsage(),
       mock: false,
       createdAt: Date.now(),
@@ -785,6 +790,7 @@ describe('gathering findings for a remediation plan', () => {
       correctionDispositions: [],
       isolation: 'checkout' as const,
       setupCommand: '',
+      container: false,
       usage: emptyUsage(),
       mock: false,
       createdAt: Date.now(),
@@ -888,5 +894,30 @@ describe('gathering findings for a remediation plan', () => {
     })
 
     expect(repo.reviewFindingsForSession(session.id)).toEqual([])
+  })
+})
+
+describe('repository dev-container choice', () => {
+  it('round-trips under any spelling of the same repository, and defaults to off', () => {
+    const repo = freshRepo()
+    const dir = mkdtempSync(join(tmpdir(), 'parley-devc-store-'))
+    expect(repo.getRepoContainer(dir)).toBe(false)
+
+    // Written with a trailing slash on the symlinked /tmp spelling, read via
+    // the resolved real path: one canonical row serves both.
+    repo.setRepoContainer(`${dir}/`, true)
+    expect(repo.getRepoContainer(realpathSync(dir))).toBe(true)
+    expect(repo.getRepoContainer(dir)).toBe(true)
+
+    repo.setRepoContainer(dir, false)
+    expect(repo.getRepoContainer(dir)).toBe(false)
+  })
+
+  it('records the decision as repository activity', () => {
+    const repo = freshRepo()
+    const dir = mkdtempSync(join(tmpdir(), 'parley-devc-activity-'))
+    const before = repo.repoActivitySeq(dir)
+    repo.setRepoContainer(dir, true)
+    expect(repo.repoActivitySeq(dir)).toBeGreaterThan(before)
   })
 })

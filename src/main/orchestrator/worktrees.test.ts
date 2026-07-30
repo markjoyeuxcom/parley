@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -67,6 +67,7 @@ function makePlan(repo: Repo, repoPath: string, overrides: Partial<WorkPlan> = {
     correctionDispositions: [],
     isolation: 'worktree',
     setupCommand: '',
+    container: false,
     usage: emptyUsage(),
     mock: true,
     createdAt: Date.now(),
@@ -390,5 +391,88 @@ describe('reconcileWorktrees', () => {
     expect(healed.orphaned).toBe(false)
     expect(repo.getWorktreeForPlan(plan.id)?.orphaned).toBe(false)
     expect(created.path).toBe(healed.path)
+  })
+})
+
+/** Logs routed calls, refuses shapes the real CLI would refuse, runs the rest. */
+function devcontainerShim(): { binary: string; log: string; failUp: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'parley-wt-devc-'))
+  const binary = join(dir, 'devcontainer')
+  writeFileSync(
+    binary,
+    `#!/bin/sh
+log="$(dirname "$0")/log"
+cmd="$1"; shift
+case "$cmd" in
+  up)
+    [ "$1" = "--workspace-folder" ] && [ -n "$2" ] || exit 64
+    echo "up $2" >> "$log"
+    if [ -f "$(dirname "$0")/up-fail" ]; then echo "docker daemon unreachable" >&2; exit 1; fi
+    echo '{"outcome":"success"}'; exit 0;;
+  exec)
+    [ "$1" = "--workspace-folder" ] && [ -n "$2" ] || exit 64
+    ws="$2"; shift 2
+    [ "$1" = "--" ] || exit 64
+    shift
+    echo "exec $ws $*" >> "$log"
+    cd "$ws" && exec "$@";;
+  *) exit 64;;
+esac
+`,
+  )
+  chmodSync(binary, 0o755)
+  return {
+    binary,
+    log: join(dir, 'log'),
+    failUp: () => writeFileSync(join(dir, 'up-fail'), ''),
+  }
+}
+
+describe('dev-container setup and landing verification', () => {
+  it('a container plan runs setup through the CLI, after the container is up', async () => {
+    const shim = devcontainerShim()
+    const repo = freshRepo()
+    const origin = gitRepo('parley-wt-devc-setup-')
+    const plan = makePlan(repo, origin, { container: true, setupCommand: 'mkdir setup-ran' })
+    const root = worktreesRoot()
+
+    const created = await ensureWorktree(repo, root, plan, undefined, shim.binary)
+    expect(existsSync(join(created.path, 'setup-ran'))).toBe(true)
+
+    const log = readFileSync(shim.log, 'utf8')
+    expect(log).toContain(`up ${created.path}`)
+    expect(log).toContain(`exec ${created.path} mkdir setup-ran`)
+  })
+
+  it('a dead container fails the ensure with nothing half-made', async () => {
+    const shim = devcontainerShim()
+    shim.failUp()
+    const repo = freshRepo()
+    const origin = gitRepo('parley-wt-devc-dead-')
+    const plan = makePlan(repo, origin, { container: true })
+    const root = worktreesRoot()
+
+    await expect(ensureWorktree(repo, root, plan, undefined, shim.binary)).rejects.toThrow(
+      /dev container failed to start/,
+    )
+    expect(repo.getWorktreeForPlan(plan.id)).toBeNull()
+  })
+
+  it('landing verification routes through the origin container and stays fail-open on a dead one', async () => {
+    const shim = devcontainerShim()
+    const origin = gitRepo('parley-wt-devc-land-')
+
+    const ok = await verifyLanding(origin, 'true', { container: true, binary: shim.binary })
+    expect(ok.ok).toBe(true)
+    const log = readFileSync(shim.log, 'utf8')
+    expect(log).toContain(`up ${origin}`)
+    expect(log).toContain(`exec ${origin} true`)
+
+    // A dead daemon surfaces as the same non-blocking failure a red command
+    // does — the landing already happened, and this check never undoes it.
+    shim.failUp()
+    const failed = await verifyLanding(origin, 'true', { container: true, binary: shim.binary })
+    expect(failed.ok).toBe(false)
+    expect(failed.detail).toMatch(/could not start the origin's dev container/)
   })
 })
