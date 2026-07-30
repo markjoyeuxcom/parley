@@ -181,36 +181,44 @@ with the first debate-originated feature work (schema now **v21**):
 
 **The queue (designs banked in the assistant's memory, each with
 pushbacks and verify-at-build lists):**
-1. **Packaging prep, next commit**: dev/packaged userData separation
-   (dev takes `parley-dev` BEFORE the module-level databasePath
-   computes; user copies the existing dir to keep dev history; titlebar
-   dev chip on non-packaged builds). Naming recommendation: productName
-   **Parley** plain, bundle id com.moomora.parley, "by Moomora" in
-   prose only — final before the first .dmg, since it names userData.
-2. **agy adapter series** (user directive): Antigravity CLI third
-   vendor — `agy -p --output-format stream-json`, conversation_id
-   resume, --effort low|medium|high, Google-account OAuth. v1 gemini-*
-   models ONLY (agy also serves Claude/GPT-OSS — vendor≠family trap);
-   `--dangerously-skip-permissions` joins the forbidden list.
-3. **Dev containers** (promoted by the user's real workload —
+**Landed since this list was written:** packaging prep (userData split
+`parley-dev`/`parley`, titlebar dev chip, naming settled) and the **agy
+adapter series** — third vendor live end to end (through 03fbd3a; first
+three-vendor debate settled 2026-07-30). Facts superseding the old
+item: delivery is FLAGLESS piped stdin — no `-p` at all (bare `-p`
+swallows the next token as its prompt, and a value would put the brief
+in the process table; with no print flag agy detects the non-TTY pipe
+and reads stdin headless). `--effort` is never passed — tiers are baked
+into the gemini-* slugs, resolved against `agy models` discovery.
+Headless agy EXECUTES global permissions.allow rules without prompting
+(proven live), and its shell runs in agy's own scratch that Parley's
+scratch check can't see — so the adapter fails any observed
+`step_type: "tool"` closed (real recording:
+src/main/agents/fixtures/agy-tool-stream.ndjson). agy seats are
+tool-free debate seats only (`seatingRefusals` in shared/vendors.ts);
+planner/executor/reviewer stay claude/codex until per-lineage grant
+validation (backlog item filed). Advise operators to keep
+`~/.gemini/antigravity-cli/settings.json` permissions.allow empty.
+
+1. **Dev containers** (promoted by the user's real workload —
    Terraform/K8s/EKS/ArgoCD/Go controllers): repo stays local, only
    execution enters the container via `devcontainer exec` argv; `up`
    only in write flows, never read-only reviews. Pairs with infra:
    render attachments for briefs (helm template/kustomize build safe
    tier), infra skill pack, kube-context/AWS-profile chips in Grid,
    verification presets recorded as learnings.
-4. **Grid I** (lifecycle slot/process controls, maximize/swap,
+2. **Grid I** (lifecycle slot/process controls, maximize/swap,
    git+worktree identity headers with plan chips, Grid-LOCAL status —
    inferred states never enter the holds queue — and both bridges) then
    **Grid II** comforts. Comparison mode parked as a PIPELINE feature.
-5. **Unattended runs**: envelope approval (bounds up front, per-
+3. **Unattended runs**: envelope approval (bounds up front, per-
    milestone approvals minted from it), fail-park at existing holds,
    end at merge-ready always; foreman acceptance stays outside.
-6. **App Builder arc** (four series: workspace creator + foundation,
+4. **App Builder arc** (four series: workspace creator + foundation,
    preview management, acceptance records + 'acceptance' ingestion
    source, then the guided shell); readiness stage = disposition
    ergonomics, never auto-disposition.
-7. **SSH/remote execution arc** after App Builder (execution-target
+5. **SSH/remote execution arc** after App Builder (execution-target
    abstraction over the ~6 local-assuming touchpoints), composing with
    unattended for overnight VM runs.
 
