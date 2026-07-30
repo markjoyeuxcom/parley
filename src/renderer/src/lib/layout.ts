@@ -69,6 +69,27 @@ export function setRatio(node: LayoutNode, path: SplitPath, ratio: number): Layo
   return node
 }
 
+/**
+ * Exchanges the slots at two leaves — the panes trade places, their sizes
+ * stay where they were. A missing or identical id is a no-op: swapping with
+ * a ghost must never duplicate the survivor.
+ */
+export function swapLeaves(node: LayoutNode, a: Id, b: Id): LayoutNode {
+  if (a === b) return node
+  const ids = collectSlotIds(node)
+  if (!ids.includes(a) || !ids.includes(b)) return node
+
+  const walk = (n: LayoutNode): LayoutNode => {
+    if (n.type === 'leaf') {
+      if (n.slotId === a) return { type: 'leaf', slotId: b }
+      if (n.slotId === b) return { type: 'leaf', slotId: a }
+      return n
+    }
+    return { ...n, a: walk(n.a), b: walk(n.b) }
+  }
+  return walk(node)
+}
+
 /** Finds the pane after `slotId` in reading order, for keyboard pane cycling. */
 export function nextSlot(node: LayoutNode | null, slotId: Id | null): Id | null {
   const ids = collectSlotIds(node)

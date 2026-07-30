@@ -9,6 +9,7 @@ import {
   removeLeaf,
   setRatio,
   splitLeaf,
+  swapLeaves,
   toSavedLayout,
   type Slot,
 } from './layout'
@@ -198,6 +199,20 @@ describe('pane cycling', () => {
   it('falls back to the first pane when nothing is focused', () => {
     expect(nextSlot(layout, null)).toBe('a')
     expect(nextSlot(layout, 'ghost')).toBe('a')
+  })
+
+  it('swaps two leaves in place, and refuses ghosts and self-swaps', () => {
+    const swapped = swapLeaves(layout, 'a', 'c')
+    expect(collectSlotIds(swapped)).toEqual(
+      collectSlotIds(layout).map((id) => (id === 'a' ? 'c' : id === 'c' ? 'a' : id)),
+    )
+    // The tree's shape and ratios are untouched — the panes traded places.
+    expect(JSON.stringify(swapped).replace(/"slotId":"[^"]*"/g, '')).toBe(
+      JSON.stringify(layout).replace(/"slotId":"[^"]*"/g, ''),
+    )
+    // A ghost id must never duplicate the survivor.
+    expect(swapLeaves(layout, 'a', 'ghost')).toBe(layout)
+    expect(swapLeaves(layout, 'a', 'a')).toBe(layout)
   })
 
   it('returns null for an empty grid', () => {

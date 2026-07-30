@@ -15,6 +15,17 @@
   min-height: 0;
   padding: var(--s5);
   display: flex;
+  /* The anchor for a maximized pane's overlay. */
+  position: relative;
+}
+
+/* Maximize is a view state, not a tree change: the pane overlays its
+   siblings, which stay mounted underneath — unmounting a terminal destroys
+   its scrollback, and restore must cost nothing. */
+.pane.is-maximized {
+  position: absolute;
+  inset: var(--s5);
+  z-index: 5;
 }
 
 .split {

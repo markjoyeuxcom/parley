@@ -16,6 +16,8 @@ import {
   fromSavedLayout,
   leaf,
   nextSlot,
+  previousSlot,
+  swapLeaves,
   removeLeaf,
   setRatio,
   splitLeaf,
@@ -62,6 +64,7 @@ export function GridSurface(): ReactNode {
   const [layouts, setLayouts] = useState<GridLayout[]>([])
   const [saving, setSaving] = useState(false)
   const [renaming, setRenaming] = useState<{ slotId: Id; value: string } | null>(null)
+  const [maximizedSlot, setMaximizedSlot] = useState<Id | null>(null)
   const draggingSkill = useRef<Skill | null>(null)
 
   const slotCount = countSlots(layout)
@@ -215,6 +218,7 @@ export function GridSurface(): ReactNode {
         return splitLeaf(current, target, 'row', slotId)
       })
       setFocusedSlot(slotId)
+      setMaximizedSlot(null)
     },
     [attempt, cwd, focusedSlot, notify, slotCount, slots],
   )
@@ -233,6 +237,7 @@ export function GridSurface(): ReactNode {
       })
       setLayout((current) => (current ? removeLeaf(current, slotId) : null))
       setFocusedSlot((current) => (current === slotId ? null : current))
+      setMaximizedSlot((current) => (current === slotId ? null : current))
     },
     [slots],
   )
@@ -300,10 +305,13 @@ export function GridSurface(): ReactNode {
     if (recent) setCwd(recent)
   }, [cwd, state.sessions, state.loops])
 
-  // ⌘D splits right, ⌘⇧D splits down, ⌘W closes, ⌘] cycles.
+  // ⌘D splits right, ⌘⇧D splits down, ⌘W closes, ⌘]/⌘[ cycle, ⌘⏎ maximizes.
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (!event.metaKey) return
+      // The surface stays mounted while hidden; without this guard ⌘W on a
+      // different surface silently closed the focused Grid pane.
+      if (state.surface !== 'grid') return
       const key = event.key.toLowerCase()
       if (key === 'd' && focusedSlot) {
         event.preventDefault()
@@ -314,11 +322,17 @@ export function GridSurface(): ReactNode {
       } else if (key === ']') {
         event.preventDefault()
         setFocusedSlot((current) => nextSlot(layout, current))
+      } else if (key === '[') {
+        event.preventDefault()
+        setFocusedSlot((current) => previousSlot(layout, current))
+      } else if (key === 'enter' && focusedSlot) {
+        event.preventDefault()
+        setMaximizedSlot((current) => (current === focusedSlot ? null : focusedSlot))
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [closeSlot, focusedSlot, layout, openPane])
+  }, [closeSlot, focusedSlot, layout, openPane, state.surface])
 
   const chooseFolder = async (): Promise<void> => {
     const result = await attempt(() => api.pickDirectory('Choose a folder for new panes'))
@@ -484,6 +498,7 @@ export function GridSurface(): ReactNode {
               const slot = slots[id]
               return slotPaneExit(slot, slot?.paneId ? paneById.get(slot.paneId) : undefined)
             }}
+            maximizedSlot={maximizedSlot}
             paneMenu={(id) => {
               const slot = slots[id]
               if (!slot) return null
@@ -529,6 +544,25 @@ export function GridSurface(): ReactNode {
                         ) : null}
                       </MenuSection>
                       <MenuSection>
+                        <MenuItem
+                          onClick={() => {
+                            close()
+                            setMaximizedSlot((current) => (current === id ? null : id))
+                          }}
+                        >
+                          {maximizedSlot === id ? 'Restore size (⌘⏎)' : 'Maximize (⌘⏎)'}
+                        </MenuItem>
+                        <MenuItem
+                          onClick={() => {
+                            close()
+                            const other = nextSlot(layout, id)
+                            if (other && other !== id) {
+                              setLayout((current) => (current ? swapLeaves(current, id, other) : current))
+                            }
+                          }}
+                        >
+                          Swap with next pane
+                        </MenuItem>
                         <MenuItem
                           onClick={() => { close(); setRenaming({ slotId: id, value: slot.title ?? '' }) }}
                         >
@@ -750,6 +784,7 @@ interface LayoutViewProps {
   paneStatus: (id: Id) => 'idle' | 'starting' | 'live' | 'exited'
   paneExit: (id: Id) => number | null
   paneMenu: (id: Id) => ReactNode
+  maximizedSlot: Id | null
   onFocus: (id: Id) => void
   onClose: (id: Id) => void
   onStart: (id: Id) => void
@@ -772,7 +807,7 @@ function LayoutView(props: LayoutViewProps): ReactNode {
 
     return (
       <div
-        className={`pane ${focused ? 'is-focused' : ''} ${isDrop ? 'is-drop-target' : ''}`}
+        className={`pane ${focused ? 'is-focused' : ''} ${isDrop ? 'is-drop-target' : ''} ${props.maximizedSlot === id ? 'is-maximized' : ''}`}
         onDragOver={(event) => {
           event.preventDefault()
           props.onDropTarget(id)
