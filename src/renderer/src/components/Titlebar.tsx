@@ -1,5 +1,6 @@
 import { type ReactNode } from 'react'
 import { Command, FolderGit2, Repeat, Scale, Terminal } from 'lucide-react'
+import { isToolless } from '@shared/vendors'
 import { useStore, type Surface, type ThemeChoice } from '../state'
 import { HoldsButton } from './HoldsPanel'
 import { Dot } from './ui'
@@ -95,11 +96,13 @@ export function Titlebar(): ReactNode {
 }
 
 /**
- * Subscription status for the two CLIs.
+ * Subscription status for the CLIs.
  *
  * Shown permanently rather than only on failure: the whole app depends on these
  * being signed in, and a silent "not authenticated" is the single most likely
- * reason a session produces nothing.
+ * reason a session produces nothing. A missing tool-less vendor is the one
+ * exception — agy only ever fills optional debate seats, so its absence is a
+ * configuration, not a failure, and gets the neutral dot instead of red.
  */
 function CliStatus(): ReactNode {
   const { state } = useStore()
@@ -108,12 +111,22 @@ function CliStatus(): ReactNode {
   return (
     <div className="row row--tight" style={{ marginRight: 'var(--s2)' }}>
       {state.health.map((cli) => {
-        const tone = !cli.present ? 'dot--fail' : cli.authenticated ? 'dot--pass' : 'dot--caution'
+        const absentButOptional = !cli.present && isToolless(cli.vendor)
+        const tone = !cli.present
+          ? absentButOptional
+            ? ''
+            : 'dot--fail'
+          : cli.authenticated
+            ? 'dot--pass'
+            : 'dot--caution'
+        const detail = absentButOptional
+          ? `${cli.vendor} is optional — it only adds a third debate voice. ${cli.detail}`
+          : cli.detail
         return (
           <span
             key={cli.vendor}
             className="row row--tight"
-            title={`${cli.vendor} ${cli.version} — ${cli.detail}`}
+            title={`${cli.vendor} ${cli.version} — ${detail}`}
             style={{ gap: 4 }}
           >
             <Dot tone={tone} />

@@ -26,6 +26,7 @@ import type { SeatRole } from '@shared/vendors'
 import { useEffect, useState, type ReactNode } from 'react'
 import { StoreProvider, useStore, type Surface } from '../state'
 import { AgentPicker } from '../components/AgentPicker'
+import { Titlebar } from '../components/Titlebar'
 import { HoldsButton, HoldsPopover } from '../components/HoldsPanel'
 import { Notices } from '../components/Notices'
 import { ParleySurface } from './ParleySurface'
@@ -454,6 +455,31 @@ describe('mounted-surface smoke', () => {
       )
       expect(values).toEqual(['gemini-real-pro', 'gemini-real-flash-high'])
     })
+  })
+
+  it('a missing agy gets the neutral dot while a missing required CLI stays red', async () => {
+    installBridge({
+      'health.probe': () => [
+        { vendor: 'claude', present: true, version: '2.1.0', authenticated: true, detail: 'Signed in.' },
+        { vendor: 'codex', present: false, version: '', authenticated: false, detail: 'codex was not found on PATH.' },
+        { vendor: 'agy', present: false, version: '', authenticated: false, detail: 'agy was not found on PATH.' },
+      ],
+    })
+    render(
+      <StoreProvider>
+        <Titlebar />
+      </StoreProvider>,
+    )
+
+    const chip = (vendor: string) => screen.getByTitle(new RegExp(`^${vendor} `))
+    await waitFor(() => expect(chip('agy')).toBeTruthy())
+
+    // agy absent is a configuration, not a failure — bare neutral dot, and
+    // the tooltip says it is optional. codex absent is still an error.
+    expect(chip('agy').querySelector('.dot')?.className).toBe('dot ')
+    expect(chip('agy').getAttribute('title')).toContain('optional')
+    expect(chip('codex').querySelector('.dot--fail')).toBeTruthy()
+    expect(chip('claude').querySelector('.dot--pass')).toBeTruthy()
   })
 
   it('hides Agy for an executor seat and replaces an ineligible preset', async () => {
