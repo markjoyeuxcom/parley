@@ -278,6 +278,11 @@ export const api = {
   closePane: (paneId: Id): Promise<unknown> => bridge().invoke('pane.close', { paneId }),
   stopPane: (paneId: Id): Promise<unknown> => bridge().invoke('pane.stop', { paneId }),
   paneIdentity: (cwd: string): Promise<PaneIdentity> => bridge().invoke('pane.identity', { cwd }),
+  savePaneTranscript: (
+    suggestedName: string,
+    text: string,
+  ): Promise<{ saved: boolean; path: string | null }> =>
+    bridge().invoke('pane.saveTranscript', { suggestedName, text }),
   listPanes: (): Promise<Pane[]> => bridge().invoke('pane.list'),
 
   // Saved layouts

@@ -471,6 +471,19 @@ const HANDLERS: Record<CommandName, Handler> = {
     }
     return { git, worktree } satisfies PaneIdentity
   },
+  'pane.saveTranscript': async (p, ctx) => {
+    const { suggestedName, text } = p as { suggestedName: string; text: string }
+    const window = ctx.window()
+    if (!window) throw new Error('no window')
+    const result = await ctx.dialogs.showSaveDialog(window, {
+      title: 'Save transcript',
+      defaultPath: suggestedName,
+      filters: [{ name: 'Text', extensions: ['txt'] }],
+    })
+    if (result.canceled || !result.filePath) return { saved: false, path: null }
+    await writeFile(result.filePath, text, 'utf8')
+    return { saved: true, path: result.filePath }
+  },
   'pane.list': (_p, ctx) => ctx.pty.list(),
 
   // ── Saved layouts ──────────────────────────────────────────────────────────

@@ -1,24 +1,36 @@
 import type { Id } from '@shared/domain'
 
 /**
- * Per-pane selection accessors, registered by each mounted terminal. A module
- * map like ptyBuffer's, for the same reason: the menu that promotes a
- * selection into a review brief lives outside the terminal component, and
- * threading a ref through the layout tree for one string is chrome the tree
- * does not need.
+ * Per-pane terminal accessors, registered by each mounted terminal. A module
+ * map like ptyBuffer's, for the same reason: the menus and the find bar live
+ * outside the terminal component, and threading refs through the layout tree
+ * for a handful of calls is chrome the tree does not need.
  */
-const getters = new Map<Id, () => string>()
+export interface TermAccess {
+  getSelection: () => string
+  /** The full buffer as text — the transcript a save writes. */
+  serialize: () => string
+  findNext: (query: string) => boolean
+  findPrevious: (query: string) => boolean
+  clearSearch: () => void
+}
 
-export function registerSelection(paneId: Id, get: () => string): () => void {
-  getters.set(paneId, get)
+const terms = new Map<Id, TermAccess>()
+
+export function registerTerm(paneId: Id, access: TermAccess): () => void {
+  terms.set(paneId, access)
   return () => {
-    if (getters.get(paneId) === get) getters.delete(paneId)
+    if (terms.get(paneId) === access) terms.delete(paneId)
   }
+}
+
+export function termAccess(paneId: Id): TermAccess | null {
+  return terms.get(paneId) ?? null
 }
 
 export function paneSelection(paneId: Id): string {
   try {
-    return getters.get(paneId)?.() ?? ''
+    return terms.get(paneId)?.getSelection() ?? ''
   } catch {
     return ''
   }

@@ -221,18 +221,36 @@ question), container lifecycle/cleanup. The infra pairings (render
 attachments, skill pack, Grid kube-context chips, verification presets)
 remain future work.
 
-1. **Grid I** (lifecycle slot/process controls, maximize/swap,
-   git+worktree identity headers with plan chips, Grid-LOCAL status —
-   inferred states never enter the holds queue — and both bridges) then
-   **Grid II** comforts. Comparison mode parked as a PIPELINE feature.
-2. **Unattended runs**: envelope approval (bounds up front, per-
+**Grid I: LANDED** (Grid m1–m6). The load-bearing find: state.panes had
+been empty since the Grid was built (pane.created never emitted,
+pane.list never called) — every status dot, exit chip and the ⌘1 count
+was unreachable; m1 connected the pipe and fixed the semantics (exit is
+a STATUS and the corpse survives; pane.closed = user close = removal).
+Then: slot lifecycle menu (stop/restart/reopen/replace/rename/duplicate
++ Resume via the CLIs' OWN pickers — `claude --resume`, `codex resume`,
+never governed ids); maximize (overlay — siblings stay mounted,
+scrollback survives)/swap/⌘[ + the window-keydown surface guard (⌘W on
+other surfaces was silently closing Grid panes); identity headers
+(bounded pane.identity — 4 git calls 5s ceiling, never readTree;
+worktree chip matched realpath-to-realpath, says landed/unlanded, never
+"safe to remove") + deterministic unread dot, all Grid-local, NEVER
+into holds; both bridges (focusGridSpawn/focusNewSession knocks —
+"Open worktree in Grid" on every worktree plan, "Review this in
+Parley…" with terminal selection as matter) + Broadcast (keystrokes
+shape, one writePane per agent pane); ⌘F scrollback search (the
+installed-unused search addon) + Save transcript (@xterm/addon-serialize
+added, save-dialog IPC mirroring session.export); AGENTS.md carries the
+new Grid rules. **Grid II comforts** follow usage; comparison mode
+stays parked as a PIPELINE feature.
+
+1. **Unattended runs**: envelope approval (bounds up front, per-
    milestone approvals minted from it), fail-park at existing holds,
    end at merge-ready always; foreman acceptance stays outside.
-3. **App Builder arc** (four series: workspace creator + foundation,
+2. **App Builder arc** (four series: workspace creator + foundation,
    preview management, acceptance records + 'acceptance' ingestion
    source, then the guided shell); readiness stage = disposition
    ergonomics, never auto-disposition.
-4. **SSH/remote execution arc** after App Builder (execution-target
+3. **SSH/remote execution arc** after App Builder (execution-target
    abstraction over the ~6 local-assuming touchpoints), composing with
    unattended for overnight VM runs.
 

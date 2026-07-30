@@ -411,9 +411,26 @@ the actual CLI with its own prompts and TUI, not a re-hosted imitation.</p>
   Drag one onto an agent pane and it is typed into that live session, with all
   the context the session already has.</li>
   <li><b>Saved layouts</b> restore the arrangement — pane kinds, split tree,
-  folders. Shells reopen immediately; agent panes come back as one-click
-  placeholders, so no CLI session starts against your subscription without you
-  asking.</li>
+  folders, and pane names. Shells reopen immediately; agent panes come back as
+  one-click placeholders, so no CLI session starts against your subscription
+  without you asking.</li>
+  <li><b>Identity in the header</b>: branch, <code>±</code> for a dirty
+  checkout, <code>↑↓</code> drift from upstream — refreshed on focus, never a
+  timer. A pane sitting in one of Parley&rsquo;s plan worktrees shows a
+  <b>landed / unlanded</b> chip that opens the plan. Output in an unfocused
+  pane leaves a dot until you look. All of it Grid-local: none of these
+  signals enter the holds queue.</li>
+  <li><b>Lifecycle on the pane menu</b>: Stop (keeps the corpse and exit
+  code), Restart, Reopen, Replace kind, Rename, Duplicate, and
+  <i>Resume a session&hellip;</i> — the CLI&rsquo;s <em>own</em> picker
+  (<code>claude --resume</code>, <code>codex resume</code>), never
+  Parley&rsquo;s governed resume ids. <kbd>⌘⏎</kbd> maximizes,
+  <kbd>⌘[</kbd>/<kbd>⌘]</kbd> cycle, <kbd>⌘F</kbd> finds in scrollback, and
+  the menu saves a transcript.</li>
+  <li><b>Bridges</b>: every worktree plan offers <i>Open worktree in
+  Grid</i>; a pane&rsquo;s menu offers <i>Review this in Parley&hellip;</i>
+  with any selected text as the brief&rsquo;s starting matter; and
+  <i>Broadcast</i> types one prompt into every running agent pane.</li>
 </ul>
 <div class="callout warn">
 <p><b>The Grid is ungoverned.</b> A pane has the CLI's own permission prompts

@@ -27,7 +27,7 @@ import {
   type SplitPath,
 } from '../lib/layout'
 import { shortPath } from '../lib/format'
-import { paneSelection } from '../lib/termSelection'
+import { paneSelection, termAccess } from '../lib/termSelection'
 import { useStore } from '../state'
 import { TerminalPane } from '../components/TerminalPane'
 import { Chip, Dialog, Dot, Empty, Field, Menu, MenuItem, MenuSection } from '../components/ui'
@@ -67,6 +67,8 @@ export function GridSurface(): ReactNode {
   const [saving, setSaving] = useState(false)
   const [renaming, setRenaming] = useState<{ slotId: Id; value: string } | null>(null)
   const [broadcasting, setBroadcasting] = useState(false)
+  /** Null = closed; a string = the live query against the focused pane. */
+  const [finding, setFinding] = useState<string | null>(null)
   const [maximizedSlot, setMaximizedSlot] = useState<Id | null>(null)
   /** Keyed by folder — panes sharing a cwd share one identity line. */
   const [identities, setIdentities] = useState<Record<string, PaneIdentity | null>>({})
@@ -409,6 +411,9 @@ export function GridSurface(): ReactNode {
       } else if (key === 'enter' && focusedSlot) {
         event.preventDefault()
         setMaximizedSlot((current) => (current === focusedSlot ? null : focusedSlot))
+      } else if (key === 'f' && focusedSlot) {
+        event.preventDefault()
+        setFinding((current) => current ?? '')
       }
     }
     window.addEventListener('keydown', onKey)
@@ -508,6 +513,32 @@ export function GridSurface(): ReactNode {
             <Radio size={12} strokeWidth={2} />
             Broadcast
           </button>
+        ) : null}
+
+        {finding !== null && focusedSlot ? (
+          <input
+            className="input"
+            style={{ width: 180, height: 24, fontSize: 'var(--text-small)' }}
+            autoFocus
+            placeholder="Find in pane… (⏎ next, ⇧⏎ prev)"
+            value={finding}
+            onChange={(event) => {
+              const query = event.target.value
+              setFinding(query)
+              const paneId = slots[focusedSlot]?.paneId
+              if (paneId && query) termAccess(paneId)?.findNext(query)
+            }}
+            onKeyDown={(event) => {
+              const paneId = slots[focusedSlot]?.paneId
+              if (event.key === 'Escape') {
+                if (paneId) termAccess(paneId)?.clearSearch()
+                setFinding(null)
+              } else if (event.key === 'Enter' && paneId && finding) {
+                if (event.shiftKey) termAccess(paneId)?.findPrevious(finding)
+                else termAccess(paneId)?.findNext(finding)
+              }
+            }}
+          />
         ) : null}
 
         <div className="divider" style={{ width: 1, height: 18, background: 'var(--line)' }} />
@@ -710,6 +741,30 @@ export function GridSurface(): ReactNode {
                         >
                           Review this in Parley…
                         </MenuItem>
+                        {slot.paneId ? (
+                          <MenuItem
+                            onClick={() => {
+                              close()
+                              const paneId = slot.paneId
+                              if (!paneId) return
+                              const text = termAccess(paneId)?.serialize() ?? ''
+                              if (!text.trim()) {
+                                notify('warn', 'Nothing in the buffer yet.')
+                                return
+                              }
+                              const label = (slot.title ?? KIND_LABEL[slot.kind]).replace(/[^\w-]+/g, '-')
+                              void attempt(() => api.savePaneTranscript(`PANE-${label}.txt`, text)).then(
+                                (result) => {
+                                  if (result?.saved && result.path) {
+                                    notify('info', `Transcript saved to ${result.path}`)
+                                  }
+                                },
+                              )
+                            }}
+                          >
+                            Save transcript…
+                          </MenuItem>
+                        ) : null}
                       </MenuSection>
                     </>
                   )}

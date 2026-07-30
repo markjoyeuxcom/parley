@@ -109,6 +109,33 @@ none of Parley's — no single-use approval, no deterministic verification, no
 independent review. That's the right trade for small edits you're watching, and
 the wrong one for a change you'll ship.
 
+### Orientation and lifecycle
+
+Every pane header carries its identity: branch, a `±` when the checkout is
+dirty, `↑↓` drift from upstream — refreshed when the pane gains focus, never
+on a timer. When a pane's folder is one of Parley's own plan worktrees, a
+chip says **landed** or **unlanded** and opens the plan; it deliberately
+never says "safe to remove". Output landing in an unfocused pane marks it
+with a dot until you look. These signals are Grid-local by rule: nothing
+here enters the holds queue, whose authority comes from the durable record.
+
+The pane menu separates the slot from its process: **Stop** kills the
+process and keeps the corpse with its exit code, **Restart**/**Reopen**
+relaunch into the same position, **Replace** swaps the kind, **Rename**
+gives the slot a name that survives restarts and rides saved layouts,
+**Duplicate** splits with the same folder. **Resume a session…** opens the
+CLI's *own* picker (`claude --resume`, `codex resume`) — Parley's governed
+resume ids never reach a pane. ⌘⏎ maximizes (an overlay — siblings stay
+mounted, scrollback survives), ⌘[ and ⌘] cycle, ⌘F finds in the focused
+pane's scrollback, and the menu can save a full transcript.
+
+Two bridges connect the Grid to the governed side. Every worktree plan
+offers **Open worktree in Grid** — a shell in the plan's own checkout, with
+the header saying landed or not. And **Review this in Parley…** promotes a
+pane (with any selected terminal text as the brief's starting matter) into
+a real review session. **Broadcast** types one prompt into every running
+agent pane, exactly as if you had typed it in each.
+
 ---
 
 ## Debate

@@ -152,6 +152,11 @@ export const PaneResizeReq = z.object({
 export const PaneCloseReq = z.object({ paneId: Id })
 export const PaneStopReq = z.object({ paneId: Id })
 export const PaneIdentityReq = z.object({ cwd: z.string().min(1) })
+/** The transcript text travels from the renderer — the buffer lives in xterm. */
+export const SaveTranscriptReq = z.object({
+  suggestedName: z.string().min(1).max(200),
+  text: z.string().max(5_000_000),
+})
 
 export const RunSkillReq = z.object({ paneId: Id, skillId: Id })
 export const SaveSkillReq = Skill.omit({ builtIn: true })
@@ -323,6 +328,7 @@ export const COMMANDS = {
   'pane.close': PaneCloseReq,
   'pane.stop': PaneStopReq,
   'pane.identity': PaneIdentityReq,
+  'pane.saveTranscript': SaveTranscriptReq,
   'pane.list': null,
   'layout.save': SaveLayoutReq,
   'layout.list': null,

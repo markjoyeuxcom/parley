@@ -235,6 +235,39 @@ lives in one place.
 
 Opening a layout over live panes asks first, because it kills them.
 
+### The pane registry, and what "closed" means
+
+`state.panes` is fed by `pane.created`, patched by `pane.status`, and pruned
+by `pane.closed` — and the last two are different ends on purpose. A process
+**exit** is a status (`'exited'`, with the code): the handle stays in the pty
+manager's map and the row stays in the renderer, so the pane can show its
+corpse, its final scrollback, and its exit chip. `pane.closed` means the
+handle is **gone**, which only a user's close does. Wiring exit to closed is
+the exact defect that kept the exit chips unreachable for months. The Grid
+reconciles once at mount via `pane.list`; events carry everything after.
+
+### Grid-local signals never enter the holds queue
+
+The identity line (branch/dirty/drift via the bounded `pane.identity` — four
+git calls, five-second ceiling, never `readTree`), the plan-worktree chip
+(matched realpath-to-realpath because the registry stores raw spellings; it
+says landed or unlanded and NEVER "safe to remove"), and the unread-output
+dot are all deterministic and all Grid-local. The holds queue's authority is
+derived from the durable record; a PTY observation is not a record and must
+not notify like one.
+
+### Cross-surface doors are knocks, and panes are keystrokes
+
+Another surface asks the Grid for a pane via the `focusGridSpawn` knock
+(set → switch → consume, the `focusMilestoneId` shape), consumed only while
+the Grid is visible so the hidden surface never spawns behind the user's
+back. In the other direction, a pane promotes into a review via
+`focusNewSession` with the terminal selection as matter. Resume in a pane is
+the CLI's OWN picker (`claude --resume` bare, `codex resume`) — governed
+resume ids never reach the Grid. Broadcast and Skills share one shape:
+keystrokes into the interactive session (`pane.write`, flattened newlines,
+one `\r`) — never a separate spawn, never a privileged path.
+
 ## The planning conversation
 
 `plan → audit → correction → you`. The correction stage is what makes the audit

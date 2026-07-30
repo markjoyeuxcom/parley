@@ -1,11 +1,13 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { SearchAddon } from '@xterm/addon-search'
+import { SerializeAddon } from '@xterm/addon-serialize'
 import { WebglAddon } from '@xterm/addon-webgl'
 import type { Id } from '@shared/domain'
 import { api } from '../lib/api'
 import { attachPane } from '../lib/ptyBuffer'
-import { registerSelection } from '../lib/termSelection'
+import { registerTerm } from '../lib/termSelection'
 
 /**
  * Reads the xterm palette out of the app's own CSS custom properties.
@@ -125,7 +127,17 @@ export function TerminalPane({
       term.write(data)
       onOutputRef.current?.()
     })
-    const unregisterSelection = registerSelection(paneId, () => term.getSelection())
+    const search = new SearchAddon()
+    term.loadAddon(search)
+    const serialize = new SerializeAddon()
+    term.loadAddon(serialize)
+    const unregisterSelection = registerTerm(paneId, {
+      getSelection: () => term.getSelection(),
+      serialize: () => serialize.serialize(),
+      findNext: (query) => search.findNext(query),
+      findPrevious: (query) => search.findPrevious(query),
+      clearSearch: () => search.clearDecorations(),
+    })
 
     const observer = new ResizeObserver(() => syncSize())
     observer.observe(host)
