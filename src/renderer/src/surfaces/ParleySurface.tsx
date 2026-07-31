@@ -1,19 +1,24 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Hammer, Pause, Play, Plus, Send, Square, Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Hammer, Layers, Pause, Play, Plus, Send, Square, Trash2 } from 'lucide-react'
 import type { AgentConfig, Id, InterjectionTarget, Session, Turn } from '@shared/domain'
 import { api } from '../lib/api'
 import { firstLine, formatTokens, relativeTime, seatLabel, seatSide, shortPath, statusTone, VENDOR_LABEL } from '../lib/format'
+import { groupSessions, recentProjects, type SessionGrouping } from '../lib/sessionGroups'
 import { useStore } from '../state'
 import { DeleteSessionDialog } from '../components/DeleteSessionDialog'
 import { FindingsLedgerPanel } from '../components/FindingsLedgerPanel'
 import { NewSessionDialog } from '../components/NewSessionDialog'
 import { NewPlanDialog, PlanPanel } from '../components/PlanPanel'
 import { FindingsPanel, VerdictPanel } from '../components/VerdictPanel'
-import { Chip, Dot, Empty, Label, Spinner } from '../components/ui'
+import { Chip, Dot, Empty, Label, Menu, MenuItem, MenuSection, Spinner } from '../components/ui'
 
 export function ParleySurface(): ReactNode {
   const { state, dispatch, openSession, refreshSessions, attempt, notify } = useStore()
   const [showNew, setShowNew] = useState(false)
+  // Grouping and folds are a view preference, not a record: they live with
+  // the surface and reset with the window, like every other view state here.
+  const [grouping, setGrouping] = useState<SessionGrouping>('none')
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [pendingDelete, setPendingDelete] = useState<Session | null>(null)
 
   const archive = async (session: Session): Promise<void> => {
@@ -40,6 +45,39 @@ export function ParleySurface(): ReactNode {
       <aside className="sidebar">
         <div className="sidebar__header">
           <Label>Sessions</Label>
+          <span className="spacer" />
+          <Menu
+            title="Group sessions"
+            label={
+              <>
+                <Layers size={12} strokeWidth={2} />
+                {grouping === 'none' ? 'Flat' : grouping === 'project' ? 'Project' : 'Repo'}
+              </>
+            }
+          >
+            {(close) => (
+              <MenuSection>
+                {(
+                  [
+                    ['none', 'No grouping — newest first'],
+                    ['project', 'By project'],
+                    ['repository', 'By repository'],
+                  ] as Array<[SessionGrouping, string]>
+                ).map(([value, label]) => (
+                  <MenuItem
+                    key={value}
+                    selected={grouping === value}
+                    onClick={() => {
+                      close()
+                      setGrouping(value)
+                    }}
+                  >
+                    {label}
+                  </MenuItem>
+                ))}
+              </MenuSection>
+            )}
+          </Menu>
           <button className="btn btn--subtle btn--icon btn--sm" onClick={() => setShowNew(true)} title="New session">
             <Plus size={13} strokeWidth={2} />
           </button>
@@ -52,16 +90,46 @@ export function ParleySurface(): ReactNode {
             </div>
           ) : (
             <div className="list">
-              {state.sessions.map((session) => (
-                <SessionRow
-                  key={session.id}
-                  session={session}
-                  active={session.id === state.activeSessionId}
-                  onOpen={() => void openSession(session.id)}
-                  onArchive={() => void archive(session)}
-                  onDelete={() => setPendingDelete(session)}
-                />
-              ))}
+              {groupSessions(state.sessions, grouping).map((group) => {
+                const folded = collapsed.has(group.key)
+                return (
+                  <div key={group.key}>
+                    {group.title ? (
+                      <button
+                        className="list-group__header"
+                        onClick={() =>
+                          setCollapsed((current) => {
+                            const next = new Set(current)
+                            if (next.has(group.key)) next.delete(group.key)
+                            else next.add(group.key)
+                            return next
+                          })
+                        }
+                      >
+                        {folded ? (
+                          <ChevronRight size={11} strokeWidth={2} />
+                        ) : (
+                          <ChevronDown size={11} strokeWidth={2} />
+                        )}
+                        <span className="list-group__title">{group.title}</span>
+                        <span className="dimmer tnum">{group.sessions.length}</span>
+                      </button>
+                    ) : null}
+                    {folded
+                      ? null
+                      : group.sessions.map((session) => (
+                          <SessionRow
+                            key={session.id}
+                            session={session}
+                            active={session.id === state.activeSessionId}
+                            onOpen={() => void openSession(session.id)}
+                            onArchive={() => void archive(session)}
+                            onDelete={() => setPendingDelete(session)}
+                          />
+                        ))}
+                  </div>
+                )
+              })}
             </div>
           )}
         </div>

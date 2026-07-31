@@ -3,6 +3,7 @@ import { FolderOpen, Plus, X } from 'lucide-react'
 import type { AgentConfig, Session, SessionKind } from '@shared/domain'
 import { api } from '../lib/api'
 import { seatLabel, shortPath } from '../lib/format'
+import { recentProjects } from '../lib/sessionGroups'
 import { useStore } from '../state'
 import { AgentPicker, defaultAgentA, defaultAgentB } from './AgentPicker'
 import { Dialog, Field } from './ui'
@@ -25,7 +26,7 @@ export function NewSessionDialog({
   onClose: () => void
   onStarted: (session: Session) => void
 }): ReactNode {
-  const { attempt } = useStore()
+  const { state, attempt } = useStore()
   const [kind, setKind] = useState<SessionKind>(initialKind)
   const [matter, setMatter] = useState(initialMatter ?? '')
   const [project, setProject] = useState('')
@@ -145,12 +146,20 @@ export function NewSessionDialog({
 
       <div className="field-row">
         <Field label="Project" hint="Optional label for grouping.">
+          {/* Suggestions only — a project is still free text, so a new one
+              costs nothing and an old one need not be retyped exactly. */}
           <input
             className="input"
             placeholder="Ledger"
+            list="recent-projects"
             value={project}
             onChange={(event) => setProject(event.target.value)}
           />
+          <datalist id="recent-projects">
+            {recentProjects(state.sessions).map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
         </Field>
 
         <Field

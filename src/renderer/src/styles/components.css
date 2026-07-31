@@ -396,6 +396,36 @@
   gap: 1px;
 }
 
+/* Sidebar group header. Quiet by design: it organises the list, it is not
+   an item in it, so it must not compete with the rows for attention. */
+.list-group__header {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: var(--s3) var(--s4) var(--s2);
+  background: none;
+  border: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-tiny);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-align: left;
+}
+
+.list-group__header:hover {
+  color: var(--text-secondary);
+}
+
+.list-group__title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .list-item {
   display: flex;
   flex-direction: column;
