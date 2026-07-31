@@ -20,6 +20,7 @@ import { NewPlanDialog, PlanPanel } from '../components/PlanPanel'
 import { NewSessionDialog } from '../components/NewSessionDialog'
 import { NewWorkspaceDialog } from '../components/NewWorkspaceDialog'
 import { PreviewCard } from '../components/PreviewCard'
+import { JourneyPanel } from '../components/JourneyPanel'
 import { useHoldJump } from '../components/HoldsPanel'
 import { Chip, Dot, Empty, Label, Spinner } from '../components/ui'
 
@@ -356,6 +357,15 @@ export function BacklogSurface(): ReactNode {
             />
           ) : (
             <>
+              {/* A guided build has no repository until its Foundation stage,
+                  so its home is the cross-repo view — which is also where
+                  "new app" already lives. */}
+              {repo === null ? (
+                <div style={{ padding: 'var(--s5) var(--s6) 0' }}>
+                  <JourneyPanel />
+                </div>
+              ) : null}
+
               {/* Tabs exist only within a repository — the all-repos view is
                   the cross-repo triage board it has always been. */}
               {repo ? (

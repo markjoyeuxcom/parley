@@ -99,6 +99,12 @@ export function App(): ReactNode {
         run: () => setQuickSession({ kind: 'review' }),
       },
       {
+        id: 'new.journey',
+        group: 'New',
+        label: 'Build an app — guided, from idea to reviewed',
+        run: () => dispatch({ type: 'surface', surface: 'backlog' }),
+      },
+      {
         id: 'new.app',
         group: 'New',
         label: 'App — scaffold a new project, proven green',

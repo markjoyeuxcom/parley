@@ -23,9 +23,9 @@ import {
 } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import type { Hold } from '@shared/holds'
-import type { RepoContainerStatus } from '@shared/ipc'
+import type { JourneyView, RepoContainerStatus } from '@shared/ipc'
 import type { InFlightRow } from '@shared/inflight'
-import type { JourneyProgress } from '@shared/journey'
+import { journeyStage, type JourneyProgress } from '@shared/journey'
 import type { AgentRegistry } from '@main/agents'
 import { isShellFree, shellMetacharsIn } from '@shared/command'
 import { EXECUTABLE_PAIRS } from '@shared/execution'
@@ -1663,6 +1663,20 @@ export class Manager {
       judged: plan ? this.repo.listAcceptancesForPlan(plan.id).length > 0 : false,
       hardened: harden?.status === 'complete',
     }
+  }
+
+  /** Every journey with the stage its links imply, newest first. */
+  listJourneyViews(): JourneyView[] {
+    return this.repo.listJourneys(this.registry.mock).map((journey) => {
+      const progress = this.journeyProgress(journey)
+      const workspace = journey.workspaceId ? this.repo.getWorkspace(journey.workspaceId) : null
+      return {
+        journey,
+        progress,
+        stage: journeyStage(progress),
+        repoPath: workspace?.repoPath ?? null,
+      }
+    })
   }
 
   /** Everything running right now, derived from the record. */

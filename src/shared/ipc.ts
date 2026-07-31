@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import type { AppJourney } from './domain'
+import type { JourneyProgress, JourneyStage } from './journey'
 import {
   AgentConfig,
   Capability,
@@ -234,6 +236,19 @@ export const RecordAcceptanceReq = z.object({
   changes: z.array(z.string().max(500)).max(30).default([]),
 })
 export const AcceptancePlanReq = z.object({ planId: Id })
+export const CreateJourneyReq = z.object({
+  name: z.string().trim().min(1).max(120),
+  brief: z.string().max(20_000).default(''),
+})
+export const UpdateJourneyReq = z.object({
+  journeyId: Id,
+  brief: z.string().max(20_000).optional(),
+  sessionId: Id.nullable().optional(),
+  workspaceId: Id.nullable().optional(),
+  planId: Id.nullable().optional(),
+  hardenSessionId: Id.nullable().optional(),
+})
+export const JourneyIdReq = z.object({ journeyId: Id })
 export const StartPreviewReq = z.object({
   repoPath: z.string().min(1),
   command: z.string().min(1).max(400),
@@ -345,6 +360,10 @@ export const COMMANDS = {
   'workspace.preview': WorkspacePreviewReq,
   'acceptance.record': RecordAcceptanceReq,
   'acceptance.list': AcceptancePlanReq,
+  'journey.create': CreateJourneyReq,
+  'journey.update': UpdateJourneyReq,
+  'journey.delete': JourneyIdReq,
+  'journey.list': null,
   'preview.start': StartPreviewReq,
   'preview.stop': PreviewIdReq,
   'preview.forget': PreviewIdReq,
@@ -497,6 +516,15 @@ export interface PaneIdentity {
  * devcontainer CLI is installed. The cli probe is fresh on every read — a
  * stale "missing" after an install would be worse than the probe's cost.
  */
+/** A journey with the stage its links currently imply. */
+export interface JourneyView {
+  journey: AppJourney
+  progress: JourneyProgress
+  stage: JourneyStage
+  /** The project's path once there is one, so the card can link to it. */
+  repoPath: string | null
+}
+
 export interface RepoContainerStatus {
   enabled: boolean
   configPresent: boolean

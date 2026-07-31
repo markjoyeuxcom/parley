@@ -247,6 +247,31 @@ const HANDLERS: Record<CommandName, Handler> = {
         changes: string[]
       },
     ),
+  'journey.list': (_p, ctx) => ctx.manager.listJourneyViews(),
+  'journey.create': (p, ctx) => {
+    const { name, brief } = p as { name: string; brief: string }
+    return ctx.manager.repo.createJourney({
+      id: newId(),
+      name,
+      brief,
+      sessionId: null,
+      workspaceId: null,
+      planId: null,
+      hardenSessionId: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      mock: ctx.manager.registry.mock,
+    })
+  },
+  'journey.update': (p, ctx) => {
+    const { journeyId, ...patch } = p as { journeyId: string } & Record<string, unknown>
+    return ctx.manager.repo.updateJourney(journeyId, patch)
+  },
+  'journey.delete': (p, ctx) => {
+    ctx.manager.repo.deleteJourney((p as { journeyId: string }).journeyId)
+    return { ok: true }
+  },
+
   'acceptance.list': (p, ctx) =>
     ctx.manager.repo.listAcceptancesForPlan((p as { planId: string }).planId),
 

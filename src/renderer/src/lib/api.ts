@@ -1,6 +1,7 @@
 import type {
   Acceptance,
   AgentConfig,
+  AppJourney,
   Approval,
   BacklogItem,
   Envelope,
@@ -36,6 +37,7 @@ import type {
   AppInfo,
   CliHealth,
   CommandName,
+  JourneyView,
   LedgerEntry,
   PaneIdentity,
   RepoContainerStatus,
@@ -186,6 +188,23 @@ export const api = {
     bridge().invoke('envelope.start', { planId, approvalId, caps }),
   stopEnvelope: (planId: Id): Promise<unknown> => bridge().invoke('envelope.stop', { planId }),
   listEnvelopes: (planId: Id): Promise<Envelope[]> => bridge().invoke('envelope.list', { planId }),
+
+  // Guided app builds
+  listJourneys: (): Promise<JourneyView[]> => bridge().invoke('journey.list'),
+  createJourney: (name: string, brief: string): Promise<AppJourney> =>
+    bridge().invoke('journey.create', { name, brief }),
+  updateJourney: (
+    journeyId: Id,
+    patch: {
+      brief?: string
+      sessionId?: Id | null
+      workspaceId?: Id | null
+      planId?: Id | null
+      hardenSessionId?: Id | null
+    },
+  ): Promise<AppJourney> => bridge().invoke('journey.update', { journeyId, ...patch }),
+  deleteJourney: (journeyId: Id): Promise<unknown> =>
+    bridge().invoke('journey.delete', { journeyId }),
 
   // Acceptance — the human's judgement on finished work
   listAcceptances: (planId: Id): Promise<Acceptance[]> =>

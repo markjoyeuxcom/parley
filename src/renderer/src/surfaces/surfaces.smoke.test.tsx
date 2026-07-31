@@ -35,6 +35,7 @@ import { GridSurface } from './GridSurface'
 import { PlanPanel } from '../components/PlanPanel'
 import { NewWorkspaceDialog } from '../components/NewWorkspaceDialog'
 import { PreviewCard } from '../components/PreviewCard'
+import { JourneyPanel } from '../components/JourneyPanel'
 import { LoopsSurface } from './LoopsSurface'
 
 /** Activates a surface the way the titlebar would — some surfaces only fetch
@@ -362,6 +363,7 @@ function installBridge(
     'workspace.list': () => [],
     'preview.list': () => [],
     'acceptance.list': () => [],
+    'journey.list': () => [],
     'repo.containerStatus': () => ({
       enabled: false,
       configPresent: true,
@@ -505,6 +507,72 @@ describe('mounted-surface smoke', () => {
     act(() => appEventListener?.({ type: 'pane.closed', paneId: pane.id }))
     act(() => appEventListener?.({ type: 'pane.created', pane: { ...pane, id: 'q'.repeat(36) } }))
     await screen.findByText('1')
+  })
+
+  it('the guided build shows the stage its links imply, and hands off to the real control', async () => {
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    const journey = {
+      id: 'g'.repeat(36),
+      name: 'Recipe box',
+      brief: 'A box for recipes.',
+      sessionId: null,
+      workspaceId: null,
+      planId: null,
+      hardenSessionId: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      mock: true,
+    }
+    installBridge({
+      'journey.list': () => [
+        {
+          journey,
+          progress: {
+            hasBrief: true,
+            challengeSettled: false,
+            foundationReady: false,
+            buildComplete: false,
+            judged: false,
+            hardened: false,
+          },
+          stage: 'challenge',
+          repoPath: null,
+        },
+      ],
+      'session.start': (payload) => {
+        invoked.push({ name: 'session.start', payload })
+        return { ...session, id: 'n'.repeat(36) }
+      },
+      'journey.update': (payload) => {
+        invoked.push({ name: 'journey.update', payload })
+        return journey
+      },
+    })
+
+    render(
+      <StoreProvider>
+        <JourneyPanel />
+      </StoreProvider>,
+    )
+
+    // The stage comes from what the links point at — the brief exists, the
+    // debate has not settled, so Challenge is where it stands.
+    await screen.findByText(/step 2 of 6 · Challenge/)
+    await screen.findByText(/Put the brief to two model families/)
+
+    // The stage's action opens the ORDINARY control, prefilled from the brief.
+    fireEvent.click(screen.getByRole('button', { name: /Challenge the brief/ }))
+    // The debate opens with the brief already as its matter — the guide
+    // carries the words across rather than making the user retype them.
+    await screen.findByDisplayValue('A box for recipes.')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start debate' }))
+    // Starting it links the session back — that link is the guide's whole job.
+    await waitFor(() => expect(invoked.map((entry) => entry.name)).toContain('journey.update'))
+    const patch = invoked.find((entry) => entry.name === 'journey.update')?.payload as {
+      sessionId: string
+    }
+    expect(patch.sessionId).toBe('n'.repeat(36))
   })
 
   it('a completed milestone can be accepted, and requested changes file as backlog items', async () => {
