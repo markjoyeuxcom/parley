@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
-import type { RemoteEvent, RemoteRequest, RemoteTarget } from '@shared/remote'
-import { decodeEvent, encodeRequest, sshArgv } from './protocol'
+import type { RemoteFrame, RemoteRequest, RemoteTarget } from '@shared/remote'
+import { decodeFrame } from './frames'
+import { encodeRequest, sshArgv } from './protocol'
 
 /**
  * One conversation with a remote helper.
@@ -44,7 +45,7 @@ export interface SshRunResult {
 export interface SshRunOptions {
   target: Pick<RemoteTarget, 'host'>
   request: RemoteRequest
-  onEvent: (event: RemoteEvent) => void
+  onFrame: (frame: RemoteFrame) => void
   signal?: AbortSignal
   timeoutMs?: number
   /** Injected in tests; the real one is resolved from PATH. */
@@ -115,10 +116,10 @@ export function runSsh(opts: SshRunOptions): Promise<SshRunResult> {
       while (newline >= 0) {
         const line = pending.slice(0, newline)
         pending = pending.slice(newline + 1)
-        const event = decodeEvent(line)
-        if (event) {
+        const frame = decodeFrame(line)
+        if (frame) {
           sawEvent = true
-          opts.onEvent(event)
+          opts.onFrame(frame)
         } else if (line.trim().length > 0 && unreadable.length < MAX_UNREADABLE) {
           unreadable.push(line.slice(0, 500))
         }

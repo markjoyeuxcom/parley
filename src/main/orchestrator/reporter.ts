@@ -190,3 +190,87 @@ export class StoreMilestoneReporter implements MilestoneReporter {
     return this.current
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Facts that arrived from somewhere else                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Validates a fact that came off the wire before it can touch the record.
+ *
+ * Nothing that arrives from another machine reaches {@link milestonePatch}
+ * without passing through here. The reason is not distrust of our own helper —
+ * it is that a fact is an instruction to write the user's record, and an
+ * instruction with a field of the wrong type would be applied as enthusiastically
+ * as a correct one.
+ *
+ * The optional fields are the delicate part. `completedAt` omitted means leave
+ * the stamp alone; `completedAt: null` means clear it. JSON drops undefined, so
+ * the wire preserves that distinction for free — but only if this function asks
+ * whether the key is PRESENT rather than whether its value is undefined. An
+ * object built locally can hold an explicit undefined, and testing for
+ * undefined would silently merge the two instructions.
+ */
+export function decodeMilestoneFact(value: unknown): MilestoneFact | null {
+  if (typeof value !== 'object' || value === null) return null
+  const raw = value as Record<string, unknown>
+  const present = (key: string): boolean => Object.prototype.hasOwnProperty.call(raw, key)
+
+  switch (raw.kind) {
+    case 'phase':
+      return raw.phase === 'executing' || raw.phase === 'testing' || raw.phase === 'reviewing'
+        ? { kind: 'phase', phase: raw.phase }
+        : null
+    case 'checkpoint':
+      // Any shape is legitimate here — run state is the driver's own private
+      // vocabulary — but presence is not: an absent checkpoint and a cleared
+      // one mean opposite things about whether a run can be resumed.
+      return present('runState') ? { kind: 'checkpoint', runState: raw.runState as never } : null
+    case 'spend':
+      return typeof raw.usage === 'object' && raw.usage !== null
+        ? { kind: 'spend', usage: raw.usage as never }
+        : null
+    case 'verification':
+      if (!present('result')) return null
+      if (raw.result !== null && typeof raw.result !== 'object') return null
+      return { kind: 'verification', result: raw.result as never }
+    case 'narrative':
+      return typeof raw.note === 'string'
+        ? {
+            kind: 'narrative',
+            note: raw.note,
+            blocking: strings(raw.blocking),
+            notes: strings(raw.notes),
+          }
+        : null
+    case 'judgement':
+      if (!present('passed')) return null
+      if (raw.passed !== null && typeof raw.passed !== 'boolean') return null
+      return { kind: 'judgement', passed: raw.passed }
+    case 'finished': {
+      if (typeof raw.passed !== 'boolean' || typeof raw.note !== 'string') return null
+      const fact: MilestoneFact = { kind: 'finished', passed: raw.passed, note: raw.note }
+      if (present('completedAt')) {
+        if (raw.completedAt !== null && typeof raw.completedAt !== 'number') return null
+        fact.completedAt = raw.completedAt
+      }
+      if (present('judgement')) {
+        if (raw.judgement !== null && typeof raw.judgement !== 'boolean') return null
+        fact.judgement = raw.judgement
+      }
+      return fact
+    }
+    case 'planOutcome':
+      return raw.status === 'ready' || raw.status === 'complete' || raw.status === 'failed'
+        ? { kind: 'planOutcome', status: raw.status }
+        : null
+    default:
+      return null
+  }
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string')
+    : []
+}

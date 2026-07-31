@@ -10,7 +10,7 @@
  * while its containment checks inspect another has no guarantees at all — it
  * has a race with good manners.
  *
- * Two properties this file exists to protect:
+ * Four properties this file exists to protect:
  *
  * **Nothing dynamic is ever interpolated into the ssh command line.** The
  * remote command is a compile-time constant. Every value that varies — the
@@ -20,12 +20,26 @@
  * remote login shell, so argv does not survive the wire; the answer is to send
  * no argv over the wire at all. `isShellFree` keeps meaning what it means.
  *
- * **Output is framed.** The helper's stdout carries protocol messages only. A
- * child process's stdout is wrapped in a message, never written raw to the
- * same stream — one test printing `{` at the wrong moment would otherwise turn
- * the protocol into soup. The ssh process's own stderr stays reserved for
- * failures where the helper could not start or could not speak the protocol,
- * which is exactly the class of failure that has no in-band representation.
+ * **Everything is framed and sequenced.** The helper's stdout carries protocol
+ * frames only — a child process's output is wrapped in one, never written raw
+ * to the same stream, or one test printing `{` at the wrong moment would turn
+ * the protocol into soup. Each frame carries the run it belongs to and a
+ * sequence number so a receiver can deduplicate. That matters BEFORE
+ * reconnection exists, not after: a connection that dies between the remote
+ * emitting a fact and learning it was received will resend, and a protocol
+ * without identity has no way to notice. Adding these fields later would
+ * change every message. The ssh process's own stderr stays reserved for
+ * failures where the helper could not start or could not speak at all.
+ *
+ * **Omission and null are different instructions.** A fact that omits
+ * `completedAt` leaves the stamp alone; one that sends null clears it. JSON
+ * drops undefined, which is the behaviour we want — but only if the receiving
+ * side tests for PRESENCE rather than for undefined.
+ *
+ * **The local environment never travels.** The remote process inherits the
+ * remote user's environment plus a small, explicitly allowed overlay. Sending
+ * process.env would transport cloud credentials, API keys, session tokens and
+ * paths that mean nothing over there.
  *
  * Lives in shared because the renderer must describe a target and its
  * capabilities before you approve a run on it, not after.
@@ -43,6 +57,9 @@ export const REMOTE_PROTOCOL_VERSION = 1
  * vary by run — see the note above about ssh and argv.
  */
 export const REMOTE_HELPER_COMMAND = 'parley-remote'
+
+/** The bundle is one file with no runtime npm dependencies. This is its floor. */
+export const REMOTE_NODE_FLOOR = 20
 
 /** Ref namespace for a run's transported states. Never user-visible history. */
 export const RUN_REF_PREFIX = 'refs/parley/runs'
@@ -74,17 +91,58 @@ export interface RemoteRepositorySpec {
 }
 
 /**
- * What the remote needs to execute a milestone. Deliberately the milestone
- * itself and its plan's execution-relevant fields — NOT the record. Parley's
- * record stays on the user's machine; the remote is an execution appliance
- * that is told what to run, not a second copy of the truth.
+ * The milestone state the execution core actually consumes.
+ *
+ * Deliberately not the database row. Sending the whole record because it is
+ * convenient would put every column on the wire and make each schema change a
+ * protocol change; it would also ship fields the core never reads to a machine
+ * that has no business holding them.
+ *
+ * `recordVersion` is what makes replay safe. The remote reports facts against
+ * the state it was given, and if the local record has moved on since — a human
+ * stopped the run, an adopt landed, the plan was re-drafted — those facts are
+ * true about a state that no longer exists. Replay rejects them rather than
+ * writing a truthful report onto the wrong row.
  */
-export interface RemoteRunSpec {
-  planId: string
+export interface RemoteMilestoneContext {
   milestoneId: string
-  /** Serialised milestone + the plan fields the pipeline reads. */
-  payload: unknown
+  planId: string
+  status: string
+  /** Serialised run state: where an interrupted run would resume from. */
+  checkpoint: unknown | null
+  narrative: string | null
+  verification: unknown | null
+  recordVersion: number
 }
+
+export interface RemoteRunSpec {
+  context: RemoteMilestoneContext
+  /** The plan fields the core reads — executor, reviewer, isolation, caps. */
+  plan: unknown
+  /** The milestone definition itself: intent, files, test command, mutations. */
+  milestone: unknown
+}
+
+/**
+ * Environment variables a request may never set.
+ *
+ * Every one of these would let a request reach past the protocol and change
+ * how the runner itself behaves: relocate the home directory the agent CLIs
+ * read their credentials from, redirect git at another repository, or inject
+ * code into every process the runner spawns. The runner owns them.
+ */
+export const FORBIDDEN_ENV = [
+  'HOME',
+  'PATH',
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_CONFIG_GLOBAL',
+  'GIT_SSH_COMMAND',
+  'LD_PRELOAD',
+  'DYLD_INSERT_LIBRARIES',
+  'NODE_OPTIONS',
+]
 
 export interface RemoteRequest {
   version: number
@@ -93,24 +151,50 @@ export interface RemoteRequest {
   repository?: RemoteRepositorySpec
   run?: RemoteRunSpec
   /**
-   * Allow-listed environment for the remote pipeline. Never the local
-   * environment wholesale: it carries this machine's PATH, tokens and
-   * home-directory assumptions, none of which are true over there.
+   * A small overlay on the REMOTE user's environment — never a copy of this
+   * machine's. Secrets get their own declared mechanism when they are needed;
+   * they must not arrive by generic forwarding.
    */
   env?: Record<string, string>
 }
 
+/** Strips anything a request may not set. Applied on both sides, deliberately. */
+export function safeEnvOverlay(env: Record<string, string> | undefined): Record<string, string> {
+  if (!env) return {}
+  const forbidden = new Set(FORBIDDEN_ENV)
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (forbidden.has(key.toUpperCase())) continue
+    out[key] = value
+  }
+  return out
+}
+
 /* ------------------------------------------------------------------ */
-/* Events                                                              */
+/* What a host can actually do                                         */
 /* ------------------------------------------------------------------ */
 
+export interface RemoteVendorDetail {
+  /** Absolute path as the runner resolved it, or null when nothing was found. */
+  executable: string | null
+  version: string | null
+  /** The CLI's own config was found. NOT a promise that the subscription works. */
+  configured: boolean
+  /**
+   * The permission posture the runner observed, when the CLI has one worth
+   * naming. Surfaced rather than buried in an adapter: a host whose agy will
+   * execute allow-listed tools is a materially different host to run on.
+   */
+  permissionMode: string | null
+}
+
 /**
- * Capabilities the helper reports before any work is dispatched.
+ * What the helper reports before any work is dispatched.
  *
- * `vendors` is load-bearing: a target without the plan's executor CLI
- * installed and signed in cannot run the plan, and discovering that after
- * pushing a snapshot and spending an approval is the expensive way to find
- * out. Parley refuses at the gate instead.
+ * The distinction that earns its place here is supported vs available.
+ * "This bundle knows how to drive codex" and "codex is usable on this host"
+ * are different facts, and collapsing them into one list makes every failure
+ * ambiguous — you cannot tell an out-of-date bundle from an unprovisioned host.
  */
 export interface RemoteCapabilities {
   /**
@@ -120,24 +204,40 @@ export interface RemoteCapabilities {
    * good helper or accept an incompatible one.
    */
   protocolVersion: number
-  /** What the helper IS — the bundle's content hash. Identity, not compatibility. */
+  /**
+   * What the helper IS: the SHA-256 of the bundle, computed by the runner
+   * hashing its own file at startup. Identity, not compatibility.
+   */
   buildId: string
   nodeVersion: string
-  /**
-   * Named abilities, so a helper can grow without a protocol bump and a
-   * caller can refuse precisely. A helper that cannot do mutation testing
-   * should say so here rather than fail a milestone halfway through it.
-   */
+  nodeExecutable: string
+  /** Named abilities, so a helper can grow without a protocol bump. */
   capabilities: string[]
-  /** Vendor slugs the remote can actually run, with the versions it found. */
-  vendors: Array<{ vendor: string; version: string }>
-  /** Absolute path under which the helper creates run worktrees. */
+  /** Adapters this bundle contains. */
+  supportedVendors: string[]
+  /** Of those, the ones this host can actually run. */
+  availableVendors: string[]
+  vendorDetails: Record<string, RemoteVendorDetail>
+  /** Who the run would execute as, and whose CLI credentials it would use. */
+  user: string
+  home: string
+  /**
+   * The PATH a non-interactive ssh session actually gets. Reported because it
+   * is usually different from an interactive one — nvm, asdf and mise all live
+   * in shell startup files a non-interactive session never reads — and "it
+   * works in my ssh terminal" is the single most likely support question.
+   */
+  path: string
+  git: string | null
   runsRoot: string
-  git: string
 }
 
 /** The abilities a v1 milestone run needs a helper to declare. */
 export const REQUIRED_CAPABILITIES = ['git-worktree', 'pipeline-v1', 'mutation', 'evidence']
+
+/* ------------------------------------------------------------------ */
+/* Frames                                                              */
+/* ------------------------------------------------------------------ */
 
 export interface RemoteEvidenceManifest {
   /** The commit the milestone produced, published at the result ref. */
@@ -150,28 +250,44 @@ export interface RemoteEvidenceManifest {
    * almost nothing and would catch a helper that lied or a ref that moved.
    */
   changedPaths: string[]
-  /** Where logs and artifacts live on the remote, by run id. Never in the result tree. */
+  /** Where logs and artifacts live on the remote. Never in the result tree. */
   artifactsPath: string | null
 }
 
-export type RemoteEvent =
+export type RemoteBody =
   | { type: 'ready'; capabilities: RemoteCapabilities }
   /** A child process's output, attributed. Never raw on the wire. */
   | { type: 'stdout'; processId: string; data: string }
   | { type: 'stderr'; processId: string; data: string }
   | { type: 'exit'; processId: string; code: number; signal: string | null }
-  /** Pipeline progress, mapped locally onto the same record writes as a local run. */
+  /** Progress worth showing a human. Never persisted. */
   | { type: 'progress'; phase: string; text: string }
   /**
-   * One fact the execution core observed. Deliberately a fact, not a store
+   * One thing the execution core observed. Deliberately a fact, not a store
    * write: the core reports what happened and each side decides what that
-   * means — a row here, a JSONL line there — so the protocol never depends on
-   * the shape of anybody's database.
+   * means, so the protocol never depends on the shape of anybody's database.
    */
-  | { type: 'report'; report: unknown }
+  | { type: 'fact'; fact: unknown }
   | { type: 'result'; outcome: 'complete' | 'failed'; manifest: RemoteEvidenceManifest }
   /** The helper could speak, and is telling us it cannot continue. */
   | { type: 'error'; message: string; retryable: boolean }
+
+/**
+ * Every line the helper writes.
+ *
+ * `sequence` is monotonic within a run and starts at 1. It exists so a
+ * receiver can deduplicate: the moment reconnection is possible, a frame the
+ * remote sent but could not confirm will arrive twice, and a record written
+ * twice from one observation is a corrupted record. The remote also journals
+ * its frames per run, so a future reconnect can ask to resume after a
+ * sequence rather than replay a whole milestone.
+ */
+export interface RemoteFrame {
+  protocolVersion: number
+  runId: string
+  sequence: number
+  body: RemoteBody
+}
 
 /* ------------------------------------------------------------------ */
 /* Targets                                                             */

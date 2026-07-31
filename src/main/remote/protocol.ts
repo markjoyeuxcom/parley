@@ -3,21 +3,16 @@ import {
   REMOTE_PROTOCOL_VERSION,
   REQUIRED_CAPABILITIES,
   type RemoteCapabilities,
-  type RemoteEvent,
-  type RemoteEvidenceManifest,
   type RemoteRequest,
   type RemoteTarget,
 } from '@shared/remote'
 
 /**
- * The wire, as pure functions.
+ * Reaching a host, and deciding whether it can do the work.
  *
- * Everything here is total and synchronous so the rules can be proven without
- * a network, a host, or a helper: how the ssh command line is built, what a
- * request looks like, and — the part that earns its tests — what happens when
- * the far end sends something unexpected. A protocol reader that throws on
- * malformed input turns a noisy remote into a crashed run; a reader that
- * silently accepts anything turns it into a wrong one. This one does neither.
+ * Total and synchronous, so the rules can be proven without a network, a host
+ * or a helper. Reading and writing frames lives next door in frames.ts, which
+ * both ends share.
  */
 
 /**
@@ -65,132 +60,6 @@ export function handshakeRequest(runId: string): RemoteRequest {
 }
 
 /* ------------------------------------------------------------------ */
-/* Reading the far end                                                 */
-/* ------------------------------------------------------------------ */
-
-/**
- * One line of the helper's stdout.
- *
- * Returns null for anything that is not a well-formed event rather than
- * throwing or guessing. A helper that prints a stray banner, a shell profile
- * that echoes a message on login, a truncated final line — none of these are
- * protocol events, and none of them should be able to end a run. The caller
- * counts them; enough unreadable output with no readable output is its own
- * diagnosis, and a better one than a parse exception.
- */
-export function decodeEvent(line: string): RemoteEvent | null {
-  const trimmed = line.trim()
-  if (!trimmed.startsWith('{')) return null
-
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(trimmed)
-  } catch {
-    return null
-  }
-  if (typeof parsed !== 'object' || parsed === null) return null
-
-  const event = parsed as Record<string, unknown>
-  const type = event.type
-  if (typeof type !== 'string') return null
-
-  switch (type) {
-    case 'ready': {
-      const capabilities = decodeCapabilities(event.capabilities)
-      return capabilities ? { type: 'ready', capabilities } : null
-    }
-    case 'stdout':
-    case 'stderr': {
-      const processId = str(event.processId)
-      const data = str(event.data)
-      if (processId === null || data === null) return null
-      return { type, processId, data }
-    }
-    case 'exit': {
-      const processId = str(event.processId)
-      const code = num(event.code)
-      if (processId === null || code === null) return null
-      return { type: 'exit', processId, code, signal: str(event.signal) }
-    }
-    case 'progress': {
-      const phase = str(event.phase)
-      const text = str(event.text)
-      if (phase === null || text === null) return null
-      return { type: 'progress', phase, text }
-    }
-    case 'report': {
-      if (!('report' in event)) return null
-      return { type: 'report', report: event.report }
-    }
-    case 'result': {
-      const outcome = event.outcome
-      if (outcome !== 'complete' && outcome !== 'failed') return null
-      const manifest = decodeManifest(event.manifest)
-      if (!manifest) return null
-      return { type: 'result', outcome, manifest }
-    }
-    case 'error': {
-      const message = str(event.message)
-      if (message === null) return null
-      return { type: 'error', message, retryable: event.retryable === true }
-    }
-    default:
-      return null
-  }
-}
-
-function decodeCapabilities(value: unknown): RemoteCapabilities | null {
-  if (typeof value !== 'object' || value === null) return null
-  const raw = value as Record<string, unknown>
-  const protocolVersion = num(raw.protocolVersion)
-  const buildId = str(raw.buildId)
-  const nodeVersion = str(raw.nodeVersion)
-  const runsRoot = str(raw.runsRoot)
-  const git = str(raw.git)
-  if (protocolVersion === null || buildId === null) return null
-  if (nodeVersion === null || runsRoot === null || git === null) return null
-  const abilities = Array.isArray(raw.capabilities)
-    ? raw.capabilities.filter((entry): entry is string => typeof entry === 'string')
-    : []
-
-  const vendors: RemoteCapabilities['vendors'] = []
-  if (Array.isArray(raw.vendors)) {
-    for (const entry of raw.vendors) {
-      if (typeof entry !== 'object' || entry === null) continue
-      const vendor = str((entry as Record<string, unknown>).vendor)
-      const vendorVersion = str((entry as Record<string, unknown>).version)
-      if (vendor === null || vendorVersion === null) continue
-      vendors.push({ vendor, version: vendorVersion })
-    }
-  }
-  return { protocolVersion, buildId, nodeVersion, capabilities: abilities, vendors, runsRoot, git }
-}
-
-function decodeManifest(value: unknown): RemoteEvidenceManifest | null {
-  if (typeof value !== 'object' || value === null) return null
-  const raw = value as Record<string, unknown>
-  const baseCommit = str(raw.baseCommit)
-  if (baseCommit === null) return null
-  const changedPaths = Array.isArray(raw.changedPaths)
-    ? raw.changedPaths.filter((entry): entry is string => typeof entry === 'string')
-    : []
-  return {
-    resultCommit: str(raw.resultCommit),
-    baseCommit,
-    changedPaths,
-    artifactsPath: str(raw.artifactsPath),
-  }
-}
-
-function str(value: unknown): string | null {
-  return typeof value === 'string' ? value : null
-}
-
-function num(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
-
-/* ------------------------------------------------------------------ */
 /* The handshake's verdict                                             */
 /* ------------------------------------------------------------------ */
 
@@ -199,9 +68,19 @@ function num(value: unknown): number | null {
  *
  * Checked BEFORE a snapshot is pushed and before an approval is spent, because
  * every one of these failures is knowable in advance and none of them is worth
- * discovering from a half-finished run. The vendor check is the one that pays
- * for itself: a target without the plan's executor CLI signed in produces a
- * confident-looking failure thirty seconds in.
+ * discovering from a half-finished run.
+ *
+ * The vendor check distinguishes two failures that look identical from the
+ * outside and have opposite fixes. A vendor this BUNDLE does not support means
+ * the helper is out of date — upgrade the host's parley-remote. A vendor the
+ * bundle supports but the HOST cannot run means the CLI is missing or
+ * unconfigured over there — install it and sign in. Collapsing them into "no
+ * claude on that host" would send people to fix the wrong machine.
+ *
+ * What it deliberately does NOT claim: that the subscription works. A config
+ * file is evidence of intent, not of a valid session, and probing properly
+ * would mean spending. An expired login is an ordinary execution failure and
+ * must arrive as one.
  */
 export function targetRefusal(
   capabilities: RemoteCapabilities,
@@ -210,18 +89,72 @@ export function targetRefusal(
   if (capabilities.protocolVersion !== REMOTE_PROTOCOL_VERSION) {
     return `the remote helper speaks protocol v${capabilities.protocolVersion}, this Parley speaks v${REMOTE_PROTOCOL_VERSION} — run \`parley remote upgrade\` for that host, or update this Parley`
   }
+
   // Named abilities are checked separately from the protocol version, because
   // a helper can grow one without the other moving. A helper that cannot
   // mutate should be refused here, not halfway through a mutation stage.
   const declared = new Set(capabilities.capabilities)
   const unsupported = REQUIRED_CAPABILITIES.filter((ability) => !declared.has(ability))
   if (unsupported.length > 0) {
-    return `the remote helper (build ${capabilities.buildId.slice(0, 12)}) does not support ${unsupported.join(', ')} — upgrade it for that host`
+    return `the remote helper (build ${short(capabilities.buildId)}) does not support ${unsupported.join(', ')} — run \`parley remote upgrade\` for that host`
   }
-  const have = new Set(capabilities.vendors.map((entry) => entry.vendor))
-  const missing = [...new Set(needs)].filter((vendor) => !have.has(vendor))
+
+  const wanted = [...new Set(needs)]
+  const supported = new Set(capabilities.supportedVendors)
+  const outdated = wanted.filter((vendor) => !supported.has(vendor))
+  if (outdated.length > 0) {
+    return `the remote helper (build ${short(capabilities.buildId)}) has no adapter for ${outdated.join(' or ')} — run \`parley remote upgrade\` for that host`
+  }
+
+  const available = new Set(capabilities.availableVendors)
+  const missing = wanted.filter((vendor) => !available.has(vendor))
   if (missing.length > 0) {
-    return `the remote host has no working ${missing.join(' or ')} CLI — install it there and sign in, then try again`
+    return `${missing.map((vendor) => vendorProblem(vendor, capabilities)).join('; ')} — fix that on ${capabilities.user}@${capabilities.home}, then try again`
   }
   return null
+}
+
+/** The specific reason one vendor is unusable, so one trip fixes the host. */
+function vendorProblem(vendor: string, capabilities: RemoteCapabilities): string {
+  const detail = capabilities.vendorDetails[vendor]
+  if (!detail || detail.executable === null) {
+    // The likeliest cause by far, and the one people lose an afternoon to: a
+    // non-interactive ssh session gets a different PATH from a login shell,
+    // so nvm/asdf/mise-managed CLIs are simply not there. Say the PATH.
+    return `${vendor} was not found on the remote PATH (${capabilities.path})`
+  }
+  if (!detail.configured) {
+    return `${vendor} is installed at ${detail.executable} but has no configuration — sign in there`
+  }
+  return `${vendor} is present but unusable`
+}
+
+function short(buildId: string): string {
+  return buildId.slice(0, 12)
+}
+
+/**
+ * Whether a host is worth reporting on at all, separate from any one plan.
+ *
+ * Used by `parley remote status`, which should describe a host honestly even
+ * when nothing is being run on it.
+ */
+export function hostWarnings(capabilities: RemoteCapabilities): string[] {
+  const warnings: string[] = []
+  if (capabilities.git === null) {
+    warnings.push('git was not found on the remote PATH — no run can fetch its snapshot')
+  }
+  const unusable = capabilities.supportedVendors.filter(
+    (vendor) => !capabilities.availableVendors.includes(vendor),
+  )
+  for (const vendor of unusable) warnings.push(vendorProblem(vendor, capabilities))
+  for (const [vendor, detail] of Object.entries(capabilities.vendorDetails)) {
+    // Surfaced rather than left in the adapter: a host whose agy will execute
+    // allow-listed tools without asking is a materially different host to run
+    // on, and that should be visible before a run, not after.
+    if (detail.permissionMode && detail.permissionMode !== 'ask') {
+      warnings.push(`${vendor} on that host is set to "${detail.permissionMode}" — it may act without prompting`)
+    }
+  }
+  return warnings
 }
