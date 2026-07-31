@@ -636,6 +636,30 @@ The rules, each enforced in main, none only in the renderer:
   is a separate, much later project. The hold's detail says so, so the UI
   never implies the installed copy updated.
 
+## Acceptance is a record, not a gate
+
+Verification and independent review decide correctness. Acceptance records
+whether the human wanted it. Keep them separate: making acceptance gate
+anything would put a human judgement in the position of a machine check,
+and the pipeline already refuses to let an agent certify its own work for
+the same family of reasons.
+
+- **It is the backlog's provenance for feedback.** The backlog rule is that
+  every item traces to something that happened, which is why no free-typing
+  add exists. Notes filed while judging carry `source: 'acceptance'` and
+  the acceptance id; that is what makes typed feedback admissible at all.
+  Do not add a bare "new item" button — add a record it can come from.
+- **Recording is one transaction.** An acceptance whose notes did not file
+  is feedback nobody can act on; items without their acceptance are exactly
+  the untraceable typing the rule forbids. That is why `fileBacklogItemCore`
+  exists — SQLite refuses a nested BEGIN, so a caller already in a
+  transaction needs the core (the `createPlanCore` precedent).
+- **A human's own words file `open`, not `proposed`.** Proposals exist
+  because an AGENT drafted them and nobody had agreed yet. The event log
+  records the source as `human` for the same reason.
+- **Refused before completion.** Judging unfinished work would record
+  someone looking at something that did not exist.
+
 ## Previews: the third process path, and why it is separate
 
 `capture` runs a command to completion; a Grid pane is an interactive

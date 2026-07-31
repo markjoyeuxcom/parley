@@ -481,6 +481,26 @@ is a repository whose `npm run verify` means something from its first
 commit — which is exactly what an audited plan needs to verify anything at
 all.
 
+## Acceptance
+
+A completed milestone has passed its tests and an independent review, which
+settles whether it is *correct*. It does not settle whether it is what you
+wanted, and nothing but you can. So a completed milestone offers **Accept**
+and **Request changes…**, and what you say is recorded.
+
+Requesting changes is also how feedback gets into the backlog at all.
+Parley has no free-typing "add item" anywhere: everything on a backlog is
+traceable to something that happened — a confirmed review finding, an
+accepted risk, a stow sweep. Notes written while judging finished work file
+as items with source `acceptance`, carrying that acceptance's id, so
+"someone typed it" becomes real provenance because the typing itself is on
+the record. They file straight to open, since you are the author and there
+is no one to propose to.
+
+Acceptance is deliberately **not a gate**. Nothing waits on it and nothing
+unlocks from it — it is a record, and a way of turning "that's not right"
+into work you will find again.
+
 ## Previews
 
 A repository's Overview carries a **Preview** card: Parley runs the

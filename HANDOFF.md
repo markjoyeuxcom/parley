@@ -297,8 +297,24 @@ the renderer. Command suggested from the project's package.json
 (dev→start→serve). Nothing persisted: a preview dies with the app (Pane
 precedent). One per repo.
 
-Remaining App Builder series: **(3) acceptance records + the
-'acceptance' backlog ingestion source**, **(4) the thin guided shell**
+**App Builder series 3 of 4: LANDED** (Acceptance m1–m3, schema 25).
+An acceptance is the human's judgement on a COMPLETED milestone —
+deliberately NOT a gate (verification + independent review already
+decide correctness; this decides whether it is what they wanted).
+Second job is the load-bearing one: it is the backlog's provenance for
+FEEDBACK. The backlog rule is that every item traces to something that
+happened, hence no free-typing add; notes written while judging file
+with source 'acceptance' + originAcceptanceId, straight to `open` (the
+human is the author; proposals exist because an AGENT drafted them),
+and the event log calls it a `human` act. **Recording is ONE
+transaction** — an acceptance whose notes did not file is unusable
+feedback, items without their acceptance are the untraceable typing the
+rule forbids — which required extracting `fileBacklogItemCore` (SQLite
+refuses nested BEGIN; the createPlanCore precedent). Controls sit ABOVE
+the fold: a completed milestone folds by default and the first draft
+hid the only thing still needing a person.
+
+Remaining: **App Builder series (4) the thin guided shell**
 (Brief → Challenge → Foundation → Build → Preview → Harden). Readiness
 stage = disposition ERGONOMICS, never auto-disposition.
 
