@@ -38,6 +38,7 @@ import {
 } from '@shared/protocol'
 import { capture, isShellFree, splitCommand, type CaptureResult } from '@main/util/spawn'
 import { ensureUp, runProjectCommand } from './containers'
+import { StoreMilestoneReporter, type MilestoneReporter } from './reporter'
 import { newId, type Repo } from '@main/store/repo'
 import { canonicalRepoPath } from '@main/util/repoPath'
 import { assertCapability, type AgentRegistry, type RunResult } from '@main/agents'
@@ -962,6 +963,33 @@ export class Pipeline {
    * code in the repo. The seed is exactly the preserved run state plus the
    * entry decision; a fresh run seeds zeros.
    */
+  /**
+   * The reporter a local run uses: facts become rows in this process's store.
+   *
+   * A remote run builds a different one that turns the same facts into framed
+   * protocol messages, which the local side replays through the same patch
+   * function — so both records are written by one definition rather than two
+   * that agree until they do not.
+   */
+  private reporterFor(
+    plan: WorkPlan,
+    milestone: Milestone,
+    activity: (phase: MilestonePhase, text: string) => void,
+  ): StoreMilestoneReporter {
+    return new StoreMilestoneReporter(
+      {
+        updateMilestone: (id, patch) => this.repo.updateMilestone(id, patch),
+        setRunState: (id, state) => this.repo.setMilestoneRunState(id, state),
+        addPlanUsage: (planId, usage) => this.repo.addPlanUsage(planId, usage),
+        setPlanStatus: (planId, status) => this.setStatus(planId, status),
+        emitMilestone: (row) => this.emit({ type: 'plan.milestone', milestone: row }),
+        emitActivity: (phase, text) => activity(phase as MilestonePhase, text),
+      },
+      milestone,
+      plan.id,
+    )
+  }
+
   private async driveMilestone(input: {
     milestoneId: Id
     plan: WorkPlan
@@ -985,12 +1013,18 @@ export class Pipeline {
     const signal = gate?.signal
     const before = input.runState.before
     let runState = input.runState
+
+    const entry = this.repo.getMilestone(milestoneId)
+    if (!entry) throw new PipelineError('milestone disappeared mid-run')
+    // Everything this loop records goes through the reporter from here on. The
+    // core states facts; the reporter decides they are rows. That indirection
+    // is what lets the identical loop run on a machine with no database.
+    const report = this.reporterFor(plan, entry, activity)
     const saveRunState = (patch: Partial<RunState>): void => {
       runState = { ...runState, ...patch }
-      this.repo.setMilestoneRunState(milestoneId, runState)
+      report.record({ kind: 'checkpoint', runState })
     }
-    let current = this.repo.getMilestone(milestoneId)
-    if (!current) throw new PipelineError('milestone disappeared mid-run')
+    let current = entry
 
     const executor = this.registry.get(plan.executor.vendor)
 
@@ -1038,12 +1072,12 @@ export class Pipeline {
     let lastNotes: string[] = []
     let lastMutationResults: MutationResult[] = []
     const publishHistory = (): void => {
-      current = this.repo.updateMilestone(milestoneId, {
-        reviewNote: history.join('\n\n'),
-        reviewBlocking: lastBlocking,
-        reviewNotes: lastNotes,
+      current = report.record({
+        kind: 'narrative',
+        note: history.join('\n\n'),
+        blocking: lastBlocking,
+        notes: lastNotes,
       })
-      this.emit({ type: 'plan.milestone', milestone: current })
     }
 
     // ── Execute → verify → review, remediating a bounded number of times ─────
@@ -1059,10 +1093,7 @@ export class Pipeline {
         // exists — if the review wants changes, the loop remediates normally.
         activity('testing', 'verifying the work the interrupted run left behind')
       } else {
-        if (remediating) {
-          current = this.repo.updateMilestone(milestoneId, { status: 'executing' })
-          this.emit({ type: 'plan.milestone', milestone: current })
-        }
+        if (remediating) current = report.record({ kind: 'phase', phase: 'executing' })
         activity(
           'executing',
           remediating
@@ -1118,7 +1149,7 @@ export class Pipeline {
           // is the only thing standing between the user and a half-hour spinner.
           onActivity: (text) => activity('executing', text),
         })
-        this.repo.addPlanUsage(plan.id, execution.usage)
+        report.record({ kind: 'spend', usage: execution.usage })
         if (execution.resumeId) executorResumeId = execution.resumeId
         // Persisted before the error check on purpose: an errored turn still
         // learned a resume id and still said something worth keeping.
@@ -1128,12 +1159,13 @@ export class Pipeline {
         })
 
         if (execution.error) {
-          current = this.repo.updateMilestone(milestoneId, {
-            status: 'failed',
-            reviewNote: [...history, gate?.isStopped ? STOPPED_NOTE : execution.error].join('\n\n'),
+          current = report.record({
+            kind: 'finished',
+            passed: false,
+            note: [...history, gate?.isStopped ? STOPPED_NOTE : execution.error].join('\n\n'),
+            completedAt: null,
           })
-          this.emit({ type: 'plan.milestone', milestone: current })
-          this.setStatus(plan.id, 'failed')
+          report.record({ kind: 'planOutcome', status: 'failed' })
           return current
         }
         executionText = execution.text
@@ -1156,6 +1188,7 @@ export class Pipeline {
         activity,
         signal,
         firstExecutionText: executionText,
+        report,
       })
       firstIteration = false
 
@@ -1232,22 +1265,26 @@ export class Pipeline {
     // A completed milestone has nothing to resume; a failed one keeps its run
     // state — that preservation is the whole difference between "start over"
     // and "continue from the critique".
-    if (finalPassed) this.repo.setMilestoneRunState(milestoneId, null)
-    current = this.repo.updateMilestone(milestoneId, {
-      status: finalPassed ? 'complete' : 'failed',
-      reviewNote: history.join('\n\n'),
+    if (finalPassed) report.record({ kind: 'checkpoint', runState: null })
+    current = report.record({
+      kind: 'finished',
+      passed: finalPassed,
+      note: history.join('\n\n'),
       completedAt: finalPassed ? Date.now() : null,
     })
-    this.emit({ type: 'plan.milestone', milestone: current })
     if (finalPassed) this.settleMilestoneReviewFindings(plan, milestoneId)
 
+    // Whether the PLAN is finished needs its other milestones, which is
+    // knowledge the machine running this core may not have — so the reading
+    // stays here, on the side that holds the record, and only the conclusion
+    // travels as a fact.
     const remaining = this.repo
       .listMilestones(plan.id)
       .filter((m) => m.status !== 'complete' && m.status !== 'rejected')
-    this.setStatus(
-      plan.id,
-      finalPassed && remaining.length === 0 ? 'complete' : finalPassed ? 'ready' : 'failed',
-    )
+    report.record({
+      kind: 'planOutcome',
+      status: finalPassed && remaining.length === 0 ? 'complete' : finalPassed ? 'ready' : 'failed',
+    })
     return current
   }
 
@@ -1277,8 +1314,10 @@ export class Pipeline {
     activity: (phase: MilestonePhase, text: string) => void
     signal?: AbortSignal
     firstExecutionText: string
+    /** The same reporter the driving loop uses; this pass states facts too. */
+    report: MilestoneReporter
   }): Promise<VerifyOutcome> {
-    const { milestoneId, plan, root, before, round, activity, signal } = input
+    const { milestoneId, plan, root, before, round, activity, signal, report } = input
     let current = this.repo.getMilestone(milestoneId)
     if (!current) throw new PipelineError('milestone disappeared mid-run')
 
@@ -1323,7 +1362,7 @@ export class Pipeline {
         activity('testing', `checking whether the existing work passes ${current.testCommand}`)
         const existingResult = await this.runTests(current.testCommand, root, { container: this.containerFor(plan), signal })
         if (existingResult) {
-          current = this.repo.updateMilestone(milestoneId, { testResult: existingResult })
+          current = report.record({ kind: 'verification', result: existingResult })
           existingWorkNote =
             existingResult.exitCode === 0
               ? ` The work already present does pass \`${existingResult.command}\`, so committing it may be all this milestone needed.`
@@ -1331,22 +1370,24 @@ export class Pipeline {
         }
       }
 
-      current = this.repo.updateMilestone(milestoneId, {
-        status: 'failed',
-        reviewPassed: false,
-        reviewNote:
+      // One fact, so one write and one event: the refusal and its verdict are
+      // the same moment, and splitting them would put a milestone through a
+      // transient state the surfaces would render.
+      current = report.record({
+        kind: 'finished',
+        passed: false,
+        judgement: false,
+        note:
           `${plan.executor.vendor} reported finishing this milestone, but the working tree is byte-for-byte unchanged — ` +
           `no tracked edits, nothing staged, no new files.${detail}${existingWorkNote}` +
           cause,
       })
-      this.emit({ type: 'plan.milestone', milestone: current })
-      this.setStatus(plan.id, 'failed')
+      report.record({ kind: 'planOutcome', status: 'failed' })
       return { kind: 'unchanged', milestone: current }
     }
 
     // ── Verify deterministically ─────────────────────────────────────────────
-    current = this.repo.updateMilestone(milestoneId, { status: 'testing' })
-    this.emit({ type: 'plan.milestone', milestone: current })
+    current = report.record({ kind: 'phase', phase: 'testing' })
 
     activity(
       'testing',
@@ -1359,8 +1400,7 @@ export class Pipeline {
         `${testResult.command} exited ${testResult.exitCode} in ${(testResult.durationMs / 1000).toFixed(1)}s`,
       )
     }
-    current = this.repo.updateMilestone(milestoneId, { testResult })
-    this.emit({ type: 'plan.milestone', milestone: current })
+    current = report.record({ kind: 'verification', result: testResult })
 
     // ── Mutation checks ──────────────────────────────────────────────────────
     //
@@ -1388,8 +1428,7 @@ export class Pipeline {
     }
 
     // ── Independent review ───────────────────────────────────────────────────
-    current = this.repo.updateMilestone(milestoneId, { status: 'reviewing' })
-    this.emit({ type: 'plan.milestone', milestone: current })
+    current = report.record({ kind: 'phase', phase: 'reviewing' })
 
     activity(
       'reviewing',
@@ -1418,7 +1457,7 @@ export class Pipeline {
       signal,
       timeoutMs: STAGE_TIMEOUT_MS,
     })
-    this.repo.addPlanUsage(plan.id, review.usage)
+    report.record({ kind: 'spend', usage: review.usage })
 
     const parsedReview = parseReview(review.text)
     if (parsedReview) {
@@ -1514,8 +1553,7 @@ export class Pipeline {
     }
     if (!parsedReview && !review.error) noteParts.push('The reviewer did not return a usable judgement.')
 
-    current = this.repo.updateMilestone(milestoneId, { reviewPassed })
-    this.emit({ type: 'plan.milestone', milestone: current })
+    current = report.record({ kind: 'judgement', passed: reviewPassed })
 
     return {
       kind: 'reviewed',
