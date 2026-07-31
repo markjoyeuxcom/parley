@@ -233,6 +233,12 @@ export interface CaptureResult {
  * actual script — npm's grandchild — alive to keep writing after the cut.
  * The self-update gate must never let an orphaned build keep touching out/
  * behind the guard's back.
+ *
+ * `env` REPLACES the inherited environment rather than extending it, so a
+ * caller that needs both must spread `process.env` itself. Replacing is the
+ * safer default for the callers that want this at all: they are setting
+ * GIT_INDEX_FILE and friends, where a stale inherited value silently changes
+ * which file git writes.
  */
 export function capture(
   command: string,
@@ -240,13 +246,13 @@ export function capture(
   cwd: string,
   timeoutMs = 15 * 60 * 1000,
   signal?: AbortSignal,
-  opts: { killTree?: boolean } = {},
+  opts: { killTree?: boolean; env?: Record<string, string> } = {},
 ): Promise<CaptureResult> {
   const startedAt = Date.now()
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
-      env: process.env,
+      env: opts.env ?? process.env,
       detached: opts.killTree === true,
     })
     let stdout = ''
