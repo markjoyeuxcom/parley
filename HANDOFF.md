@@ -32,12 +32,14 @@ improving *itself* through its own pipeline.
   tabs/titles, exchange fold, four-column layout, bulk dispositions,
   mounted smoke tests).
 - Commit messages: `<Series> mN: <lowercase sentence>`, thorough provenance
-  body, `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>` trailer.
+  body, and a `Co-Authored-By:` trailer naming the model that wrote it
+  (Fable 5 for most of the history, Opus 5 for the later App Builder and
+  Sessions work — the trailer follows the session, it is not a constant).
 - Two sessions have worked this repo in parallel all day. Schema numbers are
   taken as max+1 at land time, never assumed; existing migration guard blocks
   are never edited.
 
-## State at handoff (schema v20)
+## State at handoff
 
 - **Holds m1–m3**: the attention queue. Derived, never materialised; acks +
   notify-once stamps are the only new rows; decision holds refuse acks in the
