@@ -262,11 +262,34 @@ oldest-first, every row openable, bars only where a cap exists.
 **Still to do: the by-hand acceptance** — grant an envelope on a small
 real worktree plan and come back to merge-ready.
 
-1. **App Builder arc** (four series: workspace creator + foundation,
-   preview management, acceptance records + 'acceptance' ingestion
-   source, then the guided shell); readiness stage = disposition
-   ergonomics, never auto-disposition.
-2. **SSH/remote execution arc** after App Builder (execution-target
+**App Builder series 1 of 4: LANDED** (Workspace m1–m4, schema 24).
+The load-bearing fact: scaffolding is a NEW CAPABILITY CLASS — until this,
+Parley created no file in a user directory that did not already exist
+(the two writeFile sites are save-dialog destinations; the pipeline
+overwrites-then-restores a tracked file behind containment).
+`validateNewWorkspacePath` is the deliberate inverse of
+validateRepoPath and is stricter than needed (absolute, shell-free so
+`~` cannot make a literal folder, parent must exist, target absent or
+EMPTY, never userData/self). `workspace.create` approval granted
+against the RESOLVED path. Order is the feature: scaffold → commit →
+install → **verify must pass before `ready`**, else unwind (removing a
+dir Parley made entirely; emptying one the user picked). Template is
+CODE not config, pinned by templates.test.ts incl. that the shipped
+test passes against the shipped function; `PARLEY_LIVE_TEMPLATE=1`
+proves the real install+verify (passed 2026-07-31). `workspaces` is the
+FOURTH source of listRepoSummaries membership — a new project has no
+plan/backlog/learning and would otherwise be invisible. **Still to do:
+the by-hand acceptance** — create a real app, then plan a first feature
+against it.
+
+Remaining App Builder series: **(2) preview process management**
+(long-running dev server, killTree, Stop/Restart — valuable for
+existing repos independently), **(3) acceptance records + the
+'acceptance' backlog ingestion source**, **(4) the thin guided shell**
+(Brief → Challenge → Foundation → Build → Preview → Harden). Readiness
+stage = disposition ERGONOMICS, never auto-disposition.
+
+1. **SSH/remote execution arc** after App Builder (execution-target
    abstraction over the ~6 local-assuming touchpoints), composing with
    unattended for overnight VM runs.
 

@@ -453,6 +453,34 @@ landing — your role compresses to answering questions and resolving holds.
 
 ---
 
+## Starting a new app
+
+Parley can scaffold a new project rather than only improving existing ones.
+**New app** — in the ⌘K palette or on the Repos sidebar — asks for a name,
+a location and a template, then does four things in order: creates the
+folder, writes the template, makes the first commit, installs, and runs the
+project's own verification.
+
+The order is the feature. **A project is only recorded ready if its
+verification passes**, and if it does not, Parley removes what it made
+rather than leaving a half-built scaffold behind. A project whose tests
+could never run is the failure that eats an agent's hour and produces work
+nobody can honestly review; here it cannot reach milestone one.
+
+This is the one place Parley creates files where none existed, so it is
+fenced accordingly. The destination must be an empty folder or a
+not-yet-existing one inside a folder that does exist; never someone else's
+work, never an existing git repository, never inside Parley's own record or
+checkout. The path is validated live as you type, and creating the project
+spends a recorded `workspace.create` approval naming that exact path — the
+same shape as every other authorisation to write.
+
+The first commit is the project, not its dependency tree: the template
+carries a `.gitignore` and the commit lands before the install. What you get
+is a repository whose `npm run verify` means something from its first
+commit — which is exactly what an audited plan needs to verify anything at
+all.
+
 ## Unattended runs
 
 Five milestones normally cost five approval clicks with dead time between

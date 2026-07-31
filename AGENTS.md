@@ -636,6 +636,46 @@ The rules, each enforced in main, none only in the renderer:
   is a separate, much later project. The hold's detail says so, so the UI
   never implies the installed copy updated.
 
+## Scaffolding is its own capability class
+
+Until the workspace creator, one rule held absolutely: **Parley creates no
+file in a user directory that did not already exist.** The two `writeFile`
+sites are save-dialog destinations the user typed; the pipeline's writes
+overwrite-then-restore a tracked file behind a `realpathSync` containment
+check; `mkdir` happens only under userData. `validateRepoPath` demanding
+"the directory must already exist" is that rule's load-bearing expression.
+
+The creator inverts it, so the fence is the feature:
+
+- **`validateNewWorkspacePath` is the deliberate inverse** and is stricter
+  than it needs to be: absolute and shell-free (`~` is a metachar, and an
+  unexpanded tilde would create a literal `~` folder), the PARENT must
+  exist so a typo cannot grow a tree, the target must be absent or an EMPTY
+  directory, and never inside userData or the self checkout. Widening any
+  of these needs a better reason than convenience.
+- **`workspace.create` is a real approval**, granted against the RESOLVED
+  path and consumed in the same synchronous block as the validation. An
+  approval spent against a different path than it named would make the
+  record a lie.
+- **Verify before ready, always.** The workspace is recorded `ready` only
+  after the template's own verification exits 0. This is the whole point of
+  the series — the environmental-failure class dies by construction, not by
+  remediation — so a future change that marks a project ready on a skipped
+  or failed verification has removed the feature while keeping its UI.
+- **Unwind removes only what it made.** `createdRoot` distinguishes a
+  directory Parley created (remove entirely) from an empty one the user
+  chose in the picker (keep the folder, empty it).
+- **Commit before install**, so the first commit is the project rather than
+  its dependency tree. A test asserts `node_modules` is untracked.
+- **The template is code, not user data.** What Parley writes into a
+  stranger's empty folder belongs under review with the rest of the app;
+  `templates.test.ts` pins the load-bearing lines, including that the
+  shipped starting test passes against the shipped starting function.
+  `PARLEY_LIVE_TEMPLATE=1` proves the real install and verify.
+- **`workspaces` is the fourth source of repository membership.**
+  `listRepoSummaries` unions plans, backlog items and learnings; a
+  brand-new project has none of those and would otherwise be invisible.
+
 ## The envelope: batch the authorisation, never the authority
 
 An unattended run rests on one recorded approval (`plan.envelope`) from

@@ -308,14 +308,15 @@
     <li><a href="#holds">10 · Holds</a></li>
     <li><a href="#repos">11 · Repos</a></li>
     <li><a href="#foreman">12 · The foreman</a></li>
-    <li><a href="#unattended">13 · Unattended runs</a></li>
-    <li><a href="#devcontainers">14 · Dev containers</a></li>
-    <li><a href="#selfupdate">15 · Self-update</a></li>
+    <li><a href="#newapp">13 · Starting a new app</a></li>
+    <li><a href="#unattended">14 · Unattended runs</a></li>
+    <li><a href="#devcontainers">15 · Dev containers</a></li>
+    <li><a href="#selfupdate">16 · Self-update</a></li>
     <li class="g">Reference</li>
-    <li><a href="#shortcuts">16 · Keyboard shortcuts</a></li>
-    <li><a href="#mock">17 · Mock mode</a></li>
-    <li><a href="#troubleshooting">18 · Troubleshooting</a></li>
-    <li><a href="#data">19 · Where your data lives</a></li>
+    <li><a href="#shortcuts">17 · Keyboard shortcuts</a></li>
+    <li><a href="#mock">18 · Mock mode</a></li>
+    <li><a href="#troubleshooting">19 · Troubleshooting</a></li>
+    <li><a href="#data">20 · Where your data lives</a></li>
     <li><a href="#invariants">A · The ten invariants</a></li>
   </ol>
 </nav>
@@ -702,8 +703,38 @@ shows its per-item verdict under the panel's idle line instead of dying in a
 toast.</p>
 </section>
 
+<section id="newapp">
+<h2>13 · Starting a new app</h2>
+<p><b>New app</b> — in the ⌘K palette or on the Repos sidebar — scaffolds a
+project rather than improving one you already have. It creates the folder,
+writes the template, makes the first commit, installs, and runs the
+project&rsquo;s own verification.</p>
+<div class="callout">
+<p><b>Ready means proven.</b> The project is only recorded ready if that
+verification passes. If it fails, Parley removes what it made rather than
+leaving a half-built scaffold behind — a project whose tests cannot run is not
+safe ground for a plan, and finding that out during milestone one is how an
+agent&rsquo;s hour gets wasted.</p>
+</div>
+<ul>
+<li><b>Where it may go.</b> An empty folder, or one that does not exist yet
+inside a folder that does. Never someone else&rsquo;s work, never an existing
+git repository, never inside Parley&rsquo;s own record or checkout. The path is
+checked as you type.</li>
+<li><b>It is a recorded decision.</b> This is the only place Parley creates
+files where none existed, so it spends a <code>workspace.create</code> approval
+naming that exact path — like every other authorisation to write.</li>
+<li><b>The first commit is the project</b>, not its dependency tree: the commit
+lands before the install and the template carries a <code>.gitignore</code>.</li>
+<li><b>Then plan against it.</b> The new repository appears on Repos with a card
+saying Parley created it, and its <code>npm run verify</code> means something
+from the first commit — which is what an audited plan needs to verify anything
+at all.</li>
+</ul>
+</section>
+
 <section id="unattended">
-<h2>13 · Unattended runs</h2>
+<h2>14 · Unattended runs</h2>
 <p>Five milestones normally cost five approval clicks. An <b>envelope</b>
 replaces them with one: state the bounds up front, and Parley mints each
 milestone&rsquo;s own single-use approval from it as the run proceeds &mdash;
@@ -730,7 +761,7 @@ work lives.</p>
 </section>
 
 <section id="devcontainers">
-<h2>14 · Dev containers</h2>
+<h2>15 · Dev containers</h2>
 <p>When a repository&rsquo;s toolchain lives in a <code>.devcontainer/</code>
 image rather than on your Mac, Parley can run <strong>its own deterministic
 commands</strong> for that repository inside the container: milestone
@@ -759,7 +790,7 @@ host bytes.</li>
 </section>
 
 <section id="selfupdate">
-<h2>15 · Self-update <span class="dim">dev mode</span></h2>
+<h2>16 · Self-update <span class="dim">dev mode</span></h2>
 <p>When Parley runs from its own checkout (<code>npm run dev</code>), it knows
 which repository it is — and the loop closes on itself.</p>
 <ul>
@@ -790,7 +821,7 @@ separate, much later project.</p>
 </section>
 
 <section id="shortcuts">
-<h2>16 · Keyboard shortcuts</h2>
+<h2>17 · Keyboard shortcuts</h2>
 <table>
   <tr><th>Keys</th><th>Where</th><th>Action</th></tr>
   <tr><td><kbd>⌘K</kbd></td><td>Everywhere</td><td>Command palette — jump surfaces, start a debate or review</td></tr>
@@ -808,7 +839,7 @@ separate, much later project.</p>
 </section>
 
 <section id="mock">
-<h2>17 · Mock mode</h2>
+<h2>18 · Mock mode</h2>
 <p><code>PARLEY_MOCK=1 npm run dev</code> replaces both CLIs with
 deterministic mock adapters: every flow is walkable, nothing consults a model,
 no quota is spent. Because mock output is structurally identical to real
@@ -823,7 +854,7 @@ cover it instead.</p>
 </section>
 
 <section id="troubleshooting">
-<h2>18 · Troubleshooting</h2>
+<h2>19 · Troubleshooting</h2>
 <h3>Terminals will not start</h3>
 <p><code>posix_spawnp failed</code> on every pane — including a plain shell —
 means node-pty's <code>spawn-helper</code> binary is missing or not
@@ -844,7 +875,7 @@ preflight warns about exactly this before you spend anything, and offers
 </section>
 
 <section id="data">
-<h2>19 · Where your data lives</h2>
+<h2>20 · Where your data lives</h2>
 <p>Nowhere else. Sessions, verdicts, findings, dispositions, approvals, plans,
 loops, backlog, learnings, saved layouts and the whole audit trail live in
 SQLite under the app's own support directory
