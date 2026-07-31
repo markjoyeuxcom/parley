@@ -135,6 +135,15 @@ export interface MilestoneReporter {
   record(fact: MilestoneFact): Milestone
   /** Progress worth showing a human while a long stage runs. Never persisted. */
   activity(phase: string, text: string): void
+  /**
+   * The milestone as it now stands, projected from every fact recorded so far.
+   *
+   * This is what removes the last store read from the execution core. The core
+   * used to re-read the row whenever it needed current state; a machine with
+   * no database cannot, so the reporter — which already applies every fact —
+   * keeps the projection and hands it back.
+   */
+  readonly milestone: Milestone
 }
 
 /**

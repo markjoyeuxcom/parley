@@ -932,6 +932,18 @@ export class Manager {
     const milestone = this.repo.getMilestone(milestoneId)
     if (!milestone) throw new RequestError('no such milestone')
 
+    // A running milestone's definition is frozen at entry, so an edit landing
+    // now would be silently ignored — and before it was frozen, an edit that
+    // landed between execution and verification was silently OBEYED, which is
+    // worse: the approval was granted against the command as it was, and the
+    // human would have got verification of something they never approved.
+    // Refusing says which of the two is happening.
+    if (milestone.status === 'executing' || milestone.status === 'testing') {
+      throw new RequestError(
+        'this milestone is running, and its verification command is fixed for the run that was approved — stop it first, or wait for it to finish',
+      )
+    }
+
     const trimmed = command.trim()
     if (trimmed && !isShellFree(trimmed)) {
       throw new RequestError(

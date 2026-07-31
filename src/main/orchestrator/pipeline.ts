@@ -1319,8 +1319,15 @@ export class Pipeline {
     report: MilestoneReporter
   }): Promise<VerifyOutcome> {
     const { milestoneId, plan, root, before, round, activity, signal, report } = input
-    let current = this.repo.getMilestone(milestoneId)
-    if (!current) throw new PipelineError('milestone disappeared mid-run')
+    // The definition — expectedPaths, testCommand, mutations, title, intent —
+    // is read once at run entry and carried, never re-read here.
+    //
+    // It is not merely that a remote machine has no database to re-read. The
+    // approval was granted against the milestone AS IT WAS: picking up an edit
+    // that landed mid-run would verify something a human never approved. That
+    // race was reachable today, because setMilestoneTestCommand had no guard
+    // against a running milestone, and it now refuses instead.
+    let current = report.milestone
 
     // ── Confirm something actually changed ───────────────────────────────────
     //

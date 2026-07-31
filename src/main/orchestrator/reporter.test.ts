@@ -6,6 +6,7 @@ import { milestonePatch, StoreMilestoneReporter, type MilestoneFact } from './re
 
 const milestone = {
   id: 'm1',
+  expectedPaths: ['src/a.ts'],
   planId: 'p1',
   index: 0,
   title: 'Do the thing',
@@ -186,5 +187,55 @@ describe('the local reporter', () => {
     )
     reporter.activity('executing', 'started')
     expect(emitActivity).toHaveBeenCalledWith('executing', 'started')
+  })
+})
+
+describe('the projection that replaced the store read', () => {
+  it('exposes the milestone as every fact has left it', () => {
+    // The execution core used to re-read the row whenever it needed current
+    // state. A machine with no database cannot, so the reporter — which
+    // already applies every fact — keeps the projection and hands it back.
+    const { reporter } = harness()
+    expect(reporter.milestone.status).toBe('pending')
+    reporter.record({ kind: 'phase', phase: 'testing' })
+    expect(reporter.milestone.status).toBe('testing')
+    reporter.record({ kind: 'verification', result: testResult })
+    expect(reporter.milestone.testResult).toEqual(testResult)
+  })
+
+  it('leaves the definition alone, whatever facts arrive', () => {
+    // The proof that carrying the definition instead of re-reading it changes
+    // nothing: no fact the core can state touches expectedPaths, testCommand,
+    // mutations, title or intent. They are fixed when the milestone is drafted
+    // and fixed again by the approval that authorised this run.
+    const { reporter } = harness()
+    const definition = {
+      title: reporter.milestone.title,
+      intent: reporter.milestone.intent,
+      testCommand: reporter.milestone.testCommand,
+      mutations: reporter.milestone.mutations,
+      expectedPaths: reporter.milestone.expectedPaths,
+    }
+    const everyFact: MilestoneFact[] = [
+      { kind: 'phase', phase: 'executing' },
+      { kind: 'phase', phase: 'testing' },
+      { kind: 'phase', phase: 'reviewing' },
+      { kind: 'checkpoint', runState: null },
+      { kind: 'spend', usage: emptyUsage() },
+      { kind: 'verification', result: testResult },
+      { kind: 'verification', result: null },
+      { kind: 'narrative', note: 'n', blocking: ['b'], notes: ['x'] },
+      { kind: 'judgement', passed: false },
+      { kind: 'planOutcome', status: 'failed' },
+      { kind: 'finished', passed: true, note: 'done', completedAt: 1, judgement: true },
+    ]
+    for (const fact of everyFact) reporter.record(fact)
+    expect({
+      title: reporter.milestone.title,
+      intent: reporter.milestone.intent,
+      testCommand: reporter.milestone.testCommand,
+      mutations: reporter.milestone.mutations,
+      expectedPaths: reporter.milestone.expectedPaths,
+    }).toEqual(definition)
   })
 })
