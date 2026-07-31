@@ -8,10 +8,11 @@ import {
   REQUIRED_CAPABILITIES,
   resultRefFor,
   safeEnvOverlay,
+  composeRemoteEnv,
   type RemoteCapabilities,
 } from '@shared/remote'
 import { decodeMilestoneFact } from '../orchestrator/reporter'
-import { decodeFrame, FrameDeduplicator, FrameWriter } from './frames'
+import { decodeFrame, FrameSequencer, FrameWriter } from './frames'
 import { encodeRequest, handshakeRequest, hostWarnings, sshArgv, targetRefusal } from './protocol'
 
 const capabilities: RemoteCapabilities = {
@@ -96,6 +97,21 @@ describe('the environment overlay', () => {
     expect(safeEnvOverlay({ CI: '1', NODE_ENV: 'test' })).toEqual({ CI: '1', NODE_ENV: 'test' })
   })
 
+  it('strips the numbered git config family, which no name list would catch', () => {
+    // GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/x
+    // rewrites git's configuration without touching one argv element — it can
+    // point hooks at another script or disable safe.directory.
+    expect(
+      safeEnvOverlay({
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'core.hooksPath',
+        GIT_CONFIG_VALUE_0: '/tmp/evil',
+        git_config_key_1: 'core.fsmonitor',
+        KEEP: 'yes',
+      }),
+    ).toEqual({ KEEP: 'yes' })
+  })
+
   it('strips everything that would reach past the protocol', () => {
     // Each of these would let a request relocate the home directory the agent
     // CLIs read credentials from, redirect git, or inject code into every
@@ -111,6 +127,25 @@ describe('the environment overlay', () => {
 
   it('treats no overlay as an empty one', () => {
     expect(safeEnvOverlay(undefined)).toEqual({})
+  })
+
+  it('lets the runner win, whatever the overlay tried', () => {
+    // Order is the property: base, then overlay, then runner-owned last. If
+    // the overlay went on last, a request that survived validation could still
+    // redirect a worktree the runner had already decided on.
+    expect(
+      composeRemoteEnv(
+        { PATH: '/usr/bin', LANG: 'C', UNSET: undefined },
+        { CI: '1', GIT_DIR: '/evil' },
+        { GIT_DIR: '/runs/01J/.git', GIT_WORK_TREE: '/runs/01J' },
+      ),
+    ).toEqual({
+      PATH: '/usr/bin',
+      LANG: 'C',
+      CI: '1',
+      GIT_DIR: '/runs/01J/.git',
+      GIT_WORK_TREE: '/runs/01J',
+    })
   })
 })
 
@@ -138,31 +173,49 @@ describe('writing frames', () => {
   })
 })
 
-describe('deduplicating frames', () => {
-  it('accepts each frame once and rejects the repeat', () => {
+describe('admitting frames in order', () => {
+  it('accepts each frame once and ignores the repeat', () => {
     // The case this exists for: a connection dies between the remote emitting
     // a fact and learning it was received, so it resends. A record written
     // twice from one observation is a corrupted record.
-    const seen = new FrameDeduplicator()
+    const seen = new FrameSequencer()
     const writer = new FrameWriter('run-a')
     const first = writer.next({ type: 'progress', phase: 'p', text: 'x' })
-    expect(seen.accept(first)).toBe(true)
-    expect(seen.accept(first)).toBe(false)
-    expect(seen.accept(writer.next({ type: 'progress', phase: 'p', text: 'y' }))).toBe(true)
+    expect(seen.admit(first)).toEqual({ kind: 'accept' })
+    expect(seen.admit(first)).toEqual({ kind: 'duplicate' })
+    expect(seen.admit(writer.next({ type: 'progress', phase: 'p', text: 'y' }))).toEqual({
+      kind: 'accept',
+    })
   })
 
-  it('keeps runs separate — sequences only mean anything within one', () => {
-    const seen = new FrameDeduplicator()
+  it('reports a gap rather than holding the frame and hoping', () => {
+    // ssh delivers an ordered byte stream, so a missing sequence cannot still
+    // be in flight — it is corruption, a parser bug or an emitter bug. Keeping
+    // 14 while waiting for 13 would leave a hole in the record and make the
+    // resume point a fiction.
+    const seen = new FrameSequencer()
+    expect(
+      seen.admit({ protocolVersion: 1, runId: 'r', sequence: 1, body: { type: 'progress', phase: 'p', text: '' } }),
+    ).toEqual({ kind: 'accept' })
+    expect(
+      seen.admit({ protocolVersion: 1, runId: 'r', sequence: 3, body: { type: 'progress', phase: 'p', text: '' } }),
+    ).toEqual({ kind: 'gap', expected: 2 })
+    // And the gap does not advance anything: 2 is still what comes next.
+    expect(seen.highWater('r')).toBe(1)
+  })
+
+  it('keeps runs separate — a sequence only means anything within one', () => {
+    const seen = new FrameSequencer()
     const a = new FrameWriter('run-a').next({ type: 'progress', phase: 'p', text: 'x' })
     const b = new FrameWriter('run-b').next({ type: 'progress', phase: 'p', text: 'x' })
-    expect(seen.accept(a)).toBe(true)
-    expect(seen.accept(b)).toBe(true)
+    expect(seen.admit(a)).toEqual({ kind: 'accept' })
+    expect(seen.admit(b)).toEqual({ kind: 'accept' })
   })
 
-  it('reports the high-water mark a resume would follow', () => {
-    const seen = new FrameDeduplicator()
+  it('reports the contiguous mark a resume would follow, never the largest seen', () => {
+    const seen = new FrameSequencer()
     const writer = new FrameWriter('run-a')
-    for (let i = 0; i < 40; i++) seen.accept(writer.next({ type: 'progress', phase: 'p', text: '' }))
+    for (let i = 0; i < 40; i++) seen.admit(writer.next({ type: 'progress', phase: 'p', text: '' }))
     expect(seen.highWater('run-a')).toBe(40)
     expect(seen.highWater('never-seen')).toBe(0)
     seen.forget('run-a')

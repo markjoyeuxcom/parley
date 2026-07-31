@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import type { RemoteFrame, RemoteRequest, RemoteTarget } from '@shared/remote'
-import { decodeFrame } from './frames'
+import { decodeFrame, FrameSequencer } from './frames'
 import { encodeRequest, sshArgv } from './protocol'
 
 /**
@@ -25,12 +25,27 @@ import { encodeRequest, sshArgv } from './protocol'
  *    is the dangerous one: the remote may have finished the work. It must
  *    never be reported as failure, because the recovery is to go and look at
  *    the result ref, not to run it again.
+ *  - **violation**: the far end spoke the protocol and then stopped making
+ *    sense — an unframed line, an unreadable frame, or a gap in the sequence.
+ *    Same recovery as disconnected (go and look), different cause.
+ *
+ * Strictness is deliberately asymmetric about the handshake. Before it, an
+ * unreadable line is ordinary: ssh sessions emit banners, and shell startup
+ * files print things. After it, the same line is fatal. Once the protocol has
+ * proven it is alive, a stray console.log or a leaked child write means facts
+ * are going missing, and a run that continues while silently dropping facts
+ * produces a record with a hole in it. Better to stop and say so.
+ *
+ * The first frame of every conversation must be `ready`. It is what proves the
+ * protocol is alive, and it re-confirms which build is actually answering —
+ * the host could have been upgraded between preflight and this run.
  */
 
 export type SshEnd =
   | { kind: 'closed'; exitCode: number }
   | { kind: 'refused'; detail: string }
   | { kind: 'protocol'; detail: string }
+  | { kind: 'violation'; detail: string }
   | { kind: 'disconnected'; detail: string }
   | { kind: 'cancelled' }
 
@@ -38,7 +53,10 @@ export interface SshRunResult {
   end: SshEnd
   /** ssh's own stderr, tail-limited. The only channel for un-framed failure. */
   stderr: string
-  /** Lines on stdout that were not protocol events, for diagnosis. */
+  /**
+   * Lines on stdout that were not frames, kept for diagnosis. Only ever
+   * collected BEFORE the handshake — after it, one of these ends the run.
+   */
   unreadable: string[]
 }
 
@@ -77,9 +95,11 @@ export function runSsh(opts: SshRunOptions): Promise<SshRunResult> {
 
     let stderr = ''
     let pending = ''
-    let sawEvent = false
+    /** Set by the `ready` frame. Before it we tolerate noise; after it we do not. */
+    let alive = false
     let settled = false
     const unreadable: string[] = []
+    const sequencer = new FrameSequencer()
 
     const finish = (end: SshEnd): void => {
       if (settled) return
@@ -96,6 +116,11 @@ export function runSsh(opts: SshRunOptions): Promise<SshRunResult> {
       } catch {
         child.kill('SIGTERM')
       }
+    }
+
+    const violate = (detail: string): void => {
+      kill()
+      finish({ kind: 'violation', detail })
     }
 
     const onAbort = (): void => {
@@ -117,12 +142,41 @@ export function runSsh(opts: SshRunOptions): Promise<SshRunResult> {
         const line = pending.slice(0, newline)
         pending = pending.slice(newline + 1)
         const frame = decodeFrame(line)
-        if (frame) {
-          sawEvent = true
-          opts.onFrame(frame)
-        } else if (line.trim().length > 0 && unreadable.length < MAX_UNREADABLE) {
-          unreadable.push(line.slice(0, 500))
+        if (!frame) {
+          if (line.trim().length === 0) {
+            newline = pending.indexOf('\n')
+            continue
+          }
+          if (alive) {
+            violate(`unreadable output after the handshake: ${line.slice(0, 200)}`)
+            return
+          }
+          if (unreadable.length < MAX_UNREADABLE) unreadable.push(line.slice(0, 500))
+          newline = pending.indexOf('\n')
+          continue
         }
+
+        if (!alive) {
+          if (frame.body.type !== 'ready') {
+            violate('the remote sent a frame before announcing itself')
+            return
+          }
+          alive = true
+        }
+
+        const admission = sequencer.admit(frame)
+        if (admission.kind === 'gap') {
+          // ssh delivers an ordered byte stream, so a missing sequence cannot
+          // still be in flight. Holding this frame and hoping the gap fills
+          // would leave the record with a hole and the resume point a fiction.
+          violate(
+            `the remote skipped frame ${admission.expected} — expected ${admission.expected}, got ${frame.sequence}`,
+          )
+          return
+        }
+        // A duplicate is exactly what a resume resends; applying it twice is
+        // the corruption, ignoring it is the whole point of the sequence.
+        if (admission.kind === 'accept') opts.onFrame(frame)
         newline = pending.indexOf('\n')
       }
     })
@@ -149,7 +203,7 @@ export function runSsh(opts: SshRunOptions): Promise<SshRunResult> {
         finish({ kind: 'refused', detail: sshRefusal(stderr) })
         return
       }
-      if (!sawEvent) {
+      if (!alive) {
         finish({ kind: 'protocol', detail: helperMissing(stderr, unreadable) })
         return
       }

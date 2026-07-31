@@ -138,11 +138,31 @@ export const FORBIDDEN_ENV = [
   'GIT_WORK_TREE',
   'GIT_INDEX_FILE',
   'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_SYSTEM',
+  'GIT_CONFIG_NOSYSTEM',
+  'GIT_CONFIG_COUNT',
   'GIT_SSH_COMMAND',
+  'GIT_EXEC_PATH',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_NAMESPACE',
+  'GIT_ATTR_NOSYSTEM',
   'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
   'DYLD_INSERT_LIBRARIES',
+  'DYLD_LIBRARY_PATH',
   'NODE_OPTIONS',
 ]
+
+/**
+ * Families that are forbidden by prefix, because they are numbered.
+ *
+ * `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/x`
+ * rewrites git's configuration without touching a single argv element — it can
+ * point hooks at an attacker's script, disable safe.directory, or change
+ * core.fsmonitor. A set of exact names would never catch it.
+ */
+export const FORBIDDEN_ENV_PREFIXES = ['GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_']
 
 export interface RemoteRequest {
   version: number
@@ -164,9 +184,31 @@ export function safeEnvOverlay(env: Record<string, string> | undefined): Record<
   const forbidden = new Set(FORBIDDEN_ENV)
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(env)) {
-    if (forbidden.has(key.toUpperCase())) continue
+    const upper = key.toUpperCase()
+    if (forbidden.has(upper)) continue
+    if (FORBIDDEN_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix))) continue
     out[key] = value
   }
+  return out
+}
+
+/**
+ * The environment a remote child actually gets.
+ *
+ * Order is the whole point. The remote user's own environment is the base; the
+ * validated overlay goes on top; the runner's own variables go on LAST so
+ * nothing in the overlay can displace them. Applying the overlay last would
+ * let a request that survived validation still redirect the worktree that the
+ * runner had already decided on.
+ */
+export function composeRemoteEnv(
+  base: Record<string, string | undefined>,
+  overlay: Record<string, string> | undefined,
+  runnerOwned: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(base)) if (value !== undefined) out[key] = value
+  Object.assign(out, safeEnvOverlay(overlay), runnerOwned)
   return out
 }
 

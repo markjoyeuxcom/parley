@@ -49,40 +49,50 @@ export class FrameWriter {
 }
 
 /**
- * Accepts each frame once.
+ * What to do with a frame that just arrived.
  *
- * Deduplication is on (runId, sequence) and it exists before reconnection
- * does. The moment a connection can be resumed, a frame the remote sent but
- * could not confirm will arrive twice, and a record written twice from one
- * observation is a corrupted record — a milestone's spend double-counted, a
- * narrative appended to itself. Cheap now, impossible to retrofit honestly.
+ * A gap is not a frame to hold on to. ssh gives an ordered byte stream, so a
+ * missing sequence cannot be "in flight" — it means corruption, a parser bug
+ * or an emitter bug, and the only honest response is to stop. Buffering 14
+ * while hoping 13 turns up would produce a run whose record has a hole in it
+ * and whose resume point is a fiction.
  */
-export class FrameDeduplicator {
-  private readonly seen = new Map<string, Set<number>>()
+export type FrameAdmission =
+  | { kind: 'accept' }
+  /** Already applied. Safe to ignore — this is exactly what resume will resend. */
+  | { kind: 'duplicate' }
+  | { kind: 'gap'; expected: number }
 
-  /** True the first time this exact frame is offered, false every time after. */
-  accept(frame: RemoteFrame): boolean {
-    let sequences = this.seen.get(frame.runId)
-    if (!sequences) {
-      sequences = new Set()
-      this.seen.set(frame.runId, sequences)
-    }
-    if (sequences.has(frame.sequence)) return false
-    sequences.add(frame.sequence)
-    return true
+/**
+ * Admits frames in order, once each.
+ *
+ * The high-water mark is the highest CONTIGUOUS sequence accepted, which is
+ * the only number a resume can honestly be based on: "everything up to here
+ * has been applied". The largest sequence merely *observed* would be a lie the
+ * moment anything was missed.
+ *
+ * That definition also collapses the bookkeeping to one integer per run. An
+ * ever-growing set of seen sequences would be both heavier and weaker — it
+ * would happily accept 14 before 13 and never notice the hole.
+ */
+export class FrameSequencer {
+  private readonly contiguous = new Map<string, number>()
+
+  admit(frame: RemoteFrame): FrameAdmission {
+    const high = this.contiguous.get(frame.runId) ?? 0
+    if (frame.sequence <= high) return { kind: 'duplicate' }
+    if (frame.sequence > high + 1) return { kind: 'gap', expected: high + 1 }
+    this.contiguous.set(frame.runId, frame.sequence)
+    return { kind: 'accept' }
   }
 
-  /** Highest sequence accepted for a run — what a resume would ask to follow. */
+  /** Everything up to and including this has been applied. Zero means none. */
   highWater(runId: string): number {
-    const sequences = this.seen.get(runId)
-    if (!sequences) return 0
-    let highest = 0
-    for (const sequence of sequences) if (sequence > highest) highest = sequence
-    return highest
+    return this.contiguous.get(runId) ?? 0
   }
 
   forget(runId: string): void {
-    this.seen.delete(runId)
+    this.contiguous.delete(runId)
   }
 }
 
