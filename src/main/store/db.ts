@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 24
+export const SCHEMA_VERSION = 25
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -356,6 +356,9 @@ CREATE TABLE IF NOT EXISTS backlog_items (
   state             TEXT NOT NULL,
   source            TEXT NOT NULL,
   origin_session_id TEXT,
+  -- The acceptance whose note filed this. Deliberately FK-less: provenance
+  -- must outlive whatever it points at.
+  origin_acceptance_id TEXT,
   plan_id           TEXT,
   evidence          TEXT NOT NULL DEFAULT '[]',
   blocked_by        TEXT NOT NULL DEFAULT '[]',
@@ -474,6 +477,21 @@ CREATE TABLE IF NOT EXISTS envelopes (
   ended_at       INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_envelopes_plan ON envelopes(plan_id, started_at DESC);
+
+-- A human's recorded judgement on completed work, and the provenance for any
+-- feedback they filed with it. FK-less like every other authorship record.
+CREATE TABLE IF NOT EXISTS acceptances (
+  id           TEXT PRIMARY KEY,
+  milestone_id TEXT NOT NULL,
+  plan_id      TEXT NOT NULL,
+  repo_path    TEXT NOT NULL,
+  state        TEXT NOT NULL,
+  note         TEXT NOT NULL DEFAULT '',
+  created_at   INTEGER NOT NULL,
+  mock         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_acceptances_milestone
+  ON acceptances(milestone_id, created_at DESC);
 
 -- Projects Parley scaffolded. Also the fourth source of repository
 -- membership: a brand-new project has no plan, backlog item or learning, so
@@ -883,6 +901,16 @@ export function migrate(db: Db): void {
   if (current < 24) {
     // Workspaces are additive: SCHEMA creates the table fresh, and no
     // existing row changes shape.
+  }
+  if (current < 25) {
+    // acceptances is additive. The provenance column joins an existing table,
+    // and every pre-existing item keeps a null — they came from somewhere
+    // else, which is exactly what null says here.
+    try {
+      db.exec(`ALTER TABLE backlog_items ADD COLUMN origin_acceptance_id TEXT`)
+    } catch {
+      // Already present, because SCHEMA above created the table fresh.
+    }
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

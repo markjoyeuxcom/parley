@@ -50,7 +50,7 @@ const WRITE_EXEMPTIONS: Readonly<Record<string, string>> = {
     'Occurrence ingestion is followed by its plan or milestone lifecycle transition.',
   'disposeFinding:ledger_dispositions':
     'A disposition changes the global finding gate, which remains visible even for archived repositories.',
-  'fileBacklogItem:backlog_items':
+  'fileBacklogItemCore:backlog_items':
     'The appended backlog event is the transaction choke point that records activity for filing and resighting.',
   'transitionBacklogItemCore:backlog_items':
     'The appended backlog event is the transaction choke point that records activity for every state change.',
@@ -276,6 +276,7 @@ describe('repository activity completeness', () => {
         .sort()
 
     expect(tables('direct')).toEqual([
+      'acceptances',
       'backlog_items',
       'foreman_proposals',
       'learnings',

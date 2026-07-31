@@ -45,6 +45,7 @@ import {
   type Usage,
   type Vendor,
   type Verdict,
+  type Acceptance,
   type Envelope,
   type Workspace,
   type WorkPlan,
@@ -84,7 +85,9 @@ function backlogContentHash(title: string, detail: string): string {
 /** Who the trail says acted, derived from where the item came from. */
 function backlogEventSource(source: BacklogItemSource): BacklogEventSource {
   if (source === 'stow') return 'stow'
-  if (source === 'manual') return 'human'
+  // A note written while accepting is the human's own words, not the
+  // pipeline's observation — the event log has to say which it was.
+  if (source === 'manual' || source === 'acceptance') return 'human'
   return 'pipeline'
 }
 
@@ -1252,9 +1255,34 @@ export class Repo {
     priority?: FindingPriority | null
     source: BacklogItemSource
     originSessionId?: Id | null
+    /** The acceptance whose note filed this. Provenance, not a foreign key. */
+    originAcceptanceId?: Id | null
     evidence?: Evidence[]
     mock: boolean
     /** Stow files `proposed`; deterministic sources file `open`. */
+    state?: 'proposed' | 'open'
+    note?: string
+  }): { item: BacklogItem; resighted: boolean } {
+    return this.db.transaction(() => this.fileBacklogItemCore(input))
+  }
+
+  /**
+   * The filing itself, without opening a transaction.
+   *
+   * Exists so a caller that is ALREADY in one — recording an acceptance and
+   * its notes together — can file without nesting, which SQLite refuses. The
+   * createPlanCore precedent.
+   */
+  private fileBacklogItemCore(input: {
+    repoPath: string
+    title: string
+    detail?: string
+    priority?: FindingPriority | null
+    source: BacklogItemSource
+    originSessionId?: Id | null
+    originAcceptanceId?: Id | null
+    evidence?: Evidence[]
+    mock: boolean
     state?: 'proposed' | 'open'
     note?: string
   }): { item: BacklogItem; resighted: boolean } {
@@ -1262,7 +1290,7 @@ export class Repo {
     const contentHash = backlogContentHash(input.title, input.detail ?? '')
     const eventSource = backlogEventSource(input.source)
 
-    return this.db.transaction(() => {
+    return (() => {
       const live = this.db.get(
         `SELECT * FROM backlog_items
          WHERE repo_path = ? AND content_hash = ?
@@ -1311,6 +1339,7 @@ export class Repo {
         state,
         source: input.source,
         originSessionId: input.originSessionId ?? null,
+        originAcceptanceId: input.originAcceptanceId ?? null,
         planId: null,
         evidence: input.evidence ?? [],
         blockedBy: [],
@@ -1319,8 +1348,8 @@ export class Repo {
         updatedAt: now,
       }
       this.db.run(
-        `INSERT INTO backlog_items (id, repo_path, content_hash, title, detail, priority, state, source, origin_session_id, plan_id, evidence, blocked_by, mock, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO backlog_items (id, repo_path, content_hash, title, detail, priority, state, source, origin_session_id, origin_acceptance_id, plan_id, evidence, blocked_by, mock, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         item.id,
         item.repoPath,
         item.contentHash,
@@ -1330,6 +1359,7 @@ export class Repo {
         item.state,
         item.source,
         item.originSessionId,
+        item.originAcceptanceId,
         item.planId,
         json(item.evidence),
         json(item.blockedBy),
@@ -1339,7 +1369,7 @@ export class Repo {
       )
       this.appendBacklogEvent(item.id, state, input.note ?? `Filed (${input.source}).`, eventSource)
       return { item, resighted: false }
-    })
+    })()
   }
 
   /**
@@ -1603,6 +1633,7 @@ export class Repo {
       state: str(row['state']) as BacklogItemState,
       source: str(row['source']) as BacklogItemSource,
       originSessionId: nullableStr(row['origin_session_id']),
+      originAcceptanceId: nullableStr(row['origin_acceptance_id']),
       planId: nullableStr(row['plan_id']),
       evidence: parseJson<BacklogItem['evidence']>(row['evidence'], []),
       blockedBy: parseJson<Id[]>(row['blocked_by'], []),
@@ -1898,6 +1929,101 @@ export class Repo {
       }
       return plan
     })
+  }
+
+  // ─── Acceptance ────────────────────────────────────────────────────────────
+
+  /**
+   * Records a human's judgement on completed work, and files whatever they
+   * said needs changing — in ONE transaction.
+   *
+   * Atomic on purpose: an acceptance whose notes did not file would be a
+   * record of feedback nobody can act on, and items filed without their
+   * acceptance would be exactly the free-floating typing the backlog's
+   * provenance rule exists to prevent. Either both happened or neither did.
+   */
+  recordAcceptance(input: {
+    milestoneId: Id
+    planId: Id
+    repoPath: string
+    state: Acceptance['state']
+    note?: string
+    /** One line each. Empty lines are the user's formatting, not items. */
+    changes?: string[]
+    mock: boolean
+  }): { acceptance: Acceptance; items: BacklogItem[] } {
+    return this.db.transaction(() => {
+      const acceptance: Acceptance = {
+        id: newId(),
+        milestoneId: input.milestoneId,
+        planId: input.planId,
+        repoPath: canonicalRepoPath(input.repoPath),
+        state: input.state,
+        note: input.note ?? '',
+        createdAt: Date.now(),
+        mock: input.mock,
+      }
+      this.db.run(
+        `INSERT INTO acceptances (id, milestone_id, plan_id, repo_path, state, note, created_at, mock)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        acceptance.id,
+        acceptance.milestoneId,
+        acceptance.planId,
+        acceptance.repoPath,
+        acceptance.state,
+        acceptance.note,
+        acceptance.createdAt,
+        acceptance.mock ? 1 : 0,
+      )
+
+      const items: BacklogItem[] = []
+      for (const line of input.changes ?? []) {
+        const title = line.trim()
+        if (!title) continue
+        const { item } = this.fileBacklogItemCore({
+          repoPath: acceptance.repoPath,
+          title,
+          source: 'acceptance',
+          originAcceptanceId: acceptance.id,
+          mock: input.mock,
+          // A human's own words go straight to open: proposals exist because
+          // an AGENT drafted them and a human had not yet agreed.
+          state: 'open',
+          note: 'Filed from your acceptance notes.',
+        })
+        items.push(item)
+      }
+      this.noteRepoActivity(acceptance.repoPath)
+      return { acceptance, items }
+    })
+  }
+
+  listAcceptancesForMilestone(milestoneId: Id): Acceptance[] {
+    return this.db
+      .all(
+        `SELECT * FROM acceptances WHERE milestone_id = ? ORDER BY created_at DESC`,
+        milestoneId,
+      )
+      .map((row) => this.toAcceptance(row))
+  }
+
+  listAcceptancesForPlan(planId: Id): Acceptance[] {
+    return this.db
+      .all(`SELECT * FROM acceptances WHERE plan_id = ? ORDER BY created_at DESC`, planId)
+      .map((row) => this.toAcceptance(row))
+  }
+
+  private toAcceptance(row: Row): Acceptance {
+    return {
+      id: str(row['id']),
+      milestoneId: str(row['milestone_id']),
+      planId: str(row['plan_id']),
+      repoPath: str(row['repo_path']),
+      state: str(row['state']) as Acceptance['state'],
+      note: str(row['note']),
+      createdAt: num(row['created_at']),
+      mock: num(row['mock']) === 1,
+    }
   }
 
   // ─── Workspaces ────────────────────────────────────────────────────────────

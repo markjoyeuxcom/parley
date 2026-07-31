@@ -712,6 +712,37 @@ export const Workspace = z.object({
 })
 export type Workspace = z.infer<typeof Workspace>
 
+export const AcceptanceState = z.enum([
+  /** The human looked at the work and it does what they wanted. */
+  'accepted',
+  /** They looked, and said what is wrong. The notes become backlog items. */
+  'changes-requested',
+])
+export type AcceptanceState = z.infer<typeof AcceptanceState>
+
+/**
+ * A human's recorded judgement on completed work.
+ *
+ * Deliberately not a gate: nothing waits on it and nothing unlocks from it.
+ * Verification and independent review already decide whether a milestone is
+ * *correct*; this records whether it is what the person actually wanted,
+ * which no test can tell them. Its second job is provenance — feedback
+ * filed from here enters the backlog with a record behind it rather than as
+ * free-floating typing.
+ */
+export const Acceptance = z.object({
+  id: Id,
+  milestoneId: Id,
+  planId: Id,
+  repoPath: z.string(),
+  state: AcceptanceState,
+  note: z.string().default(''),
+  createdAt: Timestamp,
+  /** See {@link Session.mock}. */
+  mock: z.boolean().default(false),
+})
+export type Acceptance = z.infer<typeof Acceptance>
+
 export const Worktree = z.object({
   planId: Id,
   /** The repository the worktree was created from, and lands back into. */
@@ -748,7 +779,20 @@ export const BacklogItemState = z.enum([
 ])
 export type BacklogItemState = z.infer<typeof BacklogItemState>
 
-export const BacklogItemSource = z.enum(['review-finding', 'accepted-risk', 'stow', 'manual'])
+export const BacklogItemSource = z.enum([
+  'review-finding',
+  'accepted-risk',
+  'stow',
+  'manual',
+  /**
+   * A note the human wrote while accepting — or declining to accept —
+   * completed work. Its provenance is the acceptance record it came from,
+   * which is what lets feedback enter the backlog at all: everything here
+   * must be traceable to something that happened, and "someone typed it"
+   * is only provenance when the typing itself is recorded.
+   */
+  'acceptance',
+])
 export type BacklogItemSource = z.infer<typeof BacklogItemSource>
 
 /**
@@ -772,6 +816,8 @@ export const BacklogItem = z.object({
   state: BacklogItemState,
   source: BacklogItemSource,
   originSessionId: Id.nullable().default(null),
+  /** The acceptance whose note filed this, when that is where it came from. */
+  originAcceptanceId: Id.nullable().default(null),
   /** The plan that targeted it, while `planned` or `closure-proposed`. */
   planId: Id.nullable().default(null),
   evidence: z.array(Evidence).default([]),

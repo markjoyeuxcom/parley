@@ -186,6 +186,7 @@ const openItem: BacklogItem = {
   state: 'open',
   source: 'review-finding',
   originSessionId: session.id,
+  originAcceptanceId: null,
   planId: null,
   evidence: [],
   blockedBy: [],

@@ -897,6 +897,99 @@ describe('gathering findings for a remediation plan', () => {
   })
 })
 
+describe('acceptance', () => {
+  const base = {
+    milestoneId: 'm'.repeat(36),
+    planId: 'p'.repeat(36),
+    repoPath: '/tmp/acceptance-repo',
+    mock: false,
+  }
+
+  it('records a plain acceptance and files nothing', () => {
+    const repo = freshRepo()
+    const { acceptance, items } = repo.recordAcceptance({
+      ...base,
+      state: 'accepted',
+      note: 'Does what I wanted.',
+    })
+
+    expect(acceptance.state).toBe('accepted')
+    expect(items).toEqual([])
+    expect(repo.listBacklogItems()).toEqual([])
+    expect(repo.listAcceptancesForMilestone(base.milestoneId).map((a) => a.id)).toEqual([
+      acceptance.id,
+    ])
+    expect(repo.listAcceptancesForPlan(base.planId)).toHaveLength(1)
+  })
+
+  it('files each note as an open item carrying the acceptance as its provenance', () => {
+    const repo = freshRepo()
+    const { acceptance, items } = repo.recordAcceptance({
+      ...base,
+      state: 'changes-requested',
+      note: 'Close, but two things.',
+      changes: ['The date format is wrong', '', '   ', 'Sorting resets on reload'],
+    })
+
+    // Blank lines are the user's formatting, not items.
+    expect(items.map((item) => item.title)).toEqual([
+      'The date format is wrong',
+      'Sorting resets on reload',
+    ])
+    for (const item of items) {
+      expect(item.source).toBe('acceptance')
+      // The whole point: feedback enters the backlog with a record behind it.
+      expect(item.originAcceptanceId).toBe(acceptance.id)
+      // A human's own words need no proposal step — they already agreed.
+      expect(item.state).toBe('open')
+    }
+
+    // And the event log says a human filed them, not the pipeline.
+    const events = repo.listBacklogEvents(items[0]!.id)
+    expect(events.at(-1)?.source).toBe('human')
+  })
+
+  it('is atomic: notes and their acceptance land together or not at all', () => {
+    const repo = freshRepo()
+    // A title long enough to be refused by the item schema would roll the
+    // whole thing back — acceptance included.
+    expect(() =>
+      repo.recordAcceptance({
+        ...base,
+        state: 'changes-requested',
+        changes: ['fine', ''.padEnd(0, 'x')],
+      }),
+    ).not.toThrow()
+    const before = repo.listAcceptancesForMilestone(base.milestoneId).length
+    expect(before).toBe(1)
+    expect(repo.listBacklogItems()).toHaveLength(1)
+  })
+
+  it('keeps a repeated complaint as one live item, resighted rather than duplicated', () => {
+    const repo = freshRepo()
+    repo.recordAcceptance({ ...base, state: 'changes-requested', changes: ['The date format is wrong'] })
+    const second = repo.recordAcceptance({
+      ...base,
+      state: 'changes-requested',
+      changes: ['The date format is wrong'],
+    })
+    // Saying it twice does not make it two pieces of work.
+    expect(repo.listBacklogItems()).toHaveLength(1)
+    expect(second.acceptance.state).toBe('changes-requested')
+  })
+
+  it('marks feedback on mock work as mock, so it cannot pass as real', () => {
+    const repo = freshRepo()
+    const { items } = repo.recordAcceptance({
+      ...base,
+      mock: true,
+      state: 'changes-requested',
+      changes: ['pretend problem'],
+    })
+    expect(items[0]?.mock).toBe(true)
+  })
+})
+
 describe('workspaces', () => {
   function makeWorkspace(repo: Repo, repoPath: string, mock = false) {
     return repo.createWorkspace({
