@@ -1,4 +1,5 @@
 import type {
+  Acceptance,
   AgentConfig,
   Approval,
   BacklogItem,
@@ -185,6 +186,17 @@ export const api = {
     bridge().invoke('envelope.start', { planId, approvalId, caps }),
   stopEnvelope: (planId: Id): Promise<unknown> => bridge().invoke('envelope.stop', { planId }),
   listEnvelopes: (planId: Id): Promise<Envelope[]> => bridge().invoke('envelope.list', { planId }),
+
+  // Acceptance — the human's judgement on finished work
+  listAcceptances: (planId: Id): Promise<Acceptance[]> =>
+    bridge().invoke('acceptance.list', { planId }),
+  recordAcceptance: (input: {
+    milestoneId: Id
+    state: 'accepted' | 'changes-requested'
+    note?: string
+    changes?: string[]
+  }): Promise<{ acceptance: Acceptance; items: BacklogItem[] }> =>
+    bridge().invoke('acceptance.record', input),
 
   // Previews — the project's own dev server
   listPreviews: (): Promise<Preview[]> => bridge().invoke('preview.list'),

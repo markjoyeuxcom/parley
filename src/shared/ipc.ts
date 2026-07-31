@@ -225,6 +225,15 @@ export const CreateWorkspaceReq = z.object({
   approvalId: Id,
 })
 export const WorkspacePreviewReq = z.object({ path: z.string().min(1) })
+/** Records a judgement on completed work, filing any notes atomically with it. */
+export const RecordAcceptanceReq = z.object({
+  milestoneId: Id,
+  state: z.enum(['accepted', 'changes-requested']),
+  note: z.string().max(10_000).default(''),
+  /** One item per entry; blank entries are the user's formatting. */
+  changes: z.array(z.string().max(500)).max(30).default([]),
+})
+export const AcceptancePlanReq = z.object({ planId: Id })
 export const StartPreviewReq = z.object({
   repoPath: z.string().min(1),
   command: z.string().min(1).max(400),
@@ -334,6 +343,8 @@ export const COMMANDS = {
   'workspace.list': null,
   'workspace.templates': null,
   'workspace.preview': WorkspacePreviewReq,
+  'acceptance.record': RecordAcceptanceReq,
+  'acceptance.list': AcceptancePlanReq,
   'preview.start': StartPreviewReq,
   'preview.stop': PreviewIdReq,
   'preview.forget': PreviewIdReq,

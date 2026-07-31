@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronDown, ChevronRight, FolderOpen, Moon, Play, ShieldCheck, Square } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronRight,
+  FolderOpen,
+  Moon,
+  Play,
+  ShieldCheck,
+  Square,
+  ThumbsUp,
+} from 'lucide-react'
 import type {
   AgentConfig,
   BacklogItem,
@@ -11,7 +20,7 @@ import type {
   WorkPlanKind,
 } from '@shared/domain'
 import type { LedgerEntry } from '@shared/ipc'
-import type { Envelope, EnvelopeCaps } from '@shared/domain'
+import type { Acceptance, Envelope, EnvelopeCaps } from '@shared/domain'
 import { api, type PlanDetail } from '../lib/api'
 import { formatDuration, shortPath, statusTone, verificationState } from '../lib/format'
 import { approvalPermission } from '../lib/ledgerView'
@@ -396,6 +405,7 @@ export function PlanPanel({
   const { attempt, notify, state, dispatch } = useStore()
 
   const [offeringEnvelope, setOfferingEnvelope] = useState(false)
+  const [requestingChanges, setRequestingChanges] = useState<Milestone | null>(null)
 
   const envelopes = state.envelopes.filter((envelope) => envelope.planId === plan.id)
   const runningEnvelope = envelopes.find((envelope) => envelope.state === 'running') ?? null
@@ -488,6 +498,28 @@ export function PlanPanel({
    * per-milestone path does it: the grant is the recorded authorisation, the
    * start is what spends it.
    */
+  /** Records the judgement and refreshes, so the row shows what was said. */
+  const recordJudgement = async (
+    milestone: Milestone,
+    judgement: 'accepted' | 'changes-requested',
+    note: string,
+    changes: string[],
+  ): Promise<void> => {
+    const result = await attempt(() =>
+      api.recordAcceptance({ milestoneId: milestone.id, state: judgement, note, changes }),
+    )
+    if (!result) return
+    dispatch({ type: 'acceptances', acceptances: [result.acceptance, ...state.acceptances] })
+    if (result.items.length) {
+      notify(
+        'info',
+        `Filed ${result.items.length} item${result.items.length === 1 ? '' : 's'} on the backlog from your notes.`,
+      )
+    }
+  }
+  const accept = (milestone: Milestone): Promise<void> =>
+    recordJudgement(milestone, 'accepted', '', [])
+
   const startUnattended = async (caps: EnvelopeCaps): Promise<void> => {
     setGranting(true)
     const summary =
@@ -763,6 +795,11 @@ export function PlanPanel({
             plan={plan}
             milestone={milestone}
             onApprove={() => setPendingApproval(milestone)}
+            judgement={
+              state.acceptances.find((entry) => entry.milestoneId === milestone.id) ?? null
+            }
+            onAccept={() => accept(milestone)}
+            onRequestChanges={() => setRequestingChanges(milestone)}
             /* Eleven expanded milestones is several thousand words of scroll to
                reach the one row that is live. A settled milestone starts folded
                and keeps its detail one click away. */
@@ -770,6 +807,18 @@ export function PlanPanel({
           />
         ))}
       </Panel>
+
+      {requestingChanges ? (
+        <RequestChangesDialog
+          milestone={requestingChanges}
+          onClose={() => setRequestingChanges(null)}
+          onSubmit={(note, changes) => {
+            const target = requestingChanges
+            setRequestingChanges(null)
+            void recordJudgement(target, 'changes-requested', note, changes)
+          }}
+        />
+      ) : null}
 
       {offeringEnvelope ? (
         <EnvelopeDialog
@@ -801,6 +850,72 @@ export function PlanPanel({
         />
       ) : null}
     </>
+  )
+}
+
+/**
+ * Saying what is wrong with finished work.
+ *
+ * Each line becomes a backlog item, which is why the dialog says so before
+ * anything is written: the backlog only holds work traceable to something
+ * that happened, and this is the moment that makes typed feedback traceable.
+ */
+function RequestChangesDialog({
+  milestone,
+  onClose,
+  onSubmit,
+}: {
+  milestone: Milestone
+  onClose: () => void
+  onSubmit: (note: string, changes: string[]) => void
+}): ReactNode {
+  const [note, setNote] = useState('')
+  const [changes, setChanges] = useState('')
+  const lines = changes
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  return (
+    <Dialog
+      title={`Request changes to milestone ${milestone.index + 1}`}
+      subtitle="Tests and an independent review already said this is correct. This is where you say whether it is what you wanted."
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn--primary" onClick={() => onSubmit(note.trim(), lines)}>
+            {lines.length
+              ? `Record and file ${lines.length} item${lines.length === 1 ? '' : 's'}`
+              : 'Record'}
+          </button>
+        </>
+      }
+    >
+      <Field label="What is wrong" hint="For the record. Not filed as work on its own.">
+        <textarea
+          className="input"
+          rows={3}
+          autoFocus
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+        />
+      </Field>
+      <Field
+        label="Changes to make"
+        hint="One per line. Each becomes an open backlog item for this repository, carrying this acceptance as its provenance."
+      >
+        <textarea
+          className="input"
+          rows={5}
+          placeholder={'The date format is wrong\nSorting resets on reload'}
+          value={changes}
+          onChange={(event) => setChanges(event.target.value)}
+        />
+      </Field>
+    </Dialog>
   )
 }
 
@@ -1116,11 +1231,18 @@ function MilestoneRow({
   plan,
   milestone,
   onApprove,
+  judgement,
+  onAccept,
+  onRequestChanges,
   startCollapsed = false,
 }: {
   plan: WorkPlan
   milestone: Milestone
   onApprove: () => void
+  /** The human's recorded judgement on this milestone, once there is one. */
+  judgement: Acceptance | null
+  onAccept: () => Promise<void>
+  onRequestChanges: () => void
   startCollapsed?: boolean
 }): ReactNode {
   const tone = statusTone(milestone.status)
@@ -1185,6 +1307,32 @@ function MilestoneRow({
         ) : null}
         <Chip tone={tone.tone}>{tone.label}</Chip>
       </button>
+
+      {milestone.status === 'complete' ? (
+        judgement ? (
+          <div className="field__hint">
+            {judgement.state === 'accepted' ? 'You accepted this' : 'You asked for changes'}
+            {judgement.note ? `: “${judgement.note}”` : '.'}{' '}
+            {judgement.state === 'changes-requested'
+              ? 'Anything you listed is on the backlog.'
+              : ''}
+          </div>
+        ) : (
+          <div className="row">
+            <button className="btn btn--sm" onClick={() => void onAccept()}>
+              <ThumbsUp size={12} strokeWidth={2} />
+              Accept
+            </button>
+            <button className="btn btn--subtle btn--sm" onClick={onRequestChanges}>
+              Request changes…
+            </button>
+            <span className="dimmer" style={{ fontSize: 'var(--text-tiny)' }}>
+              Tests and review say it is correct — this says whether it is what you wanted
+            </span>
+          </div>
+        )
+      ) : null}
+
 
       {!expanded ? null : (
         <>

@@ -11,6 +11,7 @@ import {
   type Id,
   type Envelope,
   type EnvelopeCaps,
+  type Acceptance,
   type Workspace,
   type Loop,
   type Milestone,
@@ -1581,6 +1582,43 @@ export class Manager {
     })
 
     return workspace
+  }
+
+  /**
+   * Records the human's judgement on a completed milestone.
+   *
+   * Refused before completion on purpose: accepting work that has not
+   * finished would be a record of something nobody could have looked at.
+   */
+  recordAcceptance(input: {
+    milestoneId: Id
+    state: Acceptance['state']
+    note?: string
+    changes?: string[]
+  }): { acceptance: Acceptance; items: BacklogItem[] } {
+    const milestone = this.repo.getMilestone(input.milestoneId)
+    if (!milestone) throw new RequestError('no such milestone')
+    if (milestone.status !== 'complete') {
+      throw new RequestError(
+        `this milestone is ${milestone.status} — there is nothing finished to judge yet`,
+      )
+    }
+    const plan = this.repo.getPlan(milestone.planId)
+    if (!plan) throw new RequestError('the plan for this milestone is missing')
+
+    const result = this.repo.recordAcceptance({
+      milestoneId: milestone.id,
+      planId: plan.id,
+      repoPath: plan.repoPath,
+      state: input.state,
+      note: input.note ?? '',
+      changes: input.changes ?? [],
+      mock: plan.mock,
+    })
+    if (result.items.length) {
+      this.emit({ type: 'backlog.changed', repoPath: plan.repoPath })
+    }
+    return result
   }
 
   /** The same validation the create path runs, without granting anything. */

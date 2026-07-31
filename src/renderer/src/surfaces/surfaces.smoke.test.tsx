@@ -361,6 +361,7 @@ function installBridge(
     'inflight.list': () => [],
     'workspace.list': () => [],
     'preview.list': () => [],
+    'acceptance.list': () => [],
     'repo.containerStatus': () => ({
       enabled: false,
       configPresent: true,
@@ -504,6 +505,75 @@ describe('mounted-surface smoke', () => {
     act(() => appEventListener?.({ type: 'pane.closed', paneId: pane.id }))
     act(() => appEventListener?.({ type: 'pane.created', pane: { ...pane, id: 'q'.repeat(36) } }))
     await screen.findByText('1')
+  })
+
+  it('a completed milestone can be accepted, and requested changes file as backlog items', async () => {
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    const completed = { ...smokeMilestone, status: 'complete' as const }
+    installBridge({
+      'plan.get': () => ({ plan: smokePlan, milestones: [completed], worktree: null }),
+      'ledger.list': () => [],
+      'acceptance.record': (payload) => {
+        invoked.push({ name: 'acceptance.record', payload })
+        return {
+          acceptance: {
+            id: 'j'.repeat(36),
+            milestoneId: completed.id,
+            planId: smokePlan.id,
+            repoPath: '/tmp/smoke-repo',
+            state: 'changes-requested',
+            note: 'Close, but two things.',
+            createdAt: Date.now(),
+            mock: true,
+          },
+          items: [openItem, { ...openItem, id: 'y'.repeat(36) }],
+        }
+      },
+    })
+
+    function AcceptHarness(): ReactNode {
+      const { state, openPlan } = useStore()
+      return (
+        <>
+          <button onClick={() => void openPlan(smokePlan.id)}>Open the plan</button>
+          {state.planDetail ? (
+            <PlanPanel
+              detail={state.planDetail}
+              ledger={state.planLedger}
+              onRefresh={() => {}}
+              host="backlog"
+            />
+          ) : null}
+        </>
+      )
+    }
+    render(
+      <StoreProvider>
+        <AcceptHarness />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open the plan' }))
+    // The framing matters: the machine already said correct; this is a
+    // different question.
+    await screen.findByText(/this says whether it is what you wanted/i)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Request changes/ }))
+    fireEvent.change(screen.getByPlaceholderText(/The date format is wrong/), {
+      target: { value: 'The date format is wrong\n\nSorting resets on reload' },
+    })
+    // The button counts what will be filed, before anything is written.
+    fireEvent.click(await screen.findByRole('button', { name: 'Record and file 2 items' }))
+
+    await waitFor(() => expect(invoked).toHaveLength(1))
+    const payload = invoked[0]?.payload as { state: string; changes: string[] }
+    expect(payload.state).toBe('changes-requested')
+    // Blank lines are formatting, not items.
+    expect(payload.changes).toEqual(['The date format is wrong', 'Sorting resets on reload'])
+
+    // Afterwards the row shows the judgement rather than offering it again.
+    await screen.findByText(/You asked for changes/)
+    expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull()
   })
 
   it('the preview card starts a suggested command and opens the URL in the browser', async () => {

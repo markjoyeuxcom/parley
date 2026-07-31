@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import type {
+  Acceptance,
   BacklogItem,
   Envelope,
   Id,
@@ -102,6 +103,8 @@ interface State {
   workspaces: Workspace[]
   /** Live dev servers. In-memory like panes — they die with the app. */
   previews: Preview[]
+  /** The open plan's recorded judgements, newest first. */
+  acceptances: Acceptance[]
   panes: Pane[]
   skills: Skill[]
   notices: Notice[]
@@ -174,6 +177,7 @@ const initialState: State = {
   envelopes: [],
   workspaces: [],
   previews: [],
+  acceptances: [],
   panes: [],
   skills: [],
   notices: [],
@@ -215,6 +219,7 @@ type Action =
   | { type: 'envelopes'; envelopes: Envelope[] }
   | { type: 'workspaces'; workspaces: Workspace[] }
   | { type: 'previews'; previews: Preview[] }
+  | { type: 'acceptances'; acceptances: Acceptance[] }
   | { type: 'panes'; panes: Pane[] }
   | { type: 'skills'; skills: Skill[] }
   | { type: 'notice'; level: Notice['level']; message: string }
@@ -293,6 +298,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, workspaces: action.workspaces }
     case 'previews':
       return { ...state, previews: action.previews }
+    case 'acceptances':
+      return { ...state, acceptances: action.acceptances }
     case 'panes':
       return { ...state, panes: action.panes }
     case 'skills':
@@ -760,10 +767,15 @@ export function StoreProvider({ children }: { children: ReactNode }): ReactNode 
       // Unattended-run records ride along: the band that offers Stop must not
       // appear a frame after the plan it belongs to.
       const envelopes = await api.listEnvelopes(planId).catch(() => [])
+      const judgements = await api.listAcceptances(planId).catch(() => [])
       const known = Array.isArray(envelopes) ? envelopes : []
       if (generation !== planGenerationRef.current) return
       dispatch({ type: 'planOpened', detail, ledger: ledger ?? null })
       dispatch({ type: 'envelopes', envelopes: known })
+      dispatch({
+        type: 'acceptances',
+        acceptances: Array.isArray(judgements) ? judgements : [],
+      })
     },
     [attempt],
   )

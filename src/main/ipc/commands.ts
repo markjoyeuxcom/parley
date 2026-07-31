@@ -238,6 +238,18 @@ const HANDLERS: Record<CommandName, Handler> = {
     return { ok: true }
   },
 
+  'acceptance.record': (p, ctx) =>
+    ctx.manager.recordAcceptance(
+      p as {
+        milestoneId: string
+        state: 'accepted' | 'changes-requested'
+        note: string
+        changes: string[]
+      },
+    ),
+  'acceptance.list': (p, ctx) =>
+    ctx.manager.repo.listAcceptancesForPlan((p as { planId: string }).planId),
+
   'workspace.preview': (p, ctx) => {
     try {
       const path = ctx.manager.previewWorkspacePath((p as { path: string }).path)
