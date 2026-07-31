@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Archive, ArchiveRestore, BookOpen, FolderGit2, HardHat, Link2 } from 'lucide-react'
+import { Archive, ArchiveRestore, BookOpen, FolderGit2, HardHat, Link2, Sparkles } from 'lucide-react'
 import type {
   AgentConfig,
   BacklogItem,
@@ -18,6 +18,7 @@ import { useStore, type RepoTab } from '../state'
 import { AgentPicker } from '../components/AgentPicker'
 import { NewPlanDialog, PlanPanel } from '../components/PlanPanel'
 import { NewSessionDialog } from '../components/NewSessionDialog'
+import { NewWorkspaceDialog } from '../components/NewWorkspaceDialog'
 import { useHoldJump } from '../components/HoldsPanel'
 import { Chip, Dot, Empty, Label, Spinner } from '../components/ui'
 
@@ -76,6 +77,7 @@ export function BacklogSurface(): ReactNode {
     rows: Learning[]
   } | null>(null)
   const [showReview, setShowReview] = useState(false)
+  const [startingApp, setStartingApp] = useState(false)
 
   // The holds queue's knock: a repo-scoped hold opened this surface on a
   // specific repository — and on the exact tab that carries its control.
@@ -107,6 +109,10 @@ export function BacklogSurface(): ReactNode {
     })
     // Proposals ride the same refetch rhythm: every foreman write emits
     // backlog.changed, which refreshes state.backlogItems, which re-runs this.
+    void api
+      .listWorkspaces()
+      .then((all) => dispatch({ type: 'workspaces', workspaces: all }))
+      .catch(() => {})
     void attempt(() => api.listForemanProposals()).then((all) => {
       if (all && !cancelled) setProposals(all)
     })
@@ -266,12 +272,22 @@ export function BacklogSurface(): ReactNode {
       <aside className="sidebar">
         <div className="sidebar__header">
           <Label>Repositories</Label>
+          <span className="spacer" />
+          <button
+            className="btn btn--subtle btn--sm"
+            onClick={() => setStartingApp(true)}
+            title="Scaffold a new project, proven green before any agent touches it"
+          >
+            <Sparkles size={12} strokeWidth={2} />
+            New app
+          </button>
         </div>
         <div className="scroll-y">
           {repos.length === 0 ? (
             <div style={{ padding: 'var(--s6)' }} className="field__hint">
               Nothing tracked yet. Confirmed review findings and accepted risks file here on their
-              own; a session's Stow action drafts more.
+              own; a session's Stow action drafts more. Or start a new app — Parley scaffolds it
+              and proves its tests pass before anything else runs.
             </div>
           ) : (
             <div className="list">
@@ -419,6 +435,8 @@ export function BacklogSurface(): ReactNode {
                     }
                   />
 
+                  <WorkspaceCard repo={repo} />
+
                   <ContainerCard repo={repo} />
                 </>
               ) : null}
@@ -512,6 +530,16 @@ export function BacklogSurface(): ReactNode {
           onClose={() => setAcceptTarget(null)}
           onCreated={() => {
             notify('info', 'Proposal accepted — the plan is drafting. Its items are now planned.')
+          }}
+        />
+      ) : null}
+
+      {startingApp ? (
+        <NewWorkspaceDialog
+          onClose={() => setStartingApp(false)}
+          onCreated={(workspace) => {
+            setStartingApp(false)
+            selectRepo(workspace.repoPath)
           }}
         />
       ) : null}
@@ -625,6 +653,40 @@ function InFlightCard({
 }
 
 /** The holds queue filtered to this repository — same holds, scoped door. */
+/**
+ * What Parley knows about a project it created.
+ *
+ * Only ever shown for a repository that HAS a workspace record — an existing
+ * repo the user pointed Parley at never scaffolded anything, and claiming
+ * otherwise would be a small lie about provenance.
+ */
+function WorkspaceCard({ repo }: { repo: string }): ReactNode {
+  const { state } = useStore()
+  const workspace = state.workspaces.find(
+    (candidate) => candidate.repoPath === repo || candidate.repoPath.replace(/\/+$/, '') === repo,
+  )
+  if (!workspace) return null
+
+  return (
+    <section className="panel foreman-panel">
+      <header className="panel__header">
+        <Label>Created by Parley</Label>
+        {workspace.state === 'building' ? <Spinner /> : null}
+        <Chip tone={workspace.state === 'ready' ? '' : workspace.state === 'failed' ? 'chip--fail' : 'chip--accent'}>
+          {workspace.state}
+        </Chip>
+      </header>
+      <div className="panel__body">
+        <p style={{ margin: 0, fontSize: 'var(--text-small)', color: 'var(--text-tertiary)' }}>
+          {workspace.state === 'building'
+            ? 'Scaffolding, installing and running the project’s own verification. It is not safe ground for a plan until that passes.'
+            : workspace.detail}
+        </p>
+      </div>
+    </section>
+  )
+}
+
 /**
  * The repository's standing dev-container choice. The toggle is a recorded
  * decision, and the hint says the part that surprises people: plans snapshot

@@ -5,6 +5,7 @@ import { HoldsPopover } from './components/HoldsPanel'
 import { countActionable } from './lib/holdsState'
 import { CommandPalette, type PaletteAction } from './components/CommandPalette'
 import { NewSessionDialog } from './components/NewSessionDialog'
+import { NewWorkspaceDialog } from './components/NewWorkspaceDialog'
 import { GridSurface } from './surfaces/GridSurface'
 import { ParleySurface } from './surfaces/ParleySurface'
 import { LoopsSurface } from './surfaces/LoopsSurface'
@@ -18,6 +19,7 @@ export function App(): ReactNode {
     repoPath?: string | null
     matter?: string
   } | null>(null)
+  const [newApp, setNewApp] = useState(false)
 
   // Another surface knocked for a session dialog (the Grid's "Review this in
   // Parley"); consume the request and open the one instance App owns.
@@ -95,6 +97,12 @@ export function App(): ReactNode {
         group: 'New',
         label: 'Codebase review — evidence-led audit',
         run: () => setQuickSession({ kind: 'review' }),
+      },
+      {
+        id: 'new.app',
+        group: 'New',
+        label: 'App — scaffold a new project, proven green',
+        run: () => setNewApp(true),
       },
       {
         id: 'new.loop',
@@ -181,6 +189,18 @@ export function App(): ReactNode {
       <CommandPalette actions={actions} />
       <HoldsPopover />
       <Notices />
+
+      {newApp ? (
+        <NewWorkspaceDialog
+          onClose={() => setNewApp(false)}
+          onCreated={() => {
+            setNewApp(false)
+            // The Repos surface is where a repository lives, and the new one
+            // appears there the moment its record exists.
+            dispatch({ type: 'surface', surface: 'backlog' })
+          }}
+        />
+      ) : null}
 
       {quickSession ? (
         <NewSessionDialog

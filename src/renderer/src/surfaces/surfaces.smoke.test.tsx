@@ -33,6 +33,7 @@ import { ParleySurface } from './ParleySurface'
 import { BacklogSurface } from './BacklogSurface'
 import { GridSurface } from './GridSurface'
 import { PlanPanel } from '../components/PlanPanel'
+import { NewWorkspaceDialog } from '../components/NewWorkspaceDialog'
 import { LoopsSurface } from './LoopsSurface'
 
 /** Activates a surface the way the titlebar would — some surfaces only fetch
@@ -356,6 +357,7 @@ function installBridge(
     'holds.list': () => [],
     'envelope.list': () => [],
     'inflight.list': () => [],
+    'workspace.list': () => [],
     'repo.containerStatus': () => ({
       enabled: false,
       configPresent: true,
@@ -499,6 +501,73 @@ describe('mounted-surface smoke', () => {
     act(() => appEventListener?.({ type: 'pane.closed', paneId: pane.id }))
     act(() => appEventListener?.({ type: 'pane.created', pane: { ...pane, id: 'q'.repeat(36) } }))
     await screen.findByText('1')
+  })
+
+  it('the new-app dialog shows a refusal live, and grants against the resolved path', async () => {
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    installBridge({
+      'workspace.templates': () => [
+        { id: 'web-app', name: 'Local web app', description: 'TypeScript + Vite + Vitest.' },
+      ],
+      'dialog.pickDirectory': () => ({ path: '/tmp/projects' }),
+      'workspace.preview': (payload) => {
+        const path = (payload as { path: string }).path
+        return path.endsWith('/taken')
+          ? { ok: false, path: '', refusal: '/tmp/projects/taken is not empty' }
+          : { ok: true, path, refusal: '' }
+      },
+      'approval.grant': (payload) => {
+        invoked.push({ name: 'approval.grant', payload })
+        return { id: 'w'.repeat(36), scope: 'workspace.create', subjectId: '' }
+      },
+      'workspace.create': (payload) => {
+        invoked.push({ name: 'workspace.create', payload })
+        return {
+          id: 'k'.repeat(36),
+          repoPath: '/tmp/projects/my-app',
+          name: 'My App',
+          templateId: 'web-app',
+          state: 'building',
+          detail: '',
+          createdAt: Date.now(),
+          readyAt: null,
+          mock: false,
+        }
+      },
+    })
+
+    render(
+      <StoreProvider>
+        <NewWorkspaceDialog onClose={() => {}} onCreated={() => {}} />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: /Choose a folder/ }))
+    const nameField = screen.getByPlaceholderText('My great app')
+
+    // A destination that cannot be used says so while you are still typing —
+    // not after you have committed to it.
+    fireEvent.change(nameField, { target: { value: 'taken' } })
+    await screen.findByText('/tmp/projects/taken is not empty')
+    expect((screen.getByRole('button', { name: 'Approve and create' }) as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.change(nameField, { target: { value: 'My App' } })
+    // The folder name is derived from the project name, visibly.
+    await screen.findByText('/tmp/projects/my-app')
+
+    // The dialog states what will happen before anything is granted.
+    expect(screen.getByText(/only marked ready if that verification/i)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve and create' }))
+    await waitFor(() =>
+      expect(invoked.map((entry) => entry.name)).toEqual(['approval.grant', 'workspace.create']),
+    )
+    const grant = invoked[0]?.payload as { scope: string; subjectId: string; summary: string }
+    // The approval is granted against the RESOLVED path — the same subject
+    // the main process will check when it spends it.
+    expect(grant.scope).toBe('workspace.create')
+    expect(grant.subjectId).toBe('/tmp/projects/my-app')
+    expect(grant.summary).toMatch(/Nothing outside that folder is touched/)
   })
 
   it('the in-flight popover badges what is running and opens a row at its home', async () => {

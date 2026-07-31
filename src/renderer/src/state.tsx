@@ -18,6 +18,7 @@ import type {
   PaneKind,
   Session,
   Skill,
+  Workspace,
 } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import type { Hold } from '@shared/holds'
@@ -96,6 +97,8 @@ interface State {
    * envelope.changed, so a running band updates live without a refetch.
    */
   envelopes: Envelope[]
+  /** Projects Parley created, newest first. Upserted by workspace.changed. */
+  workspaces: Workspace[]
   panes: Pane[]
   skills: Skill[]
   notices: Notice[]
@@ -166,6 +169,7 @@ const initialState: State = {
   planDetail: null,
   planLedger: null,
   envelopes: [],
+  workspaces: [],
   panes: [],
   skills: [],
   notices: [],
@@ -205,6 +209,7 @@ type Action =
   | { type: 'planDetail'; detail: PlanDetail | null }
   | { type: 'planOpened'; detail: PlanDetail; ledger: LedgerEntry[] | null }
   | { type: 'envelopes'; envelopes: Envelope[] }
+  | { type: 'workspaces'; workspaces: Workspace[] }
   | { type: 'panes'; panes: Pane[] }
   | { type: 'skills'; skills: Skill[] }
   | { type: 'notice'; level: Notice['level']; message: string }
@@ -279,6 +284,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, planDetail: action.detail, planLedger: action.ledger }
     case 'envelopes':
       return { ...state, envelopes: action.envelopes }
+    case 'workspaces':
+      return { ...state, workspaces: action.workspaces }
     case 'panes':
       return { ...state, panes: action.panes }
     case 'skills':
@@ -586,6 +593,17 @@ function applyEvent(state: State, event: AppEvent): State {
         i.id === event.iteration.id ? event.iteration : i,
       )
       return { ...state, loopDetail: { ...state.loopDetail, iterations } }
+    }
+
+    case 'workspace.changed': {
+      const rest = state.workspaces.filter((w) => w.id !== event.workspace.id)
+      return {
+        ...state,
+        workspaces: [event.workspace, ...rest],
+        // A newly ready project is a new repository; the Repos sidebar is a
+        // projection that has to refetch to see it.
+        repoActivityVersion: state.repoActivityVersion + 1,
+      }
     }
 
     case 'envelope.changed': {
