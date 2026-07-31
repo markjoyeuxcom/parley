@@ -282,9 +282,22 @@ plan/backlog/learning and would otherwise be invisible. **Still to do:
 the by-hand acceptance** — create a real app, then plan a first feature
 against it.
 
-Remaining App Builder series: **(2) preview process management**
-(long-running dev server, killTree, Stop/Restart — valuable for
-existing repos independently), **(3) acceptance records + the
+**App Builder series 2 of 4: LANDED** (Preview m1–m3). The third
+process path: `capture` runs to completion, a Grid pane is interactive,
+a preview is a long-running server Parley must be able to STOP. Every
+preview spawns detached (own process group), stop signals the group
+with SIGKILL escalation, disposeAll on quit — a plain child.kill()
+reaps npm and orphans vite holding the port. **Defect the tests caught:
+listen for `exit`, NEVER `close`** — close waits for every pipe writer
+and a dev server's grandchild holds it open, so a crashed server showed
+as running forever; late output must not revive an exited record
+either (guard + test). URL is READ from output (the port it got may
+differ) and opened via injected openExternal — never navigation inside
+the renderer. Command suggested from the project's package.json
+(dev→start→serve). Nothing persisted: a preview dies with the app (Pane
+precedent). One per repo.
+
+Remaining App Builder series: **(3) acceptance records + the
 'acceptance' backlog ingestion source**, **(4) the thin guided shell**
 (Brief → Challenge → Foundation → Build → Preview → Harden). Readiness
 stage = disposition ERGONOMICS, never auto-disposition.

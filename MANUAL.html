@@ -309,14 +309,15 @@
     <li><a href="#repos">11 · Repos</a></li>
     <li><a href="#foreman">12 · The foreman</a></li>
     <li><a href="#newapp">13 · Starting a new app</a></li>
-    <li><a href="#unattended">14 · Unattended runs</a></li>
-    <li><a href="#devcontainers">15 · Dev containers</a></li>
-    <li><a href="#selfupdate">16 · Self-update</a></li>
+    <li><a href="#previews">14 · Previews</a></li>
+    <li><a href="#unattended">15 · Unattended runs</a></li>
+    <li><a href="#devcontainers">16 · Dev containers</a></li>
+    <li><a href="#selfupdate">17 · Self-update</a></li>
     <li class="g">Reference</li>
-    <li><a href="#shortcuts">17 · Keyboard shortcuts</a></li>
-    <li><a href="#mock">18 · Mock mode</a></li>
-    <li><a href="#troubleshooting">19 · Troubleshooting</a></li>
-    <li><a href="#data">20 · Where your data lives</a></li>
+    <li><a href="#shortcuts">18 · Keyboard shortcuts</a></li>
+    <li><a href="#mock">19 · Mock mode</a></li>
+    <li><a href="#troubleshooting">20 · Troubleshooting</a></li>
+    <li><a href="#data">21 · Where your data lives</a></li>
     <li><a href="#invariants">A · The ten invariants</a></li>
   </ol>
 </nav>
@@ -733,8 +734,31 @@ at all.</li>
 </ul>
 </section>
 
+<section id="previews">
+<h2>14 · Previews</h2>
+<p>A repository&rsquo;s Overview carries a <b>Preview</b> card: Parley runs the
+project&rsquo;s own dev server and tells you where it is listening. The command
+comes from the project&rsquo;s <code>package.json</code> — <code>dev</code>, then
+<code>start</code>, then <code>serve</code> — and you can name a different one.</p>
+<div class="callout">
+<p><b>Why not just a terminal tab?</b> Stopping. <code>npm run dev</code> is npm
+spawning vite, so a plain signal reaps npm and orphans the server, which then
+holds the port with nothing visible left to kill. Parley starts every preview in
+its own process group, stops the group, and takes them all with it when the app
+quits.</p>
+</div>
+<ul>
+<li><b>The address is read, not guessed</b> — the port it got may not be the
+port it asked for — and it opens in your browser, never inside Parley.</li>
+<li><b>The output is kept after the process dies</b>, which is exactly when the
+last twenty lines matter.</li>
+<li><b>One per project.</b> Two dev servers in one repository fight over the
+port, and the second one&rsquo;s failure would look like the first one&rsquo;s.</li>
+</ul>
+</section>
+
 <section id="unattended">
-<h2>14 · Unattended runs</h2>
+<h2>15 · Unattended runs</h2>
 <p>Five milestones normally cost five approval clicks. An <b>envelope</b>
 replaces them with one: state the bounds up front, and Parley mints each
 milestone&rsquo;s own single-use approval from it as the run proceeds &mdash;
@@ -761,7 +785,7 @@ work lives.</p>
 </section>
 
 <section id="devcontainers">
-<h2>15 · Dev containers</h2>
+<h2>16 · Dev containers</h2>
 <p>When a repository&rsquo;s toolchain lives in a <code>.devcontainer/</code>
 image rather than on your Mac, Parley can run <strong>its own deterministic
 commands</strong> for that repository inside the container: milestone
@@ -790,7 +814,7 @@ host bytes.</li>
 </section>
 
 <section id="selfupdate">
-<h2>16 · Self-update <span class="dim">dev mode</span></h2>
+<h2>17 · Self-update <span class="dim">dev mode</span></h2>
 <p>When Parley runs from its own checkout (<code>npm run dev</code>), it knows
 which repository it is — and the loop closes on itself.</p>
 <ul>
@@ -821,7 +845,7 @@ separate, much later project.</p>
 </section>
 
 <section id="shortcuts">
-<h2>17 · Keyboard shortcuts</h2>
+<h2>18 · Keyboard shortcuts</h2>
 <table>
   <tr><th>Keys</th><th>Where</th><th>Action</th></tr>
   <tr><td><kbd>⌘K</kbd></td><td>Everywhere</td><td>Command palette — jump surfaces, start a debate or review</td></tr>
@@ -839,7 +863,7 @@ separate, much later project.</p>
 </section>
 
 <section id="mock">
-<h2>18 · Mock mode</h2>
+<h2>19 · Mock mode</h2>
 <p><code>PARLEY_MOCK=1 npm run dev</code> replaces both CLIs with
 deterministic mock adapters: every flow is walkable, nothing consults a model,
 no quota is spent. Because mock output is structurally identical to real
@@ -854,7 +878,7 @@ cover it instead.</p>
 </section>
 
 <section id="troubleshooting">
-<h2>19 · Troubleshooting</h2>
+<h2>20 · Troubleshooting</h2>
 <h3>Terminals will not start</h3>
 <p><code>posix_spawnp failed</code> on every pane — including a plain shell —
 means node-pty's <code>spawn-helper</code> binary is missing or not
@@ -875,7 +899,7 @@ preflight warns about exactly this before you spend anything, and offers
 </section>
 
 <section id="data">
-<h2>20 · Where your data lives</h2>
+<h2>21 · Where your data lives</h2>
 <p>Nowhere else. Sessions, verdicts, findings, dispositions, approvals, plans,
 loops, backlog, learnings, saved layouts and the whole audit trail live in
 SQLite under the app's own support directory

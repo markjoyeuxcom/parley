@@ -481,6 +481,25 @@ is a repository whose `npm run verify` means something from its first
 commit — which is exactly what an audited plan needs to verify anything at
 all.
 
+## Previews
+
+A repository's Overview carries a **Preview** card: Parley runs the
+project's own dev server, in the project's own folder, and tells you where
+it is listening. The command is read from the project's `package.json`
+(`dev`, then `start`, then `serve`) rather than assumed, and you can name a
+different one.
+
+The reason this beats a terminal tab is stopping. `npm run dev` is npm
+spawning vite, so a plain signal to the child reaps npm and orphans the
+server — which then holds the port with nothing visible left to kill.
+Parley starts every preview in its own process group and stops the group,
+and quitting the app takes them all with it.
+
+The address is read from the server's own output, not guessed — the port it
+got may not be the port it asked for — and it opens in your browser, never
+inside Parley. The output is kept even after the process dies, which is
+exactly when the last twenty lines matter.
+
 ## Unattended runs
 
 Five milestones normally cost five approval clicks with dead time between

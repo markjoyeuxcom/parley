@@ -636,6 +636,33 @@ The rules, each enforced in main, none only in the renderer:
   is a separate, much later project. The hold's detail says so, so the UI
   never implies the installed copy updated.
 
+## Previews: the third process path, and why it is separate
+
+`capture` runs a command to completion; a Grid pane is an interactive
+terminal the user drives; a preview is a long-running server Parley starts
+and must be able to stop. Do not fold it into either of the others.
+
+- **Process-group discipline is the feature.** Every preview spawns
+  `detached` so it leads its own group; stop signals the group (negative
+  pid) with a SIGKILL escalation, and `disposeAll` runs on quit. A plain
+  `child.kill()` reaps npm and orphans vite, which then holds the port with
+  no visible way to end it.
+- **Listen for `exit`, never `close`.** `close` waits for every writer to
+  release the stdio pipe, and a dev server's own grandchild routinely holds
+  it open — a crashed server would show as running forever. Output arriving
+  after exit must not revive the record either; there is a guard and a test
+  for exactly this, and it was a real defect caught by that test.
+- **Read the URL, never construct it.** The port a server got may differ
+  from the port it wanted; a link to a port nothing serves is worse than no
+  link. `0.0.0.0` is rewritten to localhost because it is not an address a
+  browser should open.
+- **It opens in the user's browser**, through an injected `openExternal`.
+  The renderer has no navigation and no remote origins, and a dev server is
+  precisely the content that must not be granted an exception.
+- **Nothing is persisted.** A preview dies with the app, so a stored row
+  claiming one runs would be a promise the disk cannot keep — the Pane
+  precedent.
+
 ## Scaffolding is its own capability class
 
 Until the workspace creator, one rule held absolutely: **Parley creates no
