@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { inputRefFor, resultRefFor } from '@shared/remote'
 import {
   createExecutionSnapshot,
+  snapshotRefusal,
   deleteRunRefs,
   descendsFrom,
   fetchResult,
@@ -282,5 +283,53 @@ describe('moving states between repositories', () => {
     expect(sh(repo, 'for-each-ref', '--format=%(refname)', 'refs/parley')).toBe('')
     // Deleting a settled run twice is normal — reconcile may race the caller.
     await expect(deleteRunRefs(repo, 'run-10')).resolves.toBeUndefined()
+  })
+})
+
+describe('trees that cannot be snapshotted honestly', () => {
+  it('refuses a sparse checkout, because the snapshot would not be the tree', () => {
+    // Measured, not assumed: seeding a temp index from HEAD reinstates every
+    // tracked path, so a sparse working tree produces a snapshot containing
+    // files the local run never saw. Calling that an execution snapshot would
+    // be worse than failing, because everything downstream believes the name.
+    const repo = newRepo()
+    mkdirSync(join(repo, 'kept'))
+    mkdirSync(join(repo, 'excluded'))
+    writeFileSync(join(repo, 'kept', 'a.txt'), 'a\n')
+    writeFileSync(join(repo, 'excluded', 'b.txt'), 'b\n')
+    sh(repo, 'add', '-A')
+    sh(repo, 'commit', '-q', '-m', 'two directories')
+    sh(repo, 'sparse-checkout', 'init', '--cone')
+    sh(repo, 'sparse-checkout', 'set', 'kept')
+    expect(existsSync(join(repo, 'excluded'))).toBe(false)
+
+    return createExecutionSnapshot(repo, 'run-1').then((result) => {
+      expect(result.ok).toBe(false)
+      expect(result.ok === false && result.detail).toContain('sparse')
+    })
+  })
+
+  it('allows an ordinary full checkout', async () => {
+    expect(await snapshotRefusal(repo)).toBeNull()
+  })
+
+  it('refuses a submodule with uncommitted work', async () => {
+    // A submodule travels as the gitlink commit it points at. Uncommitted work
+    // inside one has no such commit, so it would silently not travel and the
+    // remote would build something this tree does not contain.
+    const inner = newRepo()
+    const outer = newRepo()
+    sh(outer, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', inner, 'vendor')
+    sh(outer, 'commit', '-q', '-m', 'add submodule')
+    expect(await snapshotRefusal(outer)).toBeNull()
+    const inner2 = join(outer, 'vendor')
+
+    // A dirty working tree inside a submodule is invisible to `git submodule
+    // status` — only the superproject's own status notices it, which is why
+    // the refusal consults both.
+    writeFileSync(join(inner2, 'tracked.txt'), 'changed inside the submodule\n')
+    const refusal = await snapshotRefusal(outer)
+    expect(refusal).toContain('vendor')
+    expect(refusal).toContain('submodule')
   })
 })

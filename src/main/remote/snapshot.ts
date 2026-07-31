@@ -89,6 +89,9 @@ export async function createExecutionSnapshot(
   runId: string,
   signal?: AbortSignal,
 ): Promise<SnapshotResult> {
+  const refusal = await snapshotRefusal(repoPath, signal)
+  if (refusal) return { ok: false, detail: refusal }
+
   const head = await git(['rev-parse', 'HEAD'], repoPath, signal)
   // A repository with no commits yet is legitimate — a workspace Parley just
   // scaffolded has one, but a plan can target a repo before its first commit.
@@ -128,6 +131,66 @@ export async function createExecutionSnapshot(
     // anything (git never looks there again) but it would leak a file per run.
     rmSync(indexDir, { recursive: true, force: true })
   }
+}
+
+/**
+ * Why this working tree cannot be snapshotted honestly, or null.
+ *
+ * Both refusals here are cases where the procedure would happily produce a
+ * commit that is NOT the tree about to execute — which is worse than failing,
+ * because everything downstream would treat it as one.
+ */
+export async function snapshotRefusal(
+  repoPath: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  // Sparse checkout, measured rather than assumed: seeding a temp index from
+  // HEAD reinstates every tracked path, including the ones sparse rules keep
+  // OUT of the working tree, so the snapshot ends up containing files the
+  // local run would never have seen. Transporting the sparse specification
+  // would fix it properly; until then, refusing is the honest answer, because
+  // the alternative is calling something an execution snapshot when it is not.
+  const sparse = await git(['config', '--get', 'core.sparseCheckout'], repoPath, signal)
+  if (sparse.ok && sparse.stdout.trim().toLowerCase() === 'true') {
+    return 'this checkout is sparse, so a snapshot would carry files the local run never had — remote execution needs a full checkout'
+  }
+
+  // Submodules travel as the gitlink commit they point at, which is what git
+  // records and is correct. What does NOT travel is anything uncommitted
+  // inside one, or a gitlink moved to a commit that exists only on this
+  // machine — either way the remote would build something this tree does not
+  // contain, without anything looking wrong.
+  //
+  // Detection is deliberately empirical: `git submodule status` reports the
+  // gitlink, and stays silent about a dirty working tree inside a submodule.
+  // The superproject's own status is what notices that, which is why both are
+  // consulted rather than the more obvious one alone.
+  const listed = await git(['submodule', 'status', '--recursive'], repoPath, signal)
+  if (listed.ok && listed.stdout) {
+    const paths = listed.stdout
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/)[1] ?? '')
+      .filter(Boolean)
+    if (paths.length > 0) {
+      const status = await git(['status', '--porcelain'], repoPath, signal)
+      // The status column is stripped by pattern rather than by a fixed
+      // offset, because this stdout has been trimmed — which removes the
+      // leading space of the first porcelain line and shifts exactly one entry
+      // by one character. A slice(3) here silently missed the first modified
+      // path and only the first.
+      const modified = new Set(
+        status.stdout
+          .split('\n')
+          .map((line) => line.replace(/^\s*[A-Z?! ]{1,2}\s+/, '').trim())
+          .filter(Boolean),
+      )
+      const dirty = paths.filter((path) => modified.has(path))
+      if (dirty.length > 0) {
+        return `these submodules have changes a snapshot cannot carry: ${dirty.join(', ')} — commit and push inside each one first, so the remote can reach the commit this tree points at`
+      }
+    }
+  }
+  return null
 }
 
 /** Untracked, non-ignored paths — reported so the record can say what travelled. */
