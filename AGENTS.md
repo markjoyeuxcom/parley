@@ -636,6 +636,32 @@ The rules, each enforced in main, none only in the renderer:
   is a separate, much later project. The hold's detail says so, so the UI
   never implies the installed copy updated.
 
+## The guided build is a guide, not an engine
+
+There is no fourth engine behind Build an app. Each stage opens the same
+control a user would reach for anyway, and the journey records what came
+back. Keep it that way: the moment a stage runs something itself, every
+gate that control carries has to be re-implemented here, and one of them
+will be forgotten.
+
+- **The record stores LINKS ONLY; the stage is derived** (`shared/journey.ts`
+  over observations the Manager reads from the record). A stored stage
+  would be a second opinion about state the record already answers, and it
+  would disagree the first time someone worked outside the guide.
+- **It follows the work, never the reverse.** Someone who ran the debate
+  themselves and pointed the journey at it must arrive at the next stage,
+  not be asked to repeat one. And it never skips ahead: building before
+  briefing does not make the brief unnecessary.
+- **The panel mounts its own dialogs** rather than knocking on another
+  surface, because it needs their return value. That is the exception to
+  the knock pattern and the reason for it.
+- **Deleting a journey deletes only the guide.** Everything it links is
+  durable on its own, which is also why the repository-activity guard puts
+  it out of scope.
+- The **readiness/disposition ergonomics** idea stays disposition
+  ERGONOMICS if it is ever built — never auto-disposition, which would
+  breach no-self-certification.
+
 ## Acceptance is a record, not a gate
 
 Verification and independent review decide correctness. Acceptance records

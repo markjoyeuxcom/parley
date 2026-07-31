@@ -308,17 +308,18 @@
     <li><a href="#holds">10 · Holds</a></li>
     <li><a href="#repos">11 · Repos</a></li>
     <li><a href="#foreman">12 · The foreman</a></li>
-    <li><a href="#newapp">13 · Starting a new app</a></li>
-    <li><a href="#acceptance">14 · Acceptance</a></li>
-    <li><a href="#previews">15 · Previews</a></li>
-    <li><a href="#unattended">16 · Unattended runs</a></li>
-    <li><a href="#devcontainers">17 · Dev containers</a></li>
-    <li><a href="#selfupdate">18 · Self-update</a></li>
+    <li><a href="#guided">13 · Building a new app</a></li>
+    <li><a href="#newapp">14 · Starting a new app</a></li>
+    <li><a href="#acceptance">15 · Acceptance</a></li>
+    <li><a href="#previews">16 · Previews</a></li>
+    <li><a href="#unattended">17 · Unattended runs</a></li>
+    <li><a href="#devcontainers">18 · Dev containers</a></li>
+    <li><a href="#selfupdate">19 · Self-update</a></li>
     <li class="g">Reference</li>
-    <li><a href="#shortcuts">19 · Keyboard shortcuts</a></li>
-    <li><a href="#mock">20 · Mock mode</a></li>
-    <li><a href="#troubleshooting">21 · Troubleshooting</a></li>
-    <li><a href="#data">22 · Where your data lives</a></li>
+    <li><a href="#shortcuts">20 · Keyboard shortcuts</a></li>
+    <li><a href="#mock">21 · Mock mode</a></li>
+    <li><a href="#troubleshooting">22 · Troubleshooting</a></li>
+    <li><a href="#data">23 · Where your data lives</a></li>
     <li><a href="#invariants">A · The ten invariants</a></li>
   </ol>
 </nav>
@@ -705,8 +706,43 @@ shows its per-item verdict under the panel's idle line instead of dying in a
 toast.</p>
 </section>
 
+<section id="guided">
+<h2>13 · Building a new app, guided</h2>
+<p><b>Build an app</b>, on the Repos surface, walks an idea to a reviewed
+running project in six steps.</p>
+<table>
+  <tr><th>Step</th><th>What happens</th></tr>
+  <tr><td><b>Brief</b></td><td>You say what you want, in your own words.</td></tr>
+  <tr><td><b>Challenge</b></td><td>A debate between two model families, with the
+  brief as its matter — the cheapest moment to find out an idea does not survive
+  contact is before any code exists.</td></tr>
+  <tr><td><b>Foundation</b></td><td>The project is scaffolded, and its tests are
+  proven green before any agent touches it (<a href="#newapp">§14</a>).</td></tr>
+  <tr><td><b>Build</b></td><td>A plan against the new project, run in audited
+  slices — each verified and independently reviewed.</td></tr>
+  <tr><td><b>Preview</b></td><td>Run it (<a href="#previews">§16</a>), look at
+  it, and say whether it is what you wanted (<a href="#acceptance">§15</a>).</td></tr>
+  <tr><td><b>Harden</b></td><td>A review of what now exists, scoped to what you
+  actually built.</td></tr>
+</table>
+<div class="callout">
+<p><b>It is a guide, not a generator.</b> Every step opens the ordinary Parley
+control for that step, and every gate is still the gate. The guide only
+remembers which debate, project, plan and review belong together, and names the
+next honest step.</p>
+</div>
+<ul>
+<li><b>It follows your work.</b> Run the debate yourself and point the guide at
+it, and you arrive at the next stage rather than repeating one.</li>
+<li><b>It never skips ahead.</b> Building before briefing does not make the
+brief unnecessary.</li>
+<li><b>Removing a guide keeps everything it linked</b> — the debate, the
+project, the plan and the review are the record; the guide is scaffolding.</li>
+</ul>
+</section>
+
 <section id="newapp">
-<h2>13 · Starting a new app</h2>
+<h2>14 · Starting a new app</h2>
 <p><b>New app</b> — in the ⌘K palette or on the Repos sidebar — scaffolds a
 project rather than improving one you already have. It creates the folder,
 writes the template, makes the first commit, installs, and runs the
@@ -736,7 +772,7 @@ at all.</li>
 </section>
 
 <section id="acceptance">
-<h2>14 · Acceptance</h2>
+<h2>15 · Acceptance</h2>
 <p>A completed milestone has passed its tests and an independent review. That
 settles whether it is <i>correct</i> — not whether it is what you wanted, which
 nothing but you can settle. So a completed milestone offers <b>Accept</b> and
@@ -761,7 +797,7 @@ right&rdquo; into work you will find again.</li>
 </section>
 
 <section id="previews">
-<h2>15 · Previews</h2>
+<h2>16 · Previews</h2>
 <p>A repository&rsquo;s Overview carries a <b>Preview</b> card: Parley runs the
 project&rsquo;s own dev server and tells you where it is listening. The command
 comes from the project&rsquo;s <code>package.json</code> — <code>dev</code>, then
@@ -784,7 +820,7 @@ port, and the second one&rsquo;s failure would look like the first one&rsquo;s.<
 </section>
 
 <section id="unattended">
-<h2>16 · Unattended runs</h2>
+<h2>17 · Unattended runs</h2>
 <p>Five milestones normally cost five approval clicks. An <b>envelope</b>
 replaces them with one: state the bounds up front, and Parley mints each
 milestone&rsquo;s own single-use approval from it as the run proceeds &mdash;
@@ -811,7 +847,7 @@ work lives.</p>
 </section>
 
 <section id="devcontainers">
-<h2>17 · Dev containers</h2>
+<h2>18 · Dev containers</h2>
 <p>When a repository&rsquo;s toolchain lives in a <code>.devcontainer/</code>
 image rather than on your Mac, Parley can run <strong>its own deterministic
 commands</strong> for that repository inside the container: milestone
@@ -840,7 +876,7 @@ host bytes.</li>
 </section>
 
 <section id="selfupdate">
-<h2>18 · Self-update <span class="dim">dev mode</span></h2>
+<h2>19 · Self-update <span class="dim">dev mode</span></h2>
 <p>When Parley runs from its own checkout (<code>npm run dev</code>), it knows
 which repository it is — and the loop closes on itself.</p>
 <ul>
@@ -871,7 +907,7 @@ separate, much later project.</p>
 </section>
 
 <section id="shortcuts">
-<h2>19 · Keyboard shortcuts</h2>
+<h2>20 · Keyboard shortcuts</h2>
 <table>
   <tr><th>Keys</th><th>Where</th><th>Action</th></tr>
   <tr><td><kbd>⌘K</kbd></td><td>Everywhere</td><td>Command palette — jump surfaces, start a debate or review</td></tr>
@@ -889,7 +925,7 @@ separate, much later project.</p>
 </section>
 
 <section id="mock">
-<h2>20 · Mock mode</h2>
+<h2>21 · Mock mode</h2>
 <p><code>PARLEY_MOCK=1 npm run dev</code> replaces both CLIs with
 deterministic mock adapters: every flow is walkable, nothing consults a model,
 no quota is spent. Because mock output is structurally identical to real
@@ -904,7 +940,7 @@ cover it instead.</p>
 </section>
 
 <section id="troubleshooting">
-<h2>21 · Troubleshooting</h2>
+<h2>22 · Troubleshooting</h2>
 <h3>Terminals will not start</h3>
 <p><code>posix_spawnp failed</code> on every pane — including a plain shell —
 means node-pty's <code>spawn-helper</code> binary is missing or not
@@ -925,7 +961,7 @@ preflight warns about exactly this before you spend anything, and offers
 </section>
 
 <section id="data">
-<h2>22 · Where your data lives</h2>
+<h2>23 · Where your data lives</h2>
 <p>Nowhere else. Sessions, verdicts, findings, dispositions, approvals, plans,
 loops, backlog, learnings, saved layouts and the whole audit trail live in
 SQLite under the app's own support directory

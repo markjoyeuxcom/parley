@@ -453,6 +453,28 @@ landing — your role compresses to answering questions and resolving holds.
 
 ---
 
+## Building a new app, guided
+
+**Build an app** on the Repos surface walks an idea to a reviewed,
+running project in six steps:
+
+**Brief** — say what you want, in your own words. **Challenge** — put that
+brief to two model families before any code exists, which is the cheapest
+moment to discover an idea does not survive contact. **Foundation** —
+scaffold the project, with its tests proven green before any agent touches
+it. **Build** — plan the work against the new project and run it in audited
+slices, each verified and independently reviewed. **Preview** — run it, look
+at it, and say whether it is what you wanted. **Harden** — review what now
+exists, scoped to what you actually built.
+
+It is a guide, not a generator. Every step opens the ordinary Parley
+control for that step and every gate is still the gate; the guide's only
+job is remembering which debate, project, plan and review belong together,
+and naming the next honest step. It never skips ahead, and it follows work
+you do outside it — run the debate yourself, point the guide at it, and you
+arrive at the next stage rather than being asked to repeat one. Removing a
+guide keeps everything it linked.
+
 ## Starting a new app
 
 Parley can scaffold a new project rather than only improving existing ones.

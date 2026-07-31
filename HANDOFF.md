@@ -314,9 +314,19 @@ refuses nested BEGIN; the createPlanCore precedent). Controls sit ABOVE
 the fold: a completed milestone folds by default and the first draft
 hid the only thing still needing a person.
 
-Remaining: **App Builder series (4) the thin guided shell**
-(Brief → Challenge → Foundation → Build → Preview → Harden). Readiness
-stage = disposition ERGONOMICS, never auto-disposition.
+**App Builder series 4 of 4: LANDED** (Journey m1–m3, schema 26) —
+**THE ARC IS COMPLETE.** The guided shell is a GUIDE, not an engine:
+each stage opens the ordinary control (debate / workspace creator /
+plan dialog / preview+acceptance / scoped review) and the journey
+records what came back. `app_journeys` stores LINKS ONLY; the stage is
+derived (`shared/journey.ts`) from what they point at — a stored stage
+would be a second opinion and would disagree the moment someone worked
+outside the guide. Never skips ahead; DOES follow work done outside it.
+The panel mounts its own dialogs (the deliberate exception to the knock
+pattern — it needs their return value). Deleting a journey deletes only
+the guide; the completeness guard classifies app_journeys out of scope
+for that reason. Readiness/disposition-ergonomics was NOT built and
+stays a future idea — never auto-disposition.
 
 1. **SSH/remote execution arc** after App Builder (execution-target
    abstraction over the ~6 local-assuming touchpoints), composing with
