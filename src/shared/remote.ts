@@ -68,8 +68,23 @@ export function inputRefFor(runId: string): string {
   return `${RUN_REF_PREFIX}/${runId}/input`
 }
 
-export function resultRefFor(runId: string): string {
-  return `${RUN_REF_PREFIX}/${runId}/result`
+/**
+ * Where a finished remote run publishes what it built — provisionally.
+ *
+ * Called a candidate rather than a result because that is what it is. There is
+ * no way to couple "the remote published the ref" with "the local side learned
+ * it did" across a connection that can die between the two, so a run whose ssh
+ * dropped may leave a perfectly good candidate behind that nobody ever asked
+ * for. Promising that no ref can exist after a disconnect would be a promise
+ * about a distributed system that no protocol over ssh can keep.
+ *
+ * So the ref carries no authority. Authority is local: the candidate is
+ * fetched, its ancestry and changed paths are verified here, and only then is
+ * it accepted. An unclaimed candidate is garbage, collected later, and never
+ * applied because it happened to be lying around.
+ */
+export function candidateRefFor(runId: string): string {
+  return `${RUN_REF_PREFIX}/${runId}/candidate`
 }
 
 /* ------------------------------------------------------------------ */
@@ -121,6 +136,39 @@ export interface RemoteRunSpec {
   plan: unknown
   /** The milestone definition itself: intent, files, test command, mutations. */
   milestone: unknown
+}
+
+/**
+ * Variables the runner must clear before running git for its own lifecycle.
+ *
+ * {@link safeEnvOverlay} guards what a REQUEST may set; this guards what the
+ * remote host's own environment may already contain. An ssh session that
+ * arrives with GIT_DIR exported — from a login script, a CI agent, a wrapper
+ * somebody wrote years ago — would silently redirect every repository command
+ * the runner makes, and the runner would report confidently about the wrong
+ * repository.
+ *
+ * Agent CLIs still get the user's environment: their credentials live in it.
+ * This applies to repository lifecycle only, which is the part that must be
+ * exactly what the runner decided and nothing else.
+ */
+export function controlledGitEnv(
+  base: Record<string, string | undefined>,
+  owned: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(base)) {
+    if (value === undefined) continue
+    const upper = key.toUpperCase()
+    if (upper.startsWith('GIT_')) continue
+    out[key] = value
+  }
+  // Hooks are code the repository carries. A snapshot from another machine
+  // must not get to run any of it on this host as a side effect of a checkout.
+  out.GIT_CONFIG_GLOBAL = '/dev/null'
+  out.GIT_CONFIG_SYSTEM = '/dev/null'
+  out.GIT_TERMINAL_PROMPT = '0'
+  return { ...out, ...owned }
 }
 
 /**

@@ -3,13 +3,13 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
-import { inputRefFor, resultRefFor } from '@shared/remote'
+import { candidateRefFor, inputRefFor } from '@shared/remote'
 import {
   createExecutionSnapshot,
   snapshotRefusal,
   deleteRunRefs,
   descendsFrom,
-  fetchResult,
+  fetchCandidate,
   pushSnapshot,
 } from './snapshot'
 
@@ -221,7 +221,7 @@ describe('moving states between repositories', () => {
     expect(sh(mirror, 'for-each-ref', '--format=%(refname)')).toBe(inputRefFor('run-7'))
   })
 
-  it('fetches a result back without touching any local branch', async () => {
+  it('fetches a candidate back without touching any local branch', async () => {
     const mirror = bareMirror()
     const snapshot = await createExecutionSnapshot(repo, 'run-7')
     if (!snapshot.ok) return
@@ -242,10 +242,10 @@ describe('moving states between repositories', () => {
     sh(checkout, 'add', '-A')
     sh(checkout, 'commit', '-q', '-m', 'milestone')
     const resultCommit = sh(checkout, 'rev-parse', 'HEAD')
-    sh(checkout, 'push', '-q', mirror, `${resultCommit}:${resultRefFor('run-7')}`)
+    sh(checkout, 'push', '-q', mirror, `${resultCommit}:${candidateRefFor('run-7')}`)
 
     const before = userState(repo)
-    const fetched = await fetchResult(repo, mirror, 'run-7')
+    const fetched = await fetchCandidate(repo, mirror, 'run-7')
     expect(fetched.ok).toBe(true)
     expect(fetched.commit).toBe(resultCommit)
     expect(userState(repo)).toEqual(before)

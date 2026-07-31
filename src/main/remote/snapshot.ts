@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { capture } from '@main/util/spawn'
-import { inputRefFor, resultRefFor } from '@shared/remote'
+import { candidateRefFor, inputRefFor } from '@shared/remote'
 
 /**
  * The immutable input snapshot.
@@ -233,21 +233,27 @@ export async function pushSnapshot(
   return { ok: result.ok, detail: result.ok ? '' : (result.stderr || result.stdout).slice(0, 400) }
 }
 
-/** Brings the run's result commit back, without touching any local branch. */
-export async function fetchResult(
+/**
+ * Brings a run's candidate commit back, without touching any local branch.
+ *
+ * Fetching a candidate is not accepting it. It is how the local side gets the
+ * objects it needs in order to judge — ancestry, changed paths, evidence — and
+ * every one of those checks runs after this, against objects we now hold.
+ */
+export async function fetchCandidate(
   repoPath: string,
   mirror: string,
   runId: string,
   signal?: AbortSignal,
 ): Promise<{ ok: boolean; commit: string | null; detail: string }> {
-  const ref = resultRefFor(runId)
+  const ref = candidateRefFor(runId)
   const fetched = await git(['fetch', '--force', mirror, `${ref}:${ref}`], repoPath, signal)
   if (!fetched.ok) {
     return { ok: false, commit: null, detail: (fetched.stderr || fetched.stdout).slice(0, 400) }
   }
   const resolved = await git(['rev-parse', ref], repoPath, signal)
   if (!resolved.ok || !resolved.stdout) {
-    return { ok: false, commit: null, detail: 'the result ref did not resolve after fetching' }
+    return { ok: false, commit: null, detail: 'the candidate ref did not resolve after fetching' }
   }
   return { ok: true, commit: resolved.stdout, detail: '' }
 }
@@ -287,7 +293,7 @@ export async function deleteRunRefs(
   runId: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  for (const ref of [inputRefFor(runId), resultRefFor(runId)]) {
+  for (const ref of [inputRefFor(runId), candidateRefFor(runId)]) {
     await git(['update-ref', '-d', ref], repoPath, signal)
   }
 }

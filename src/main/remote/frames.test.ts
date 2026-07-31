@@ -6,7 +6,7 @@ import {
   REMOTE_HELPER_COMMAND,
   REMOTE_PROTOCOL_VERSION,
   REQUIRED_CAPABILITIES,
-  resultRefFor,
+  candidateRefFor,
   safeEnvOverlay,
   composeRemoteEnv,
   type RemoteCapabilities,
@@ -88,7 +88,10 @@ describe('the request body', () => {
 
   it('namespaces both run states out of branch history', () => {
     expect(inputRefFor('01J')).toBe('refs/parley/runs/01J/input')
-    expect(resultRefFor('01J')).toBe('refs/parley/runs/01J/result')
+    // "candidate", not "result": a ref the remote published carries no
+    // authority, because a connection can die between publishing it and the
+    // local side learning it exists.
+    expect(candidateRefFor('01J')).toBe('refs/parley/runs/01J/candidate')
   })
 })
 
