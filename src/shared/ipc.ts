@@ -230,6 +230,7 @@ export const StartPreviewReq = z.object({
   command: z.string().min(1).max(400),
 })
 export const PreviewIdReq = z.object({ previewId: Id })
+export const PreviewSuggestReq = z.object({ repoPath: z.string().min(1) })
 /** Opens a preview's own URL in the user's browser — never in the app. */
 export const OpenPreviewUrlReq = z.object({ previewId: Id })
 /** Boots the freshly built Parley: decides the green offer, then relaunches. */
@@ -339,6 +340,7 @@ export const COMMANDS = {
   'preview.logs': PreviewIdReq,
   'preview.open': OpenPreviewUrlReq,
   'preview.list': null,
+  'preview.suggest': PreviewSuggestReq,
   'repos.list': ListReposReq,
   'repos.archive': ArchiveRepoReq,
   'repo.containerStatus': RepoContainerStatusReq,

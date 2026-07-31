@@ -23,7 +23,7 @@ import { readCodexDefaultModel } from '@main/util/environment'
 import { gitIdentity } from '@main/util/gitIdentity'
 import { TEMPLATES } from '@main/orchestrator/templates'
 import type { PtyManager } from '@main/pty/manager'
-import type { PreviewManager } from '@main/preview/manager'
+import { suggestPreviewCommand, type PreviewManager } from '@main/preview/manager'
 import { disposeLedgerFinding, getSessionDetail, listSessionLedger } from './ledger'
 
 /** The two native dialogs the command table uses, injected by register.ts. */
@@ -208,6 +208,9 @@ const HANDLERS: Record<CommandName, Handler> = {
    * than after they have committed to it.
    */
   'preview.list': (_p, ctx) => ctx.preview.list(),
+  'preview.suggest': (p) => ({
+    command: suggestPreviewCommand((p as { repoPath: string }).repoPath),
+  }),
   'preview.start': (p, ctx) => {
     const { repoPath, command } = p as { repoPath: string; command: string }
     return ctx.preview.start(repoPath, command)

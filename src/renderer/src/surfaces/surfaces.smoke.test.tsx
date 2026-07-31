@@ -34,6 +34,7 @@ import { BacklogSurface } from './BacklogSurface'
 import { GridSurface } from './GridSurface'
 import { PlanPanel } from '../components/PlanPanel'
 import { NewWorkspaceDialog } from '../components/NewWorkspaceDialog'
+import { PreviewCard } from '../components/PreviewCard'
 import { LoopsSurface } from './LoopsSurface'
 
 /** Activates a surface the way the titlebar would — some surfaces only fetch
@@ -358,6 +359,7 @@ function installBridge(
     'envelope.list': () => [],
     'inflight.list': () => [],
     'workspace.list': () => [],
+    'preview.list': () => [],
     'repo.containerStatus': () => ({
       enabled: false,
       configPresent: true,
@@ -501,6 +503,61 @@ describe('mounted-surface smoke', () => {
     act(() => appEventListener?.({ type: 'pane.closed', paneId: pane.id }))
     act(() => appEventListener?.({ type: 'pane.created', pane: { ...pane, id: 'q'.repeat(36) } }))
     await screen.findByText('1')
+  })
+
+  it('the preview card starts a suggested command and opens the URL in the browser', async () => {
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    const preview = {
+      id: 'p'.repeat(36),
+      repoPath: '/tmp/smoke-repo',
+      command: 'npm run dev',
+      status: 'running' as const,
+      url: 'http://localhost:5173/',
+      exitCode: null,
+      startedAt: Date.now(),
+    }
+    installBridge({
+      'preview.suggest': () => ({ command: 'npm run dev' }),
+      'preview.start': (payload) => {
+        invoked.push({ name: 'preview.start', payload })
+        return preview
+      },
+      'preview.open': (payload) => {
+        invoked.push({ name: 'preview.open', payload })
+        return { ok: true }
+      },
+      'preview.logs': () => ({ text: 'VITE ready' }),
+    })
+
+    render(
+      <StoreProvider>
+        <PreviewCard repo="/tmp/smoke-repo" />
+      </StoreProvider>,
+    )
+
+    // The command comes from the project itself, not from a guess.
+    await waitFor(() =>
+      expect((screen.getByPlaceholderText('npm run dev') as HTMLInputElement).value).toBe(
+        'npm run dev',
+      ),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Start/ }))
+    await waitFor(() => expect(invoked.map((entry) => entry.name)).toEqual(['preview.start']))
+    expect(invoked[0]?.payload).toEqual({ repoPath: '/tmp/smoke-repo', command: 'npm run dev' })
+
+    // Once running, the address is offered — and opening it goes through the
+    // main process, never a navigation inside the app.
+    act(() => appEventListener?.({ type: 'preview.changed', preview }))
+    const link = await screen.findByRole('button', { name: /localhost:5173/ })
+    fireEvent.click(link)
+    await waitFor(() =>
+      expect(invoked.map((entry) => entry.name)).toEqual(['preview.start', 'preview.open']),
+    )
+
+    // A running preview offers Stop, not Start.
+    expect(screen.queryByRole('button', { name: /^Start/ })).toBeNull()
+    await screen.findByRole('button', { name: /Stop/ })
   })
 
   it('the new-app dialog shows a refusal live, and grants against the resolved path', async () => {

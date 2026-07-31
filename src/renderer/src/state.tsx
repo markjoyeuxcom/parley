@@ -16,6 +16,7 @@ import type {
   Loop,
   Pane,
   PaneKind,
+  Preview,
   Session,
   Skill,
   Workspace,
@@ -99,6 +100,8 @@ interface State {
   envelopes: Envelope[]
   /** Projects Parley created, newest first. Upserted by workspace.changed. */
   workspaces: Workspace[]
+  /** Live dev servers. In-memory like panes — they die with the app. */
+  previews: Preview[]
   panes: Pane[]
   skills: Skill[]
   notices: Notice[]
@@ -170,6 +173,7 @@ const initialState: State = {
   planLedger: null,
   envelopes: [],
   workspaces: [],
+  previews: [],
   panes: [],
   skills: [],
   notices: [],
@@ -210,6 +214,7 @@ type Action =
   | { type: 'planOpened'; detail: PlanDetail; ledger: LedgerEntry[] | null }
   | { type: 'envelopes'; envelopes: Envelope[] }
   | { type: 'workspaces'; workspaces: Workspace[] }
+  | { type: 'previews'; previews: Preview[] }
   | { type: 'panes'; panes: Pane[] }
   | { type: 'skills'; skills: Skill[] }
   | { type: 'notice'; level: Notice['level']; message: string }
@@ -286,6 +291,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, envelopes: action.envelopes }
     case 'workspaces':
       return { ...state, workspaces: action.workspaces }
+    case 'previews':
+      return { ...state, previews: action.previews }
     case 'panes':
       return { ...state, panes: action.panes }
     case 'skills':
@@ -593,6 +600,11 @@ function applyEvent(state: State, event: AppEvent): State {
         i.id === event.iteration.id ? event.iteration : i,
       )
       return { ...state, loopDetail: { ...state.loopDetail, iterations } }
+    }
+
+    case 'preview.changed': {
+      const rest = state.previews.filter((p) => p.id !== event.preview.id)
+      return { ...state, previews: [event.preview, ...rest] }
     }
 
     case 'workspace.changed': {

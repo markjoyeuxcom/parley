@@ -19,6 +19,7 @@ import { AgentPicker } from '../components/AgentPicker'
 import { NewPlanDialog, PlanPanel } from '../components/PlanPanel'
 import { NewSessionDialog } from '../components/NewSessionDialog'
 import { NewWorkspaceDialog } from '../components/NewWorkspaceDialog'
+import { PreviewCard } from '../components/PreviewCard'
 import { useHoldJump } from '../components/HoldsPanel'
 import { Chip, Dot, Empty, Label, Spinner } from '../components/ui'
 
@@ -112,6 +113,10 @@ export function BacklogSurface(): ReactNode {
     void api
       .listWorkspaces()
       .then((all) => dispatch({ type: 'workspaces', workspaces: all }))
+      .catch(() => {})
+    void api
+      .listPreviews()
+      .then((all) => dispatch({ type: 'previews', previews: all }))
       .catch(() => {})
     void attempt(() => api.listForemanProposals()).then((all) => {
       if (all && !cancelled) setProposals(all)
@@ -436,6 +441,8 @@ export function BacklogSurface(): ReactNode {
                   />
 
                   <WorkspaceCard repo={repo} />
+
+                  <PreviewCard repo={repo} />
 
                   <ContainerCard repo={repo} />
                 </>

@@ -17,6 +17,7 @@ import type {
   LoopIteration,
   Milestone,
   Pane,
+  Preview,
   SelfUpdate,
   Session,
   SessionDeletionImpact,
@@ -184,6 +185,20 @@ export const api = {
     bridge().invoke('envelope.start', { planId, approvalId, caps }),
   stopEnvelope: (planId: Id): Promise<unknown> => bridge().invoke('envelope.stop', { planId }),
   listEnvelopes: (planId: Id): Promise<Envelope[]> => bridge().invoke('envelope.list', { planId }),
+
+  // Previews — the project's own dev server
+  listPreviews: (): Promise<Preview[]> => bridge().invoke('preview.list'),
+  suggestPreviewCommand: (repoPath: string): Promise<{ command: string }> =>
+    bridge().invoke('preview.suggest', { repoPath }),
+  startPreview: (repoPath: string, command: string): Promise<Preview> =>
+    bridge().invoke('preview.start', { repoPath, command }),
+  stopPreview: (previewId: Id): Promise<unknown> => bridge().invoke('preview.stop', { previewId }),
+  forgetPreview: (previewId: Id): Promise<unknown> =>
+    bridge().invoke('preview.forget', { previewId }),
+  previewLogs: (previewId: Id): Promise<{ text: string }> =>
+    bridge().invoke('preview.logs', { previewId }),
+  /** Opens the running preview in the user's browser, never inside Parley. */
+  openPreview: (previewId: Id): Promise<unknown> => bridge().invoke('preview.open', { previewId }),
 
   // New projects
   listTemplates: (): Promise<Array<{ id: string; name: string; description: string }>> =>

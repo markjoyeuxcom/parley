@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { statSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { isShellFree } from '@shared/command'
 import type { Id, Preview } from '@shared/domain'
 import { splitCommand } from '@main/util/spawn'
@@ -54,6 +55,26 @@ export function detectUrl(text: string): string | null {
   if (!match) return null
   // 0.0.0.0 means "every interface" and is not a thing a browser should open.
   return match[0].replace('0.0.0.0', 'localhost')
+}
+
+/**
+ * The command this project most likely uses to serve itself.
+ *
+ * Read from its own package.json rather than assumed: `npm run dev` is the
+ * common case but not the universal one, and offering a command that does not
+ * exist would make the first click a failure. Empty means "you tell me".
+ */
+export function suggestPreviewCommand(repoPath: string): string {
+  try {
+    const raw = readFileSync(join(repoPath, 'package.json'), 'utf8')
+    const scripts = (JSON.parse(raw) as { scripts?: Record<string, string> }).scripts ?? {}
+    if (scripts['dev']) return 'npm run dev'
+    if (scripts['start']) return 'npm start'
+    if (scripts['serve']) return 'npm run serve'
+  } catch {
+    // No package.json, or not JSON — a perfectly ordinary repository.
+  }
+  return ''
 }
 
 export class PreviewManager {
