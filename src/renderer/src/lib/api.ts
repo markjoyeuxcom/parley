@@ -24,6 +24,7 @@ import type {
   Turn,
   Verdict,
   WorkPlan,
+  Workspace,
   Worktree,
 } from '@shared/domain'
 import type { AppEvent, PtyChunk } from '@shared/events'
@@ -183,6 +184,22 @@ export const api = {
     bridge().invoke('envelope.start', { planId, approvalId, caps }),
   stopEnvelope: (planId: Id): Promise<unknown> => bridge().invoke('envelope.stop', { planId }),
   listEnvelopes: (planId: Id): Promise<Envelope[]> => bridge().invoke('envelope.list', { planId }),
+
+  // New projects
+  listTemplates: (): Promise<Array<{ id: string; name: string; description: string }>> =>
+    bridge().invoke('workspace.templates'),
+  listWorkspaces: (): Promise<Workspace[]> => bridge().invoke('workspace.list'),
+  /** Validates a destination without granting anything — for live dialog hints. */
+  previewWorkspacePath: (
+    path: string,
+  ): Promise<{ ok: boolean; path: string; refusal: string }> =>
+    bridge().invoke('workspace.preview', { path }),
+  createWorkspace: (input: {
+    name: string
+    path: string
+    templateId: string
+    approvalId: Id
+  }): Promise<Workspace> => bridge().invoke('workspace.create', input),
 
   // Self-update (dev mode)
   /** The one live offer, resolved at action time — holds don't carry row ids. */

@@ -11,6 +11,7 @@ import {
   type Id,
   type Envelope,
   type EnvelopeCaps,
+  type Workspace,
   type Loop,
   type Milestone,
   type Session,
@@ -40,6 +41,9 @@ import {
 import { LivenessWatchdog } from './liveness'
 import { runForeman } from './foreman'
 import { computeInFlight } from './inflight'
+import { buildWorkspace } from './workspace'
+import { templateById } from './templates'
+import { validateNewWorkspacePath } from './workspacePath'
 import { driveEnvelope, newEnvelope } from './envelope'
 import { runSelfGate, type SelfGateOptions } from './selfupdate'
 import { devcontainerProbe, hasDevcontainerConfig } from './containers'
@@ -161,6 +165,8 @@ export class Manager {
   private readonly milestoneRuns = new Map<Id, RunGate>()
   /** One unattended run per plan, keyed by plan id. Self-prunes in a finally. */
   private readonly envelopeRuns = new Map<Id, RunGate>()
+  /** One build per path. Self-prunes in a finally. */
+  private readonly workspaceBuilds = new Map<string, AbortController>()
   /** In-flight stow sweeps — the same synchronous has-check discipline. */
   private readonly stowRuns = new Set<Id>()
   /**
@@ -1512,12 +1518,90 @@ export class Manager {
    * panes are deliberately absent — they are the user's own terminals, named
    * in the confirm text instead of refused on their behalf.
    */
+  /**
+   * Creates one project, and returns its record immediately — install and
+   * verification take minutes, and no IPC invoke is held open across them.
+   *
+   * The approval is consumed here, in the same synchronous block as the
+   * validation and the row: the click that authorised writing into THIS path
+   * cannot authorise writing into another.
+   */
+  createWorkspace(input: {
+    name: string
+    path: string
+    templateId: string
+    approvalId: Id
+  }): Workspace {
+    const template = templateById(input.templateId)
+    if (!template) throw new RequestError('no such template')
+
+    let root: string
+    try {
+      root = validateNewWorkspacePath(input.path, {
+        userDataPath: this.deps.userDataPath ?? null,
+        selfRepoPath: this.deps.selfRepoPath ?? null,
+      })
+    } catch (err) {
+      throw new RequestError(err instanceof Error ? err.message : String(err))
+    }
+
+    if (this.workspaceBuilds.has(root)) {
+      throw new RequestError('a project is already being created at that path')
+    }
+    if (this.repo.getWorkspaceByPath(root)) {
+      throw new RequestError('Parley has already created a project at that path')
+    }
+
+    // The approval names the path; spending it against a different one would
+    // make the record a lie.
+    this.repo.consumeApproval(input.approvalId, 'workspace.create', root)
+
+    const workspace = this.repo.createWorkspace({
+      id: newId(),
+      repoPath: root,
+      name: input.name.trim(),
+      templateId: template.id,
+      state: 'building',
+      detail: '',
+      createdAt: Date.now(),
+      readyAt: null,
+      mock: this.registry.mock,
+    })
+    const controller = new AbortController()
+    this.workspaceBuilds.set(root, controller)
+    this.emit({ type: 'workspace.changed', workspace })
+
+    void buildWorkspace(
+      { repo: this.repo, emit: (event) => this.emit(event), signal: controller.signal },
+      workspace.id,
+      template,
+    ).finally(() => {
+      this.workspaceBuilds.delete(root)
+      this.holdsChanged()
+    })
+
+    return workspace
+  }
+
+  /** The same validation the create path runs, without granting anything. */
+  previewWorkspacePath(path: string): string {
+    try {
+      return validateNewWorkspacePath(path, {
+        userDataPath: this.deps.userDataPath ?? null,
+        selfRepoPath: this.deps.selfRepoPath ?? null,
+      })
+    } catch (err) {
+      throw new RequestError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   /** Everything running right now, derived from the record. */
   listInFlight(): InFlightRow[] {
     return computeInFlight(this.repo)
   }
 
   busyWithRuns(): string | null {
+    if (this.workspaceBuilds.size) return 'a project is being created'
     if (this.envelopeRuns.size) return 'an unattended run is in progress'
     if (this.milestoneRuns.size) return 'a milestone is executing'
     if (this.planRuns.size) return 'a plan is being drafted or audited'

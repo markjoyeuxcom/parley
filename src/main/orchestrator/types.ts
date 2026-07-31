@@ -35,6 +35,12 @@ export interface OrchestratorDeps {
    */
   selfRepoPath?: string | null
   /**
+   * Parley's own record directory. Injected only so the workspace creator can
+   * refuse to scaffold inside it — the app's record is not a place for the
+   * user's projects.
+   */
+  userDataPath?: string | null
+  /**
    * The devcontainer CLI to route container-snapshot commands through — a
    * shim in tests, omitted in the app so PATH resolution applies. Injected
    * because the routing must be provable without docker.

@@ -217,6 +217,14 @@ export const StartEnvelopeReq = z.object({
   caps: EnvelopeCaps,
 })
 export const EnvelopePlanReq = z.object({ planId: Id })
+/** Creates one new project. The approval names the exact path and template. */
+export const CreateWorkspaceReq = z.object({
+  name: z.string().trim().min(1).max(120),
+  path: z.string().min(1),
+  templateId: z.string().min(1),
+  approvalId: Id,
+})
+export const WorkspacePreviewReq = z.object({ path: z.string().min(1) })
 /** Boots the freshly built Parley: decides the green offer, then relaunches. */
 export const RelaunchSelfUpdateReq = z.object({ updateId: Id })
 /** Declines the offer; the app keeps running the bytes it started with. */
@@ -314,6 +322,10 @@ export const COMMANDS = {
   'envelope.start': StartEnvelopeReq,
   'envelope.stop': EnvelopePlanReq,
   'envelope.list': EnvelopePlanReq,
+  'workspace.create': CreateWorkspaceReq,
+  'workspace.list': null,
+  'workspace.templates': null,
+  'workspace.preview': WorkspacePreviewReq,
   'repos.list': ListReposReq,
   'repos.archive': ArchiveRepoReq,
   'repo.containerStatus': RepoContainerStatusReq,

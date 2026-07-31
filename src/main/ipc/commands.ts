@@ -21,6 +21,7 @@ import { RequestError, type Manager } from '@main/orchestrator/manager'
 import { newId } from '@main/store/repo'
 import { readCodexDefaultModel } from '@main/util/environment'
 import { gitIdentity } from '@main/util/gitIdentity'
+import { TEMPLATES } from '@main/orchestrator/templates'
 import type { PtyManager } from '@main/pty/manager'
 import { disposeLedgerFinding, getSessionDetail, listSessionLedger } from './ledger'
 
@@ -189,6 +190,31 @@ const HANDLERS: Record<CommandName, Handler> = {
   // ── Decision holds ────────────────────────────────────────────────────────
   'holds.list': (_p, ctx) => ctx.manager.listHolds(),
   'inflight.list': (_p, ctx) => ctx.manager.listInFlight(),
+
+  // ── New projects ───────────────────────────────────────────────────────────
+  'workspace.templates': () => TEMPLATES.map(({ id, name, description }) => ({ id, name, description })),
+  'workspace.list': (_p, ctx) => ctx.manager.repo.listWorkspaces(),
+  'workspace.create': (p, ctx) =>
+    ctx.manager.createWorkspace(
+      p as { name: string; path: string; templateId: string; approvalId: string },
+    ),
+  /**
+   * Answers "could a project be created here?" without granting anything, so
+   * the dialog can show the refusal while the user is still typing rather
+   * than after they have committed to it.
+   */
+  'workspace.preview': (p, ctx) => {
+    try {
+      const path = ctx.manager.previewWorkspacePath((p as { path: string }).path)
+      return { ok: true as const, path, refusal: '' }
+    } catch (err) {
+      return {
+        ok: false as const,
+        path: '',
+        refusal: err instanceof Error ? err.message : String(err),
+      }
+    }
+  },
   'holds.ack': (p, ctx) => ctx.manager.ackHold((p as { holdId: string }).holdId),
 
   // ── Backlog ───────────────────────────────────────────────────────────────

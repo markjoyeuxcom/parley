@@ -122,6 +122,7 @@ async function bootstrap(): Promise<void> {
     // Packaged, getAppPath is inside the asar — not a repo — so null keeps
     // every self rule dormant.
     selfRepoPath: app.isPackaged ? null : app.getAppPath(),
+    userDataPath: app.getPath('userData'),
     // One native banner per newly-appearing hold — the push half of the
     // attention queue. Supplementary by design: the stamp is written either
     // way, and the durable surface is the holds list itself, so a denied
