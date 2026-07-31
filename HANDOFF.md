@@ -1,8 +1,9 @@
 # Parley — continuation handoff
 
-Refreshed 2026-07-28, after the SelfUpdate series landed — the self-building
-arc is complete. Everything a fresh session needs that the code and git
-history do not already say.
+Refreshed 2026-07-31, after the App Builder arc and the sessions-organization
+batch landed. Everything a fresh session needs that the code and git history
+do not already say. Schema is at **v26**; the suite is **893 passing, 11
+skipped** (the skips are the operator-run `PARLEY_LIVE*` arms, by design).
 
 ## What this repo is
 
@@ -24,7 +25,10 @@ improving *itself* through its own pipeline.
   and **Engine m1–m2** (a parallel session's arcs — seats as data, protocols
   as values), **Holds m1–m3**, **Worktrees m1–m3**, **Recovery m1–m6**,
   **Backlog m1–m5**, **Foreman m1–m5**, **Repos m1–m5**, **SelfUpdate
-  m1–m5**, plus a day of walkthrough-found fixes (emit side-door, plan
+  m1–m5**, **Containers m1–m4**, **Grid m1–m6**, **Envelope m1–m5**,
+  **Workspace m1–m4**, **Preview m1–m3**, **Acceptance m1–m3**,
+  **Journey m1–m3**, **Sessions m1–m2**, plus a day of
+  walkthrough-found fixes (emit side-door, plan
   tabs/titles, exchange fold, four-column layout, bulk dispositions,
   mounted smoke tests).
 - Commit messages: `<Series> mN: <lowercase sentence>`, thorough provenance
@@ -328,18 +332,34 @@ the guide; the completeness guard classifies app_journeys out of scope
 for that reason. Readiness/disposition-ergonomics was NOT built and
 stays a future idea — never auto-disposition.
 
-1. **SSH/remote execution arc** after App Builder (execution-target
-   abstraction over the ~6 local-assuming touchpoints), composing with
-   unattended for overnight VM runs.
+**The next arc is SSH/remote execution**: an execution-target
+abstraction over the ~6 local-assuming touchpoints, composing with
+unattended runs for overnight VM work. It is a design-first arc — plan
+it before writing code, the way every series here started.
 
-Small UI batch (foreman-sized, slots anywhere): sessions organization —
-a group-by control on the ⌘2 sidebar (None | Project | Repository,
-collapsible headers, archived toggle unchanged), a **Sessions tab on
-the Repos surface** (the missing tab — a repository's reviews and
-debates are its record too, and the future delta re-review work needs
-this listing as its home), and recent-project suggestions in the
-new-session dialogs (datalist nudge; project stays free text — no
-project entity, no third organizing surface).
+**By-hand acceptances still open** (nothing blocks the next arc, but
+these are the honest gaps in what has been proven outside tests):
+create a real app through **Build an app** / **New app**, start its
+preview, and plan a first feature against it; and grant an envelope on
+a small real worktree plan, then come back at merge-ready.
+
+**Sessions organization: LANDED** (Sessions m1–m2, no schema change —
+grouping and folds are view preference, they reset with the window).
+The ⌘2 sidebar has a group-by control (None | Project | Repository)
+that groups WITHOUT sorting: groups appear in the order their first
+session does, so the work you were just in stays at the top in every
+mode — alphabetical groups would have thrown away the one property the
+default list has. Project fields suggest projects already in use
+(datalist, capped at 8) and stay free text: no project entity, no third
+organizing surface. The **Sessions tab on Repos** lists what named a
+repository, newest first, with each session's plan count; its badge
+counts only RUNNING sessions because a total would just restate the
+list. Rows are doors into ⌘2, and the session header's repository chip
+is the door back (it lands on this tab) — a round trip, not a one-way
+link, and the home the future delta re-review work needs.
+`sessionsForRepo` trims a trailing slash and does nothing else:
+resolving symlinks or `~` is main's job, and an empty target collects
+nothing rather than every repo-less session.
 
 Older carried items: delta re-reviews / recurring finding identity;
 `approveAndRun`/`adoptExisting` still hold one IPC invoke per run;
