@@ -49,17 +49,42 @@ const result = await build({
 })
 
 // With packages:'bundle' nothing is left unresolved, so an npm import does
-// not fail the build — it silently makes the bundle bigger and drags in code
+// not fail the build — it silently makes the artifact bigger and drags in code
 // that was never meant to run on someone else's host. The rule is that there
-// must be none at all, so the check is on what got pulled in.
+// must be none at all.
+//
+// The guard prints the PATH that pulled the package in, because "npm code
+// appeared" is not actionable and "domain.ts imports zod, and pipeline.ts
+// imports domain.ts" is. Finding that by hand costs an afternoon.
 const fromNpm = Object.keys(result.metafile.inputs).filter((input) =>
   input.includes('node_modules'),
 )
 if (fromNpm.length > 0) {
-  console.error('parley-remote must have no npm dependencies, but these were bundled:')
-  for (const input of fromNpm.slice(0, 20)) console.error(`  ${input}`)
+  console.error('parley-remote must contain no npm code, but these were bundled:')
+  for (const input of fromNpm.slice(0, 8)) console.error(`  ${input}`)
+  const entryEdges = []
+  for (const [file, info] of Object.entries(result.metafile.inputs)) {
+    if (file.includes('node_modules')) continue
+    for (const imported of info.imports ?? []) {
+      if (imported.path.includes('node_modules')) {
+        entryEdges.push(`  ${file}  ->  ${imported.original ?? imported.path}`)
+      }
+    }
+  }
+  if (entryEdges.length > 0) {
+    console.error('\nthe edges that brought them in:')
+    for (const edge of entryEdges.slice(0, 8)) console.error(edge)
+    console.error(
+      '\nmove the runtime value into a dependency leaf (see src/shared/usage.ts)',
+    )
+  }
+  writeFileSync(join(outDir, 'metafile.json'), JSON.stringify(result.metafile, null, 2), 'utf8')
+  console.error(`\nfull dependency graph written to ${join(outDir, 'metafile.json')}`)
   process.exit(1)
 }
+
+// Kept on success too: when someone asks why the bundle grew, this answers it.
+writeFileSync(join(outDir, 'metafile.json'), JSON.stringify(result.metafile, null, 2), 'utf8')
 
 const bytes = readFileSync(outFile)
 const buildId = createHash('sha256').update(bytes).digest('hex')

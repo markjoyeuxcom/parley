@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { emptyUsage, type Capability, type Vendor } from '@shared/domain'
+import { type Capability, type Vendor } from '@shared/domain'
+import { emptyUsage } from '@shared/usage'
 import type { CliHealth } from '@shared/ipc'
 import { agyModelRefusal } from './agy'
 import type { AgentAdapter, RunRequest, RunResult } from './types'

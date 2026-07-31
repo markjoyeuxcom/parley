@@ -1,5 +1,6 @@
 import { extractJson, safeString } from '@shared/extract'
-import { emptyUsage, type Id, type Loop, type LoopIteration } from '@shared/domain'
+import { type Id, type Loop, type LoopIteration } from '@shared/domain'
+import { emptyUsage } from '@shared/usage'
 import { loopVerifyPrompt, loopWorkPrompt } from '@shared/protocol'
 import { isShellFree, splitCommand } from '@main/util/spawn'
 import { ensureUp, runProjectCommand } from './containers'

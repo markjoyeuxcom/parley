@@ -1,4 +1,5 @@
-import { emptyUsage, type Capability, type Usage } from '@shared/domain'
+import { type Capability, type Usage } from '@shared/domain'
+import { emptyUsage } from '@shared/usage'
 import type { CliHealth } from '@shared/ipc'
 import { capture, runJsonl } from '@main/util/spawn'
 import { findExecutable } from '@main/util/environment'

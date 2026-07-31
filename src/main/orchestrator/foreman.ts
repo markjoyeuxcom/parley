@@ -1,5 +1,5 @@
 import type { AgentConfig, ForemanDeferral, ForemanProposal, Id, Session } from '@shared/domain'
-import { emptyUsage } from '@shared/domain'
+import { emptyUsage } from '@shared/usage'
 import type { AppEvent } from '@shared/events'
 import { extractJson, safeString } from '@shared/extract'
 import { FOREMAN_CONTRACT } from '@shared/protocol'

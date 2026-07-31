@@ -10,7 +10,6 @@ import {
 import { isAbsolute, join, relative as relative_ } from 'node:path'
 import { extractJson, oneOf, safeString } from '@shared/extract'
 import {
-  emptyUsage,
   type AgentConfig,
   type Id,
   type Milestone,
@@ -21,6 +20,7 @@ import {
   type WorkPlan,
   type Worktree,
 } from '@shared/domain'
+import { emptyUsage } from '@shared/usage'
 import { executionRefusal } from '@shared/execution'
 import { proposeBacklogClosures } from './backlog'
 import { commitMilestone, ensureWorktree, verifyWorktree } from './worktrees'
@@ -39,7 +39,8 @@ import {
 import { capture, isShellFree, splitCommand, type CaptureResult } from '@main/util/spawn'
 import { ensureUp, runProjectCommand } from './containers'
 import { StoreMilestoneReporter, type MilestoneReporter } from './reporter'
-import { newId, type Repo } from '@main/store/repo'
+import type { Repo } from '@main/store/repo'
+import { newId } from '@main/util/ids'
 import { canonicalRepoPath } from '@main/util/repoPath'
 import { assertCapability, type AgentRegistry, type RunResult } from '@main/agents'
 import { groupLedgerEntry } from '@main/ipc/ledger'

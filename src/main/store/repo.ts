@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { newId } from '@main/util/ids'
 import {
   type CorrectionDisposition,
   addUsage,
@@ -57,9 +57,12 @@ import type { RepoSummary } from '@shared/ipc'
 import { canonicalRepoPath } from '@main/util/repoPath'
 import type { Db, Row } from './db'
 
-export function newId(): Id {
-  return randomUUID()
-}
+/**
+ * Re-exported from a dependency leaf so the execution core can mint an id
+ * without importing the persistence layer — and through it, the schemas and
+ * their validator. One definition, two doors.
+ */
+export { newId }
 
 const json = (value: unknown): string => JSON.stringify(value)
 

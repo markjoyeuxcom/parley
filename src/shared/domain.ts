@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { Usage as UsageShape } from './usage'
 
 /**
  * The domain model for Parley.
@@ -63,23 +64,25 @@ export const Usage = z.object({
    */
   costUsd: z.number().nonnegative().default(0),
 })
-export type Usage = z.infer<typeof Usage>
 
-export const emptyUsage = (): Usage => ({
-  inputTokens: 0,
-  cachedInputTokens: 0,
-  outputTokens: 0,
-  reasoningTokens: 0,
-  costUsd: 0,
-})
+/**
+ * The type and the values live in a leaf module with no dependencies, so the
+ * remote execution bundle can import them without inheriting this file's
+ * schema library. Re-exported here so every existing caller is unaffected —
+ * there is one definition of each, not a remote copy.
+ */
+export type Usage = UsageShape
+export { addUsage, emptyUsage } from './usage'
 
-export const addUsage = (a: Usage, b: Usage): Usage => ({
-  inputTokens: a.inputTokens + b.inputTokens,
-  cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
-  outputTokens: a.outputTokens + b.outputTokens,
-  reasoningTokens: a.reasoningTokens + b.reasoningTokens,
-  costUsd: a.costUsd + b.costUsd,
-})
+/**
+ * Compile-time proof that the schema and the hand-written type still describe
+ * the same thing. Without it the two could drift silently — a field added to
+ * the schema and not to the leaf would validate into a shape nothing else
+ * knows about — and the drift would only surface as a confusing runtime bug.
+ */
+type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never
+const _usageShapesAgree: Exact<z.infer<typeof Usage>, UsageShape> = true
+void _usageShapesAgree
 
 // ─── Approvals ───────────────────────────────────────────────────────────────
 
