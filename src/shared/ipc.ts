@@ -225,6 +225,13 @@ export const CreateWorkspaceReq = z.object({
   approvalId: Id,
 })
 export const WorkspacePreviewReq = z.object({ path: z.string().min(1) })
+export const StartPreviewReq = z.object({
+  repoPath: z.string().min(1),
+  command: z.string().min(1).max(400),
+})
+export const PreviewIdReq = z.object({ previewId: Id })
+/** Opens a preview's own URL in the user's browser — never in the app. */
+export const OpenPreviewUrlReq = z.object({ previewId: Id })
 /** Boots the freshly built Parley: decides the green offer, then relaunches. */
 export const RelaunchSelfUpdateReq = z.object({ updateId: Id })
 /** Declines the offer; the app keeps running the bytes it started with. */
@@ -326,6 +333,12 @@ export const COMMANDS = {
   'workspace.list': null,
   'workspace.templates': null,
   'workspace.preview': WorkspacePreviewReq,
+  'preview.start': StartPreviewReq,
+  'preview.stop': PreviewIdReq,
+  'preview.forget': PreviewIdReq,
+  'preview.logs': PreviewIdReq,
+  'preview.open': OpenPreviewUrlReq,
+  'preview.list': null,
   'repos.list': ListReposReq,
   'repos.archive': ArchiveRepoReq,
   'repo.containerStatus': RepoContainerStatusReq,

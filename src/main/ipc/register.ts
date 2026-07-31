@@ -1,4 +1,4 @@
-import { app, dialog, ipcMain } from 'electron'
+import { app, dialog, ipcMain, shell } from 'electron'
 import { CH, toInvokeResult, type InvokeResult } from '@shared/ipc'
 import { invokeCommand, type IpcAppControl, type IpcContext, type IpcDialogs } from './commands'
 import { relaunchIntoFreshBuild } from './relaunch'
@@ -31,8 +31,16 @@ const appControl: IpcAppControl = {
  * operation: the renderer is sandboxed and untrusted, and a single audited
  * chokepoint is far easier to reason about than thirty separate handlers.
  */
-export function registerIpc(ctx: Omit<IpcContext, 'dialogs' | 'appControl'>): void {
-  const full: IpcContext = { ...ctx, dialogs, appControl }
+export function registerIpc(
+  ctx: Omit<IpcContext, 'dialogs' | 'appControl' | 'openExternal'>,
+): void {
+  const full: IpcContext = {
+    ...ctx,
+    dialogs,
+    appControl,
+    // Same reason as the dialogs: the command table never loads Electron.
+    openExternal: (url) => void shell.openExternal(url),
+  }
   ipcMain.handle(
     CH.invoke,
     (_event, raw: unknown): Promise<InvokeResult<unknown>> =>

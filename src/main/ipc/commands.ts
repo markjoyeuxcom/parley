@@ -23,6 +23,7 @@ import { readCodexDefaultModel } from '@main/util/environment'
 import { gitIdentity } from '@main/util/gitIdentity'
 import { TEMPLATES } from '@main/orchestrator/templates'
 import type { PtyManager } from '@main/pty/manager'
+import type { PreviewManager } from '@main/preview/manager'
 import { disposeLedgerFinding, getSessionDetail, listSessionLedger } from './ledger'
 
 /** The two native dialogs the command table uses, injected by register.ts. */
@@ -54,6 +55,9 @@ export interface IpcAppControl {
 export interface IpcContext {
   manager: Manager
   pty: PtyManager
+  preview: PreviewManager
+  /** Injected like the dialogs — commands.ts never loads Electron. */
+  openExternal: (url: string) => void
   window: () => BrowserWindow | null
   health: () => CliHealth[]
   agyModels: () => Promise<string[]>
@@ -203,6 +207,34 @@ const HANDLERS: Record<CommandName, Handler> = {
    * the dialog can show the refusal while the user is still typing rather
    * than after they have committed to it.
    */
+  'preview.list': (_p, ctx) => ctx.preview.list(),
+  'preview.start': (p, ctx) => {
+    const { repoPath, command } = p as { repoPath: string; command: string }
+    return ctx.preview.start(repoPath, command)
+  },
+  'preview.stop': (p, ctx) => {
+    ctx.preview.stop((p as { previewId: string }).previewId)
+    return { ok: true }
+  },
+  'preview.forget': (p, ctx) => {
+    ctx.preview.forget((p as { previewId: string }).previewId)
+    return { ok: true }
+  },
+  'preview.logs': (p, ctx) => ({
+    text: ctx.preview.logs((p as { previewId: string }).previewId),
+  }),
+  /**
+   * The preview opens in the user's own browser, never inside Parley. The
+   * renderer has no navigation and no remote origins by design, and a dev
+   * server is exactly the kind of content that must not get an exception.
+   */
+  'preview.open': (p, ctx) => {
+    const preview = ctx.preview.get((p as { previewId: string }).previewId)
+    if (!preview?.url) throw new RequestError('that preview has no address yet')
+    ctx.openExternal(preview.url)
+    return { ok: true }
+  },
+
   'workspace.preview': (p, ctx) => {
     try {
       const path = ctx.manager.previewWorkspacePath((p as { path: string }).path)

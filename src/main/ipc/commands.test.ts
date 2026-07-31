@@ -5,6 +5,7 @@ import { openDatabase } from '@main/store/db'
 import { newId, Repo } from '@main/store/repo'
 import { Manager } from '@main/orchestrator/manager'
 import type { PtyManager } from '@main/pty/manager'
+import { PreviewManager } from '@main/preview/manager'
 import { invokeCommand, type IpcContext } from './commands'
 
 /**
@@ -46,6 +47,8 @@ function harness(): { ctx: IpcContext; repo: Repo; session: Session } {
       showOpenDialog: () => Promise.reject(new Error('dialogs must not be touched')),
       showSaveDialog: () => Promise.reject(new Error('dialogs must not be touched')),
     },
+    preview: new PreviewManager({ onChanged: () => {} }),
+    openExternal: () => {},
     appControl: {
       relaunch: () => {
         throw new Error('appControl must not be touched')
@@ -240,7 +243,9 @@ describe('handler emits and the attention queue', () => {
         showOpenDialog: () => Promise.reject(new Error('dialogs must not be touched')),
         showSaveDialog: () => Promise.reject(new Error('dialogs must not be touched')),
       },
-      appControl: {
+      preview: new PreviewManager({ onChanged: () => {} }),
+    openExternal: () => {},
+    appControl: {
         relaunch: () => {
           throw new Error('appControl must not be touched')
         },

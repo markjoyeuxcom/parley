@@ -659,6 +659,25 @@ export const Envelope = z.object({
 })
 export type Envelope = z.infer<typeof Envelope>
 
+/**
+ * A project's own dev server, run by Parley.
+ *
+ * Live process state, never persisted: a preview dies with the app, and a
+ * stored row claiming one is running would be a promise the disk cannot keep.
+ * The Pane precedent, for the same reason.
+ */
+export const Preview = z.object({
+  id: Id,
+  repoPath: z.string(),
+  command: z.string(),
+  status: z.enum(['starting', 'running', 'exited']),
+  /** Where it said it is listening, once it says so. */
+  url: z.string().nullable().default(null),
+  exitCode: z.number().int().nullable().default(null),
+  startedAt: Timestamp,
+})
+export type Preview = z.infer<typeof Preview>
+
 export const WorkspaceState = z.enum([
   /** Being scaffolded, installed and verified. */
   'building',

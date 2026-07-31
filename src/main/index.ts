@@ -9,6 +9,7 @@ import { Manager } from '@main/orchestrator/manager'
 import { backfillBacklog } from '@main/orchestrator/backlog'
 import { reconcileWorktrees } from '@main/orchestrator/worktrees'
 import { PtyManager } from '@main/pty/manager'
+import { PreviewManager } from '@main/preview/manager'
 import { disposeIpc, registerIpc } from '@main/ipc/register'
 import { applyFreshBuildFlag } from '@main/ipc/relaunch'
 import { applyResolvedPath, preflightPty } from '@main/util/environment'
@@ -26,6 +27,7 @@ if (!app.isPackaged) {
 
 let mainWindow: BrowserWindow | null = null
 let pty: PtyManager | null = null
+let preview: PreviewManager | null = null
 let manager: Manager | null = null
 let health: CliHealth[] = []
 
@@ -151,9 +153,14 @@ async function bootstrap(): Promise<void> {
     onStatus: (paneId, status, exitCode) => emit({ type: 'pane.status', paneId, status, exitCode }),
   })
 
+  preview = new PreviewManager({
+    onChanged: (changed) => emit({ type: 'preview.changed', preview: changed }),
+  })
+
   registerIpc({
     manager,
     pty,
+    preview,
     window: () => mainWindow,
     health: () => health,
     agyModels: () => registry.agyModels(),
@@ -277,6 +284,9 @@ app.on('before-quit', () => {
   // Kill every child process explicitly. Orphaned CLI runs would keep consuming
   // the user's subscription quota after the app they belong to has gone.
   pty?.disposeAll()
+  // Before the manager: an orphaned dev server holds its port and cannot be
+  // stopped from anywhere the user can see.
+  preview?.disposeAll()
   manager?.disposeAll()
   disposeIpc()
 })

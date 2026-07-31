@@ -6,6 +6,7 @@ import type {
   LoopIteration,
   Milestone,
   Pane,
+  Preview,
   Session,
   Turn,
   Usage,
@@ -74,6 +75,7 @@ export type AppEvent =
   // Loops
   | { type: 'envelope.changed'; envelope: Envelope }
   | { type: 'workspace.changed'; workspace: Workspace }
+  | { type: 'preview.changed'; preview: Preview }
   | { type: 'loop.created'; loop: Loop }
   | { type: 'loop.status'; loopId: Id; status: Loop['status']; stopReason?: string }
   | { type: 'loop.iteration.started'; iteration: LoopIteration }
