@@ -113,14 +113,31 @@ export interface RemoteRequest {
  * out. Parley refuses at the gate instead.
  */
 export interface RemoteCapabilities {
-  version: number
-  helperVersion: string
+  /**
+   * What the helper can SPEAK. Compared against REMOTE_PROTOCOL_VERSION.
+   * Deliberately separate from buildId: two different builds may correctly
+   * implement the same protocol, and conflating them would either refuse a
+   * good helper or accept an incompatible one.
+   */
+  protocolVersion: number
+  /** What the helper IS — the bundle's content hash. Identity, not compatibility. */
+  buildId: string
+  nodeVersion: string
+  /**
+   * Named abilities, so a helper can grow without a protocol bump and a
+   * caller can refuse precisely. A helper that cannot do mutation testing
+   * should say so here rather than fail a milestone halfway through it.
+   */
+  capabilities: string[]
   /** Vendor slugs the remote can actually run, with the versions it found. */
   vendors: Array<{ vendor: string; version: string }>
   /** Absolute path under which the helper creates run worktrees. */
   runsRoot: string
   git: string
 }
+
+/** The abilities a v1 milestone run needs a helper to declare. */
+export const REQUIRED_CAPABILITIES = ['git-worktree', 'pipeline-v1', 'mutation', 'evidence']
 
 export interface RemoteEvidenceManifest {
   /** The commit the milestone produced, published at the result ref. */
@@ -145,7 +162,12 @@ export type RemoteEvent =
   | { type: 'exit'; processId: string; code: number; signal: string | null }
   /** Pipeline progress, mapped locally onto the same record writes as a local run. */
   | { type: 'progress'; phase: string; text: string }
-  /** One store write the local side must make on the remote's behalf. */
+  /**
+   * One fact the execution core observed. Deliberately a fact, not a store
+   * write: the core reports what happened and each side decides what that
+   * means — a row here, a JSONL line there — so the protocol never depends on
+   * the shape of anybody's database.
+   */
   | { type: 'report'; report: unknown }
   | { type: 'result'; outcome: 'complete' | 'failed'; manifest: RemoteEvidenceManifest }
   /** The helper could speak, and is telling us it cannot continue. */

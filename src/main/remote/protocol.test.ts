@@ -4,14 +4,17 @@ import {
   inputRefFor,
   REMOTE_HELPER_COMMAND,
   REMOTE_PROTOCOL_VERSION,
+  REQUIRED_CAPABILITIES,
   resultRefFor,
   type RemoteCapabilities,
 } from '@shared/remote'
 import { decodeEvent, encodeRequest, handshakeRequest, sshArgv, targetRefusal } from './protocol'
 
 const capabilities: RemoteCapabilities = {
-  version: REMOTE_PROTOCOL_VERSION,
-  helperVersion: '0.1.0',
+  protocolVersion: REMOTE_PROTOCOL_VERSION,
+  buildId: 'b3f1c0de0000deadbeef',
+  nodeVersion: 'v24.4.1',
+  capabilities: [...REQUIRED_CAPABILITIES],
   vendors: [
     { vendor: 'claude', version: '2.1.220' },
     { vendor: 'codex', version: '0.145.0' },
@@ -78,6 +81,11 @@ describe('reading the far end', () => {
       type: 'ready',
       capabilities,
     })
+    // Build identity is required: a helper that will not say what it is
+    // cannot be pinned, upgraded, or blamed.
+    expect(
+      decodeEvent(JSON.stringify({ type: 'ready', capabilities: { ...capabilities, buildId: 7 } })),
+    ).toBeNull()
     expect(
       decodeEvent(JSON.stringify({ type: 'stdout', processId: 'verify-1', data: 'ok\n' })),
     ).toEqual({ type: 'stdout', processId: 'verify-1', data: 'ok\n' })
@@ -155,9 +163,22 @@ describe('whether a target can run this plan', () => {
   })
 
   it('refuses a protocol mismatch before anything is pushed or spent', () => {
-    const refusal = targetRefusal({ ...capabilities, version: 99 }, ['claude'])
+    const refusal = targetRefusal({ ...capabilities, protocolVersion: 99 }, ['claude'])
     expect(refusal).toContain('v99')
-    expect(refusal).toContain('update')
+    expect(refusal).toContain('upgrade')
+  })
+
+  it('refuses a helper that speaks our protocol but cannot do the work', () => {
+    // Build identity and protocol compatibility are separate questions: two
+    // builds may implement v1 correctly and still differ in what they can do.
+    // A helper that cannot mutate must be refused here, not halfway through a
+    // mutation stage.
+    const refusal = targetRefusal(
+      { ...capabilities, capabilities: ['git-worktree', 'pipeline-v1', 'evidence'] },
+      ['claude'],
+    )
+    expect(refusal).toContain('mutation')
+    expect(refusal).toContain('b3f1c0de0000')
   })
 
   it('names every missing vendor, so one trip fixes the host', () => {

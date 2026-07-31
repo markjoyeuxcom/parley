@@ -1,6 +1,7 @@
 import {
   REMOTE_HELPER_COMMAND,
   REMOTE_PROTOCOL_VERSION,
+  REQUIRED_CAPABILITIES,
   type RemoteCapabilities,
   type RemoteEvent,
   type RemoteEvidenceManifest,
@@ -141,11 +142,16 @@ export function decodeEvent(line: string): RemoteEvent | null {
 function decodeCapabilities(value: unknown): RemoteCapabilities | null {
   if (typeof value !== 'object' || value === null) return null
   const raw = value as Record<string, unknown>
-  const version = num(raw.version)
-  const helperVersion = str(raw.helperVersion)
+  const protocolVersion = num(raw.protocolVersion)
+  const buildId = str(raw.buildId)
+  const nodeVersion = str(raw.nodeVersion)
   const runsRoot = str(raw.runsRoot)
   const git = str(raw.git)
-  if (version === null || helperVersion === null || runsRoot === null || git === null) return null
+  if (protocolVersion === null || buildId === null) return null
+  if (nodeVersion === null || runsRoot === null || git === null) return null
+  const abilities = Array.isArray(raw.capabilities)
+    ? raw.capabilities.filter((entry): entry is string => typeof entry === 'string')
+    : []
 
   const vendors: RemoteCapabilities['vendors'] = []
   if (Array.isArray(raw.vendors)) {
@@ -157,7 +163,7 @@ function decodeCapabilities(value: unknown): RemoteCapabilities | null {
       vendors.push({ vendor, version: vendorVersion })
     }
   }
-  return { version, helperVersion, vendors, runsRoot, git }
+  return { protocolVersion, buildId, nodeVersion, capabilities: abilities, vendors, runsRoot, git }
 }
 
 function decodeManifest(value: unknown): RemoteEvidenceManifest | null {
@@ -201,8 +207,16 @@ export function targetRefusal(
   capabilities: RemoteCapabilities,
   needs: readonly string[],
 ): string | null {
-  if (capabilities.version !== REMOTE_PROTOCOL_VERSION) {
-    return `the remote helper speaks protocol v${capabilities.version}, this Parley speaks v${REMOTE_PROTOCOL_VERSION} — update whichever is older`
+  if (capabilities.protocolVersion !== REMOTE_PROTOCOL_VERSION) {
+    return `the remote helper speaks protocol v${capabilities.protocolVersion}, this Parley speaks v${REMOTE_PROTOCOL_VERSION} — run \`parley remote upgrade\` for that host, or update this Parley`
+  }
+  // Named abilities are checked separately from the protocol version, because
+  // a helper can grow one without the other moving. A helper that cannot
+  // mutate should be refused here, not halfway through a mutation stage.
+  const declared = new Set(capabilities.capabilities)
+  const unsupported = REQUIRED_CAPABILITIES.filter((ability) => !declared.has(ability))
+  if (unsupported.length > 0) {
+    return `the remote helper (build ${capabilities.buildId.slice(0, 12)}) does not support ${unsupported.join(', ')} — upgrade it for that host`
   }
   const have = new Set(capabilities.vendors.map((entry) => entry.vendor))
   const missing = [...new Set(needs)].filter((vendor) => !have.has(vendor))

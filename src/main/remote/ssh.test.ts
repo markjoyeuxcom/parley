@@ -29,8 +29,10 @@ function fakeSsh(name: string, body: string): string {
 }
 
 const capabilities = JSON.stringify({
-  version: REMOTE_PROTOCOL_VERSION,
-  helperVersion: '0.1.0',
+  protocolVersion: REMOTE_PROTOCOL_VERSION,
+  buildId: 'b3f1c0de',
+  nodeVersion: 'v24.4.1',
+  capabilities: ['git-worktree', 'pipeline-v1', 'mutation', 'evidence'],
   vendors: [{ vendor: 'claude', version: '2.1.220' }],
   runsRoot: '/var/lib/parley/runs',
   git: '2.45.0',
