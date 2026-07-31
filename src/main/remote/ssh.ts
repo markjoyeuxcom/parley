@@ -1,0 +1,181 @@
+import { spawn } from 'node:child_process'
+import type { RemoteEvent, RemoteRequest, RemoteTarget } from '@shared/remote'
+import { decodeEvent, encodeRequest, sshArgv } from './protocol'
+
+/**
+ * One conversation with a remote helper.
+ *
+ * The transport and nothing else: it opens ssh, writes one request, reads
+ * framed events until the far end closes, and reports how it ended. It knows
+ * nothing about milestones, refs or pipelines — those are the layers above,
+ * and keeping them out of here is what makes this testable against a fake
+ * `ssh` that is really a small node script.
+ *
+ * Three failure modes are deliberately distinguished, because they call for
+ * opposite responses and every one of them arrives as "the process ended":
+ *
+ *  - **refused**: ssh itself failed — unknown host key, no key, no such host.
+ *    Nothing ran. Safe to retry after the user fixes it, nothing to reconcile.
+ *  - **protocol**: ssh connected but what came back was not the protocol. Most
+ *    often the helper is not installed, and the remote shell said so on stderr.
+ *    Nothing ran, but the diagnosis lives in stderr, which is exactly why the
+ *    helper never writes anything but framed events to stdout.
+ *  - **disconnected**: the conversation started and then the wire died. This
+ *    is the dangerous one: the remote may have finished the work. It must
+ *    never be reported as failure, because the recovery is to go and look at
+ *    the result ref, not to run it again.
+ */
+
+export type SshEnd =
+  | { kind: 'closed'; exitCode: number }
+  | { kind: 'refused'; detail: string }
+  | { kind: 'protocol'; detail: string }
+  | { kind: 'disconnected'; detail: string }
+  | { kind: 'cancelled' }
+
+export interface SshRunResult {
+  end: SshEnd
+  /** ssh's own stderr, tail-limited. The only channel for un-framed failure. */
+  stderr: string
+  /** Lines on stdout that were not protocol events, for diagnosis. */
+  unreadable: string[]
+}
+
+export interface SshRunOptions {
+  target: Pick<RemoteTarget, 'host'>
+  request: RemoteRequest
+  onEvent: (event: RemoteEvent) => void
+  signal?: AbortSignal
+  timeoutMs?: number
+  /** Injected in tests; the real one is resolved from PATH. */
+  sshBinary?: string
+}
+
+const MAX_STDERR = 64 * 1024
+const MAX_UNREADABLE = 20
+
+/**
+ * ssh's own exit codes overlap with the remote command's, with one exception:
+ * 255 is reserved for ssh-level failure. That single reserved value is the
+ * whole reason "the host refused us" can be told apart from "the pipeline
+ * exited non-zero" without guessing.
+ */
+const SSH_FAILURE = 255
+
+export function runSsh(opts: SshRunOptions): Promise<SshRunResult> {
+  const binary = opts.sshBinary ?? 'ssh'
+  const timeoutMs = opts.timeoutMs ?? 6 * 60 * 60 * 1000
+
+  return new Promise((resolve) => {
+    // Detached so the whole ssh process group can be signalled: a cancel that
+    // leaves ssh alive leaves the remote pipeline running and spending.
+    const child = spawn(binary, sshArgv(opts.target), {
+      env: process.env,
+      detached: true,
+    })
+
+    let stderr = ''
+    let pending = ''
+    let sawEvent = false
+    let settled = false
+    const unreadable: string[] = []
+
+    const finish = (end: SshEnd): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', onAbort)
+      resolve({ end, stderr, unreadable })
+    }
+
+    const kill = (): void => {
+      try {
+        // Negative pid signals the group; ssh may have spawned helpers.
+        process.kill(-child.pid!, 'SIGTERM')
+      } catch {
+        child.kill('SIGTERM')
+      }
+    }
+
+    const onAbort = (): void => {
+      kill()
+      finish({ kind: 'cancelled' })
+    }
+    opts.signal?.addEventListener('abort', onAbort, { once: true })
+
+    const timer = setTimeout(() => {
+      kill()
+      finish({ kind: 'disconnected', detail: 'the remote run exceeded its time limit' })
+    }, timeoutMs)
+
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => {
+      pending += chunk
+      let newline = pending.indexOf('\n')
+      while (newline >= 0) {
+        const line = pending.slice(0, newline)
+        pending = pending.slice(newline + 1)
+        const event = decodeEvent(line)
+        if (event) {
+          sawEvent = true
+          opts.onEvent(event)
+        } else if (line.trim().length > 0 && unreadable.length < MAX_UNREADABLE) {
+          unreadable.push(line.slice(0, 500))
+        }
+        newline = pending.indexOf('\n')
+      }
+    })
+
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk: string) => {
+      if (stderr.length < MAX_STDERR) stderr += chunk
+    })
+
+    child.on('error', (error: Error) => {
+      finish({ kind: 'refused', detail: `could not start ssh: ${error.message}` })
+    })
+
+    // 'close' rather than 'exit': stdout must be fully drained before the end
+    // is interpreted, or a result event sitting in the pipe when the process
+    // exits would be read as a run that produced no result.
+    child.on('close', (code: number | null, signal: string | null) => {
+      if (settled) return
+      if (signal !== null) {
+        finish({ kind: 'disconnected', detail: `ssh was killed by ${signal}` })
+        return
+      }
+      if (code === SSH_FAILURE) {
+        finish({ kind: 'refused', detail: sshRefusal(stderr) })
+        return
+      }
+      if (!sawEvent) {
+        finish({ kind: 'protocol', detail: helperMissing(stderr, unreadable) })
+        return
+      }
+      finish({ kind: 'closed', exitCode: code ?? 0 })
+    })
+
+    child.stdin.on('error', () => {
+      // A helper that exits before reading stdin closes the pipe under us.
+      // The close handler owns the diagnosis; this only stops the EPIPE throw.
+    })
+    child.stdin.end(encodeRequest(opts.request))
+  })
+}
+
+/** ssh's failures are legible; pass its own words through rather than ours. */
+function sshRefusal(stderr: string): string {
+  const line = stderr
+    .split('\n')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0 && !entry.startsWith('Warning: Permanently added'))
+    .pop()
+  return line ? `ssh refused the connection: ${line}` : 'ssh could not connect to the host'
+}
+
+function helperMissing(stderr: string, unreadable: string[]): string {
+  const detail = stderr.trim() || unreadable.join(' ').trim()
+  return detail
+    ? `the remote did not speak Parley's protocol: ${detail.slice(0, 400)}`
+    : 'the remote produced no protocol output — is parley-remote installed on that host?'
+}
