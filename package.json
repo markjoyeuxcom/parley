@@ -15,6 +15,7 @@
     "dev": "electron-vite dev",
     "prebuild": "node scripts/check-electron.mjs",
     "build": "electron-vite build",
+    "build:remote": "node scripts/build-remote.mjs",
     "fix:electron": "rm -rf node_modules/electron/dist node_modules/electron/path.txt && node node_modules/electron/install.js",
     "preview": "electron-vite preview",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
