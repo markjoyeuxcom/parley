@@ -160,6 +160,14 @@ You can interject mid-session: address both sides, or **whisper** to one. The
 other side never learns it happened, which is how you test whether an agent will
 hold a position under private pressure.
 
+The session list is newest-first, which answers "what was I just doing" and
+cannot answer "what have I done about X". **Group sessions** in the sidebar
+header regroups it by project or by repository without sorting: groups appear
+in the order their first session does, so the work you were just in stays at
+the top either way. Grouping and folds are view preference — they reset with
+the window. The **Project** field suggests the projects already in use, but
+stays free text, so a new one costs nothing.
+
 ### When to use it
 
 - **You can't cheaply just try it.** If you can prototype both branches in an
@@ -359,7 +367,7 @@ batch when you return.
 Sessions are how work happens; repositories are what the work is *about* —
 and the Repos surface makes the repository answer for itself. The sidebar
 lists every repo Parley has ever worked (plans, backlog or learnings — any
-record counts); selecting one opens four tabs:
+record counts); selecting one opens five tabs:
 
 - **Overview** — the radar: every unsettled plan with its status and one
   click to its controls, the holds queue filtered to this repo, and the
@@ -369,6 +377,10 @@ record counts); selecting one opens four tabs:
   numbered and newest first; a row opens the plan **in place**, and the
   origin session is a provenance link into ⌘2, the reading room. Sessions
   became links, not homes.
+- **Sessions** — every debate and review that named this repository, newest
+  first, with how many plans came out of each. The tab counts only *running*
+  sessions, so the badge means live work rather than history. Rows open in ⌘2;
+  the repository chip in a session's header is the door back.
 - **Learnings** — the curated prose record.
 
 "All repositories" remains the cross-repo triage board.

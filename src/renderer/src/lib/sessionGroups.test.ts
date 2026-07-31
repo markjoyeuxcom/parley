@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Session } from '@shared/domain'
-import { groupSessions, recentProjects } from './sessionGroups'
+import { groupSessions, recentProjects, sessionsForRepo } from './sessionGroups'
 
 const claude = { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' }
 const codex = { vendor: 'codex' as const, model: '', effort: 'high' as const, persona: '' }
@@ -79,6 +79,24 @@ describe('grouping the session list', () => {
       )
       expect(new Set(ids).size).toBe(sessions.length)
     }
+  })
+})
+
+describe('the sessions run against a repository', () => {
+  it('matches regardless of a trailing slash on either side', () => {
+    const sessions = [
+      session({ repoPath: '/repos/atlas' }),
+      session({ repoPath: '/repos/atlas/' }),
+      session({ repoPath: '/repos/atlas-two' }),
+      session({ repoPath: null }),
+    ]
+    expect(sessionsForRepo(sessions, '/repos/atlas/')).toHaveLength(2)
+    expect(sessionsForRepo(sessions, '/repos/atlas')).toHaveLength(2)
+  })
+
+  it('never matches a session that named no repository', () => {
+    // '' would otherwise trim to '' and collect every repo-less session.
+    expect(sessionsForRepo([session({ repoPath: null }), session({ repoPath: '' })], '')).toEqual([])
   })
 })
 

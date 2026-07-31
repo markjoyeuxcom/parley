@@ -338,9 +338,18 @@ function SessionView(): ReactNode {
         <div className="spacer" />
 
         {session.repoPath ? (
-          <Chip tone="chip--mono" title={session.repoPath}>
+          // The chip is also the door back: the repository view holds
+          // everything else this session is connected to.
+          <button
+            className="chip chip--mono"
+            title={`${session.repoPath} — open in Repositories`}
+            onClick={() => {
+              dispatch({ type: 'surface', surface: 'backlog' })
+              dispatch({ type: 'focusBacklogRepo', repoPath: session.repoPath, tab: 'sessions' })
+            }}
+          >
             {shortPath(session.repoPath)}
-          </Chip>
+          </button>
         ) : (
           <Chip title="No repository attached — both sides run tool-free">no repo</Chip>
         )}

@@ -1390,6 +1390,30 @@ describe('mounted-surface smoke', () => {
     await assertLedgerGateActionsDisabled(invoked)
   })
 
+  it('the Sessions tab lists what was run against this repository, and opens it', async () => {
+    const invoked: CommandName[] = []
+    installBridge({ 'session.get': () => invoked.push('session.get') })
+    render(
+      <StoreProvider>
+        <OnSurface surface="backlog">
+          <BacklogSurface />
+        </OnSurface>
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByTitle('/tmp/smoke-repo'))
+    fireEvent.click(await screen.findByRole('tab', { name: /Sessions/ }))
+
+    expect(screen.getByRole('button', { name: /Review this repository/ })).toBeTruthy()
+
+    // The row is the association the session list cannot show: this session
+    // named this repository. Opening it leaves for ⌘2, which is why nothing
+    // is asserted about this surface afterwards — the row is a door, not a
+    // second reading room.
+    fireEvent.click(await screen.findByText(session.matter))
+    await waitFor(() => expect(invoked).toContain('session.get'))
+  })
+
   it('a rejected plan.get leaves no plan open', async () => {
     installBridge({}, { 'plan.get': 'Main refused to open this plan.' })
     render(

@@ -63,6 +63,22 @@ export function groupSessions(
   return [...named, ...rest]
 }
 
+/**
+ * The sessions that were run against a repository.
+ *
+ * A session's repoPath is whatever the user typed, so the compare trims a
+ * trailing slash on both sides. It does no more than that: resolving symlinks
+ * or `~` is main's job, and guessing here would claim a match the record
+ * cannot back up.
+ */
+export function sessionsForRepo(sessions: readonly Session[], repoPath: string): Session[] {
+  const target = repoPath.replace(/\/+$/, '')
+  // No repository is not a repository: an empty target must collect nothing,
+  // not every session that named no repo.
+  if (!target) return []
+  return sessions.filter((session) => (session.repoPath ?? '').replace(/\/+$/, '') === target)
+}
+
 /** The distinct projects worth offering as suggestions, most recent first. */
 export function recentProjects(sessions: readonly Session[], limit = 8): string[] {
   const seen = new Set<string>()

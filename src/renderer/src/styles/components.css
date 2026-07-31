@@ -314,6 +314,19 @@
   white-space: nowrap;
 }
 
+/* A chip that is also a control. Same shape, no button chrome — the only
+   difference the eye should catch is that it responds. */
+button.chip {
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+button.chip:hover {
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
 .chip--pass {
   background: var(--pass-soft);
   color: var(--pass);

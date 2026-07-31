@@ -14,6 +14,7 @@ import type { RepoContainerStatus, RepoSummary } from '@shared/ipc'
 import type { Hold } from '@shared/holds'
 import { api } from '../lib/api'
 import { compactNumber, relativeTime, shortPath, statusTone } from '../lib/format'
+import { sessionsForRepo } from '../lib/sessionGroups'
 import { useStore, type RepoTab } from '../state'
 import { AgentPicker } from '../components/AgentPicker'
 import { NewPlanDialog, PlanPanel } from '../components/PlanPanel'
@@ -212,6 +213,12 @@ export function BacklogSurface(): ReactNode {
   )
   const planById = useMemo(() => new Map(plans.map((p) => [p.id, p])), [plans])
 
+  const repoSessions = useMemo(
+    () => (repo ? sessionsForRepo(state.sessions, repo) : []),
+    [repo, state.sessions],
+  )
+  const liveHere = repoSessions.filter((session) => session.status === 'running').length
+
   const pendingCount = (path: string): number =>
     state.backlogItems.filter(
       (i) => i.repoPath === path && (i.state === 'proposed' || i.state === 'closure-proposed'),
@@ -375,6 +382,7 @@ export function BacklogSurface(): ReactNode {
                       ['overview', 'Overview'],
                       ['backlog', 'Backlog'],
                       ['plans', 'Plans'],
+                      ['sessions', 'Sessions'],
                       ['learnings', 'Learnings'],
                     ] as Array<[RepoTab, string]>
                   ).map(([tab, label]) => (
@@ -388,6 +396,12 @@ export function BacklogSurface(): ReactNode {
                       {label}
                       {tab === 'backlog' && pendingCount(repo) > 0 ? (
                         <span className="segmented__count tnum">{pendingCount(repo)}</span>
+                      ) : null}
+                      {/* Only running sessions are counted: a total would just
+                          restate the list, but live work about this repository
+                          is worth seeing from the other tabs. */}
+                      {tab === 'sessions' && liveHere > 0 ? (
+                        <span className="segmented__count tnum">{liveHere}</span>
                       ) : null}
                     </button>
                   ))}
@@ -482,6 +496,24 @@ export function BacklogSurface(): ReactNode {
                     />
                   ) : null}
                 </PlansTab>
+              ) : null}
+
+              {repo && activeTab === 'sessions' ? (
+                <SessionsTab
+                  repo={repo}
+                  sessions={repoSessions}
+                  plans={plans}
+                  onOpen={(sessionId) => {
+                    dispatch({ type: 'surface', surface: 'parley' })
+                    void openSession(sessionId)
+                  }}
+                  onNew={(kind) =>
+                    dispatch({
+                      type: 'focusNewSession',
+                      request: { kind, repoPath: repo, matter: '' },
+                    })
+                  }
+                />
               ) : null}
 
               {!repo || activeTab === 'backlog' ? (
@@ -815,6 +847,100 @@ function WaitingCard({
  * origin session is a provenance link into the reading room (⌘2); the row
  * itself opens the plan in place, hosted below the table.
  */
+/**
+ * Every session run against this repository.
+ *
+ * Sessions already live in ⌘2, and this does not move them: rows open there.
+ * What the repository view adds is the association — which debates and reviews
+ * were about this code, and which of them turned into a plan — because that is
+ * the question you ask from here and the session list cannot answer it.
+ */
+function SessionsTab({
+  repo,
+  sessions,
+  plans,
+  onOpen,
+  onNew,
+}: {
+  repo: string
+  sessions: Session[]
+  plans: WorkPlan[]
+  onOpen: (sessionId: Id) => void
+  onNew: (kind: 'debate' | 'review') => void
+}): ReactNode {
+  const newest = [...sessions].sort((a, b) => b.createdAt - a.createdAt)
+  return (
+    <section className="panel foreman-panel">
+      <header className="panel__header">
+        <Label>Sessions</Label>
+        <span className="spacer" />
+        <button className="btn btn--sm" onClick={() => onNew('review')}>
+          Review this repository…
+        </button>
+        <button className="btn btn--subtle btn--sm" onClick={() => onNew('debate')}>
+          Debate…
+        </button>
+      </header>
+      <div className="panel__body panel__body--flush">
+        {newest.length === 0 ? (
+          <span className="field__hint" style={{ padding: 'var(--s4)', display: 'block' }}>
+            No session has named {shortPath(repo)} yet. A review reads the code through the
+            selected CLI’s governed read capability and files what it confirms.
+          </span>
+        ) : (
+          <div className="plan-list" style={{ maxHeight: 'none' }}>
+            {newest.map((session) => {
+              const tone = statusTone(session.status)
+              const planned = plans.filter((plan) => plan.sessionId === session.id).length
+              return (
+                <button
+                  key={session.id}
+                  className="list-item"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => onOpen(session.id)}
+                  title={session.matter}
+                >
+                  <div className="list-item__top">
+                    {session.status === 'running' ? (
+                      <Dot tone="dot--live" />
+                    ) : (
+                      <Dot tone={tone.tone.replace('chip--', 'dot--')} />
+                    )}
+                    <span className="list-item__title">{session.matter}</span>
+                    {session.mock ? <Chip tone="chip--caution">mock</Chip> : null}
+                    {session.archivedAt !== null ? <Chip>archived</Chip> : null}
+                  </div>
+                  <div className="list-item__meta">
+                    <span>{session.kind === 'review' ? 'Review' : 'Debate'}</span>
+                    <span>·</span>
+                    <span>{tone.label}</span>
+                    {planned > 0 ? (
+                      <>
+                        <span>·</span>
+                        <span>
+                          {planned} plan{planned === 1 ? '' : 's'}
+                        </span>
+                      </>
+                    ) : null}
+                    {session.project ? (
+                      <>
+                        <span>·</span>
+                        <span className="truncate">{session.project}</span>
+                      </>
+                    ) : null}
+                    <span>·</span>
+                    <span>{relativeTime(session.createdAt)}</span>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function PlansTab({
   plans,
   items,

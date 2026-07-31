@@ -31,7 +31,7 @@ import { applyLedgerEvent, applyPlanLedgerEvent } from './lib/ledgerState'
 
 export type Surface = 'grid' | 'parley' | 'loops' | 'backlog'
 /** The Repos surface's per-repository tabs. */
-export type RepoTab = 'overview' | 'backlog' | 'plans' | 'learnings'
+export type RepoTab = 'overview' | 'backlog' | 'plans' | 'sessions' | 'learnings'
 export type ThemeChoice = 'system' | 'light' | 'dark'
 
 export interface Notice {
