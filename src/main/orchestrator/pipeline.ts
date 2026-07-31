@@ -983,6 +983,13 @@ export class Pipeline {
         setRunState: (id, state) => this.repo.setMilestoneRunState(id, state),
         addPlanUsage: (planId, usage) => this.repo.addPlanUsage(planId, usage),
         setPlanStatus: (planId, status) => this.setStatus(planId, status),
+        recordFinding: (finding, id) =>
+          this.recordFindingOccurrence(plan, finding.text, {
+            milestoneId: id,
+            round: finding.round,
+            kind: finding.blocking ? 'blocking' : 'note',
+            source: finding.source,
+          }),
         emitMilestone: (row) => this.emit({ type: 'plan.milestone', milestone: row }),
         emitActivity: (phase, text) => activity(phase as MilestonePhase, text),
       },
@@ -1273,6 +1280,10 @@ export class Pipeline {
       note: history.join('\n\n'),
       completedAt: finalPassed ? Date.now() : null,
     })
+    // Settling the ledger reads dispositions and occurrences and writes
+    // settlements — record work, and the facade's job. The loop reports that
+    // the milestone finished; what that means for the ledger is decided by
+    // whoever holds one.
     if (finalPassed) this.settleMilestoneReviewFindings(plan, milestoneId)
 
     // Whether the PLAN is finished needs its other milestones, which is
@@ -1470,20 +1481,10 @@ export class Pipeline {
     const parsedReview = parseReview(review.text)
     if (parsedReview) {
       for (const finding of parsedReview.blocking) {
-        this.recordFindingOccurrence(plan, finding, {
-          milestoneId,
-          round,
-          kind: 'blocking',
-          source: 'review',
-        })
+        report.record({ kind: 'finding', text: finding, round, blocking: true, source: 'review' })
       }
       for (const note of parsedReview.notes) {
-        this.recordFindingOccurrence(plan, note, {
-          milestoneId,
-          round,
-          kind: 'note',
-          source: 'review',
-        })
+        report.record({ kind: 'finding', text: note, round, blocking: false, source: 'review' })
       }
     }
     // Tests must be green *and* every declared break must have been caught *and*

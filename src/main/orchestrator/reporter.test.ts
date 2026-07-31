@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Milestone, TestResult, Usage } from '@shared/domain'
 import { emptyUsage } from '@shared/domain'
 import type { RunState } from './pipeline'
-import { milestonePatch, StoreMilestoneReporter, type MilestoneFact } from './reporter'
+import {
+  decodeMilestoneFact,
+  milestonePatch,
+  StoreMilestoneReporter,
+  type MilestoneFact,
+} from './reporter'
 
 const milestone = {
   id: 'm1',
@@ -41,12 +46,14 @@ function harness(): {
   runStates: Array<RunState | null>
   spend: Usage[]
   planStatuses: string[]
+  findings: Array<Record<string, unknown>>
   emitted: Milestone[]
 } {
   const rows: Array<Partial<Milestone>> = []
   const runStates: Array<RunState | null> = []
   const spend: Usage[] = []
   const planStatuses: string[] = []
+  const findings: Array<Record<string, unknown>> = []
   const emitted: Milestone[] = []
   let current = milestone
   const reporter = new StoreMilestoneReporter(
@@ -59,13 +66,14 @@ function harness(): {
       setRunState: (_id, state) => runStates.push(state),
       addPlanUsage: (_planId, usage) => spend.push(usage),
       setPlanStatus: (_planId, status) => planStatuses.push(status),
+      recordFinding: (finding, id) => findings.push({ ...finding, milestoneId: id }),
       emitMilestone: (row) => emitted.push(row),
       emitActivity: () => {},
     },
     milestone,
     'p1',
   )
-  return { reporter, rows, runStates, spend, planStatuses, emitted }
+  return { reporter, rows, runStates, spend, planStatuses, findings, emitted }
 }
 
 describe('what a fact means for the record', () => {
@@ -111,6 +119,7 @@ describe('what a fact means for the record', () => {
       { kind: 'phase', phase: 'executing' },
       { kind: 'phase', phase: 'testing' },
       { kind: 'planOutcome', status: 'failed' },
+      { kind: 'finding', text: 'x', round: 0, blocking: true, source: 'review' },
       { kind: 'checkpoint', runState: null },
       { kind: 'spend', usage: emptyUsage() },
       { kind: 'verification', result: testResult },
@@ -179,6 +188,7 @@ describe('the local reporter', () => {
         setRunState: () => {},
         addPlanUsage: () => {},
         setPlanStatus: () => {},
+        recordFinding: () => {},
         emitMilestone: () => {},
         emitActivity,
       },
@@ -237,5 +247,36 @@ describe('the projection that replaced the store read', () => {
       mutations: reporter.milestone.mutations,
       expectedPaths: reporter.milestone.expectedPaths,
     }).toEqual(definition)
+  })
+})
+
+describe('findings the reviewer named', () => {
+  it('routes to the ledger, never to the milestone row', () => {
+    // The core observes the finding; turning it into a ledger row with
+    // provenance is a local consequence that a machine with no ledger cannot
+    // perform — which is the whole reason this is a fact.
+    const { reporter, rows, findings } = harness()
+    reporter.record({ kind: 'finding', text: 'unsafe cast', round: 1, blocking: true, source: 'review' })
+    expect(rows).toEqual([])
+    expect(findings).toEqual([
+      { kind: 'finding', text: 'unsafe cast', round: 1, blocking: true, source: 'review', milestoneId: 'm1' },
+    ])
+  })
+
+  it('fails a wire finding closed when its blocking flag did not survive', () => {
+    // A blocking finding that arrived as a note would gate nothing, and the
+    // milestone would pass on work a reviewer had objected to.
+    expect(
+      decodeMilestoneFact({ kind: 'finding', text: 'x', round: null, source: 'review' }),
+    ).toMatchObject({ blocking: false })
+    expect(
+      decodeMilestoneFact({ kind: 'finding', text: 'x', round: null, blocking: true, source: 'review' }),
+    ).toMatchObject({ blocking: true })
+  })
+
+  it('refuses a finding with no text, no round key, or an invented source', () => {
+    expect(decodeMilestoneFact({ kind: 'finding', text: '', round: null, source: 'review' })).toBeNull()
+    expect(decodeMilestoneFact({ kind: 'finding', text: 'x', source: 'review' })).toBeNull()
+    expect(decodeMilestoneFact({ kind: 'finding', text: 'x', round: null, source: 'vibes' })).toBeNull()
   })
 })

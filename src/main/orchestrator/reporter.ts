@@ -52,6 +52,24 @@ export type MilestoneFact =
   /** The reviewer reached a verdict. Null when it returned nothing usable. */
   | { kind: 'judgement'; passed: boolean | null }
   /**
+   * A reviewer named something specific about the work.
+   *
+   * The core OBSERVES the finding; turning it into a ledger row, an
+   * occurrence with provenance and a renderer event is a local consequence of
+   * that observation — and one a machine with no ledger cannot perform. The
+   * same fact reported from a remote run is recorded here identically, which
+   * is the entire reason this is a fact and not a store call.
+   */
+  | {
+      kind: 'finding'
+      text: string
+      /** Which remediation round said it, or null outside a round. */
+      round: number | null
+      /** Blocking findings gate the milestone; notes are recorded and do not. */
+      blocking: boolean
+      source: 'audit' | 'review' | 'adoption'
+    }
+  /**
    * Terminal. The milestone is over and this is how it ended.
    *
    * `judgement` and `completedAt` are optional because omitting a field and
@@ -112,6 +130,7 @@ export function milestonePatch(fact: MilestoneFact): Partial<Milestone> | null {
     case 'checkpoint':
     case 'spend':
     case 'planOutcome':
+    case 'finding':
       return null
   }
 }
@@ -161,6 +180,7 @@ export class StoreMilestoneReporter implements MilestoneReporter {
       setRunState: (id: Id, state: RunState | null) => void
       addPlanUsage: (planId: Id, usage: Usage) => void
       setPlanStatus: (planId: Id, status: 'ready' | 'complete' | 'failed') => void
+      recordFinding: (finding: Extract<MilestoneFact, { kind: 'finding' }>, milestoneId: Id) => void
       emitMilestone: (milestone: Milestone) => void
       emitActivity: (phase: string, text: string) => void
     },
@@ -181,6 +201,10 @@ export class StoreMilestoneReporter implements MilestoneReporter {
     }
     if (fact.kind === 'planOutcome') {
       this.deps.setPlanStatus(this.planId, fact.status)
+      return this.current
+    }
+    if (fact.kind === 'finding') {
+      this.deps.recordFinding(fact, this.current.id)
       return this.current
     }
     const patch = milestonePatch(fact)
@@ -273,6 +297,21 @@ export function decodeMilestoneFact(value: unknown): MilestoneFact | null {
       return raw.status === 'ready' || raw.status === 'complete' || raw.status === 'failed'
         ? { kind: 'planOutcome', status: raw.status }
         : null
+    case 'finding': {
+      if (typeof raw.text !== 'string' || !raw.text) return null
+      if (raw.source !== 'audit' && raw.source !== 'review' && raw.source !== 'adoption') return null
+      if (!present('round')) return null
+      if (raw.round !== null && typeof raw.round !== 'number') return null
+      return {
+        kind: 'finding',
+        text: raw.text,
+        round: raw.round,
+        // Fail closed: a finding whose blocking flag did not survive the wire
+        // must not silently become a note that gates nothing.
+        blocking: raw.blocking === true,
+        source: raw.source,
+      }
+    }
     default:
       return null
   }
