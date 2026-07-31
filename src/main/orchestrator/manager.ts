@@ -12,6 +12,7 @@ import {
   type Envelope,
   type EnvelopeCaps,
   type Acceptance,
+  type AppJourney,
   type Workspace,
   type Loop,
   type Milestone,
@@ -24,6 +25,7 @@ import type { AppEvent } from '@shared/events'
 import type { Hold } from '@shared/holds'
 import type { RepoContainerStatus } from '@shared/ipc'
 import type { InFlightRow } from '@shared/inflight'
+import type { JourneyProgress } from '@shared/journey'
 import type { AgentRegistry } from '@main/agents'
 import { isShellFree, shellMetacharsIn } from '@shared/command'
 import { EXECUTABLE_PAIRS } from '@shared/execution'
@@ -1630,6 +1632,36 @@ export class Manager {
       })
     } catch (err) {
       throw new RequestError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  /**
+   * Observes what a journey's links actually point at.
+   *
+   * Every field is read from the record rather than remembered, so a user who
+   * ran the debate themselves, or scaffolded outside the guide, finds the
+   * stage already satisfied — the guide follows the work, never the reverse.
+   */
+  journeyProgress(journey: AppJourney): JourneyProgress {
+    const workspace = journey.workspaceId ? this.repo.getWorkspace(journey.workspaceId) : null
+    const plan = journey.planId ? this.repo.getPlan(journey.planId) : null
+    const milestones = plan ? this.repo.listMilestones(plan.id) : []
+    const harden = journey.hardenSessionId
+      ? this.repo.getSession(journey.hardenSessionId)
+      : null
+
+    return {
+      hasBrief: journey.brief.trim().length > 0,
+      challengeSettled: journey.sessionId
+        ? this.repo.getVerdict(journey.sessionId) !== null
+        : false,
+      foundationReady: workspace?.state === 'ready',
+      // Every milestone complete, and at least one of them — a plan with no
+      // milestones has not built anything.
+      buildComplete:
+        milestones.length > 0 && milestones.every((milestone) => milestone.status === 'complete'),
+      judged: plan ? this.repo.listAcceptancesForPlan(plan.id).length > 0 : false,
+      hardened: harden?.status === 'complete',
     }
   }
 

@@ -2830,6 +2830,143 @@ describe("Parley's own repository", () => {
   })
 })
 
+describe('the guided journey', () => {
+  it('reads its stage from what its links point at, not from a stored step', async () => {
+    const { manager, repo } = harness()
+    const journey = repo.createJourney({
+      id: newId(),
+      name: 'Recipe box',
+      brief: '',
+      sessionId: null,
+      workspaceId: null,
+      planId: null,
+      hardenSessionId: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      mock: true,
+    })
+
+    expect(manager.journeyProgress(journey).hasBrief).toBe(false)
+
+    // Brief.
+    const briefed = repo.updateJourney(journey.id, { brief: 'A box for recipes.' })
+    expect(manager.journeyProgress(briefed).hasBrief).toBe(true)
+    expect(manager.journeyProgress(briefed).challengeSettled).toBe(false)
+
+    // Challenge — settled only once the debate reached a verdict, which is a
+    // fact about the session, not about the guide.
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'A box for recipes.',
+      project: '',
+      repoPath: null,
+      participants: [claude, codex],
+      maxTurns: 2,
+    })
+    const linked = repo.updateJourney(journey.id, { sessionId: session.id })
+    expect(manager.journeyProgress(linked).challengeSettled).toBe(false)
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+    expect(manager.journeyProgress(linked).challengeSettled).toBe(true)
+
+    // Foundation — a workspace still building is not ground to build on.
+    const workspace = repo.createWorkspace({
+      id: newId(),
+      repoPath: mkdtempSync(join(tmpdir(), 'parley-journey-')),
+      name: 'Recipe box',
+      templateId: 'web-app',
+      state: 'building',
+      detail: '',
+      createdAt: Date.now(),
+      readyAt: null,
+      mock: true,
+    })
+    const withWorkspace = repo.updateJourney(journey.id, { workspaceId: workspace.id })
+    expect(manager.journeyProgress(withWorkspace).foundationReady).toBe(false)
+    repo.settleWorkspace(workspace.id, 'ready', 'verify passed')
+    expect(manager.journeyProgress(withWorkspace).foundationReady).toBe(true)
+  }, 60_000)
+
+  it('does not call an empty plan built, and reads acceptance as the judgement', async () => {
+    const { manager, repo } = harness()
+    const session = manager.startSession({
+      kind: 'debate',
+      matter: 'x',
+      project: '',
+      repoPath: null,
+      participants: [claude, codex],
+      maxTurns: 2,
+    })
+    await waitFor(() => repo.getSession(session.id)?.status === 'complete')
+    const repoPath = mkdtempSync(join(tmpdir(), 'parley-journey-plan-'))
+    const plan = repo.createPlan({
+      id: newId(),
+      sessionId: session.id,
+      kind: 'implementation',
+      title: 'Build it',
+      repoPath,
+      planner: claude,
+      executor: codex,
+      reviewer: claude,
+      status: 'ready',
+      question: '',
+      correctionNote: '',
+      correctionDispositions: [],
+      isolation: 'worktree',
+      setupCommand: '',
+      container: false,
+      usage: emptyUsage(),
+      mock: true,
+      createdAt: Date.now(),
+    })
+    const journey = repo.createJourney({
+      id: newId(),
+      name: 'Recipe box',
+      brief: 'A box.',
+      sessionId: session.id,
+      workspaceId: null,
+      planId: plan.id,
+      hardenSessionId: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      mock: true,
+    })
+
+    // A plan with no milestones has not built anything.
+    expect(manager.journeyProgress(journey).buildComplete).toBe(false)
+
+    const milestone = repo.createMilestone({
+      id: newId(),
+      planId: plan.id,
+      index: 0,
+      title: 'Slice one',
+      intent: 'Do it.',
+      expectedPaths: [],
+      status: 'audited',
+      auditNote: '',
+      testCommand: 'true',
+      testResult: null,
+      mutations: [],
+      mutationResults: [],
+      reviewNote: '',
+      reviewBlocking: [],
+      reviewNotes: [],
+      reviewPassed: null,
+      adopted: false,
+      approvalId: null,
+      createdAt: Date.now(),
+      completedAt: null,
+    })
+    expect(manager.journeyProgress(journey).buildComplete).toBe(false)
+
+    repo.updateMilestone(milestone.id, { status: 'complete' })
+    expect(manager.journeyProgress(journey).buildComplete).toBe(true)
+    expect(manager.journeyProgress(journey).judged).toBe(false)
+
+    manager.recordAcceptance({ milestoneId: milestone.id, state: 'accepted' })
+    expect(manager.journeyProgress(journey).judged).toBe(true)
+  }, 60_000)
+})
+
 describe('unattended runs', () => {
   function envelopeHarness(): {
     manager: Manager

@@ -46,6 +46,7 @@ import {
   type Vendor,
   type Verdict,
   type Acceptance,
+  type AppJourney,
   type Envelope,
   type Workspace,
   type WorkPlan,
@@ -1929,6 +1930,85 @@ export class Repo {
       }
       return plan
     })
+  }
+
+  // ─── App journeys ──────────────────────────────────────────────────────────
+
+  createJourney(journey: AppJourney): AppJourney {
+    this.db.run(
+      `INSERT INTO app_journeys (id, name, brief, session_id, workspace_id, plan_id, harden_session_id, created_at, updated_at, mock)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      journey.id,
+      journey.name,
+      journey.brief,
+      journey.sessionId,
+      journey.workspaceId,
+      journey.planId,
+      journey.hardenSessionId,
+      journey.createdAt,
+      journey.updatedAt,
+      journey.mock ? 1 : 0,
+    )
+    return journey
+  }
+
+  /**
+   * Attaches what a stage produced. Only ever adds links and the brief —
+   * there is no stage column to move, because the stage is derived.
+   */
+  updateJourney(
+    id: Id,
+    patch: Partial<Pick<AppJourney, 'name' | 'brief' | 'sessionId' | 'workspaceId' | 'planId' | 'hardenSessionId'>>,
+  ): AppJourney {
+    const fields: Record<string, string> = {
+      name: 'name',
+      brief: 'brief',
+      sessionId: 'session_id',
+      workspaceId: 'workspace_id',
+      planId: 'plan_id',
+      hardenSessionId: 'harden_session_id',
+    }
+    for (const [key, column] of Object.entries(fields)) {
+      const value = (patch as Record<string, unknown>)[key]
+      if (value === undefined) continue
+      this.db.run(`UPDATE app_journeys SET ${column} = ? WHERE id = ?`, value as string | null, id)
+    }
+    this.db.run(`UPDATE app_journeys SET updated_at = ? WHERE id = ?`, Date.now(), id)
+    const updated = this.getJourney(id)
+    if (!updated) throw new Error(`journey ${id} disappeared`)
+    return updated
+  }
+
+  getJourney(id: Id): AppJourney | null {
+    const row = this.db.get(`SELECT * FROM app_journeys WHERE id = ?`, id)
+    return row ? this.toJourney(row) : null
+  }
+
+  listJourneys(mock: boolean): AppJourney[] {
+    return this.db
+      .all(`SELECT * FROM app_journeys WHERE mock = ? ORDER BY created_at DESC`, mock ? 1 : 0)
+      .map((row) => this.toJourney(row))
+  }
+
+  deleteJourney(id: Id): void {
+    // The guide is scaffolding, not a record of work: everything it links to
+    // — the debate, the project, the plan — is durable on its own and stays.
+    this.db.run(`DELETE FROM app_journeys WHERE id = ?`, id)
+  }
+
+  private toJourney(row: Row): AppJourney {
+    return {
+      id: str(row['id']),
+      name: str(row['name']),
+      brief: str(row['brief']),
+      sessionId: nullableStr(row['session_id']),
+      workspaceId: nullableStr(row['workspace_id']),
+      planId: nullableStr(row['plan_id']),
+      hardenSessionId: nullableStr(row['harden_session_id']),
+      createdAt: num(row['created_at']),
+      updatedAt: num(row['updated_at']),
+      mock: num(row['mock']) === 1,
+    }
   }
 
   // ─── Acceptance ────────────────────────────────────────────────────────────

@@ -17,6 +17,8 @@ const DECLARED_PARENTS: Readonly<Record<string, string>> = {
 }
 
 const OUT_OF_SCOPE: Readonly<Record<string, string>> = {
+  app_journeys:
+    'A journey holds only links to work recorded elsewhere; deleting the guide keeps every session, project and plan it pointed at.',
   agent_threads: 'Opaque vendor resume handles do not change repository attention or summaries.',
   approvals: 'Authorisation evidence is polymorphic and deliberately survives its subject.',
   grid_layouts: 'Saved terminal layout is application-global UI state.',

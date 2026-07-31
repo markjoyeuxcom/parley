@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 25
+export const SCHEMA_VERSION = 26
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -493,6 +493,21 @@ CREATE TABLE IF NOT EXISTS acceptances (
 CREATE INDEX IF NOT EXISTS idx_acceptances_milestone
   ON acceptances(milestone_id, created_at DESC);
 
+-- One guided run at building a new app. Links only: the stage is derived
+-- from what they point at, never stored.
+CREATE TABLE IF NOT EXISTS app_journeys (
+  id                TEXT PRIMARY KEY,
+  name              TEXT NOT NULL,
+  brief             TEXT NOT NULL DEFAULT '',
+  session_id        TEXT,
+  workspace_id      TEXT,
+  plan_id           TEXT,
+  harden_session_id TEXT,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL,
+  mock              INTEGER NOT NULL DEFAULT 0
+);
+
 -- Projects Parley scaffolded. Also the fourth source of repository
 -- membership: a brand-new project has no plan, backlog item or learning, so
 -- without this row the Repos surface would not know it exists.
@@ -911,6 +926,10 @@ export function migrate(db: Db): void {
     } catch {
       // Already present, because SCHEMA above created the table fresh.
     }
+  }
+  if (current < 26) {
+    // app_journeys is additive: SCHEMA creates the table fresh, and no
+    // existing row changes shape.
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

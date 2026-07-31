@@ -712,6 +712,35 @@ export const Workspace = z.object({
 })
 export type Workspace = z.infer<typeof Workspace>
 
+/**
+ * One guided run at building a new app.
+ *
+ * Stores LINKS ONLY — which debate, which project, which plan, which review.
+ * The stage is derived from what they point at (see shared/journey.ts),
+ * because a stored stage would be a second opinion about state the record
+ * already answers, and it would disagree the moment someone worked outside
+ * the guide, which they must stay free to do.
+ */
+export const AppJourney = z.object({
+  id: Id,
+  name: z.string().min(1),
+  /** What the person said they wanted, in their own words. */
+  brief: z.string().default(''),
+  /** The challenge debate. */
+  sessionId: Id.nullable().default(null),
+  /** The scaffolded project. */
+  workspaceId: Id.nullable().default(null),
+  /** The build plan. */
+  planId: Id.nullable().default(null),
+  /** The hardening review. */
+  hardenSessionId: Id.nullable().default(null),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+  /** See {@link Session.mock}. */
+  mock: z.boolean().default(false),
+})
+export type AppJourney = z.infer<typeof AppJourney>
+
 export const AcceptanceState = z.enum([
   /** The human looked at the work and it does what they wanted. */
   'accepted',

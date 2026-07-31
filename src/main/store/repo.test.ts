@@ -897,6 +897,59 @@ describe('gathering findings for a remediation plan', () => {
   })
 })
 
+describe('app journeys', () => {
+  function makeJourney(repo: Repo, mock = false) {
+    return repo.createJourney({
+      id: newId(),
+      name: 'Recipe box',
+      brief: '',
+      sessionId: null,
+      workspaceId: null,
+      planId: null,
+      hardenSessionId: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      mock,
+    })
+  }
+
+  it('round-trips and lists within its own mode', () => {
+    const repo = freshRepo()
+    const journey = makeJourney(repo)
+    makeJourney(repo, true)
+
+    expect(repo.getJourney(journey.id)?.name).toBe('Recipe box')
+    expect(repo.listJourneys(false).map((j) => j.id)).toEqual([journey.id])
+    expect(repo.listJourneys(true)).toHaveLength(1)
+  })
+
+  it('attaches what each stage produced, one link at a time', () => {
+    const repo = freshRepo()
+    const journey = makeJourney(repo)
+
+    const briefed = repo.updateJourney(journey.id, { brief: 'A box for recipes.' })
+    expect(briefed.brief).toBe('A box for recipes.')
+    // An unmentioned link is untouched, not cleared.
+    expect(briefed.sessionId).toBeNull()
+
+    const linked = repo.updateJourney(journey.id, { sessionId: 's'.repeat(36) })
+    expect(linked.sessionId).toBe('s'.repeat(36))
+    expect(linked.brief).toBe('A box for recipes.')
+    expect(linked.updatedAt).toBeGreaterThanOrEqual(journey.updatedAt)
+  })
+
+  it('deleting the guide keeps everything it pointed at', () => {
+    const repo = freshRepo()
+    const session = makeSession(repo)
+    const journey = repo.updateJourney(makeJourney(repo).id, { sessionId: session.id })
+
+    repo.deleteJourney(journey.id)
+    expect(repo.getJourney(journey.id)).toBeNull()
+    // The guide is scaffolding; the work it linked is durable on its own.
+    expect(repo.getSession(session.id)).not.toBeNull()
+  })
+})
+
 describe('acceptance', () => {
   const base = {
     milestoneId: 'm'.repeat(36),
