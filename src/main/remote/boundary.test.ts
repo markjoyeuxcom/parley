@@ -82,6 +82,16 @@ describe('the dependency boundary', () => {
     expect(core).not.toContain('src/main/orchestrator/pipeline.ts')
   }, 120_000)
 
+  it('keeps the remote worker free of the record too', () => {
+    // The worker is what the bundle actually runs. It hosts the execution
+    // core, so it inherits the core's boundary — and asserting it here means a
+    // regression fails at the boundary rather than at install time.
+    const worker = graphOf('src/remote/worker.ts')
+    expect(worker.filter((input) => input.includes('/store/'))).toEqual([])
+    expect(worker.filter((input) => input.includes('/ipc/'))).toEqual([])
+    expect(worker.filter((input) => input.includes('node_modules'))).toEqual([])
+  }, 120_000)
+
   it('keeps the evidence leaf a leaf', () => {
     const evidence = graphOf('src/main/orchestrator/evidence.ts')
     expect(evidence.filter((input) => input.includes('/store/'))).toEqual([])

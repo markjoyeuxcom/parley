@@ -69,8 +69,12 @@ import {
   type TreeFileSnapshot,
   type TreeState,
   type VerifyOutcome,
+  freshRunState,
+  revParseHead,
 } from './evidence'
 export {
+  freshRunState,
+  revParseHead,
   MAX_CHANGED_FILE_CHARS,
   MAX_REMEDIATION_ROUNDS,
   PipelineError,
@@ -679,19 +683,7 @@ export class Pipeline {
     // Persisted from here on: a crash at any later point leaves everything a
     // resumption needs. Saved through one closure so the blob and its local
     // copy cannot drift.
-    let runState: RunState = {
-      startedAt: Date.now(),
-      round: 0,
-      previousConcerns: [],
-      reviewerNote: '',
-      executionReport: '',
-      executorResumeId: null,
-      reviewerResumeId: null,
-      before,
-      baselineHead: await revParseHead(root, signal),
-      lastActivityAt: null,
-      lastInspection: null,
-    }
+    let runState: RunState = freshRunState(before, await revParseHead(root, signal))
     this.repo.setMilestoneRunState(milestoneId, runState)
 
     return this.execute(
@@ -1642,11 +1634,6 @@ export function parseAudit(text: string): ParsedAudit | null {
     dispositions,
     blockingConcerns: concerns,
   }
-}
-
-export async function revParseHead(repoPath: string, signal?: AbortSignal): Promise<string> {
-  const result = await capture('git', ['rev-parse', 'HEAD'], repoPath, 30_000, signal)
-  return result.exitCode === 0 ? result.stdout.trim() : ''
 }
 
 export function pathsOutsideScope(changed: string[], expected: string[]): string[] {

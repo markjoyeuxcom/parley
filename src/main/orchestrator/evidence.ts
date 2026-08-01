@@ -54,6 +54,22 @@ export class PipelineError extends Error {}
  * MilestoneRunState is the wire-safe summary of this; the baseline and the
  * resume ids never leave the main process.
  */
+export function freshRunState(before: TreeState, baselineHead: string): RunState {
+  return {
+    startedAt: Date.now(),
+    round: 0,
+    previousConcerns: [],
+    reviewerNote: '',
+    executionReport: '',
+    executorResumeId: null,
+    reviewerResumeId: null,
+    before,
+    baselineHead,
+    lastActivityAt: null,
+    lastInspection: null,
+  }
+}
+
 export interface RunState {
   startedAt: number
   /** The remediation round the next execution would run. */
@@ -1172,5 +1188,12 @@ function readBoundedFile(full: string): { text: string | null; truncated: boolea
     // Binary, unreadable, or vanished between the listing and now.
     return { text: '(unreadable)', truncated: false }
   }
+}
+
+
+
+export async function revParseHead(repoPath: string, signal?: AbortSignal): Promise<string> {
+  const result = await capture('git', ['rev-parse', 'HEAD'], repoPath, 30_000, signal)
+  return result.exitCode === 0 ? result.stdout.trim() : ''
 }
 
