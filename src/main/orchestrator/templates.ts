@@ -319,7 +319,77 @@ const PYTHON_APP: ProjectTemplate = {
   },
 }
 
-export const TEMPLATES: readonly ProjectTemplate[] = [WEB_APP, GO_SERVICE, PYTHON_APP]
+const CARGO_TOML = `[package]
+name = "PLACEHOLDER_NAME"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+`
+
+const RUST_GITIGNORE = `target/
+.DS_Store
+`
+
+const RUST_MAIN = `mod greeting;
+
+use greeting::greeting;
+
+fn main() {
+    let name = std::env::args().nth(1).unwrap_or_else(|| "world".to_string());
+    println!("{}", greeting(&name));
+}
+`
+
+const RUST_GREETING = `//! The one piece of behaviour this scaffold ships.
+//!
+//! Its test asserts exactly what it does. A scaffold whose own test fails
+//! would hand milestone one a red suite and nothing to trust.
+
+pub fn greeting(name: &str) -> String {
+    format!("{} is running.", name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::greeting;
+
+    #[test]
+    fn greets_by_name() {
+        assert_eq!(greeting("parley"), "parley is running.");
+    }
+}
+`
+
+const RUST_README = `# PLACEHOLDER_NAME
+
+Scaffolded by Parley, and green before anything else ran.
+
+The verification command is \`cargo test\`. Keep it green: it is the
+deterministic half of every milestone Parley executes here, and a milestone
+whose tests cannot run cannot be reviewed honestly.
+
+\`cargo fetch\` resolves what Cargo.toml declares, which for this scaffold is
+nothing — it stays a real step so a milestone that adds a dependency has one.
+`
+
+/** Rust, and it fits the rule without any argument: two commands, two argv. */
+const RUST_APP: ProjectTemplate = {
+  id: 'rust-app',
+  name: 'Rust program',
+  description: 'A Cargo package with a passing test, so the harness is proven from the first commit.',
+  installCommand: ['cargo', 'fetch'],
+  verifyCommand: ['cargo', 'test'],
+  files: {
+    'Cargo.toml': CARGO_TOML,
+    '.gitignore': RUST_GITIGNORE,
+    'README.md': RUST_README,
+    'src/main.rs': RUST_MAIN,
+    'src/greeting.rs': RUST_GREETING,
+  },
+}
+
+export const TEMPLATES: readonly ProjectTemplate[] = [WEB_APP, GO_SERVICE, PYTHON_APP, RUST_APP]
 
 /**
  * Why this lane cannot be scaffolded on this machine, or null.

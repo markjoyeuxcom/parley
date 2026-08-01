@@ -22,10 +22,12 @@ describe('the shipped templates', () => {
       'web-app',
       'go-service',
       'python-app',
+      'rust-app',
     ])
     expect(templateById('web-app')?.name).toBe('Local web app')
     expect(templateById('go-service')?.name).toBe('Go program')
     expect(templateById('python-app')?.name).toBe('Python project')
+    expect(templateById('rust-app')?.name).toBe('Rust program')
     expect(templateById('nope')).toBeNull()
   })
 
@@ -172,5 +174,38 @@ describe('refusing a lane this machine cannot build', () => {
       (name) => (name === 'present' ? '/bin/present' : null),
     )
     expect(refusal).toContain('absent')
+  })
+})
+
+describe('every lane proves its own harness', () => {
+  it('ships a test asserting the function it ships, in each language', () => {
+    // The premise of the whole creator: a scaffold that is green from the
+    // first commit means milestone one inherits a proven harness rather than
+    // a hopeful one. A lane whose starting test did not exercise its starting
+    // code would look identical and prove nothing.
+    const cases: Array<[string, string, string, string]> = [
+      ['web-app', 'src/greeting.ts', 'src/greeting.test.ts', 'parley is running.'],
+      ['go-service', 'greeting.go', 'greeting_test.go', 'parley is running.'],
+      ['python-app', 'greeting.py', 'test_greeting.py', 'parley is running.'],
+      ['rust-app', 'src/greeting.rs', 'src/greeting.rs', 'parley is running.'],
+    ]
+    for (const [id, sourceFile, testFile, expected] of cases) {
+      const template = templateById(id)
+      if (!template) throw new Error(`expected the ${id} template`)
+      expect(template.files[sourceFile]).toBeTruthy()
+      expect(template.files[testFile]).toContain(expected)
+    }
+  })
+
+  it('ignores each language’s build output, so a first commit is the project', () => {
+    const ignored: Array<[string, string]> = [
+      ['web-app', 'node_modules/'],
+      ['go-service', '*.test'],
+      ['python-app', '.venv/'],
+      ['rust-app', 'target/'],
+    ]
+    for (const [id, entry] of ignored) {
+      expect(templateById(id)?.files['.gitignore']).toContain(entry)
+    }
   })
 })

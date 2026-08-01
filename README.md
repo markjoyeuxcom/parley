@@ -517,15 +517,17 @@ all.
 
 ### The lanes
 
-Three, and each one is green before anything else runs — the scaffold's own
+Four, and each one is green before anything else runs — the scaffold's own
 test asserts the scaffold's own function, so milestone one inherits a proven
-harness rather than a hopeful one.
+harness rather than a hopeful one. Each was checked by rendering it into an
+empty directory and running the real toolchain, not by inspection.
 
 | Lane | Install | Verify | Needs |
 | --- | --- | --- | --- |
 | **Local web app** | `npm install` | `npm run verify` | node |
 | **Go program** | `go mod tidy` | `go test ./...` | go |
 | **Python project** | `uv sync` | `uv run pytest` | [uv](https://docs.astral.sh/uv/) |
+| **Rust program** | `cargo fetch` | `cargo test` | cargo |
 
 The rule a new lane has to satisfy is that install and verify are each a
 *single* argv — Parley never spawns a shell, so a two-step setup cannot be
@@ -535,6 +537,51 @@ environment without anyone remembering to activate it.
 
 A lane whose tool is missing is refused by name before any directory is
 created, so you are never left with a scaffolded project that cannot build.
+
+### What else could be a lane
+
+**.NET fits the rule** — `dotnet restore` and `dotnet test` are each one argv —
+and it is a small, deliberate addition rather than an architectural question.
+It is not shipped yet only because every lane here was verified against a real
+toolchain before it shipped, and this machine has no `dotnet` to verify it on.
+A scaffold nobody has watched succeed would contradict the one thing the
+creator promises.
+
+**Unity does not fit, and cannot be made to.** A Unity project is not a set of
+text files: the editor generates GUIDs, `.meta` sidecars, serialised settings
+and a `Library/` cache, and no template of file contents can produce a valid
+one. Scaffolding it would mean driving the Unity Hub, which is a different
+program with a licence.
+
+## Working in a repository you already have
+
+Scaffolding is the *smallest* thing Parley does, and the templates are only the
+"start from nothing" path. Everything else — debates, reviews, plans,
+milestones, the audited execution loop — works in **any git repository**, in
+any language, with no template involved. Point it at the repo and set the
+milestone's verification command; the machinery has no idea what language it
+is looking at.
+
+The verification command has one requirement, the same one the lanes have: it
+must be a single argv with no shell syntax. `cargo test`, `dotnet test`,
+`make check`, `./scripts/verify` are all fine. Anything needing a pipe, `&&`
+or a glob belongs in a script in the repository, which Parley then runs.
+
+So the Unity answer has two halves. You cannot **create** a Unity project with
+Parley, but you can absolutely **work in one** — it is a git repository like
+any other, and an agent editing C# under an audited plan is exactly the loop
+this app is for. What degrades is the review, and it is worth knowing where:
+
+- Evidence and diffs are read as text, capped at ~48 KB per file and the first
+  40 changed files. A change confined to scripts reviews normally.
+- Scenes, prefabs and assets are large or binary. They show up as changed but
+  their contents do not reach the reviewer, so a reviewer cannot judge them —
+  it will say so rather than pretend otherwise.
+- `.meta` churn adds noise to every diff that touches an asset.
+
+The honest summary: Parley reviews **code** well, in any language. It does not
+review binary or generated project state, so a Unity milestone should be scoped
+to scripts, with scene and asset work left to the editor and to a person.
 
 ## Acceptance
 
