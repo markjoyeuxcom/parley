@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 29
+export const SCHEMA_VERSION = 30
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -566,6 +566,126 @@ CREATE TABLE IF NOT EXISTS workspaces (
   ready_at    INTEGER,
   mock        INTEGER NOT NULL DEFAULT 0
 );
+
+-- One index over everything anybody wrote down.
+--
+-- The record already answers "what is the state of this plan" perfectly and
+-- has never been able to answer "where did anyone say anything about retries"
+-- — a question whose answer is spread over a debate, a milestone's intent, a
+-- reviewer's finding and a backlog item filed six weeks later, in four tables
+-- nothing joins.
+--
+-- Maintained by TRIGGERS rather than by write-through, which is the whole
+-- point: an index kept current by remembering to update it is an index that
+-- is silently wrong the first time somebody adds a write site and does not.
+-- This codebase already has one guard test whose entire job is catching that
+-- class of omission; here the database does it instead.
+--
+-- porter unicode61 so "retries" finds "retry". The cost is a second copy of
+-- the text, which roughly doubles the space the turns take — acceptable for a
+-- local record, and stated here rather than discovered.
+CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
+  kind UNINDEXED,
+  ref_id UNINDEXED,
+  -- Where to go when this is the answer: a session id, or a repository path.
+  scope UNINDEXED,
+  title,
+  body,
+  tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS search_sessions_ai AFTER INSERT ON sessions BEGIN
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('session', new.id, new.id, new.matter, new.matter || ' ' || new.project);
+END;
+CREATE TRIGGER IF NOT EXISTS search_sessions_au AFTER UPDATE ON sessions BEGIN
+  DELETE FROM search_index WHERE kind = 'session' AND ref_id = old.id;
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('session', new.id, new.id, new.matter, new.matter || ' ' || new.project);
+END;
+CREATE TRIGGER IF NOT EXISTS search_sessions_ad AFTER DELETE ON sessions BEGIN
+  DELETE FROM search_index WHERE kind = 'session' AND ref_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS search_turns_ai AFTER INSERT ON turns BEGIN
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('turn', new.id, new.session_id, new.vendor || ' · ' || new.stage, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS search_turns_au AFTER UPDATE ON turns BEGIN
+  DELETE FROM search_index WHERE kind = 'turn' AND ref_id = old.id;
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('turn', new.id, new.session_id, new.vendor || ' · ' || new.stage, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS search_turns_ad AFTER DELETE ON turns BEGIN
+  DELETE FROM search_index WHERE kind = 'turn' AND ref_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS search_plans_ai AFTER INSERT ON plans BEGIN
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('plan', new.id, new.repo_path, new.title, new.title || ' ' || new.question);
+END;
+CREATE TRIGGER IF NOT EXISTS search_plans_au AFTER UPDATE ON plans BEGIN
+  DELETE FROM search_index WHERE kind = 'plan' AND ref_id = old.id;
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('plan', new.id, new.repo_path, new.title, new.title || ' ' || new.question);
+END;
+CREATE TRIGGER IF NOT EXISTS search_plans_ad AFTER DELETE ON plans BEGIN
+  DELETE FROM search_index WHERE kind = 'plan' AND ref_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS search_milestones_ai AFTER INSERT ON milestones BEGIN
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('milestone', new.id, new.plan_id, new.title,
+          new.title || ' ' || new.intent || ' ' || new.review_note || ' ' || new.audit_note);
+END;
+CREATE TRIGGER IF NOT EXISTS search_milestones_au AFTER UPDATE ON milestones BEGIN
+  DELETE FROM search_index WHERE kind = 'milestone' AND ref_id = old.id;
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('milestone', new.id, new.plan_id, new.title,
+          new.title || ' ' || new.intent || ' ' || new.review_note || ' ' || new.audit_note);
+END;
+CREATE TRIGGER IF NOT EXISTS search_milestones_ad AFTER DELETE ON milestones BEGIN
+  DELETE FROM search_index WHERE kind = 'milestone' AND ref_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS search_findings_ai AFTER INSERT ON ledger_findings BEGIN
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('finding', new.id, new.session_id, new.text, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS search_findings_au AFTER UPDATE ON ledger_findings BEGIN
+  DELETE FROM search_index WHERE kind = 'finding' AND ref_id = old.id;
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('finding', new.id, new.session_id, new.text, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS search_findings_ad AFTER DELETE ON ledger_findings BEGIN
+  DELETE FROM search_index WHERE kind = 'finding' AND ref_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS search_backlog_ai AFTER INSERT ON backlog_items BEGIN
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('backlog', new.id, new.repo_path, new.title, new.title || ' ' || new.detail);
+END;
+CREATE TRIGGER IF NOT EXISTS search_backlog_au AFTER UPDATE ON backlog_items BEGIN
+  DELETE FROM search_index WHERE kind = 'backlog' AND ref_id = old.id;
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('backlog', new.id, new.repo_path, new.title, new.title || ' ' || new.detail);
+END;
+CREATE TRIGGER IF NOT EXISTS search_backlog_ad AFTER DELETE ON backlog_items BEGIN
+  DELETE FROM search_index WHERE kind = 'backlog' AND ref_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS search_learnings_ai AFTER INSERT ON learnings BEGIN
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('learning', new.id, new.repo_path, new.text, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS search_learnings_au AFTER UPDATE ON learnings BEGIN
+  DELETE FROM search_index WHERE kind = 'learning' AND ref_id = old.id;
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('learning', new.id, new.repo_path, new.text, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS search_learnings_ad AFTER DELETE ON learnings BEGIN
+  DELETE FROM search_index WHERE kind = 'learning' AND ref_id = old.id;
+END;
 `
 
 export class NodeSqliteDb implements Db {
@@ -1019,6 +1139,30 @@ export function migrate(db: Db): void {
     } catch {
       // Already present, because SCHEMA above created the table fresh.
     }
+  }
+  if (current < 30) {
+    // SCHEMA created the table and its triggers above; the triggers only fire
+    // on writes from here on, so everything already recorded has to be swept
+    // in once. Backfilling from the sources rather than asking anyone to
+    // re-enter anything: the text is all there, it has simply never been
+    // indexed.
+    db.exec(`DELETE FROM search_index`)
+    db.exec(`INSERT INTO search_index (kind, ref_id, scope, title, body)
+             SELECT 'session', id, id, matter, matter || ' ' || project FROM sessions`)
+    db.exec(`INSERT INTO search_index (kind, ref_id, scope, title, body)
+             SELECT 'turn', id, session_id, vendor || ' · ' || stage, text FROM turns`)
+    db.exec(`INSERT INTO search_index (kind, ref_id, scope, title, body)
+             SELECT 'plan', id, repo_path, title, title || ' ' || question FROM plans`)
+    db.exec(`INSERT INTO search_index (kind, ref_id, scope, title, body)
+             SELECT 'milestone', id, plan_id, title,
+                    title || ' ' || intent || ' ' || review_note || ' ' || audit_note
+             FROM milestones`)
+    db.exec(`INSERT INTO search_index (kind, ref_id, scope, title, body)
+             SELECT 'finding', id, session_id, text, text FROM ledger_findings`)
+    db.exec(`INSERT INTO search_index (kind, ref_id, scope, title, body)
+             SELECT 'backlog', id, repo_path, title, title || ' ' || detail FROM backlog_items`)
+    db.exec(`INSERT INTO search_index (kind, ref_id, scope, title, body)
+             SELECT 'learning', id, repo_path, text, text FROM learnings`)
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

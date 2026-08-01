@@ -31,6 +31,13 @@ const OUT_OF_SCOPE: Readonly<Record<string, string>> = {
   hold_acks: 'Acknowledgements are keyed by global content identity, not by repository.',
   hold_notifications: 'Notification stamps are keyed by global content identity, not by repository.',
   meta: 'Schema bookkeeping is database-global.',
+  search_index:
+    'A derived index of text already recorded elsewhere. It is written by triggers, never by a method, and re-deriving it changes nothing about which repository was worked on.',
+  search_index_config: 'FTS5 shadow table for search_index.',
+  search_index_content: 'FTS5 shadow table for search_index.',
+  search_index_data: 'FTS5 shadow table for search_index.',
+  search_index_docsize: 'FTS5 shadow table for search_index.',
+  search_index_idx: 'FTS5 shadow table for search_index.',
   skills: 'Saved agent instructions are application-global.',
   worktrees: 'The checkout registry mirrors plan-owned filesystem state and is not repository activity.',
 }

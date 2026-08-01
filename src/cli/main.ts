@@ -1,5 +1,6 @@
 import { Repo } from '@main/store/repo'
 import { computeHolds } from '@main/orchestrator/holds'
+import type { SearchKind } from '@main/store/search'
 import { summariseRuns } from '@shared/runroom'
 import { parseArgs, USAGE, type Args } from './args'
 import { defaultRecordPath, openRecordForReading, RecordError } from './record'
@@ -109,6 +110,24 @@ function run(args: Args): number {
         .listMilestoneRuns(milestoneId)
         .map((run) => ({ runId: run.runId, events: repo.listRunEvents(run.runId) }))
       for (const summary of summariseRuns(runs)) emit(summary)
+      return 0
+    }
+
+    case 'search': {
+      // Every remaining word, joined: `parley search retry ceiling` is what a
+      // person types, and asking them to quote it would be asking them to
+      // think about the shell instead of the question.
+      const query = args.rest.join(' ')
+      if (!query.trim()) {
+        say('search needs something to search for')
+        return 1
+      }
+      for (const hit of repo.search(query, {
+        kinds: args.kinds as SearchKind[],
+        limit: args.limit ?? undefined,
+      })) {
+        emit(hit)
+      }
       return 0
     }
 

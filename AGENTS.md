@@ -657,6 +657,31 @@ directory and branch. That ordering is load-bearing because
 `markWorktreeLanded` clears `last_error`; the landed-row hold covers both
 verification failures and cleanup litter.
 
+## Search: one index, kept by triggers
+
+`search_index` (FTS5, `porter unicode61`, schema 30) covers sessions, turns,
+plans, milestones, ledger findings, backlog items and learnings. The record
+could always say what the state of a plan was and never where anybody said
+anything about retries — an answer spread over a debate, a milestone's intent,
+a reviewer's finding and a backlog item, in tables nothing joins.
+
+- **Triggers, not write-through.** An index kept current by remembering to
+  update it is silently wrong the first time somebody adds a write site and
+  forgets. This codebase already has a guard test whose whole job is catching
+  that class of omission; here the database does it instead. Adding a
+  searchable field means editing the INSERT in three triggers and the backfill.
+- **The query language is unreachable, not escaped.** `ftsQuery` splits on
+  non-word characters and re-quotes each token as a literal phrase, so no input
+  arrives at FTS5 as an operator — `"unclosed`, `foo* NEAR/2 bar` and `a AND`
+  are all just words. MATCH throws on malformed syntax, and a search that
+  crashes while somebody is mid-word is worse than no search.
+- Trailing `*` for prefix matching, `AND` between tokens (a second word
+  narrows), and bm25 weighted 10:1 toward the title so a finding whose own
+  sentence matched outranks a turn that mentioned the word in passing.
+- `Repo.search` is the only entry point, so the app and the CLI get the same
+  ranking. The cost is a second copy of the text — roughly doubling what the
+  turns take — which is stated in the schema rather than discovered.
+
 ## The CLI reads and never writes
 
 `out/cli/parley.mjs` (`npm run build:cli`, and part of `npm run build`) answers

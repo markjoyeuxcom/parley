@@ -1,4 +1,5 @@
 import { newId } from '@main/util/ids'
+import { searchRecord, type SearchHit, type SearchOptions } from './search'
 import type { RemoteTarget } from '@shared/remote'
 import type { RunEvent } from '@shared/journal'
 import {
@@ -2156,6 +2157,17 @@ export class Repo {
   }
 
   /** One run's story, in the order it happened. */
+  /**
+   * One question across everything anybody wrote down.
+   *
+   * On the Repo rather than reaching for the handle, so the database stays
+   * private and every caller — the app, the CLI, whatever comes next — asks
+   * the same way and gets the same ranking.
+   */
+  search(query: string, options: SearchOptions = {}): SearchHit[] {
+    return searchRecord(this.db, query, options)
+  }
+
   listRunEvents(runId: Id): RunEvent[] {
     return this.db
       .all(`SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence ASC`, runId)

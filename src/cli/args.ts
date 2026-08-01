@@ -12,8 +12,12 @@ export const USAGE = `parley — read Parley's record as JSONL
   parley plans [--repo <path>]    plans, newest first
   parley journal <milestone-id>   every event of every run, oldest first
   parley runs <milestone-id>      one line per attempt, newest first
+  parley search <words...>        everything anybody wrote about it
 
   --db <path>   read this record
+  --kind <k>    search only sessions, turns, plans, milestones, findings,
+                backlog or learnings (repeatable)
+  --limit <n>   at most n results (default 50)
   --dev         read the development checkout's record instead of the app's
 
 Stdout is one JSON object per line. Diagnostics go to stderr.
@@ -25,13 +29,17 @@ export interface Args {
   db: string | null
   dev: boolean
   repo: string | null
+  kinds: string[]
+  limit: number | null
 }
 
 export function parseArgs(argv: readonly string[]): Args {
   const rest: string[] = []
+  const kinds: string[] = []
   let db: string | null = null
   let dev = false
   let repo: string | null = null
+  let limit: number | null = null
   for (let at = 0; at < argv.length; at += 1) {
     const arg = argv[at]
     if (arg === '--dev') dev = true
@@ -41,8 +49,16 @@ export function parseArgs(argv: readonly string[]): Args {
     } else if (arg === '--repo') {
       repo = argv[at + 1] ?? null
       at += 1
+    } else if (arg === '--kind') {
+      const kind = argv[at + 1]
+      if (kind) kinds.push(kind)
+      at += 1
+    } else if (arg === '--limit') {
+      const raw = Number(argv[at + 1])
+      limit = Number.isFinite(raw) ? raw : null
+      at += 1
     } else if (arg !== undefined) rest.push(arg)
   }
-  return { command: rest[0] ?? '', rest: rest.slice(1), db, dev, repo }
+  return { command: rest[0] ?? '', rest: rest.slice(1), db, dev, repo, kinds, limit }
 }
 
