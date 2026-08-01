@@ -1203,6 +1203,9 @@ export class Manager {
         newId,
       )
       reporter.started('remote')
+      // The work leaves; the decision does not. A person authorised this here
+      // and the record of that belongs here too.
+      reporter.decision({ kind: 'approved', approvalId })
 
       const outcome = await driveRemoteMilestone(
         { runId: newId(), target, repoKey: repoKeyFor(plan.repoPath), plan, milestone },

@@ -121,6 +121,40 @@ describe('what earns a line', () => {
   })
 })
 
+describe('what a person decided', () => {
+  it('opens the story with why it was allowed to happen', () => {
+    // Everything else in a run is an agent's. This is the one line that says
+    // why any of it was permitted, and the record was silent about it.
+    const { lines } = summariseRun('r', [
+      event('run.started', { entry: 'fresh' }),
+      event('decision', { kind: 'approved', approvalId: 'a1' }, { actor: { kind: 'human' } }),
+    ])
+    expect(lines[0]?.who).toBe('You')
+    expect(lines[0]?.text).toBe('approved this run')
+  })
+
+  it('tells a run somebody ended from a run that fell over', () => {
+    // They read the same in a list of attempts and call for opposite
+    // responses: one is a decision, the other is a problem.
+    const { lines } = summariseRun('r', [
+      event('decision', { kind: 'stopped' }, { actor: { kind: 'human' } }),
+    ])
+    expect(lines[0]?.text).toBe('stopped this run')
+    expect(lines[0]?.tone).toBe('warn')
+  })
+
+  it('records adoption as a choice, since nothing authorised it', () => {
+    // Adoption writes nothing, so it needs no approval — which is exactly why
+    // it would otherwise be the one flow where a person's decision left no
+    // mark at all.
+    const { lines } = summariseRun('r', [
+      event('decision', { kind: 'adopted' }, { actor: { kind: 'human' } }),
+    ])
+    expect(lines[0]?.who).toBe('You')
+    expect(lines[0]?.text).toContain('already in the tree')
+  })
+})
+
 describe('what stays out of the story', () => {
   it('drops bookkeeping that says nothing to a reader', () => {
     // A checkpoint is how a run stays resumable; a plan outcome is about the

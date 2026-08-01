@@ -70,6 +70,23 @@ function lineFor(event: RunEvent): RunLine | null {
     const payload = event.payload as { phase: string; text: string }
     return { ...base, text: payload.text, tone: 'plain' }
   }
+  if (event.kind === 'decision') {
+    // Worth a line of its own and never merged into the agent's story: the
+    // whole point is that a person, not an agent, did this.
+    const decision = event.payload as { kind: string }
+    if (decision.kind === 'approved') {
+      return { ...base, text: 'approved this run', tone: 'plain' }
+    }
+    if (decision.kind === 'adopted') {
+      return { ...base, text: 'decided the work already in the tree counts', tone: 'plain' }
+    }
+    if (decision.kind === 'stopped') {
+      // Not a failure. A run somebody ended and a run that fell over read the
+      // same in a list of attempts, and they call for opposite responses.
+      return { ...base, text: 'stopped this run', tone: 'warn' }
+    }
+    return null
+  }
   if (event.kind === 'run.started' || event.kind === 'run.ended') return null
   if (event.kind !== 'fact') return null
 

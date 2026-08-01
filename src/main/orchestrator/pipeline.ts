@@ -711,6 +711,8 @@ export class Pipeline {
       },
       current,
       activity,
+      'fresh',
+      approvalId,
     )
   }
   /**
@@ -731,6 +733,9 @@ export class Pipeline {
     milestone: Milestone,
     activity: (phase: MilestonePhase, text: string) => void,
     entry: RunEntry = 'fresh',
+    /** The approval a person spent to get here. Absent only where nothing
+     *  had to be authorised, which today is adoption alone. */
+    approvalId?: Id,
   ): Promise<Milestone> {
     const plan = input.plan
     // One run id per ATTEMPT. A resume spends a fresh approval and is a new
@@ -744,6 +749,9 @@ export class Pipeline {
       reviewer: plan.reviewer.vendor,
     })
     reporter.started(entry)
+    // The first line of a run's story is why it happened. Everything after it
+    // is an agent's; this one is the reason any of it was allowed to.
+    if (approvalId) reporter.decision({ kind: 'approved', approvalId })
     const current = await executeMilestone(
       {
         ...input,
@@ -761,6 +769,11 @@ export class Pipeline {
         selfRepoPath: this.selfRepoPath,
       },
     )
+
+    // Observed here rather than at the click, so a run that took a stage to
+    // wind down stamps this late — the fact is exact even where the moment is
+    // approximate, and "a person ended this" is what a reader needs.
+    if (input.gate?.isStopped) reporter.decision({ kind: 'stopped' })
 
     // A parked plan is `failed` at the plan level for want of a fourth word:
     // the plan did stop and does need a human, which is all the plan's own
@@ -885,6 +898,8 @@ export class Pipeline {
         },
         current,
         activity,
+        'resumed',
+        approvalId,
       )
   }
 
@@ -1064,6 +1079,9 @@ export class Pipeline {
       reviewer: plan.reviewer.vendor,
     })
     adoptionReporter.started('adopted')
+    // No approval to point at — adoption writes nothing, which is exactly why
+    // it would otherwise be the one flow where a person's choice left no mark.
+    adoptionReporter.decision({ kind: 'adopted' })
     const core = new ExecutionCore({
       reporter: adoptionReporter,
       agents: this.registry,

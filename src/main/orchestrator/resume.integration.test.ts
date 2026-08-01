@@ -128,6 +128,34 @@ async function fabricateInterruption(
 }
 
 describe('resuming an interrupted milestone', () => {
+  it('journals itself as a resume, not as a fresh first try', async () => {
+    // A real defect this milestone turned up: `execute` takes the entry as a
+    // defaulted parameter and the resume path never passed one, so every
+    // resumed run has been recorded as `fresh` since the journal was built.
+    // The Run Room showed "Attempt 2" where the truth was "Resumed 2" —
+    // losing exactly the distinction the run id exists to preserve, since a
+    // resume spends a fresh approval and continues rather than restarting.
+    const { pipeline, repo, session } = harness()
+    const origin = gitRepo('parley-resume-journal-')
+    const { milestone } = await fabricateInterruption(repo, session.id, origin, {
+      workPresent: true,
+    })
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'resume test')
+
+    await pipeline.resumeMilestone(milestone.id, approval.id)
+
+    const runs = repo.listMilestoneRuns(milestone.id)
+    const events = repo.listRunEvents(runs[0]!.runId)
+    expect(events[0]?.payload).toMatchObject({ entry: 'resumed' })
+
+    // And the fresh approval it spent is named by a human decision, same as
+    // any other run — a resume is somebody choosing to continue.
+    const decision = events.find((event) => event.kind === 'decision')
+    expect(decision?.actor).toEqual({ kind: 'human' })
+    expect(decision?.payload).toMatchObject({ kind: 'approved', approvalId: approval.id })
+  })
+
+
   it('verifies work already present instead of re-executing, and marks the round resumed', async () => {
     const { pipeline, repo, session } = harness()
     const origin = gitRepo('parley-resume-verify-')

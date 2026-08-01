@@ -338,9 +338,22 @@ describe('a milestone run on another machine, through the Manager', () => {
     // Everything the far end did names the host: "codex on build-01" is a
     // different fact from "codex", and a journal that lost the difference
     // could not answer where a finding came from.
-    const remote = events.filter((event) => kindOf(event) !== 'planOutcome')
+    //
+    // The two exceptions are the two things THIS side did — the plan outcome
+    // it computed and the approval a person spent — and neither carries a
+    // host, because neither happened on one.
+    // On event.kind for the decision, not kindOf: the payload's own `kind` is
+    // `approved`, and reading through it here would silently match nothing.
+    const remote = events.filter(
+      (event) => event.kind !== 'decision' && kindOf(event) !== 'planOutcome',
+    )
     expect(remote.length).toBeGreaterThan(0)
     expect(remote.every((event) => event.actor.targetId === host.id)).toBe(true)
+
+    // The person who authorised a run on another machine was still here.
+    const approved = events.find((event) => event.kind === 'decision')
+    expect(approved?.actor).toEqual({ kind: 'human' })
+    expect(approved?.payload).toMatchObject({ kind: 'approved' })
 
     // The reviewer's objection is attributed to the reviewer, not to whoever
     // was driving the loop.

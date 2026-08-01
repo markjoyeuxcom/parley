@@ -657,6 +657,39 @@ directory and branch. That ordering is load-bearing because
 `markWorktreeLanded` clears `last_error`; the landed-row hold covers both
 verification failures and cleanup litter.
 
+## Human decisions are facts too
+
+`RunActor` carried a `human` kind from the day the journal was built and
+nothing ever emitted one: approving, adopting and stopping all changed rows
+and left no trace of who or when. A run's story told you everything the agents
+did and went quiet at exactly the moments a person acted.
+
+`decision` is its own event kind carrying a typed `HumanDecision`, and it
+lives on `StoreMilestoneReporter` only — NOT on the `MilestoneReporter`
+interface the remote runner implements. A human is not on that machine, and a
+remote worker able to record a decision would be inventing an actor it never
+saw. A run on another host still opens with the approval a person spent here.
+
+Three decisions, and the scope is deliberate — these are the ones that BOUND a
+run:
+
+- **approved**, with the approval id, so the journal and the authorisation
+  record are two halves of one trail rather than two accounts of the same run.
+- **adopted**, because adoption writes nothing and therefore needs no
+  approval — which makes it the one flow where a person's choice would
+  otherwise leave no mark at all.
+- **stopped**, recorded when the run OBSERVES the stop rather than when the
+  button was pressed. The timestamp trails the click by however long the stage
+  takes to wind down; the fact — a person ended this, rather than it failing —
+  is exact, and is what distinguishes it from a crash in a list of attempts.
+
+Three things that look like candidates are excluded on purpose. Acceptance
+happens after `run.ended`, and appending to a closed run's journal would make
+its closing event a lie about where the story stops. Landing a plan and
+dispositioning a finding are not about one run — a disposition usually happens
+BETWEEN runs, and filing it against whichever attempt was last would attribute
+it to a story it was not part of. All three already keep immutable records.
+
 ## Search: one index, kept by triggers
 
 `search_index` (FTS5, `porter unicode61`, schema 30) covers sessions, turns,

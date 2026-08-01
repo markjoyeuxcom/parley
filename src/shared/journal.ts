@@ -37,6 +37,16 @@ export type RunEventKind =
   | 'fact'
   /** Narrative shown while a long stage ran. */
   | 'activity'
+  /**
+   * A person decided something about this run.
+   *
+   * The record has always known what the agents did and gone quiet at exactly
+   * the moments a human acted — which are the moments that matter most reading
+   * a run back. `RunActor` has carried a `human` kind since the journal was
+   * built and nothing ever emitted one: approving, adopting and stopping all
+   * changed rows and left no trace of who or when.
+   */
+  | 'decision'
   /** A run ended, however it ended. */
   | 'run.ended'
 
@@ -63,6 +73,41 @@ export interface RunEvent {
 
 /** How a run was entered, recorded on its opening event. */
 export type RunEntry = 'fresh' | 'resumed' | 'adopted' | 'remote'
+
+/**
+ * What a person decided, in the words the record should use.
+ *
+ * Deliberately only the decisions that BOUND a run — the ones that answer
+ * "why did this start" and "why did it stop". Three things that look like
+ * candidates are not here on purpose:
+ *
+ * Acceptance happens after `run.ended`, and appending to a closed run's
+ * journal would make its closing event a lie about where the story stops. It
+ * already has its own durable record, with the human's note on it.
+ *
+ * Landing a plan and dispositioning a finding are not about one run: a
+ * disposition usually happens BETWEEN runs, and filing it against whichever
+ * attempt was last would attribute it to a story it was not part of. Both
+ * already keep immutable records of their own.
+ */
+export type HumanDecision =
+  /** Spent a single-use approval to start this attempt. */
+  | { kind: 'approved'; approvalId: string }
+  /**
+   * Decided that work Parley did not write counts, and had it verified.
+   * Needs no approval, because adoption writes nothing — which is exactly why
+   * it would otherwise leave no record of a person having chosen it.
+   */
+  | { kind: 'adopted' }
+  /**
+   * Ended a run that was still going.
+   *
+   * Recorded when the run observes the stop rather than when the button was
+   * pressed, so the timestamp can trail the click by however long the current
+   * stage takes to wind down. The fact — that a person ended this, rather
+   * than it failing — is the part worth having, and it is exact.
+   */
+  | { kind: 'stopped' }
 
 /**
  * Narrative is truncated on the way in, not on the way out.

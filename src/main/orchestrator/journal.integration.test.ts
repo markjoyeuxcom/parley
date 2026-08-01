@@ -131,6 +131,39 @@ describe('a run leaves a story behind', () => {
     expect(events[events.length - 1]?.payload).toMatchObject({ outcome: 'complete' })
   }, 60_000)
 
+  it('records who allowed it, with the approval they spent', async () => {
+    // The record has always known what the agents did and gone quiet at
+    // exactly the moment a person acted. `RunActor` carried a `human` kind
+    // from the beginning and nothing ever emitted one.
+    const { runs, repo, milestone } = await runOnce()
+    const decision = runs[0]!.events.find((event) => event.kind === 'decision')
+    expect(decision).toBeTruthy()
+    expect(decision?.actor).toEqual({ kind: 'human' })
+
+    // The approval id, so the journal and the authorisation record are two
+    // halves of one trail rather than two accounts of the same run.
+    const approvalId = (decision?.payload as { approvalId: string }).approvalId
+    expect(approvalId).toBeTruthy()
+    // And it is spent: the same single-use rule, now visible in the story.
+    expect(() =>
+      repo.consumeApproval(approvalId, 'milestone.execute', milestone.id),
+    ).toThrow()
+
+    // It comes first, because why a run was allowed precedes anything it did.
+    const positions = runs[0]!.events.map((event) => event.kind)
+    expect(positions.indexOf('decision')).toBeLessThan(positions.indexOf('fact'))
+  }, 60_000)
+
+  it('attributes only the human decision to the human', async () => {
+    // Everything else in a run is an agent's or a machine's. A journal that
+    // let "You" drift onto a fact would be worse than one with no humans in
+    // it at all.
+    const { runs } = await runOnce()
+    const human = runs[0]!.events.filter((event) => event.actor.kind === 'human')
+    expect(human).toHaveLength(1)
+    expect(human[0]?.kind).toBe('decision')
+  }, 60_000)
+
   it('numbers its events from one with no gaps', async () => {
     // Ordering is the point of a journal, and occurred_at cannot provide it —
     // two events can land in the same millisecond.

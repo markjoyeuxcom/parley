@@ -4,6 +4,7 @@ import {
   actorForFact,
   MAX_ACTIVITY_CHARS,
   MAX_ACTIVITY_EVENTS,
+  type HumanDecision,
   type RunActor,
   type RunEntry,
   type RunEvent,
@@ -295,6 +296,20 @@ export class StoreMilestoneReporter implements MilestoneReporter {
   started(entry: RunEntry): void {
     this.deps.transact(() => {
       this.deps.appendEvent(this.event('run.started', { entry }))
+    })
+  }
+
+  /**
+   * A person decided something.
+   *
+   * On this reporter only, and not on the MilestoneReporter interface the
+   * remote runner also implements — deliberately. A human is not on that
+   * machine. Every decision here is made where the record is, and a remote
+   * worker offering to record one would be inventing an actor it never saw.
+   */
+  decision(decision: HumanDecision): void {
+    this.deps.transact(() => {
+      this.deps.appendEvent(this.event('decision', decision, { kind: 'human' }))
     })
   }
 
