@@ -1,5 +1,12 @@
 import type { Id, Milestone, MutationResult, TestResult, Usage } from '@shared/domain'
 import type { RunState } from './pipeline'
+import {
+  MAX_ACTIVITY_CHARS,
+  MAX_ACTIVITY_EVENTS,
+  type RunActor,
+  type RunEntry,
+  type RunEvent,
+} from '@shared/journal'
 
 /**
  * What the execution core says happened.
@@ -183,6 +190,8 @@ export interface MilestoneReporter {
  */
 export class StoreMilestoneReporter implements MilestoneReporter {
   private current: Milestone
+  private sequence = 0
+  private activityKept: number
 
   constructor(
     private readonly deps: {
@@ -191,16 +200,71 @@ export class StoreMilestoneReporter implements MilestoneReporter {
       addPlanUsage: (planId: Id, usage: Usage) => void
       setPlanStatus: (planId: Id, status: 'ready' | 'complete' | 'failed') => void
       recordFinding: (finding: Extract<MilestoneFact, { kind: 'finding' }>, milestoneId: Id) => void
+      /**
+       * The journal, and the transaction that keeps it honest.
+       *
+       * A journal entry recording a fact whose row write failed is worse than
+       * no journal, because it reads as authoritative. These two go together
+       * or neither happens.
+       */
+      appendEvent: (event: RunEvent) => void
+      transact: <T>(fn: () => T) => T
+      activityKept: () => number
       emitMilestone: (milestone: Milestone) => void
       emitActivity: (phase: string, text: string) => void
     },
     milestone: Milestone,
     private readonly planId: Id,
+    /** This execution ATTEMPT. A resume is a new run against the same milestone. */
+    private readonly runId: Id,
+    /** Who is acting. Supplied here rather than carried in the fact, because a
+     *  fact is the wire vocabulary and the actor is local context. */
+    private readonly actor: RunActor,
+    private readonly newEventId: () => string,
   ) {
     this.current = milestone
+    this.activityKept = deps.activityKept()
+  }
+
+  private event(kind: RunEvent['kind'], payload: unknown, actor?: RunActor): RunEvent {
+    this.sequence += 1
+    return {
+      id: this.newEventId(),
+      runId: this.runId,
+      milestoneId: this.current.id,
+      planId: this.planId,
+      sequence: this.sequence,
+      occurredAt: Date.now(),
+      actor: actor ?? this.actor,
+      kind,
+      payload,
+    }
+  }
+
+  /** Opens a run's journal, so an attempt that produced nothing still says so. */
+  started(entry: RunEntry): void {
+    this.deps.transact(() => {
+      this.deps.appendEvent(this.event('run.started', { entry }))
+    })
+  }
+
+  ended(outcome: string, detail: string): void {
+    this.deps.transact(() => {
+      this.deps.appendEvent(this.event('run.ended', { outcome, detail }))
+    })
   }
 
   record(fact: MilestoneFact): Milestone {
+    // The journal entry and the row write are one transaction. Re-entrant
+    // `transaction` is what allows this: the dep calls below open their own,
+    // and before that a nested BEGIN threw.
+    return this.deps.transact(() => {
+      this.deps.appendEvent(this.event('fact', fact))
+      return this.applyFact(fact)
+    })
+  }
+
+  private applyFact(fact: MilestoneFact): Milestone {
     if (fact.kind === 'checkpoint') {
       this.deps.setRunState(this.current.id, fact.runState)
       return this.current
@@ -226,6 +290,23 @@ export class StoreMilestoneReporter implements MilestoneReporter {
 
   activity(phase: string, text: string): void {
     this.deps.emitActivity(phase, text)
+    // Facts are never dropped; activity is unbounded by nature, so it stops
+    // being kept once a run has produced enough to explain itself. The cap is
+    // recorded as its own event rather than the journal quietly thinning out.
+    if (this.activityKept > MAX_ACTIVITY_EVENTS) return
+    this.activityKept += 1
+    const capped = this.activityKept === MAX_ACTIVITY_EVENTS + 1
+    this.deps.transact(() => {
+      this.deps.appendEvent(
+        this.event(
+          'activity',
+          capped
+            ? { phase: 'journal', text: `further narrative from this run is not being kept (${MAX_ACTIVITY_EVENTS} lines)` }
+            : { phase, text: text.slice(0, MAX_ACTIVITY_CHARS) },
+          capped ? { kind: 'system' } : undefined,
+        ),
+      )
+    })
   }
 
   /** The milestone as last recorded, for callers that need it without a fact. */

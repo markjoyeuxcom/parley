@@ -1151,6 +1151,7 @@ export class Manager {
     const gate = new RunGate()
     this.milestoneRuns.set(milestoneId, gate)
     try {
+      const runId = newId()
       const reporter = new StoreMilestoneReporter(
         {
           updateMilestone: (id, patch) => this.repo.updateMilestone(id, patch),
@@ -1162,6 +1163,9 @@ export class Manager {
             // yet: it needs the session's finding vocabulary, and silently
             // dropping them would be worse than saying so.
           },
+          appendEvent: (event) => this.repo.appendRunEvent(event),
+          transact: (fn) => this.repo.transaction(fn),
+          activityKept: () => this.repo.countRunActivity(runId),
           emitMilestone: (row) => this.deps.emit({ type: 'plan.milestone', milestone: row }),
           emitActivity: (phase, text) =>
             this.deps.emit({
@@ -1173,7 +1177,13 @@ export class Manager {
         },
         milestone,
         plan.id,
+        runId,
+        // The work happens on another machine, and the journal says which:
+        // "codex on build-01" is a different fact from "codex here".
+        { kind: 'agent', vendor: plan.executor.vendor, targetId: target.id },
+        newId,
       )
+      reporter.started('remote')
 
       return await driveRemoteMilestone(
         { runId: newId(), target, repoKey: repoKeyFor(plan.repoPath), plan, milestone },

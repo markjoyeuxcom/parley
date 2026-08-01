@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 27
+export const SCHEMA_VERSION = 28
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -495,6 +495,31 @@ CREATE INDEX IF NOT EXISTS idx_acceptances_milestone
 
 -- One guided run at building a new app. Links only: the stage is derived
 -- from what they point at, never stored.
+CREATE TABLE IF NOT EXISTS run_events (
+  id              TEXT PRIMARY KEY,
+  -- One execution ATTEMPT. A resume is a new run against the same milestone,
+  -- so a milestone accumulates several over its life.
+  run_id          TEXT NOT NULL,
+  milestone_id    TEXT NOT NULL,
+  plan_id         TEXT NOT NULL,
+  -- Monotonic from 1 within a run. Ordering is the point of a journal, and
+  -- occurred_at alone cannot provide it: two events can share a millisecond.
+  sequence        INTEGER NOT NULL,
+  occurred_at     INTEGER NOT NULL,
+  actor_kind      TEXT NOT NULL,
+  actor_vendor    TEXT,
+  actor_target_id TEXT,
+  kind            TEXT NOT NULL,
+  payload         TEXT NOT NULL
+);
+
+-- No foreign key, following self_updates and envelopes: a run record should
+-- outlive the plan a session deletion cascades away. What happened happened,
+-- and losing the account of it because its subject was tidied up would defeat
+-- the reason for keeping one.
+CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_run_events_milestone ON run_events(milestone_id, occurred_at);
+
 CREATE TABLE IF NOT EXISTS remote_targets (
   id         TEXT PRIMARY KEY,
   label      TEXT NOT NULL,
@@ -540,6 +565,9 @@ CREATE TABLE IF NOT EXISTS workspaces (
 `
 
 class NodeSqliteDb implements Db {
+  /** Nesting depth, so only the outermost call owns BEGIN/COMMIT. */
+  private depth = 0
+
   constructor(private readonly handle: DatabaseSync) {}
 
   exec(sql: string): void {
@@ -566,14 +594,37 @@ class NodeSqliteDb implements Db {
    * Wraps `fn` in a transaction. Used for the multi-statement writes that must
    * not half-apply — recording a verdict with its findings, or consuming an
    * approval at the same moment a milestone flips to executing.
+   *
+   * Re-entrant: only the outermost call issues BEGIN and COMMIT, and an error
+   * anywhere inside rolls the whole thing back. SQLite refuses a nested BEGIN,
+   * and that refusal has twice forced a method to be split into a
+   * transaction-free `-Core` variant purely so a caller could wrap it —
+   * createPlanCore and fileBacklogItemCore both exist for that reason and for
+   * no other. Nesting previously threw, so nothing in the codebase nests
+   * today; making it work can only enable calls that were impossible, never
+   * change one that already ran.
    */
   transaction<T>(fn: () => T): T {
+    if (this.depth > 0) {
+      // Already inside one. Joining it is the point: the outermost call owns
+      // the commit, so a failure here still takes everything down with it.
+      this.depth += 1
+      try {
+        return fn()
+      } finally {
+        this.depth -= 1
+      }
+    }
+
     this.handle.exec('BEGIN')
+    this.depth = 1
     try {
       const value = fn()
+      this.depth = 0
       this.handle.exec('COMMIT')
       return value
     } catch (err) {
+      this.depth = 0
       try {
         this.handle.exec('ROLLBACK')
       } catch {
@@ -949,6 +1000,11 @@ export function migrate(db: Db): void {
   if (current < 27) {
     // remote_targets is additive: SCHEMA creates the table fresh, and no
     // existing row changes shape.
+  }
+  if (current < 28) {
+    // run_events is additive: SCHEMA creates the table and its indexes fresh,
+    // and no existing row changes shape. Runs before this version have no
+    // journal and never will — the facts were not kept.
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

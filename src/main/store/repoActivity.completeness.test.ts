@@ -14,6 +14,10 @@ const DECLARED_PARENTS: Readonly<Record<string, string>> = {
   // FK-less on purpose, like self_updates: an authorisation record outlives
   // the plan a session deletion cascades away.
   envelopes: 'plans',
+  // A run happened to a milestone, which belongs to a plan. FK-less for the
+  // same reason as its neighbours: what happened happened, and losing the
+  // account of it because its subject was tidied away defeats keeping one.
+  run_events: 'plans',
 }
 
 const OUT_OF_SCOPE: Readonly<Record<string, string>> = {
@@ -32,6 +36,8 @@ const OUT_OF_SCOPE: Readonly<Record<string, string>> = {
 }
 
 const WRITE_EXEMPTIONS: Readonly<Record<string, string>> = {
+  'appendRunEvent:run_events':
+    'A journal entry accompanies a row write that already noted the activity, inside the same transaction. Noting it again would double-count the same moment, and an activity line — the most frequent event by far — would keep a repository looking busy long after its run ended.',
   'noteRepoActivity:repo_activity':
     'This INSERT is the activity record itself and cannot recursively record another activity row.',
   'archiveRepo:repo_archives':
@@ -303,6 +309,7 @@ describe('repository activity completeness', () => {
       'ledger_sightings',
       'loop_iterations',
       'milestones',
+      'run_events',
       'self_updates',
       'turns',
       'verdicts',

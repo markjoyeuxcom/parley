@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Milestone, TestResult, Usage } from '@shared/domain'
 import { emptyUsage } from '@shared/domain'
 import type { RunState } from './pipeline'
+import type { RunEvent } from '@shared/journal'
 import {
   decodeMilestoneFact,
   milestonePatch,
@@ -47,6 +48,7 @@ function harness(): {
   spend: Usage[]
   planStatuses: string[]
   findings: Array<Record<string, unknown>>
+  journal: RunEvent[]
   emitted: Milestone[]
 } {
   const rows: Array<Partial<Milestone>> = []
@@ -54,6 +56,7 @@ function harness(): {
   const spend: Usage[] = []
   const planStatuses: string[] = []
   const findings: Array<Record<string, unknown>> = []
+  const journal: RunEvent[] = []
   const emitted: Milestone[] = []
   let current = milestone
   const reporter = new StoreMilestoneReporter(
@@ -67,13 +70,19 @@ function harness(): {
       addPlanUsage: (_planId, usage) => spend.push(usage),
       setPlanStatus: (_planId, status) => planStatuses.push(status),
       recordFinding: (finding, id) => findings.push({ ...finding, milestoneId: id }),
+      appendEvent: (event) => journal.push(event),
+      transact: (fn) => fn(),
+      activityKept: () => 0,
       emitMilestone: (row) => emitted.push(row),
       emitActivity: () => {},
     },
     milestone,
     'p1',
+    'run-1',
+    { kind: 'agent', vendor: 'codex' },
+    () => `event-${journal.length + 1}`,
   )
-  return { reporter, rows, runStates, spend, planStatuses, findings, emitted }
+  return { reporter, rows, runStates, spend, planStatuses, findings, journal, emitted }
 }
 
 describe('what a fact means for the record', () => {
@@ -189,11 +198,17 @@ describe('the local reporter', () => {
         addPlanUsage: () => {},
         setPlanStatus: () => {},
         recordFinding: () => {},
+        appendEvent: () => {},
+        transact: (fn) => fn(),
+        activityKept: () => 0,
         emitMilestone: () => {},
         emitActivity,
       },
       milestone,
       'p1',
+      'run-1',
+      { kind: 'agent', vendor: 'codex' },
+      () => 'event-1',
     )
     reporter.activity('executing', 'started')
     expect(emitActivity).toHaveBeenCalledWith('executing', 'started')

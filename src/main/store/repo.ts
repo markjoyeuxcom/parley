@@ -1,5 +1,6 @@
 import { newId } from '@main/util/ids'
 import type { RemoteTarget } from '@shared/remote'
+import type { RunEvent } from '@shared/journal'
 import {
   type CorrectionDisposition,
   addUsage,
@@ -2111,6 +2112,103 @@ export class Repo {
   }
 
   // ─── Workspaces ────────────────────────────────────────────────────────────
+
+  /**
+   * Joins the caller to a transaction, opening one if none is running.
+   *
+   * Exposed so a journal append and the row write it accompanies can be one
+   * unit. Re-entrant, so callers that themselves open transactions still work.
+   */
+  transaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)
+  }
+
+  /* ── The run journal ───────────────────────────────────────────────── */
+
+  /**
+   * Appends one event. Callers wrap this with the row write it accompanies.
+   *
+   * Deliberately not transactional on its own: a journal entry recording a
+   * fact whose row write failed is worse than no journal, because it reads as
+   * authoritative. The reporter joins the two into one transaction, which
+   * re-entrant `transaction` now permits.
+   */
+  appendRunEvent(event: RunEvent): void {
+    this.db.run(
+      `INSERT INTO run_events
+         (id, run_id, milestone_id, plan_id, sequence, occurred_at,
+          actor_kind, actor_vendor, actor_target_id, kind, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      event.id,
+      event.runId,
+      event.milestoneId,
+      event.planId,
+      event.sequence,
+      event.occurredAt,
+      event.actor.kind,
+      event.actor.vendor ?? null,
+      event.actor.targetId ?? null,
+      event.kind,
+      JSON.stringify(event.payload ?? null),
+    )
+  }
+
+  /** One run's story, in the order it happened. */
+  listRunEvents(runId: Id): RunEvent[] {
+    return this.db
+      .all(`SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence ASC`, runId)
+      .map((row) => this.toRunEvent(row))
+  }
+
+  /**
+   * Every attempt at a milestone, oldest first.
+   *
+   * Grouped by run rather than flattened: three attempts are three stories,
+   * and a reader who cannot tell them apart cannot see that the first two
+   * failed.
+   */
+  listMilestoneRuns(milestoneId: Id): Array<{ runId: Id; events: RunEvent[] }> {
+    const events = this.db
+      .all(
+        `SELECT * FROM run_events WHERE milestone_id = ? ORDER BY occurred_at ASC, sequence ASC`,
+        milestoneId,
+      )
+      .map((row) => this.toRunEvent(row))
+    const runs: Array<{ runId: Id; events: RunEvent[] }> = []
+    for (const event of events) {
+      const existing = runs.find((run) => run.runId === event.runId)
+      if (existing) existing.events.push(event)
+      else runs.push({ runId: event.runId, events: [event] })
+    }
+    return runs
+  }
+
+  /** How many activity events a run has already kept, for the per-run cap. */
+  countRunActivity(runId: Id): number {
+    const row = this.db.get(
+      `SELECT COUNT(*) AS n FROM run_events WHERE run_id = ? AND kind = 'activity'`,
+      runId,
+    )
+    return Number(row?.n ?? 0)
+  }
+
+  private toRunEvent(row: Record<string, unknown>): RunEvent {
+    return {
+      id: String(row.id),
+      runId: String(row.run_id),
+      milestoneId: String(row.milestone_id),
+      planId: String(row.plan_id),
+      sequence: Number(row.sequence),
+      occurredAt: Number(row.occurred_at),
+      actor: {
+        kind: String(row.actor_kind) as RunEvent['actor']['kind'],
+        vendor: row.actor_vendor === null ? undefined : String(row.actor_vendor),
+        targetId: row.actor_target_id === null ? undefined : String(row.actor_target_id),
+      },
+      kind: String(row.kind) as RunEvent['kind'],
+      payload: parseJson<unknown>(row.payload, null),
+    }
+  }
 
   /* ── Remote execution targets ──────────────────────────────────────── */
 

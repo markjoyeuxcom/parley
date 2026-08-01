@@ -39,6 +39,7 @@ import {
 import { capture, isShellFree, splitCommand, type CaptureResult } from '@main/util/spawn'
 import { ensureUp, runProjectCommand } from './containers'
 import { StoreMilestoneReporter, type MilestoneReporter } from './reporter'
+import type { RunActor, RunEntry } from '@shared/journal'
 import { ExecutionCore, executeMilestone } from './execution'
 import {
   MAX_CHANGED_FILE_CHARS,
@@ -722,11 +723,30 @@ export class Pipeline {
     input: Omit<Parameters<typeof executeMilestone>[0], 'milestone'>,
     milestone: Milestone,
     activity: (phase: MilestonePhase, text: string) => void,
+    entry: RunEntry = 'fresh',
   ): Promise<Milestone> {
     const plan = input.plan
-    const reporter = this.reporterFor(plan, milestone, activity)
+    // One run id per ATTEMPT. A resume spends a fresh approval and is a new
+    // run against the same milestone; flattening them would lose that the
+    // first two tries failed.
+    const runId = newId()
+    // The executor is the actor for what this loop states — the phases, the
+    // spend, the narrative. Findings carry the reviewer where they are named.
+    const reporter = this.reporterFor(plan, milestone, activity, runId, {
+      kind: 'agent',
+      vendor: plan.executor.vendor,
+    })
+    reporter.started(entry)
     const current = await executeMilestone(
-      { ...input, milestone },
+      {
+        ...input,
+        milestone,
+        // Through the reporter, not the raw callback: narrative is part of the
+        // story now, and the reporter is what keeps it. The remote worker
+        // already routed activity this way; locally it went straight to the
+        // renderer and was lost.
+        activity: (phase, text) => reporter.activity(phase, text),
+      },
       {
         reporter,
         agents: this.registry,
@@ -745,6 +765,10 @@ export class Pipeline {
       kind: 'planOutcome',
       status: passed && remaining.length === 0 ? 'complete' : passed ? 'ready' : 'failed',
     })
+    // Last, after everything about the run has been recorded — including what
+    // it did to the plan. A run.ended with facts after it would make the
+    // closing event a lie about where the story stops.
+    reporter.ended(passed ? 'complete' : 'failed', current.reviewNote.slice(0, 400))
     return current
   }
 
@@ -944,6 +968,8 @@ export class Pipeline {
     plan: WorkPlan,
     milestone: Milestone,
     activity: (phase: MilestonePhase, text: string) => void,
+    runId: Id,
+    actor: RunActor,
   ): StoreMilestoneReporter {
     return new StoreMilestoneReporter(
       {
@@ -958,11 +984,17 @@ export class Pipeline {
             kind: finding.blocking ? 'blocking' : 'note',
             source: finding.source,
           }),
+        appendEvent: (event) => this.repo.appendRunEvent(event),
+        transact: (fn) => this.repo.transaction(fn),
+        activityKept: () => this.repo.countRunActivity(runId),
         emitMilestone: (row) => this.emit({ type: 'plan.milestone', milestone: row }),
         emitActivity: (phase, text) => activity(phase as MilestonePhase, text),
       },
       milestone,
       plan.id,
+      runId,
+      actor,
+      newId,
     )
   }
 
@@ -1021,8 +1053,15 @@ export class Pipeline {
     // Adoption is a local flow, but the verification and mutation work is the
     // same work — one implementation, borrowed, rather than a second that
     // drifts.
+    const adoptionRunId = newId()
+    const adoptionReporter = this.reporterFor(plan, milestone, activity, adoptionRunId, {
+      // Adoption is someone deciding that work already in the tree counts. The
+      // verification is still deterministic, but the act is a person's.
+      kind: 'human',
+    })
+    adoptionReporter.started('adopted')
     const core = new ExecutionCore({
-      reporter: this.reporterFor(plan, milestone, activity),
+      reporter: adoptionReporter,
       agents: this.registry,
       devcontainerBinary: this.devcontainerBinary,
       selfRepoPath: this.selfRepoPath,
@@ -1081,7 +1120,8 @@ export class Pipeline {
         // Adoption is a local-only flow, but it records through the same
         // reporter so a mutation result reaches the record by one route
         // whoever asked for it.
-        report: this.reporterFor(plan, current, activity),
+        // The same reporter, so one adoption is one run rather than two.
+        report: adoptionReporter,
         root,
         agentEnv,
         reviewer,
