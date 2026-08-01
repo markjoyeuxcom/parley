@@ -1,11 +1,13 @@
 import type { Id, Milestone, MutationResult, TestResult, Usage } from '@shared/domain'
 import type { RunState } from './pipeline'
 import {
+  actorForFact,
   MAX_ACTIVITY_CHARS,
   MAX_ACTIVITY_EVENTS,
   type RunActor,
   type RunEntry,
   type RunEvent,
+  type RunRoles,
 } from '@shared/journal'
 
 /**
@@ -168,8 +170,8 @@ export interface MilestoneReporter {
    * The return keeps the core's own view current without a store read, which
    * is what lets the same code run where there is no store to read.
    */
-  record(fact: MilestoneFact): Milestone
-  /** Progress worth showing a human while a long stage runs. Never persisted. */
+  record(fact: MilestoneFact, actor?: RunActor): Milestone
+  /** Progress worth showing a human while a long stage runs. */
   activity(phase: string, text: string): void
   /**
    * The milestone as it now stands, projected from every fact recorded so far.
@@ -217,9 +219,12 @@ export class StoreMilestoneReporter implements MilestoneReporter {
     private readonly planId: Id,
     /** This execution ATTEMPT. A resume is a new run against the same milestone. */
     private readonly runId: Id,
-    /** Who is acting. Supplied here rather than carried in the fact, because a
-     *  fact is the wire vocabulary and the actor is local context. */
-    private readonly actor: RunActor,
+    /**
+     * Who the run's actors are. Supplied here rather than carried in the fact,
+     * because a fact is the wire vocabulary and attribution is local context —
+     * and derived per fact, because a run has more than one actor.
+     */
+    private readonly roles: RunRoles,
     private readonly newEventId: () => string,
   ) {
     this.current = milestone
@@ -235,7 +240,7 @@ export class StoreMilestoneReporter implements MilestoneReporter {
       planId: this.planId,
       sequence: this.sequence,
       occurredAt: Date.now(),
-      actor: actor ?? this.actor,
+      actor: actor ?? actorForFact(kind === 'fact' ? (payload as { kind: string }).kind : kind, this.roles),
       kind,
       payload,
     }
@@ -254,12 +259,17 @@ export class StoreMilestoneReporter implements MilestoneReporter {
     })
   }
 
-  record(fact: MilestoneFact): Milestone {
+  record(fact: MilestoneFact, actor?: RunActor): Milestone {
     // The journal entry and the row write are one transaction. Re-entrant
     // `transaction` is what allows this: the dep calls below open their own,
     // and before that a nested BEGIN threw.
+    //
+    // `actor` is supplied only when a fact arrived from somewhere else and
+    // that machine already worked out who produced it. Recomputing it here
+    // would attribute a remote reviewer's finding to whatever this side
+    // happens to think the roles are.
     return this.deps.transact(() => {
-      this.deps.appendEvent(this.event('fact', fact))
+      this.deps.appendEvent(this.event('fact', fact, actor))
       return this.applyFact(fact)
     })
   }

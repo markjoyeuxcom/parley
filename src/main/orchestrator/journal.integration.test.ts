@@ -161,13 +161,33 @@ describe('a run leaves a story behind', () => {
     expect(projected.reviewNote).toBe(persisted.reviewNote)
   }, 60_000)
 
-  it('attributes the work to the agent that did it', async () => {
+  it('attributes each fact to whoever actually produced it', async () => {
+    // A run has more than one actor, and flattening them would make "which
+    // agent raised this finding" unanswerable — one of the questions a journal
+    // exists to answer.
     const { runs } = await runOnce()
-    const facts = runs[0]!.events.filter((event) => event.kind === 'fact')
-    expect(facts.every((event) => event.actor.kind === 'agent')).toBe(true)
-    expect(facts.every((event) => event.actor.vendor === 'codex')).toBe(true)
+    const by = (kind: string): RunEvent[] =>
+      runs[0]!.events.filter(
+        (event) => event.kind === 'fact' && (event.payload as { kind: string }).kind === kind,
+      )
+
+    for (const event of by('phase')) {
+      expect(event.actor).toMatchObject({ kind: 'agent', vendor: 'codex' })
+    }
+    for (const event of by('judgement')) {
+      expect(event.actor).toMatchObject({ kind: 'reviewer', vendor: 'claude' })
+    }
+    // Verification is nobody's opinion: Parley ran the command and watched.
+    // That is exactly why it outweighs anything an agent says about its work.
+    for (const event of by('verification')) {
+      expect(event.actor.kind).toBe('verifier')
+      expect(event.actor.vendor).toBeUndefined()
+    }
+    for (const event of by('planOutcome')) {
+      expect(event.actor.kind).toBe('system')
+    }
     // Nothing ran elsewhere, so nothing claims a host.
-    expect(facts.every((event) => event.actor.targetId === undefined)).toBe(true)
+    expect(runs[0]!.events.every((event) => event.actor.targetId === undefined)).toBe(true)
   }, 60_000)
 
   it('keeps the narrative, truncated rather than whole', async () => {

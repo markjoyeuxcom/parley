@@ -83,3 +83,45 @@ export const MAX_ACTIVITY_CHARS = 500
  * than silently thinning out.
  */
 export const MAX_ACTIVITY_EVENTS = 400
+
+/**
+ * Who a given fact should be attributed to.
+ *
+ * A run has more than one actor. The executor writes the code; the reviewer
+ * names the findings; verification is a deterministic command that is nobody's
+ * opinion. Attributing all of it to whoever happened to be driving the loop
+ * would make "which agent raised this finding" unanswerable, which is one of
+ * the questions a journal exists to answer.
+ *
+ * Pure, and shared by both reporters, for the same reason milestonePatch is:
+ * two implementations of "who did this" would agree until they did not, and a
+ * remote run would start attributing work differently from a local one.
+ */
+export interface RunRoles {
+  executor: string
+  reviewer: string
+  /** The host, when the run is not on this machine. */
+  targetId?: string
+}
+
+export function actorForFact(kind: string, roles: RunRoles): RunActor {
+  switch (kind) {
+    case 'finding':
+    case 'judgement':
+    case 'narrative':
+      // The reviewer's output. A finding is the clearest case: it is an
+      // opinion, and whose opinion it was is the point of recording it.
+      return { kind: 'reviewer', vendor: roles.reviewer, targetId: roles.targetId }
+    case 'verification':
+    case 'mutations':
+      // Neither agent's claim. Parley ran the command and observed the result,
+      // which is exactly why these carry more weight than anything an agent
+      // says about its own work.
+      return { kind: 'verifier', targetId: roles.targetId }
+    case 'planOutcome':
+      // Derived from the plan's other milestones by whoever holds the record.
+      return { kind: 'system' }
+    default:
+      return { kind: 'agent', vendor: roles.executor, targetId: roles.targetId }
+  }
+}

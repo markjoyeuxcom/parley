@@ -310,3 +310,79 @@ describe('the snapshot has to be real', () => {
     expect(h.charges).toBe(0)
   })
 })
+
+describe('a remote run leaves the same kind of story', () => {
+  function journalling(mirror: string, frames: RemoteFrame[]) {
+    const journal: Array<{ kind: string; actor: { kind: string; vendor?: string; targetId?: string } }> = []
+    const h = harness(mirror, { run: frames })
+    h.deps.reporter = {
+      record: (fact, actor) => {
+        journal.push({ kind: `fact:${fact.kind}`, actor: actor ?? { kind: 'derived-here' } })
+        return milestone
+      },
+      activity: (phase) => journal.push({ kind: `activity:${phase}`, actor: { kind: 'n/a' } }),
+      milestone,
+    }
+    return { h, journal }
+  }
+
+  it('records the remote’s own attribution rather than re-deriving it', async () => {
+    // The far end knows which agent actually ran. Deriving it here would put
+    // this machine's idea of the roles onto work it never watched.
+    const { path, mirror } = gitRepo()
+    const { h, journal } = journalling(mirror, [
+      frame(1, { type: 'ready', capabilities }),
+      frame(2, {
+        type: 'fact',
+        fact: { kind: 'finding', text: 'unsafe cast', round: 0, blocking: true, source: 'review' },
+        actor: { kind: 'reviewer', vendor: 'claude', targetId: 'build-01' },
+      }),
+    ])
+    await driveRemoteMilestone(inputFor(path, target), h.deps)
+    expect(journal).toContainEqual({
+      kind: 'fact:finding',
+      actor: { kind: 'reviewer', vendor: 'claude', targetId: 'build-01' },
+    })
+  })
+
+  it('journals the remote’s narrative, not only its facts', async () => {
+    // Routing progress straight to the renderer would leave a remote run's
+    // story thinner than a local one's, for no reason visible afterwards.
+    const { path, mirror } = gitRepo()
+    const { h, journal } = journalling(mirror, [
+      frame(1, { type: 'ready', capabilities }),
+      frame(2, { type: 'progress', phase: 'executing', text: 'codex started' }),
+    ])
+    await driveRemoteMilestone(inputFor(path, target), h.deps)
+    expect(journal.some((entry) => entry.kind === 'activity:executing')).toBe(true)
+  })
+
+  it('writes nothing when the milestone moved under the run', async () => {
+    // The refusal must leave the journal untouched rather than half-written: a
+    // partial story about a state that no longer exists is worse than none.
+    const { path, mirror } = gitRepo()
+    const { h, journal } = journalling(mirror, [
+      frame(1, { type: 'ready', capabilities }),
+      frame(2, { type: 'fact', fact: { kind: 'phase', phase: 'testing' } }),
+    ])
+    h.deps.currentMilestone = () => ({ ...milestone, status: 'failed' }) as Milestone
+    const outcome = await driveRemoteMilestone(inputFor(path, target), h.deps)
+    expect(outcome.kind).toBe('rejected')
+    expect(journal.filter((entry) => entry.kind.startsWith('fact:'))).toEqual([])
+  })
+
+  it('writes nothing after a gap', async () => {
+    const { path, mirror } = gitRepo()
+    const { h, journal } = journalling(mirror, [
+      frame(1, { type: 'ready', capabilities }),
+      frame(2, { type: 'fact', fact: { kind: 'phase', phase: 'testing' } }),
+      frame(4, { type: 'fact', fact: { kind: 'judgement', passed: true } }),
+    ])
+    const outcome = await driveRemoteMilestone(inputFor(path, target), h.deps)
+    expect(outcome.kind).toBe('rejected')
+    // The one before the gap stands; nothing past it does.
+    expect(journal.filter((entry) => entry.kind.startsWith('fact:'))).toEqual([
+      { kind: 'fact:phase', actor: { kind: 'derived-here' } },
+    ])
+  })
+})

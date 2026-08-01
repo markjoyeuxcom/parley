@@ -357,7 +357,20 @@ export type RemoteBody =
    * write: the core reports what happened and each side decides what that
    * means, so the protocol never depends on the shape of anybody's database.
    */
-  | { type: 'fact'; fact: unknown }
+  | {
+      type: 'fact'
+      fact: unknown
+      /**
+       * Who produced it, as the REMOTE worked it out.
+       *
+       * Sent rather than recomputed on arrival because that side knows which
+       * agent actually ran; recomputing here would attribute a remote
+       * reviewer's finding to whatever this side believes the roles are.
+       * Optional so an older helper stays readable — the local side falls back
+       * to deriving it.
+       */
+      actor?: { kind: string; vendor?: string; targetId?: string }
+    }
   /**
    * The host has a bare mirror for this repository, here.
    *

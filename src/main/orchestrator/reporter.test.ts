@@ -79,7 +79,7 @@ function harness(): {
     milestone,
     'p1',
     'run-1',
-    { kind: 'agent', vendor: 'codex' },
+    { executor: 'codex', reviewer: 'claude' },
     () => `event-${journal.length + 1}`,
   )
   return { reporter, rows, runStates, spend, planStatuses, findings, journal, emitted }
@@ -207,7 +207,7 @@ describe('the local reporter', () => {
       milestone,
       'p1',
       'run-1',
-      { kind: 'agent', vendor: 'codex' },
+      { executor: 'codex', reviewer: 'claude' },
       () => 'event-1',
     )
     reporter.activity('executing', 'started')

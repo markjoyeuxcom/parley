@@ -39,7 +39,7 @@ import {
 import { capture, isShellFree, splitCommand, type CaptureResult } from '@main/util/spawn'
 import { ensureUp, runProjectCommand } from './containers'
 import { StoreMilestoneReporter, type MilestoneReporter } from './reporter'
-import type { RunActor, RunEntry } from '@shared/journal'
+import type { RunEntry, RunRoles } from '@shared/journal'
 import { ExecutionCore, executeMilestone } from './execution'
 import {
   MAX_CHANGED_FILE_CHARS,
@@ -733,8 +733,8 @@ export class Pipeline {
     // The executor is the actor for what this loop states — the phases, the
     // spend, the narrative. Findings carry the reviewer where they are named.
     const reporter = this.reporterFor(plan, milestone, activity, runId, {
-      kind: 'agent',
-      vendor: plan.executor.vendor,
+      executor: plan.executor.vendor,
+      reviewer: plan.reviewer.vendor,
     })
     reporter.started(entry)
     const current = await executeMilestone(
@@ -969,7 +969,7 @@ export class Pipeline {
     milestone: Milestone,
     activity: (phase: MilestonePhase, text: string) => void,
     runId: Id,
-    actor: RunActor,
+    roles: RunRoles,
   ): StoreMilestoneReporter {
     return new StoreMilestoneReporter(
       {
@@ -993,7 +993,7 @@ export class Pipeline {
       milestone,
       plan.id,
       runId,
-      actor,
+      roles,
       newId,
     )
   }
@@ -1054,10 +1054,12 @@ export class Pipeline {
     // same work — one implementation, borrowed, rather than a second that
     // drifts.
     const adoptionRunId = newId()
+    // Adoption is someone deciding work already in the tree counts, but the
+    // verification and review inside it are still the agents' — so the roles
+    // are the plan's, and the human's act is the run.started event itself.
     const adoptionReporter = this.reporterFor(plan, milestone, activity, adoptionRunId, {
-      // Adoption is someone deciding that work already in the tree counts. The
-      // verification is still deterministic, but the act is a person's.
-      kind: 'human',
+      executor: plan.executor.vendor,
+      reviewer: plan.reviewer.vendor,
     })
     adoptionReporter.started('adopted')
     const core = new ExecutionCore({

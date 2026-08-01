@@ -223,20 +223,34 @@ describe('the framing reporter', () => {
     // ahead of what anyone knows.
     const milestone = { id: 'm', status: 'pending' } as Milestone
     const seen: unknown[] = []
-    const reporter = new FramingMilestoneReporter(milestone, (body) => {
-      seen.push(body)
-      expect(reporter.milestone.status).toBe('pending')
-    })
+    const reporter = new FramingMilestoneReporter(
+      milestone,
+      (body) => {
+        seen.push(body)
+        expect(reporter.milestone.status).toBe('pending')
+      },
+      { executor: 'codex', reviewer: 'claude' },
+    )
     const after = reporter.record({ kind: 'phase', phase: 'executing' })
     expect(after.status).toBe('executing')
-    expect(seen).toEqual([{ type: 'fact', fact: { kind: 'phase', phase: 'executing' } }])
+    expect(seen).toEqual([
+      {
+        type: 'fact',
+        fact: { kind: 'phase', phase: 'executing' },
+        // Attribution travels with the fact, worked out where the run happened.
+        actor: { kind: 'agent', vendor: 'codex', targetId: undefined },
+      },
+    ])
   })
 
   it('projects exactly what the local reporter would persist', () => {
     // One definition of what a fact means, used by both sides. Two would agree
     // until they did not, and neither would notice.
     const milestone = { id: 'm', status: 'pending' } as Milestone
-    const reporter = new FramingMilestoneReporter(milestone, () => {})
+    const reporter = new FramingMilestoneReporter(milestone, () => {}, {
+      executor: 'codex',
+      reviewer: 'claude',
+    })
     const facts: MilestoneFact[] = [
       { kind: 'phase', phase: 'testing' },
       { kind: 'judgement', passed: true },

@@ -79,7 +79,10 @@ export async function runWorker(
   const before = await readTree(root, signal)
   const baselineHead = await revParseHead(root, signal)
 
-  const reporter = new FramingMilestoneReporter(request.milestone, write)
+  const reporter = new FramingMilestoneReporter(request.milestone, write, {
+    executor: request.plan.executor.vendor,
+    reviewer: request.plan.reviewer.vendor,
+  })
   const registry = new AgentRegistry(request.plan.mock)
 
   let milestone: Milestone

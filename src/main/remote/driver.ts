@@ -165,7 +165,14 @@ export async function driveRemoteMilestone(
         deps.consumeApproval()
         charged = true
       }
-      if (frame.body.type === 'progress') progress(frame.body.phase, frame.body.text)
+      // Through the reporter, so remote narrative is journalled exactly as
+      // local narrative is. Routing it straight to the renderer would have
+      // left a remote run's story thinner than a local one's for no reason
+      // anybody could see afterwards.
+      if (frame.body.type === 'progress') {
+        deps.reporter.activity(frame.body.phase, frame.body.text)
+        progress(frame.body.phase, frame.body.text)
+      }
       if (frame.body.type === 'error') remoteError = frame.body.message
       if (frame.body.type === 'result') manifest = frame.body.manifest
 

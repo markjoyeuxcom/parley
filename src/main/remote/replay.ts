@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Milestone } from '@shared/domain'
 import type { RemoteEvidenceManifest, RemoteFrame } from '@shared/remote'
+import type { RunActor } from '@shared/journal'
 import { decodeMilestoneFact, type MilestoneReporter } from '@main/orchestrator/reporter'
 import { descendsFrom } from './snapshot'
 import { FrameSequencer } from './frames'
@@ -111,7 +112,14 @@ export class RemoteReplay {
     if (!fact) {
       return { kind: 'unreadable', detail: 'the remote reported a fact this Parley cannot read' }
     }
-    this.reporter.record(fact)
+    // The remote's attribution, when it sent one. It knows which agent
+    // actually ran; deriving it here would put this side's idea of the roles
+    // onto work it did not watch.
+    const actor = frame.body.actor
+    this.reporter.record(
+      fact,
+      actor ? { kind: actor.kind as RunActor['kind'], vendor: actor.vendor, targetId: actor.targetId } : undefined,
+    )
     this.applied += 1
     return null
   }

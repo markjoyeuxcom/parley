@@ -1178,14 +1178,19 @@ export class Manager {
         milestone,
         plan.id,
         runId,
-        // The work happens on another machine, and the journal says which:
-        // "codex on build-01" is a different fact from "codex here".
-        { kind: 'agent', vendor: plan.executor.vendor, targetId: target.id },
+        // The work happens on another machine, and every actor derived from
+        // these carries it: "codex on build-01" is a different fact from
+        // "codex here".
+        {
+          executor: plan.executor.vendor,
+          reviewer: plan.reviewer.vendor,
+          targetId: target.id,
+        },
         newId,
       )
       reporter.started('remote')
 
-      return await driveRemoteMilestone(
+      const outcome = await driveRemoteMilestone(
         { runId: newId(), target, repoKey: repoKeyFor(plan.repoPath), plan, milestone },
         {
           converse: sshConverse(() => target.nodeCommand, gate.signal),
@@ -1212,6 +1217,11 @@ export class Manager {
             }),
         },
       )
+      // Closed however it ended, including the endings that are not failures.
+      // A run whose journal simply stops is indistinguishable from one still
+      // in flight, which is the wrong thing for a disconnect to look like.
+      reporter.ended(outcome.kind, 'detail' in outcome ? outcome.detail : '')
+      return outcome
     } finally {
       this.milestoneRuns.delete(milestoneId)
     }

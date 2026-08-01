@@ -162,7 +162,8 @@ function decodeBody(value: unknown): RemoteBody | null {
       // orchestrator's vocabulary, and teaching the wire about it would put
       // the record's shape back into the protocol.
       if (!has(raw, 'fact')) return null
-      return { type: 'fact', fact: raw.fact }
+      const actor = decodeActor(raw.actor)
+      return actor ? { type: 'fact', fact: raw.fact, actor } : { type: 'fact', fact: raw.fact }
     }
     case 'prepared': {
       const mirror = str(raw.mirror)
@@ -184,6 +185,19 @@ function decodeBody(value: unknown): RemoteBody | null {
     }
     default:
       return null
+  }
+}
+
+/** Attribution from the far end. Absent is fine; malformed is not trusted. */
+function decodeActor(value: unknown): { kind: string; vendor?: string; targetId?: string } | null {
+  if (typeof value !== 'object' || value === null) return null
+  const raw = value as Record<string, unknown>
+  const kind = str(raw.kind)
+  if (kind === null) return null
+  return {
+    kind,
+    vendor: str(raw.vendor) ?? undefined,
+    targetId: str(raw.targetId) ?? undefined,
   }
 }
 

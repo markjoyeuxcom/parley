@@ -1,5 +1,6 @@
 import type { Milestone } from '@shared/domain'
 import { milestonePatch, type MilestoneFact, type MilestoneReporter } from '@main/orchestrator/reporter'
+import { actorForFact, type RunRoles } from '@shared/journal'
 
 /**
  * The reporter a remote run uses: facts become lines, not rows.
@@ -22,6 +23,9 @@ export class FramingMilestoneReporter implements MilestoneReporter {
   constructor(
     milestone: Milestone,
     private readonly write: (body: unknown) => void,
+    /** Who is who on THIS machine, so attribution travels rather than being
+     *  guessed at on arrival. */
+    private readonly roles: RunRoles,
   ) {
     this.current = milestone
   }
@@ -31,7 +35,7 @@ export class FramingMilestoneReporter implements MilestoneReporter {
     // — a closed pipe, a dead connection — the local record and this
     // projection are both left at the last state that was actually reported,
     // rather than this side quietly running ahead of what anyone knows.
-    this.write({ type: 'fact', fact })
+    this.write({ type: 'fact', fact, actor: actorForFact(fact.kind, this.roles) })
     const patch = milestonePatch(fact)
     if (patch) this.current = { ...this.current, ...patch }
     return this.current
