@@ -45,7 +45,7 @@ import { LivenessWatchdog } from './liveness'
 import { runForeman } from './foreman'
 import { computeInFlight } from './inflight'
 import { buildWorkspace } from './workspace'
-import { templateById } from './templates'
+import { toolchainRefusal, templateById } from './templates'
 import { validateNewWorkspacePath } from './workspacePath'
 import { driveEnvelope, newEnvelope } from './envelope'
 import { runSelfGate, type SelfGateOptions } from './selfupdate'
@@ -58,6 +58,7 @@ import { SessionRunner } from './session'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { capture } from '@main/util/spawn'
+import { findExecutable } from '@main/util/environment'
 import { RunGate, type OrchestratorDeps } from './types'
 import type { RemoteCapabilities, RemoteTarget } from '@shared/remote'
 import { handshakeRequest } from '@main/remote/protocol'
@@ -1786,6 +1787,13 @@ export class Manager {
   }): Workspace {
     const template = templateById(input.templateId)
     if (!template) throw new RequestError('no such template')
+
+    // Before the path is even validated: a lane whose toolchain is absent
+    // cannot produce a green first commit, and finding that out after
+    // scaffolding means unwinding a directory to say something that was
+    // knowable at the click.
+    const missing = toolchainRefusal(template, (name) => findExecutable(name))
+    if (missing) throw new RequestError(missing)
 
     let root: string
     try {

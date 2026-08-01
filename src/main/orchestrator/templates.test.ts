@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { isShellFree } from '@shared/command'
-import { packageNameFor, renderTemplate, TEMPLATES, templateById } from './templates'
+import {
+  packageNameFor,
+  renderTemplate,
+  TEMPLATES,
+  templateById,
+  toolchainRefusal,
+} from './templates'
 
 /**
  * A template is code Parley writes into a stranger's empty folder, so the
@@ -12,9 +18,14 @@ describe('the shipped templates', () => {
   it('ships the lanes it means to, and no others', () => {
     // Each template is a deliberate act, not a drive-by addition — a lane that
     // cannot be verified from its first commit is worse than no lane.
-    expect(TEMPLATES.map((template) => template.id)).toEqual(['web-app', 'go-service'])
+    expect(TEMPLATES.map((template) => template.id)).toEqual([
+      'web-app',
+      'go-service',
+      'python-app',
+    ])
     expect(templateById('web-app')?.name).toBe('Local web app')
     expect(templateById('go-service')?.name).toBe('Go program')
+    expect(templateById('python-app')?.name).toBe('Python project')
     expect(templateById('nope')).toBeNull()
   })
 
@@ -94,5 +105,72 @@ describe('the shipped templates', () => {
     expect(packageNameFor('---')).toBe('app')
     expect(packageNameFor('')).toBe('app')
     expect(packageNameFor('x'.repeat(300)).length).toBeLessThanOrEqual(100)
+  })
+})
+
+describe('the Python lane', () => {
+  it('collapses venv-then-install into one argv each, which is the whole rule', () => {
+    // Python's usual setup is two steps, and two steps cannot be one argv
+    // without a shell line the spawn invariant forbids. uv is what makes the
+    // lane possible rather than a preference.
+    const template = templateById('python-app')
+    expect(template?.installCommand).toEqual(['uv', 'sync'])
+    expect(template?.verifyCommand).toEqual(['uv', 'run', 'pytest'])
+  })
+
+  it('ships a test that asserts its own function', () => {
+    const template = templateById('python-app')
+    expect(template?.files['greeting.py']).toContain('return f"{name} is running."')
+    expect(template?.files['test_greeting.py']).toContain('== "parley is running."')
+  })
+
+  it('declares no build-system, so uv installs deps without building the project', () => {
+    // With one, uv would try to build and install the project itself, and the
+    // package layout would have to match a name derived from whatever the user
+    // typed. This is a project to work in, not a package to publish.
+    const pyproject = templateById('python-app')?.files['pyproject.toml'] ?? ''
+    expect(pyproject).not.toContain('[build-system]')
+    expect(pyproject).toContain('[dependency-groups]')
+    expect(pyproject).toContain('pytest')
+  })
+
+  it('ignores the virtual environment, so the first commit is the project', () => {
+    expect(templateById('python-app')?.files['.gitignore']).toContain('.venv/')
+  })
+})
+
+describe('refusing a lane this machine cannot build', () => {
+  it('names the missing tool, and says nothing was created', () => {
+    // Checked before a directory exists. The alternative is a project that is
+    // scaffolded, committed, and then fails on install — leaving someone to
+    // infer from a spawn error that the tool was never there.
+    const template = templateById('python-app')
+    if (!template) throw new Error('expected the python-app template')
+    const refusal = toolchainRefusal(template, () => null)
+    expect(refusal).toContain('uv')
+    expect(refusal).toContain('nothing has been created')
+  })
+
+  it('allows a lane whose tools resolve', () => {
+    const template = templateById('python-app')
+    if (!template) throw new Error('expected the python-app template')
+    expect(toolchainRefusal(template, (name) => `/usr/local/bin/${name}`)).toBeNull()
+  })
+
+  it('checks the verify tool too, not only the install one', () => {
+    // They can differ — a lane could install with one tool and verify with
+    // another — and a host missing only the second would fail after the spend.
+    const refusal = toolchainRefusal(
+      {
+        id: 'x',
+        name: 'Example',
+        description: '',
+        installCommand: ['present'],
+        verifyCommand: ['absent'],
+        files: {},
+      },
+      (name) => (name === 'present' ? '/bin/present' : null),
+    )
+    expect(refusal).toContain('absent')
   })
 })

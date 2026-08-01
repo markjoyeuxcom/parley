@@ -226,7 +226,120 @@ const GO_SERVICE: ProjectTemplate = {
   },
 }
 
-export const TEMPLATES: readonly ProjectTemplate[] = [WEB_APP, GO_SERVICE]
+const PY_PROJECT = `[project]
+name = "PLACEHOLDER_NAME"
+version = "0.1.0"
+description = "Scaffolded by Parley."
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+`
+
+const PY_GITIGNORE = `.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+`
+
+const PY_GREETING = `"""The one piece of behaviour this scaffold ships.
+
+Its test asserts exactly what it does. A scaffold whose own test fails would
+hand milestone one a red suite and nothing to trust.
+"""
+
+
+def greeting(name: str) -> str:
+    return f"{name} is running."
+`
+
+const PY_GREETING_TEST = `from greeting import greeting
+
+
+def test_greeting() -> None:
+    assert greeting("parley") == "parley is running."
+`
+
+const PY_MAIN = `import sys
+
+from greeting import greeting
+
+
+def main() -> None:
+    name = sys.argv[1] if len(sys.argv) > 1 else "world"
+    print(greeting(name))
+
+
+if __name__ == "__main__":
+    main()
+`
+
+const PY_README = `# PLACEHOLDER_NAME
+
+Scaffolded by Parley, and green before anything else ran.
+
+The verification command is \`uv run pytest\`. Keep it green: it is the
+deterministic half of every milestone Parley executes here, and a milestone
+whose tests cannot run cannot be reviewed honestly.
+
+Dependencies are managed by [uv](https://docs.astral.sh/uv/). \`uv sync\`
+resolves them into \`.venv\`, and \`uv run\` uses that environment without
+anyone having to remember to activate it.
+
+There is deliberately no \`[build-system]\`: this is a project to work in, not
+a package to publish, so uv installs its dependencies without trying to build
+and install the project itself.
+`
+
+/**
+ * The third lane, and the one that shows what the single-argv rule costs.
+ *
+ * Python's usual setup is two steps — create a virtual environment, then
+ * install into it — and two steps cannot be one argv without a shell line,
+ * which the spawn invariant forbids. uv collapses both: `uv sync` resolves and
+ * installs, `uv run` executes inside the environment without anyone
+ * remembering to activate it. The price is a tool that must be on the machine,
+ * which is why the creator refuses by name rather than failing in the middle.
+ */
+const PYTHON_APP: ProjectTemplate = {
+  id: 'python-app',
+  name: 'Python project',
+  description: 'A uv-managed Python project with a passing pytest, so the harness is proven from the first commit.',
+  installCommand: ['uv', 'sync'],
+  verifyCommand: ['uv', 'run', 'pytest'],
+  files: {
+    'pyproject.toml': PY_PROJECT,
+    '.gitignore': PY_GITIGNORE,
+    'README.md': PY_README,
+    'main.py': PY_MAIN,
+    'greeting.py': PY_GREETING,
+    'test_greeting.py': PY_GREETING_TEST,
+  },
+}
+
+export const TEMPLATES: readonly ProjectTemplate[] = [WEB_APP, GO_SERVICE, PYTHON_APP]
+
+/**
+ * Why this lane cannot be scaffolded on this machine, or null.
+ *
+ * Checked BEFORE a directory is created, because the alternative is a project
+ * that exists, is committed, and then fails on its install step — leaving
+ * someone to work out from a spawn error that the tool was never there. The
+ * name of the missing tool is the whole answer, so the refusal says it.
+ */
+export function toolchainRefusal(
+  template: ProjectTemplate,
+  resolve: (name: string) => string | null,
+): string | null {
+  const tools = [template.installCommand[0], template.verifyCommand[0]]
+  for (const tool of tools) {
+    if (!tool || resolve(tool)) continue
+    return `${template.name} needs \`${tool}\`, which is not on Parley's PATH. Install it and try again — nothing has been created.`
+  }
+  return null
+}
 
 export function templateById(id: string): ProjectTemplate | null {
   return TEMPLATES.find((template) => template.id === id) ?? null

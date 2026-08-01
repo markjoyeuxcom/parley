@@ -515,6 +515,27 @@ is a repository whose `npm run verify` means something from its first
 commit — which is exactly what an audited plan needs to verify anything at
 all.
 
+### The lanes
+
+Three, and each one is green before anything else runs — the scaffold's own
+test asserts the scaffold's own function, so milestone one inherits a proven
+harness rather than a hopeful one.
+
+| Lane | Install | Verify | Needs |
+| --- | --- | --- | --- |
+| **Local web app** | `npm install` | `npm run verify` | node |
+| **Go program** | `go mod tidy` | `go test ./...` | go |
+| **Python project** | `uv sync` | `uv run pytest` | [uv](https://docs.astral.sh/uv/) |
+
+The rule a new lane has to satisfy is that install and verify are each a
+*single* argv — Parley never spawns a shell, so a two-step setup cannot be
+expressed. That is why Python is uv-managed rather than venv-and-pip: `uv sync`
+resolves and installs in one step, and `uv run` executes inside the
+environment without anyone remembering to activate it.
+
+A lane whose tool is missing is refused by name before any directory is
+created, so you are never left with a scaffolded project that cannot build.
+
 ## Acceptance
 
 A completed milestone has passed its tests and an independent review, which
