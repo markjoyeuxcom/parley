@@ -250,6 +250,60 @@ function nodeFailure(result: Captured, nodeCommand: string): string {
   return said || 'the host did not answer the installer'
 }
 
+/**
+ * What is actually installed, read off the host's disk.
+ *
+ * Everything a handshake reports is the runner's own account of itself, which
+ * is worth exactly nothing when the question is whether the runner is what it
+ * claims. `statusVerdict` has always known how to spot the disagreement — the
+ * directory name says one build, the bytes hash to another — and could never
+ * see one, because the only source of facts was the handshake and the caller
+ * fed the same value into all three fields. It graded a number against itself
+ * and, unsurprisingly, always found them equal.
+ */
+export async function remoteIntegrity(
+  target: Pick<RemoteTarget, 'host'> & { nodeCommand?: string },
+  deps: Omit<InstallDeps, 'bundlePath'> = {},
+): Promise<{
+  reachable: boolean
+  activeTarget: string | null
+  directoryBuildId: string | null
+  calculatedHash: string | null
+  previousAvailable: boolean
+}> {
+  const absent = {
+    activeTarget: null,
+    directoryBuildId: null,
+    calculatedHash: null,
+    previousAvailable: false,
+  }
+  let result: Captured
+  try {
+    result = await run(
+      deps.sshBinary ?? 'ssh',
+      bootstrapArgv(target, target.nodeCommand),
+      `${JSON.stringify({ operation: 'status' })}\n`,
+      deps.signal,
+    )
+  } catch {
+    // A node command that is not even a boring string. Nothing ran.
+    return { reachable: false, ...absent }
+  }
+  const reply = decodeBootstrapReply(result.stdout)
+  // `reachable` is about the BOOTSTRAP, not the runner: it says whether the
+  // configured node started at all. Distinguishing that from "installed but
+  // broken" is what keeps a host with a bad node path out of the corrupt
+  // bucket, where the advice would be to reinstall a perfectly good file.
+  if (!reply?.ok) return { reachable: false, ...absent }
+  return {
+    reachable: true,
+    activeTarget: reply.active ?? null,
+    directoryBuildId: reply.directoryBuildId ?? null,
+    calculatedHash: reply.calculatedHash ?? null,
+    previousAvailable: reply.previousAvailable === true,
+  }
+}
+
 export async function rollbackRemote(
   target: Pick<RemoteTarget, 'host'> & { nodeCommand?: string },
   deps: Omit<InstallDeps, 'bundlePath'>,

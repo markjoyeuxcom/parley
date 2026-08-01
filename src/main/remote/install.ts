@@ -152,7 +152,22 @@ export interface RollbackRequest {
   operation: 'rollback'
 }
 
-export type BootstrapRequest = VerifyRequest | ActivateRequest | RollbackRequest
+/**
+ * What is installed, read from the disk rather than asked of the runner.
+ *
+ * The one question a handshake cannot answer about itself. A tampered or
+ * half-written bundle reports whatever its own code says, confidently, and
+ * comparing that answer to itself is what made `corrupt` unreachable.
+ */
+export interface StatusRequest {
+  operation: 'status'
+}
+
+export type BootstrapRequest =
+  | VerifyRequest
+  | ActivateRequest
+  | RollbackRequest
+  | StatusRequest
 
 export interface BootstrapReply {
   ok: boolean
@@ -163,9 +178,14 @@ export interface BootstrapReply {
   handshake?: string
   handshakeStderr?: string
   status?: number | null
-  active?: string
+  active?: string | null
   previous?: string | null
   restored?: string
+  /** The versioned directory's NAME — the build id claimed at activation. */
+  directoryBuildId?: string | null
+  /** What the bytes at the resolved path actually hash to, computed there. */
+  calculatedHash?: string | null
+  previousAvailable?: boolean
 }
 
 export function decodeBootstrapReply(stdout: string): BootstrapReply | null {

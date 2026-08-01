@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { handshakeRequest } from './protocol'
 import { runSsh } from './ssh'
-import { installRemote, rollbackRemote } from './installer'
+import { installRemote, remoteIntegrity, rollbackRemote } from './installer'
 import { createExecutionSnapshot, deleteRunRefs, pushSnapshot } from './snapshot'
 import { statusVerdict } from './status'
 import { driveRemoteMilestone } from './driver'
@@ -49,6 +49,26 @@ const target = { host }
 const bundlePath = resolve(
   process.env['PARLEY_LIVE_REMOTE_BUNDLE'] || 'out/remote/parley-remote.mjs',
 )
+
+async function handshake(): Promise<RemoteCapabilities | null> {
+  let capabilities: RemoteCapabilities | null = null
+  await runSsh({
+    target,
+    request: handshakeRequest('live-caps'),
+    onFrame: (frame) => {
+      if (frame.body.type === 'ready') capabilities = frame.body.capabilities
+    },
+  })
+  return capabilities
+}
+
+/** The same shape manager.remoteStatus builds, so the test grades what it does. */
+function factsFrom(
+  disk: Awaited<ReturnType<typeof remoteIntegrity>>,
+  capabilities: RemoteCapabilities | null,
+): Parameters<typeof statusVerdict>[0] {
+  return { ...disk, capabilities, nodeCommand, nodeUsable: disk.reachable }
+}
 
 describe.skipIf(!live)('installing on a real host', () => {
   it('uploads, hashes, proves the staged bundle runs, and activates it', async () => {
@@ -106,6 +126,57 @@ describe.skipIf(!live)('installing on a real host', () => {
     })
     expect(verdict.health).toBe('healthy')
   }, 120_000)
+})
+
+describe.skipIf(!live)('integrity, read off the host rather than asked of it', () => {
+  it('catches a tampered installation that still answers a healthy handshake', async () => {
+    // The whole point of reading the disk. The runner is unchanged and will
+    // report its own build id perfectly happily; the bytes beside it are not
+    // what that id says they are. Nothing the runner says can catch this,
+    // which is why grading its answer against itself always found it healthy.
+    const before = await remoteIntegrity({ ...target, nodeCommand })
+    expect(before.reachable).toBe(true)
+    expect(before.calculatedHash).toBe(before.directoryBuildId)
+    expect(statusVerdict(factsFrom(before, await handshake())).health).not.toBe('corrupt')
+
+    const installed = `${before.activeTarget?.replace(/parley-remote$/, '') ?? ''}parley-remote.mjs`
+    // Through tee on stdin rather than a redirect: ssh joins a remote
+    // command's argv with spaces and hands it to the login shell, so a `>>`
+    // would be the LOGIN shell's redirect and a quoted newline would arrive
+    // as a broken command. The same property the whole protocol is built
+    // around, biting a two-line test.
+    execFileSync('ssh', [host, 'tee', '-a', installed], {
+      input: '\n// tampered\n',
+      stdio: ['pipe', 'ignore', 'ignore'],
+    })
+    try {
+      const after = await remoteIntegrity({ ...target, nodeCommand })
+      expect(after.directoryBuildId).toBe(before.directoryBuildId)
+      expect(after.calculatedHash).not.toBe(after.directoryBuildId)
+
+      // The runner does NOT lie about itself: it hashes its own bytes at
+      // startup, so a tampered bundle honestly reports the tampered hash. It
+      // simply has no way to know that is not the build it was installed as —
+      // and a self-report cannot, in principle, be the check on itself.
+      const caps = await handshake()
+      expect(caps?.buildId).toBe(after.calculatedHash)
+      expect(caps?.buildId).not.toBe(before.directoryBuildId)
+
+      // The directory NAME is the independent witness, and it is the only
+      // thing here that remembers what was activated. That comparison is what
+      // the manager could never make while it was grading the handshake's
+      // answer against itself.
+      const graded = statusVerdict(factsFrom(after, caps))
+      expect(graded.health).toBe('corrupt')
+      expect(graded.reasons.join(' ')).toContain('sit in a directory named')
+    } finally {
+      // Put the host back, whatever happened above.
+      await installRemote({ ...target, nodeCommand }, { bundlePath })
+    }
+
+    const healed = await remoteIntegrity({ ...target, nodeCommand })
+    expect(healed.calculatedHash).toBe(healed.directoryBuildId)
+  }, 240_000)
 })
 
 describe.skipIf(!live)('the snapshot transport against a real host', () => {

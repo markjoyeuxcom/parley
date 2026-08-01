@@ -69,7 +69,7 @@ import { statusVerdict, type RemoteStatus } from '@main/remote/status'
 import { driveRemoteMilestone, type RemoteRunOutcome } from '@main/remote/driver'
 import { sshConverse } from '@main/remote/converse'
 import { remoteRefusal } from '@main/remote/eligibility'
-import { installRemote, rollbackRemote } from '@main/remote/installer'
+import { installRemote, remoteIntegrity, rollbackRemote } from '@main/remote/installer'
 import { StoreMilestoneReporter } from './reporter'
 
 /**
@@ -360,6 +360,13 @@ export class Manager {
     const target = this.repo.getRemoteTarget(targetId)
     if (!target) throw new RequestError('no such target')
 
+    // Two questions, two sources, and neither can answer the other's.
+    //
+    // The runner says what it can do. The bootstrap says what is on disk. Only
+    // the second can catch a runner that is not what it claims to be, because
+    // a tampered bundle reports its own story with perfect confidence — which
+    // is why this used to grade the handshake's build id against itself and
+    // could never once disagree.
     let capabilities: RemoteCapabilities | null = null
     const conversation = await runSsh({
       target,
@@ -368,14 +375,14 @@ export class Manager {
         if (frame.body.type === 'ready') capabilities = frame.body.capabilities
       },
     })
+    const disk = await remoteIntegrity(target)
 
-    if (!capabilities) {
-      // Nothing answered, so there is nothing to grade. The transport's own
-      // words are better than anything this layer could invent: it knows
-      // whether ssh refused, whether the helper is missing, or whether the
-      // link died.
+    if (!disk.activeTarget && !capabilities) {
+      // Nothing on disk and nothing answering. The transport's own words are
+      // better than anything this layer could invent: it knows whether ssh
+      // refused, whether the helper is missing, or whether the link died.
       return {
-        health: conversation.end.kind === 'refused' ? 'not-installed' : 'not-installed',
+        health: 'not-installed',
         reasons: [
           'detail' in conversation.end ? conversation.end.detail : 'the host did not answer',
         ],
@@ -385,24 +392,21 @@ export class Manager {
           calculatedHash: null,
           capabilities: null,
           nodeCommand: target.nodeCommand,
-          nodeUsable: false,
-          previousAvailable: false,
+          nodeUsable: disk.reachable,
+          previousAvailable: disk.previousAvailable,
         },
       }
     }
 
-    const answered = capabilities as RemoteCapabilities
     return statusVerdict({
-      // The bundle answered, so it exists and node started it. What status
-      // cannot see from here is the installation's own integrity — the
-      // directory name against the file's hash — which needs the bootstrap.
-      activeTarget: answered.buildId,
-      directoryBuildId: answered.buildId,
-      calculatedHash: answered.buildId,
-      capabilities: answered,
+      ...disk,
+      capabilities,
       nodeCommand: target.nodeCommand,
-      nodeUsable: true,
-      previousAvailable: false,
+      // The bootstrap runs UNDER the configured node, so its answering at all
+      // is the proof. Asking the runner instead would confuse "the runtime is
+      // wrong" with "the bundle is broken", and send someone to reinstall a
+      // file that is exactly right.
+      nodeUsable: disk.reachable,
     })
   }
 

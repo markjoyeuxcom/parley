@@ -695,6 +695,29 @@ manifest itself, because every other test resolves paths on a disk where
 `out/` always exists, which is how remote execution stayed dev-checkout-only
 through the whole arc without a single red test.
 
+**Integrity is read off the disk, never asked of the runner.** `remoteStatus`
+takes two readings: the handshake for what the runner can do, and a bootstrap
+`status` operation for what is actually installed — the resolved link, the
+versioned directory's NAME, and what the bytes beside it hash to. It used to
+have one source and passed the handshake's build id into all three identity
+fields, grading a number against itself, so `corrupt` was unreachable by
+construction.
+
+The runner is honest — it hashes its own bytes at startup — but a self-report
+cannot in principle be the check on itself: a tampered bundle truthfully
+reports the tampered hash and has no way to know that is not what it was
+installed as. The **directory name** is the independent witness, and it is the
+only thing that remembers what was activated. The bootstrap resolves the link
+exactly ONCE and derives everything from that path, because two readings could
+straddle an activation and report one build's directory against another's
+bytes — which reads as corruption and is not.
+
+What this does NOT catch is a consistent replacement, where the directory is
+renamed to match the new bytes. That is a supply-chain question, defended at
+install time by hashing against the bundle Parley itself built; status cannot
+help, because a target may legitimately run an older build than the Parley
+inspecting it.
+
 **The acceptance**: `PARLEY_LIVE_REMOTE=<ssh-host>
 PARLEY_LIVE_REMOTE_NODE=<absolute node> npx vitest run
 src/main/remote/live.test.ts` after `npm run build:remote`. It installs, runs a

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { REMOTE_PROTOCOL_VERSION } from '@shared/remote'
+import { statusVerdict } from './status'
 import { BOOTSTRAP_SOURCE, bootstrapArgument, INSTALL_ROOT, isBoringPath } from './bootstrap'
 import {
   bootstrapArgv,
@@ -200,6 +201,88 @@ describe('the bootstrap refuses what it claims to', () => {
     const lines = (raw.stdout ?? '').split('\n').filter((line) => line.trim().length > 0)
     expect(lines).toHaveLength(1)
     expect(() => JSON.parse(lines[0]!)).not.toThrow()
+  })
+})
+
+describe('what is actually installed, read off the disk', () => {
+  it('reports the resolved link, the directory it names, and what the bytes hash to', () => {
+    const at = mkdtempSync(join(tmpdir(), 'parley-install-status-'))
+    const { relativePath } = stage(readFileSync(bundle), at)
+    runBootstrap({ operation: 'activate', relativePath, buildId: bundleHash }, at)
+
+    const { reply } = runBootstrap({ operation: 'status' }, at)
+    expect(reply?.ok).toBe(true)
+    expect(reply?.active).toContain(bundleHash)
+    // Two independent readings of "which build is this". Deriving one from
+    // the other would make them agree by construction, which is exactly the
+    // bug: the caller used to pass the handshake's build id into all three
+    // fields and grade a number against itself.
+    expect(reply?.directoryBuildId).toBe(bundleHash)
+    expect(reply?.calculatedHash).toBe(bundleHash)
+    expect(reply?.previousAvailable).toBe(false)
+    rmSync(at, { recursive: true, force: true })
+  })
+
+  it('catches bytes that no longer match the directory that names them', () => {
+    // Tampering, a half-written upload, a partial disk — the runner reports
+    // its own story with perfect confidence in all three cases, so nothing it
+    // says can catch this. Only the disk can.
+    const at = mkdtempSync(join(tmpdir(), 'parley-install-corrupt-'))
+    const { relativePath } = stage(readFileSync(bundle), at)
+    runBootstrap({ operation: 'activate', relativePath, buildId: bundleHash }, at)
+
+    const installed = join(at, INSTALL_ROOT, bundleHash, 'parley-remote.mjs')
+    writeFileSync(installed, `${readFileSync(installed, 'utf8')}\n// tampered\n`)
+
+    const { reply } = runBootstrap({ operation: 'status' }, at)
+    expect(reply?.ok).toBe(true)
+    expect(reply?.directoryBuildId).toBe(bundleHash)
+    expect(reply?.calculatedHash).not.toBe(bundleHash)
+
+    // And the verdict that could never fire before.
+    const graded = statusVerdict({
+      activeTarget: reply?.active ?? null,
+      directoryBuildId: reply?.directoryBuildId ?? null,
+      calculatedHash: reply?.calculatedHash ?? null,
+      capabilities: null,
+      nodeCommand: 'node',
+      nodeUsable: true,
+      previousAvailable: false,
+    })
+    expect(graded.health).toBe('corrupt')
+    expect(graded.reasons.join(' ')).toContain('sit in a directory named')
+    rmSync(at, { recursive: true, force: true })
+  })
+
+  it('says nothing is active when nothing is, rather than failing', () => {
+    // A host that has never been installed to is a normal answer, not an
+    // error — status is the thing people check BEFORE installing.
+    const at = mkdtempSync(join(tmpdir(), 'parley-install-empty-'))
+    const { reply } = runBootstrap({ operation: 'status' }, at)
+    expect(reply?.ok).toBe(true)
+    expect(reply?.active).toBeNull()
+    expect(reply?.calculatedHash).toBeNull()
+    rmSync(at, { recursive: true, force: true })
+  })
+
+  it('only offers a rollback that still exists', () => {
+    const at = mkdtempSync(join(tmpdir(), 'parley-install-previous-'))
+    const older = join(at, INSTALL_ROOT, 'a'.repeat(64))
+    mkdirSync(older, { recursive: true })
+    writeFileSync(join(older, 'parley-remote.mjs'), '// older\n')
+    writeFileSync(join(older, 'parley-remote'), '#!/bin/sh\nexit 0\n')
+    mkdirSync(join(at, '.local/bin'), { recursive: true })
+    symlinkSync(join(older, 'parley-remote'), join(at, '.local/bin/parley-remote'))
+
+    const { relativePath } = stage(readFileSync(bundle), at)
+    runBootstrap({ operation: 'activate', relativePath, buildId: bundleHash }, at)
+    expect(runBootstrap({ operation: 'status' }, at).reply?.previousAvailable).toBe(true)
+
+    // Recorded is not the same as present. A rollback offer pointing at a
+    // directory somebody deleted is worse than no offer at all.
+    rmSync(older, { recursive: true, force: true })
+    expect(runBootstrap({ operation: 'status' }, at).reply?.previousAvailable).toBe(false)
+    rmSync(at, { recursive: true, force: true })
   })
 })
 

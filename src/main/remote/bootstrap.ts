@@ -18,10 +18,14 @@ import { createHash } from 'node:crypto'
  * cannot be reinterpreted, and so a future edit that happens to add an
  * apostrophe cannot silently break quoting.
  *
- * It is deliberately not a second runner. Three operations, no generic argv
+ * It is deliberately not a second runner. Four operations, no generic argv
  * execution, no arbitrary filesystem access, no environment forwarding. The
  * moment it grows the ability to run what it is told, it becomes the remote
  * shell we refused to have.
+ *
+ * The fourth, `status`, exists because integrity is the one question a runner
+ * cannot answer about itself: a tampered bundle reports whatever its own code
+ * says, and comparing that to itself always agrees.
  */
 
 /** Where an installation lives, relative to the remote home directory. */
@@ -234,6 +238,43 @@ readRequest(function (request) {
       if (previous) fs.writeFileSync(path.join(ROOT, ".previous"), previous, "utf8");
       process.stdout.write(JSON.stringify({ ok: true, active: LINK, previous: previous }) + "\\n");
     } finally { unlock(fd); }
+    return;
+  }
+
+  if (op === "status") {
+    // ONE resolution, and everything derives from it.
+    //
+    // Reading the link twice — once for the directory, once for the bytes —
+    // could straddle an activation and report a directory name from one build
+    // against a hash from another. That reads as corruption and is not: the
+    // rename that swaps the link is atomic, so a single realpath either sees
+    // the old installation whole or the new one whole.
+    let active = null, directoryBuildId = null, calculatedHash = null, previousAvailable = false;
+    try { active = fs.realpathSync(LINK); } catch (e) {}
+    if (active) {
+      const dir = path.dirname(active);
+      // The directory NAME is the build id claimed at activation; the hash
+      // below is what the bytes actually are. Corruption is those two
+      // disagreeing, which is why they must be gathered separately rather
+      // than one being derived from the other.
+      directoryBuildId = path.basename(dir);
+      try {
+        calculatedHash = crypto.createHash("sha256")
+          .update(fs.readFileSync(path.join(dir, "parley-remote.mjs")))
+          .digest("hex");
+      } catch (e) {}
+    }
+    try {
+      const recorded = fs.readFileSync(path.join(ROOT, ".previous"), "utf8").trim();
+      // Recorded AND still there. A rollback offer pointing at a directory
+      // somebody deleted is worse than no offer.
+      previousAvailable = Boolean(recorded) && fs.existsSync(recorded);
+    } catch (e) {}
+    process.stdout.write(JSON.stringify({
+      ok: true, active: active, directoryBuildId: directoryBuildId,
+      calculatedHash: calculatedHash, previousAvailable: previousAvailable,
+      node: process.execPath, nodeVersion: process.version,
+    }) + "\\n");
     return;
   }
 
