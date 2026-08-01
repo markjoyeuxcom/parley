@@ -1191,6 +1191,22 @@
   overflow-wrap: anywhere;
 }
 
+/* Where in the code, under where in the work. Monospace and slightly
+   indented: it is a location, and locations are read by scanning down a
+   column rather than along a sentence. */
+.ledger-event__where {
+  list-style: none;
+  margin: var(--s1) 0 0;
+  padding: 0 0 0 var(--s3);
+  border-left: 2px solid var(--line-faint);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-tertiary);
+  font-size: var(--text-micro);
+  overflow-wrap: anywhere;
+}
+
 .ledger-event__note {
   color: var(--text-secondary);
   font-size: var(--text-small);

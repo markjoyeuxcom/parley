@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
+import { evidenceLabel } from '@shared/evidenceLabel'
 import type {
   FindingDisposition,
   FindingLedgerState,
@@ -101,6 +102,19 @@ function OccurrenceEvent({
         <div className="ledger-event__meta">
           {occurrencePlace(occurrence, plans, milestones)}
         </div>
+        {/* Where in the code, when the reviewer said. The plan and milestone
+            above locate it in the WORK; this locates it in the repository,
+            and they are different questions — "raised in milestone 3" does
+            not help anyone open a file. */}
+        {occurrence.evidence.length ? (
+          <ul className="ledger-event__where">
+            {occurrence.evidence.map((entry) => (
+              <li key={evidenceLabel(entry)} className="mono">
+                {evidenceLabel(entry)}
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
     </li>
   )

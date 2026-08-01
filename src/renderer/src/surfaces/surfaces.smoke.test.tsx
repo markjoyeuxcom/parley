@@ -27,6 +27,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { StoreProvider, useStore, type Surface } from '../state'
 import { AgentPicker } from '../components/AgentPicker'
 import { Titlebar } from '../components/Titlebar'
+import { FindingsLedgerPanel } from '../components/FindingsLedgerPanel'
 import { HoldsButton, HoldsPopover } from '../components/HoldsPanel'
 import { Notices } from '../components/Notices'
 import { ParleySurface } from './ParleySurface'
@@ -1521,6 +1522,45 @@ describe('mounted-surface smoke', () => {
     )
     await screen.findByText('Approve and run')
     expect(screen.queryByText('Run elsewhere')).toBeNull()
+  })
+
+  it('shows a finding’s location in the ledger, and stays quiet without one', async () => {
+    // The reason evidence exists on a sighting. "Raised in milestone 3" says
+    // where in the WORK; only this says where in the repository, and the two
+    // answer different questions.
+    const located: LedgerEntry = {
+      ...blockingEntry,
+      occurrences: [
+        {
+          ...blockingEntry.occurrences[0]!,
+          evidence: [
+            { path: 'src/retry.ts', line: 42, symbol: 'retry', excerpt: '' },
+            { path: 'src/queue.ts', line: null, symbol: '', excerpt: '' },
+          ],
+        },
+        {
+          ...blockingEntry.occurrences[0]!,
+          id: 'occurrence-smoke-2',
+          seq: 2,
+          evidence: [],
+        },
+      ],
+    }
+
+    render(
+      <StoreProvider>
+        <FindingsLedgerPanel entries={[located]} plans={[]} milestones={[]} />
+      </StoreProvider>,
+    )
+
+    // path:line — symbol, the notation every editor and terminal already reads.
+    await screen.findByText('src/retry.ts:42 — retry')
+    // A reference with no line still names the file rather than being dropped.
+    await screen.findByText('src/queue.ts')
+    // And a sighting that named nowhere renders nothing rather than an empty
+    // rail suggesting something is missing.
+    expect(screen.queryByText(':null')).toBeNull()
+    expect(document.querySelectorAll('.ledger-event__where')).toHaveLength(1)
   })
 
   it('tells a milestone’s story without growing a second place to authorise it', async () => {

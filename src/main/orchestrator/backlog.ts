@@ -1,4 +1,5 @@
-import type { BacklogItem, Id, Learning } from '@shared/domain'
+import type { BacklogItem, Evidence, Id, Learning } from '@shared/domain'
+import { evidenceLabel } from '@shared/evidenceLabel'
 import type { AppEvent } from '@shared/events'
 import type { Repo } from '@main/store/repo'
 import { canonicalRepoPath } from '@main/util/repoPath'
@@ -107,19 +108,31 @@ export function ingestAcceptedRisk(
     ? occurrences.filter((occurrence) => occurrence.id === input.occurrenceId)
     : occurrences
 
-  const repos = new Set<string>()
+  // Grouped by repository, with the references from the sightings that
+  // happened in each. An accepted risk filed without them says a thing is
+  // wrong somewhere and leaves whoever picks it up to find it again — which
+  // is most of the work, and the part the reviewer had already done.
+  const repos = new Map<string, Evidence[]>()
   for (const occurrence of covered) {
     const plan = repo.getPlan(occurrence.planId)
-    if (plan) repos.add(plan.repoPath)
+    if (!plan) continue
+    const seen = repos.get(plan.repoPath) ?? []
+    for (const entry of occurrence.evidence) {
+      if (!seen.some((existing) => evidenceLabel(existing) === evidenceLabel(entry))) {
+        seen.push(entry)
+      }
+    }
+    repos.set(plan.repoPath, seen)
   }
 
-  for (const repoPath of repos) {
+  for (const [repoPath, evidence] of repos) {
     repo.fileBacklogItem({
       repoPath,
       title: firstLineOf(finding.text),
       detail: finding.text,
       source: 'accepted-risk',
       originSessionId: finding.sessionId,
+      evidence,
       mock: session?.mock ?? false,
       note: 'Accepted as a risk in the finding ledger; carried so accepted never becomes forgotten.',
     })
@@ -152,13 +165,7 @@ export function renderBacklogBlock(items: BacklogItem[]): string {
   let used = 0
   let omitted = 0
   for (const item of items) {
-    const evidence = item.evidence
-      .slice(0, 3)
-      .map(
-        (entry) =>
-          `${entry.path}${entry.line ? `:${entry.line}` : ''}${entry.symbol ? ` — ${entry.symbol}` : ''}`,
-      )
-      .join(', ')
+    const evidence = item.evidence.slice(0, 3).map(evidenceLabel).join(', ')
     const detail =
       item.detail.length > ITEM_DETAIL_CAP
         ? `${item.detail.slice(0, ITEM_DETAIL_CAP - 1)}…`

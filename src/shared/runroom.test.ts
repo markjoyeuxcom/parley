@@ -62,6 +62,36 @@ describe('what earns a line', () => {
     expect(missed.lines[0]?.tone).toBe('bad')
   })
 
+  it('puts where a finding is beside it, and leaves its words alone', () => {
+    // The reference belongs in the line, not the detail. The detail is what
+    // the reviewer wrote; editing a path into it would change what they said.
+    const { lines } = summariseRun('r', [
+      fact(
+        {
+          kind: 'finding',
+          text: 'the retry ceiling is not surfaced',
+          evidence: [
+            { path: 'src/retry.ts', line: 42, symbol: 'retry', excerpt: '' },
+            { path: 'src/queue.ts', line: null, symbol: '', excerpt: '' },
+          ],
+          blocking: true,
+        },
+        { actor: { kind: 'reviewer', vendor: 'claude' } },
+      ),
+    ])
+    expect(lines[0]?.text).toBe(
+      'raised a blocking finding — src/retry.ts:42 — retry, src/queue.ts',
+    )
+    expect(lines[0]?.detail).toBe('the retry ceiling is not surfaced')
+  })
+
+  it('reads the same when the reviewer named nowhere', () => {
+    const { lines } = summariseRun('r', [
+      fact({ kind: 'finding', text: 'nothing covers the empty case', blocking: true }),
+    ])
+    expect(lines[0]?.text).toBe('raised a blocking finding')
+  })
+
   it('carries a finding’s own words as detail rather than flattening them', () => {
     const { lines } = summariseRun('r', [
       fact(

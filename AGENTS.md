@@ -425,11 +425,22 @@ entries and notes. Three rules, in the order they matter:
   to `[]` so rows written before the reviewer was ever asked read as "said
   nothing about where", which is exactly true.
 
-`reporter.ts` validates evidence by hand rather than with the zod schema. It
-is inside the graph `parley-remote` is built from, and importing a validator
-as a VALUE puts the whole of zod in a bundle whose defining property is that
-it contains no npm code. The boundary test caught it; the comment is there so
-the next person does not rediscover it.
+The surfaces all render it through `evidenceLabel` — `path:line — symbol`,
+one notation so the ledger panel, the run room and the backlog brief cannot
+drift into three. In the run room the reference goes in the LINE and the
+reviewer's words stay the detail: putting a path inside a quote edits what
+somebody said. An accepted risk carries the references from the sightings in
+that repository and no others — a path from a different checkout is worse
+than none.
+
+**`domain.ts` is not a place to put a function.** Twice in this milestone the
+boundary went red on it: once validating the fact's evidence with the zod
+schema (fixed by hand-checking, like every other field in that decoder), and
+once by adding a four-line formatter beside the type it formats. `domain.ts`
+builds schemas at module scope, so ANY value imported from it pulls the whole
+of zod behind it — fine in the app, fatal in `parley-remote`. Helpers the
+execution core needs go in a leaf: `usage.ts`, `ids.ts`, and now
+`evidenceLabel.ts`. Type imports erase and are always safe.
 
 ## Adoption: verifying work Parley did not write
 

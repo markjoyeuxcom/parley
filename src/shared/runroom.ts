@@ -1,3 +1,5 @@
+import type { Evidence } from './domain'
+import { evidenceLabel } from './evidenceLabel'
 import type { RunEvent } from './journal'
 
 /**
@@ -103,13 +105,19 @@ function lineFor(event: RunEvent): RunLine | null {
       }
     }
 
-    case 'finding':
+    case 'finding': {
+      // The reference goes in the LINE, not the detail: the detail is the
+      // reviewer's own words and putting a path inside them would edit what
+      // they said. Where it is belongs beside "raised a blocking finding".
+      const where = (fact.evidence as Evidence[] | undefined) ?? []
+      const at = where.length ? ` — ${where.map(evidenceLabel).join(', ')}` : ''
       return {
         ...base,
-        text: fact.blocking ? 'raised a blocking finding' : 'left a note',
+        text: `${fact.blocking ? 'raised a blocking finding' : 'left a note'}${at}`,
         detail: String(fact.text),
         tone: fact.blocking ? 'bad' : 'warn',
       }
+    }
 
     case 'judgement':
       if (fact.passed === null) {

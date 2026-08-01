@@ -132,6 +132,68 @@ describe('deterministic backlog ingestion', () => {
     expect(repo.listBacklogItems({ repoPath })).toHaveLength(before)
   })
 
+  it('an accepted risk carries where it was seen, not just that it was seen', () => {
+    // Filing "something is wrong somewhere" leaves whoever picks it up to find
+    // it again — which is most of the work, and the part the reviewer had
+    // already done. Only the sightings in THIS repository come along: a
+    // reference to a file in another checkout is worse than none.
+    const repo = new Repo(openDatabase(':memory:'))
+    const session = makeDebateSession(repo)
+    const repoA = mkdtempSync(join(tmpdir(), 'parley-backlog-evidence-a-'))
+    const repoB = mkdtempSync(join(tmpdir(), 'parley-backlog-evidence-b-'))
+    const planA = makePlan(repo, session.id, repoA)
+    const planB = makePlan(repo, session.id, repoB)
+
+    const finding = repo.upsertLedgerFinding(session.id, 'The cache key omits the tenant.')
+    repo.recordFindingOccurrence({
+      findingId: finding.id,
+      planId: planA.id,
+      milestoneId: null,
+      round: null,
+      kind: 'blocking',
+      source: 'review',
+      evidence: [{ path: 'src/cache.ts', line: 12, symbol: 'keyFor', excerpt: '' }],
+    })
+    // The same claim, seen again in the same repository somewhere else.
+    repo.recordFindingOccurrence({
+      findingId: finding.id,
+      planId: planA.id,
+      milestoneId: null,
+      round: null,
+      kind: 'blocking',
+      source: 'review',
+      evidence: [{ path: 'src/warm.ts', line: 3, symbol: '', excerpt: '' }],
+    })
+    repo.recordFindingOccurrence({
+      findingId: finding.id,
+      planId: planB.id,
+      milestoneId: null,
+      round: null,
+      kind: 'blocking',
+      source: 'review',
+      evidence: [{ path: 'elsewhere/other.ts', line: 9, symbol: '', excerpt: '' }],
+    })
+
+    disposeLedgerFinding(
+      repo,
+      {
+        sessionId: session.id,
+        findingId: finding.id,
+        occurrenceId: null,
+        state: 'accepted-risk',
+        note: 'Single-tenant for now.',
+      },
+      () => {},
+    )
+
+    const filed = repo.listBacklogItems({ repoPath: repoA })[0]
+    expect(filed?.evidence.map((entry) => entry.path)).toEqual(['src/cache.ts', 'src/warm.ts'])
+    expect(filed?.evidence[0]?.line).toBe(12)
+    // The other repository's item gets its own reference and not this one's.
+    const other = repo.listBacklogItems({ repoPath: repoB })[0]
+    expect(other?.evidence.map((entry) => entry.path)).toEqual(['elsewhere/other.ts'])
+  })
+
   it('accepted risks carry into the backlogs of the repos they were accepted against', () => {
     const repo = new Repo(openDatabase(':memory:'))
     const session = makeDebateSession(repo)
