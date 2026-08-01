@@ -444,6 +444,15 @@ const HANDLERS: Record<CommandName, Handler> = {
   'remote.status': (p, ctx) => ctx.manager.remoteStatus((p as { targetId: string }).targetId),
   'remote.recover': (p, ctx) => ctx.manager.recoverRemoteRun((p as { runId: string }).runId),
   'remote.unresolved': (_p, ctx) => ctx.manager.repo.listUnresolvedRemoteRuns(),
+  'profile.list': (_p, ctx) => ctx.manager.repo.listAgentProfiles(),
+  'profile.add': (p, ctx) =>
+    ctx.manager.repo.createAgentProfile(
+      p as { name: string; vendor: 'claude' | 'codex' | 'agy'; model: string; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'; persona: string },
+    ),
+  'profile.forget': (p, ctx) => {
+    ctx.manager.repo.forgetAgentProfile((p as { profileId: string }).profileId)
+    return null
+  },
   'search.query': (p, ctx) => {
     const input = p as { query: string; limit?: number }
     return ctx.manager.search(input.query, input.limit)

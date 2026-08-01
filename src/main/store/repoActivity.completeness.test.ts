@@ -43,6 +43,8 @@ const OUT_OF_SCOPE: Readonly<Record<string, string>> = {
   search_index_docsize: 'FTS5 shadow table for search_index.',
   search_index_idx: 'FTS5 shadow table for search_index.',
   skills: 'Saved agent instructions are application-global.',
+  agent_profiles:
+    'Named seat configurations are application-global, like remote_targets: they describe how work may be staffed, not that any repository was worked on.',
   worktrees: 'The checkout registry mirrors plan-owned filesystem state and is not repository activity.',
 }
 

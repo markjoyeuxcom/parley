@@ -1,4 +1,5 @@
 import type {
+  AgentProfile,
   Acceptance,
   AgentConfig,
   AppJourney,
@@ -332,6 +333,11 @@ export const api = {
   recoverRemoteRun: (runId: Id): Promise<{ recovered: boolean; detail: string }> =>
     bridge().invoke('remote.recover', { runId }),
   unresolvedRemoteRuns: (): Promise<RemoteRunRecord[]> => bridge().invoke('remote.unresolved'),
+  listAgentProfiles: (): Promise<AgentProfile[]> => bridge().invoke('profile.list'),
+  addAgentProfile: (profile: Omit<AgentProfile, 'id' | 'createdAt'>): Promise<AgentProfile> =>
+    bridge().invoke('profile.add', profile),
+  forgetAgentProfile: (profileId: Id): Promise<null> =>
+    bridge().invoke('profile.forget', { profileId }),
   searchRecord: (query: string, limit?: number): Promise<RecordSearchHit[]> =>
     bridge().invoke('search.query', { query, ...(limit ? { limit } : {}) }),
   installRemote: (targetId: string): Promise<{ ok: boolean; detail: string; buildId: string }> =>

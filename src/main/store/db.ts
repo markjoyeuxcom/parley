@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 31
+export const SCHEMA_VERSION = 32
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -512,6 +512,9 @@ CREATE TABLE IF NOT EXISTS run_events (
   occurred_at     INTEGER NOT NULL,
   actor_kind      TEXT NOT NULL,
   actor_vendor    TEXT,
+  -- The profile the seat was picked from, as of that moment. A column like
+  -- its actor siblings: the journal is queried by who, and JSON would hide it.
+  actor_profile   TEXT,
   actor_target_id TEXT,
   kind            TEXT NOT NULL,
   payload         TEXT NOT NULL
@@ -523,6 +526,22 @@ CREATE TABLE IF NOT EXISTS run_events (
 -- the reason for keeping one.
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_run_events_milestone ON run_events(milestone_id, occurred_at);
+
+-- A named way of configuring a seat. Application-global, like remote_targets:
+-- it describes how work may be staffed, not that any repository was worked on.
+-- Never credentials — the CLIs hold their own authentication, and a profile
+-- that carried keys would turn a convenience into a vault.
+CREATE TABLE IF NOT EXISTS agent_profiles (
+  id         TEXT PRIMARY KEY,
+  -- NOCASE: "fast reviewer" and "Fast Reviewer" would be one identity to any
+  -- person reading a journal, so they are one identity here too.
+  name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  vendor     TEXT NOT NULL,
+  model      TEXT NOT NULL DEFAULT '',
+  effort     TEXT NOT NULL DEFAULT 'medium',
+  persona    TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS remote_targets (
   id         TEXT PRIMARY KEY,
@@ -1200,6 +1219,16 @@ export function migrate(db: Db): void {
     // Additive: SCHEMA creates the table fresh. Runs that disconnected before
     // this existed are unrecoverable and always were — nothing recorded where
     // they went.
+  }
+  if (current < 32) {
+    // agent_profiles is additive. run_events grows the actor's profile
+    // column; events recorded before profiles existed read as unstamped,
+    // which is exactly what they were.
+    try {
+      db.exec(`ALTER TABLE run_events ADD COLUMN actor_profile TEXT`)
+    } catch {
+      // Already present, because SCHEMA above created the table fresh.
+    }
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

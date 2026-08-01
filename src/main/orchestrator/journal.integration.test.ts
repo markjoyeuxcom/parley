@@ -27,7 +27,15 @@ afterAll(() => {
 })
 
 const claude = { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' }
-const codex = { vendor: 'codex' as const, model: '', effort: 'high' as const, persona: '' }
+const codex = {
+  vendor: 'codex' as const,
+  model: '',
+  effort: 'high' as const,
+  persona: '',
+  // Stamped as if picked from a profile, so attribution is exercised on the
+  // ordinary local path and not only over the wire.
+  profile: 'Fast executor',
+}
 
 function gitRepo(): string {
   const repoPath = mkdtempSync(join(tmpdir(), 'parley-journal-'))
@@ -152,6 +160,14 @@ describe('a run leaves a story behind', () => {
     // It comes first, because why a run was allowed precedes anything it did.
     const positions = runs[0]!.events.map((event) => event.kind)
     expect(positions.indexOf('decision')).toBeLessThan(positions.indexOf('fact'))
+  }, 60_000)
+
+  it('carries the profile a seat was picked from into every line it wrote', async () => {
+    const { runs } = await runOnce()
+    const agents = runs[0]!.events.filter((event) => event.actor.kind === 'agent')
+    expect(agents.length).toBeGreaterThan(0)
+    // The name as of pick time — a rename or deletion later cannot reach it.
+    expect(agents.every((event) => event.actor.profile === 'Fast executor')).toBe(true)
   }, 60_000)
 
   it('attributes only the human decision to the human', async () => {

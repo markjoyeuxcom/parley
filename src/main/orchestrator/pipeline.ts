@@ -747,6 +747,8 @@ export class Pipeline {
     const reporter = this.reporterFor(plan, milestone, activity, runId, {
       executor: plan.executor.vendor,
       reviewer: plan.reviewer.vendor,
+      executorProfile: plan.executor.profile,
+      reviewerProfile: plan.reviewer.profile,
     })
     reporter.started(entry)
     // The first line of a run's story is why it happened. Everything after it
@@ -1077,6 +1079,8 @@ export class Pipeline {
     const adoptionReporter = this.reporterFor(plan, milestone, activity, adoptionRunId, {
       executor: plan.executor.vendor,
       reviewer: plan.reviewer.vendor,
+      executorProfile: plan.executor.profile,
+      reviewerProfile: plan.reviewer.profile,
     })
     adoptionReporter.started('adopted')
     // No approval to point at — adoption writes nothing, which is exactly why

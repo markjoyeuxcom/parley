@@ -369,7 +369,7 @@ export type RemoteBody =
        * Optional so an older helper stays readable — the local side falls back
        * to deriving it.
        */
-      actor?: { kind: string; vendor?: string; targetId?: string }
+      actor?: { kind: string; vendor?: string; profile?: string; targetId?: string }
     }
   /**
    * The host has a bare mirror for this repository, here.

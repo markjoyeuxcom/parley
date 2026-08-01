@@ -118,7 +118,14 @@ export class RemoteReplay {
     const actor = frame.body.actor
     this.reporter.record(
       fact,
-      actor ? { kind: actor.kind as RunActor['kind'], vendor: actor.vendor, targetId: actor.targetId } : undefined,
+      actor
+        ? {
+            kind: actor.kind as RunActor['kind'],
+            vendor: actor.vendor,
+            profile: actor.profile,
+            targetId: actor.targetId,
+          }
+        : undefined,
     )
     this.applied += 1
     return null

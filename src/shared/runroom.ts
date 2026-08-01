@@ -52,7 +52,9 @@ function who(event: RunEvent): string {
     case 'system':
       return 'Parley'
     default:
-      return `${event.actor.vendor ?? 'agent'}${at}`
+      // The profile is the identity someone chose and named; the vendor is
+      // what happened to be behind it. When both exist, the name leads.
+      return `${event.actor.profile ?? event.actor.vendor ?? 'agent'}${at}`
   }
 }
 

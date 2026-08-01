@@ -105,6 +105,19 @@ describe('what earns a line', () => {
     expect(lines[0]?.tone).toBe('bad')
   })
 
+  it('leads with the profile name when the seat was picked from one', () => {
+    // The profile is the identity someone chose and named; the vendor is what
+    // happened to be behind it. "Fast reviewer raised a blocking finding"
+    // answers the question a journal exists for better than "codex" does.
+    const { lines } = summariseRun('r', [
+      fact(
+        { kind: 'phase', phase: 'executing' },
+        { actor: { kind: 'agent', vendor: 'codex', profile: 'Fast executor', targetId: 'build-01' } },
+      ),
+    ])
+    expect(lines[0]?.who).toBe('Fast executor on build-01')
+  })
+
   it('names the host when the work did not happen here', () => {
     const { lines } = summariseRun('r', [
       fact({ kind: 'phase', phase: 'executing' }, { actor: { kind: 'agent', vendor: 'codex', targetId: 'build-01' } }),

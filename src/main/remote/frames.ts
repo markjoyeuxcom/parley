@@ -189,7 +189,9 @@ function decodeBody(value: unknown): RemoteBody | null {
 }
 
 /** Attribution from the far end. Absent is fine; malformed is not trusted. */
-function decodeActor(value: unknown): { kind: string; vendor?: string; targetId?: string } | null {
+function decodeActor(
+  value: unknown,
+): { kind: string; vendor?: string; profile?: string; targetId?: string } | null {
   if (typeof value !== 'object' || value === null) return null
   const raw = value as Record<string, unknown>
   const kind = str(raw.kind)
@@ -197,6 +199,10 @@ function decodeActor(value: unknown): { kind: string; vendor?: string; targetId?
   return {
     kind,
     vendor: str(raw.vendor) ?? undefined,
+    // Dropped silently when malformed, like every field here — but never
+    // dropped when present: losing it would strip a remote reviewer of the
+    // name a person gave it.
+    profile: str(raw.profile) ?? undefined,
     targetId: str(raw.targetId) ?? undefined,
   }
 }

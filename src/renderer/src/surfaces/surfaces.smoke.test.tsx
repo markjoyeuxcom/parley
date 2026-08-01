@@ -415,6 +415,7 @@ function installBridge(
     'loop.list': () => [],
     'skill.list': () => [],
     'pane.list': () => [],
+    'profile.list': () => [],
     ...overrides,
   }
   window.parley = {
@@ -1904,6 +1905,75 @@ function SurfaceProbe(): ReactNode {
     </div>
   )
 }
+
+describe('profiles in the agent picker', () => {
+  it('fills the seat from a profile, stamps it, and a hand edit ends it', async () => {
+    installBridge({
+      'profile.list': () => [
+        {
+          id: 'p1',
+          name: 'Fast reviewer',
+          vendor: 'codex',
+          model: 'gpt-5.6-luna',
+          effort: 'low',
+          persona: 'terse',
+          createdAt: 1,
+        },
+      ],
+    })
+    render(
+      <StoreProvider>
+        <AgentPickerHarness />
+      </StoreProvider>,
+    )
+
+    const profileSelect = (await screen.findByText('Fast reviewer')).closest('select')!
+    fireEvent.change(profileSelect, { target: { value: 'Fast reviewer' } })
+    // The whole seat moved: vendor, model — and the stamp with it.
+    await waitFor(() =>
+      expect(screen.getByTestId('picker-config').textContent).toBe('codex:gpt-5.6-luna'),
+    )
+
+    // Editing any field ends the profile: a drifted config wearing the name
+    // would put "Fast reviewer" in the journal on a seat someone retuned.
+    const modelInput = screen.getByPlaceholderText(/codex default|CLI default/i)
+    fireEvent.change(modelInput, { target: { value: 'gpt-5.6-sol' } })
+    await waitFor(() => expect(profileSelect.value).toBe(''))
+  })
+
+  it('saves the current seat under a name, through the real command', async () => {
+    const invoked: Array<{ command: string; payload: unknown }> = []
+    installBridge({
+      'profile.list': () => [],
+      'profile.add': (payload) => {
+        invoked.push({ command: 'profile.add', payload })
+        return { id: 'p2', createdAt: 1, ...(payload as object) }
+      },
+    })
+    render(
+      <StoreProvider>
+        <AgentPickerHarness />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByText('Save as profile…'))
+    fireEvent.change(screen.getByPlaceholderText('Profile name'), {
+      target: { value: 'Opus architect' },
+    })
+    fireEvent.click(screen.getByText('Save'))
+
+    await waitFor(() =>
+      expect(invoked).toEqual([
+        {
+          command: 'profile.add',
+          payload: { name: 'Opus architect', vendor: 'claude', model: '', effort: 'high', persona: '' },
+        },
+      ]),
+    )
+    // And the seat now IS that profile.
+    await screen.findByText('Opus architect')
+  })
+})
 
 describe('the palette searches the record', () => {
   it('renders hits with their marks, and opens a milestone through its session', async () => {

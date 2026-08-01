@@ -690,6 +690,33 @@ dispositioning a finding are not about one run — a disposition usually happens
 BETWEEN runs, and filing it against whichever attempt was last would attribute
 it to a story it was not part of. All three already keep immutable records.
 
+## Agent profiles: a name for a way of configuring a seat
+
+The Buzz idea taken without its luggage: a reusable agent identity is a
+vendor, model, effort and persona under a name — **never credentials**. The
+CLIs hold their own authentication; a profile that carried keys would turn a
+convenience into a vault. `agent_profiles` (schema 32), unique NOCASE name,
+CRUD beside the remote targets it resembles.
+
+The load-bearing decision is that a seat carries the profile's **name as a
+stamp**, not a reference. `AgentConfig.profile` is set at pick time, travels
+wherever the config goes — into the plan row, over the wire to a remote
+worker that holds no record of profiles — and lands in the journal as
+`actor_profile` on every event the seat produced. A name and not an id
+because the journal is read by people and outlives renames: what a seat was
+called when it acted is a fact, and deleting or renaming the profile later
+does not reach it.
+
+A hand edit ends the profile. The picker routes every field change through
+one `edit()` that deletes the stamp, because a config that has drifted from
+its profile is not that profile — leaving the name on would put "Fast
+reviewer" in the journal on a seat somebody quietly retuned. The eligibility
+fallback (vendor auto-corrected for a role) drops it for the same reason.
+
+The Run Room and the CLI's `runs`/`journal` output lead with the profile name
+when one is present ("Fast executor on build-01"); the vendor stays on the
+event for queries.
+
 ## Search: one index, kept by triggers
 
 `search_index` (FTS5, `porter unicode61`, schema 30) covers sessions, turns,

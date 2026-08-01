@@ -82,6 +82,10 @@ export async function runWorker(
   const reporter = new FramingMilestoneReporter(request.milestone, write, {
     executor: request.plan.executor.vendor,
     reviewer: request.plan.reviewer.vendor,
+    // Stamped on the config at pick time precisely so this machine, which
+    // holds no record of profiles, can still attribute work to one.
+    executorProfile: request.plan.executor.profile,
+    reviewerProfile: request.plan.reviewer.profile,
   })
   const registry = new AgentRegistry(request.plan.mock)
 

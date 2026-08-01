@@ -20,12 +20,16 @@
 /** Who did the thing. Not who is to blame — several actors are not people. */
 export interface RunActor {
   kind: 'human' | 'agent' | 'verifier' | 'reviewer' | 'system'
-  /**
-   * The adapter behind an agent or reviewer, when there is one. A placeholder
-   * for the agent profile this will become: a profile id belongs here, and
-   * everything reading this field will keep working when one arrives.
-   */
+  /** The adapter behind an agent or reviewer, when there is one. */
   vendor?: string
+  /**
+   * The profile the seat was picked from, when one was — its NAME as of that
+   * moment. This is the field the vendor comment promised from the day the
+   * journal was built. A name rather than an id, because the journal is read
+   * by people and outlives renames: what a seat was called when it acted is
+   * a fact, and facts do not retroactively change.
+   */
+  profile?: string
   /** The execution host, when the actor was not this machine. */
   targetId?: string
 }
@@ -145,6 +149,9 @@ export const MAX_ACTIVITY_EVENTS = 400
 export interface RunRoles {
   executor: string
   reviewer: string
+  /** Profile names, when the seats were picked from profiles. */
+  executorProfile?: string
+  reviewerProfile?: string
   /** The host, when the run is not on this machine. */
   targetId?: string
 }
@@ -156,7 +163,12 @@ export function actorForFact(kind: string, roles: RunRoles): RunActor {
     case 'narrative':
       // The reviewer's output. A finding is the clearest case: it is an
       // opinion, and whose opinion it was is the point of recording it.
-      return { kind: 'reviewer', vendor: roles.reviewer, targetId: roles.targetId }
+      return {
+        kind: 'reviewer',
+        vendor: roles.reviewer,
+        ...(roles.reviewerProfile ? { profile: roles.reviewerProfile } : {}),
+        targetId: roles.targetId,
+      }
     case 'verification':
     case 'mutations':
       // Neither agent's claim. Parley ran the command and observed the result,
@@ -167,6 +179,11 @@ export function actorForFact(kind: string, roles: RunRoles): RunActor {
       // Derived from the plan's other milestones by whoever holds the record.
       return { kind: 'system' }
     default:
-      return { kind: 'agent', vendor: roles.executor, targetId: roles.targetId }
+      return {
+        kind: 'agent',
+        vendor: roles.executor,
+        ...(roles.executorProfile ? { profile: roles.executorProfile } : {}),
+        targetId: roles.targetId,
+      }
   }
 }

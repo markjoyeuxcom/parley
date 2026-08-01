@@ -228,7 +228,8 @@ function seed(repo: Repo, repoPath: string): { plan: WorkPlan; milestone: Milest
     title: 'Remote plan',
     repoPath,
     planner: claude,
-    executor: codex,
+    // Stamped, so attribution-with-a-profile is exercised across the wire.
+    executor: { ...codex, profile: 'Build executor' },
     reviewer: claude,
     status: 'ready',
     question: '',
@@ -371,6 +372,12 @@ describe('a milestone run on another machine, through the Manager', () => {
     // was driving the loop.
     const raised = events.find((event) => kindOf(event) === 'finding')
     expect(raised?.actor).toMatchObject({ kind: 'reviewer', vendor: 'claude' })
+
+    // The executor's events carry the profile the seat was picked from —
+    // recomputed HERE from the plan's stamp, since the scripted host sends
+    // its facts without actors.
+    const executing = events.find((event) => kindOf(event) === 'phase')
+    expect(executing?.actor).toMatchObject({ vendor: 'codex', profile: 'Build executor' })
 
     // And the one thing this side concluded carries no host, because no host
     // concluded it — the plan's other milestones are knowledge only here.

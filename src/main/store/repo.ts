@@ -3,6 +3,7 @@ import { searchRecord, type SearchHit, type SearchOptions } from './search'
 import type { RemoteRunRecord, RemoteTarget } from '@shared/remote'
 import type { RunEvent } from '@shared/journal'
 import {
+  type AgentProfile,
   type CorrectionDisposition,
   addUsage,
   emptyUsage,
@@ -2140,8 +2141,8 @@ export class Repo {
     this.db.run(
       `INSERT INTO run_events
          (id, run_id, milestone_id, plan_id, sequence, occurred_at,
-          actor_kind, actor_vendor, actor_target_id, kind, payload)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          actor_kind, actor_vendor, actor_profile, actor_target_id, kind, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       event.id,
       event.runId,
       event.milestoneId,
@@ -2150,6 +2151,7 @@ export class Repo {
       event.occurredAt,
       event.actor.kind,
       event.actor.vendor ?? null,
+      event.actor.profile ?? null,
       event.actor.targetId ?? null,
       event.kind,
       JSON.stringify(event.payload ?? null),
@@ -2217,6 +2219,10 @@ export class Repo {
       actor: {
         kind: String(row.actor_kind) as RunEvent['actor']['kind'],
         vendor: row.actor_vendor === null ? undefined : String(row.actor_vendor),
+        profile:
+          row.actor_profile === null || row.actor_profile === undefined
+            ? undefined
+            : String(row.actor_profile),
         targetId: row.actor_target_id === null ? undefined : String(row.actor_target_id),
       },
       kind: String(row.kind) as RunEvent['kind'],
@@ -2233,6 +2239,59 @@ export class Repo {
    * work MAY run, not a fact about any repository having been worked on. The
    * completeness guard classifies it out of scope for exactly that reason.
    */
+  /* ── Named seat configurations ───────────────────────────────────────── */
+
+  createAgentProfile(input: Omit<AgentProfile, 'id' | 'createdAt'>): AgentProfile {
+    const name = input.name.trim()
+    if (!name) throw new Error('a profile needs a name')
+    const row: AgentProfile = {
+      id: newId(),
+      name,
+      vendor: input.vendor,
+      model: input.model,
+      effort: input.effort,
+      persona: input.persona,
+      createdAt: Date.now(),
+    }
+    this.db.run(
+      `INSERT INTO agent_profiles (id, name, vendor, model, effort, persona, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      row.id,
+      row.name,
+      row.vendor,
+      row.model,
+      row.effort,
+      row.persona,
+      row.createdAt,
+    )
+    return row
+  }
+
+  listAgentProfiles(): AgentProfile[] {
+    return this.db
+      .all(`SELECT * FROM agent_profiles ORDER BY name COLLATE NOCASE ASC`)
+      .map((row) => ({
+        id: str(row['id']),
+        name: str(row['name']),
+        vendor: str(row['vendor']) as AgentProfile['vendor'],
+        model: str(row['model'] ?? ''),
+        effort: str(row['effort']) as AgentProfile['effort'],
+        persona: str(row['persona'] ?? ''),
+        createdAt: num(row['created_at']),
+      }))
+  }
+
+  /**
+   * Deletes the profile and nothing else.
+   *
+   * Configs that were stamped from it keep their stamp: the journal and every
+   * plan row carry the NAME as of when the seat was picked, and what a seat
+   * was called when it ran is a fact a deletion cannot reach.
+   */
+  forgetAgentProfile(id: Id): void {
+    this.db.run(`DELETE FROM agent_profiles WHERE id = ?`, id)
+  }
+
   /* ── Runs that left this machine ─────────────────────────────────────── */
 
   openRemoteRun(input: {

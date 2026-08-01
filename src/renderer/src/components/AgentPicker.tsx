@@ -1,6 +1,7 @@
-import { useEffect, useMemo, type ReactNode } from 'react'
-import type { AgentConfig, Effort, Vendor } from '@shared/domain'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import type { AgentConfig, AgentProfile, Effort, Vendor } from '@shared/domain'
 import { eligibleVendors, type SeatRole } from '@shared/vendors'
+import { api } from '../lib/api'
 import { useStore } from '../state'
 import { Field } from './ui'
 
@@ -55,6 +56,77 @@ export function AgentPicker({
   toolFree?: boolean
 }): ReactNode {
   const { state } = useStore()
+  const [profiles, setProfiles] = useState<AgentProfile[]>([])
+  const [saving, setSaving] = useState(false)
+  const [saveName, setSaveName] = useState('')
+  const [saveError, setSaveError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    void api
+      .listAgentProfiles()
+      .then((rows) => {
+        // The same guard RunRoom carries: a bridge that answers with nothing
+        // must produce an empty picker, not a crashed one.
+        if (!cancelled) setProfiles(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        // Profiles are a convenience; a picker with none is still a picker.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  /**
+   * A hand edit ends the profile.
+   *
+   * The stamp means "this seat IS that profile", and a config that has
+   * drifted from it is not. Keeping the name on an edited config would put a
+   * profile's name on work it never described — the journal would then say
+   * "Fast reviewer" about a seat someone had quietly retuned.
+   */
+  const edit = (patch: Partial<AgentConfig>): void => {
+    const next = { ...value, ...patch }
+    delete next.profile
+    onChange(next)
+  }
+
+  const applyProfile = (name: string): void => {
+    const chosen = profiles.find((profile) => profile.name === name)
+    if (!chosen) return
+    onChange({
+      vendor: chosen.vendor,
+      model: chosen.model,
+      effort: chosen.effort,
+      persona: chosen.persona,
+      profile: chosen.name,
+    })
+  }
+
+  const saveProfile = async (): Promise<void> => {
+    const name = saveName.trim()
+    if (!name) return
+    try {
+      const created = await api.addAgentProfile({
+        name,
+        vendor: value.vendor,
+        model: value.model,
+        effort: value.effort,
+        persona: value.persona,
+      })
+      setProfiles((rows) => [...rows, created].sort((a, b) => a.name.localeCompare(b.name)))
+      setSaving(false)
+      setSaveName('')
+      setSaveError('')
+      // The seat becomes the profile it was just saved as.
+      onChange({ ...value, profile: created.name })
+    } catch (error) {
+      // Almost always the unique name; the exact words come from the store.
+      setSaveError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   const listId = `models-${value.vendor}`
   const eligible = useMemo(
     () => eligibleVendors(role, toolFree),
@@ -65,7 +137,11 @@ export function AgentPicker({
   useEffect(() => {
     if (vendorEligible) return
     const fallback = eligible[0]
-    if (fallback) onChange({ ...value, vendor: fallback, model: '' })
+    if (fallback) {
+      const next = { ...value, vendor: fallback, model: '' }
+      delete next.profile
+      onChange(next)
+    }
   }, [eligible, onChange, value, vendorEligible])
 
   // The configured model leads, so the first thing offered is one this machine
@@ -81,12 +157,57 @@ export function AgentPicker({
     <div className="stack stack--tight">
       <div className="label">{label}</div>
 
+      {profiles.length > 0 || saving ? (
+        <div className="field-row">
+          <Field label="Profile">
+            <select
+              className="select"
+              value={value.profile ?? ''}
+              onChange={(event) => {
+                if (event.target.value) applyProfile(event.target.value)
+              }}
+            >
+              {/* A blank first option, because "no profile" is the normal
+                  state and a select that cannot express it would stamp one on
+                  every seat that merely opened the menu. A hand edit clears
+                  the stamp, so the select falls back here on its own. */}
+              <option value="">None</option>
+              {profiles.map((profile) => (
+                <option key={profile.id} value={profile.name}>
+                  {profile.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {saving ? (
+            <Field label="Save as" hint={saveError || undefined}>
+              <div className="row">
+                <input
+                  className="input"
+                  placeholder="Profile name"
+                  value={saveName}
+                  autoFocus
+                  onChange={(event) => setSaveName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void saveProfile()
+                    if (event.key === 'Escape') setSaving(false)
+                  }}
+                />
+                <button className="btn btn--sm" onClick={() => void saveProfile()}>
+                  Save
+                </button>
+              </div>
+            </Field>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="field-row field-row--3">
         <Field label="CLI">
           <select
             className="select"
             value={value.vendor}
-            onChange={(event) => onChange({ ...value, vendor: event.target.value as Vendor, model: '' })}
+            onChange={(event) => edit({ vendor: event.target.value as Vendor, model: '' })}
           >
             {VENDORS.filter(({ vendor }) => eligible.includes(vendor)).map((option) => (
               <option key={option.vendor} value={option.vendor}>
@@ -115,7 +236,7 @@ export function AgentPicker({
               value.vendor === 'agy' ? 'Required Gemini model' : configured || 'CLI default'
             }
             value={value.model}
-            onChange={(event) => onChange({ ...value, model: event.target.value })}
+            onChange={(event) => edit({ model: event.target.value })}
           />
           <datalist id={listId}>
             {suggestions.map((model) => (
@@ -128,7 +249,7 @@ export function AgentPicker({
           <select
             className="select"
             value={value.effort}
-            onChange={(event) => onChange({ ...value, effort: event.target.value as Effort })}
+            onChange={(event) => edit({ effort: event.target.value as Effort })}
           >
             {EFFORTS.map((effort) => (
               <option key={effort} value={effort}>
@@ -139,12 +260,26 @@ export function AgentPicker({
         </Field>
       </div>
 
+      {!saving ? (
+        <button
+          type="button"
+          className="btn btn--subtle btn--sm"
+          style={{ alignSelf: 'flex-start' }}
+          onClick={() => {
+            setSaving(true)
+            setSaveName(value.profile ?? '')
+          }}
+        >
+          Save as profile…
+        </button>
+      ) : null}
+
       <Field>
         <input
           className="input"
           placeholder={personaPlaceholder ?? 'Persona (optional)'}
           value={value.persona}
-          onChange={(event) => onChange({ ...value, persona: event.target.value })}
+          onChange={(event) => edit({ persona: event.target.value })}
         />
       </Field>
     </div>

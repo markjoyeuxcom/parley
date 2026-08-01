@@ -37,8 +37,45 @@ export const AgentConfig = z.object({
   effort: Effort.default('medium'),
   /** Optional persona layered on top of the protocol's system prompt. */
   persona: z.string().default(''),
+  /**
+   * The profile this seat was picked from, by NAME, stamped at pick time.
+   *
+   * The name and not the id, deliberately. It travels wherever the config
+   * goes — into a plan row, over the wire to a remote worker — and both ends
+   * can attribute work to it without a lookup against a record only one of
+   * them has. It is also honest the way the journal is honest: renaming a
+   * profile later does not rewrite what a seat was called when it ran.
+   * Cleared the moment any field is edited, because a config that has
+   * drifted from its profile is no longer that profile.
+   *
+   * Optional rather than defaulted: a default would make every literal in
+   * the codebase name it, and absence — a seat configured by hand — is the
+   * normal case, not a gap to be filled.
+   */
+  profile: z.string().optional(),
 })
 export type AgentConfig = z.infer<typeof AgentConfig>
+
+/**
+ * A named way of configuring a seat.
+ *
+ * The Buzz idea, taken without its luggage: an agent identity worth reusing
+ * is a vendor, a model, an effort and a persona under a name — "Fast
+ * reviewer", "Opus architect". Never credentials. The CLIs hold their own
+ * authentication, and a profile that carried keys would turn a convenience
+ * into a vault.
+ */
+export const AgentProfile = z.object({
+  id: Id,
+  /** Unique. Two profiles with one name would make attribution ambiguous. */
+  name: z.string().min(1),
+  vendor: Vendor,
+  model: z.string().default(''),
+  effort: Effort.default('medium'),
+  persona: z.string().default(''),
+  createdAt: Timestamp,
+})
+export type AgentProfile = z.infer<typeof AgentProfile>
 
 /**
  * Capability granted to a single agent invocation.

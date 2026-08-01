@@ -1342,6 +1342,8 @@ export class Manager {
         {
           executor: plan.executor.vendor,
           reviewer: plan.reviewer.vendor,
+          executorProfile: plan.executor.profile,
+          reviewerProfile: plan.reviewer.profile,
           targetId: target.id,
         },
         newId,
