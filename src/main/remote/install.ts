@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { join, sep } from 'node:path'
 import type { RemoteTarget } from '@shared/remote'
 import { BIN_DIR, INSTALL_ROOT, isBoringPath, LINK_NAME, bootstrapArgument } from './bootstrap'
 
@@ -182,6 +183,33 @@ export function decodeBootstrapReply(stdout: string): BootstrapReply | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Where this build's runner lives on THIS machine.
+ *
+ * Two worlds, one difference that matters: sftp is a separate process, and a
+ * separate process cannot read out of an asar archive. Electron patches `fs`
+ * so `readFileSync` on an asar path works and everything looks fine right up
+ * until the upload, which is why this needs saying rather than assuming — a
+ * packaged Parley that resolved the bundle inside the archive would hash it
+ * successfully and then hand sftp a path that does not exist.
+ *
+ * So the packaged copy is unpacked (`asarUnpack: out/remote/**`), and this
+ * points at the unpacked tree. The substitution is on the LAST segment only:
+ * `app.asar` appears in the middle of nothing else, but a user whose account
+ * is literally named `app.asar` should not be a bug.
+ *
+ * Pure and injected rather than reading `app` here, for the same reason
+ * everything else in the orchestrator is: this file is inside the boundary
+ * that `parley-remote` itself is built from, and an electron import would
+ * fail the bundle.
+ */
+export function remoteBundlePath(appPath: string): string {
+  const unpacked = appPath.endsWith(`${sep}app.asar`)
+    ? `${appPath.slice(0, -'app.asar'.length)}app.asar.unpacked`
+    : appPath
+  return join(unpacked, 'out', 'remote', 'parley-remote.mjs')
 }
 
 /** Where the active runner should be, for the message that says it is not on PATH. */

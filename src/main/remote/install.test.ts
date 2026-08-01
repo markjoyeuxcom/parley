@@ -13,6 +13,7 @@ import {
   sftpArgv,
   sftpBatch,
   stagingFor,
+  remoteBundlePath,
   type BootstrapRequest,
 } from './install'
 
@@ -199,6 +200,58 @@ describe('the bootstrap refuses what it claims to', () => {
     const lines = (raw.stdout ?? '').split('\n').filter((line) => line.trim().length > 0)
     expect(lines).toHaveLength(1)
     expect(() => JSON.parse(lines[0]!)).not.toThrow()
+  })
+})
+
+describe('where a packaged build keeps its runner', () => {
+  it('points inside the checkout in dev, and beside the archive when packaged', () => {
+    // sftp is a separate process, and a separate process cannot read out of
+    // an asar. Electron patches `fs`, so resolving the bundle INSIDE the
+    // archive hashes fine and then hands sftp a path that does not exist —
+    // which is why the packaged copy is unpacked and this points at it.
+    expect(remoteBundlePath('/Users/x/dev/parley')).toBe(
+      join('/Users/x/dev/parley', 'out', 'remote', 'parley-remote.mjs'),
+    )
+    expect(remoteBundlePath('/Applications/Parley.app/Contents/Resources/app.asar')).toBe(
+      join(
+        '/Applications/Parley.app/Contents/Resources/app.asar.unpacked',
+        'out',
+        'remote',
+        'parley-remote.mjs',
+      ),
+    )
+  })
+
+  it('only rewrites a trailing app.asar, not one that happens to be in the path', () => {
+    // Someone whose home directory is named app.asar is not a bug worth
+    // having.
+    expect(remoteBundlePath('/Users/app.asar/dev/parley')).toBe(
+      join('/Users/app.asar/dev/parley', 'out', 'remote', 'parley-remote.mjs'),
+    )
+  })
+
+  it('ships the runner unpacked, and rebuilds it on every build', () => {
+    // The packaging config IS the feature here. Remote execution worked only
+    // from a dev checkout for the whole arc, and no test could see it: every
+    // test resolves paths on this disk, where out/ always exists. This reads
+    // the manifest that decides what an installed copy actually contains.
+    const manifest = JSON.parse(
+      readFileSync(resolve(__dirname, '../../../package.json'), 'utf8'),
+    ) as {
+      scripts: Record<string, string>
+      build: { asar: boolean; asarUnpack: string[]; files: string[] }
+    }
+
+    // Inside the asar the file exists and is unreadable by sftp, which is the
+    // failure that looks most like success.
+    expect(manifest.build.asarUnpack).toContain('out/remote/**')
+    // And it has to be in the package at all.
+    expect(manifest.build.files.some((glob) => glob.startsWith('out/'))).toBe(true)
+    // A build that does not produce it ships whatever was last built by hand,
+    // or nothing. `build` is also what the self-update gate runs, so this is
+    // what keeps a relaunched Parley's runner matching the Parley talking to
+    // the host.
+    expect(manifest.scripts['build']).toContain('build:remote')
   })
 })
 

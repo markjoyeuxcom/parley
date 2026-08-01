@@ -688,6 +688,14 @@ answer is to send no argv over the wire at all. That rule holds through
 installation too, which uses SFTP for the bytes and a constant `node -e`
 bootstrap for everything after.
 
+**The runner travels with Parley.** Installing sends the copy that shipped
+with this exact build, so a host always answers to the Parley talking to it —
+which is why build identity is the file's own content hash rather than a
+version somebody has to remember to bump. That holds for the installed app
+and not only a dev checkout; the runner rides beside the archive rather than
+inside it, because the upload is a real `sftp` process and cannot read out of
+one.
+
 **It executes as that host's user.** Their CLI installations, their
 subscriptions, their permission configuration. `parley remote status` reports
 who that is, which agents are actually usable, and each one's permission

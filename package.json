@@ -14,7 +14,7 @@
     "predev": "node scripts/check-electron.mjs",
     "dev": "electron-vite dev",
     "prebuild": "node scripts/check-electron.mjs",
-    "build": "electron-vite build",
+    "build": "electron-vite build && npm run build:remote",
     "build:remote": "node scripts/build-remote.mjs",
     "fix:electron": "rm -rf node_modules/electron/dist node_modules/electron/path.txt && node node_modules/electron/install.js",
     "preview": "electron-vite preview",
@@ -62,7 +62,8 @@
     "productName": "Parley",
     "asar": true,
     "asarUnpack": [
-      "**/node_modules/node-pty/**"
+      "**/node_modules/node-pty/**",
+      "out/remote/**"
     ],
     "directories": {
       "output": "dist",

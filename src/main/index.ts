@@ -124,6 +124,11 @@ async function bootstrap(): Promise<void> {
     // Packaged, getAppPath is inside the asar — not a repo — so null keeps
     // every self rule dormant.
     selfRepoPath: app.isPackaged ? null : app.getAppPath(),
+    // The same call, kept apart on purpose: packaged, this is inside the
+    // asar and is still exactly where the shipped remote runner is found
+    // (beside it, in app.asar.unpacked). selfRepoPath must stay null there;
+    // this must not.
+    appPath: app.getAppPath(),
     userDataPath: app.getPath('userData'),
     // One native banner per newly-appearing hold — the push half of the
     // attention queue. Supplementary by design: the stamp is written either

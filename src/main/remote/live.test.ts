@@ -37,7 +37,18 @@ const host = process.env['PARLEY_LIVE_REMOTE'] ?? ''
 const nodeCommand = process.env['PARLEY_LIVE_REMOTE_NODE'] || 'node'
 const live = host !== ''
 const target = { host }
-const bundlePath = resolve('out/remote/parley-remote.mjs')
+/**
+ * Overridable so the PACKAGED bundle can be accepted too.
+ *
+ * The packaged copy is the one that used to be unreachable, and it is the
+ * only copy most people will ever have. Pointing this at
+ * `dist/mac-arm64/Parley.app/Contents/Resources/app.asar.unpacked/out/remote/parley-remote.mjs`
+ * proves the shipped artefact installs — which a dev-checkout run cannot,
+ * since out/ always exists here.
+ */
+const bundlePath = resolve(
+  process.env['PARLEY_LIVE_REMOTE_BUNDLE'] || 'out/remote/parley-remote.mjs',
+)
 
 describe.skipIf(!live)('installing on a real host', () => {
   it('uploads, hashes, proves the staged bundle runs, and activates it', async () => {

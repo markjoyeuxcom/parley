@@ -35,6 +35,16 @@ export interface OrchestratorDeps {
    */
   selfRepoPath?: string | null
   /**
+   * This build's own root — `app.getAppPath()`, packaged or not.
+   *
+   * Distinct from {@link OrchestratorDeps.selfRepoPath}, which is null when
+   * packaged because there is no checkout to treat as a repository. This one
+   * is never null, because a packaged build still ships the remote runner and
+   * still has to find it. Conflating them is what left remote execution
+   * usable only from a dev checkout.
+   */
+  appPath?: string | null
+  /**
    * Parley's own record directory. Injected only so the workspace creator can
    * refuse to scaffold inside it — the app's record is not a place for the
    * user's projects.

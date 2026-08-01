@@ -111,7 +111,15 @@ export async function installRemote(
     return {
       ok: false,
       buildId: '',
-      detail: `no built runner at ${deps.bundlePath} — run \`npm run build:remote\` first`,
+      // True in both worlds, because this reaches two very different people:
+      // a developer who has never built the runner, and someone whose
+      // installed copy shipped without it. Telling the second to run npm is
+      // advice they cannot take.
+      detail:
+        `no built runner at ${deps.bundlePath}. In a dev checkout, run ` +
+        '`npm run build:remote`. In an installed copy this means the build ' +
+        'shipped without the runner, which is a packaging fault rather than ' +
+        'anything you can fix here.',
     }
   }
   const bytes = readFileSync(deps.bundlePath)

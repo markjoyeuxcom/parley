@@ -683,6 +683,18 @@ speaking the protocol to bare `parley-remote`, resolved off the host's own
 PATH, and reports `ok: false` if that fails. A gate that cannot fail the way
 the thing it guards fails is not a gate.
 
+**The runner ships with the app, outside the archive.** `npm run build`
+produces it (so the self-update gate's rebuild keeps a relaunched Parley's
+runner matching), electron-builder ships it via `asarUnpack: out/remote/**`,
+and `remoteBundlePath(appPath)` resolves it in both worlds by substituting a
+TRAILING `app.asar` for `app.asar.unpacked`. Unpacked is not a detail: sftp is
+a separate process and cannot read out of an asar, while Electron patches `fs`
+so an in-archive path hashes perfectly and only fails at the upload — the
+failure that looks most like success. `install.test.ts` asserts the packaging
+manifest itself, because every other test resolves paths on a disk where
+`out/` always exists, which is how remote execution stayed dev-checkout-only
+through the whole arc without a single red test.
+
 **The acceptance**: `PARLEY_LIVE_REMOTE=<ssh-host>
 PARLEY_LIVE_REMOTE_NODE=<absolute node> npx vitest run
 src/main/remote/live.test.ts` after `npm run build:remote`. It installs, runs a
@@ -690,6 +702,11 @@ real milestone with a real agent CLI on the host, checks the candidate came
 back with only the declared path changed and local HEAD untouched, then rolls
 back and reinstalls. Run it after touching anything under `src/remote/**` or
 the installer — the fakes will stay green through all three failures above.
+
+Point `PARLEY_LIVE_REMOTE_BUNDLE` at
+`dist/mac-arm64/Parley.app/Contents/Resources/app.asar.unpacked/out/remote/parley-remote.mjs`
+after `npm run package:mac:dir` to accept the SHIPPED artefact rather than the
+checkout's — the only copy most people will ever have.
 
 ## The self repo: worktree-only, gate fail-closed, quit never exit
 

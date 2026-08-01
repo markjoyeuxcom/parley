@@ -64,6 +64,7 @@ import type { RemoteCapabilities, RemoteTarget } from '@shared/remote'
 import type { RunEvent } from '@shared/journal'
 import { handshakeRequest } from '@main/remote/protocol'
 import { runSsh } from '@main/remote/ssh'
+import { remoteBundlePath } from '@main/remote/install'
 import { statusVerdict, type RemoteStatus } from '@main/remote/status'
 import { driveRemoteMilestone, type RemoteRunOutcome } from '@main/remote/driver'
 import { sshConverse } from '@main/remote/converse'
@@ -412,16 +413,18 @@ export class Manager {
    * receives the runner belonging to the Parley that is talking to it — which
    * is the whole reason build identity is a content hash rather than a version
    * string somebody has to remember to bump.
+   *
+   * Packaged or not: `npm run build` produces the runner, electron-builder
+   * ships it unpacked beside the asar, and `remoteBundlePath` knows where to
+   * look in both worlds. It used to resolve against the dev checkout alone,
+   * which made remote execution a thing only people running from source
+   * could use.
    */
   async installRemote(targetId: Id): Promise<{ ok: boolean; detail: string; buildId: string }> {
     const target = this.repo.getRemoteTarget(targetId)
     if (!target) throw new RequestError('no such execution host')
     const outcome = await installRemote(target, {
-      // The dev checkout is where out/ lives. A packaged build has no
-      // checkout, so selfRepoPath is null and this reports the missing bundle
-      // rather than guessing at a path — shipping the runner as a packaged
-      // resource is its own piece of work and is not pretended here.
-      bundlePath: join(this.deps.selfRepoPath ?? '', 'out', 'remote', 'parley-remote.mjs'),
+      bundlePath: remoteBundlePath(this.deps.appPath ?? this.deps.selfRepoPath ?? ''),
     })
     return { ok: outcome.ok, detail: outcome.detail, buildId: outcome.buildId }
   }
