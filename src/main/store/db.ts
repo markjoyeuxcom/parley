@@ -568,7 +568,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
 );
 `
 
-class NodeSqliteDb implements Db {
+export class NodeSqliteDb implements Db {
   /** Nesting depth, so only the outermost call owns BEGIN/COMMIT. */
   private depth = 0
 

@@ -59,6 +59,8 @@ Two escape hatches:
   vitest run src/main/remote/live.test.ts` — the remote arc against a real
   machine. Needs `npm run build:remote` first. See "Remote execution" for why
   the fakes cannot replace it.
+- `npm run build:cli && node out/cli/parley.mjs holds --dev` — the record from
+  a terminal, as JSONL. See "The CLI reads and never writes".
 
 ## Layout
 
@@ -654,6 +656,33 @@ row is marked landed first and then flagged with every leftover, naming the
 directory and branch. That ordering is load-bearing because
 `markWorktreeLanded` clears `last_error`; the landed-row hold covers both
 verification failures and cleanup litter.
+
+## The CLI reads and never writes
+
+`out/cli/parley.mjs` (`npm run build:cli`, and part of `npm run build`) answers
+questions about the record from a shell. Everything Parley knows is already in
+one SQLite file; the app was the only way to ask it anything, which is fine for
+deciding and useless for CI, cron, or someone three weeks later.
+
+- **Stdout is data, stderr is for humans** — one JSON object per line, no
+  headers or totals, so it pipes into `jq` with nothing to strip. The record it
+  opened is named on stderr every run, because dev and packaged keep separate
+  ones and an answer from the wrong one looks perfectly plausible.
+- **It refuses rather than repairs.** `openRecordForReading` will not create a
+  missing database (every command would then truthfully report nothing — a
+  confident wrong answer) and will not accept a schema that is not exactly this
+  build's, in EITHER direction. Migrating is the owner's job; a reader doing it
+  would rewrite the record of a running app to suit a command someone typed.
+- **It does not execute.** Not a gap to be filled later without thought: a run
+  spends a single-use approval and real money, and a human gate does not
+  survive being handed a `--yes` flag.
+- **No Electron, enforced at build.** The store and orchestrator were kept
+  Electron-free so they could be tested without a window; `scripts/build-cli.mjs`
+  fails on an `electron` import and prints the edge, because such a bundle
+  builds cleanly here and dies on the first line of every real invocation.
+- The tests build the bundle and run it as a subprocess. Stdout being valid
+  JSONL, a refusal exiting non-zero with an empty stdout, and the absence of
+  Electron are all properties of the artifact that a function call cannot see.
 
 ## Remote execution: one snapshot in, one candidate back
 
