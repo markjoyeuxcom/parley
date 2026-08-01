@@ -75,9 +75,15 @@ describe('a healthy conversation', () => {
     const binary = fakeSsh(
       'happy',
       `let input = ''
-process.stdin.on('data', (c) => { input += c })
-process.stdin.on('end', () => {
-  const request = JSON.parse(input)
+process.stdin.on('data', (c) => {
+  input += c
+  // One newline-terminated line, not EOF: stdin stays open for the life of
+  // the run so that its closing can mean something. fromCharCode rather than
+  // an escape, because this string is source for a generated file and the
+  // escape gets one interpretation too many on the way.
+  const at = input.indexOf(String.fromCharCode(10))
+  if (at < 0) return
+  const request = JSON.parse(input.slice(0, at))
   hello()
   say({ type: 'progress', phase: 'received', text: request.operation })
   process.exit(0)

@@ -12,6 +12,17 @@ import {
 } from '@shared/remote'
 import { FrameWriter } from '@main/remote/frames'
 import { probeHost, SUPPORTED_VENDORS } from './probe'
+import { connectionLost, superviseRun } from './supervisor'
+import { cleanupRun, runWorker } from './worker'
+import { ensureMirror } from './worktree'
+
+/**
+ * How the bundle knows it is the worker rather than the supervisor.
+ *
+ * One artefact, two roles. A separate worker file would be a second thing to
+ * install, version, and get out of step with the first.
+ */
+const WORKER_FLAG = '--parley-worker'
 
 /**
  * parley-remote — the execution appliance.
@@ -59,17 +70,29 @@ function runsRootFor(): string {
   return process.env.PARLEY_RUNS_ROOT ?? join(process.env.HOME ?? homedir(), '.local', 'share', 'parley', 'runs')
 }
 
-function readRequest(): Promise<string> {
+/**
+ * Reads the one request line, and leaves stdin open afterwards.
+ *
+ * Waiting for EOF would be simpler and wrong: the caller keeps stdin open for
+ * the life of the run precisely so that its closing means the connection went
+ * away. A reader that consumed until EOF would never return while the link was
+ * healthy, and would return instantly once it was not.
+ */
+function readRequestLine(): Promise<string> {
   return new Promise((resolve) => {
     let input = ''
     process.stdin.setEncoding('utf8')
-    process.stdin.on('data', (chunk: string) => {
+    const onData = (chunk: string): void => {
       input += chunk
-    })
-    process.stdin.on('end', () => resolve(input))
+      const at = input.indexOf('\n')
+      if (at < 0) return
+      process.stdin.off('data', onData)
+      resolve(input.slice(0, at))
+    }
+    process.stdin.on('data', onData)
     // A caller that opens the connection and never writes should not hold the
-    // host forever. ssh's own keepalives cover a dead network; this covers a
-    // live one with nothing on it.
+    // host forever. ssh's keepalives cover a dead network; this covers a live
+    // one with nothing on it.
     setTimeout(() => resolve(input), 60_000).unref()
   })
 }
@@ -100,7 +123,7 @@ async function main(): Promise<void> {
     die(`needs Node ${REMOTE_NODE_FLOOR} or newer, found ${process.version} at ${process.execPath}`)
   }
 
-  const request = parseRequest(await readRequest())
+  const request = parseRequest(await readRequestLine())
   if (!request) die('expected one JSON request on stdin')
 
   if (request.version !== REMOTE_PROTOCOL_VERSION) {
@@ -147,6 +170,58 @@ async function main(): Promise<void> {
     case 'handshake':
       process.exit(0)
       break
+    case 'run': {
+      const spec = request.repository
+      const run = request.run
+      if (!spec || !run) {
+        say({ type: 'error', message: 'a run needs a repository and a run spec', retryable: false })
+        process.exit(1)
+      }
+
+      const mirror = await ensureMirror(join(runsRoot, 'mirrors'), spec.remote)
+      if (!mirror.ok || !mirror.path) {
+        say({ type: 'error', message: mirror.detail, retryable: false })
+        process.exit(1)
+      }
+
+      const workerRequest = {
+        runId: request.runId,
+        mirrorDir: mirror.path,
+        runsRoot,
+        expectedCommit: spec.expectedCommit,
+        plan: run.plan,
+        milestone: run.milestone,
+      }
+
+      // The same bundle, in worker mode. A second artefact would be a second
+      // thing to install, version and get out of step.
+      const end = await superviseRun({
+        command: process.execPath,
+        args: [fileURLToPath(import.meta.url), WORKER_FLAG],
+        request: workerRequest,
+        hooks: {
+          emit: say,
+          // Cleanup runs HERE, after the worker's process group is gone. That
+          // is the whole reason the work does not happen in this process.
+          cleanup: () => cleanupRun(mirror.path!, runsRoot, request.runId),
+        },
+        cancelled: connectionLost(process.stdin),
+      })
+
+      if (end.kind === 'failed') {
+        say({ type: 'error', message: end.detail, retryable: false })
+        process.exit(1)
+      }
+      if (end.kind === 'cancelled') {
+        // Said plainly rather than left to inference, and never as a result:
+        // the caller may still be listening even though the link that
+        // triggered this is the one that went away.
+        say({ type: 'error', message: 'the run was cancelled', retryable: true })
+        process.exit(1)
+      }
+      process.exit(0)
+      break
+    }
     default:
       // Honest about what this build does. A helper that pretended to accept
       // work it cannot do would fail somewhere less legible.
@@ -159,6 +234,50 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch((error: unknown) => {
-  die(error instanceof Error ? error.message : String(error))
-})
+/**
+ * The worker half: run the milestone, write bodies, say how it ended.
+ *
+ * It writes bodies rather than frames because sequence numbers belong to the
+ * conversation, and the conversation is the supervisor's.
+ */
+async function worker(): Promise<void> {
+  const request = JSON.parse(await readRequestLine()) as Parameters<typeof runWorker>[0]
+  const controller = new AbortController()
+  process.on('SIGTERM', () => controller.abort())
+
+  const write = (body: unknown): void => {
+    process.stdout.write(`${JSON.stringify(body)}\n`)
+  }
+  const { result, manifest } = await runWorker(request, write, controller.signal)
+
+  if (result.status === 'completed' && manifest) {
+    write({ type: 'result', outcome: 'complete', manifest })
+    process.exit(0)
+  }
+  if (result.status === 'refused') {
+    // A real ending, and not a result: the record will show why, and there is
+    // no tree for anyone to import.
+    write({ type: 'error', message: result.reason, retryable: false })
+    process.exit(2)
+  }
+  if (result.status === 'cancelled') process.exit(3)
+  write({
+    type: 'error',
+    message: result.status === 'failed' ? result.error : 'the run did not finish',
+    retryable: false,
+  })
+  process.exit(1)
+}
+
+// One artefact, two roles, chosen by a flag this file owns. Nothing about a
+// run reaches the command line: the worker gets its request on stdin exactly
+// as the supervisor got its own.
+if (process.argv.includes(WORKER_FLAG)) {
+  void worker().catch((error: unknown) => {
+    die(error instanceof Error ? error.message : String(error))
+  })
+} else {
+  void main().catch((error: unknown) => {
+    die(error instanceof Error ? error.message : String(error))
+  })
+}

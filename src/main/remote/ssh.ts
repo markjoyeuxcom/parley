@@ -124,6 +124,14 @@ export function runSsh(opts: SshRunOptions): Promise<SshRunResult> {
     }
 
     const onAbort = (): void => {
+      // Close stdin first: the remote sees EOF, stops its own work and tears
+      // down its worktree. Killing ssh alone would leave it running there with
+      // nobody reading its output.
+      try {
+        child.stdin.end()
+      } catch {
+        // Already gone; the kill below is the fallback.
+      }
       kill()
       finish({ kind: 'cancelled' })
     }
@@ -214,7 +222,12 @@ export function runSsh(opts: SshRunOptions): Promise<SshRunResult> {
       // A helper that exits before reading stdin closes the pipe under us.
       // The close handler owns the diagnosis; this only stops the EPIPE throw.
     })
-    child.stdin.end(encodeRequest(opts.request))
+    // Written, but NOT closed. Stdin staying open is how the far end knows the
+    // connection is still there — closing it after the request would make EOF
+    // arrive instantly and be indistinguishable from a dropped link, so the
+    // remote would cancel itself the moment it started. Keeping it open turns
+    // the same signal into something useful: closing stdin IS the cancel.
+    child.stdin.write(encodeRequest(opts.request))
   })
 }
 

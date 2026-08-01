@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -272,6 +272,129 @@ describe('the permission posture is surfaced, not buried', () => {
     expect(JSON.stringify(frames)).toContain('permissive')
     rmSync(home, { recursive: true, force: true })
   })
+})
+
+describe('a run driven through the built bundle', () => {
+  it('supervises a worker, frames its facts, and publishes a candidate', async () => {
+    // The assembly test. Every part below has its own unit coverage; what this
+    // proves is that the bundle wires them together — supervisor mode picks
+    // worker mode out of the same file, the request reaches it on stdin, its
+    // bodies come back as numbered frames, and a candidate lands in the mirror.
+    const home = mkdtempSync(join(tmpdir(), 'parley-e2e-home-'))
+    const source = mkdtempSync(join(tmpdir(), 'parley-e2e-src-'))
+    const git = (cwd: string, ...args: string[]): string =>
+      execFileSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'T',
+          GIT_AUTHOR_EMAIL: 't@e.com',
+          GIT_COMMITTER_NAME: 'T',
+          GIT_COMMITTER_EMAIL: 't@e.com',
+        },
+      }).trim()
+
+    git(source, 'init', '-q', '-b', 'main')
+    writeFileSync(join(source, 'seed.txt'), 'seed\n')
+    git(source, 'add', '-A')
+    git(source, 'commit', '-q', '-m', 'seed')
+    const commit = git(source, 'rev-parse', 'HEAD')
+
+    const runsRoot = join(home, 'runs')
+    const mirror = join(runsRoot, 'mirrors', 'repo-key')
+    mkdirSync(mirror, { recursive: true })
+    git(mirror, 'init', '-q', '--bare')
+    git(source, 'push', '-q', mirror, `${commit}:refs/parley/runs/e2e/input`)
+
+    const request = {
+      version: REMOTE_PROTOCOL_VERSION,
+      operation: 'run',
+      runId: 'e2e',
+      repository: { remote: 'repo-key', inputRef: 'refs/parley/runs/e2e/input', expectedCommit: commit },
+      run: {
+        plan: {
+          id: 'p', sessionId: 's', kind: 'implementation', title: 'e2e', repoPath: source,
+          planner: { vendor: 'claude', model: '', effort: 'high', persona: '' },
+          executor: { vendor: 'codex', model: '', effort: 'high', persona: '' },
+          reviewer: { vendor: 'claude', model: '', effort: 'high', persona: '' },
+          status: 'ready', question: '', correctionNote: '', correctionDispositions: [],
+          isolation: 'checkout', setupCommand: '', container: false,
+          usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
+          mock: true, createdAt: 1,
+        },
+        milestone: {
+          id: 'm', planId: 'p', index: 0, title: 'e2e milestone',
+          intent: 'Something the mock adapter finishes.',
+          expectedPaths: ['parley-mock-work.txt'], status: 'audited', auditNote: '',
+          testCommand: 'node --version', testResult: null, mutations: [], mutationResults: [],
+          reviewNote: '', reviewBlocking: [], reviewNotes: [], reviewPassed: null,
+          adopted: false, approvalId: null, createdAt: 1, completedAt: null,
+        },
+      },
+    }
+
+    // spawn, not spawnSync — and stdin stays OPEN for the life of the run.
+    // spawnSync closes it after writing, which the remote correctly reads as
+    // the connection going away, so the run would cancel itself immediately.
+    // The real client holds it open for exactly this reason; a test that did
+    // not would be testing a different protocol.
+    const frames = await new Promise<RemoteFrame[]>((resolve, reject) => {
+      const child = spawn(process.execPath, [bundle], {
+        cwd: sandbox,
+        // node's own directory is on the PATH here, unlike the handshake
+        // tests: the milestone's verification command has to actually run, and
+        // a host that can start parley-remote necessarily has node available.
+        env: {
+          PATH: `${fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+          HOME: home,
+          PARLEY_RUNS_ROOT: runsRoot,
+        },
+      })
+      const collected: RemoteFrame[] = []
+      let pending = ''
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL')
+        reject(new Error('the run did not finish'))
+      }, 150_000)
+      child.stdout.setEncoding('utf8')
+      child.stdout.on('data', (chunk: string) => {
+        pending += chunk
+        let at = pending.indexOf('\n')
+        while (at >= 0) {
+          const frame = decodeFrame(pending.slice(0, at))
+          if (frame) collected.push(frame)
+          pending = pending.slice(at + 1)
+          at = pending.indexOf('\n')
+        }
+      })
+      child.on('close', () => {
+        clearTimeout(timer)
+        resolve(collected)
+      })
+      child.stdin.write(`${JSON.stringify(request)}\n`)
+    })
+
+    // Every line was a frame, numbered from one without a gap: the supervisor
+    // owns the sequence across its own frames and everything the worker sent.
+    expect(frames.map((frame) => frame.sequence)).toEqual(
+      frames.map((_, index) => index + 1),
+    )
+    expect(frames[0]?.body.type).toBe('ready')
+    expect(frames.some((frame) => frame.body.type === 'fact')).toBe(true)
+
+    const published = frames.find((frame) => frame.body.type === 'result')
+    expect(published).toBeTruthy()
+    const at = git(mirror, 'rev-parse', 'refs/parley/runs/e2e/candidate')
+    expect(at.length).toBe(40)
+    // It descends from exactly what was submitted.
+    expect(() => git(mirror, 'merge-base', '--is-ancestor', commit, at)).not.toThrow()
+    // And the worktree is gone: the supervisor cleaned up after the worker.
+    expect(existsSync(join(runsRoot, 'e2e'))).toBe(false)
+
+    rmSync(home, { recursive: true, force: true })
+    rmSync(source, { recursive: true, force: true })
+  }, 180_000)
 })
 
 describe('failures that have no in-band representation', () => {
