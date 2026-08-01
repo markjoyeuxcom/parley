@@ -22,6 +22,7 @@ function occurrence(
     round: 0,
     kind: 'blocking',
     source: 'review',
+    evidence: [],
     seq,
     createdAt: seq,
     ...patch,

@@ -310,6 +310,7 @@ const blockingEntry: LedgerEntry = {
       milestoneId: null,
       round: null,
       kind: 'blocking',
+      evidence: [],
       source: 'audit',
       seq: 1,
       createdAt: 1_700_000_000_000,

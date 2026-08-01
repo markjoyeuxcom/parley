@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 28
+export const SCHEMA_VERSION = 29
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -150,6 +150,10 @@ CREATE TABLE IF NOT EXISTS ledger_sightings (
   kind         TEXT NOT NULL,
   source       TEXT NOT NULL,
   seq          INTEGER NOT NULL,
+  -- Where the reviewer said it is. On the SIGHTING rather than the finding:
+  -- findings are deduped by normalised text, and the same claim seen in two
+  -- places points at two different lines.
+  evidence     TEXT NOT NULL DEFAULT '[]',
   created_at   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_sightings_finding
@@ -1005,6 +1009,16 @@ export function migrate(db: Db): void {
     // run_events is additive: SCHEMA creates the table and its indexes fresh,
     // and no existing row changes shape. Runs before this version have no
     // journal and never will — the facts were not kept.
+  }
+  if (current < 29) {
+    // Sightings recorded before this carry no reference and never will: the
+    // reviewer was not asked for one. The default makes them read as "said
+    // nothing about where", which is exactly true.
+    try {
+      db.exec(`ALTER TABLE ledger_sightings ADD COLUMN evidence TEXT NOT NULL DEFAULT '[]'`)
+    } catch {
+      // Already present, because SCHEMA above created the table fresh.
+    }
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

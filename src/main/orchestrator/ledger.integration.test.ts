@@ -122,7 +122,7 @@ function recordOccurrence(
   repo: Repo,
   sessionId: string,
   text: string,
-  provenance: Omit<FindingOccurrence, 'id' | 'findingId' | 'seq' | 'createdAt'>,
+  provenance: Omit<FindingOccurrence, 'id' | 'findingId' | 'seq' | 'createdAt' | 'evidence'>,
 ): FindingOccurrence {
   const finding = repo.upsertLedgerFinding(sessionId, text)
   return repo.recordFindingOccurrence({ findingId: finding.id, ...provenance })
@@ -494,6 +494,68 @@ describe('what a finished run does to the record, wherever it ran', () => {
       },
     }
   }
+
+  it('keeps where a finding is, per sighting rather than per claim', () => {
+    // Findings are deduped by normalised text, so the same sentence raised
+    // against two files is one finding and two sightings. Hanging the
+    // reference off the finding would attribute one file's line to the other.
+    const { pipeline, repo, session } = harness()
+    const plan = makePlan(repo, session.id, gitRepo('parley-ledger-where-'))
+    const first = makeMilestone(repo, plan.id)
+    const second = makeMilestone(repo, plan.id, { index: 1 })
+
+    const same = 'the retry ceiling is not surfaced'
+    pipeline.ingestFinding(
+      plan,
+      {
+        kind: 'finding',
+        text: same,
+        evidence: [{ path: 'src/retry.ts', line: 42, symbol: 'retry', excerpt: '' }],
+        round: 1,
+        blocking: true,
+        source: 'review',
+      },
+      first.id,
+    )
+    pipeline.ingestFinding(
+      plan,
+      {
+        kind: 'finding',
+        text: same,
+        evidence: [{ path: 'src/queue.ts', line: 7, symbol: '', excerpt: '' }],
+        round: 1,
+        blocking: true,
+        source: 'review',
+      },
+      second.id,
+    )
+
+    const occurrences = repo.listFindingOccurrences(session.id)
+    expect(occurrences).toHaveLength(2)
+    // One claim...
+    expect(new Set(occurrences.map((o) => o.findingId)).size).toBe(1)
+    // ...two places, each kept with the sighting that saw it.
+    expect(occurrences.map((o) => o.evidence[0]?.path)).toEqual(['src/retry.ts', 'src/queue.ts'])
+    expect(occurrences[0]?.evidence[0]?.line).toBe(42)
+  })
+
+  it('records a finding that names nowhere, because the objection is the point', () => {
+    // A missing test has no line. Refusing the finding for want of a
+    // reference would trade a real objection for a schema.
+    const { pipeline, repo, session } = harness()
+    const plan = makePlan(repo, session.id, gitRepo('parley-ledger-nowhere-'))
+    const milestone = makeMilestone(repo, plan.id)
+
+    pipeline.ingestFinding(
+      plan,
+      { kind: 'finding', text: 'nothing covers the empty case', round: 1, blocking: true, source: 'review' },
+      milestone.id,
+    )
+
+    const occurrences = repo.listFindingOccurrences(session.id)
+    expect(occurrences).toHaveLength(1)
+    expect(occurrences[0]?.evidence).toEqual([])
+  })
 
   it('ingests a finding with its provenance, whichever machine observed it', () => {
     const { pipeline, repo, session } = harness()

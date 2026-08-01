@@ -397,6 +397,40 @@ A milestone whose verification carries one is **`parked`**, not `failed`:
 Remote needed nothing: the fact vocabulary is shared, so a remote park lands
 through the same `milestonePatch` and is indistinguishable from a local one.
 
+## A finding says where it is
+
+Session findings have carried `Evidence` (path, line, symbol, excerpt) since
+the beginning. The findings raised DURING a run — the ones that gate approval
+and become backlog items — were bare sentences. "The retry ceiling is not
+surfaced" cannot be opened, cannot be counted against a file, and means very
+little read back six weeks later.
+
+`REVIEW_CONTRACT` now takes `{"what": ..., "where": [...]}` for blocking
+entries and notes. Three rules, in the order they matter:
+
+- **A bare string is still a finding.** Every reviewer wrote them that way
+  until the contract grew somewhere to put a reference, and a run whose real
+  objection was dropped for arriving as prose would be worse off than before
+  any of this existed. `findingList` accepts both shapes; `what` and `text`
+  are both read, because rejecting a model's obvious synonym loses a real
+  objection over a word.
+- **A reference that cannot be opened is not kept.** No path, no entry. A line
+  that is not a positive integer becomes null rather than being clamped: a
+  wrong line sends the next reader somewhere with confidence, which is worse
+  than sending them to the file.
+- **Evidence lives on the SIGHTING, not the finding.** Findings dedupe by
+  normalised text, so one sentence raised against two files is one finding and
+  two occurrences; hanging the reference off the finding would attribute one
+  file's line to the other. `ledger_sightings.evidence` (schema 29), defaulted
+  to `[]` so rows written before the reviewer was ever asked read as "said
+  nothing about where", which is exactly true.
+
+`reporter.ts` validates evidence by hand rather than with the zod schema. It
+is inside the graph `parley-remote` is built from, and importing a validator
+as a VALUE puts the whole of zod in a bundle whose defining property is that
+it contains no npm code. The boundary test caught it; the comment is there so
+the next person does not rediscover it.
+
 ## Adoption: verifying work Parley did not write
 
 An interrupted run leaves a milestone's files behind. Every retry then finds them

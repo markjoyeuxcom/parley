@@ -809,13 +809,20 @@ End your message with a single fenced JSON block, exactly in this shape:
 \`\`\`json
 {
   "passed": true,
-  "blocking": ["a problem that must be fixed before this milestone is done"],
-  "notes": ["worth recording, not worth blocking"],
+  "blocking": [
+    {
+      "what": "a problem that must be fixed before this milestone is done",
+      "where": [{ "path": "src/thing.ts", "line": 42, "symbol": "functionName" }]
+    }
+  ],
+  "notes": [{ "what": "worth recording, not worth blocking", "where": [] }],
   "note": "your assessment in at most 80 words"
 }
 \`\`\`
 
 "passed" must be false whenever "blocking" is non-empty. A problem you are willing to record but not act on belongs in "notes".
+
+Point at the code. Every entry in "blocking" that is about a specific place should carry "where" — the path as it appears in the diff, and a line number if you are confident in it. A finding that names its location can be opened, counted against a file, and still means something when it is read back in six weeks; the same finding as a bare sentence cannot. Omit "where" (or give an empty list) when the problem is genuinely about something absent — a missing test, a case nothing handles — rather than inventing a location for it. A wrong line is worse than none, because it sends the next reader somewhere with confidence. A bare string is still accepted and still recorded; it simply arrives without the reference.
 
 Blocking:
   - The change does not do what the milestone said.

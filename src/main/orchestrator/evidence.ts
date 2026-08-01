@@ -2,7 +2,15 @@ import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative as relative_ } from 'node:path'
 import { extractJson, oneOf, safeString } from '@shared/extract'
-import type { AgentConfig, Milestone, Mutation, MutationResult, TestResult, Vendor } from '@shared/domain'
+import type {
+  AgentConfig,
+  Evidence,
+  Milestone,
+  Mutation,
+  MutationResult,
+  TestResult,
+  Vendor,
+} from '@shared/domain'
 import { capture } from '@main/util/spawn'
 
 /**
@@ -230,12 +238,36 @@ export function reviewerConfig(configured: AgentConfig, vendor: Vendor): AgentCo
 }
 
 
+/**
+ * One thing a reviewer said, and where it is.
+ *
+ * The sentence was all Parley kept. It is what a person reads, and it is
+ * useless for everything else: a finding that says "the retry ceiling is not
+ * surfaced" cannot be opened, cannot be counted against a file, and cannot be
+ * carried into a backlog item that means anything six weeks later. Session
+ * findings have had evidence since the beginning; the findings raised DURING a
+ * run — the ones that gate approval and become backlog items — had none.
+ *
+ * Optional by construction, and stays optional. A reviewer that names nothing
+ * is still making a claim worth recording, and refusing it would trade a real
+ * objection for a schema.
+ */
+export interface ReviewFinding {
+  text: string
+  evidence: Evidence[]
+}
+
+/** The sentences alone, for the places that want prose. */
+export function findingTexts(findings: readonly ReviewFinding[]): string[] {
+  return findings.map((finding) => finding.text)
+}
+
 export interface ParsedReview {
   passed: boolean
   /** Problems that must be fixed. Non-empty means the milestone did not pass. */
-  blocking: string[]
+  blocking: ReviewFinding[]
   /** Recorded, not acted on. Never sent to remediation. */
-  notes: string[]
+  notes: ReviewFinding[]
   note: string
 }
 
@@ -248,7 +280,7 @@ export function parseReview(text: string): ParsedReview | null {
   // `concerns` is the old single-list key. A model still using it has ignored
   // the schema, and the safe reading of an unclassified problem is that it
   // blocks — erring toward a milestone being handed back rather than shipped.
-  const blocking = stringList(data['blocking'] ?? data['concerns'])
+  const blocking = findingList(data['blocking'] ?? data['concerns'])
 
   return {
     // Derived, not read. The reviewer's own flag is not trusted against its own
@@ -258,7 +290,7 @@ export function parseReview(text: string): ParsedReview | null {
     // it makes "acknowledged but shipped" impossible to express.
     passed: data['passed'] === true && blocking.length === 0,
     blocking,
-    notes: stringList(data['notes']),
+    notes: findingList(data['notes']),
     note: safeString(data['note'], 2000),
   }
 }
@@ -915,6 +947,63 @@ export function tail(text: string, max: number): string {
 
 const MAX_DIFF_CHARS = 120_000
 
+
+/**
+ * A list of findings, from either shape a reviewer might send.
+ *
+ * A bare string is still a finding — every reviewer wrote them that way until
+ * the contract grew a place to put evidence, and a run whose objection was
+ * dropped because it arrived as prose would be strictly worse off than before
+ * this existed. The sentence is the finding; the reference is what it points
+ * at.
+ */
+function findingList(value: unknown): ReviewFinding[] {
+  if (!Array.isArray(value)) return []
+  const out: ReviewFinding[] = []
+  for (const entry of value.slice(0, 30)) {
+    if (typeof entry === 'string') {
+      if (entry.trim()) out.push({ text: entry, evidence: [] })
+      continue
+    }
+    if (!entry || typeof entry !== 'object') continue
+    const row = entry as Record<string, unknown>
+    // `what` is what the contract asks for; `text` is what a model reaching
+    // for the obvious synonym sends, and rejecting that would drop a real
+    // objection over a word.
+    const text = safeString(row['what'] ?? row['text'], 2000)
+    if (!text.trim()) continue
+    out.push({ text, evidence: evidenceList(row['where'] ?? row['evidence']) })
+  }
+  return out
+}
+
+/**
+ * References, kept only where they are usable.
+ *
+ * A path is the whole point — an entry without one cannot be opened and cannot
+ * be counted against a file, so it is not a reference, it is decoration. Line
+ * numbers are dropped rather than clamped when they are not positive integers:
+ * a wrong line sends someone to the wrong place with full confidence, which is
+ * worse than sending them to the file and letting them look.
+ */
+function evidenceList(value: unknown): Evidence[] {
+  if (!Array.isArray(value)) return []
+  const out: Evidence[] = []
+  for (const entry of value.slice(0, 10)) {
+    if (!entry || typeof entry !== 'object') continue
+    const row = entry as Record<string, unknown>
+    const path = safeString(row['path'], 400).trim()
+    if (!path) continue
+    const line = row['line']
+    out.push({
+      path,
+      line: typeof line === 'number' && Number.isInteger(line) && line > 0 ? line : null,
+      symbol: safeString(row['symbol'], 200),
+      excerpt: safeString(row['excerpt'], 400),
+    })
+  }
+  return out
+}
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value)

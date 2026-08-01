@@ -56,6 +56,7 @@ import {
   type TreeFileSnapshot,
   type TreeState,
   type VerifyOutcome,
+  findingTexts,
 } from './evidence'
 
 /**
@@ -625,10 +626,24 @@ export class ExecutionCore {
     const parsedReview = parseReview(review.text)
     if (parsedReview) {
       for (const finding of parsedReview.blocking) {
-        report.record({ kind: 'finding', text: finding, round, blocking: true, source: 'review' })
+        report.record({
+          kind: 'finding',
+          text: finding.text,
+          evidence: finding.evidence,
+          round,
+          blocking: true,
+          source: 'review',
+        })
       }
       for (const note of parsedReview.notes) {
-        report.record({ kind: 'finding', text: note, round, blocking: false, source: 'review' })
+        report.record({
+          kind: 'finding',
+          text: note.text,
+          evidence: note.evidence,
+          round,
+          blocking: false,
+          source: 'review',
+        })
       }
     }
     // Tests must be green *and* every declared break must have been caught *and*
@@ -676,12 +691,12 @@ export class ExecutionCore {
     }
     if (parsedReview?.note) noteParts.push(parsedReview.note)
     if (parsedReview?.blocking.length) {
-      noteParts.push(`Blocking: ${parsedReview.blocking.join('; ')}`)
+      noteParts.push(`Blocking: ${findingTexts(parsedReview.blocking).join('; ')}`)
     }
     // Recorded beside the blocking list rather than merged into it, so an
     // approver can see what was judged worth noting and what was judged worth
     // stopping for.
-    if (parsedReview?.notes.length) noteParts.push(`Notes: ${parsedReview.notes.join('; ')}`)
+    if (parsedReview?.notes.length) noteParts.push(`Notes: ${findingTexts(parsedReview.notes).join('; ')}`)
     if (testResult && testResult.exitCode !== 0) {
       noteParts.push(`Verification failed: \`${testResult.command}\` exited ${testResult.exitCode}.`)
     }
@@ -714,8 +729,11 @@ export class ExecutionCore {
       passed,
       // Blocking only. Remediation is told to fix what was named and nothing
       // else; feeding it taste would contradict that in the same breath.
-      concerns: [...(missingConcern ? [missingConcern] : []), ...(parsedReview?.blocking ?? [])],
-      reviewNotes: parsedReview?.notes ?? [],
+      concerns: [
+        ...(missingConcern ? [missingConcern] : []),
+        ...findingTexts(parsedReview?.blocking ?? []),
+      ],
+      reviewNotes: findingTexts(parsedReview?.notes ?? []),
       reviewerNote: parsedReview?.note ?? '',
       reviewerResumeId: review.resumeId ?? input.reviewerResumeId,
       testResult,

@@ -1,4 +1,4 @@
-import type { Id, Milestone, MutationResult, TestResult, Usage } from '@shared/domain'
+import type { Evidence, Id, Milestone, MutationResult, TestResult, Usage } from '@shared/domain'
 import type { RunState } from './pipeline'
 import {
   actorForFact,
@@ -80,6 +80,12 @@ export type MilestoneFact =
   | {
       kind: 'finding'
       text: string
+      /**
+       * Where it is, when the reviewer said. Optional and staying optional:
+       * an objection with no reference is still an objection, and refusing it
+       * would trade a real finding for a schema.
+       */
+      evidence?: Evidence[]
       /** Which remediation round said it, or null outside a round. */
       round: number | null
       /** Blocking findings gate the milestone; notes are recorded and do not. */
@@ -132,6 +138,32 @@ export type MilestoneFact =
  * the plan's status — belongs to the reporter implementation, because those
  * are local consequences of a fact rather than the fact itself.
  */
+/**
+ * References that survived the wire, and nothing else.
+ *
+ * Dropped rather than refused when an entry is malformed: a bad reference
+ * from a remote run must not cost the finding it was attached to. The path is
+ * the whole point — an entry without one cannot be opened — so that is the
+ * one field whose absence discards the entry.
+ */
+function evidenceIn(value: unknown): Evidence[] {
+  if (!Array.isArray(value)) return []
+  const out: Evidence[] = []
+  for (const entry of value.slice(0, 10)) {
+    if (!entry || typeof entry !== 'object') continue
+    const row = entry as Record<string, unknown>
+    if (typeof row['path'] !== 'string' || !row['path']) continue
+    const line = row['line']
+    out.push({
+      path: row['path'],
+      line: typeof line === 'number' && Number.isInteger(line) && line > 0 ? line : null,
+      symbol: typeof row['symbol'] === 'string' ? row['symbol'] : '',
+      excerpt: typeof row['excerpt'] === 'string' ? row['excerpt'] : '',
+    })
+  }
+  return out
+}
+
 export function milestonePatch(fact: MilestoneFact): Partial<Milestone> | null {
   switch (fact.kind) {
     case 'phase':
@@ -423,10 +455,17 @@ export function decodeMilestoneFact(value: unknown): MilestoneFact | null {
       if (typeof raw.text !== 'string' || !raw.text) return null
       if (raw.source !== 'audit' && raw.source !== 'review' && raw.source !== 'adoption') return null
       if (!present('round')) return null
+      // Hand-checked, like every other field here, and not with the zod
+      // schema: this module is inside the graph `parley-remote` is built
+      // from, and importing a validator as a VALUE would put the whole of zod
+      // in a bundle whose defining property is that it contains no npm code.
+      // The boundary test catches it, which is how this comment came to exist.
+      const evidence = evidenceIn(raw.evidence)
       if (raw.round !== null && typeof raw.round !== 'number') return null
       return {
         kind: 'finding',
         text: raw.text,
+        evidence,
         round: raw.round,
         // Fail closed: a finding whose blocking flag did not survive the wire
         // must not silently become a note that gates nothing.

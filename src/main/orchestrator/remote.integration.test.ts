@@ -271,7 +271,14 @@ describe('a milestone run on another machine, through the Manager', () => {
     const mirror = bareMirror()
     const { repo, manager } = harness(fakeHost({ mirror, facts: [
       { kind: 'phase', phase: 'executing' },
-      { kind: 'finding', text: 'the retry ceiling is not surfaced', round: 1, blocking: true, source: 'review' },
+      {
+        kind: 'finding',
+        text: 'the retry ceiling is not surfaced',
+        evidence: [{ path: 'src/retry.ts', line: 42, symbol: 'retry', excerpt: '' }],
+        round: 1,
+        blocking: true,
+        source: 'review',
+      },
       { kind: 'judgement', passed: true },
       { kind: 'finished', passed: true, note: 'done', judgement: true, completedAt: Date.now() },
     ] }))
@@ -304,6 +311,11 @@ describe('a milestone run on another machine, through the Manager', () => {
       kind: 'blocking',
       source: 'review',
     })
+    // And where it is, carried across the wire with it. A finding that
+    // reaches this side as a bare sentence cannot be opened.
+    expect(occurrences[0]?.evidence).toEqual([
+      { path: 'src/retry.ts', line: 42, symbol: 'retry', excerpt: '' },
+    ])
     // And settled, because the milestone passed. Recording without settling
     // would leave this gating every future approval on the plan.
     const dispositions = repo.listFindingDispositions(plan.sessionId)

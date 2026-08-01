@@ -27,8 +27,8 @@ function makeSession(repo: Repo, matter = 'review the approval gate'): Session {
 function occurrence(
   findingId: string,
   patch: Partial<FindingOccurrence> = {},
-): Omit<FindingOccurrence, 'id' | 'seq' | 'createdAt'> &
-  Partial<Pick<FindingOccurrence, 'id' | 'createdAt'>> {
+): Omit<FindingOccurrence, 'id' | 'seq' | 'createdAt' | 'evidence'> &
+  Partial<Pick<FindingOccurrence, 'id' | 'createdAt' | 'evidence'>> {
   return {
     findingId,
     planId: 'plan-1',

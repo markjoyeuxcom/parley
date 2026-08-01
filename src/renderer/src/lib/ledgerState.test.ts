@@ -55,6 +55,7 @@ function entry(
     milestoneId: 'milestone-1',
     round: 0,
     kind: 'blocking',
+    evidence: [],
     source: 'review',
     seq: 1,
     createdAt: 2,

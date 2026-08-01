@@ -19,6 +19,7 @@ import {
   type Vendor,
   type WorkPlan,
   type Worktree,
+  type Evidence,
 } from '@shared/domain'
 import { emptyUsage } from '@shared/usage'
 import { executionRefusal } from '@shared/execution'
@@ -53,6 +54,7 @@ import {
   STOPPED_NOTE,
   TEST_TIMEOUT_MS,
   emptyTree,
+  findingTexts,
   incrementalDelta,
   isGreenfield,
   judgeMutation,
@@ -87,6 +89,7 @@ export {
   STOPPED_NOTE,
   TEST_TIMEOUT_MS,
   emptyTree,
+  findingTexts,
   incrementalDelta,
   isGreenfield,
   judgeMutation,
@@ -1194,19 +1197,21 @@ export class Pipeline {
     // run.
     if (parsedReview) {
       for (const finding of parsedReview.blocking) {
-        this.recordFindingOccurrence(plan, finding, {
+        this.recordFindingOccurrence(plan, finding.text, {
           milestoneId,
           round: null,
           kind: 'blocking',
           source: 'adoption',
+          evidence: finding.evidence,
         })
       }
       for (const note of parsedReview.notes) {
-        this.recordFindingOccurrence(plan, note, {
+        this.recordFindingOccurrence(plan, note.text, {
           milestoneId,
           round: null,
           kind: 'note',
           source: 'adoption',
+          evidence: note.evidence,
         })
       }
     }
@@ -1273,12 +1278,12 @@ export class Pipeline {
     }
     if (parsedReview?.note) noteParts.push(parsedReview.note)
     if (parsedReview?.blocking.length) {
-      noteParts.push(`Blocking: ${parsedReview.blocking.join('; ')}`)
+      noteParts.push(`Blocking: ${findingTexts(parsedReview.blocking).join('; ')}`)
     }
     // Recorded beside the blocking list rather than merged into it, so an
     // approver can see what was judged worth noting and what was judged worth
     // stopping for.
-    if (parsedReview?.notes.length) noteParts.push(`Notes: ${parsedReview.notes.join('; ')}`)
+    if (parsedReview?.notes.length) noteParts.push(`Notes: ${findingTexts(parsedReview.notes).join('; ')}`)
     // Keyed on the exit code rather than the combined verdict: a surviving
     // break also fails `testsPassed`, and reporting that as "exited 0 …
     // failed" would send the reader looking at the wrong thing. The surviving
@@ -1406,6 +1411,7 @@ export class Pipeline {
       round: finding.round,
       kind: finding.blocking ? 'blocking' : 'note',
       source: finding.source,
+      evidence: finding.evidence ?? [],
     })
   }
 
@@ -1417,12 +1423,16 @@ export class Pipeline {
       round: number | null
       kind: 'blocking' | 'note'
       source: 'audit' | 'review' | 'adoption'
+      /** Where the reviewer said it is. Per SIGHTING, not per finding: the
+       *  same claim seen twice can point at two different places. */
+      evidence?: Evidence[]
     },
   ): void {
     const finding = this.repo.upsertLedgerFinding(plan.sessionId, text)
     this.repo.recordFindingOccurrence({
       findingId: finding.id,
       planId: plan.id,
+      evidence: [],
       ...provenance,
     })
     this.emitLedgerEntry(plan.sessionId, finding.id)

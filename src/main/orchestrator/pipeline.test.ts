@@ -8,6 +8,7 @@ import {
   missingExpectedPaths,
   pathsOutsideScope,
   alignAudit,
+  findingTexts,
   parseAudit,
   reviewerConfig,
   parsePlan,
@@ -148,7 +149,7 @@ describe('parseReview', () => {
       '```json\n{"passed":false,"blocking":["deleted a test"],"note":"no"}\n```',
     )
     expect(review?.passed).toBe(false)
-    expect(review?.blocking).toEqual(['deleted a test'])
+    expect(findingTexts(review?.blocking ?? [])).toEqual(['deleted a test'])
   })
 
   it('refuses to pass a milestone whose review names a blocking problem', () => {
@@ -167,7 +168,7 @@ describe('parseReview', () => {
       '```json\n{"passed":true,"blocking":[],"notes":["I would have named it differently"],"note":"good"}\n```',
     )
     expect(review?.passed).toBe(true)
-    expect(review?.notes).toEqual(['I would have named it differently'])
+    expect(findingTexts(review?.notes ?? [])).toEqual(['I would have named it differently'])
   })
 
   it('never sends notes to remediation', () => {
@@ -176,8 +177,68 @@ describe('parseReview', () => {
     )
     // `blocking` is what becomes the remediation brief. A round told to fix what
     // was named and nothing else must not also be handed taste.
-    expect(review?.blocking).toEqual(['real defect'])
-    expect(review?.blocking).not.toContain('style nit')
+    expect(findingTexts(review?.blocking ?? [])).toEqual(['real defect'])
+    expect(findingTexts(review?.blocking ?? [])).not.toContain('style nit')
+  })
+
+  it('keeps the reference when the reviewer points at code', () => {
+    const review = parseReview(
+      [
+        '```json',
+        JSON.stringify({
+          passed: false,
+          blocking: [
+            {
+              what: 'the retry ceiling is not surfaced',
+              where: [{ path: 'src/retry.ts', line: 42, symbol: 'retry' }],
+            },
+          ],
+          note: 'no',
+        }),
+        '```',
+      ].join('\n'),
+    )
+    expect(review?.blocking[0]?.text).toBe('the retry ceiling is not surfaced')
+    expect(review?.blocking[0]?.evidence).toEqual([
+      { path: 'src/retry.ts', line: 42, symbol: 'retry', excerpt: '' },
+    ])
+  })
+
+  it('still records a bare sentence, because the objection is the finding', () => {
+    // Every reviewer wrote them this way until the contract grew somewhere to
+    // put a reference. A run whose real objection was dropped for arriving as
+    // prose would be worse off than before any of this existed.
+    const review = parseReview(
+      '```json\n{"passed":false,"blocking":["deleted a test"],"note":"no"}\n```',
+    )
+    expect(review?.blocking[0]).toEqual({ text: 'deleted a test', evidence: [] })
+  })
+
+  it('drops a reference that cannot be opened, and keeps the finding', () => {
+    // A path is the whole point; a line that is not a positive integer is
+    // worse than no line, because it sends the next reader somewhere with
+    // confidence. Neither is a reason to lose what the reviewer said.
+    const review = parseReview(
+      [
+        '```json',
+        JSON.stringify({
+          passed: false,
+          blocking: [
+            {
+              what: 'something is wrong',
+              where: [{ line: 12 }, { path: 'src/a.ts', line: -3 }, { path: 'src/b.ts', line: 1.5 }],
+            },
+          ],
+          note: 'no',
+        }),
+        '```',
+      ].join('\n'),
+    )
+    expect(review?.blocking[0]?.text).toBe('something is wrong')
+    expect(review?.blocking[0]?.evidence).toEqual([
+      { path: 'src/a.ts', line: null, symbol: '', excerpt: '' },
+      { path: 'src/b.ts', line: null, symbol: '', excerpt: '' },
+    ])
   })
 
   it('treats the old single-list key as blocking', () => {
@@ -187,7 +248,7 @@ describe('parseReview', () => {
       '```json\n{"passed":true,"concerns":["stale occupancy"],"note":"ok"}\n```',
     )
     expect(review?.passed).toBe(false)
-    expect(review?.blocking).toEqual(['stale occupancy'])
+    expect(findingTexts(review?.blocking ?? [])).toEqual(['stale occupancy'])
   })
 
   it('ignores blank and non-string entries', () => {

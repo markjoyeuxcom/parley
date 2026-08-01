@@ -34,7 +34,7 @@ function occurrence(
   findingId: string,
   id: string,
   milestoneId: string,
-): Omit<FindingOccurrence, 'seq' | 'createdAt'> {
+): Omit<FindingOccurrence, 'seq' | 'createdAt' | 'evidence'> {
   return {
     id,
     findingId,

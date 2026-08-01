@@ -1085,6 +1085,16 @@ export const FindingOccurrence = z.object({
   kind: FindingOccurrenceKind,
   source: FindingOccurrenceSource,
   seq: z.number().int().positive(),
+  /**
+   * Where the reviewer said this one is.
+   *
+   * On the sighting rather than the finding, because findings are deduped by
+   * normalised text: the same claim raised against two files is one finding
+   * and two sightings, and collapsing their references would attribute a line
+   * to the wrong place. Defaulted, because a reviewer that names nothing is
+   * still making a claim worth keeping.
+   */
+  evidence: z.array(Evidence).default([]),
   createdAt: Timestamp,
 })
 export type FindingOccurrence = z.infer<typeof FindingOccurrence>

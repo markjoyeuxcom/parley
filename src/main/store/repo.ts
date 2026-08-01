@@ -940,15 +940,15 @@ export class Repo {
   }
 
   recordFindingOccurrence(
-    input: Omit<FindingOccurrence, 'id' | 'seq' | 'createdAt'> &
-      Partial<Pick<FindingOccurrence, 'id' | 'createdAt'>>,
+    input: Omit<FindingOccurrence, 'id' | 'seq' | 'createdAt' | 'evidence'> &
+      Partial<Pick<FindingOccurrence, 'id' | 'createdAt' | 'evidence'>>,
   ): FindingOccurrence {
     const id = input.id ?? newId()
     const createdAt = input.createdAt ?? Date.now()
     this.db.run(
       `INSERT INTO ledger_sightings
-       (id, finding_id, plan_id, milestone_id, round, kind, source, seq, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ${NEXT_LEDGER_SEQUENCE}, ?)`,
+       (id, finding_id, plan_id, milestone_id, round, kind, source, seq, evidence, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ${NEXT_LEDGER_SEQUENCE}, ?, ?)`,
       id,
       input.findingId,
       input.planId,
@@ -956,6 +956,7 @@ export class Repo {
       input.round,
       input.kind,
       input.source,
+      JSON.stringify(input.evidence ?? []),
       createdAt,
     )
     const row = this.db.get(`SELECT * FROM ledger_sightings WHERE id = ?`, id)
@@ -973,6 +974,7 @@ export class Repo {
       kind: str(row['kind']) as FindingOccurrence['kind'],
       source: str(row['source']) as FindingOccurrence['source'],
       seq: num(row['seq']),
+      evidence: parseJson<Evidence[]>(row['evidence'], []),
       createdAt: num(row['created_at']),
     }
   }
