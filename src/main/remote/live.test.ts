@@ -318,7 +318,7 @@ describe.skipIf(!live)('a real milestone, executed over there', () => {
         milestone,
       },
       {
-        converse: sshConverse(() => nodeCommand),
+        converse: sshConverse(),
         consumeApproval: () => {
           charged += 1
         },

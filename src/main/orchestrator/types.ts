@@ -45,6 +45,14 @@ export interface OrchestratorDeps {
    */
   appPath?: string | null
   /**
+   * The ssh binary, and how git should address a host's mirror.
+   *
+   * Both exist so a fake host can be put under `runMilestoneRemotely`. Omitted
+   * in the app, where the answers are `ssh` and `ssh://<host><mirror>`.
+   */
+  sshBinary?: string
+  remoteMirrorUrl?: (host: string, mirror: string) => string
+  /**
    * Parley's own record directory. Injected only so the workspace creator can
    * refuse to scaffold inside it — the app's record is not a place for the
    * user's projects.

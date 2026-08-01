@@ -1207,7 +1207,7 @@ export class Manager {
       const outcome = await driveRemoteMilestone(
         { runId: newId(), target, repoKey: repoKeyFor(plan.repoPath), plan, milestone },
         {
-          converse: sshConverse(() => target.nodeCommand, gate.signal),
+          converse: sshConverse(gate.signal, this.deps.sshBinary),
           consumeApproval: () =>
             this.repo.consumeApproval(approvalId, 'milestone.execute', milestoneId),
           reporter,
@@ -1229,6 +1229,10 @@ export class Manager {
               phase: phase as 'executing' | 'testing' | 'reviewing',
               text,
             }),
+          ...(this.deps.remoteMirrorUrl
+            ? { remoteUrlFor: (to: { host: string }, at: string) =>
+                this.deps.remoteMirrorUrl!(to.host, at) }
+            : {}),
         },
       )
       // The same bookkeeping a local run does, and for the same reason: these

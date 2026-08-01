@@ -678,11 +678,19 @@ and touched nothing, and a disconnect may have left the work finished over
 there and unknown here. Concluding anything about the plan from either would
 be inventing a result.
 
-**Not covered**: `Manager.runMilestoneRemotely` itself has no automated test —
-`runSsh` hardcodes its binary and the driver's git transport needs a real ssh
-URL, so there is no seam to fake it at that level. The driver, the shared
-bookkeeping and the live host suite each cover a part; the wiring between them
-is read, not exercised.
+**A fake host goes under the Manager**, through two deps: `sshBinary` and
+`remoteMirrorUrl`. `remote.integration.test.ts` drives the whole path —
+approval, reporter wiring, ledger consequences, journal attribution — against
+an ssh that is a real program doing real git work in a real bare repository.
+It publishes an actual candidate, so the local ancestry and changed-path
+reconciliation run for real; a fake that merely returned a manifest would
+agree with itself. That test was written by reverting the ledger fix
+underneath it and confirming it went red, which is the only way to know a test
+has teeth.
+
+`sshConverse` took a `nodeCommandFor` before this that every caller supplied
+and nothing read — the helper is invoked by name off the host's PATH, so which
+node runs it is the launcher's business.
 
 **A host's environment is the part fakes cannot prove.** Everything above was
 green against a fake `ssh` for the whole arc, and the first real host broke
