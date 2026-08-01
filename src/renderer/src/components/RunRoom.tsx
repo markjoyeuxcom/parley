@@ -30,6 +30,8 @@ const TONE: Record<RunLine['tone'], string> = {
 const OUTCOME: Record<string, { label: string; tone: string }> = {
   complete: { label: 'completed', tone: 'chip--pass' },
   failed: { label: 'failed', tone: 'chip--fail' },
+  // Not a failure: an attempt that could not establish anything.
+  parked: { label: 'parked', tone: 'chip--caution' },
   accepted: { label: 'accepted', tone: 'chip--pass' },
   ended: { label: 'ended', tone: 'chip--caution' },
   unstarted: { label: 'never started', tone: 'chip--caution' },

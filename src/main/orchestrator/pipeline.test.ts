@@ -749,7 +749,7 @@ describe('reviewDiffPrompt', () => {
   })
 })
 
-describe('summariseTests distinguishes three ways of not passing', () => {
+describe('summariseTests distinguishes four ways of not passing', () => {
   /**
    * A non-zero result can mean three different things that call for three
    * different responses, and the reviewer and executor read this text to decide
@@ -762,6 +762,7 @@ describe('summariseTests distinguishes three ways of not passing', () => {
     exitCode: 0,
     signal: null as string | null,
     timedOut: false,
+    startError: null,
     stdout: '6 test case(s), 0 failure(s)',
     stderr: '',
     durationMs: 3000,
@@ -770,6 +771,32 @@ describe('summariseTests distinguishes three ways of not passing', () => {
 
   it('reports a clean run as passed', () => {
     expect(summariseTests(base)).toContain('PASSED')
+  })
+
+  it('reports a command that never started as never started', () => {
+    // The fourth way, and the only one where nothing about the code is in
+    // question at all. Called FAILED it sends an executor to rewrite working
+    // code — which is exactly what a host with no node on its PATH cost,
+    // twice, in one run.
+    const text = summariseTests({
+      ...base,
+      exitCode: -1,
+      startError: 'spawn node ENOENT',
+    })
+    expect(text).toContain('NEVER RAN')
+    expect(text).toContain('spawn node ENOENT')
+    expect(text).not.toMatch(/FAILED/)
+    // And it points at the machine rather than the diff.
+    expect(text).toMatch(/outside what an edit can fix/i)
+  })
+
+  it('says nothing ran even when the exit code looks like a plain failure', () => {
+    // A command can fail to start AND carry a conventional-looking code. The
+    // start error is checked first because it is the stronger claim: not
+    // "this went badly" but "this did not happen".
+    const text = summariseTests({ ...base, exitCode: 127, startError: 'spawn npm ENOENT' })
+    expect(text).toContain('NEVER RAN')
+    expect(text).not.toContain('exit 127')
   })
 
   it('reports a real failure with its exit code', () => {
@@ -962,6 +989,7 @@ describe('judgeMutation', () => {
       exitCode,
       signal: null,
       timedOut: false,
+      startError: null,
       stdout: '',
       stderr: '',
       durationMs: 1,
@@ -1125,6 +1153,7 @@ describe('milestoneVerdict', () => {
     exitCode: 0,
     signal: null,
     timedOut: false,
+    startError: null,
     stdout: '',
     stderr: '',
     durationMs: 1,

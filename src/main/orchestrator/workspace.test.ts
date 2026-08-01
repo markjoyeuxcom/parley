@@ -33,6 +33,7 @@ function seed(repo: Repo, root: string) {
 const ok = (): CaptureResult => ({
   exitCode: 0,
   signal: null,
+  startError: null,
   stdout: '',
   stderr: '',
   durationMs: 1,

@@ -761,6 +761,10 @@ export class Pipeline {
     const remaining = this.repo
       .listMilestones(plan.id)
       .filter((m) => m.status !== 'complete' && m.status !== 'rejected')
+    // A parked plan is `failed` at the plan level for want of a fourth word:
+    // the plan did stop and does need a human, which is all the plan's own
+    // status has ever meant. The distinction that matters — whether anything
+    // was learned — lives on the milestone, where it can be acted on.
     reporter.record({
       kind: 'planOutcome',
       status: passed && remaining.length === 0 ? 'complete' : passed ? 'ready' : 'failed',
@@ -768,7 +772,12 @@ export class Pipeline {
     // Last, after everything about the run has been recorded — including what
     // it did to the plan. A run.ended with facts after it would make the
     // closing event a lie about where the story stops.
-    reporter.ended(passed ? 'complete' : 'failed', current.reviewNote.slice(0, 400))
+    //
+    // The journal keeps `parked` distinct, because a reader scanning attempts
+    // needs to see that this one established nothing. Three failed attempts
+    // and two failures plus a park are different situations.
+    const ending = passed ? 'complete' : current.status === 'parked' ? 'parked' : 'failed'
+    reporter.ended(ending, current.reviewNote.slice(0, 400))
     return current
   }
 

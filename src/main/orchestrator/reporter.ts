@@ -112,6 +112,16 @@ export type MilestoneFact =
    * machine running this core may not have.
    */
   | { kind: 'planOutcome'; status: 'ready' | 'complete' | 'failed' }
+  /**
+   * The run stopped without learning anything, and a human has to act first.
+   *
+   * Its own fact rather than a `finished` with passed:false, because the two
+   * make opposite claims. `finished` says the work was judged; this says it
+   * could not be. Collapsing them would put "the tests failed" in the record
+   * for a milestone whose tests never ran — and that sentence, believed by a
+   * reviewer, is what makes an executor rewrite code that was never wrong.
+   */
+  | { kind: 'parked'; reason: string }
 
 /**
  * What a fact means for the milestone row.
@@ -134,6 +144,9 @@ export function milestonePatch(fact: MilestoneFact): Partial<Milestone> | null {
       return { reviewNote: fact.note, reviewBlocking: fact.blocking, reviewNotes: fact.notes }
     case 'judgement':
       return { reviewPassed: fact.passed }
+    case 'parked':
+      // No completedAt: nothing completed. No reviewPassed: nobody judged it.
+      return { status: 'parked', reviewNote: fact.reason }
     case 'finished': {
       const patch: Partial<Milestone> = {
         status: fact.passed ? 'complete' : 'failed',
@@ -398,6 +411,10 @@ export function decodeMilestoneFact(value: unknown): MilestoneFact | null {
       }
       return fact
     }
+    case 'parked':
+      return typeof raw.reason === 'string' && raw.reason
+        ? { kind: 'parked', reason: raw.reason }
+        : null
     case 'planOutcome':
       return raw.status === 'ready' || raw.status === 'complete' || raw.status === 'failed'
         ? { kind: 'planOutcome', status: raw.status }

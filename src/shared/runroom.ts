@@ -121,6 +121,16 @@ function lineFor(event: RunEvent): RunLine | null {
         tone: fact.passed ? 'good' : 'bad',
       }
 
+    case 'parked':
+      // Worth a line of its own, and worth the reason: this is the one ending
+      // whose fix is outside the repository.
+      return {
+        ...base,
+        text: 'parked — the verification could not run',
+        detail: String(fact.reason),
+        tone: 'warn',
+      }
+
     case 'finished':
       return {
         ...base,

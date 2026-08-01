@@ -977,6 +977,42 @@ describe('handing a rejection back to the executor', () => {
     expect(mutationRound).toMatch(/strengthen the tests/)
   })
 
+  it('parks the milestone when the verification command cannot start', async () => {
+    // The defect a real host found. A command that cannot be spawned arrives
+    // looking exactly like a failing suite — an exit code and some stderr —
+    // and the pipeline used to review it, object to it, and spend paid
+    // remediation rounds rewriting code that was never wrong.
+    const { done, repo } = await runFirstMilestone(
+      gitRepo('parley-park-'),
+      'parley-definitely-not-installed --version',
+    )
+
+    // Not `failed`. A failure is a judgement; this is the absence of one.
+    expect(done.status).toBe('parked')
+
+    // The record says the command never started, so nothing downstream can
+    // mistake the exit code for a verdict.
+    expect(done.testResult?.startError).toBeTruthy()
+    expect(done.reviewNote).toContain('could not be run here')
+    expect(done.reviewNote).toMatch(/not a verdict on the code/i)
+
+    // Nothing judged it, because nothing could.
+    expect(done.reviewPassed).toBeNull()
+    expect(done.completedAt).toBeNull()
+
+    // And it stopped there: no review, no remediation round, nothing spent
+    // establishing something that was already unknowable.
+    const events = repo
+      .listRunEvents(repo.listMilestoneRuns(done.id)[0]?.runId ?? '')
+      .map((event) => event.payload as { kind?: string; phase?: string })
+    expect(events.some((fact) => fact.kind === 'parked')).toBe(true)
+    expect(events.some((fact) => fact.kind === 'phase' && fact.phase === 'reviewing')).toBe(false)
+    expect(events.some((fact) => fact.kind === 'judgement')).toBe(false)
+    // Mutation checks are meaningless against a suite that never ran, and
+    // would have "proved" the tests catch nothing.
+    expect(events.some((fact) => fact.kind === 'mutations')).toBe(false)
+  })
+
   it('re-anchors a stale mutation against the real file and catches the break', async () => {
     const repoPath = gitRepo('parley-mutate-')
     const { done } = await runFirstMilestone(repoPath, grepResolved, staleAnchor)

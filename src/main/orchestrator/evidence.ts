@@ -125,6 +125,16 @@ export const STOPPED_NOTE =
 /** Result of one verify-and-review pass. */
 export type VerifyOutcome =
   | { kind: 'unchanged'; milestone: Milestone }
+  /**
+   * The verification could not run, so there is nothing to review.
+   *
+   * Separate from `unchanged`, which is a finding about the tree. This is a
+   * finding about the machine, and the difference matters to the caller: an
+   * unchanged tree means the agent did nothing and remediation might help,
+   * while a verification that never started means every round after this one
+   * would ask an agent to fix code on the strength of evidence nobody has.
+   */
+  | { kind: 'parked'; milestone: Milestone }
   | {
       kind: 'reviewed'
       milestone: Milestone
@@ -627,7 +637,15 @@ export function summariseTests(result: TestResult | null): string {
   // death: Parley kills with SIGTERM. Reported as "killed by SIGTERM" it looks
   // like something external intervened, when in fact nothing did — the command
   // never finished and the deadline ran out.
-  const verdict = result.timedOut
+  //
+  // The start failure is checked before all of them because it is the only one
+  // where the command did not merely fail to finish — it did not begin. A
+  // milestone parks on this rather than being reviewed, so a reader reaching
+  // this text is looking at adoption or a brief, and telling either of them
+  // "FAILED" would be a straight falsehood about work nobody examined.
+  const verdict = result.startError
+    ? `NEVER RAN — the command could not be started: ${result.startError}. Nothing was verified and nothing about the code is in question here; something is missing or misconfigured on the machine, which is outside what an edit can fix.`
+    : result.timedOut
     ? `DID NOT FINISH — the command was still running after ${(TEST_TIMEOUT_MS / 60000).toFixed(0)} minutes and Parley stopped it, so nothing was verified. Treat this as a hang: something waits for what never arrives. The code may be correct and simply never returns.`
     : result.signal
       ? `DID NOT COMPLETE — the runner was killed by ${result.signal}, so nothing was verified. This is a crash in the verification command itself, not a failing test.`

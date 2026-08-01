@@ -43,6 +43,7 @@ function captured(exitCode = 0): CaptureResult {
   return {
     exitCode,
     signal: null,
+    startError: null,
     stdout: '',
     stderr: '',
     durationMs: 1,

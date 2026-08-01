@@ -325,7 +325,9 @@ export class ExecutionCore {
       })
       firstIteration = false
 
-      if (outcome.kind === 'unchanged') return outcome.milestone
+      // Both endings leave the loop, and neither is a failure the next round
+      // could address: one has nothing to review, the other nothing to trust.
+      if (outcome.kind === 'unchanged' || outcome.kind === 'parked') return outcome.milestone
       current = outcome.milestone
       reviewerResumeId = outcome.reviewerResumeId
       lastTestResult = outcome.testResult
@@ -535,6 +537,33 @@ export class ExecutionCore {
     }
     current = report.record({ kind: 'verification', result: testResult })
 
+    // ── Did it run at all? ───────────────────────────────────────────────────
+    //
+    // Before anything is judged, because everything downstream treats the
+    // result as evidence. A command that never started is not weak evidence,
+    // it is none: the mutation stage would "prove" the tests catch nothing,
+    // the reviewer would read a red suite and object, and the executor would
+    // spend a paid round rewriting code that was never wrong — which is
+    // precisely the sequence a host with no node on its PATH produced.
+    //
+    // So it parks. Retrying changes nothing until a human changes something,
+    // and saying "the tests failed" about tests that did not run is the one
+    // thing Parley must never do: its whole claim is that a green result is
+    // observed rather than asserted, and that claim is worth exactly as much
+    // as its willingness to admit when it observed nothing.
+    if (testResult?.startError) {
+      activity('testing', `the verification command could not run: ${testResult.startError}`)
+      current = report.record({
+        kind: 'parked',
+        reason:
+          `\`${testResult.command}\` could not be run here: ${testResult.startError}. ` +
+          `Nothing was learned about this milestone's work — the command never started, so its ` +
+          `exit code is not a verdict on the code. Fix what is missing and resume; ` +
+          `re-running unchanged would produce the same non-answer.`,
+      })
+      return { kind: 'parked', milestone: current }
+    }
+
     // ── Mutation checks ──────────────────────────────────────────────────────
     //
     // Only worth running against a green suite: with a red one every mutation
@@ -731,6 +760,7 @@ export class ExecutionCore {
         exitCode: -1,
         signal: null,
         timedOut: false,
+        startError: 'the verification command needs shell syntax, which Parley will not run',
         stdout: '',
         stderr:
           'This verification command needs shell syntax, which Parley will not run. Put it in a script and name the script instead.',
@@ -745,6 +775,7 @@ export class ExecutionCore {
         exitCode: -1,
         signal: null,
         timedOut: false,
+        startError: 'the verification command could not be parsed',
         stdout: '',
         stderr: 'Could not parse this verification command.',
         durationMs: 0,
@@ -763,6 +794,9 @@ export class ExecutionCore {
           exitCode: up.exitCode,
           signal: up.signal,
           timedOut: up.timedOut,
+          // The comment above already called this "a verification that never
+          // ran". It said so in prose and reported an exit code anyway.
+          startError: 'the dev container would not start',
           stdout: '',
           stderr: `the dev container failed to start: ${tail(`${up.stderr}\n${up.stdout}`.trim(), 8000)}`,
           durationMs: up.durationMs,
@@ -782,6 +816,7 @@ export class ExecutionCore {
       exitCode: result.exitCode,
       signal: result.signal,
       timedOut: result.timedOut,
+      startError: result.startError,
       stdout: tail(result.stdout, 8000),
       stderr: tail(result.stderr, 8000),
       durationMs: result.durationMs,

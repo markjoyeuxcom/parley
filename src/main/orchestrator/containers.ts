@@ -67,6 +67,8 @@ function missingCli(binary: string): CaptureResult {
   return {
     exitCode: -1,
     signal: null,
+    // Nothing ran, so this must never be read as a verdict on the code.
+    startError: `${binary} was not found on PATH`,
     stdout: '',
     stderr:
       `The devcontainer CLI (${binary}) was not found on PATH. ` +
@@ -109,6 +111,7 @@ export async function runProjectCommand(
     return {
       exitCode: -1,
       signal: null,
+      startError: 'there was no command to run',
       stdout: '',
       stderr: 'no command to run',
       durationMs: 0,

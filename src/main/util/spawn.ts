@@ -214,6 +214,21 @@ export interface CaptureResult {
    * crashed", which sends an executor off fixing tests that never ran.
    */
   signal: string | null
+  /**
+   * Why the command never started, or null when it really ran.
+   *
+   * The same distinction {@link CaptureResult.signal} draws, one step earlier
+   * and more absolute: a process that could not be spawned produced no
+   * evidence at all. It arrives looking identical to a failing suite — an
+   * exit code, some stderr — and that is precisely how a host with no `node`
+   * on its PATH once cost two rounds of paid remediation against code that
+   * was never wrong.
+   *
+   * The message and not a boolean, because whoever reads this has to go and
+   * fix something outside Parley, and "spawn node ENOENT" and "EACCES" send
+   * them to different places.
+   */
+  startError: string | null
   stdout: string
   stderr: string
   durationMs: number
@@ -259,6 +274,7 @@ export function capture(
     let stderr = ''
     let settled = false
     let timedOut = false
+    let startError: string | null = null
     const LIMIT = 512 * 1024
 
     const finish = (exitCode: number, killedBy: string | null = null) => {
@@ -269,6 +285,7 @@ export function capture(
       resolve({
         exitCode,
         signal: killedBy,
+        startError,
         stdout,
         stderr,
         durationMs: Date.now() - startedAt,
@@ -313,6 +330,7 @@ export function capture(
     })
     child.on('error', (err) => {
       stderr += `\nspawn error: ${err.message}`
+      startError = err.message
       finish(-1)
     })
     child.on('close', (code, killedBy) => finish(code ?? -1, killedBy ?? null))

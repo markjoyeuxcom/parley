@@ -329,6 +329,18 @@ export const MilestoneStatus = z.enum([
   'complete',
   'rejected',
   'failed',
+  /**
+   * Stopped because Parley could not establish anything, and a human must fix
+   * something outside it before this can mean anything.
+   *
+   * Deliberately not `failed`. A failure is a result: the work was done and
+   * judged. A park is the absence of one — the verification command could not
+   * start, so nothing about the code was learned, and the honest report is
+   * that nobody knows rather than that it went badly. Retrying without
+   * changing the environment would produce the identical non-answer, which is
+   * exactly why this is its own status and not a flavour of failure.
+   */
+  'parked',
 ])
 export type MilestoneStatus = z.infer<typeof MilestoneStatus>
 
@@ -444,6 +456,23 @@ export const TestResult = z.object({
    * safe assumption for a run that produced a real exit code.
    */
   timedOut: z.boolean().default(false),
+  /**
+   * Why the command never started, or null when it really ran.
+   *
+   * The strongest form of the distinction `signal` and `timedOut` already
+   * draw. A suite that fails is evidence; a suite that could not be spawned
+   * is the absence of evidence, and the two are indistinguishable on the wire
+   * — both are a non-zero exit and some stderr. Read as a verdict it is worse
+   * than useless: a reviewer objects to failing tests, an executor rewrites
+   * working code, and a run spends real money establishing nothing. That is
+   * not hypothetical; it is what a host with no node on its PATH cost.
+   *
+   * A milestone whose verification carries this parks for a human instead of
+   * being judged. Nullable with a default so results recorded before it
+   * existed read as "it ran", which is the safe reading of a result that
+   * carried a real exit code.
+   */
+  startError: z.string().nullable().default(null),
   stdout: z.string(),
   stderr: z.string(),
   durationMs: z.number().int().nonnegative(),
