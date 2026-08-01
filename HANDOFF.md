@@ -2,7 +2,7 @@
 
 Refreshed 2026-08-01, after the SSH/remote-execution arc landed. Everything a
 fresh session needs that the code and git history do not already say. Schema
-is at **v27**; the suite is **1110 passing, 11 skipped** (the skips are the
+is at **v27**; the suite is **1121 passing, 11 skipped** (the skips are the
 operator-run `PARLEY_LIVE*` arms, by design).
 
 ## What this repo is
@@ -370,13 +370,35 @@ checkouts are refused outright (measured: a sparse tree produces a
 snapshot containing files the local run never had), as are submodules
 with uncommitted work.
 
-**NOT built, and needed before a person can use any of it**: the
-command surface. `install`/`status`/`upgrade` have their logic and
-their bootstrap but nothing calls them; remote_targets has a table and
-repo methods but no UI; and Manager has no entry that hands a milestone
-to `driveRemoteMilestone` via `sshConverse`. Also unbuilt: PTY and
-preview forwarding (the old m5), and resume-after-disconnect (the frame
-identity work makes it possible; nothing implements it).
+**The surface landed too** (m6–m8): an Execution hosts panel on the
+all-repositories view (add, Check, Install, Forget), and "Run elsewhere"
+beside "Approve and run" on any approvable milestone of a worktree,
+non-mock plan. The control is ABSENT rather than present-and-refusing
+where a plan may not leave — main refuses those anyway, but a button
+that appears and then says no teaches distrust of every other control.
+Install's order is its safety property and the tests observe it via a
+log the fakes append to: upload, hash on the host, make the STAGED copy
+answer a handshake, only then activate.
+
+**Still NOT built, in rough priority:**
+1. **The by-hand acceptance.** Nothing has run against a real host over
+   a real ssh connection with real CLIs. Everything is proven against
+   local bare repos and mock adapters. This is the honest gap, and it
+   is the same gap containers and self-update each had before their
+   operator arms passed.
+2. `remoteStatus` grades what the HANDSHAKE can see; the
+   installation-integrity half (directory name vs the file's own hash,
+   rollback availability) needs the bootstrap, so `corrupt` cannot
+   currently be detected. The verdict logic handles it; nothing feeds
+   it real data.
+3. Ledger provenance for findings a REMOTE reviewer names — a no-op
+   with a comment in manager.ts, because it needs the session's finding
+   vocabulary and dropping them silently would be worse.
+4. Packaged builds cannot install: the bundle resolves from the dev
+   checkout's out/, and shipping it as a packaged resource is its own
+   work.
+5. PTY and preview forwarding; resume-after-disconnect (frame identity
+   makes it possible, nothing implements it).
 
 **By-hand acceptances still open** (nothing blocks the next arc, but
 these are the honest gaps in what has been proven outside tests):
