@@ -88,6 +88,9 @@ function fakeHost(script: {
   facts?: unknown[]
   /** Skip publishing, to test a result that promises what it did not do. */
   publish?: boolean
+  /** Publish the candidate and then die without saying so — a disconnect
+   *  over a run that actually finished, which is the case worth recovering. */
+  vanishAfterPublish?: boolean
   /** Report these as changed, whatever actually was. */
   claimChanged?: string[]
   outcome?: 'complete' | 'failed'
@@ -105,6 +108,7 @@ import { join } from 'node:path'
 const MIRROR = ${JSON.stringify(script.mirror)}
 const FACTS = ${JSON.stringify(script.facts ?? [])}
 const PUBLISH = ${script.publish === false ? 'false' : 'true'}
+const VANISH = ${script.vanishAfterPublish === true ? 'true' : 'false'}
 const CLAIM = ${JSON.stringify(script.claimChanged ?? ['a.txt'])}
 const OUTCOME = ${JSON.stringify(script.outcome ?? 'complete')}
 
@@ -166,6 +170,14 @@ function answer(request) {
     g('commit', '-qm', 'the remote did the work')
     candidate = g('rev-parse', 'HEAD')
     g('push', '-q', MIRROR, 'HEAD:refs/parley/runs/' + request.runId + '/candidate')
+  }
+
+  if (VANISH) {
+    // Killed rather than exited: a clean exit after the ready frame is a
+    // polite close and reads as an ENDING, which is an answer. A dropped
+    // connection kills ssh, and that signal is what the transport reads as a
+    // dead wire - the one outcome that means we do not know.
+    process.kill(process.pid, 'SIGKILL')
   }
 
   say({
@@ -385,6 +397,121 @@ describe('a milestone run on another machine, through the Manager', () => {
     // could not be trusted.
     expect(repo.getPlan(plan.id)?.status).not.toBe('complete')
   }, 60_000)
+
+  it('remembers a run that vanished, and goes back for what it left', async () => {
+    // The gap this closes. The host finished the work, published a candidate,
+    // and the wire died before it could say so. Re-running would spend a
+    // second approval on work that is already done and sitting at a ref.
+    const mirror = bareMirror()
+    const { repo, manager } = harness(
+      fakeHost({ mirror, vanishAfterPublish: true, facts: [{ kind: 'phase', phase: 'executing' }] }),
+    )
+    const { plan, milestone } = seed(repo, workRepo())
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'allow')
+
+    const outcome = await manager.runMilestoneRemotely(milestone.id, approval.id, target(repo).id)
+    expect(outcome.kind).toBe('disconnected')
+
+    // Unresolved, not settled: the difference between "it failed" and "we do
+    // not know", which is the whole reason this record exists.
+    const unresolved = repo.listUnresolvedRemoteRuns()
+    expect(unresolved).toHaveLength(1)
+    expect(unresolved[0]?.milestoneId).toBe(milestone.id)
+    expect(unresolved[0]?.submittedCommit).toBeTruthy()
+
+    // And it is waiting on a human, rather than sitting silently in a table.
+    const held = manager.listHolds().find((hold) => hold.kind === 'remote-unresolved')
+    expect(held).toBeTruthy()
+    expect(held?.detail).toContain('may have finished')
+
+    const recovered = await manager.recoverRemoteRun(unresolved[0]!.runId)
+    console.log('REFS:', execFileSync('git', ['--git-dir', unresolved[0]!.mirrorUrl, 'for-each-ref'], { encoding: 'utf8' }))
+    // The journal, the record and the git refs all name this run the same
+    // thing. They did not until this milestone, and nothing noticed because
+    // nothing had ever needed to look one up from another.
+    const journalled = repo.listMilestoneRuns(milestone.id)[0]?.runId
+    expect(journalled).toBe(unresolved[0]!.runId)
+    expect(recovered.recovered).toBe(true)
+    expect(recovered.detail).toContain('a.txt')
+    // Honest about what the disconnect cost: the host's own account of what
+    // it changed went with the connection.
+    expect(recovered.detail).toMatch(/review the diff/i)
+
+    // Settled now, and the hold is gone.
+    expect(repo.listUnresolvedRemoteRuns()).toHaveLength(0)
+    expect(repo.getRemoteRun(unresolved[0]!.runId)?.state).toBe('settled')
+    void plan
+  }, 60_000)
+
+  it('says plainly when there was nothing to recover', async () => {
+    // A run that died before publishing leaves nothing at the ref. That is
+    // not a failure of the work and not an error — it means the milestone is
+    // free to be approved again.
+    const mirror = bareMirror()
+    const { repo, manager } = harness(
+      fakeHost({ mirror, publish: false, vanishAfterPublish: true, facts: [] }),
+    )
+    const { milestone } = seed(repo, workRepo())
+    const approval = repo.grantApproval('milestone.execute', milestone.id, 'allow')
+    await manager.runMilestoneRemotely(milestone.id, approval.id, target(repo).id)
+
+    const unresolved = repo.listUnresolvedRemoteRuns()
+    expect(unresolved).toHaveLength(1)
+    const result = await manager.recoverRemoteRun(unresolved[0]!.runId)
+    expect(result.recovered).toBe(false)
+    expect(result.detail).toContain('no candidate')
+    expect(repo.listUnresolvedRemoteRuns()).toHaveLength(0)
+  }, 60_000)
+
+  it('stays unresolved when it cannot even look', () => {
+    // The distinction that matters most on this path. "Nothing was published"
+    // frees the milestone to be approved again; "I could not reach the host"
+    // means the work may still be sitting there, and settling on it would
+    // send someone to spend a second approval on finished work.
+    const { repo, manager } = harness('/nonexistent-ssh')
+    const { plan, milestone } = seed(repo, workRepo())
+    repo.openRemoteRun({
+      runId: 'unreachable-run',
+      milestoneId: milestone.id,
+      planId: plan.id,
+      targetId: target(repo).id,
+      mirrorUrl: '/definitely/not/a/repository.git',
+      submittedCommit: 'a'.repeat(40),
+    })
+    repo.reconcileRemoteRuns()
+
+    return manager.recoverRemoteRun('unreachable-run').then((result) => {
+      expect(result.recovered).toBe(false)
+      expect(result.detail).toMatch(/could not reach/i)
+      // Still waiting, still held.
+      expect(repo.listUnresolvedRemoteRuns()).toHaveLength(1)
+    })
+  }, 60_000)
+
+  it('treats a process that died mid-run the same as a dead wire', () => {
+    // Parley quitting is the other way a run's fate goes unknown, and the
+    // work is just as likely to be sitting finished on the host. A row left
+    // in-flight belongs to a process that is gone.
+    const { repo } = harness('/nonexistent-ssh')
+    const { plan, milestone } = seed(repo, workRepo())
+    repo.openRemoteRun({
+      runId: 'crashed-run',
+      milestoneId: milestone.id,
+      planId: plan.id,
+      targetId: target(repo).id,
+      mirrorUrl: '/tmp/mirror.git',
+      submittedCommit: 'a'.repeat(40),
+    })
+    expect(repo.listUnresolvedRemoteRuns()).toHaveLength(0)
+
+    expect(repo.reconcileRemoteRuns()).toBe(1)
+    const [recovered] = repo.listUnresolvedRemoteRuns()
+    expect(recovered?.runId).toBe('crashed-run')
+    expect(recovered?.detail).toContain('Parley stopped')
+
+    // Idempotent: a second boot must not re-open what it already reported.
+    expect(repo.reconcileRemoteRuns()).toBe(0)
+  })
 
   it('spends nothing when the host never answers', async () => {
     // A transport failure must leave the approval good: making someone grant a

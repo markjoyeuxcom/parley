@@ -110,6 +110,9 @@ async function bootstrap(): Promise<void> {
   repo.reconcileForemanAttempts()
   repo.reconcileSelfUpdates()
   repo.reconcileEnvelopes()
+  // A run marked in-flight belongs to a process that is gone. Unlike an
+  // interrupted local run, the work may be sitting finished on a host.
+  repo.reconcileRemoteRuns()
   repo.reconcileWorkspaces()
 
   const registry = new AgentRegistry()

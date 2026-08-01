@@ -72,6 +72,16 @@ export interface RemoteDriverDeps {
    * for tests, which have a mirror on the local disk rather than behind ssh.
    */
   remoteUrlFor?: (target: Pick<RemoteTarget, 'host'>, mirror: string) => string
+  /**
+   * The snapshot is on the host and a run is about to begin.
+   *
+   * The moment the run becomes RECOVERABLE, and the last moment it is still
+   * free: nothing is spent until `ready`. Whoever holds the record writes
+   * down enough here to come back for a candidate later, because after this
+   * point a dead connection can hide a run that finished, and every value
+   * needed to go looking is a local variable that vanishes with the call.
+   */
+  onSubmitted?: (submitted: { commit: string; mirror: string; url: string }) => void
 }
 
 export interface RemoteRunInput {
@@ -124,6 +134,7 @@ export async function driveRemoteMilestone(
   const remoteUrl = url(target, mirror)
   const pushed = await pushSnapshot(plan.repoPath, remoteUrl, runId, snapshot.commit)
   if (!pushed.ok) return { kind: 'unstarted', detail: pushed.detail }
+  deps.onSubmitted?.({ commit: snapshot.commit, mirror, url: remoteUrl })
 
   // ── The run ──────────────────────────────────────────────────────────────
   const fingerprint = milestoneFingerprint(milestone)

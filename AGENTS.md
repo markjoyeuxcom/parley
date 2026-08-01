@@ -791,6 +791,32 @@ while the run was in flight.
 **Refusals**: worktree-only, no mock plans, self repo exempt. Checked before
 anything is snapshotted, pushed or spent.
 
+**A run that leaves is written down before anything is spent.** `remote_runs`
+(schema 31) is opened the moment the snapshot lands on the host — the window
+in which a run becomes recoverable and is still free — and carries which host,
+which mirror URL and which commit was submitted. Every one of those was a
+local variable that vanished with the call, which is why `disconnected` has
+always pointed at a recovery nothing could perform.
+
+`in-flight` → `unresolved` covers both ways a fate goes unknown: the wire dies
+(the driver settles it) or Parley quits (`reconcileRemoteRuns` at startup, like
+every other reconcile). `unresolved` derives a `remote-unresolved` hold — the
+only hold about work that may already be DONE.
+
+`Manager.recoverRemoteRun` fetches the candidate ref and spends nothing. It
+asks `candidateExists` FIRST, because "nothing was published" and "I could not
+reach the host" are opposite answers: the first settles the run and frees the
+milestone, the second leaves it unresolved because the work may still be
+sitting there. Telling them apart by reading git's English would break the
+first time git rephrased it.
+
+Ancestry against the submitted snapshot still holds on this path and the
+changed paths are re-derived locally from git, which was always the authority.
+What is lost with the connection is the remote's own account of what it
+changed — the second opinion that would catch a helper lying about its own
+work — so a recovered result SAYS it was recovered and asks for the diff to be
+reviewed rather than passing itself off as a reported one.
+
 **A finished run's record consequences belong to whoever holds the record.**
 The execution core states facts and writes no rows, so ingesting a finding as
 a ledger occurrence, settling the blockers a passing milestone answered, and

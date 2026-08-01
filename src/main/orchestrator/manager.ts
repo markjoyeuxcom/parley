@@ -67,6 +67,7 @@ import { runSsh } from '@main/remote/ssh'
 import { remoteBundlePath } from '@main/remote/install'
 import { statusVerdict, type RemoteStatus } from '@main/remote/status'
 import { driveRemoteMilestone, type RemoteRunOutcome } from '@main/remote/driver'
+import { candidateExists, descendsFrom, fetchCandidate } from '@main/remote/snapshot'
 import { sshConverse } from '@main/remote/converse'
 import { remoteRefusal } from '@main/remote/eligibility'
 import { installRemote, remoteIntegrity, rollbackRemote } from '@main/remote/installer'
@@ -431,6 +432,101 @@ export class Manager {
       bundlePath: remoteBundlePath(this.deps.appPath ?? this.deps.selfRepoPath ?? ''),
     })
     return { ok: outcome.ok, detail: outcome.detail, buildId: outcome.buildId }
+  }
+
+  /**
+   * Goes and looks for a run whose fate was never reported.
+   *
+   * The recovery the disconnect path has always pointed at and never had. A
+   * candidate lives at a git ref in the host's mirror, so this needs no
+   * protocol and no cooperation from the helper — just a fetch, which works
+   * whether the run finished an hour ago or the connection died mid-sentence.
+   *
+   * Two guards survive the loss of the wire and one does not. Ancestry holds:
+   * a candidate that does not descend from the exact snapshot submitted was
+   * built from something else, and is refused however plausible it looks. The
+   * changed paths are re-derived here from git, which was always the
+   * authority. What is gone is the remote's independent claim about those
+   * paths — the second opinion that would catch a helper lying about its own
+   * work. So a recovered result says so in the record rather than passing
+   * itself off as a reported one.
+   *
+   * Spends nothing. The approval was consumed when the run announced itself,
+   * which is precisely why re-running is the wrong answer: it would charge a
+   * second one for work that may already be done.
+   */
+  async recoverRemoteRun(runId: Id): Promise<{ recovered: boolean; detail: string }> {
+    const record = this.repo.getRemoteRun(runId)
+    if (!record) throw new RequestError('no record of a run with that id leaving this machine')
+    if (record.state === 'settled') {
+      throw new RequestError('that run already has an answer; there is nothing to recover')
+    }
+    const plan = this.repo.getPlan(record.planId)
+    if (!plan) throw new RequestError('the plan for that run is missing')
+
+    // Asked before fetching, because "there is nothing there" and "I could
+    // not look" are opposite answers. Only the first settles anything.
+    const present = await candidateExists(plan.repoPath, record.mirrorUrl, runId)
+    if (!present.reachable) {
+      return {
+        recovered: false,
+        detail:
+          `Could not reach ${record.mirrorUrl} to look for this run's work: ${present.detail}. ` +
+          `It stays unresolved — the work may still be there.`,
+      }
+    }
+    if (!present.published) {
+      // Nothing was published, so the run did not get far enough to produce
+      // anything. Not a failure of the work: the milestone is free again.
+      this.repo.settleRemoteRun(runId, 'settled', 'no candidate was ever published')
+      this.holdsChanged()
+      return { recovered: false, detail: 'the host published no candidate for this run' }
+    }
+
+    const fetched = await fetchCandidate(plan.repoPath, record.mirrorUrl, runId)
+    if (!fetched.ok || !fetched.commit) {
+      // Nothing there. Not an error and not a failure of the work — it means
+      // the run did not get far enough to publish, and the milestone is free
+      // to be approved again.
+      // Listed a moment ago and unfetchable now. Left unresolved rather than
+      // settled: something is wrong with the transport, not with the run.
+      return {
+        recovered: false,
+        detail: `The candidate is there but could not be collected: ${fetched.detail}`,
+      }
+    }
+
+    if (!(await descendsFrom(plan.repoPath, record.submittedCommit, fetched.commit))) {
+      this.repo.settleRemoteRun(
+        runId,
+        'settled',
+        'the published candidate was built from something other than the submitted snapshot',
+      )
+      throw new RequestError(
+        `${fetched.commit.slice(0, 12)} does not descend from the snapshot that was submitted — refusing to import it`,
+      )
+    }
+
+    const changed = await capture(
+      'git',
+      ['diff', '--name-only', record.submittedCommit, fetched.commit],
+      plan.repoPath,
+      60_000,
+    )
+    const changedPaths = changed.stdout.split('\n').filter(Boolean)
+    this.repo.settleRemoteRun(
+      runId,
+      'settled',
+      `recovered ${fetched.commit.slice(0, 12)} (${changedPaths.length} path${changedPaths.length === 1 ? '' : 's'})`,
+    )
+    this.holdsChanged()
+    return {
+      recovered: true,
+      detail:
+        `Recovered ${fetched.commit.slice(0, 12)} from ${record.mirrorUrl}, ` +
+        `changing ${changedPaths.join(', ') || 'nothing'}. It is fetched and its ancestry checked; ` +
+        `the remote's own account of what it changed was lost with the connection, so review the diff before landing.`,
+    }
   }
 
   async rollbackRemote(targetId: Id): Promise<{ ok: boolean; detail: string }> {
@@ -1208,7 +1304,11 @@ export class Manager {
       reporter.decision({ kind: 'approved', approvalId })
 
       const outcome = await driveRemoteMilestone(
-        { runId: newId(), target, repoKey: repoKeyFor(plan.repoPath), plan, milestone },
+        // The SAME id the journal uses. These were two separate newId() calls,
+        // so a remote run's story and the git refs holding its work have never
+        // named it the same thing — invisible while nothing had to correlate
+        // them, and fatal to a recovery that has only the record to go on.
+        { runId, target, repoKey: repoKeyFor(plan.repoPath), plan, milestone },
         {
           converse: sshConverse(gate.signal, this.deps.sshBinary),
           consumeApproval: () =>
@@ -1225,6 +1325,18 @@ export class Manager {
             )
             return diff.stdout.split('\n').filter(Boolean)
           },
+          // Written after the push and before anything is spent: from here on
+          // a dead wire can hide a run that finished, and every value needed
+          // to go back for it is about to go out of scope.
+          onSubmitted: ({ commit, url }) =>
+            this.repo.openRemoteRun({
+              runId,
+              milestoneId,
+              planId: plan.id,
+              targetId: target.id,
+              mirrorUrl: url,
+              submittedCommit: commit,
+            }),
           onProgress: (phase, text) =>
             this.deps.emit({
               type: 'plan.activity',
@@ -1255,6 +1367,14 @@ export class Manager {
       // A run whose journal simply stops is indistinguishable from one still
       // in flight, which is the wrong thing for a disconnect to look like.
       reporter.ended(outcome.kind, 'detail' in outcome ? outcome.detail : '')
+      // A disconnect is the one ending that does not settle anything: the run
+      // may have finished over there. Everything else is an answer, including
+      // the unhappy ones.
+      this.repo.settleRemoteRun(
+        runId,
+        outcome.kind === 'disconnected' ? 'unresolved' : 'settled',
+        'detail' in outcome ? outcome.detail : outcome.kind,
+      )
       return outcome
     } finally {
       this.milestoneRuns.delete(milestoneId)

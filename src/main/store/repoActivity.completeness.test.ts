@@ -18,6 +18,10 @@ const DECLARED_PARENTS: Readonly<Record<string, string>> = {
   // same reason as its neighbours: what happened happened, and losing the
   // account of it because its subject was tidied away defeats keeping one.
   run_events: 'plans',
+  // A run that left this machine belongs to the milestone's plan. FK-less for
+  // the same reason as its neighbours: "there is work on a host nobody
+  // collected" stays true after a session deletion tidies the plan away.
+  remote_runs: 'plans',
 }
 
 const OUT_OF_SCOPE: Readonly<Record<string, string>> = {
@@ -43,6 +47,12 @@ const OUT_OF_SCOPE: Readonly<Record<string, string>> = {
 }
 
 const WRITE_EXEMPTIONS: Readonly<Record<string, string>> = {
+  'openRemoteRun:remote_runs':
+    'Opening the record happens inside a run whose milestone writes already noted the activity. Noting it again would count one run twice.',
+  'settleRemoteRun:remote_runs':
+    'Settling records what became of a run that already counted. A disconnect resolved weeks later must not make the repository look freshly worked on.',
+  'reconcileRemoteRuns:remote_runs':
+    'Startup reconciliation marks what a dead process left behind. It is bookkeeping about the past, and dating a repository from it would make every boot look like work.',
   'appendRunEvent:run_events':
     'A journal entry accompanies a row write that already noted the activity, inside the same transaction. Noting it again would double-count the same moment, and an activity line — the most frequent event by far — would keep a repository looking busy long after its run ended.',
   'noteRepoActivity:repo_activity':
@@ -316,6 +326,7 @@ describe('repository activity completeness', () => {
       'ledger_sightings',
       'loop_iterations',
       'milestones',
+      'remote_runs',
       'run_events',
       'self_updates',
       'turns',

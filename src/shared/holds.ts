@@ -40,6 +40,14 @@ export type HoldKind =
    * inside Parley can clear it.
    */
   | 'milestone-parked'
+  /**
+   * A run left for another machine and never reported back.
+   *
+   * The only hold about work that may already be DONE. Re-running it would
+   * spend a second approval on something that might be finished and waiting
+   * at a ref; the resolution is to go and look.
+   */
+  | 'remote-unresolved'
   /** A loop stopped without succeeding: a cap, a failure, or a kill. */
   | 'loop-exhausted'
   /** An in-flight run has been silent past the stall threshold. */
@@ -71,6 +79,7 @@ export const HOLD_CLASS: Record<HoldKind, HoldClass> = {
   'plan-blocked': 'notice',
   'milestone-failed': 'notice',
   'milestone-parked': 'notice',
+  'remote-unresolved': 'notice',
   'loop-exhausted': 'notice',
   'run-stalled': 'notice',
   'merge-ready': 'decision',

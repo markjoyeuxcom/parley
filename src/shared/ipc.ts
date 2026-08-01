@@ -413,6 +413,7 @@ export const COMMANDS = {
   'remote.add': AddRemoteTargetReq,
   'remote.forget': RemoteTargetIdReq,
   'remote.status': RemoteTargetIdReq,
+  'remote.recover': z.object({ runId: Id }),
   'remote.install': RemoteTargetIdReq,
   'remote.rollback': RemoteTargetIdReq,
   'plan.runMilestoneRemotely': RunMilestoneRemotelyReq,

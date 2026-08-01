@@ -326,6 +326,9 @@ export const api = {
     bridge().invoke('remote.forget', { targetId }),
   remoteStatus: (targetId: string): Promise<RemoteStatusView> =>
     bridge().invoke('remote.status', { targetId }),
+  /** Collects a run whose fate was never reported. Spends nothing. */
+  recoverRemoteRun: (runId: Id): Promise<{ recovered: boolean; detail: string }> =>
+    bridge().invoke('remote.recover', { runId }),
   installRemote: (targetId: string): Promise<{ ok: boolean; detail: string; buildId: string }> =>
     bridge().invoke('remote.install', { targetId }),
   rollbackRemote: (targetId: string): Promise<{ ok: boolean; detail: string }> =>

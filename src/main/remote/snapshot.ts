@@ -240,6 +240,34 @@ export async function pushSnapshot(
  * objects it needs in order to judge — ancestry, changed paths, evidence — and
  * every one of those checks runs after this, against objects we now hold.
  */
+/**
+ * Whether the host has a candidate for this run at all.
+ *
+ * Asked separately from fetching it because the two failures it separates are
+ * opposites: a ref that was never published means the run did not get far
+ * enough, and the milestone is free to be approved again; a host that cannot
+ * be reached means the work may be sitting there and the question is still
+ * open. A fetch reports both as an error, and telling them apart by reading
+ * git's English would break the first time git rephrased it.
+ */
+export async function candidateExists(
+  repoPath: string,
+  mirror: string,
+  runId: string,
+  signal?: AbortSignal,
+): Promise<{ reachable: boolean; published: boolean; detail: string }> {
+  const ref = candidateRefFor(runId)
+  const listed = await git(['ls-remote', mirror, ref], repoPath, signal)
+  if (!listed.ok) {
+    return {
+      reachable: false,
+      published: false,
+      detail: (listed.stderr || listed.stdout).slice(0, 400),
+    }
+  }
+  return { reachable: true, published: listed.stdout.trim().length > 0, detail: '' }
+}
+
 export async function fetchCandidate(
   repoPath: string,
   mirror: string,

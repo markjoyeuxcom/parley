@@ -1,6 +1,6 @@
 import { newId } from '@main/util/ids'
 import { searchRecord, type SearchHit, type SearchOptions } from './search'
-import type { RemoteTarget } from '@shared/remote'
+import type { RemoteRunRecord, RemoteTarget } from '@shared/remote'
 import type { RunEvent } from '@shared/journal'
 import {
   type CorrectionDisposition,
@@ -2233,6 +2233,90 @@ export class Repo {
    * work MAY run, not a fact about any repository having been worked on. The
    * completeness guard classifies it out of scope for exactly that reason.
    */
+  /* ── Runs that left this machine ─────────────────────────────────────── */
+
+  openRemoteRun(input: {
+    runId: Id
+    milestoneId: Id
+    planId: Id
+    targetId: Id
+    mirrorUrl: string
+    submittedCommit: string
+  }): RemoteRunRecord {
+    const id = newId()
+    const createdAt = Date.now()
+    this.db.run(
+      `INSERT INTO remote_runs
+       (id, run_id, milestone_id, plan_id, target_id, mirror_url, submitted_commit, state, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'in-flight', ?)`,
+      id,
+      input.runId,
+      input.milestoneId,
+      input.planId,
+      input.targetId,
+      input.mirrorUrl,
+      input.submittedCommit,
+      createdAt,
+    )
+    return { id, ...input, state: 'in-flight', detail: '', createdAt, settledAt: null }
+  }
+
+  settleRemoteRun(runId: Id, state: 'unresolved' | 'settled', detail: string): void {
+    this.db.run(
+      `UPDATE remote_runs SET state = ?, detail = ?, settled_at = ?
+       WHERE run_id = ? AND state != 'settled'`,
+      state,
+      detail.slice(0, 400),
+      state === 'settled' ? Date.now() : null,
+      runId,
+    )
+  }
+
+  listUnresolvedRemoteRuns(): RemoteRunRecord[] {
+    return this.db
+      .all(`SELECT * FROM remote_runs WHERE state = 'unresolved' ORDER BY created_at ASC`)
+      .map((row) => this.toRemoteRun(row))
+  }
+
+  getRemoteRun(runId: Id): RemoteRunRecord | null {
+    const row = this.db.get(`SELECT * FROM remote_runs WHERE run_id = ?`, runId)
+    return row ? this.toRemoteRun(row) : null
+  }
+
+  /**
+   * Anything still marked in-flight belongs to a process that is gone.
+   *
+   * The same stance every other reconcile takes, and here it covers a case the
+   * disconnect path cannot: Parley quitting mid-run. Either way the honest
+   * state is that nobody knows how it went, which is exactly what unresolved
+   * means — and unlike an interrupted local run, the work may be sitting
+   * finished on a host waiting to be collected.
+   */
+  reconcileRemoteRuns(): number {
+    const { changes } = this.db.run(
+      `UPDATE remote_runs SET state = 'unresolved',
+       detail = 'Parley stopped while this run was in flight'
+       WHERE state = 'in-flight'`,
+    )
+    return changes
+  }
+
+  private toRemoteRun(row: Row): RemoteRunRecord {
+    return {
+      id: str(row['id']),
+      runId: str(row['run_id']),
+      milestoneId: str(row['milestone_id']),
+      planId: str(row['plan_id']),
+      targetId: str(row['target_id']),
+      mirrorUrl: str(row['mirror_url']),
+      submittedCommit: str(row['submitted_commit']),
+      state: str(row['state']) as RemoteRunRecord['state'],
+      detail: str(row['detail'] ?? ''),
+      createdAt: num(row['created_at']),
+      settledAt: nullableNum(row['settled_at']),
+    }
+  }
+
   createRemoteTarget(target: RemoteTarget & { nodeCommand: string }): RemoteTarget {
     this.db.run(
       `INSERT INTO remote_targets (id, label, host, node_command, runs_root, created_at)

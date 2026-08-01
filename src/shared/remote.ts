@@ -420,6 +420,28 @@ export interface RemoteTarget {
   createdAt: number
 }
 
+/**
+ * A run that left this machine, and whether we ever found out how it went.
+ *
+ * `unresolved` is the state that matters and the one Parley could not express
+ * before: the connection died, or Parley quit, and the work may have finished
+ * on the host. Re-running it would spend a second approval on something that
+ * may already be done; the recovery is to go and look at the candidate ref.
+ */
+export interface RemoteRunRecord {
+  id: string
+  runId: string
+  milestoneId: string
+  planId: string
+  targetId: string
+  mirrorUrl: string
+  submittedCommit: string
+  state: 'in-flight' | 'unresolved' | 'settled'
+  detail: string
+  createdAt: number
+  settledAt: number | null
+}
+
 /** The shape a run's outcome takes once it is back on this machine. */
 export type RemoteRunOutcome =
   | { status: 'complete'; manifest: RemoteEvidenceManifest }

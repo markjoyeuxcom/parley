@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 30
+export const SCHEMA_VERSION = 31
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -566,6 +566,38 @@ CREATE TABLE IF NOT EXISTS workspaces (
   ready_at    INTEGER,
   mock        INTEGER NOT NULL DEFAULT 0
 );
+
+-- A run that left this machine, and whether we ever found out how it went.
+--
+-- Written after the snapshot is pushed and before anything is spent, because
+-- that is the window in which a run becomes recoverable: from then on a dead
+-- connection can hide a run that FINISHED, and every value needed to go back
+-- and look — which host, which mirror, which commit was submitted — is a
+-- local variable that vanishes with the call.
+--
+-- FK-less, like its neighbours. A row here outlives the plan a session
+-- deletion cascades away, because "there is work on a host that nobody
+-- collected" stays true regardless of what was tidied up locally.
+CREATE TABLE IF NOT EXISTS remote_runs (
+  id               TEXT PRIMARY KEY,
+  run_id           TEXT NOT NULL,
+  milestone_id     TEXT NOT NULL,
+  plan_id          TEXT NOT NULL,
+  target_id        TEXT NOT NULL,
+  -- How git addresses the host's mirror. Kept verbatim rather than rebuilt
+  -- from the target, which may have been edited or deleted since.
+  mirror_url       TEXT NOT NULL,
+  -- The exact tree that was sent. A candidate that does not descend from it
+  -- was built from something else and is refused however plausible it looks.
+  submitted_commit TEXT NOT NULL,
+  -- in-flight: we are watching. unresolved: we stopped watching and do not
+  -- know. settled: we know, one way or another.
+  state            TEXT NOT NULL,
+  detail           TEXT NOT NULL DEFAULT '',
+  created_at       INTEGER NOT NULL,
+  settled_at       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_remote_runs_state ON remote_runs(state, created_at);
 
 -- One index over everything anybody wrote down.
 --
@@ -1163,6 +1195,11 @@ export function migrate(db: Db): void {
              SELECT 'backlog', id, repo_path, title, title || ' ' || detail FROM backlog_items`)
     db.exec(`INSERT INTO search_index (kind, ref_id, scope, title, body)
              SELECT 'learning', id, repo_path, text, text FROM learnings`)
+  }
+  if (current < 31) {
+    // Additive: SCHEMA creates the table fresh. Runs that disconnected before
+    // this existed are unrecoverable and always were — nothing recorded where
+    // they went.
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

@@ -113,6 +113,26 @@ export function computeHolds(repo: Repo, acked: ReadonlySet<string>, now = Date.
     }
   }
 
+  // Not scoped to a session's plans like the loop above: a run whose fate is
+  // unknown matters whether or not its session is still open, and the work is
+  // sitting on someone else's disk either way.
+  for (const run of repo.listUnresolvedRemoteRuns()) {
+    const plan = repo.getPlan(run.planId)
+    holds.push(
+      hold('remote-unresolved', run.runId, String(run.createdAt), {
+        sessionId: plan?.sessionId ?? '',
+        planId: run.planId,
+        milestoneId: run.milestoneId,
+        loopId: null,
+        repoPath: plan ? canonicalRepoPath(plan.repoPath) : '',
+        title: 'A run on another machine never reported back',
+        detail: `${plan?.title ?? 'a plan'} — ${run.detail || 'the connection died'}. The work may have finished there; look for its candidate rather than running it again.`,
+        sinceAt: run.createdAt,
+        mock: plan?.mock ?? false,
+      }),
+    )
+  }
+
   for (const loop of repo.listLoops()) {
     if (loop.status === 'exhausted' || loop.status === 'failed' || loop.status === 'killed') {
       holds.push(loopHold(loop))
