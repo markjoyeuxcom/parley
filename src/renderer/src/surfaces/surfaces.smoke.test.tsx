@@ -1414,6 +1414,64 @@ describe('mounted-surface smoke', () => {
     await waitFor(() => expect(invoked).toContain('session.get'))
   })
 
+  it('offers Run elsewhere only where a plan may actually leave', async () => {
+    // Main refuses a checkout plan too, but a control that appears and then
+    // refuses teaches people to distrust every other control on the screen.
+    const worktreePlan = { ...smokePlan, isolation: 'worktree' as const, mock: false }
+    installBridge({
+      'remote.list': () => [
+        { id: 'h1', label: 'Build box', host: 'build-01', nodeCommand: 'node', createdAt: 1 },
+      ],
+      'plan.get': () => ({
+        plan: worktreePlan,
+        milestones: [{ ...smokeMilestone, status: 'audited' as const }],
+        worktree: null,
+      }),
+      'ledger.list': () => [],
+    })
+    const { unmount } = render(
+      <StoreProvider>
+        <PlanPanel
+          detail={{
+            plan: worktreePlan,
+            milestones: [{ ...smokeMilestone, status: 'audited' as const }],
+            worktree: null,
+          }}
+          ledger={[]}
+          onRefresh={() => {}}
+          host="backlog"
+        />
+      </StoreProvider>,
+    )
+    await screen.findByText('Approve and run')
+    await screen.findByText('Run elsewhere')
+    unmount()
+
+    // The same milestone on a checkout plan: local run only.
+    installBridge({
+      'remote.list': () => [
+        { id: 'h1', label: 'Build box', host: 'build-01', nodeCommand: 'node', createdAt: 1 },
+      ],
+      'ledger.list': () => [],
+    })
+    render(
+      <StoreProvider>
+        <PlanPanel
+          detail={{
+            plan: { ...smokePlan, isolation: 'checkout' as const, mock: false },
+            milestones: [{ ...smokeMilestone, status: 'audited' as const }],
+            worktree: null,
+          }}
+          ledger={[]}
+          onRefresh={() => {}}
+          host="backlog"
+        />
+      </StoreProvider>,
+    )
+    await screen.findByText('Approve and run')
+    expect(screen.queryByText('Run elsewhere')).toBeNull()
+  })
+
   it('execution hosts render, and Check asks rather than assumes', async () => {
     const invoked: CommandName[] = []
     installBridge({

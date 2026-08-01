@@ -8,6 +8,7 @@ import {
   ShieldCheck,
   Square,
   ThumbsUp,
+  Server,
 } from 'lucide-react'
 import type {
   AgentConfig,
@@ -21,7 +22,7 @@ import type {
 } from '@shared/domain'
 import type { LedgerEntry } from '@shared/ipc'
 import type { Acceptance, Envelope, EnvelopeCaps } from '@shared/domain'
-import { api, type PlanDetail } from '../lib/api'
+import { api, type PlanDetail, type RemoteTargetView } from '../lib/api'
 import { formatDuration, shortPath, statusTone, verificationState } from '../lib/format'
 import { approvalPermission } from '../lib/ledgerView'
 import { shellMetacharsIn } from '@shared/command'
@@ -29,7 +30,7 @@ import { EXECUTABLE_PAIRS, executionRefusal } from '@shared/execution'
 import { useStore, type Surface } from '../state'
 import { AgentPicker } from './AgentPicker'
 import { BulkDispositionControl, OccurrenceDispositionControl } from './FindingsLedgerPanel'
-import { Chip, Dialog, Field, Label, Panel, Spinner } from './ui'
+import { Chip, Dialog, Field, Label, Menu, MenuItem, MenuSection, Panel, Spinner } from './ui'
 import { RunActivity } from './RunActivity'
 import { PlanProgress } from './PlanProgress'
 
@@ -542,6 +543,65 @@ export function PlanPanel({
     }
   }
 
+  /**
+   * Runs a milestone on another machine.
+   *
+   * Deliberately the SAME approval and the same wording as a local run, with
+   * the host named in it: the durable record has to say where the work was
+   * allowed to happen, because "an isolated worktree of /repos/atlas" means
+   * something different on a machine the user is not sitting at.
+   *
+   * Worktree-only, so the button is not offered for a checkout plan at all —
+   * main refuses it too, but a control that appears and then refuses teaches
+   * people to distrust the controls.
+   */
+  const [hosts, setHosts] = useState<RemoteTargetView[]>([])
+  useEffect(() => {
+    // Only worth asking for a plan that could actually use one.
+    if (plan.isolation !== 'worktree' || plan.mock) return
+    void api
+      .listRemoteTargets()
+      .then((next) => setHosts(Array.isArray(next) ? next : []))
+      .catch(() => {})
+  }, [plan.isolation, plan.mock])
+
+  const approveAndRunRemotely = async (milestone: Milestone, target: RemoteTargetView): Promise<void> => {
+    setGranting(true)
+    const summary =
+      `Allow ${plan.executor.vendor} to run milestone ${milestone.index + 1}: ${milestone.title} ` +
+      `on ${target.label} (${target.host}), in an isolated worktree of a copy of ${plan.repoPath} on that host. ` +
+      `It executes as that host's user with that user's CLI subscriptions. The result returns as a branch ` +
+      `to review; landing on the checkout is a separate decision.`
+
+    const approval = await attempt(() => api.grantApproval('milestone.execute', milestone.id, summary))
+    setGranting(false)
+    if (!approval) return
+
+    setPendingApproval(null)
+    notify('info', `Milestone ${milestone.index + 1} sent to ${target.label}.`)
+
+    const outcome = await attempt(() =>
+      api.runMilestoneRemotely(milestone.id, approval.id, target.id),
+    )
+    if (outcome) {
+      // Named for what to do next rather than for what went wrong — the
+      // driver's own vocabulary, carried through instead of flattened.
+      const said: Record<string, [Parameters<typeof notify>[0], string]> = {
+        accepted: ['info', `Milestone ${milestone.index + 1} came back and was accepted.`],
+        ended: ['warn', `Milestone ${milestone.index + 1} did not pass on ${target.label}.`],
+        unstarted: ['warn', `Nothing ran on ${target.label}, and nothing was spent.`],
+        disconnected: [
+          'warn',
+          `The connection to ${target.label} dropped. The work may have finished — check the host before running it again.`,
+        ],
+        rejected: ['error', `What ${target.label} sent back was refused.`],
+      }
+      const [level, message] = said[outcome.kind] ?? ['warn', `The run ended: ${outcome.kind}`]
+      notify(level, outcome.detail ? `${message} ${outcome.detail}` : message)
+    }
+    onRefresh()
+  }
+
   const approveAndRun = async (milestone: Milestone): Promise<void> => {
     setGranting(true)
     // The persisted record of what was authorised, so it must name the
@@ -795,6 +855,15 @@ export function PlanPanel({
             plan={plan}
             milestone={milestone}
             onApprove={() => setPendingApproval(milestone)}
+            hosts={hosts}
+            onRunRemotely={
+              // Worktree-only, never a mock plan. The same rule main enforces,
+              // applied here so the control simply is not offered rather than
+              // appearing and refusing.
+              plan.isolation === 'worktree' && !plan.mock
+                ? (target) => void approveAndRunRemotely(milestone, target)
+                : null
+            }
             judgement={
               state.acceptances.find((entry) => entry.milestoneId === milestone.id) ?? null
             }
@@ -1231,6 +1300,8 @@ function MilestoneRow({
   plan,
   milestone,
   onApprove,
+  onRunRemotely,
+  hosts,
   judgement,
   onAccept,
   onRequestChanges,
@@ -1239,6 +1310,13 @@ function MilestoneRow({
   plan: WorkPlan
   milestone: Milestone
   onApprove: () => void
+  /**
+   * Null when this plan may not run remotely at all — a checkout plan, a mock
+   * one, Parley's own repository. Main refuses those too, but a control that
+   * appears and then refuses teaches people to distrust the controls.
+   */
+  onRunRemotely: ((target: RemoteTargetView) => void) | null
+  hosts: RemoteTargetView[]
   /** The human's recorded judgement on this milestone, once there is one. */
   judgement: Acceptance | null
   onAccept: () => Promise<void>
@@ -1387,6 +1465,33 @@ function MilestoneRow({
             <ShieldCheck size={12} strokeWidth={2} />
             {milestone.status === 'failed' ? 'Approve and retry' : 'Approve and run'}
           </button>
+          {onRunRemotely && hosts.length > 0 ? (
+            <Menu
+              title="Run on another machine"
+              label={
+                <>
+                  <Server size={12} strokeWidth={2} />
+                  Run elsewhere
+                </>
+              }
+            >
+              {(close) => (
+                <MenuSection>
+                  {hosts.map((host) => (
+                    <MenuItem
+                      key={host.id}
+                      onClick={() => {
+                        close()
+                        onRunRemotely(host)
+                      }}
+                    >
+                      {host.label}
+                    </MenuItem>
+                  ))}
+                </MenuSection>
+              )}
+            </Menu>
+          ) : null}
           <span className="dimmer" style={{ fontSize: 'var(--text-tiny)' }}>
             Writes to the repository
           </span>
