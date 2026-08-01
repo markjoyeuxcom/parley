@@ -307,6 +307,11 @@ export const AddRemoteTargetReq = z.object({
     .optional(),
 })
 export const RemoteTargetIdReq = z.object({ targetId: Id })
+export const RunMilestoneRemotelyReq = z.object({
+  milestoneId: Id,
+  approvalId: Id,
+  targetId: Id,
+})
 
 export const SetRepoContainerReq = z.object({
   repoPath: z.string().min(1),
@@ -406,6 +411,9 @@ export const COMMANDS = {
   'remote.add': AddRemoteTargetReq,
   'remote.forget': RemoteTargetIdReq,
   'remote.status': RemoteTargetIdReq,
+  'remote.install': RemoteTargetIdReq,
+  'remote.rollback': RemoteTargetIdReq,
+  'plan.runMilestoneRemotely': RunMilestoneRemotelyReq,
   'plan.runMilestone': RunMilestoneReq,
   'plan.inspect': InspectMilestoneReq,
   'plan.answer': AnswerPlanReq,

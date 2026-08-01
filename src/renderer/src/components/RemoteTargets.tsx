@@ -26,6 +26,7 @@ export function RemoteTargetsPanel(): ReactNode {
   const [targets, setTargets] = useState<RemoteTargetView[]>([])
   const [statuses, setStatuses] = useState<Record<string, RemoteStatusView>>({})
   const [checking, setChecking] = useState<string | null>(null)
+  const [installing, setInstalling] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
 
   const refresh = (): void => {
@@ -78,6 +79,23 @@ export function RemoteTargetsPanel(): ReactNode {
                       onClick={() => check(target)}
                     >
                       {checking === target.id ? 'Checking…' : 'Check'}
+                    </button>
+                    <button
+                      className="btn btn--subtle btn--sm"
+                      disabled={installing === target.id}
+                      title="Uploads this build's runner, checks its hash on the host, makes it prove it starts, and only then activates it."
+                      onClick={() => {
+                        setInstalling(target.id)
+                        void attempt(() => api.installRemote(target.id))
+                          .then((done) => {
+                            if (!done) return
+                            notify(done.ok ? 'info' : 'error', done.detail)
+                            if (done.ok) check(target)
+                          })
+                          .finally(() => setInstalling(null))
+                      }}
+                    >
+                      {installing === target.id ? 'Installing…' : 'Install'}
                     </button>
                     <button
                       className="btn btn--subtle btn--sm"

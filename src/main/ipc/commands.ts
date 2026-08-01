@@ -440,6 +440,16 @@ const HANDLERS: Record<CommandName, Handler> = {
     return { ok: true }
   },
   'remote.status': (p, ctx) => ctx.manager.remoteStatus((p as { targetId: string }).targetId),
+  'remote.install': (p, ctx) => ctx.manager.installRemote((p as { targetId: string }).targetId),
+  'remote.rollback': (p, ctx) => ctx.manager.rollbackRemote((p as { targetId: string }).targetId),
+  'plan.runMilestoneRemotely': (p, ctx) => {
+    const { milestoneId, approvalId, targetId } = p as {
+      milestoneId: string
+      approvalId: string
+      targetId: string
+    }
+    return ctx.manager.runMilestoneRemotely(milestoneId, approvalId, targetId)
+  },
   'repo.setContainer': (p, ctx) => {
     const { repoPath, enabled } = p as { repoPath: string; enabled: boolean }
     return ctx.manager.setRepoContainer(repoPath, enabled)

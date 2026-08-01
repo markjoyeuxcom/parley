@@ -55,11 +55,30 @@ import { LoopRunner, validateExitCommand, type LoopOutcome } from './loop'
 import { missingExpectedPaths, Pipeline, readTree } from './pipeline'
 import { assertNoUnresolvedBlockingOccurrences } from './gate'
 import { SessionRunner } from './session'
+import { createHash } from 'node:crypto'
+import { join } from 'node:path'
+import { capture } from '@main/util/spawn'
 import { RunGate, type OrchestratorDeps } from './types'
 import type { RemoteCapabilities, RemoteTarget } from '@shared/remote'
 import { handshakeRequest } from '@main/remote/protocol'
 import { runSsh } from '@main/remote/ssh'
 import { statusVerdict, type RemoteStatus } from '@main/remote/status'
+import { driveRemoteMilestone, type RemoteRunOutcome } from '@main/remote/driver'
+import { sshConverse } from '@main/remote/converse'
+import { remoteRefusal } from '@main/remote/eligibility'
+import { installRemote, rollbackRemote } from '@main/remote/installer'
+import { StoreMilestoneReporter } from './reporter'
+
+/**
+ * A stable directory name for a repository's mirror on a host.
+ *
+ * Derived from the canonical path so the same repository reaches the same
+ * mirror every time, and hashed so it is a boring directory name whatever the
+ * path contained.
+ */
+function repoKeyFor(repoPath: string): string {
+  return createHash('sha256').update(canonicalRepoPath(repoPath)).digest('hex').slice(0, 32)
+}
 
 export class RequestError extends Error {}
 
@@ -377,6 +396,33 @@ export class Manager {
       nodeUsable: true,
       previousAvailable: false,
     })
+  }
+
+  /**
+   * Puts the runner on a host, or replaces the one already there.
+   *
+   * The bundle comes from this build's own out/ directory, so a host always
+   * receives the runner belonging to the Parley that is talking to it — which
+   * is the whole reason build identity is a content hash rather than a version
+   * string somebody has to remember to bump.
+   */
+  async installRemote(targetId: Id): Promise<{ ok: boolean; detail: string; buildId: string }> {
+    const target = this.repo.getRemoteTarget(targetId)
+    if (!target) throw new RequestError('no such execution host')
+    const outcome = await installRemote(target, {
+      // The dev checkout is where out/ lives. A packaged build has no
+      // checkout, so selfRepoPath is null and this reports the missing bundle
+      // rather than guessing at a path — shipping the runner as a packaged
+      // resource is its own piece of work and is not pretended here.
+      bundlePath: join(this.deps.selfRepoPath ?? '', 'out', 'remote', 'parley-remote.mjs'),
+    })
+    return { ok: outcome.ok, detail: outcome.detail, buildId: outcome.buildId }
+  }
+
+  async rollbackRemote(targetId: Id): Promise<{ ok: boolean; detail: string }> {
+    const target = this.repo.getRemoteTarget(targetId)
+    if (!target) throw new RequestError('no such execution host')
+    return rollbackRemote(target, {})
   }
 
   /**
@@ -1060,6 +1106,101 @@ export class Manager {
     this.milestoneRuns.set(milestoneId, gate)
     try {
       return await this.pipeline.runMilestone(milestoneId, approvalId, gate)
+    } finally {
+      this.milestoneRuns.delete(milestoneId)
+    }
+  }
+
+  /**
+   * Runs a milestone on another machine.
+   *
+   * Shares the in-flight registry with local execution, because "one run per
+   * milestone" has to mean one run anywhere — two machines executing the same
+   * milestone would each produce a candidate and each be truthful about a tree
+   * the other never saw.
+   *
+   * The approval is NOT consumed here. It is consumed when the remote
+   * announces itself, because everything before that — snapshotting, pushing,
+   * reaching the host at all — can fail without anything having been spent,
+   * and a single-use approval burnt on a transport failure would make the user
+   * grant a fresh one to retry something that never ran.
+   */
+  async runMilestoneRemotely(
+    milestoneId: Id,
+    approvalId: Id,
+    targetId: Id,
+  ): Promise<RemoteRunOutcome> {
+    const milestone = this.repo.getMilestone(milestoneId)
+    if (!milestone) throw new RequestError('no such milestone')
+    const plan = this.repo.getPlan(milestone.planId)
+    if (!plan) throw new RequestError('that milestone has no plan')
+    const target = this.repo.getRemoteTarget(targetId)
+    if (!target) throw new RequestError('no such execution host')
+
+    const refusal = remoteRefusal({
+      plan,
+      selfRepoPath: this.deps.selfRepoPath ?? null,
+      canonical: canonicalRepoPath,
+    })
+    if (refusal) throw new RequestError(refusal)
+
+    if (this.milestoneRuns.has(milestoneId)) {
+      throw new RequestError('that milestone is already running')
+    }
+    const gate = new RunGate()
+    this.milestoneRuns.set(milestoneId, gate)
+    try {
+      const reporter = new StoreMilestoneReporter(
+        {
+          updateMilestone: (id, patch) => this.repo.updateMilestone(id, patch),
+          setRunState: (id, state) => this.repo.setMilestoneRunState(id, state),
+          addPlanUsage: (planId, usage) => this.repo.addPlanUsage(planId, usage),
+          setPlanStatus: (planId, status) => this.repo.setPlanStatus(planId, status),
+          recordFinding: () => {
+            // Ledger provenance for remote findings is deliberately not wired
+            // yet: it needs the session's finding vocabulary, and silently
+            // dropping them would be worse than saying so.
+          },
+          emitMilestone: (row) => this.deps.emit({ type: 'plan.milestone', milestone: row }),
+          emitActivity: (phase, text) =>
+            this.deps.emit({
+              type: 'plan.activity',
+              milestoneId,
+              phase: phase as 'executing' | 'testing' | 'reviewing',
+              text,
+            }),
+        },
+        milestone,
+        plan.id,
+      )
+
+      return await driveRemoteMilestone(
+        { runId: newId(), target, repoKey: repoKeyFor(plan.repoPath), plan, milestone },
+        {
+          converse: sshConverse(() => target.nodeCommand, gate.signal),
+          consumeApproval: () =>
+            this.repo.consumeApproval(approvalId, 'milestone.execute', milestoneId),
+          reporter,
+          currentMilestone: () => this.repo.getMilestone(milestoneId),
+          changedPathsIn: async (repoPath, from, to) => {
+            const diff = await capture(
+              'git',
+              ['diff', '--name-only', from, to],
+              repoPath,
+              60_000,
+              gate.signal,
+            )
+            return diff.stdout.split('\n').filter(Boolean)
+          },
+          onProgress: (phase, text) =>
+            this.deps.emit({
+              type: 'plan.activity',
+              milestoneId,
+              phase: phase as 'executing' | 'testing' | 'reviewing',
+              text,
+            }),
+        },
+      )
     } finally {
       this.milestoneRuns.delete(milestoneId)
     }

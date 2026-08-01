@@ -322,6 +322,16 @@ export const api = {
     bridge().invoke('remote.forget', { targetId }),
   remoteStatus: (targetId: string): Promise<RemoteStatusView> =>
     bridge().invoke('remote.status', { targetId }),
+  installRemote: (targetId: string): Promise<{ ok: boolean; detail: string; buildId: string }> =>
+    bridge().invoke('remote.install', { targetId }),
+  rollbackRemote: (targetId: string): Promise<{ ok: boolean; detail: string }> =>
+    bridge().invoke('remote.rollback', { targetId }),
+  runMilestoneRemotely: (
+    milestoneId: Id,
+    approvalId: Id,
+    targetId: string,
+  ): Promise<{ kind: string; detail?: string }> =>
+    bridge().invoke('plan.runMilestoneRemotely', { milestoneId, approvalId, targetId }),
   repoContainerStatus: (repoPath: string): Promise<RepoContainerStatus> =>
     bridge().invoke('repo.containerStatus', { repoPath }),
   setRepoContainer: (repoPath: string, enabled: boolean): Promise<RepoContainerStatus> =>
