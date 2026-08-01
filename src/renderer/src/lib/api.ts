@@ -88,6 +88,8 @@ export interface LoopDetail {
  * Thin on purpose — the schemas in `shared/ipc.ts` are the contract, and this
  * only gives call sites names and return types.
  */
+import type { RunEvent } from '@shared/journal'
+
 /** What the renderer needs to know about a host, structurally. */
 export interface RemoteTargetView {
   id: string
@@ -312,6 +314,8 @@ export const api = {
     bridge().invoke('repos.list', { includeArchived }),
   archiveRepo: (repoPath: string, archived: boolean): Promise<{ ok: true }> =>
     bridge().invoke('repos.archive', { repoPath, archived }),
+  milestoneRuns: (milestoneId: Id): Promise<Array<{ runId: string; events: RunEvent[] }>> =>
+    bridge().invoke('plan.milestoneRuns', { milestoneId }),
   listRemoteTargets: (): Promise<RemoteTargetView[]> => bridge().invoke('remote.list', {}),
   addRemoteTarget: (input: {
     label: string

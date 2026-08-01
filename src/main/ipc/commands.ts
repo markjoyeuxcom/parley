@@ -432,6 +432,8 @@ const HANDLERS: Record<CommandName, Handler> = {
   },
   'repo.containerStatus': (p, ctx) =>
     ctx.manager.repoContainerStatus((p as { repoPath: string }).repoPath),
+  'plan.milestoneRuns': (p, ctx) =>
+    ctx.manager.listMilestoneRuns((p as { milestoneId: string }).milestoneId),
   'remote.list': (_p, ctx) => ctx.manager.listRemoteTargets(),
   'remote.add': (p, ctx) =>
     ctx.manager.addRemoteTarget(p as { label: string; host: string; nodeCommand?: string }),

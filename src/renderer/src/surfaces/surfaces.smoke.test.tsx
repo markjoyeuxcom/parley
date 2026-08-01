@@ -1472,6 +1472,84 @@ describe('mounted-surface smoke', () => {
     expect(screen.queryByText('Run elsewhere')).toBeNull()
   })
 
+  it('tells a milestone’s story without growing a second place to authorise it', async () => {
+    // The reason a journal was worth building: two attempts, and the second
+    // one only makes sense if you can read what the first one was told.
+    const journal = (runId: string, sequence: number, at: number, kind: string, payload: unknown, actor: unknown) => ({
+      id: `${runId}-${sequence}`,
+      runId,
+      milestoneId: smokeMilestone.id,
+      planId: smokePlan.id,
+      sequence,
+      occurredAt: at,
+      actor,
+      kind,
+      payload,
+    })
+    installBridge({
+      'ledger.list': () => [],
+      'plan.milestoneRuns': () => [
+        {
+          runId: 'run-1',
+          events: [
+            journal('run-1', 1, 1_700_000_001_000, 'run.started', { entry: 'fresh' }, { kind: 'system' }),
+            journal('run-1', 2, 1_700_000_002_000, 'fact', { kind: 'phase', phase: 'executing' }, { kind: 'agent', vendor: 'codex' }),
+            journal('run-1', 3, 1_700_000_003_000, 'fact', { kind: 'verification', result: { command: 'npm test', exitCode: 1, durationMs: 2000 } }, { kind: 'verifier' }),
+            journal('run-1', 4, 1_700_000_004_000, 'fact', { kind: 'finding', text: 'the retry ceiling is not surfaced', blocking: true }, { kind: 'reviewer', vendor: 'claude' }),
+            journal('run-1', 5, 1_700_000_005_000, 'run.ended', { outcome: 'failed' }, { kind: 'system' }),
+          ],
+        },
+        {
+          runId: 'run-2',
+          events: [
+            journal('run-2', 1, 1_700_000_010_000, 'run.started', { entry: 'resumed' }, { kind: 'system' }),
+            journal('run-2', 2, 1_700_000_011_000, 'fact', { kind: 'verification', result: { command: 'npm test', exitCode: 0, durationMs: 2400 } }, { kind: 'verifier' }),
+          ],
+        },
+      ],
+    })
+
+    render(
+      <StoreProvider>
+        <PlanPanel
+          detail={{
+            plan: smokePlan,
+            milestones: [{ ...smokeMilestone, status: 'audited' as const }],
+            worktree: null,
+          }}
+          ledger={[]}
+          onRefresh={() => {}}
+          host="backlog"
+        />
+      </StoreProvider>,
+    )
+
+    // The newest attempt is the one open, because "what happened just now" is
+    // almost always the question.
+    await screen.findByText('Resumed 2')
+    await screen.findByText('`npm test` exited 0 in 2.4s')
+    expect(screen.queryByText(/exited 1/)).toBeNull()
+
+    // The earlier attempt is present without being in the way, and opening it
+    // reads chronologically — the failure, then what the reviewer said about it.
+    fireEvent.click(screen.getByText('Attempt 1'))
+    const older = (await screen.findByText('`npm test` exited 1 in 2.0s')).closest('ol')
+    expect(older).not.toBeNull()
+    const story = within(older as HTMLElement)
+      .getAllByRole('listitem')
+      .map((line) => line.textContent)
+    expect(story[0]).toContain('started work')
+    expect(story[1]).toContain('exited 1')
+    // Whose objection it was is the point of recording it.
+    expect(story[2]).toContain('claude')
+    expect(story[2]).toContain('the retry ceiling is not surfaced')
+
+    // And the room did not become a second door to authorising work: the
+    // controls are still exactly the ones the milestone already had.
+    await screen.findByText('Approve and run')
+    expect(within(older as HTMLElement).queryByRole('button')).toBeNull()
+  })
+
   it('execution hosts render, and Check asks rather than assumes', async () => {
     const invoked: CommandName[] = []
     installBridge({

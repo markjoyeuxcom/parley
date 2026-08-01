@@ -319,6 +319,86 @@
   margin: 0;
 }
 
+/* ── The run room ───────────────────────────────────────────────────────
+   One attempt's story, read top to bottom. Quiet by construction: it sits
+   inside a milestone that already has the controls, so nothing here should
+   compete with them for attention. */
+
+.run-room {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.run-attempt {
+  border: 1px solid var(--line-faint);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.run-attempt__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s3) var(--s4);
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-tiny);
+  text-align: left;
+  cursor: pointer;
+}
+
+.run-attempt__head:hover {
+  background: var(--bg-hover);
+}
+
+.run-attempt__title {
+  font-weight: 590;
+  color: var(--text-primary);
+}
+
+.run-attempt__lines {
+  list-style: none;
+  margin: 0;
+  padding: var(--s2) var(--s4) var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  border-top: 1px solid var(--line-faint);
+}
+
+.run-line {
+  display: grid;
+  grid-template-columns: 8px auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--s3);
+  font-size: var(--text-tiny);
+  color: var(--text-secondary);
+}
+
+.run-line__who {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.run-line__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A reviewer's own words, indented under the line that announced them: the
+   objection is the part worth reading, not the fact that there was one. */
+.run-line__detail {
+  grid-column: 3;
+  color: var(--text-primary);
+  border-left: 2px solid var(--line);
+  padding-left: var(--s3);
+  overflow-wrap: anywhere;
+}
+
 /* ── Status chips ───────────────────────────────────────────────────────── */
 
 .chip {

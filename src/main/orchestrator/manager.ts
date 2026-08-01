@@ -61,6 +61,7 @@ import { capture } from '@main/util/spawn'
 import { findExecutable } from '@main/util/environment'
 import { RunGate, type OrchestratorDeps } from './types'
 import type { RemoteCapabilities, RemoteTarget } from '@shared/remote'
+import type { RunEvent } from '@shared/journal'
 import { handshakeRequest } from '@main/remote/protocol'
 import { runSsh } from '@main/remote/ssh'
 import { statusVerdict, type RemoteStatus } from '@main/remote/status'
@@ -305,6 +306,11 @@ export class Manager {
       configPresent: hasDevcontainerConfig(canonical),
       cli: await devcontainerProbe(this.deps.devcontainerBinary ?? 'devcontainer'),
     }
+  }
+
+  /** Every attempt at a milestone, for the room that tells its story. */
+  listMilestoneRuns(milestoneId: Id): Array<{ runId: Id; events: RunEvent[] }> {
+    return this.repo.listMilestoneRuns(milestoneId)
   }
 
   /* ── Remote execution targets ──────────────────────────────────────── */

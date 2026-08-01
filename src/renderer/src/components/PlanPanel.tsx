@@ -31,6 +31,7 @@ import { useStore, type Surface } from '../state'
 import { AgentPicker } from './AgentPicker'
 import { BulkDispositionControl, OccurrenceDispositionControl } from './FindingsLedgerPanel'
 import { Chip, Dialog, Field, Label, Menu, MenuItem, MenuSection, Panel, Spinner } from './ui'
+import { RunRoom } from './RunRoom'
 import { RunActivity } from './RunActivity'
 import { PlanProgress } from './PlanProgress'
 
@@ -1325,6 +1326,10 @@ function MilestoneRow({
 }): ReactNode {
   const tone = statusTone(milestone.status)
   const inFlight = ['executing', 'testing', 'reviewing'].includes(milestone.status)
+  // Anything that moves the milestone moves its story, so the room refetches
+  // whenever the row it lives in has something new to say. Status and the
+  // completion stamp are exactly the fields a run changes.
+  const runsVersion = `${milestone.status}:${milestone.completedAt ?? 0}:${milestone.reviewPassed}`
   const approvable = executionRefusal(plan, milestone) === ''
   const [open, setOpen] = useState(!startCollapsed)
   // A milestone that starts running after it was folded away must not stay hidden.
@@ -1454,6 +1459,11 @@ function MilestoneRow({
           note={milestone.reviewNote}
         />
       ) : null}
+
+      {/* How it got here, under what it is. The controls stay below, where
+          they have always been — a room that grew its own approve button
+          would be a second place to authorise work. */}
+      <RunRoom milestoneId={milestone.id} version={runsVersion} />
 
       {milestone.status === 'rejected' ? (
         <div className="field__hint">
