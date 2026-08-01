@@ -23,11 +23,13 @@ describe('the shipped templates', () => {
       'go-service',
       'python-app',
       'rust-app',
+      'dotnet-app',
     ])
     expect(templateById('web-app')?.name).toBe('Local web app')
     expect(templateById('go-service')?.name).toBe('Go program')
     expect(templateById('python-app')?.name).toBe('Python project')
     expect(templateById('rust-app')?.name).toBe('Rust program')
+    expect(templateById('dotnet-app')?.name).toBe('.NET program')
     expect(templateById('nope')).toBeNull()
   })
 
@@ -207,5 +209,73 @@ describe('every lane proves its own harness', () => {
     for (const [id, entry] of ignored) {
       expect(templateById(id)?.files['.gitignore']).toContain(entry)
     }
+  })
+})
+
+describe('the .NET lane', () => {
+  const template = templateById('dotnet-app')
+
+  it('says out loud that it has not been run against a real SDK', () => {
+    // Every other lane was watched succeeding before it shipped. This one was
+    // written from convention, and the description has to carry that rather
+    // than letting it read like the others.
+    expect(template?.description).toContain('not yet verified')
+  })
+
+  it('points restore and test at the test project, so no solution is needed', () => {
+    // A hand-written .sln means GUIDs nobody reads; .slnx would raise the SDK
+    // floor. The test project pulls the app in through its ProjectReference.
+    expect(template?.installCommand).toEqual([
+      'dotnet',
+      'restore',
+      'tests/App.Tests/App.Tests.csproj',
+    ])
+    expect(template?.verifyCommand).toEqual([
+      'dotnet',
+      'test',
+      'tests/App.Tests/App.Tests.csproj',
+    ])
+    expect(Object.keys(template?.files ?? {})).not.toContain('App.sln')
+  })
+
+  it('aims its ProjectReference at a file the template actually ships', () => {
+    // The likeliest blind-writing mistake, and the one that would surface as
+    // an unhelpful MSBuild error half a minute into a scaffold.
+    const files = template?.files ?? {}
+    const reference = /ProjectReference Include="([^"]+)"/.exec(
+      files['tests/App.Tests/App.Tests.csproj'] ?? '',
+    )?.[1]
+    expect(reference).toBe('../../src/App/App.csproj')
+    // Resolve it the way MSBuild would: relative to the project holding it.
+    expect(files['src/App/App.csproj']).toBeTruthy()
+  })
+
+  it('keeps the project name out of C# identifiers', () => {
+    // packageNameFor produces kebab-case, which is a legal npm name and an
+    // illegal namespace. A project called "My App" would otherwise scaffold
+    // into code that cannot compile.
+    const rendered = renderTemplate(template!, 'My App')
+    for (const [path, contents] of Object.entries(rendered)) {
+      if (!path.endsWith('.cs') && !path.endsWith('.csproj')) continue
+      expect(contents).not.toContain('my-app')
+    }
+    expect(rendered['src/App/Greeting.cs']).toContain('namespace App;')
+  })
+
+  it('ships a test that uses the app and asserts its function', () => {
+    expect(template?.files['src/App/Greeting.cs']).toContain('$"{name} is running."')
+    const test = template?.files['tests/App.Tests/GreetingTests.cs'] ?? ''
+    expect(test).toContain('using App;')
+    expect(test).toContain('"parley is running."')
+  })
+
+  it('pins its package versions rather than floating them', () => {
+    // No lockfile yet, and a scaffold that resolves differently on different
+    // days is not the fixed starting point this is supposed to be.
+    const proj = template?.files['tests/App.Tests/App.Tests.csproj'] ?? ''
+    for (const pkg of ['Microsoft.NET.Test.Sdk', 'xunit', 'xunit.runner.visualstudio']) {
+      expect(proj).toContain(pkg)
+    }
+    expect(proj).not.toContain('Version="*"')
   })
 })

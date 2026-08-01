@@ -528,6 +528,7 @@ empty directory and running the real toolchain, not by inspection.
 | **Go program** | `go mod tidy` | `go test ./...` | go |
 | **Python project** | `uv sync` | `uv run pytest` | [uv](https://docs.astral.sh/uv/) |
 | **Rust program** | `cargo fetch` | `cargo test` | cargo |
+| **.NET program** † | `dotnet restore …` | `dotnet test …` | dotnet 8+ |
 
 The rule a new lane has to satisfy is that install and verify are each a
 *single* argv — Parley never spawns a shell, so a two-step setup cannot be
@@ -538,14 +539,25 @@ environment without anyone remembering to activate it.
 A lane whose tool is missing is refused by name before any directory is
 created, so you are never left with a scaffolded project that cannot build.
 
-### What else could be a lane
+† **The .NET lane has not been run against a real SDK.** Every other lane was
+rendered into an empty directory and watched succeeding before it shipped; this
+one was written from convention on a machine with no `dotnet` installed. What
+*has* been checked is everything checkable without one: both `.csproj` files
+parse as XML, the `ProjectReference` resolves to a file the template ships, the
+project name never reaches a C# identifier, and the package versions are
+pinned. The first person with an SDK should run it and either confirm it or fix
+it:
 
-**.NET fits the rule** — `dotnet restore` and `dotnet test` are each one argv —
-and it is a small, deliberate addition rather than an architectural question.
-It is not shipped yet only because every lane here was verified against a real
-toolchain before it shipped, and this machine has no `dotnet` to verify it on.
-A scaffold nobody has watched succeed would contradict the one thing the
-creator promises.
+```bash
+dotnet restore tests/App.Tests/App.Tests.csproj && dotnet test tests/App.Tests/App.Tests.csproj
+```
+
+It ships with no solution file on purpose: restore and test point straight at
+the test project, which pulls the app in through its ProjectReference. A
+hand-written `.sln` means maintaining GUIDs nobody reads, and `.slnx` would
+raise the SDK floor for no benefit.
+
+### What else could be a lane
 
 **Unity does not fit, and cannot be made to.** A Unity project is not a set of
 text files: the editor generates GUIDs, `.meta` sidecars, serialised settings

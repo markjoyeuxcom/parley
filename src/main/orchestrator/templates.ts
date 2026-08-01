@@ -389,7 +389,146 @@ const RUST_APP: ProjectTemplate = {
   },
 }
 
-export const TEMPLATES: readonly ProjectTemplate[] = [WEB_APP, GO_SERVICE, PYTHON_APP, RUST_APP]
+const DOTNET_GITIGNORE = `bin/
+obj/
+*.user
+.DS_Store
+`
+
+const DOTNET_APP_CSPROJ = `<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>
+`
+
+const DOTNET_TESTS_CSPROJ = `<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/App/App.csproj" />
+  </ItemGroup>
+
+</Project>
+`
+
+const DOTNET_PROGRAM = `namespace App;
+
+public static class Program
+{
+    public static void Main(string[] args)
+    {
+        var name = args.Length > 0 ? args[0] : "world";
+        Console.WriteLine(Greeting.For(name));
+    }
+}
+`
+
+const DOTNET_GREETING = `namespace App;
+
+/// <summary>
+/// The one piece of behaviour this scaffold ships. Its test asserts exactly
+/// what it does — a scaffold whose own test fails would hand milestone one a
+/// red suite and nothing to trust.
+/// </summary>
+public static class Greeting
+{
+    public static string For(string name) => $"{name} is running.";
+}
+`
+
+const DOTNET_TEST = `using App;
+using Xunit;
+
+namespace AppTests;
+
+public class GreetingTests
+{
+    [Fact]
+    public void GreetsByName()
+    {
+        Assert.Equal("parley is running.", Greeting.For("parley"));
+    }
+}
+`
+
+const DOTNET_README = `# PLACEHOLDER_NAME
+
+Scaffolded by Parley.
+
+The verification command is \`dotnet test tests/App.Tests/App.Tests.csproj\`.
+Keep it green: it is the deterministic half of every milestone Parley executes
+here, and a milestone whose tests cannot run cannot be reviewed honestly.
+
+There is deliberately **no solution file**. \`dotnet restore\` and
+\`dotnet test\` are pointed straight at the test project, which pulls in the
+app through its ProjectReference. A hand-written .sln would mean maintaining
+GUIDs nobody reads, and the newer .slnx format would raise the SDK floor for
+no benefit here. Add one whenever you want an IDE to group things; nothing in
+Parley needs it.
+
+Package versions are pinned rather than floating. There is no lockfile yet,
+and a scaffold that resolves differently on different days is not the fixed
+starting point this is supposed to be.
+`
+
+/**
+ * .NET, and the one lane in here that was NOT watched succeeding.
+ *
+ * Every other template was rendered into an empty directory and run through
+ * its real toolchain before it shipped. This machine has no dotnet, so this
+ * one is written from the conventions rather than from evidence — which is a
+ * weaker claim than the others make, and is said out loud here rather than
+ * left for someone to discover.
+ *
+ * The layout avoids the two things most likely to break blind: no solution
+ * file (restore and test point straight at the test project, which pulls the
+ * app in through its ProjectReference), and no project-name substitution into
+ * C# identifiers, because a project called "My App" would otherwise become an
+ * illegal namespace.
+ */
+const DOTNET_APP: ProjectTemplate = {
+  id: 'dotnet-app',
+  name: '.NET program',
+  description:
+    'A C# console app with an xunit test project. Written to convention but not yet verified against a real dotnet SDK.',
+  installCommand: ['dotnet', 'restore', 'tests/App.Tests/App.Tests.csproj'],
+  verifyCommand: ['dotnet', 'test', 'tests/App.Tests/App.Tests.csproj'],
+  files: {
+    '.gitignore': DOTNET_GITIGNORE,
+    'README.md': DOTNET_README,
+    'src/App/App.csproj': DOTNET_APP_CSPROJ,
+    'src/App/Program.cs': DOTNET_PROGRAM,
+    'src/App/Greeting.cs': DOTNET_GREETING,
+    'tests/App.Tests/App.Tests.csproj': DOTNET_TESTS_CSPROJ,
+    'tests/App.Tests/GreetingTests.cs': DOTNET_TEST,
+  },
+}
+
+export const TEMPLATES: readonly ProjectTemplate[] = [
+  WEB_APP,
+  GO_SERVICE,
+  PYTHON_APP,
+  RUST_APP,
+  DOTNET_APP,
+]
 
 /**
  * Why this lane cannot be scaffolded on this machine, or null.
