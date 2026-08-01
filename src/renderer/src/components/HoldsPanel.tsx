@@ -63,7 +63,7 @@ export function useHoldJump(): (hold: Hold) => void {
     // both doors — the popover chip and the Repos WaitingCard — route there.
     // Without this branch the interim state would fall through to the session
     // arm and dead-end: the hold carries no sessionId.
-    if (hold.kind === 'self-update') {
+    if (hold.kind === 'self-update' || hold.kind === 'remote-unresolved') {
       dispatch({ type: 'holdsPanel', open: true })
       return
     }
@@ -100,7 +100,7 @@ export function useHoldJump(): (hold: Hold) => void {
 }
 
 export function HoldsPopover(): ReactNode {
-  const { state, dispatch, attempt } = useStore()
+  const { state, dispatch, attempt, notify } = useStore()
   const jumpToHold = useHoldJump()
   const [busyId, setBusyId] = useState<string | null>(null)
   // The self-update confirm, bound to the row id resolved at click time — the
@@ -162,6 +162,30 @@ export function HoldsPopover(): ReactNode {
     await attempt(() => api.relaunchSelfUpdate(updateId))
     setBusyId(null)
     setRelaunchConfirm(null)
+    await refreshHolds()
+  }
+
+  const collectRun = async (hold: Hold): Promise<void> => {
+    setBusyId(hold.id)
+    // Re-resolved at click time, never remembered: the hold's identity hashes
+    // the run id away, and a chip rendered before a recovery elsewhere must
+    // not act on a run that has since been settled.
+    const unresolved = await attempt(() => api.unresolvedRemoteRuns())
+    const run = unresolved?.find((entry) => entry.milestoneId === hold.milestoneId)
+    if (!run) {
+      // Settled under the chip. Show the truth rather than acting on a ghost.
+      setBusyId(null)
+      await refreshHolds()
+      return
+    }
+    const result = await attempt(() => api.recoverRemoteRun(run.runId))
+    setBusyId(null)
+    if (result) {
+      // The outcome is prose either way — recovered-with-caveat, nothing to
+      // collect, or unreachable — and the hold may be gone the moment the
+      // list refreshes, so the words have to outlive the row.
+      notify(result.recovered ? 'info' : 'warn', result.detail)
+    }
     await refreshHolds()
   }
 
@@ -236,7 +260,17 @@ export function HoldsPopover(): ReactNode {
                   ) : null}
                 </div>
                 <div className="holds-item__actions">
-                  {hold.kind === 'self-update' ? (
+                  {hold.kind === 'remote-unresolved' ? (
+                    // The control IS this row, like self-update: the work sits
+                    // on another machine, and no surface has a better door.
+                    <button
+                      className="btn btn--primary btn--sm"
+                      disabled={busyId === hold.id}
+                      onClick={() => void collectRun(hold)}
+                    >
+                      {busyId === hold.id ? 'Collecting…' : 'Collect the work'}
+                    </button>
+                  ) : hold.kind === 'self-update' ? (
                     // The controls ARE this row — jumping anywhere else would
                     // land on a surface that has none.
                     <>

@@ -1852,6 +1852,107 @@ function OpenHolds(): ReactNode {
   return <HoldsPopover />
 }
 
+// ─── A run on another machine that never reported back ──────────────────────
+
+const unresolvedHold: Hold = {
+  id: 'hold-remote-unresolved-smoke',
+  kind: 'remote-unresolved',
+  sessionId: session.id,
+  planId: smokePlan.id,
+  milestoneId: smokeMilestone.id,
+  loopId: null,
+  repoPath: smokePlan.repoPath,
+  title: 'A run on another machine never reported back',
+  detail: 'The work may have finished there; look for its candidate rather than running it again.',
+  sinceAt: 1_700_000_000_000,
+  mock: false,
+  actionable: false,
+}
+
+const unresolvedRun = {
+  id: 'rr1',
+  runId: 'run-vanished',
+  milestoneId: smokeMilestone.id,
+  planId: smokePlan.id,
+  targetId: 't1',
+  mirrorUrl: '/tmp/mirror.git',
+  submittedCommit: 'a'.repeat(40),
+  state: 'unresolved' as const,
+  detail: 'the connection died',
+  createdAt: 1_700_000_000_000,
+  settledAt: null,
+}
+
+describe('the unresolved remote run in the popover', () => {
+  it('collects through the run resolved at click time, and keeps the outcome visible', async () => {
+    const invoked: Array<{ command: string; payload: unknown }> = []
+    let queue: Hold[] = [unresolvedHold]
+    installBridge({
+      'holds.list': () => queue,
+      'remote.unresolved': () => [unresolvedRun],
+      'remote.recover': (payload) => {
+        invoked.push({ command: 'remote.recover', payload })
+        queue = []
+        return {
+          recovered: true,
+          detail: 'Recovered abc123def456, changing a.txt. Review the diff before landing.',
+        }
+      },
+    })
+    render(
+      <StoreProvider>
+        <OpenHolds />
+        {/* The outcome must outlive the row, and it lives in a notice — so
+            the notices surface is part of what this test is about. */}
+        <Notices />
+      </StoreProvider>,
+    )
+
+    await screen.findByText(unresolvedHold.title)
+    fireEvent.click(await screen.findByText('Collect the work'))
+
+    // The run id came from the live list, not from anything baked into the
+    // chip — the hold's identity hashes it away on purpose.
+    await waitFor(() =>
+      expect(invoked).toEqual([
+        { command: 'remote.recover', payload: { runId: unresolvedRun.runId } },
+      ]),
+    )
+    // The hold clears, and the outcome outlives the row as a notice — it
+    // carries the review-the-diff caveat, which must not vanish with the chip.
+    await screen.findByText(/Nothing is waiting on you/)
+    await screen.findByText(/Review the diff/)
+  })
+
+  it('acts on nothing when the run was settled under the chip', async () => {
+    const invoked: string[] = []
+    let queue: Hold[] = [unresolvedHold]
+    installBridge({
+      'holds.list': () => {
+        const now = queue
+        queue = []
+        return now
+      },
+      // Recovered elsewhere between render and click: the live list is empty.
+      'remote.unresolved': () => [],
+      'remote.recover': () => {
+        invoked.push('remote.recover')
+        return { recovered: false, detail: 'x' }
+      },
+    })
+    render(
+      <StoreProvider>
+        <OpenHolds />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByText('Collect the work'))
+    // The truth is shown instead of a ghost being acted on.
+    await screen.findByText(/Nothing is waiting on you/)
+    expect(invoked).toEqual([])
+  })
+})
+
 describe('the self-update hold in the popover', () => {
   it('declines through the real command, resolved from the live offer', async () => {
     const invoked: Array<{ command: string; payload: unknown }> = []

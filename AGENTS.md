@@ -810,6 +810,15 @@ milestone, the second leaves it unresolved because the work may still be
 sitting there. Telling them apart by reading git's English would break the
 first time git rephrased it.
 
+The hold's control is inline in the popover — "Collect the work" — following
+the self-update precedent, and for the same two reasons: no other surface has
+a better door (the work is on another machine), and a deleted plan leaves the
+hold with no sessionId to jump through. The click re-resolves the run from
+`remote.unresolved` rather than remembering one, because the hold's identity
+hashes the run id away on purpose — a chip rendered before a recovery
+elsewhere must not act on a run that has since settled. The outcome lands as a
+notice, since the recovered-with-caveat prose must outlive the row it removes.
+
 Ancestry against the submitted snapshot still holds on this path and the
 changed paths are re-derived locally from git, which was always the authority.
 What is lost with the connection is the remote's own account of what it

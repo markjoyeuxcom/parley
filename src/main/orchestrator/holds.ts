@@ -120,7 +120,7 @@ export function computeHolds(repo: Repo, acked: ReadonlySet<string>, now = Date.
     const plan = repo.getPlan(run.planId)
     holds.push(
       hold('remote-unresolved', run.runId, String(run.createdAt), {
-        sessionId: plan?.sessionId ?? '',
+        sessionId: plan?.sessionId ?? null,
         planId: run.planId,
         milestoneId: run.milestoneId,
         loopId: null,

@@ -32,6 +32,7 @@ import type {
 } from '@shared/domain'
 import type { AppEvent, PtyChunk } from '@shared/events'
 import type { Hold } from '@shared/holds'
+import type { RemoteRunRecord } from '@shared/remote'
 import type { InFlightRow } from '@shared/inflight'
 import type {
   AppInfo,
@@ -329,6 +330,7 @@ export const api = {
   /** Collects a run whose fate was never reported. Spends nothing. */
   recoverRemoteRun: (runId: Id): Promise<{ recovered: boolean; detail: string }> =>
     bridge().invoke('remote.recover', { runId }),
+  unresolvedRemoteRuns: (): Promise<RemoteRunRecord[]> => bridge().invoke('remote.unresolved'),
   installRemote: (targetId: string): Promise<{ ok: boolean; detail: string; buildId: string }> =>
     bridge().invoke('remote.install', { targetId }),
   rollbackRemote: (targetId: string): Promise<{ ok: boolean; detail: string }> =>

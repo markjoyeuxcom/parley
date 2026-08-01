@@ -443,6 +443,7 @@ const HANDLERS: Record<CommandName, Handler> = {
   },
   'remote.status': (p, ctx) => ctx.manager.remoteStatus((p as { targetId: string }).targetId),
   'remote.recover': (p, ctx) => ctx.manager.recoverRemoteRun((p as { runId: string }).runId),
+  'remote.unresolved': (_p, ctx) => ctx.manager.repo.listUnresolvedRemoteRuns(),
   'remote.install': (p, ctx) => ctx.manager.installRemote((p as { targetId: string }).targetId),
   'remote.rollback': (p, ctx) => ctx.manager.rollbackRemote((p as { targetId: string }).targetId),
   'plan.runMilestoneRemotely': (p, ctx) => {
