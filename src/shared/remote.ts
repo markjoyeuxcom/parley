@@ -91,7 +91,7 @@ export function candidateRefFor(runId: string): string {
 /* Requests                                                            */
 /* ------------------------------------------------------------------ */
 
-export type RemoteOperation = 'handshake' | 'run' | 'cancel' | 'cleanup'
+export type RemoteOperation = 'handshake' | 'prepare' | 'run' | 'cancel' | 'cleanup'
 
 export interface RemoteRepositorySpec {
   /** Where the helper fetches the input snapshot from, as the remote sees it. */
@@ -358,6 +358,15 @@ export type RemoteBody =
    * means, so the protocol never depends on the shape of anybody's database.
    */
   | { type: 'fact'; fact: unknown }
+  /**
+   * The host has a bare mirror for this repository, here.
+   *
+   * A separate step because of an ordering the design cannot avoid: the local
+   * side must PUSH its snapshot before it can ask for a run, and it cannot
+   * push into a repository that does not exist yet. Deriving the path locally
+   * and hoping would be guessing about someone else's filesystem.
+   */
+  | { type: 'prepared'; mirror: string }
   | { type: 'result'; outcome: 'complete' | 'failed'; manifest: RemoteEvidenceManifest }
   /** The helper could speak, and is telling us it cannot continue. */
   | { type: 'error'; message: string; retryable: boolean }

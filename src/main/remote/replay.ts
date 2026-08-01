@@ -72,6 +72,22 @@ export class RemoteReplay {
   ) {}
 
   apply(frame: RemoteFrame): ReplayRefusal | null {
+    // EVERY frame is admitted, not just the ones carrying facts. Sequence
+    // numbers belong to the conversation — a `ready` or a progress line uses
+    // one too — so a sequencer that only saw facts would read the first of
+    // them as a gap and refuse a perfectly ordered run.
+    const admission = this.sequencer.admit(frame)
+    if (admission.kind === 'duplicate') {
+      if (frame.body.type === 'fact') this.duplicates += 1
+      return null
+    }
+    if (admission.kind === 'gap') {
+      return {
+        kind: 'gap',
+        detail: `the remote skipped frame ${admission.expected}, so the record would have a hole in it`,
+      }
+    }
+
     if (frame.body.type !== 'fact') return null
 
     if (!this.started) {
@@ -89,18 +105,6 @@ export class RemoteReplay {
         }
       }
       this.started = true
-    }
-
-    const admission = this.sequencer.admit(frame)
-    if (admission.kind === 'duplicate') {
-      this.duplicates += 1
-      return null
-    }
-    if (admission.kind === 'gap') {
-      return {
-        kind: 'gap',
-        detail: `the remote skipped frame ${admission.expected}, so the record would have a hole in it`,
-      }
     }
 
     const fact = decodeMilestoneFact(frame.body.fact)

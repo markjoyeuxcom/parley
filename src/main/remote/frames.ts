@@ -164,6 +164,10 @@ function decodeBody(value: unknown): RemoteBody | null {
       if (!has(raw, 'fact')) return null
       return { type: 'fact', fact: raw.fact }
     }
+    case 'prepared': {
+      const mirror = str(raw.mirror)
+      return mirror === null ? null : { type: 'prepared', mirror }
+    }
     case 'result': {
       const outcome = raw.outcome
       if (outcome !== 'complete' && outcome !== 'failed') return null

@@ -170,6 +170,21 @@ async function main(): Promise<void> {
     case 'handshake':
       process.exit(0)
       break
+    case 'prepare': {
+      const spec = request.repository
+      if (!spec) {
+        say({ type: 'error', message: 'prepare needs a repository', retryable: false })
+        process.exit(1)
+      }
+      const made = await ensureMirror(join(runsRoot, 'mirrors'), spec.remote)
+      if (!made.ok || !made.path) {
+        say({ type: 'error', message: made.detail, retryable: false })
+        process.exit(1)
+      }
+      say({ type: 'prepared', mirror: made.path })
+      process.exit(0)
+      break
+    }
     case 'run': {
       const spec = request.repository
       const run = request.run
