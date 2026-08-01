@@ -20,6 +20,8 @@ const OUT_OF_SCOPE: Readonly<Record<string, string>> = {
   app_journeys:
     'A journey holds only links to work recorded elsewhere; deleting the guide keeps every session, project and plan it pointed at.',
   agent_threads: 'Opaque vendor resume handles do not change repository attention or summaries.',
+  remote_targets:
+    'A host Parley can execute on is application-global configuration; it describes where work may run, not that any repository was worked on.',
   approvals: 'Authorisation evidence is polymorphic and deliberately survives its subject.',
   grid_layouts: 'Saved terminal layout is application-global UI state.',
   hold_acks: 'Acknowledgements are keyed by global content identity, not by repository.',

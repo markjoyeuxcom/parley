@@ -1,4 +1,5 @@
 import { newId } from '@main/util/ids'
+import type { RemoteTarget } from '@shared/remote'
 import {
   type CorrectionDisposition,
   addUsage,
@@ -2110,6 +2111,48 @@ export class Repo {
   }
 
   // ─── Workspaces ────────────────────────────────────────────────────────────
+
+  /* ── Remote execution targets ──────────────────────────────────────── */
+
+  /**
+   * Hosts Parley may execute on.
+   *
+   * Application-global rather than per-repository: a build host is somewhere
+   * work MAY run, not a fact about any repository having been worked on. The
+   * completeness guard classifies it out of scope for exactly that reason.
+   */
+  createRemoteTarget(target: RemoteTarget & { nodeCommand: string }): RemoteTarget {
+    this.db.run(
+      `INSERT INTO remote_targets (id, label, host, node_command, runs_root, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      target.id,
+      target.label,
+      target.host,
+      target.nodeCommand,
+      target.runsRoot,
+      target.createdAt,
+    )
+    return target
+  }
+
+  listRemoteTargets(): Array<RemoteTarget & { nodeCommand: string }> {
+    return this.db.all(`SELECT * FROM remote_targets ORDER BY created_at ASC`).map((row) => ({
+      id: String(row.id),
+      label: String(row.label),
+      host: String(row.host),
+      nodeCommand: String(row.node_command),
+      runsRoot: String(row.runs_root),
+      createdAt: Number(row.created_at),
+    }))
+  }
+
+  getRemoteTarget(id: Id): (RemoteTarget & { nodeCommand: string }) | null {
+    return this.listRemoteTargets().find((target) => target.id === id) ?? null
+  }
+
+  deleteRemoteTarget(id: Id): void {
+    this.db.run(`DELETE FROM remote_targets WHERE id = ?`, id)
+  }
 
   createWorkspace(workspace: Workspace): Workspace {
     return this.db.transaction(() => {

@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 26
+export const SCHEMA_VERSION = 27
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -495,6 +495,21 @@ CREATE INDEX IF NOT EXISTS idx_acceptances_milestone
 
 -- One guided run at building a new app. Links only: the stage is derived
 -- from what they point at, never stored.
+CREATE TABLE IF NOT EXISTS remote_targets (
+  id         TEXT PRIMARY KEY,
+  label      TEXT NOT NULL,
+  -- An ssh destination as ssh itself understands it. An alias from
+  -- ~/.ssh/config is the recommended form: it keeps identity files, ports and
+  -- jump hosts where they already live rather than duplicating them here.
+  host       TEXT NOT NULL,
+  -- The command that starts node over there. Usually just 'node'; an absolute
+  -- path is the answer for a host where nvm, asdf or mise put it somewhere a
+  -- non-interactive ssh session cannot see.
+  node_command TEXT NOT NULL DEFAULT 'node',
+  runs_root  TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_journeys (
   id                TEXT PRIMARY KEY,
   name              TEXT NOT NULL,
@@ -929,6 +944,10 @@ export function migrate(db: Db): void {
   }
   if (current < 26) {
     // app_journeys is additive: SCHEMA creates the table fresh, and no
+    // existing row changes shape.
+  }
+  if (current < 27) {
+    // remote_targets is additive: SCHEMA creates the table fresh, and no
     // existing row changes shape.
   }
   db.run(
