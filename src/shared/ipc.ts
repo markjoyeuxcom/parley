@@ -281,6 +281,33 @@ export const ArchiveRepoReq = z.object({
   archived: z.boolean(),
 })
 export const RepoContainerStatusReq = z.object({ repoPath: z.string().min(1) })
+/**
+ * A host Parley may execute on.
+ *
+ * `host` is whatever ssh understands — an alias from ~/.ssh/config is the
+ * recommended form, because it keeps identity files, ports and jump hosts
+ * where they already live. `nodeCommand` is validated against the boring
+ * grammar here rather than only at use: a bad one should be refused when it is
+ * saved, not discovered on the next run.
+ */
+export const AddRemoteTargetReq = z.object({
+  label: z.string().min(1).max(80),
+  host: z
+    .string()
+    .min(1)
+    .max(200)
+    .refine((value) => !/\s/.test(value), 'an ssh destination cannot contain spaces'),
+  nodeCommand: z
+    .string()
+    .max(200)
+    .refine(
+      (value) => value === '' || (/^[A-Za-z0-9._/-]+$/.test(value) && !value.split('/').includes('..')),
+      'a node command must be a plain name or an absolute path, with no arguments',
+    )
+    .optional(),
+})
+export const RemoteTargetIdReq = z.object({ targetId: Id })
+
 export const SetRepoContainerReq = z.object({
   repoPath: z.string().min(1),
   enabled: z.boolean(),
@@ -375,6 +402,10 @@ export const COMMANDS = {
   'repos.archive': ArchiveRepoReq,
   'repo.containerStatus': RepoContainerStatusReq,
   'repo.setContainer': SetRepoContainerReq,
+  'remote.list': null,
+  'remote.add': AddRemoteTargetReq,
+  'remote.forget': RemoteTargetIdReq,
+  'remote.status': RemoteTargetIdReq,
   'plan.runMilestone': RunMilestoneReq,
   'plan.inspect': InspectMilestoneReq,
   'plan.answer': AnswerPlanReq,

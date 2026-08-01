@@ -22,6 +22,7 @@ import { NewSessionDialog } from '../components/NewSessionDialog'
 import { NewWorkspaceDialog } from '../components/NewWorkspaceDialog'
 import { PreviewCard } from '../components/PreviewCard'
 import { JourneyPanel } from '../components/JourneyPanel'
+import { RemoteTargetsPanel } from '../components/RemoteTargets'
 import { useHoldJump } from '../components/HoldsPanel'
 import { Chip, Dot, Empty, Label, Spinner } from '../components/ui'
 
@@ -370,6 +371,10 @@ export function BacklogSurface(): ReactNode {
               {repo === null ? (
                 <div style={{ padding: 'var(--s5) var(--s6) 0' }}>
                   <JourneyPanel />
+                  {/* Hosts are application-global, like the guided build: they
+                      describe where work MAY run, not a fact about any one
+                      repository. */}
+                  <RemoteTargetsPanel />
                 </div>
               ) : null}
 

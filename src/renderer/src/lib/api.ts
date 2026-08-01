@@ -88,6 +88,32 @@ export interface LoopDetail {
  * Thin on purpose — the schemas in `shared/ipc.ts` are the contract, and this
  * only gives call sites names and return types.
  */
+/** What the renderer needs to know about a host, structurally. */
+export interface RemoteTargetView {
+  id: string
+  label: string
+  host: string
+  nodeCommand: string
+  createdAt: number
+}
+
+export interface RemoteStatusView {
+  health: 'not-installed' | 'corrupt' | 'incompatible' | 'degraded' | 'healthy'
+  reasons: string[]
+  facts: {
+    nodeCommand: string
+    capabilities: {
+      buildId: string
+      nodeVersion: string
+      user: string
+      home: string
+      path: string
+      availableVendors: string[]
+      supportedVendors: string[]
+    } | null
+  }
+}
+
 export const api = {
   info: (): Promise<AppInfo> => bridge().invoke('app.info'),
   health: (): Promise<CliHealth[]> => bridge().invoke('health.probe'),
@@ -286,6 +312,16 @@ export const api = {
     bridge().invoke('repos.list', { includeArchived }),
   archiveRepo: (repoPath: string, archived: boolean): Promise<{ ok: true }> =>
     bridge().invoke('repos.archive', { repoPath, archived }),
+  listRemoteTargets: (): Promise<RemoteTargetView[]> => bridge().invoke('remote.list', {}),
+  addRemoteTarget: (input: {
+    label: string
+    host: string
+    nodeCommand?: string
+  }): Promise<RemoteTargetView> => bridge().invoke('remote.add', input),
+  forgetRemoteTarget: (targetId: string): Promise<{ ok: boolean }> =>
+    bridge().invoke('remote.forget', { targetId }),
+  remoteStatus: (targetId: string): Promise<RemoteStatusView> =>
+    bridge().invoke('remote.status', { targetId }),
   repoContainerStatus: (repoPath: string): Promise<RepoContainerStatus> =>
     bridge().invoke('repo.containerStatus', { repoPath }),
   setRepoContainer: (repoPath: string, enabled: boolean): Promise<RepoContainerStatus> =>

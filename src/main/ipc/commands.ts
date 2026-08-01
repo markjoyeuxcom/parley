@@ -432,6 +432,14 @@ const HANDLERS: Record<CommandName, Handler> = {
   },
   'repo.containerStatus': (p, ctx) =>
     ctx.manager.repoContainerStatus((p as { repoPath: string }).repoPath),
+  'remote.list': (_p, ctx) => ctx.manager.listRemoteTargets(),
+  'remote.add': (p, ctx) =>
+    ctx.manager.addRemoteTarget(p as { label: string; host: string; nodeCommand?: string }),
+  'remote.forget': (p, ctx) => {
+    ctx.manager.forgetRemoteTarget((p as { targetId: string }).targetId)
+    return { ok: true }
+  },
+  'remote.status': (p, ctx) => ctx.manager.remoteStatus((p as { targetId: string }).targetId),
   'repo.setContainer': (p, ctx) => {
     const { repoPath, enabled } = p as { repoPath: string; enabled: boolean }
     return ctx.manager.setRepoContainer(repoPath, enabled)

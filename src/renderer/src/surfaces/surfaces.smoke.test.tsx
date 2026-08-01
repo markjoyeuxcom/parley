@@ -1414,6 +1414,52 @@ describe('mounted-surface smoke', () => {
     await waitFor(() => expect(invoked).toContain('session.get'))
   })
 
+  it('execution hosts render, and Check asks rather than assumes', async () => {
+    const invoked: CommandName[] = []
+    installBridge({
+      'remote.list': () => [
+        { id: 'h1', label: 'Build box', host: 'build-01', nodeCommand: 'node', createdAt: 1 },
+      ],
+      'remote.status': () => {
+        invoked.push('remote.status')
+        return {
+          health: 'degraded',
+          reasons: ['codex was not found on the remote PATH (/usr/bin:/bin)'],
+          facts: {
+            nodeCommand: 'node',
+            capabilities: {
+              buildId: 'b'.repeat(64),
+              nodeVersion: 'v24.4.1',
+              user: 'build',
+              home: '/home/build',
+              path: '/usr/bin:/bin',
+              availableVendors: ['claude'],
+              supportedVendors: ['claude', 'codex'],
+            },
+          },
+        }
+      },
+    })
+    render(
+      <StoreProvider>
+        <OnSurface surface="backlog">
+          <BacklogSurface />
+        </OnSurface>
+      </StoreProvider>,
+    )
+
+    // Listing a host contacts nothing: the status is absent until asked for.
+    await screen.findByText('Build box')
+    expect(invoked).toEqual([])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check' }))
+    await waitFor(() => expect(invoked).toContain('remote.status'))
+    // The verdict a person can act on, and the PATH that explains it.
+    await screen.findByText('limited')
+    await screen.findByText(/not found on the remote PATH/)
+    await screen.findByText(/runs as build/)
+  })
+
   it('a rejected plan.get leaves no plan open', async () => {
     installBridge({}, { 'plan.get': 'Main refused to open this plan.' })
     render(

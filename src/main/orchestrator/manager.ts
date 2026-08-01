@@ -56,6 +56,10 @@ import { missingExpectedPaths, Pipeline, readTree } from './pipeline'
 import { assertNoUnresolvedBlockingOccurrences } from './gate'
 import { SessionRunner } from './session'
 import { RunGate, type OrchestratorDeps } from './types'
+import type { RemoteCapabilities, RemoteTarget } from '@shared/remote'
+import { handshakeRequest } from '@main/remote/protocol'
+import { runSsh } from '@main/remote/ssh'
+import { statusVerdict, type RemoteStatus } from '@main/remote/status'
 
 export class RequestError extends Error {}
 
@@ -281,6 +285,98 @@ export class Manager {
       configPresent: hasDevcontainerConfig(canonical),
       cli: await devcontainerProbe(this.deps.devcontainerBinary ?? 'devcontainer'),
     }
+  }
+
+  /* ── Remote execution targets ──────────────────────────────────────── */
+
+  listRemoteTargets(): Array<RemoteTarget & { nodeCommand: string }> {
+    return this.repo.listRemoteTargets()
+  }
+
+  /**
+   * Records a host Parley may execute on.
+   *
+   * Adding one costs nothing and reaches nothing — no ssh happens here. That
+   * is deliberate: a target is a note about where work MIGHT run, and the
+   * expensive question of whether that host is actually usable belongs to
+   * `remote.status`, which the user asks when they want an answer rather than
+   * every time they type a hostname.
+   */
+  addRemoteTarget(input: { label: string; host: string; nodeCommand?: string }): RemoteTarget {
+    const existing = this.repo.listRemoteTargets()
+    if (existing.some((target) => target.host === input.host)) {
+      throw new RequestError(`${input.host} is already a target`)
+    }
+    return this.repo.createRemoteTarget({
+      id: newId(),
+      label: input.label.trim() || input.host,
+      host: input.host,
+      nodeCommand: input.nodeCommand?.trim() || 'node',
+      runsRoot: '',
+      createdAt: Date.now(),
+    })
+  }
+
+  forgetRemoteTarget(targetId: Id): void {
+    this.repo.deleteRemoteTarget(targetId)
+  }
+
+  /**
+   * Asks a host what it is, and says plainly what is wrong with it.
+   *
+   * The one place ssh is touched outside a run. It reaches the host, reads the
+   * handshake, and turns it into a verdict — healthy, degraded, incompatible,
+   * not-installed — rather than a wall of capability fields, because the
+   * question a person is actually asking is "can I run work here".
+   */
+  async remoteStatus(targetId: Id): Promise<RemoteStatus> {
+    const target = this.repo.getRemoteTarget(targetId)
+    if (!target) throw new RequestError('no such target')
+
+    let capabilities: RemoteCapabilities | null = null
+    const conversation = await runSsh({
+      target,
+      request: handshakeRequest(newId()),
+      onFrame: (frame) => {
+        if (frame.body.type === 'ready') capabilities = frame.body.capabilities
+      },
+    })
+
+    if (!capabilities) {
+      // Nothing answered, so there is nothing to grade. The transport's own
+      // words are better than anything this layer could invent: it knows
+      // whether ssh refused, whether the helper is missing, or whether the
+      // link died.
+      return {
+        health: conversation.end.kind === 'refused' ? 'not-installed' : 'not-installed',
+        reasons: [
+          'detail' in conversation.end ? conversation.end.detail : 'the host did not answer',
+        ],
+        facts: {
+          activeTarget: null,
+          directoryBuildId: null,
+          calculatedHash: null,
+          capabilities: null,
+          nodeCommand: target.nodeCommand,
+          nodeUsable: false,
+          previousAvailable: false,
+        },
+      }
+    }
+
+    const answered = capabilities as RemoteCapabilities
+    return statusVerdict({
+      // The bundle answered, so it exists and node started it. What status
+      // cannot see from here is the installation's own integrity — the
+      // directory name against the file's hash — which needs the bootstrap.
+      activeTarget: answered.buildId,
+      directoryBuildId: answered.buildId,
+      calculatedHash: answered.buildId,
+      capabilities: answered,
+      nodeCommand: target.nodeCommand,
+      nodeUsable: true,
+      previousAvailable: false,
+    })
   }
 
   /**
