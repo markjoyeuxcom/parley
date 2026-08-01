@@ -1,9 +1,9 @@
 # Parley — continuation handoff
 
-Refreshed 2026-07-31, after the App Builder arc and the sessions-organization
-batch landed. Everything a fresh session needs that the code and git history
-do not already say. Schema is at **v26**; the suite is **893 passing, 11
-skipped** (the skips are the operator-run `PARLEY_LIVE*` arms, by design).
+Refreshed 2026-08-01, after the SSH/remote-execution arc landed. Everything a
+fresh session needs that the code and git history do not already say. Schema
+is at **v27**; the suite is **1110 passing, 11 skipped** (the skips are the
+operator-run `PARLEY_LIVE*` arms, by design).
 
 ## What this repo is
 
@@ -334,10 +334,49 @@ the guide; the completeness guard classifies app_journeys out of scope
 for that reason. Readiness/disposition-ergonomics was NOT built and
 stays a future idea — never auto-disposition.
 
-**The next arc is SSH/remote execution**: an execution-target
-abstraction over the ~6 local-assuming touchpoints, composing with
-unattended runs for overnight VM work. It is a design-first arc — plan
-it before writing code, the way every series here started.
+**SSH/remote execution: LANDED** (Remote m1–m5, schema 27). Not the
+"execution-target abstraction" the earlier note imagined — that design
+was rejected during recon, because routing commands remotely while the
+pipeline kept reading the local filesystem would have left containment
+and evidence inspecting a different tree from the one the commands ran
+in. The shape instead: ONE immutable snapshot in, the ENTIRE milestone
+pipeline on the far side, one candidate back.
+
+What that required, in order, and mostly discovered by getting it wrong:
+
+  - a protocol where nothing dynamic reaches an ssh command line, for
+    runs AND for installation (sftp for bytes, a constant base64 `node
+    -e` bootstrap for hash/handshake/activate)
+  - frames with runId + contiguous sequence, strict after handshake;
+    sequences belong to the CONVERSATION, so every frame is admitted
+  - the execution core extracted from Pipeline into a module that
+    CANNOT reach the record, proven by bundling rather than by reading
+    imports — the first version looked clean and pulled ipc/ledger in
+    transitively
+  - two dependency leaves (shared/usage.ts, main/util/ids.ts) so the
+    bundle contains no npm code at all, absolutely, with the build
+    printing the edge that pulled anything in
+  - a supervisor/worker split: the pipeline never runs in the process
+    ssh talks to, or cancelling kills its own cleanup
+  - stdin held open for the life of a run (closing it IS the cancel);
+    the first e2e test used spawnSync and cancelled itself instantly
+  - a published ref is a CANDIDATE with no authority — ancestry and
+    changed-path reconciliation run locally, against objects we hold
+  - the approval charged on `ready`, not at entry: everything before it
+    can fail without anything having been spent
+
+Refusals: worktree-only, no mock plans, self repo exempt. Sparse
+checkouts are refused outright (measured: a sparse tree produces a
+snapshot containing files the local run never had), as are submodules
+with uncommitted work.
+
+**NOT built, and needed before a person can use any of it**: the
+command surface. `install`/`status`/`upgrade` have their logic and
+their bootstrap but nothing calls them; remote_targets has a table and
+repo methods but no UI; and Manager has no entry that hands a milestone
+to `driveRemoteMilestone` via `sshConverse`. Also unbuilt: PTY and
+preview forwarding (the old m5), and resume-after-disconnect (the frame
+identity work makes it possible; nothing implements it).
 
 **By-hand acceptances still open** (nothing blocks the next arc, but
 these are the honest gaps in what has been proven outside tests):
