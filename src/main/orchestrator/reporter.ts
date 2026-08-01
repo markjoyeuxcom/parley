@@ -1,4 +1,4 @@
-import type { Id, Milestone, TestResult, Usage } from '@shared/domain'
+import type { Id, Milestone, MutationResult, TestResult, Usage } from '@shared/domain'
 import type { RunState } from './pipeline'
 
 /**
@@ -33,6 +33,14 @@ export type MilestoneFact =
   | { kind: 'checkpoint'; runState: RunState | null }
   /** An agent turn completed and cost this. Recorded even when the turn errored. */
   | { kind: 'spend'; usage: Usage }
+  /**
+   * The mutation stage finished, and this is what each deliberate break did.
+   *
+   * The evidence behind the strongest claim this pipeline makes — that the
+   * tests would actually have caught the work being wrong — so it is recorded
+   * as its own observation rather than folded into the verification result.
+   */
+  | { kind: 'mutations'; results: MutationResult[] }
   /**
    * Parley ran the project's own verification command and observed this.
    *
@@ -111,6 +119,8 @@ export function milestonePatch(fact: MilestoneFact): Partial<Milestone> | null {
       return { status: fact.phase }
     case 'verification':
       return { testResult: fact.result }
+    case 'mutations':
+      return { mutationResults: fact.results }
     case 'narrative':
       return { reviewNote: fact.note, reviewBlocking: fact.blocking, reviewNotes: fact.notes }
     case 'judgement':
@@ -262,6 +272,10 @@ export function decodeMilestoneFact(value: unknown): MilestoneFact | null {
     case 'spend':
       return typeof raw.usage === 'object' && raw.usage !== null
         ? { kind: 'spend', usage: raw.usage as never }
+        : null
+    case 'mutations':
+      return Array.isArray(raw.results)
+        ? { kind: 'mutations', results: raw.results as MutationResult[] }
         : null
     case 'verification':
       if (!present('result')) return null

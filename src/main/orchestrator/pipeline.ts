@@ -1434,6 +1434,7 @@ export class Pipeline {
         milestoneId,
         milestone: current,
         plan,
+        report,
         root,
         agentEnv: input.agentEnv,
         reviewer: input.reviewer,
@@ -1705,6 +1706,10 @@ export class Pipeline {
         milestoneId,
         milestone: current,
         plan,
+        // Adoption is a local-only flow, but it records through the same
+        // reporter so a mutation result reaches the record by one route
+        // whoever asked for it.
+        report: this.reporterFor(plan, current, activity),
         root,
         agentEnv,
         reviewer,
@@ -2083,6 +2088,7 @@ export class Pipeline {
     reviewerResumeId: string | null
     activity: (phase: MilestonePhase, text: string) => void
     signal?: AbortSignal
+    report: MilestoneReporter
   }): Promise<{ milestone: Milestone; mutationResults: MutationResult[] }> {
     const { milestone, plan, root, activity, signal } = input
     activity(
@@ -2107,6 +2113,7 @@ export class Pipeline {
         },
         plan,
         activity,
+        input.report,
         signal,
       )
     }
@@ -2117,8 +2124,7 @@ export class Pipeline {
         ? 'every deliberate break was caught'
         : `${survived.length} deliberate break${survived.length === 1 ? '' : 's'} went undetected`,
     )
-    const updated = this.repo.updateMilestone(input.milestoneId, { mutationResults })
-    this.emit({ type: 'plan.milestone', milestone: updated })
+    const updated = input.report.record({ kind: 'mutations', results: mutationResults })
     return { milestone: updated, mutationResults }
   }
 
@@ -2147,6 +2153,7 @@ export class Pipeline {
     },
     plan: WorkPlan,
     activity: (phase: MilestonePhase, text: string) => void,
+    report: MilestoneReporter,
     signal?: AbortSignal,
   ): Promise<MutationResult[]> {
     // Position in `milestone.mutations` is the identity used with the model, so the
@@ -2212,7 +2219,7 @@ export class Pipeline {
       signal,
       timeoutMs: STAGE_TIMEOUT_MS,
     })
-    this.repo.addPlanUsage(plan.id, reply.usage)
+    report.record({ kind: 'spend', usage: reply.usage })
     if (reply.error) {
       activity('testing', `the re-anchoring could not be completed: ${reply.error}`)
       return results
