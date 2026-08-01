@@ -8,7 +8,15 @@ import { useStore } from '../state'
 import { Chip, Empty } from './ui'
 
 /** Hold kinds whose exact control is the milestone's approval dialog. */
-const DIALOG_KINDS = new Set<Hold['kind']>(['approval-waiting', 'ledger-gated', 'milestone-failed'])
+const DIALOG_KINDS = new Set<Hold['kind']>([
+  'approval-waiting',
+  'ledger-gated',
+  'milestone-failed',
+  // The retry control is the same one, and it is the right destination even
+  // though the fix is elsewhere: the reason is on the milestone, and this is
+  // where you come back to once the machine is sorted out.
+  'milestone-parked',
+])
 
 /**
  * The titlebar affordance for the attention queue.

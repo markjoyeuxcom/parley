@@ -1450,7 +1450,11 @@ function MilestoneRow({
 
       {milestone.testResult ? <VerificationResult result={milestone.testResult} /> : null}
 
-      {milestone.reviewNote || milestone.reviewBlocking.length ? (
+      {/* A parked milestone's note is the park's reason, not a reviewer's
+          opinion — no reviewer ran. Rendering it under "Review by Codex"
+          would attribute a sentence to an agent that never saw the work,
+          which is the same misattribution the status exists to prevent. */}
+      {milestone.status !== 'parked' && (milestone.reviewNote || milestone.reviewBlocking.length) ? (
         <ReviewOutcome
           reviewer={plan.executor.vendor === 'claude' ? 'Codex' : 'Claude'}
           blocking={milestone.reviewBlocking}
@@ -1465,6 +1469,34 @@ function MilestoneRow({
           would be a second place to authorise work. */}
       <RunRoom milestoneId={milestone.id} version={runsVersion} />
 
+      {/* A park says what has to change, and says it where the retry button
+          is — the one thing a reader must not conclude here is that the code
+          is at fault, because nothing looked at the code. */}
+      {milestone.status === 'parked' ? (
+        <div className="gate">
+          <div className="gate__title">Nothing was verified — the command could not start</div>
+          <div className="gate__body">
+            {milestone.testResult?.command ? (
+              <>
+                <span className="mono">{milestone.testResult.command}</span> never ran
+                {milestone.testResult.startError ? (
+                  <>
+                    {' '}
+                    &mdash; {milestone.testResult.startError}
+                  </>
+                ) : null}
+                . Its exit code is not a verdict on this milestone's work, and no review was run
+                against it.
+              </>
+            ) : (
+              milestone.reviewNote
+            )}{' '}
+            Whatever is missing is on the machine rather than in the repository, so fix that first;
+            retrying unchanged produces the same non-answer.
+          </div>
+        </div>
+      ) : null}
+
       {milestone.status === 'rejected' ? (
         <div className="field__hint">
           The auditor rejected this milestone. Revise the plan rather than forcing it through.
@@ -1473,7 +1505,13 @@ function MilestoneRow({
         <div className="row">
           <button className="btn btn--sm" onClick={onApprove}>
             <ShieldCheck size={12} strokeWidth={2} />
-            {milestone.status === 'failed' ? 'Approve and retry' : 'Approve and run'}
+            {milestone.status === 'failed'
+              ? 'Approve and retry'
+              : // Not "retry": nothing was tried. The first real attempt at
+                // establishing anything is still ahead.
+                milestone.status === 'parked'
+                ? 'Approve and run again'
+                : 'Approve and run'}
           </button>
           {onRunRemotely && hosts.length > 0 ? (
             <Menu

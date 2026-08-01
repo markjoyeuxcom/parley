@@ -8,6 +8,7 @@ import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
 import { newId, Repo } from '@main/store/repo'
 import { emptyUsage, type Id, type Mutation } from '@shared/domain'
+import { executionRefusal } from '@shared/execution'
 import { occurrenceState } from '@shared/ledger'
 import { canonicalRepoPath } from '@main/util/repoPath'
 import { Manager, RequestError } from './manager'
@@ -977,6 +978,20 @@ describe('handing a rejection back to the executor', () => {
     expect(mutationRound).toMatch(/strengthen the tests/)
   })
 
+  it('lets a parked milestone run again once the machine is fixed', async () => {
+    // A park that could not be left would be a dead end, and the milestone is
+    // not what was wrong. The gate has to let it back through.
+    const { done, repo } = await runFirstMilestone(
+      gitRepo('parley-park-retry-'),
+      'parley-definitely-not-installed --version',
+    )
+    expect(done.status).toBe('parked')
+
+    const plan = repo.getPlan(done.planId)
+    if (!plan) throw new Error('expected a plan')
+    expect(executionRefusal(plan, done)).toBe('')
+  })
+
   it('parks the milestone when the verification command cannot start', async () => {
     // The defect a real host found. A command that cannot be spawned arrives
     // looking exactly like a failing suite — an exit code and some stderr —
@@ -1201,6 +1216,34 @@ describe('adopting work that is already in the tree', () => {
     if (settleLedger) disposeOpenBlockingOccurrences(repo, session.id)
     return { manager, repo, events, registry, milestones: updated }
   }
+
+  it('parks an adoption too, because adoption IS the verification', async () => {
+    // Adoption's whole claim is that Parley verified work it did not write.
+    // With the verification unable to start there is nothing to make that
+    // claim on, and recording "verified" here would be a worse lie than on
+    // the execute path — this is the path whose only output is the check.
+    const { manager, repo, milestones } = await planIn(
+      repoWithExistingWork(),
+      'parley-definitely-not-installed --version',
+    )
+    const first = milestones[0]
+    if (!first) throw new Error('expected a milestone')
+
+    const done = await manager.adoptMilestone(first.id)
+
+    expect(done.status).toBe('parked')
+    expect(done.adopted).toBe(false)
+    expect(done.reviewPassed).toBeNull()
+    expect(done.reviewNote).toContain('nothing to adopt on')
+    // It parked instead of reviewing, so no reviewer was paid to look at work
+    // whose verification never happened.
+    const runId = repo.listMilestoneRuns(done.id)[0]?.runId ?? ''
+    const kinds = repo
+      .listRunEvents(runId)
+      .map((event) => (event.payload as { kind?: string }).kind)
+    expect(kinds).toContain('parked')
+    expect(kinds).not.toContain('judgement')
+  })
 
   it('completes without an approval, because it writes nothing', async () => {
     const { manager, repo, milestones } = await planIn(repoWithExistingWork())

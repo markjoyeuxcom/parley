@@ -357,6 +357,46 @@ bounded incremental delta (`contentPatch`, a real multi-hunk line diff) so the
 reviewer can tell which part of the combined diff is the milestone's. An
 unknown digest — a failed git spawn — is never treated as unchanged.
 
+## A verification that never ran is not a verdict
+
+Parley's claim is that a green result is observed rather than asserted. That
+claim is worth exactly as much as its willingness to say when it observed
+nothing — and the absence of evidence arrives looking identical to bad
+evidence: an exit code and some stderr.
+
+`CaptureResult.startError` and `TestResult.startError` carry the reason a
+command never began, following the precedent `signal` and `timedOut` set. The
+message, not a boolean: whoever reads it has to fix something outside Parley,
+and `ENOENT` and `EACCES` send them to different places. Four paths set it —
+a spawn failure, a command needing shell syntax, one that will not parse, and
+a dev container that will not start. All four previously reported exit `-1`
+and were read as failing tests.
+
+A milestone whose verification carries one is **`parked`**, not `failed`:
+
+- **Nothing downstream may treat it as evidence.** The check runs before the
+  mutation stage (which would "prove" the tests catch nothing) and before the
+  review that starts remediation. Adoption parks too — it is the path whose
+  only output IS the verification.
+- **`parked` is its own status and its own fact.** A failure is a judgement;
+  a park is the absence of one. A `finished` with `passed: false` would write
+  "the tests failed" about tests that never ran, and a reviewer believing that
+  sentence is what makes an executor rewrite working code. It cost two paid
+  remediation rounds on a real host.
+- **Nothing may attribute it to an agent.** `reviewPassed` stays null, no
+  `completedAt`, and the renderer does not put the reason under "Review by
+  Codex" — no reviewer saw the work.
+- **A park exists to be left.** `EXECUTABLE_PAIRS` admits it, the button says
+  "Approve and run again" rather than "retry" (nothing was tried), and the
+  hold's generation includes the start error so fixing one missing thing and
+  hitting another is new waiting rather than something an old ack hides.
+- **`milestone-parked` is its own hold kind.** "It failed" sends someone to
+  the diff; "it never ran" sends them to the machine. Telling them the wrong
+  one costs an afternoon.
+
+Remote needed nothing: the fact vocabulary is shared, so a remote park lands
+through the same `milestonePatch` and is indistinguishable from a local one.
+
 ## Adoption: verifying work Parley did not write
 
 An interrupted run leaves a milestone's files behind. Every retry then finds them

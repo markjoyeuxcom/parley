@@ -1414,6 +1414,56 @@ describe('mounted-surface smoke', () => {
     await waitFor(() => expect(invoked).toContain('session.get'))
   })
 
+  it('a parked milestone blames the machine, not the code, and still offers a run', async () => {
+    // The reason this status exists. A reader landing here must not conclude
+    // the work is at fault — nothing looked at the work — and must still be
+    // able to run it again once they have fixed what was missing.
+    const parked = {
+      ...smokeMilestone,
+      status: 'parked' as const,
+      testCommand: 'npm test',
+      testResult: {
+        command: 'npm test',
+        exitCode: -1,
+        signal: null,
+        timedOut: false,
+        startError: 'spawn npm ENOENT',
+        stdout: '',
+        stderr: '',
+        durationMs: 0,
+        ranAt: 1_700_000_000_000,
+      },
+      reviewNote: '`npm test` could not be run here: spawn npm ENOENT.',
+    }
+    installBridge({
+      'plan.get': () => ({ plan: smokePlan, milestones: [parked], worktree: null }),
+      'ledger.list': () => [],
+    })
+
+    render(
+      <StoreProvider>
+        <PlanPanel
+          detail={{ plan: smokePlan, milestones: [parked], worktree: null }}
+          ledger={[]}
+          onRefresh={() => {}}
+          host="backlog"
+        />
+      </StoreProvider>,
+    )
+
+    await screen.findByText('Nothing was verified — the command could not start')
+    // The reason, and where the fix is.
+    expect(screen.getByText(/spawn npm ENOENT/)).toBeTruthy()
+    expect(screen.getByText(/on the machine rather than in the repository/)).toBeTruthy()
+    // Never "failed", which would send someone to the diff.
+    expect(screen.queryByText(/the tests failed/i)).toBeNull()
+
+    // Retryable — a park exists to be left — but not called a retry, because
+    // nothing was tried.
+    await screen.findByText('Approve and run again')
+    expect(screen.queryByText('Approve and retry')).toBeNull()
+  })
+
   it('offers Run elsewhere only where a plan may actually leave', async () => {
     // Main refuses a checkout plan too, but a control that appears and then
     // refuses teaches people to distrust every other control on the screen.

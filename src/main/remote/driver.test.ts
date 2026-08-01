@@ -11,7 +11,7 @@ import {
   type RemoteFrame,
   type RemoteTarget,
 } from '@shared/remote'
-import type { MilestoneFact, MilestoneReporter } from '@main/orchestrator/reporter'
+import { milestonePatch, type MilestoneFact, type MilestoneReporter } from '@main/orchestrator/reporter'
 import { driveRemoteMilestone, type RemoteDriverDeps } from './driver'
 
 /**
@@ -104,14 +104,22 @@ function harness(
     runEnd?: Awaited<ReturnType<RemoteDriverDeps['converse']>>
   },
 ): Harness {
-  const state = { charges: 0, recorded: [] as MilestoneFact[] }
+  // Applies milestonePatch, like both real reporters do. A stub that recorded
+  // facts and returned an unchanging milestone could not show a fact having
+  // any effect — and "the fake could not fail the way the real thing fails"
+  // is how the remote arc shipped three environment bugs.
+  const state = { charges: 0, recorded: [] as MilestoneFact[], current: milestone }
   const reporter: MilestoneReporter = {
     record: (fact) => {
       state.recorded.push(fact)
-      return milestone
+      const patch = milestonePatch(fact)
+      if (patch) state.current = { ...state.current, ...patch }
+      return state.current
     },
     activity: () => {},
-    milestone,
+    get milestone() {
+      return state.current
+    },
   }
   let call = 0
   const deps: RemoteDriverDeps = {
@@ -280,6 +288,37 @@ describe('what the record gets', () => {
       { kind: 'phase', phase: 'testing' },
       { kind: 'judgement', passed: true },
     ])
+  })
+
+  it('brings a park home as a park, with nothing extra needed to carry it', async () => {
+    // The property the shared fact vocabulary was built for. A host whose
+    // verification command cannot start parks over there, and the same
+    // milestonePatch that decided what that meant remotely decides it here —
+    // so a remote park is indistinguishable from a local one in the record.
+    // Neither the protocol nor the driver learned a new word for it.
+    const { path, mirror } = gitRepo()
+    const h = harness(mirror, {
+      run: [
+        frame(1, { type: 'ready', capabilities }),
+        frame(2, { type: 'fact', fact: { kind: 'phase', phase: 'testing' } }),
+        frame(3, {
+          type: 'fact',
+          fact: { kind: 'parked', reason: '`npm test` could not be run here: spawn npm ENOENT' },
+        }),
+      ],
+    })
+    const outcome = await driveRemoteMilestone(inputFor(path, target), h.deps)
+
+    // Nothing was published, so there is no candidate — but the run is not a
+    // failure of the work, and the record has to say which.
+    expect(outcome.kind).toBe('ended')
+    expect(h.recorded).toContainEqual({
+      kind: 'parked',
+      reason: '`npm test` could not be run here: spawn npm ENOENT',
+    })
+    // The milestone the reporter is holding really is parked: the patch ran.
+    expect(h.deps.reporter.milestone.status).toBe('parked')
+    expect(h.deps.reporter.milestone.reviewPassed).toBeNull()
   })
 
   it('rejects the whole run when the milestone moved locally', async () => {

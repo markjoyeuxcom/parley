@@ -25,6 +25,7 @@ const MILESTONE_STATUSES: Milestone['status'][] = [
   'complete',
   'rejected',
   'failed',
+  'parked',
 ]
 
 function pair(planStatus: WorkPlan['status'], milestoneStatus: Milestone['status']): string {
@@ -41,6 +42,12 @@ describe('milestone execution gate', () => {
       ['ready', 'approved'],
       ['ready', 'failed'],
       ['failed', 'failed'],
+      // A park is retryable by design: it means a human has to fix something
+      // outside Parley, and running again is what they do afterwards. A park
+      // that could not be left would be a dead end, and the milestone is not
+      // what was wrong.
+      ['ready', 'parked'],
+      ['failed', 'parked'],
     ])
 
     for (const planStatus of PLAN_STATUSES) {

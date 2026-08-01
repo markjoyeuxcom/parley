@@ -1106,6 +1106,27 @@ export class Pipeline {
     current = this.repo.updateMilestone(milestoneId, { testResult })
     this.emit({ type: 'plan.milestone', milestone: current })
 
+    // Adoption's entire claim is that Parley verified work it did not write.
+    // A verification that never started cannot support it, and adopting on
+    // the strength of one would put "verified" in the record for a milestone
+    // nothing checked — a worse lie here than on the execute path, because
+    // adoption is the path whose only output IS the verification.
+    if (testResult?.startError) {
+      activity('testing', `the verification command could not run: ${testResult.startError}`)
+      current = adoptionReporter.record({
+        kind: 'parked',
+        reason:
+          `\`${testResult.command}\` could not be run here: ${testResult.startError}. ` +
+          `Adoption verifies rather than writes, so with the verification unable to start there ` +
+          `is nothing to adopt on. Fix what is missing and adopt again.`,
+      })
+      adoptionReporter.record({ kind: 'planOutcome', status: 'failed' })
+      adoptionReporter.ended('parked', current.reviewNote.slice(0, 400))
+      this.setStatus(plan.id, 'failed')
+      this.emit({ type: 'plan.milestone', milestone: current })
+      return current
+    }
+
     // Fixed before the mutation stage because both stages use it: a stale
     // anchor is re-resolved by the reviewer's vendor, the one party with no
     // stake in the outcome.

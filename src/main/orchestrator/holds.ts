@@ -94,6 +94,12 @@ export function computeHolds(repo: Repo, acked: ReadonlySet<string>, now = Date.
         if (milestone.status === 'failed' && pairExecutable(plan, milestone)) {
           holds.push(milestoneFailedHold(session.id, plan, milestone))
         }
+        // Same shape, different question. "It failed" sends someone to the
+        // diff; "it never ran" sends them to the machine, and telling them
+        // the wrong one costs an afternoon.
+        if (milestone.status === 'parked' && pairExecutable(plan, milestone)) {
+          holds.push(milestoneParkedHold(session.id, plan, milestone))
+        }
       }
 
       const approvable = milestones.find(
@@ -259,6 +265,28 @@ function milestoneFailedHold(sessionId: string, plan: WorkPlan, milestone: Miles
     repoPath: canonicalRepoPath(plan.repoPath),
     title: 'A milestone failed',
     detail: `${plan.title} — milestone ${milestone.index + 1}: ${milestone.title}`,
+    sinceAt: milestone.testResult?.ranAt ?? milestone.createdAt,
+    mock: plan.mock,
+  })
+}
+
+function milestoneParkedHold(sessionId: string, plan: WorkPlan, milestone: Milestone): Hold {
+  // The start error is in the generation: fixing one missing thing and hitting
+  // a different one is a new situation, and an acknowledgement of the first
+  // must not hide the second.
+  const generation = `${milestone.approvalId ?? ''}\0${milestone.testResult?.ranAt ?? ''}\0${milestone.testResult?.startError ?? ''}`
+  return hold('milestone-parked', milestone.id, generation, {
+    sessionId,
+    planId: plan.id,
+    milestoneId: milestone.id,
+    loopId: null,
+    repoPath: canonicalRepoPath(plan.repoPath),
+    title: 'A milestone is parked — its verification could not run',
+    // The command and the reason, not the milestone title: what has to change
+    // is named in the reason, and it is not in this repository.
+    detail: milestone.testResult?.startError
+      ? `${plan.title} — milestone ${milestone.index + 1}: \`${milestone.testResult.command}\` could not start (${milestone.testResult.startError})`
+      : `${plan.title} — milestone ${milestone.index + 1}: ${milestone.title}`,
     sinceAt: milestone.testResult?.ranAt ?? milestone.createdAt,
     mock: plan.mock,
   })

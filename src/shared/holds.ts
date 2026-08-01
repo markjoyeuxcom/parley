@@ -31,6 +31,15 @@ export type HoldKind =
   | 'plan-blocked'
   /** A milestone failed — remediation exhausted, tests red, or interrupted. */
   | 'milestone-failed'
+  /**
+   * A milestone stopped without learning anything: its verification command
+   * could not start.
+   *
+   * Its own kind rather than a failure, because the action is different. A
+   * failure sends you to the diff; this sends you to the machine, and nothing
+   * inside Parley can clear it.
+   */
+  | 'milestone-parked'
   /** A loop stopped without succeeding: a cap, a failure, or a kill. */
   | 'loop-exhausted'
   /** An in-flight run has been silent past the stall threshold. */
@@ -61,6 +70,7 @@ export const HOLD_CLASS: Record<HoldKind, HoldClass> = {
   'ledger-gated': 'decision',
   'plan-blocked': 'notice',
   'milestone-failed': 'notice',
+  'milestone-parked': 'notice',
   'loop-exhausted': 'notice',
   'run-stalled': 'notice',
   'merge-ready': 'decision',

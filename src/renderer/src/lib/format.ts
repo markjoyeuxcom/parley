@@ -101,6 +101,10 @@ export function statusTone(status: string): { tone: string; label: string } {
     case 'exhausted':
     case 'planned':
     case 'blocked':
+    // Amber rather than red on purpose: nothing went wrong with the work, and
+    // colouring it as a failure would be the same lie the status exists to
+    // stop the record telling.
+    case 'parked':
       return { tone: 'chip--caution', label: status }
     case 'failed':
     case 'killed':

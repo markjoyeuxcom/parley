@@ -239,6 +239,68 @@ describe('holds engine', () => {
     expect(manager.listHolds().some((h) => h.id === clarification.id)).toBe(true)
   })
 
+  it('tells a parked milestone apart from a failed one, and names what could not start', async () => {
+    // The two look identical in a queue and send someone to opposite places:
+    // a failure to the diff, a park to the machine. Rendering both as "a
+    // milestone failed" is what made a missing interpreter look like broken
+    // code for two paid remediation rounds.
+    const repo = new Repo(openDatabase(':memory:'))
+    const session = makeSession(repo)
+    const { milestone } = makeFailedMilestone(repo, session.id)
+    repo.updateMilestone(milestone.id, {
+      status: 'parked',
+      testCommand: 'npm test',
+      testResult: {
+        command: 'npm test',
+        exitCode: -1,
+        signal: null,
+        timedOut: false,
+        startError: 'spawn npm ENOENT',
+        stdout: '',
+        stderr: '\nspawn error: spawn npm ENOENT',
+        durationMs: 0,
+        ranAt: Date.now(),
+      },
+    })
+    const { manager } = harness(repo)
+    await settle()
+
+    const holds = manager.listHolds()
+    expect(holds.some((h) => h.kind === 'milestone-failed')).toBe(false)
+    const parked = holds.find((h) => h.kind === 'milestone-parked')
+    if (!parked) throw new Error('expected a milestone-parked hold')
+
+    // Both the command and the reason, because neither alone is actionable.
+    expect(parked.title).toContain('could not run')
+    expect(parked.detail).toContain('npm test')
+    expect(parked.detail).toContain('spawn npm ENOENT')
+
+    // A notice: it is real waiting, but nothing in Parley can clear it, so it
+    // must not sit in the badge count as though a click would resolve it.
+    expect(parked.actionable).toBe(false)
+
+    // Fixing one missing thing and hitting a different one is a new
+    // situation, and acknowledging the first must not hide the second.
+    const acked = manager.ackHold(parked.id)
+    expect(acked.some((h) => h.id === parked.id)).toBe(false)
+    repo.updateMilestone(milestone.id, {
+      testResult: {
+        command: 'npm test',
+        exitCode: -1,
+        signal: null,
+        timedOut: false,
+        startError: 'spawn npm EACCES',
+        stdout: '',
+        stderr: '',
+        durationMs: 0,
+        ranAt: Date.now(),
+      },
+    })
+    const again = manager.listHolds().find((h) => h.kind === 'milestone-parked')
+    expect(again).toBeTruthy()
+    expect(again?.id).not.toBe(parked.id)
+  })
+
   it('acknowledges a failed milestone, and a fresh failure reopens as a new hold', async () => {
     const repo = new Repo(openDatabase(':memory:'))
     const session = makeSession(repo)
