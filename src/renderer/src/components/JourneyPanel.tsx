@@ -115,7 +115,8 @@ export function JourneyPanel(): ReactNode {
         <div className="panel__body panel__body--flush">
           {views.length === 0 ? (
             <Empty
-              title="No app in progress"
+              compact
+              title="No app in progress."
               body="A guided build takes you from an idea to a reviewed app, one ordinary step at a time."
             />
           ) : (

@@ -60,8 +60,9 @@ export function RemoteTargetsPanel(): ReactNode {
         <div className="panel__body panel__body--flush">
           {targets.length === 0 ? (
             <Empty
-              title="No execution hosts"
-              body="A host runs a milestone in its own isolated worktree and sends back a result you review here. It needs parley-remote installed, and it runs as its own user with its own CLI subscriptions."
+              compact
+              title="No execution hosts."
+              body="A host runs a milestone in its own isolated worktree, as its own user, and sends back a result you review here."
             />
           ) : (
             targets.map((target) => {

@@ -83,7 +83,34 @@ export function Field({
   )
 }
 
-export function Empty({ title, body, action }: { title: string; body?: string; action?: ReactNode }): ReactNode {
+export function Empty({
+  title,
+  body,
+  action,
+  compact = false,
+}: {
+  title: string
+  body?: string
+  action?: ReactNode
+  /**
+   * One quiet line instead of a full-height block.
+   *
+   * For a panel that is NOT what its screen is about. A setup panel with
+   * nothing in it still has to explain itself, but it should cost a line —
+   * two of them at full height pushed the actual content of a view below the
+   * fold and made the page look like it had nothing in it.
+   */
+  compact?: boolean
+}): ReactNode {
+  if (compact) {
+    return (
+      <div className="empty empty--compact">
+        <span className="empty__title">{title}</span>
+        {body ? <span className="empty__body">{body}</span> : null}
+        {action}
+      </div>
+    )
+  }
   return (
     <div className="empty">
       <div className="empty__title">{title}</div>

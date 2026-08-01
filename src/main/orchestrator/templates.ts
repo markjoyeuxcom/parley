@@ -140,7 +140,93 @@ const WEB_APP: ProjectTemplate = {
   },
 }
 
-export const TEMPLATES: readonly ProjectTemplate[] = [WEB_APP]
+const GO_MOD = `module PLACEHOLDER_NAME
+
+go 1.22
+`
+
+const GO_GITIGNORE = `PLACEHOLDER_NAME
+*.test
+*.out
+.DS_Store
+`
+
+const GO_MAIN = `package main
+
+import (
+\t"fmt"
+\t"os"
+)
+
+func main() {
+\tname := "world"
+\tif len(os.Args) > 1 {
+\t\tname = os.Args[1]
+\t}
+\tfmt.Println(Greeting(name))
+}
+`
+
+const GO_GREETING = `package main
+
+// Greeting is the one piece of behaviour this scaffold ships, and its test
+// asserts exactly what it does. A scaffold whose own test fails would hand
+// milestone one a red suite and nothing to trust.
+func Greeting(name string) string {
+\treturn name + " is running."
+}
+`
+
+const GO_GREETING_TEST = `package main
+
+import "testing"
+
+func TestGreeting(t *testing.T) {
+\tif got := Greeting("parley"); got != "parley is running." {
+\t\tt.Fatalf("Greeting(parley) = %q", got)
+\t}
+}
+`
+
+const GO_README = `# PLACEHOLDER_NAME
+
+Scaffolded by Parley, and green before anything else ran.
+
+The verification command is \`go test ./...\`. Keep it green: it is the
+deterministic half of every milestone Parley executes here, and a milestone
+whose tests cannot run cannot be reviewed honestly.
+
+There is no dependency step to speak of — \`go mod tidy\` resolves what the
+source actually imports, which for this scaffold is the standard library.
+`
+
+/**
+ * The second lane, and the one that proves the first was not a special case.
+ *
+ * Go earns it by having no dependency-manager ceremony: both commands are a
+ * single argv that exits 0, which is the whole contract. Python needs `uv` or
+ * a venv, and a venv is two steps — which is why it is not here yet rather
+ * than being faked with a shell line.
+ */
+const GO_SERVICE: ProjectTemplate = {
+  id: 'go-service',
+  name: 'Go program',
+  description: 'A Go module with a passing test, so the harness is proven from the first commit.',
+  // Resolves what the source imports. For this scaffold that is nothing, and
+  // it stays a real step so a milestone that adds a dependency has one.
+  installCommand: ['go', 'mod', 'tidy'],
+  verifyCommand: ['go', 'test', './...'],
+  files: {
+    'go.mod': GO_MOD,
+    '.gitignore': GO_GITIGNORE,
+    'README.md': GO_README,
+    'main.go': GO_MAIN,
+    'greeting.go': GO_GREETING,
+    'greeting_test.go': GO_GREETING_TEST,
+  },
+}
+
+export const TEMPLATES: readonly ProjectTemplate[] = [WEB_APP, GO_SERVICE]
 
 export function templateById(id: string): ProjectTemplate | null {
   return TEMPLATES.find((template) => template.id === id) ?? null

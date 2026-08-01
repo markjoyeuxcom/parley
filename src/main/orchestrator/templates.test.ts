@@ -9,11 +9,32 @@ import { packageNameFor, renderTemplate, TEMPLATES, templateById } from './templ
  */
 
 describe('the shipped templates', () => {
-  it('ships exactly one lane, and it is the web app', () => {
-    // A second template is a deliberate act, not a drive-by addition.
-    expect(TEMPLATES.map((template) => template.id)).toEqual(['web-app'])
+  it('ships the lanes it means to, and no others', () => {
+    // Each template is a deliberate act, not a drive-by addition — a lane that
+    // cannot be verified from its first commit is worse than no lane.
+    expect(TEMPLATES.map((template) => template.id)).toEqual(['web-app', 'go-service'])
     expect(templateById('web-app')?.name).toBe('Local web app')
+    expect(templateById('go-service')?.name).toBe('Go program')
     expect(templateById('nope')).toBeNull()
+  })
+
+  it('gives every lane an install and a verify that are single argv', () => {
+    // The real constraint on a new language, and the reason Python is not here
+    // yet: a venv is two steps, and faking it with a shell line would break the
+    // spawn invariant this whole harness rests on.
+    for (const template of TEMPLATES) {
+      expect(template.installCommand.length).toBeGreaterThan(0)
+      expect(template.verifyCommand.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('ships a Go lane whose own test asserts its own function', () => {
+    const template = templateById('go-service')
+    expect(template?.verifyCommand).toEqual(['go', 'test', './...'])
+    expect(template?.files['greeting.go']).toContain('return name + " is running."')
+    expect(template?.files['greeting_test.go']).toContain('"parley is running."')
+    // The module line carries the project name, like package.json does.
+    expect(template?.files['go.mod']).toContain('module PLACEHOLDER_NAME')
   })
 
   it('runs its commands as argv, never as a shell line', () => {

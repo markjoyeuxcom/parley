@@ -297,6 +297,28 @@
   min-width: 0;
 }
 
+/* A quiet one-line empty state, for panels that are not what the screen is
+   about. Same words, a fraction of the height. */
+.empty--compact {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  padding: var(--s4) var(--s5);
+  text-align: left;
+  min-height: 0;
+}
+
+.empty--compact .empty__title {
+  font-size: var(--text-small);
+  margin: 0;
+}
+
+.empty--compact .empty__body {
+  font-size: var(--text-tiny);
+  max-width: none;
+  margin: 0;
+}
+
 /* ── Status chips ───────────────────────────────────────────────────────── */
 
 .chip {
@@ -497,6 +519,24 @@ button.chip:hover {
   min-height: 0;
   border-right: 1px solid var(--line);
   background: var(--bg-sunken);
+}
+
+/**
+ * The other half of .workspace, and it needs the same treatment the sidebar
+ * has always had.
+ *
+ * A grid item defaults to min-height:auto, so it refuses to shrink below its
+ * content — which means the .scroll-y inside it is handed an unbounded height
+ * and never becomes a scroller. The content then grows past the viewport and
+ * .workspace's overflow:hidden simply clips it: no scrollbar, no way down.
+ * This had no rule at all, and only showed up once a surface got tall enough.
+ */
+.main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .sidebar__header {
