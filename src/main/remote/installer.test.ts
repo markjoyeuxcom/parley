@@ -62,17 +62,23 @@ function goodSsh(hash: () => string): string {
     'ssh-ok',
     `  const request = JSON.parse(input)
   note('ssh:' + request.operation)
+  const READY = JSON.stringify({
+    protocolVersion: 1, runId: request.runId || 'install', sequence: 1,
+    body: { type: 'ready', capabilities: {
+      protocolVersion: 1, buildId: ${JSON.stringify(hash())}, nodeVersion: 'v24.4.1',
+      nodeExecutable: '/usr/bin/node', capabilities: [], supportedVendors: [],
+      availableVendors: [], vendorDetails: {}, user: 'build', home: '/home/build',
+      path: '/usr/bin', git: '2.45.0', runsRoot: '/runs',
+    } },
+  })
+  // The last call is not a bootstrap request at all: it is the protocol
+  // handshake, spoken to \`parley-remote\` found on the host's own PATH.
+  if (request.operation === 'handshake') {
+    process.stdout.write(READY + String.fromCharCode(10))
+    process.exit(0)
+  }
   if (request.operation === 'verify-and-handshake') {
-    const ready = JSON.stringify({
-      protocolVersion: 1, runId: 'install', sequence: 1,
-      body: { type: 'ready', capabilities: {
-        protocolVersion: 1, buildId: ${JSON.stringify(hash())}, nodeVersion: 'v24.4.1',
-        nodeExecutable: '/usr/bin/node', capabilities: [], supportedVendors: [],
-        availableVendors: [], vendorDetails: {}, user: 'build', home: '/home/build',
-        path: '/usr/bin', git: '2.45.0', runsRoot: '/runs',
-      } },
-    })
-    process.stdout.write(JSON.stringify({ ok: true, hash: request.expectedHash, handshake: ready + String.fromCharCode(10) }) + String.fromCharCode(10))
+    process.stdout.write(JSON.stringify({ ok: true, hash: request.expectedHash, handshake: READY + String.fromCharCode(10) }) + String.fromCharCode(10))
   } else {
     process.stdout.write(JSON.stringify({ ok: true, active: '/home/build/.local/bin/parley-remote', previous: null }) + String.fromCharCode(10))
   }
@@ -101,7 +107,66 @@ describe('a healthy install', () => {
     expect(outcome.nodeVersion).toBe('v24.4.1')
     // The order IS the safety property: a bundle that cannot run must never
     // become the one that runs.
-    expect(readLog()).toEqual(['sftp:put', 'ssh:verify-and-handshake', 'ssh:activate'])
+    // The order IS the safety property, and the last step is part of it: a
+    // host is only "installed" once it has answered as `parley-remote` off
+    // its own PATH, which is the single thing a run actually does.
+    expect(readLog()).toEqual([
+      'sftp:put',
+      'ssh:verify-and-handshake',
+      'ssh:activate',
+      'ssh:handshake',
+    ])
+  }, 60_000)
+})
+
+describe('installed is not the same as usable', () => {
+  it('refuses to call it installed when the host cannot run it by name', async () => {
+    // The failure a real host produced and every fake had hidden. Each step
+    // above names an absolute path; a run names nothing and lets the host's
+    // PATH find `parley-remote`. Reporting success here is what leaves someone
+    // with a target that looks ready and fails every single run — and the
+    // reasons are unguessable from the run's end (not executable, no node on
+    // a non-interactive PATH, ~/.local/bin not on PATH at all).
+    rmSync(log(), { force: true })
+    const unreachable = fake(
+      'ssh-not-on-path',
+      `  const request = JSON.parse(input)
+  note('ssh:' + request.operation)
+  if (request.operation === 'handshake') {
+    process.stderr.write('bash: parley-remote: command not found' + String.fromCharCode(10))
+    process.exit(127)
+  }
+  if (request.operation === 'verify-and-handshake') {
+    const ready = JSON.stringify({
+      protocolVersion: 1, runId: 'install', sequence: 1,
+      body: { type: 'ready', capabilities: {
+        protocolVersion: 1, buildId: ${JSON.stringify(buildId)}, nodeVersion: 'v24.4.1',
+        nodeExecutable: '/usr/bin/node', capabilities: [], supportedVendors: [],
+        availableVendors: [], vendorDetails: {}, user: 'build', home: '/home/build',
+        path: '/usr/bin', git: '2.45.0', runsRoot: '/runs',
+      } },
+    })
+    process.stdout.write(JSON.stringify({ ok: true, hash: request.expectedHash, handshake: ready + String.fromCharCode(10) }) + String.fromCharCode(10))
+  } else {
+    process.stdout.write(JSON.stringify({ ok: true, active: '/home/build/.local/bin/parley-remote', previous: null }) + String.fromCharCode(10))
+  }
+  process.exit(0)`,
+    )
+
+    const outcome = await installRemote(target, {
+      bundlePath,
+      sftpBinary: goodSftp(),
+      sshBinary: unreachable,
+    })
+
+    expect(outcome.ok).toBe(false)
+    // Actionable, because the person reading it has to go and change a PATH.
+    expect(outcome.detail).toContain('parley-remote')
+    expect(outcome.detail).toContain('PATH')
+    expect(outcome.detail).toContain('command not found')
+    // It really did get all the way through activation first — this is the
+    // last gate, not an early refusal.
+    expect(readLog()).toContain('ssh:activate')
   }, 60_000)
 })
 

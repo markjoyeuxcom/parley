@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -225,8 +225,26 @@ describe('verify, then activate', () => {
     const { reply } = runBootstrap({ operation: 'activate', relativePath, buildId: bundleHash }, at)
     expect(reply?.ok).toBe(true)
 
+    // The LAUNCHER, not the .mjs. Linking the bundle directly is what a real
+    // host rejected two ways at once: sftp leaves it mode 644, and its
+    // "#!/usr/bin/env node" shebang cannot find node on exactly the hosts
+    // (nvm, asdf, mise) this bootstrap exists to support.
     const link = join(at, '.local/bin/parley-remote')
-    expect(readlinkSync(link)).toBe(join(at, INSTALL_ROOT, bundleHash, 'parley-remote.mjs'))
+    const launcher = join(at, INSTALL_ROOT, bundleHash, 'parley-remote')
+    expect(readlinkSync(link)).toBe(launcher)
+    // Executable, or the symlink resolves to something that cannot be run.
+    expect(statSync(launcher).mode & 0o111).not.toBe(0)
+
+    // It names its interpreter absolutely, and names the bundle where the
+    // bundle now IS. Written during verify it pointed into the staging
+    // directory this rename just destroyed, so activation has to write it
+    // again — a launcher naming a path that no longer exists is a host that
+    // installs cleanly and fails every run.
+    const script = readFileSync(launcher, 'utf8')
+    expect(script).toContain(process.execPath)
+    expect(script).toContain(join(at, INSTALL_ROOT, bundleHash, 'parley-remote.mjs'))
+    expect(script).not.toContain('.install-')
+
     // The staging directory became the versioned one; nothing was copied.
     expect(existsSync(join(at, relativePath))).toBe(false)
     rmSync(at, { recursive: true, force: true })

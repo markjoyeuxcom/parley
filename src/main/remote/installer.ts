@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { REMOTE_PROTOCOL_VERSION, type RemoteTarget } from '@shared/remote'
+import { REMOTE_HELPER_COMMAND, REMOTE_PROTOCOL_VERSION, type RemoteTarget } from '@shared/remote'
 import { decodeFrame } from './frames'
+import { encodeRequest, handshakeRequest, sshArgv } from './protocol'
 import {
+  activeLinkHint,
   bootstrapArgv,
   decodeBootstrapReply,
   newNonce,
@@ -25,6 +27,15 @@ import {
  * them and compares against what we built; the STAGED bundle answers a
  * handshake before it is activated; only then is it renamed into place and the
  * symlink swapped. A bundle that cannot run never becomes the one that runs.
+ *
+ * And then it is asked again, by name. That last step exists because the first
+ * real host revealed how little the others proved: every one of them names an
+ * absolute path, while a run names nothing and lets the host's PATH find
+ * `parley-remote`. On a host with node under nvm, the staged handshake passed
+ * and every run afterwards failed — the bundle arrived mode 644 from sftp and
+ * its `#!/usr/bin/env node` shebang had no node to find. Both were invisible
+ * to a check that ran `node <path>`. A gate that cannot fail the way the thing
+ * it guards fails is not a gate.
  */
 
 export interface InstallOutcome {
@@ -174,6 +185,35 @@ export async function installRemote(
   const done = decodeBootstrapReply(activated.stdout)
   if (!done?.ok) {
     return { ok: false, buildId, detail: done?.error ?? 'the host could not activate the upload' }
+  }
+
+  // ── And prove it answers the way a run will reach it ─────────────────────
+  //
+  // Everything above named a path. A run names nothing: it says
+  // `ssh host parley-remote` and lets the host's own PATH find the symlink.
+  // That last hop is its own failure — the link may not be on a
+  // non-interactive PATH, or may not be executable — and it went undetected
+  // for the whole arc because no earlier step took it.
+  const reachable = await run(
+    deps.sshBinary ?? 'ssh',
+    sshArgv(target),
+    encodeRequest(handshakeRequest('install-reachability')),
+    deps.signal,
+  )
+  const answered = reachable.stdout
+    .split('\n')
+    .map((line) => decodeFrame(line))
+    .some((frame) => frame?.body.type === 'ready')
+  if (!answered) {
+    return {
+      ok: false,
+      buildId,
+      // Installed, and unusable. Saying "installed" here is what produced a
+      // host that looked ready and failed every single run.
+      detail: `the runner is installed but the host could not run it as \`${REMOTE_HELPER_COMMAND}\`. It should be at ${activeLinkHint('~')} — check that directory is on the PATH of a non-interactive ssh session.${
+        (reachable.stderr || '').trim() ? `\n\n${reachable.stderr.trim().slice(0, 300)}` : ''
+      }`,
+    }
   }
 
   return {

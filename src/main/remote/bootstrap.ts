@@ -97,6 +97,45 @@ function resolveInside(relative) {
   return path.join(real, path.basename(full));
 }
 
+/**
+ * The launcher: an executable that names its own interpreter.
+ *
+ * The bundle ships with a "#!/usr/bin/env node" shebang, which is useless on
+ * exactly the hosts this bootstrap exists to support — nvm, asdf and mise put
+ * node somewhere no non-interactive shell will look, so "env node" fails with
+ * 127. And sftp does not carry a mode, so the uploaded file arrives 644 and
+ * cannot be executed at all. Two separate reasons a run fails at the same
+ * point.
+ *
+ * A tiny sh script solves both, and can only be written here: this process IS
+ * the node the target configured, so process.execPath is the right interpreter
+ * by construction rather than by guesswork.
+ *
+ * The launcher is not hashed, because there is nothing to hash it against —
+ * unlike the bundle, it is written by the host from its own execPath rather
+ * than uploaded. What matters is that the BUNDLE is never rewritten: the bytes
+ * that were verified stay byte-for-byte the bytes that run.
+ */
+function writeLauncher(bundle) {
+  const node = process.execPath;
+  if (!BORING.test(node)) fail("the host's node path is not a boring path: " + node);
+  if (!BORING.test(bundle)) fail("the bundle path is not a boring path");
+  const at = path.join(path.dirname(bundle), "${LINK_NAME}");
+  const script = [
+    "#!/bin/sh",
+    "# Written by Parley's bootstrap. The interpreter is named absolutely: a",
+    "# host managed by nvm, asdf or mise has no node on its non-interactive PATH.",
+    "exec '" + node + "' '" + bundle + "' " + '"$@"',
+    "",
+  ].join("\\n");
+  fs.writeFileSync(at, script, { mode: 0o755 });
+  // writeFileSync's mode only applies when it creates the file, and staging is
+  // fresh per nonce so it always does — but the executable bit is the whole
+  // point of this file, so it is not left to that.
+  fs.chmodSync(at, 0o755);
+  return at;
+}
+
 function lock() {
   fs.mkdirSync(ROOT, { recursive: true });
   const at = path.join(ROOT, ".lock");
@@ -138,7 +177,16 @@ readRequest(function (request) {
     if (actual !== request.expectedHash) {
       fail("uploaded bundle hash " + actual + " does not match " + request.expectedHash);
     }
-    const probe = cp.spawnSync(process.execPath, [file], {
+    // Probed THROUGH the launcher, not as an argument to node.
+    //
+    // "node <bundle>" would prove something a run never does, and it is worth
+    // being blunt about how that failed: it passed on a host where every run
+    // then died, because passing an argument to node bypasses both the
+    // executable bit and the shebang — the only two things that were broken.
+    // The gate that promises a bundle which cannot run never becomes the one
+    // that runs has to exercise the mechanism a run exercises.
+    const launcher = writeLauncher(file);
+    const probe = cp.spawnSync(launcher, [], {
       input: JSON.stringify({ version: request.protocolVersion, operation: "handshake", runId: "install" }) + "\\n",
       encoding: "utf8",
       timeout: 60000,
@@ -169,7 +217,19 @@ readRequest(function (request) {
       try { previous = fs.readlinkSync(LINK); } catch (e) {}
       const temporary = path.join(BIN, ".${LINK_NAME}-" + request.buildId.slice(0, 8));
       try { fs.unlinkSync(temporary); } catch (e) {}
-      fs.symlinkSync(path.join(target, "parley-remote.mjs"), temporary);
+      // Written a second time, now that the bundle has its final path.
+      //
+      // The staging launcher named a path inside .install-<nonce>, which is
+      // the directory this rename just made vanish — so it was correct for
+      // the probe and dangling from the instant it was activated. Rewriting
+      // it here is what makes the verified-then-activated order safe for a
+      // file that has to name where it lives. Rewriting the BUNDLE would
+      // break the hash guarantee; the launcher is host-authored and carries
+      // none.
+      writeLauncher(path.join(target, "parley-remote.mjs"));
+      // Linking the .mjs instead would put the shebang back on the critical
+      // path, which is one of the two reasons a run could not start at all.
+      fs.symlinkSync(path.join(target, "${LINK_NAME}"), temporary);
       fs.renameSync(temporary, LINK);
       if (previous) fs.writeFileSync(path.join(ROOT, ".previous"), previous, "utf8");
       process.stdout.write(JSON.stringify({ ok: true, active: LINK, previous: previous }) + "\\n");

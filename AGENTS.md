@@ -55,6 +55,10 @@ Two escape hatches:
 - `PARLEY_LIVE=1 npx vitest run src/main/agents/live.test.ts` — the only test
   that really invokes the CLIs. It spends a little quota and proves the argv and
   event schemas are still right. Run it after touching an adapter.
+- `PARLEY_LIVE_REMOTE=<ssh-host> PARLEY_LIVE_REMOTE_NODE=<absolute node> npx
+  vitest run src/main/remote/live.test.ts` — the remote arc against a real
+  machine. Needs `npm run build:remote` first. See "Remote execution" for why
+  the fakes cannot replace it.
 
 ## Layout
 
@@ -614,6 +618,38 @@ while the run was in flight.
 
 **Refusals**: worktree-only, no mock plans, self repo exempt. Checked before
 anything is snapshotted, pushed or spent.
+
+**A host's environment is the part fakes cannot prove.** Everything above was
+green against a fake `ssh` for the whole arc, and the first real host broke
+three times in the same place — nvm puts node where a non-interactive ssh
+session will not look:
+
+- sftp carries no mode, so the bundle landed 644 and could not be executed;
+- its `#!/usr/bin/env node` shebang had no node to find;
+- the run's own verification command (`node test.js`) could not be spawned.
+
+The first two are why activation writes a **launcher** — a small `sh` script
+naming `process.execPath` absolutely — and links THAT rather than the `.mjs`.
+It is written twice on purpose: once in staging so the probe executes it, and
+again after the rename, because the staging path it first named is the
+directory activation just destroyed. The third is why `src/remote/main.ts`
+appends `dirname(process.execPath)` to `PATH` at entry — appended, never
+prepended, so a repository that pins its own toolchain still wins.
+
+**Prove an installation the way a run uses it.** The staged handshake ran
+`node <path>`, which bypasses both the executable bit and the shebang — it
+passed on a host where every run then failed. `installRemote` now ends by
+speaking the protocol to bare `parley-remote`, resolved off the host's own
+PATH, and reports `ok: false` if that fails. A gate that cannot fail the way
+the thing it guards fails is not a gate.
+
+**The acceptance**: `PARLEY_LIVE_REMOTE=<ssh-host>
+PARLEY_LIVE_REMOTE_NODE=<absolute node> npx vitest run
+src/main/remote/live.test.ts` after `npm run build:remote`. It installs, runs a
+real milestone with a real agent CLI on the host, checks the candidate came
+back with only the declared path changed and local HEAD untouched, then rolls
+back and reinstalls. Run it after touching anything under `src/remote/**` or
+the installer — the fakes will stay green through all three failures above.
 
 ## The self repo: worktree-only, gate fail-closed, quit never exit
 

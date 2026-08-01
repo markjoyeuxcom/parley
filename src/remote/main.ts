@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   REMOTE_NODE_FLOOR,
@@ -283,6 +283,33 @@ async function worker(): Promise<void> {
   })
   process.exit(1)
 }
+
+/**
+ * Put the node that is running us within reach of everything we spawn.
+ *
+ * A non-interactive ssh session does not read the shell startup files where
+ * nvm, asdf and mise put node, so on those hosts `node` is not on PATH — and
+ * those are the hosts this whole design set out to support rather than refuse.
+ * The launcher solves it for the helper itself by naming an absolute
+ * interpreter. It does nothing for what the helper spawns, and the run's
+ * verification command is very often `node`, `npm` or `npx`.
+ *
+ * Left unfixed this is not a clean failure. The command cannot start, the
+ * result is an exit code, the reviewer reads failing tests and objects, and
+ * the executor spends real quota rewriting code that was never wrong. That is
+ * what a real host did before this line existed.
+ *
+ * APPENDED, never prepended: a repository that pins its own toolchain must
+ * keep winning. This is a floor for hosts that have nothing, not an override.
+ */
+function reachableToolchain(): void {
+  const bin = dirname(process.execPath)
+  const path = process.env['PATH'] ?? ''
+  if (path.split(delimiter).includes(bin)) return
+  process.env['PATH'] = path ? `${path}${delimiter}${bin}` : bin
+}
+
+reachableToolchain()
 
 // One artefact, two roles, chosen by a flag this file owns. Nothing about a
 // run reaches the command line: the worker gets its request on stdin exactly
