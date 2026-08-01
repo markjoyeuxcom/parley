@@ -16,6 +16,7 @@ import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
 import { newId, Repo } from '@main/store/repo'
 import { Pipeline } from './pipeline'
+import type { MilestoneFact, MilestoneReporter } from './reporter'
 
 const claude = { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' }
 const codex = { vendor: 'codex' as const, model: '', effort: 'high' as const, persona: '' }
@@ -464,5 +465,128 @@ describe('pipeline finding ledger ingestion', () => {
       expect(disposition.note).toMatch(/no verification command/i)
       expect(disposition.note).not.toMatch(/passed deterministic verification/i)
     }
+  })
+})
+
+/**
+ * The consequences of a finished run, shared by both places one can happen.
+ *
+ * These writes are what the execution core cannot do — it states facts and
+ * holds no record — so they belong to whoever has the record. That used to be
+ * only the local path: a remote run raised findings into a callback that
+ * dropped them, settled nothing on success, and never moved the plan. Running
+ * elsewhere quietly cost you the ledger.
+ */
+describe('what a finished run does to the record, wherever it ran', () => {
+  /** A reporter that records nothing but what it was told, so facts are visible. */
+  function collector(): { reporter: MilestoneReporter; facts: MilestoneFact[] } {
+    const facts: MilestoneFact[] = []
+    const milestone = {} as Milestone
+    return {
+      facts,
+      reporter: {
+        record: (fact) => {
+          facts.push(fact)
+          return milestone
+        },
+        activity: () => {},
+        milestone,
+      },
+    }
+  }
+
+  it('ingests a finding with its provenance, whichever machine observed it', () => {
+    const { pipeline, repo, session } = harness()
+    const plan = makePlan(repo, session.id, gitRepo('parley-ledger-ingest-'))
+    const milestone = makeMilestone(repo, plan.id)
+
+    pipeline.ingestFinding(
+      plan,
+      {
+        kind: 'finding',
+        text: 'the retry ceiling is not surfaced',
+        round: 2,
+        blocking: true,
+        source: 'review',
+      },
+      milestone.id,
+    )
+
+    const occurrences = repo.listFindingOccurrences(session.id)
+    expect(occurrences).toHaveLength(1)
+    // Provenance is the point: which plan, which milestone, which round, and
+    // whether it gates. A finding without it is a sentence in a log.
+    expect(occurrences[0]).toMatchObject({
+      planId: plan.id,
+      milestoneId: milestone.id,
+      round: 2,
+      kind: 'blocking',
+      source: 'review',
+    })
+  })
+
+  it('settles the blocking findings a passing milestone answered', () => {
+    // The half that must land WITH the ingestion. Recording findings and never
+    // settling them would be worse than dropping them: every remote run would
+    // leave open blockers gating the next approval, so a host that worked
+    // perfectly would make the plan unrunnable.
+    const { pipeline, repo, session } = harness()
+    const plan = makePlan(repo, session.id, gitRepo('parley-ledger-settle-'))
+    const milestone = makeMilestone(repo, plan.id, { status: 'complete' })
+    pipeline.ingestFinding(
+      plan,
+      { kind: 'finding', text: 'a blocking objection', round: 1, blocking: true, source: 'review' },
+      milestone.id,
+    )
+    const dispositions = () => repo.listFindingDispositions(session.id)
+    const open = (): number =>
+      repo
+        .listFindingOccurrences(session.id)
+        .filter((o) => occurrenceState(o, dispositions()) === 'open').length
+    expect(open()).toBe(1)
+
+    const { reporter } = collector()
+    pipeline.settleFinishedRun(plan, milestone.id, repo.getMilestone(milestone.id)!, reporter)
+    expect(open()).toBe(0)
+  })
+
+  it('leaves a failed milestone’s objections open, because they were not answered', () => {
+    const { pipeline, repo, session } = harness()
+    const plan = makePlan(repo, session.id, gitRepo('parley-ledger-open-'))
+    const milestone = makeMilestone(repo, plan.id, { status: 'failed' })
+    pipeline.ingestFinding(
+      plan,
+      { kind: 'finding', text: 'still wrong', round: 1, blocking: true, source: 'review' },
+      milestone.id,
+    )
+
+    const { reporter, facts } = collector()
+    pipeline.settleFinishedRun(plan, milestone.id, repo.getMilestone(milestone.id)!, reporter)
+
+    const dispositions = repo.listFindingDispositions(session.id)
+    expect(
+      repo.listFindingOccurrences(session.id).every((o) => occurrenceState(o, dispositions) === 'open'),
+    ).toBe(true)
+    expect(facts).toContainEqual({ kind: 'planOutcome', status: 'failed' })
+  })
+
+  it('moves the plan on knowledge only the record has', () => {
+    // Which of the plan's OTHER milestones remain — something the machine that
+    // ran the work cannot know, which is exactly why the core states a fact
+    // and leaves this to whoever holds the record.
+    const { pipeline, repo, session } = harness()
+    const plan = makePlan(repo, session.id, gitRepo('parley-ledger-outcome-'))
+    const first = makeMilestone(repo, plan.id, { status: 'complete' })
+    const second = makeMilestone(repo, plan.id, { index: 1, status: 'audited' })
+
+    const more = collector()
+    pipeline.settleFinishedRun(plan, first.id, repo.getMilestone(first.id)!, more.reporter)
+    // Work left: ready, not complete.
+    expect(more.facts).toContainEqual({ kind: 'planOutcome', status: 'ready' })
+
+    repo.updateMilestone(second.id, { status: 'complete' })
+    const done = collector()
+    pipeline.settleFinishedRun(plan, second.id, repo.getMilestone(second.id)!, done.reporter)
+    expect(done.facts).toContainEqual({ kind: 'planOutcome', status: 'complete' })
   })
 })

@@ -38,7 +38,11 @@ import {
 } from '@shared/protocol'
 import { capture, isShellFree, splitCommand, type CaptureResult } from '@main/util/spawn'
 import { ensureUp, runProjectCommand } from './containers'
-import { StoreMilestoneReporter, type MilestoneReporter } from './reporter'
+import {
+  StoreMilestoneReporter,
+  type MilestoneFact,
+  type MilestoneReporter,
+} from './reporter'
 import type { RunEntry, RunRoles } from '@shared/journal'
 import { ExecutionCore, executeMilestone } from './execution'
 import {
@@ -755,20 +759,12 @@ export class Pipeline {
       },
     )
 
-    const passed = current.status === 'complete'
-    if (passed) this.settleMilestoneReviewFindings(plan, input.milestoneId)
-
-    const remaining = this.repo
-      .listMilestones(plan.id)
-      .filter((m) => m.status !== 'complete' && m.status !== 'rejected')
     // A parked plan is `failed` at the plan level for want of a fourth word:
     // the plan did stop and does need a human, which is all the plan's own
     // status has ever meant. The distinction that matters — whether anything
     // was learned — lives on the milestone, where it can be acted on.
-    reporter.record({
-      kind: 'planOutcome',
-      status: passed && remaining.length === 0 ? 'complete' : passed ? 'ready' : 'failed',
-    })
+    this.settleFinishedRun(plan, input.milestoneId, current, reporter)
+    const passed = current.status === 'complete'
     // Last, after everything about the run has been recorded — including what
     // it did to the plan. A run.ended with facts after it would make the
     // closing event a lie about where the story stops.
@@ -986,13 +982,7 @@ export class Pipeline {
         setRunState: (id, state) => this.repo.setMilestoneRunState(id, state),
         addPlanUsage: (planId, usage) => this.repo.addPlanUsage(planId, usage),
         setPlanStatus: (planId, status) => this.setStatus(planId, status),
-        recordFinding: (finding, id) =>
-          this.recordFindingOccurrence(plan, finding.text, {
-            milestoneId: id,
-            round: finding.round,
-            kind: finding.blocking ? 'blocking' : 'note',
-            source: finding.source,
-          }),
+        recordFinding: (finding, id) => this.ingestFinding(plan, finding, id),
         appendEvent: (event) => this.repo.appendRunEvent(event),
         transact: (fn) => this.repo.transaction(fn),
         activityKept: () => this.repo.countRunActivity(runId),
@@ -1367,6 +1357,56 @@ export class Pipeline {
         source: 'audit',
       })
     }
+  }
+
+  /**
+   * The ledger consequences of a finished run, wherever it ran.
+   *
+   * These are exactly the writes the execution core cannot do — it states
+   * facts and holds no record — and they were performed only on the local
+   * path. A remote run raised findings into a callback that dropped them,
+   * settled nothing on success, and never moved the plan's status, so a
+   * milestone could complete on another machine and leave the plan looking
+   * untouched.
+   *
+   * Paired in one method on purpose. Recording findings without settling them
+   * is worse than dropping them: every remote run would leave open blocking
+   * occurrences that gate the next approval, so a host that worked would make
+   * the plan unrunnable. Whoever calls one must call the other, and the way to
+   * guarantee that is for there to be one thing to call.
+   */
+  settleFinishedRun(
+    plan: WorkPlan,
+    milestoneId: Id,
+    milestone: Milestone,
+    reporter: MilestoneReporter,
+  ): void {
+    const passed = milestone.status === 'complete'
+    if (passed) this.settleMilestoneReviewFindings(plan, milestoneId)
+
+    const remaining = this.repo
+      .listMilestones(plan.id)
+      .filter((m) => m.status !== 'complete' && m.status !== 'rejected')
+    // Computed HERE and not by the core, because it needs the plan's other
+    // milestones — knowledge the machine that ran the work does not have.
+    reporter.record({
+      kind: 'planOutcome',
+      status: passed && remaining.length === 0 ? 'complete' : passed ? 'ready' : 'failed',
+    })
+  }
+
+  /** Ingests one observed finding as a ledger occurrence with its provenance. */
+  ingestFinding(
+    plan: WorkPlan,
+    finding: Extract<MilestoneFact, { kind: 'finding' }>,
+    milestoneId: Id,
+  ): void {
+    this.recordFindingOccurrence(plan, finding.text, {
+      milestoneId,
+      round: finding.round,
+      kind: finding.blocking ? 'blocking' : 'note',
+      source: finding.source,
+    })
   }
 
   private recordFindingOccurrence(

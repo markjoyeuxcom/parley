@@ -1171,11 +1171,12 @@ export class Manager {
           setRunState: (id, state) => this.repo.setMilestoneRunState(id, state),
           addPlanUsage: (planId, usage) => this.repo.addPlanUsage(planId, usage),
           setPlanStatus: (planId, status) => this.repo.setPlanStatus(planId, status),
-          recordFinding: () => {
-            // Ledger provenance for remote findings is deliberately not wired
-            // yet: it needs the session's finding vocabulary, and silently
-            // dropping them would be worse than saying so.
-          },
+          // A finding is a finding wherever the reviewer ran. Through the
+          // same method the local path uses, so a remote objection gets the
+          // same ledger row, the same provenance and the same gate on the
+          // next approval — this used to drop them on the floor, which meant
+          // running elsewhere quietly cost you the record of what was raised.
+          recordFinding: (finding, id) => this.pipeline.ingestFinding(plan, finding, id),
           appendEvent: (event) => this.repo.appendRunEvent(event),
           transact: (fn) => this.repo.transaction(fn),
           activityKept: () => this.repo.countRunActivity(runId),
@@ -1230,6 +1231,19 @@ export class Manager {
             }),
         },
       )
+      // The same bookkeeping a local run does, and for the same reason: these
+      // are the record's consequences of the facts, and the record is here.
+      //
+      // Gated on the milestone having actually settled rather than on which
+      // of the five outcomes came back. `unstarted` spent nothing and touched
+      // nothing; a disconnect may have left the work finished over there and
+      // unknown here. Concluding anything about the plan from either would be
+      // inventing a result.
+      const finished = reporter.milestone
+      if (['complete', 'failed', 'parked'].includes(finished.status)) {
+        this.pipeline.settleFinishedRun(plan, milestoneId, finished, reporter)
+      }
+
       // Closed however it ended, including the endings that are not failures.
       // A run whose journal simply stops is indistinguishable from one still
       // in flight, which is the wrong thing for a disconnect to look like.

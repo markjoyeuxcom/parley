@@ -659,6 +659,31 @@ while the run was in flight.
 **Refusals**: worktree-only, no mock plans, self repo exempt. Checked before
 anything is snapshotted, pushed or spent.
 
+**A finished run's record consequences belong to whoever holds the record.**
+The execution core states facts and writes no rows, so ingesting a finding as
+a ledger occurrence, settling the blockers a passing milestone answered, and
+moving the plan's status are all done locally — including for a run that
+happened on another machine. `Pipeline.settleFinishedRun` and
+`Pipeline.ingestFinding` are the single implementation both paths call.
+
+Settling and ingestion are ONE method deliberately. Recording findings without
+settling them is worse than dropping them: every remote run would leave open
+blocking occurrences gating the next approval, so a host that worked perfectly
+would make the plan unrunnable. Whoever calls one must call the other, and the
+way to guarantee that is to have one thing to call.
+
+The remote side runs it only when the milestone actually settled
+(complete/failed/parked), not per driver outcome: `unstarted` spent nothing
+and touched nothing, and a disconnect may have left the work finished over
+there and unknown here. Concluding anything about the plan from either would
+be inventing a result.
+
+**Not covered**: `Manager.runMilestoneRemotely` itself has no automated test —
+`runSsh` hardcodes its binary and the driver's git transport needs a real ssh
+URL, so there is no seam to fake it at that level. The driver, the shared
+bookkeeping and the live host suite each cover a part; the wiring between them
+is read, not exercised.
+
 **A host's environment is the part fakes cannot prove.** Everything above was
 green against a fake `ssh` for the whole arc, and the first real host broke
 three times in the same place — nvm puts node where a non-interactive ssh
