@@ -415,6 +415,7 @@ export const COMMANDS = {
   'remote.status': RemoteTargetIdReq,
   'remote.recover': z.object({ runId: Id }),
   'remote.unresolved': null,
+  'search.query': z.object({ query: z.string(), limit: z.number().int().positive().max(100).optional() }),
   'remote.install': RemoteTargetIdReq,
   'remote.rollback': RemoteTargetIdReq,
   'plan.runMilestoneRemotely': RunMilestoneRemotelyReq,
@@ -459,6 +460,26 @@ export type CommandPayload<K extends CommandName> = (typeof COMMANDS)[K] extends
   : undefined
 
 /** One stable finding and its append-only occurrence and decision history. */
+/**
+ * A search hit, with the door that opens it.
+ *
+ * The doors are resolved in main, where the record is: a milestone hit knows
+ * its plan id but the renderer needs the plan's session and repository to
+ * navigate, and asking every surface to look those up would put four copies
+ * of the join in four components.
+ */
+export interface RecordSearchHit {
+  kind: 'session' | 'turn' | 'plan' | 'milestone' | 'finding' | 'backlog' | 'learning'
+  refId: Id
+  title: string
+  /** The matching text, with the query's words marked by «…». */
+  snippet: string
+  sessionId: Id | null
+  planId: Id | null
+  milestoneId: Id | null
+  repoPath: string | null
+}
+
 export interface LedgerEntry extends LedgerFinding {
   occurrences: FindingOccurrence[]
   dispositions: FindingDisposition[]

@@ -28,6 +28,7 @@ import { StoreProvider, useStore, type Surface } from '../state'
 import { AgentPicker } from '../components/AgentPicker'
 import { Titlebar } from '../components/Titlebar'
 import { FindingsLedgerPanel } from '../components/FindingsLedgerPanel'
+import { CommandPalette } from '../components/CommandPalette'
 import { HoldsButton, HoldsPopover } from '../components/HoldsPanel'
 import { Notices } from '../components/Notices'
 import { ParleySurface } from './ParleySurface'
@@ -1882,6 +1883,135 @@ const unresolvedRun = {
   createdAt: 1_700_000_000_000,
   settledAt: null,
 }
+
+// ─── The palette asks the record ─────────────────────────────────────────────
+
+/** Opens the palette the way ⌘K would. */
+function OpenPalette(): ReactNode {
+  const { dispatch } = useStore()
+  useEffect(() => {
+    dispatch({ type: 'palette', open: true })
+  }, [dispatch])
+  return <CommandPalette actions={[]} />
+}
+
+/** The doors the palette walked through, visible to assertions. */
+function SurfaceProbe(): ReactNode {
+  const { state } = useStore()
+  return (
+    <div data-testid="probe">
+      {state.surface}:{state.focusBacklogRepo ?? ''}
+    </div>
+  )
+}
+
+describe('the palette searches the record', () => {
+  it('renders hits with their marks, and opens a milestone through its session', async () => {
+    const invoked: Array<{ command: string; payload: unknown }> = []
+    installBridge({
+      'session.get': (payload) => {
+        invoked.push({ command: 'session.get', payload })
+        return { session, turns: [], interjections: [], verdict: null, findings: [], ledger: [], plans: [] }
+      },
+      'plan.get': (payload) => {
+        invoked.push({ command: 'plan.get', payload })
+        return { plan: smokePlan, milestones: [smokeMilestone], worktree: null }
+      },
+      'search.query': (payload) => {
+        invoked.push({ command: 'search.query', payload })
+        return [
+          {
+            kind: 'milestone',
+            refId: smokeMilestone.id,
+            title: 'Add a retry ceiling',
+            snippet: 'Cap «retries» and surface exhaustion.',
+            sessionId: session.id,
+            planId: smokePlan.id,
+            milestoneId: smokeMilestone.id,
+            repoPath: smokePlan.repoPath,
+          },
+        ]
+      },
+      'ledger.list': () => [],
+    })
+    render(
+      <StoreProvider>
+        <OpenPalette />
+      </StoreProvider>,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Run a command…'), {
+      target: { value: 'retries' },
+    })
+
+    // The index's «marks» arrive as real marks, not as punctuation.
+    const marked = await screen.findByText('retries', { selector: 'mark' })
+    expect(marked.tagName).toBe('MARK')
+    expect(screen.queryByText(/«/)).toBeNull()
+
+    // Opening a milestone hit walks the session door and lands on the plan —
+    // the same path a hold's jump takes. The default bridge handlers answer
+    // session.get and plan.get; these wrappers only witness the walk.
+    fireEvent.click(marked.closest('button')!)
+    await waitFor(() => {
+      const commands = invoked.map((entry) => entry.command)
+      expect(commands).toContain('session.get')
+      expect(commands).toContain('plan.get')
+    })
+  })
+
+  it('opens repository-scoped work on the Repos surface', async () => {
+    installBridge({
+      'search.query': () => [
+        {
+          kind: 'backlog',
+          refId: 'item-1',
+          title: 'Document the retry policy',
+          snippet: 'Document the «retry» policy',
+          sessionId: null,
+          planId: null,
+          milestoneId: null,
+          repoPath: '/tmp/smoke-atlas',
+        },
+      ],
+    })
+    render(
+      <StoreProvider>
+        <OpenPalette />
+        <SurfaceProbe />
+      </StoreProvider>,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Run a command…'), {
+      target: { value: 'retry' },
+    })
+    fireEvent.click(await screen.findByText('retry', { selector: 'mark' }))
+
+    // A backlog hit has no session; its door is the repository, on the tab
+    // that holds the item.
+    await waitFor(() =>
+      expect(screen.getByTestId('probe').textContent).toBe('backlog:/tmp/smoke-atlas'),
+    )
+  })
+
+  it('shows nothing from the record while the box is empty', async () => {
+    const invoked: string[] = []
+    installBridge({
+      'search.query': () => {
+        invoked.push('search.query')
+        return []
+      },
+    })
+    render(
+      <StoreProvider>
+        <OpenPalette />
+      </StoreProvider>,
+    )
+    // The debounce window passes with no query; the record is never asked.
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    expect(invoked).toEqual([])
+  })
+})
 
 describe('the unresolved remote run in the popover', () => {
   it('collects through the run resolved at click time, and keeps the outcome visible', async () => {

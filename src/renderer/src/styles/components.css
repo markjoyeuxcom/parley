@@ -928,6 +928,30 @@ button.chip:hover {
   background: var(--bg-selected);
 }
 
+/* The seam between doing and finding. Quiet: a label, not a heading. */
+.palette__section {
+  padding: var(--s3) var(--s4) var(--s1);
+  color: var(--text-tertiary);
+  font-size: var(--text-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-top: 1px solid var(--line-faint);
+  margin-top: var(--s2);
+}
+
+.palette__snippet {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette__snippet mark {
+  background: none;
+  color: var(--text-primary);
+  font-weight: 640;
+}
+
 .palette__hint {
   margin-left: auto;
   font-size: var(--text-tiny);

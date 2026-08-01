@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import type { RecordSearchHit } from '@shared/ipc'
+import { api } from '../lib/api'
 import { useStore } from '../state'
 
 export interface PaletteAction {
@@ -15,13 +17,49 @@ export interface PaletteAction {
  * Filtering is a simple subsequence match on label and group, which is what a
  * keyboard-driven user actually wants — typing "nd" should find "New debate".
  */
+/**
+ * The palette also asks the record.
+ *
+ * One box, one keystroke, two kinds of answer: things to DO (the actions
+ * above) and things that were SAID (the search index below). A second overlay
+ * on a second shortcut would make someone decide which kind of question they
+ * have before typing, which is exactly the decision a palette exists to
+ * absorb.
+ */
 export function CommandPalette({ actions }: { actions: PaletteAction[] }): ReactNode {
-  const { state, dispatch } = useStore()
+  const { state, dispatch, openSession, openPlan } = useStore()
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
+  const [hits, setHits] = useState<RecordSearchHit[]>([])
   const listRef = useRef<HTMLDivElement>(null)
 
   const results = useMemo(() => filterActions(actions, query), [actions, query])
+
+  // Debounced, and generation-guarded: a slow answer for "ret" must not land
+  // on top of the results for "retry ceiling".
+  useEffect(() => {
+    if (!state.paletteOpen || !query.trim()) {
+      setHits([])
+      return
+    }
+    let stale = false
+    const timer = setTimeout(() => {
+      void api
+        .searchRecord(query, 12)
+        .then((found) => {
+          if (!stale) setHits(found)
+        })
+        .catch(() => {
+          // A search that fails mid-keystroke is noise, not news; the actions
+          // above keep working and the next keystroke retries.
+          if (!stale) setHits([])
+        })
+    }, 150)
+    return () => {
+      stale = true
+      clearTimeout(timer)
+    }
+  }, [query, state.paletteOpen])
 
   useEffect(() => {
     setCursor(0)
@@ -44,11 +82,39 @@ export function CommandPalette({ actions }: { actions: PaletteAction[] }): React
 
   const close = (): void => dispatch({ type: 'palette', open: false })
 
+  /** Actions first, then the record: one list as far as the keyboard knows. */
+  const total = results.length + hits.length
+
+  const openHit = (hit: RecordSearchHit): void => {
+    // The same doors the holds use. A hit that still has its session opens
+    // there, landing on the plan and milestone when it names them; work whose
+    // session is gone — or that never had one — opens on its repository.
+    if (hit.sessionId) {
+      dispatch({ type: 'surface', surface: 'parley' })
+      void openSession(hit.sessionId).then(async () => {
+        if (hit.planId) await openPlan(hit.planId)
+        if (hit.milestoneId) dispatch({ type: 'focusMilestone', milestoneId: hit.milestoneId })
+      })
+      return
+    }
+    if (hit.repoPath) {
+      const tab = hit.kind === 'backlog' ? 'backlog' : hit.kind === 'learning' ? 'learnings' : 'plans'
+      dispatch({ type: 'focusBacklogRepo', repoPath: hit.repoPath, tab })
+      dispatch({ type: 'surface', surface: 'backlog' })
+    }
+  }
+
   const commit = (index: number): void => {
     const action = results[index]
-    if (!action) return
+    if (action) {
+      close()
+      action.run()
+      return
+    }
+    const hit = hits[index - results.length]
+    if (!hit) return
     close()
-    action.run()
+    openHit(hit)
   }
 
   return (
@@ -71,7 +137,7 @@ export function CommandPalette({ actions }: { actions: PaletteAction[] }): React
               close()
             } else if (event.key === 'ArrowDown') {
               event.preventDefault()
-              setCursor((c) => Math.min(results.length - 1, c + 1))
+              setCursor((c) => Math.min(total - 1, c + 1))
             } else if (event.key === 'ArrowUp') {
               event.preventDefault()
               setCursor((c) => Math.max(0, c - 1))
@@ -82,7 +148,7 @@ export function CommandPalette({ actions }: { actions: PaletteAction[] }): React
           }}
         />
         <div className="palette__list" ref={listRef}>
-          {results.length === 0 ? (
+          {total === 0 ? (
             <div style={{ padding: 'var(--s6)', color: 'var(--text-tertiary)', fontSize: 'var(--text-small)' }}>
               Nothing matches “{query}”.
             </div>
@@ -102,9 +168,44 @@ export function CommandPalette({ actions }: { actions: PaletteAction[] }): React
               </button>
             ))
           )}
+          {hits.length > 0 ? (
+            <>
+              <div className="palette__section">In the record</div>
+              {hits.map((hit, at) => {
+                const index = results.length + at
+                return (
+                  <button
+                    key={`${hit.kind}:${hit.refId}`}
+                    className={`palette__item ${index === cursor ? 'is-active' : ''}`}
+                    onMouseEnter={() => setCursor(index)}
+                    onClick={() => commit(index)}
+                  >
+                    <span style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-tiny)', minWidth: 52 }}>
+                      {hit.kind}
+                    </span>
+                    <span className="palette__snippet">{markedSnippet(hit.snippet)}</span>
+                  </button>
+                )
+              })}
+            </>
+          ) : null}
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * The snippet with the index's «marks» rendered as marks.
+ *
+ * The characters are the search layer's own highlighting protocol — chosen
+ * there because they cannot appear in a git path or survive tokenising — and
+ * this is the one place they become visual instead of textual.
+ */
+export function markedSnippet(snippet: string): ReactNode {
+  const parts = snippet.split(/[«»]/)
+  return parts.map((part, at) =>
+    at % 2 === 1 ? <mark key={at}>{part}</mark> : <span key={at}>{part}</span>,
   )
 }
 

@@ -23,7 +23,7 @@ import {
 } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import type { Hold } from '@shared/holds'
-import type { JourneyView, RepoContainerStatus } from '@shared/ipc'
+import type { JourneyView, RecordSearchHit, RepoContainerStatus } from '@shared/ipc'
 import type { InFlightRow } from '@shared/inflight'
 import { journeyStage, type JourneyProgress } from '@shared/journey'
 import type { AgentRegistry } from '@main/agents'
@@ -455,6 +455,54 @@ export class Manager {
    * which is precisely why re-running is the wrong answer: it would charge a
    * second one for work that may already be done.
    */
+  /**
+   * One question across the whole record, with the doors resolved.
+   *
+   * `Repo.search` says what matched; this says how to get there. A milestone
+   * hit's scope is its plan id, and the renderer needs the plan's session and
+   * repository to open anything — knowledge that lives here, beside the
+   * record, rather than in four copies of the join across four surfaces.
+   */
+  search(query: string, limit?: number): RecordSearchHit[] {
+    return this.repo.search(query, { limit: limit ?? 20 }).map((hit) => {
+      const base = {
+        kind: hit.kind,
+        refId: hit.refId,
+        title: hit.title,
+        snippet: hit.snippet,
+        sessionId: null as Id | null,
+        planId: null as Id | null,
+        milestoneId: null as Id | null,
+        repoPath: null as string | null,
+      }
+      switch (hit.kind) {
+        case 'session':
+          return { ...base, sessionId: hit.refId }
+        case 'turn':
+        case 'finding':
+          return { ...base, sessionId: hit.scope }
+        case 'plan': {
+          const plan = this.repo.getPlan(hit.refId)
+          return { ...base, planId: hit.refId, sessionId: plan?.sessionId ?? null, repoPath: hit.scope }
+        }
+        case 'milestone': {
+          // The scope is the plan id; the doors are the plan's.
+          const plan = this.repo.getPlan(hit.scope)
+          return {
+            ...base,
+            milestoneId: hit.refId,
+            planId: hit.scope,
+            sessionId: plan?.sessionId ?? null,
+            repoPath: plan?.repoPath ?? null,
+          }
+        }
+        default:
+          // backlog and learning live on their repository.
+          return { ...base, repoPath: hit.scope }
+      }
+    })
+  }
+
   async recoverRemoteRun(runId: Id): Promise<{ recovered: boolean; detail: string }> {
     const record = this.repo.getRemoteRun(runId)
     if (!record) throw new RequestError('no record of a run with that id leaving this machine')

@@ -41,6 +41,7 @@ import type {
   JourneyView,
   LedgerEntry,
   PaneIdentity,
+  RecordSearchHit,
   RepoContainerStatus,
   RepoSummary,
 } from '@shared/ipc'
@@ -331,6 +332,8 @@ export const api = {
   recoverRemoteRun: (runId: Id): Promise<{ recovered: boolean; detail: string }> =>
     bridge().invoke('remote.recover', { runId }),
   unresolvedRemoteRuns: (): Promise<RemoteRunRecord[]> => bridge().invoke('remote.unresolved'),
+  searchRecord: (query: string, limit?: number): Promise<RecordSearchHit[]> =>
+    bridge().invoke('search.query', { query, ...(limit ? { limit } : {}) }),
   installRemote: (targetId: string): Promise<{ ok: boolean; detail: string; buildId: string }> =>
     bridge().invoke('remote.install', { targetId }),
   rollbackRemote: (targetId: string): Promise<{ ok: boolean; detail: string }> =>

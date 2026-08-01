@@ -714,6 +714,16 @@ a reviewer's finding and a backlog item, in tables nothing joins.
 - `Repo.search` is the only entry point, so the app and the CLI get the same
   ranking. The cost is a second copy of the text — roughly doubling what the
   turns take — which is stated in the schema rather than discovered.
+- **In the app, search lives in the ⌘K palette** — actions first, "In the
+  record" beneath, one cursor across both. `Manager.search` resolves each
+  hit's DOORS (session, plan, milestone, repository) before it leaves main,
+  because a milestone hit's scope is a plan id and only the record knows which
+  session and repository that plan belongs to; four surfaces doing that join
+  would be four copies. Hits route exactly as a hold's jump does: through the
+  session when one survives, to the Repos surface when only the repository
+  does. The «marks» in a snippet are the search layer's highlighting protocol
+  and become `<mark>` only at the palette — chosen as characters that cannot
+  appear in a git path or survive tokenising.
 
 ## The CLI reads and never writes
 
