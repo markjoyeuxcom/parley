@@ -39,6 +39,67 @@ import {
 import { capture, isShellFree, splitCommand, type CaptureResult } from '@main/util/spawn'
 import { ensureUp, runProjectCommand } from './containers'
 import { StoreMilestoneReporter, type MilestoneReporter } from './reporter'
+import { ExecutionCore, executeMilestone } from './execution'
+import {
+  MAX_CHANGED_FILE_CHARS,
+  MAX_REMEDIATION_ROUNDS,
+  PipelineError,
+  STAGE_TIMEOUT_MS,
+  STOPPED_NOTE,
+  TEST_TIMEOUT_MS,
+  emptyTree,
+  incrementalDelta,
+  isGreenfield,
+  judgeMutation,
+  milestoneVerdict,
+  missingExpectedPaths,
+  parseMutationRepairs,
+  parseReview,
+  preExistingUntouched,
+  readTree,
+  renderDiffForReview,
+  reviewerConfig,
+  summariseMutations,
+  summariseTests,
+  tail,
+  treeUnchanged,
+  withMutationApplied,
+  type ParsedReview,
+  type RunState,
+  type TreeFileSnapshot,
+  type TreeState,
+  type VerifyOutcome,
+} from './evidence'
+export {
+  MAX_CHANGED_FILE_CHARS,
+  MAX_REMEDIATION_ROUNDS,
+  PipelineError,
+  STAGE_TIMEOUT_MS,
+  STOPPED_NOTE,
+  TEST_TIMEOUT_MS,
+  emptyTree,
+  incrementalDelta,
+  isGreenfield,
+  judgeMutation,
+  milestoneVerdict,
+  missingExpectedPaths,
+  parseMutationRepairs,
+  parseReview,
+  preExistingUntouched,
+  readTree,
+  renderDiffForReview,
+  reviewerConfig,
+  summariseMutations,
+  summariseTests,
+  tail,
+  treeUnchanged,
+  withMutationApplied,
+  type ParsedReview,
+  type RunState,
+  type TreeFileSnapshot,
+  type TreeState,
+  type VerifyOutcome,
+} from './evidence'
 import type { Repo } from '@main/store/repo'
 import { newId } from '@main/util/ids'
 import { canonicalRepoPath } from '@main/util/repoPath'
@@ -48,77 +109,7 @@ import type { MilestonePhase } from '@shared/events'
 import type { OrchestratorDeps, RunGate } from './types'
 import { assertNoUnresolvedBlockingOccurrences } from './gate'
 
-/**
- * How many times a rejected milestone may be handed back to its executor.
- *
- * Bounded deliberately. Each round costs a full execute-and-review cycle, and a
- * disagreement that survives two attempts is one a human should look at rather
- * than one more prompt.
- */
-const MAX_REMEDIATION_ROUNDS = 2
-
-const STAGE_TIMEOUT_MS = 30 * 60 * 1000
-const TEST_TIMEOUT_MS = 20 * 60 * 1000
-/** A stall inspection is a look, not a stage: bounded well under a turn. */
 const INSPECT_TIMEOUT_MS = 3 * 60 * 1000
-const MAX_DIFF_CHARS = 120_000
-
-export class PipelineError extends Error {}
-
-/**
- * Everything a resumed milestone run needs, persisted as one blob on the
- * milestone row (the plans.pending argument: what a resumption needs differs
- * by stage and keeps growing). Written during the run at the points where the
- * loop's own locals change, cleared on completion and at retry/adoption entry,
- * preserved on failure — presence is what "resumable" means. The domain's
- * MilestoneRunState is the wire-safe summary of this; the baseline and the
- * resume ids never leave the main process.
- */
-export interface RunState {
-  startedAt: number
-  /** The remediation round the next execution would run. */
-  round: number
-  previousConcerns: string[]
-  /** The reviewer's critique prose — a resumed remediation needs it verbatim. */
-  reviewerNote: string
-  /** Tail of the executor's last report, for notes written after a crash. */
-  executionReport: string
-  executorResumeId: string | null
-  reviewerResumeId: string | null
-  /** The pre-execution baseline. Unreconstructible for a dirty checkout. */
-  before: TreeState
-  /** HEAD at baseline capture — the validity anchor. A resume against a moved
-   *  HEAD would diff across two worlds, so it refuses instead. */
-  baselineHead: string
-  /** Written on real activity only, throttled; never on a watchdog tick. */
-  lastActivityAt: number | null
-  lastInspection: { at: number; verdict: string; note: string } | null
-}
-
-/**
- * The note a user-requested stop writes. One sentence for the act, one for
- * what it left behind — the run state survives a stop exactly as it survives
- * a crash, and the reader deciding what to do next needs to know that.
- */
-const STOPPED_NOTE =
-  'Stopped by you. The run state was preserved, so this milestone can be resumed with a fresh approval.'
-
-/**
- * The planning conversation, as the engine reads it.
- *
- * Three read-only spoken stages: the planner drafts on its own thread, its
- * counterpart audits fresh, and the planner answers the audit on the same
- * resumed thread — with a human gate (a clarification) available exactly
- * where guessing would bake an unagreed assumption into the plan. The audit
- * has no such gate: an auditor's job is judgement over what is in front of
- * it, and its dead end is parking the plan blocked, not asking.
- *
- * Consulted, not decorative: `speak` resolves the actor, the resumption and
- * the telemetry label from the entry, and `clarificationOf` lets a reply park
- * the stage only where the gate declares one. The apply half of each stage —
- * what its parsed reply does to the plan — stays in the stage functions,
- * named and explicit, because those consequences are the stage.
- */
 export const PLANNING_CONVERSATION = {
   drafting: { status: 'drafting', actor: 'planner', resumed: true, gate: 'clarification' },
   auditing: { status: 'auditing', actor: 'auditor', resumed: false, gate: 'none' },
@@ -140,39 +131,6 @@ type PendingStage =
       auditFindingCount: number
     }
 
-/** Result of one verify-and-review pass. */
-type VerifyOutcome =
-  | { kind: 'unchanged'; milestone: Milestone }
-  | {
-      kind: 'reviewed'
-      milestone: Milestone
-      passed: boolean
-      /** The reviewer's objections, which become the next round's brief. */
-      concerns: string[]
-      /** Its non-blocking remarks, kept apart so the surface can mute them. */
-      reviewNotes: string[]
-      reviewerNote: string
-      reviewerResumeId: string | null
-      testResult: TestResult | null
-      testsPassed: boolean
-      note: string
-    }
-
-/**
- * The audited execution pipeline.
- *
- * The separation of powers is the product:
- *
- *   plan (read-only)  →  audit by a different vendor (read-only)
- *                     →  human approval, single-use
- *                     →  execute one milestone (write)
- *                     →  deterministic tests, run by Parley
- *                     →  independent review of the diff by the vendor that did
- *                        not execute it
- *
- * No agent both writes code and certifies its own work, and no repository write
- * happens without a recorded approval that is spent in the act of starting.
- */
 export class Pipeline {
   private readonly repo: Repo
   private readonly registry: AgentRegistry
@@ -199,39 +157,6 @@ export class Pipeline {
    * The plan's dev-container snapshot, with the permanent self-repo belt on
    * top of createPlan's: a hand-edited row must not put Parley's own gate in
    * a container that cannot build host bytes.
-   */
-  private containerFor(plan: WorkPlan): boolean {
-    return (
-      plan.container &&
-      (this.selfRepoPath === null || canonicalRepoPath(plan.repoPath) !== this.selfRepoPath)
-    )
-  }
-
-  /**
-   * Brings the workspace's container up once per pipeline lifetime — the same
-   * folder is the same container, so later milestones and mutation rounds
-   * reuse it. Returns null when ready, the failed capture otherwise; callers
-   * turn that into their own honest failure. Only ever reached from approved
-   * write flows.
-   */
-  private async ensureContainerUp(
-    workspace: string,
-    signal?: AbortSignal,
-  ): Promise<CaptureResult | null> {
-    if (this.containerUp.has(workspace)) return null
-    const up = await ensureUp(workspace, { binary: this.devcontainerBinary, signal })
-    if (up.exitCode !== 0) return up
-    this.containerUp.add(workspace)
-    return null
-  }
-
-  /**
-   * Resolves where a milestone executes: the plan's worktree, or null for
-   * checkout isolation. Creating and health-checking happen here, before any
-   * approval is consumed — setup can take minutes and can fail, and a failure
-   * must not burn a single-use approval. Health is fail-closed on purpose:
-   * readTree fails *open* on a broken directory, which would silently disable
-   * the changed-tree guard and blind the reviewer.
    */
   private async executionWorktree(
     plan: WorkPlan,
@@ -769,21 +694,68 @@ export class Pipeline {
     }
     this.repo.setMilestoneRunState(milestoneId, runState)
 
-    return this.driveMilestone({
-      milestoneId,
-      plan,
-      worktree,
-      root,
-      agentEnv,
-      gate,
+    return this.execute(
+      {
+        milestoneId,
+        plan,
+        worktree,
+        root,
+        agentEnv,
+        gate,
+        activity,
+        runState,
+        history: [],
+        enterAtVerify: false,
+        resumedRound: null,
+        seedTestResult: null,
+      },
+      current,
       activity,
-      runState,
-      history: [],
-      enterAtVerify: false,
-      resumedRound: null,
-      seedTestResult: null,
-    })
+    )
   }
+  /**
+   * Runs the execution core, then does the record work only this side can.
+   *
+   * The tail is the whole reason the facade exists. Settling the ledger reads
+   * dispositions and occurrences; deriving the plan's status needs the
+   * milestone's SIBLINGS. Neither is knowable on a machine that holds no
+   * record, and inverting them into callbacks the core could invoke would
+   * have disguised the dependency rather than removed it.
+   *
+   * The order — finish, settle, then move the plan — is pinned by
+   * executionorder.integration.test.ts, which was written before any of this
+   * moved precisely so the move would have something to be identical to.
+   */
+  private async execute(
+    input: Omit<Parameters<typeof executeMilestone>[0], 'milestone'>,
+    milestone: Milestone,
+    activity: (phase: MilestonePhase, text: string) => void,
+  ): Promise<Milestone> {
+    const plan = input.plan
+    const reporter = this.reporterFor(plan, milestone, activity)
+    const current = await executeMilestone(
+      { ...input, milestone },
+      {
+        reporter,
+        agents: this.registry,
+        devcontainerBinary: this.devcontainerBinary,
+        selfRepoPath: this.selfRepoPath,
+      },
+    )
+
+    const passed = current.status === 'complete'
+    if (passed) this.settleMilestoneReviewFindings(plan, input.milestoneId)
+
+    const remaining = this.repo
+      .listMilestones(plan.id)
+      .filter((m) => m.status !== 'complete' && m.status !== 'rejected')
+    reporter.record({
+      kind: 'planOutcome',
+      status: passed && remaining.length === 0 ? 'complete' : passed ? 'ready' : 'failed',
+    })
+    return current
+  }
+
 
   /**
    * Continues an interrupted milestone from its preserved run state, spending
@@ -872,20 +844,24 @@ export class Pipeline {
         : 'resuming from the preserved run state',
     )
 
-    return this.driveMilestone({
-      milestoneId,
-      plan,
-      worktree,
-      root,
-      agentEnv,
-      gate,
-      activity,
-      runState: state,
-      history,
-      enterAtVerify,
-      resumedRound: state.round,
-      seedTestResult,
-    })
+    return this.execute(
+        {
+        milestoneId,
+        plan,
+        worktree,
+        root,
+        agentEnv,
+        gate,
+        activity,
+        runState: state,
+        history,
+        enterAtVerify,
+        resumedRound: state.round,
+        seedTestResult,
+        },
+        current,
+        activity,
+      )
   }
 
   /**
@@ -998,611 +974,6 @@ export class Pipeline {
     )
   }
 
-  private async driveMilestone(input: {
-    milestoneId: Id
-    plan: WorkPlan
-    worktree: Worktree | null
-    root: string
-    agentEnv?: Record<string, string>
-    gate?: RunGate
-    activity: (phase: MilestonePhase, text: string) => void
-    /** Already persisted by the caller; the driver keeps persisting through it. */
-    runState: RunState
-    /** Prior note history to keep — empty for a fresh run. */
-    history: string[]
-    /** Skip the first execution and verify the work already in the tree. */
-    enterAtVerify: boolean
-    /** The round whose note carries the resumed marker, or null. */
-    resumedRound: number | null
-    /** The interrupted attempt's test result, for a resumed remediation prompt. */
-    seedTestResult: TestResult | null
-  }): Promise<Milestone> {
-    const { milestoneId, plan, worktree, root, agentEnv, gate, activity } = input
-    const signal = gate?.signal
-    const before = input.runState.before
-    let runState = input.runState
-
-    const entry = this.repo.getMilestone(milestoneId)
-    if (!entry) throw new PipelineError('milestone disappeared mid-run')
-    // Everything this loop records goes through the reporter from here on. The
-    // core states facts; the reporter decides they are rows. That indirection
-    // is what lets the identical loop run on a machine with no database.
-    const report = this.reporterFor(plan, entry, activity)
-    const saveRunState = (patch: Partial<RunState>): void => {
-      runState = { ...runState, ...patch }
-      report.record({ kind: 'checkpoint', runState })
-    }
-    let current = entry
-
-    const executor = this.registry.get(plan.executor.vendor)
-
-    const reviewerVendor =
-      plan.reviewer.vendor === plan.executor.vendor
-        ? this.registry.counterpart(plan.executor.vendor)
-        : plan.reviewer.vendor
-    const reviewer = this.registry.get(reviewerVendor)
-
-    // Both sides are resumed across rounds. The executor keeps everything it
-    // already did, so remediation costs a critique rather than a restatement of
-    // the milestone; the reviewer keeps its own objections, so it can check
-    // whether they were actually met instead of forming a fresh opinion. All
-    // of it seeds from the run state: zeros for a fresh run, the preserved
-    // values for a resumption — the same loop either way.
-    let executorResumeId = runState.executorResumeId
-    let reviewerResumeId = runState.reviewerResumeId
-
-    let round = runState.round
-    let previousConcerns = [...runState.previousConcerns]
-    let lastReviewNote = runState.reviewerNote
-    let lastTestResult: TestResult | null = input.seedTestResult
-    // Tracked explicitly rather than re-derived at the end from `reviewPassed`:
-    // that would let a milestone whose tests failed complete on the strength of
-    // a satisfied reviewer, which is the exact weak signal this pipeline exists
-    // to strengthen.
-    let lastPassed = false
-    const history = [...input.history]
-
-    /**
-     * Persists the review history as it accumulates, rather than at the end.
-     *
-     * `reviewPassed` is written the moment a review concludes, but the note used
-     * to be assembled only after this loop exited — so throughout a remediation
-     * round the record said a review had failed and nothing about why. That is
-     * precisely the window in which the objection is worth reading, and it was
-     * withheld: watching a real plan run, the reviewer's reasoning had to be
-     * inferred from which files the executor touched next.
-     */
-    // The prose assembly and the structured lists are written together so the
-    // record cannot show a blocking finding the note does not mention, or vice
-    // versa. Only the latest round's lists are kept: they are what is outstanding,
-    // while `reviewNote` carries the whole history.
-    let lastBlocking: string[] = []
-    let lastNotes: string[] = []
-    let lastMutationResults: MutationResult[] = []
-    const publishHistory = (): void => {
-      current = report.record({
-        kind: 'narrative',
-        note: history.join('\n\n'),
-        blocking: lastBlocking,
-        notes: lastNotes,
-      })
-    }
-
-    // ── Execute → verify → review, remediating a bounded number of times ─────
-    let firstIteration = true
-    for (;;) {
-      const remediating = round > 0
-      const resumedEntry = firstIteration && input.resumedRound !== null
-      let executionText = runState.executionReport
-
-      if (firstIteration && input.enterAtVerify) {
-        // The interrupted run's work is already in the tree; re-executing
-        // would at best waste the spend and at worst clobber it. Verify what
-        // exists — if the review wants changes, the loop remediates normally.
-        activity('testing', 'verifying the work the interrupted run left behind')
-      } else {
-        if (remediating) current = report.record({ kind: 'phase', phase: 'executing' })
-        activity(
-          'executing',
-          remediating
-            ? `${plan.executor.vendor} addressing ${previousConcerns.length} objection${previousConcerns.length === 1 ? '' : 's'} — round ${round} of ${MAX_REMEDIATION_ROUNDS}`
-            : resumedEntry
-              ? `${plan.executor.vendor} resuming on ${root}`
-              : `${plan.executor.vendor} started on ${root}`,
-        )
-
-        const execution = await executor.run({
-          systemPrompt:
-            'You implement exactly one approved milestone in a real repository. Stay inside its scope. Do not commit.',
-          prompt: remediating
-            ? remediationPrompt({
-                round,
-                maxRounds: MAX_REMEDIATION_ROUNDS,
-                concerns: previousConcerns,
-                reviewerNote: lastReviewNote,
-                testSummary: summariseTests(lastTestResult),
-                // Without this, a mutation-only failure remediates blind: the
-                // reviewer had no objections, the test summary reads green, and the
-                // one actionable fact — which declared break survived — never
-                // reaches the agent being asked to fix it.
-                mutationSummary: summariseMutations(lastMutationResults),
-                reviewerVendor,
-              })
-            : resumedEntry && executorResumeId
-              ? // The vendor session survived the interruption: a continuation,
-                // not a restatement — the executor still holds its own context.
-                resumeExecutionPrompt(
-                  current.title,
-                  current.intent,
-                  current.expectedPaths,
-                  root,
-                  current.testCommand,
-                )
-              : executePrompt(
-                  current.title,
-                  current.intent,
-                  current.expectedPaths,
-                  root,
-                  plan.correctionNote,
-                  current.testCommand,
-                ),
-          cfg: plan.executor,
-          capability: 'write',
-          cwd: root,
-          env: agentEnv,
-          resumeId: executorResumeId,
-          signal,
-          timeoutMs: STAGE_TIMEOUT_MS,
-          // The adapters already report every tool use, file edit and command. This
-          // is the only thing standing between the user and a half-hour spinner.
-          onActivity: (text) => activity('executing', text),
-        })
-        report.record({ kind: 'spend', usage: execution.usage })
-        if (execution.resumeId) executorResumeId = execution.resumeId
-        // Persisted before the error check on purpose: an errored turn still
-        // learned a resume id and still said something worth keeping.
-        saveRunState({
-          executorResumeId,
-          executionReport: execution.text.trim().slice(-600),
-        })
-
-        if (execution.error) {
-          current = report.record({
-            kind: 'finished',
-            passed: false,
-            note: [...history, gate?.isStopped ? STOPPED_NOTE : execution.error].join('\n\n'),
-            completedAt: null,
-          })
-          report.record({ kind: 'planOutcome', status: 'failed' })
-          return current
-        }
-        executionText = execution.text
-      }
-
-      const outcome = await this.verifyAndReview({
-        milestoneId,
-        plan,
-        root,
-        worktree,
-        agentEnv,
-        gate,
-        before,
-        round,
-        resumed: resumedEntry,
-        previousConcerns,
-        reviewer,
-        reviewerVendor,
-        reviewerResumeId,
-        activity,
-        signal,
-        firstExecutionText: executionText,
-        report,
-      })
-      firstIteration = false
-
-      if (outcome.kind === 'unchanged') return outcome.milestone
-      current = outcome.milestone
-      reviewerResumeId = outcome.reviewerResumeId
-      lastTestResult = outcome.testResult
-      lastReviewNote = outcome.reviewerNote
-      lastPassed = outcome.passed
-      lastBlocking = outcome.concerns
-      lastNotes = outcome.reviewNotes
-      lastMutationResults = current.mutationResults
-      saveRunState({ reviewerResumeId, reviewerNote: outcome.reviewerNote })
-      history.push(outcome.note)
-      publishHistory()
-
-      if (outcome.passed) break
-
-      // Another round is only worth spending if the reviewer said something the
-      // executor can act on, and if we have not already used our budget.
-      if (round >= MAX_REMEDIATION_ROUNDS) {
-        history.push(
-          `Stopped after the ${MAX_REMEDIATION_ROUNDS}-round remediation budget. The objections above are unresolved and need a person.`,
-        )
-        publishHistory()
-        break
-      }
-      // A failing verification is actionable even when the reviewer raised
-      // nothing: the executor can read the test output and fix it. Only stop
-      // when there is genuinely nothing to hand back.
-      if (!outcome.concerns.length && outcome.testsPassed) {
-        history.push('No remediation was attempted: there was no specific objection to act on.')
-        publishHistory()
-        break
-      }
-
-      previousConcerns = outcome.concerns
-      round += 1
-      // The persisted round is the one the next execution runs — exactly what
-      // a resumed remediation needs to rebuild its critique prompt.
-      saveRunState({ round, previousConcerns })
-    }
-
-    let finalPassed = lastPassed
-    // A run the user stopped must say so, or the record narrates the stop as
-    // an unexplained failure and sends the reader hunting for a crash.
-    if (!finalPassed && gate?.isStopped) {
-      history.push(STOPPED_NOTE)
-      publishHistory()
-    }
-    // A passing worktree milestone is committed by Parley — never per
-    // remediation round (one baseline spans the rounds), and never by the
-    // agent. If the commit fails, the milestone fails with it: a record that
-    // says complete while the branch lacks the work would corrupt landing.
-    if (finalPassed && worktree) {
-      activity('reviewing', 'committing the milestone in the worktree')
-      const commit = await commitMilestone(
-        worktree,
-        `${plan.title} — milestone ${current.index + 1}: ${current.title}`,
-      )
-      if (commit.committed) {
-        history.push(
-          `Committed in the worktree as ${commit.sha.slice(0, 10)} on ${worktree.branch}. ` +
-            `Nothing reaches ${plan.repoPath} until the branch is landed.`,
-        )
-      } else {
-        finalPassed = false
-        history.push(
-          `The milestone passed verification and review, but committing it in the worktree failed: ${commit.detail}. ` +
-            'The record must match the branch, so it is marked failed.',
-        )
-      }
-    }
-    // A completed milestone has nothing to resume; a failed one keeps its run
-    // state — that preservation is the whole difference between "start over"
-    // and "continue from the critique".
-    if (finalPassed) report.record({ kind: 'checkpoint', runState: null })
-    current = report.record({
-      kind: 'finished',
-      passed: finalPassed,
-      note: history.join('\n\n'),
-      completedAt: finalPassed ? Date.now() : null,
-    })
-    // Settling the ledger reads dispositions and occurrences and writes
-    // settlements — record work, and the facade's job. The loop reports that
-    // the milestone finished; what that means for the ledger is decided by
-    // whoever holds one.
-    if (finalPassed) this.settleMilestoneReviewFindings(plan, milestoneId)
-
-    // Whether the PLAN is finished needs its other milestones, which is
-    // knowledge the machine running this core may not have — so the reading
-    // stays here, on the side that holds the record, and only the conclusion
-    // travels as a fact.
-    const remaining = this.repo
-      .listMilestones(plan.id)
-      .filter((m) => m.status !== 'complete' && m.status !== 'rejected')
-    report.record({
-      kind: 'planOutcome',
-      status: finalPassed && remaining.length === 0 ? 'complete' : finalPassed ? 'ready' : 'failed',
-    })
-    return current
-  }
-
-  /**
-   * One verify-and-review pass over whatever the executor just did.
-   *
-   * Split out of {@link runMilestone} so the remediation loop reads as a loop
-   * rather than three hundred lines of nesting.
-   */
-  private async verifyAndReview(input: {
-    milestoneId: Id
-    plan: WorkPlan
-    /** Where this milestone executes: the worktree path, or plan.repoPath. */
-    root: string
-    worktree: Worktree | null
-    agentEnv?: Record<string, string>
-    /** Present so failure sinks can tell a requested stop from a crash. */
-    gate?: RunGate
-    before: TreeState
-    round: number
-    /** This round continues an interrupted run; its note must say so. */
-    resumed?: boolean
-    previousConcerns: string[]
-    reviewer: ReturnType<AgentRegistry['get']>
-    reviewerVendor: Vendor
-    reviewerResumeId: string | null
-    activity: (phase: MilestonePhase, text: string) => void
-    signal?: AbortSignal
-    firstExecutionText: string
-    /** The same reporter the driving loop uses; this pass states facts too. */
-    report: MilestoneReporter
-  }): Promise<VerifyOutcome> {
-    const { milestoneId, plan, root, before, round, activity, signal, report } = input
-    // The definition — expectedPaths, testCommand, mutations, title, intent —
-    // is read once at run entry and carried, never re-read here.
-    //
-    // It is not merely that a remote machine has no database to re-read. The
-    // approval was granted against the milestone AS IT WAS: picking up an edit
-    // that landed mid-run would verify something a human never approved. That
-    // race was reachable today, because setMilestoneTestCommand had no guard
-    // against a running milestone, and it now refuses instead.
-    let current = report.milestone
-
-    // ── Confirm something actually changed ───────────────────────────────────
-    //
-    // Checked before the tests and before the review, both of which would
-    // otherwise sail through: an unchanged tree usually still passes its tests,
-    // and a reviewer handed a diff containing none of the milestone's work has
-    // nothing to object to. An executor that reports success while writing
-    // nothing is a failure, not a pass.
-    const after = await readTree(root, signal)
-    const missing = missingExpectedPaths(root, current.expectedPaths)
-
-    if (treeUnchanged(before, after)) {
-      // Three genuinely different situations, which need three different
-      // explanations. The middle one is the trap: every expected file already
-      // exists, usually left behind by an earlier attempt, and the executor
-      // sensibly declined to overwrite work it did not recognise.
-      const detail = !current.expectedPaths.length
-        ? ''
-        : missing.length === 0
-          ? ` Every path the plan named already exists (${current.expectedPaths.join(', ')}). ` +
-            'They were most likely left by an earlier attempt, and the executor declined to overwrite them. ' +
-            (input.worktree
-              ? 'They live in this plan’s worktree, so Adopt & verify can complete the milestone from them.'
-              : 'Either commit or delete that work before retrying, so the executor has a clean slate.')
-          : missing.length === current.expectedPaths.length
-            ? ` The plan expected it to create or modify ${current.expectedPaths.join(', ')}; none of those exist.`
-            : ` The plan expected ${current.expectedPaths.join(', ')}; these do not exist: ${missing.join(', ')}.`
-      // Under the mocks this is worth calling out, but not as it once was: the mock
-      // executor does write a placeholder, so an unchanged tree here is no longer
-      // explained by mock mode itself and usually means the path is not writable.
-      const cause = this.registry.mock
-        ? ` Parley is running with PARLEY_MOCK=1. The mock executor writes one placeholder file, so an unchanged tree usually means ${input.worktree ? 'the worktree' : 'the repository path'} is not writable rather than that mock mode cannot work.`
-        : ` What it said: ${input.firstExecutionText.trim().slice(0, 600) || '(no report)'}`
-      // If the work already exists, whether it *passes* is the thing the user
-      // needs in order to decide between committing it and starting over. The
-      // milestone still fails — it did nothing — but failing without answering
-      // that question just sends them to a terminal to ask it themselves.
-      let existingWorkNote = ''
-      if (missing.length === 0 && current.expectedPaths.length > 0 && current.testCommand) {
-        activity('testing', `checking whether the existing work passes ${current.testCommand}`)
-        const existingResult = await this.runTests(current.testCommand, root, { container: this.containerFor(plan), signal })
-        if (existingResult) {
-          current = report.record({ kind: 'verification', result: existingResult })
-          existingWorkNote =
-            existingResult.exitCode === 0
-              ? ` The work already present does pass \`${existingResult.command}\`, so committing it may be all this milestone needed.`
-              : ` The work already present does not pass \`${existingResult.command}\` (exit ${existingResult.exitCode}), so it is unfinished rather than done.`
-        }
-      }
-
-      // One fact, so one write and one event: the refusal and its verdict are
-      // the same moment, and splitting them would put a milestone through a
-      // transient state the surfaces would render.
-      current = report.record({
-        kind: 'finished',
-        passed: false,
-        judgement: false,
-        note:
-          `${plan.executor.vendor} reported finishing this milestone, but the working tree is byte-for-byte unchanged — ` +
-          `no tracked edits, nothing staged, no new files.${detail}${existingWorkNote}` +
-          cause,
-      })
-      report.record({ kind: 'planOutcome', status: 'failed' })
-      return { kind: 'unchanged', milestone: current }
-    }
-
-    // ── Verify deterministically ─────────────────────────────────────────────
-    current = report.record({ kind: 'phase', phase: 'testing' })
-
-    activity(
-      'testing',
-      current.testCommand ? `running ${current.testCommand}` : 'no verification command defined',
-    )
-    const testResult = await this.runTests(current.testCommand, root, { container: this.containerFor(plan), signal })
-    if (testResult) {
-      activity(
-        'testing',
-        `${testResult.command} exited ${testResult.exitCode} in ${(testResult.durationMs / 1000).toFixed(1)}s`,
-      )
-    }
-    current = report.record({ kind: 'verification', result: testResult })
-
-    // ── Mutation checks ──────────────────────────────────────────────────────
-    //
-    // Only worth running against a green suite: with a red one every mutation
-    // "fails" and proves nothing. This is where a milestone earns the claim that
-    // its tests would catch a wrong implementation, rather than merely that this
-    // implementation happens to pass.
-    let mutationResults: MutationResult[] = []
-    const testsGreen = testResult === null || testResult.exitCode === 0
-    if (testsGreen && current.mutations.length > 0) {
-      const staged = await this.runMutationStage({
-        milestoneId,
-        milestone: current,
-        plan,
-        report,
-        root,
-        agentEnv: input.agentEnv,
-        reviewer: input.reviewer,
-        reviewerVendor: input.reviewerVendor,
-        reviewerResumeId: input.reviewerResumeId,
-        activity,
-        signal,
-      })
-      current = staged.milestone
-      mutationResults = staged.mutationResults
-    }
-
-    // ── Independent review ───────────────────────────────────────────────────
-    current = report.record({ kind: 'phase', phase: 'reviewing' })
-
-    activity(
-      'reviewing',
-      round > 0
-        ? `${input.reviewerVendor} re-reviewing after remediation`
-        : `${input.reviewerVendor} reviewing the diff`,
-    )
-    const review = await input.reviewer.run({
-      onActivity: (text) => activity('reviewing', text),
-      systemPrompt:
-        'You review a diff written by a different agent. Passing tests are necessary, not sufficient. You are read-only.',
-      prompt: reviewDiffPrompt(
-        current.title,
-        current.intent,
-        renderDiffForReview(after, before),
-        summariseTests(testResult),
-        input.previousConcerns,
-        summariseMutations(mutationResults),
-        missing,
-      ),
-      cfg: reviewerConfig(plan.reviewer, input.reviewerVendor),
-      capability: 'read',
-      cwd: root,
-      env: input.agentEnv,
-      resumeId: input.reviewerResumeId,
-      signal,
-      timeoutMs: STAGE_TIMEOUT_MS,
-    })
-    report.record({ kind: 'spend', usage: review.usage })
-
-    const parsedReview = parseReview(review.text)
-    if (parsedReview) {
-      for (const finding of parsedReview.blocking) {
-        report.record({ kind: 'finding', text: finding, round, blocking: true, source: 'review' })
-      }
-      for (const note of parsedReview.notes) {
-        report.record({ kind: 'finding', text: note, round, blocking: false, source: 'review' })
-      }
-    }
-    // Tests must be green *and* every declared break must have been caught *and*
-    // the independent reviewer must pass it. Any one alone is exactly the weak
-    // signal this pipeline exists to strengthen. A surviving mutation is counted
-    // with the tests rather than left to the reviewer's judgement, because it is
-    // the same kind of fact: deterministic, reproducible, and not a matter of
-    // opinion. The milestone said its tests would catch this, and they did not.
-    const {
-      testsPassed,
-      surviving: survivingMutations,
-      unverifiable,
-      notRunnable,
-    } = milestoneVerdict(testResult, mutationResults)
-    const reviewPassed = parsedReview?.passed === true
-    const passed = missing.length === 0 && testsPassed && reviewPassed
-    const missingConcern =
-      missing.length > 0
-        ? `Create or restore every declared output before this milestone can pass. Missing: ${missing.join(', ')}.`
-        : null
-
-    const noteParts: string[] = []
-    // The resumed marker is the round-provenance rule at work: a pass after an
-    // interruption must never read as a clean uninterrupted attempt.
-    const resumedMark = input.resumed ? ' (resumed after interruption)' : ''
-    noteParts.push(
-      round === 0
-        ? `Round 1${resumedMark} — ${plan.executor.vendor} executed, ${input.reviewerVendor} reviewed.`
-        : `Round ${round + 1}${resumedMark} — ${plan.executor.vendor} remediated, ${input.reviewerVendor} re-reviewed.`,
-    )
-    if (missing.length) {
-      // A frequent and otherwise invisible failure: the executor wrote
-      // *something*, but not the files the plan named, so the test command that
-      // targets those paths cannot possibly pass.
-      noteParts.push(
-        `The plan expected these paths, and they do not exist: ${missing.join(', ')}.`,
-      )
-    }
-    if (review.error) {
-      noteParts.push(
-        input.gate?.isStopped
-          ? 'Stopped by you before the review completed.'
-          : `The review could not be completed: ${review.error}`,
-      )
-    }
-    if (parsedReview?.note) noteParts.push(parsedReview.note)
-    if (parsedReview?.blocking.length) {
-      noteParts.push(`Blocking: ${parsedReview.blocking.join('; ')}`)
-    }
-    // Recorded beside the blocking list rather than merged into it, so an
-    // approver can see what was judged worth noting and what was judged worth
-    // stopping for.
-    if (parsedReview?.notes.length) noteParts.push(`Notes: ${parsedReview.notes.join('; ')}`)
-    if (testResult && testResult.exitCode !== 0) {
-      noteParts.push(`Verification failed: \`${testResult.command}\` exited ${testResult.exitCode}.`)
-    }
-    if (survivingMutations.length) {
-      noteParts.push(
-        `The tests did not catch ${survivingMutations.length} deliberate break${survivingMutations.length === 1 ? '' : 's'} this milestone said they would:\n` +
-          survivingMutations
-            .map((m) => `  • ${m.file}: ${m.describes} — the suite still passed.`)
-            .join('\n'),
-      )
-    }
-    if (unverifiable.length) {
-      noteParts.push(
-        `${unverifiable.length} verification check${unverifiable.length === 1 ? '' : 's'} could not be applied to the code as written, even after being re-anchored:\n` +
-          unverifiable.map((m) => `  • ${m.file}: ${m.describes} — ${m.skipped}.`).join('\n'),
-      )
-    }
-    if (notRunnable.length) {
-      noteParts.push(
-        `${notRunnable.length} check${notRunnable.length === 1 ? '' : 's'} could not run because this milestone has no verification command.`,
-      )
-    }
-    if (!parsedReview && !review.error) noteParts.push('The reviewer did not return a usable judgement.')
-
-    current = report.record({ kind: 'judgement', passed: reviewPassed })
-
-    return {
-      kind: 'reviewed',
-      milestone: current,
-      passed,
-      // Blocking only. Remediation is told to fix what was named and nothing
-      // else; feeding it taste would contradict that in the same breath.
-      concerns: [...(missingConcern ? [missingConcern] : []), ...(parsedReview?.blocking ?? [])],
-      reviewNotes: parsedReview?.notes ?? [],
-      reviewerNote: parsedReview?.note ?? '',
-      reviewerResumeId: review.resumeId ?? input.reviewerResumeId,
-      testResult,
-      testsPassed,
-      note: noteParts.join('\n\n'),
-    }
-  }
-
-  /**
-   * Verifies work that is already in the tree, without executing anything.
-   *
-   * The situation this exists for: an interrupted run leaves a milestone's files
-   * behind, so every retry finds them already present, the executor declines to
-   * overwrite them, and the milestone can never succeed — while the work itself
-   * sits there finished. Deleting it to make the pipeline happy would throw away
-   * good code; marking it done by hand would put a lie in the audit trail.
-   *
-   * So: skip execution, keep the checks that actually establish anything — the
-   * deterministic tests, the declared break checks, and the independent
-   * cross-vendor review — and record `adopted: true` so the trail says plainly
-   * that Parley did not write this.
-   *
-   * Needs no approval: no agent gets write capability on this path. The only
-   * writes are the harness's own break checks, applied and restored exactly as
-   * execution applies them — held in memory, reverted in a `finally`, loud on
-   * a failure to restore. It is still gated on the findings ledger: adoption
-   * completes a milestone through review, so an open blocker that stops
-   * "Approve and run" must stop "Adopt & verify" too, or adoption is a side
-   * door around the ledger.
-   */
   async adoptMilestone(milestoneId: Id, gate?: RunGate): Promise<Milestone> {
     const signal = gate?.signal
     const milestone = this.repo.getMilestone(milestoneId)
@@ -1655,6 +1026,15 @@ export class Pipeline {
     const activity = (phase: MilestonePhase, text: string): void => {
       this.emit({ type: 'plan.activity', milestoneId, phase, text })
     }
+    // Adoption is a local flow, but the verification and mutation work is the
+    // same work — one implementation, borrowed, rather than a second that
+    // drifts.
+    const core = new ExecutionCore({
+      reporter: this.reporterFor(plan, milestone, activity),
+      agents: this.registry,
+      devcontainerBinary: this.devcontainerBinary,
+      selfRepoPath: this.selfRepoPath,
+    })
 
     // `mutationResults` is cleared with the rest so an earlier attempt's
     // outcomes cannot sit beside this run's verdict; adoption re-runs the
@@ -1674,7 +1054,7 @@ export class Pipeline {
 
     // ── Deterministic verification ───────────────────────────────────────────
     activity('testing', current.testCommand ? `running ${current.testCommand}` : 'no verification command defined')
-    const testResult = await this.runTests(current.testCommand, root, { container: this.containerFor(plan), signal })
+    const testResult = await core.runTests(current.testCommand, root, { container: core.containerFor(plan), signal })
     if (testResult) {
       activity(
         'testing',
@@ -1702,7 +1082,7 @@ export class Pipeline {
     // the verdict anyway.
     let mutationResults: MutationResult[] = []
     if (testResult !== null && testResult.exitCode === 0 && current.mutations.length > 0) {
-      const staged = await this.runMutationStage({
+      const staged = await core.runMutationStage({
         milestoneId,
         milestone: current,
         plan,
@@ -1993,307 +1373,6 @@ export class Pipeline {
   }
 
   /** Runs the milestone's verification command. Parley runs it, never an agent. */
-  private async runTests(
-    command: string,
-    cwd: string,
-    opts: { container: boolean; signal?: AbortSignal },
-  ): Promise<TestResult | null> {
-    const trimmed = command.trim()
-    if (!trimmed) return null
-
-    if (!isShellFree(trimmed)) {
-      return {
-        command: trimmed,
-        exitCode: -1,
-        signal: null,
-        timedOut: false,
-        stdout: '',
-        stderr:
-          'This verification command needs shell syntax, which Parley will not run. Put it in a script and name the script instead.',
-        durationMs: 0,
-        ranAt: Date.now(),
-      }
-    }
-    const argv = splitCommand(trimmed)
-    if (!argv || !argv[0]) {
-      return {
-        command: trimmed,
-        exitCode: -1,
-        signal: null,
-        timedOut: false,
-        stdout: '',
-        stderr: 'Could not parse this verification command.',
-        durationMs: 0,
-        ranAt: Date.now(),
-      }
-    }
-
-    // A container that will not start is a verification that never ran —
-    // fail closed with the reason, in explicit contrast to verifyLanding's
-    // fail-open smoke check.
-    if (opts.container) {
-      const up = await this.ensureContainerUp(cwd, opts.signal)
-      if (up) {
-        return {
-          command: trimmed,
-          exitCode: up.exitCode,
-          signal: up.signal,
-          timedOut: up.timedOut,
-          stdout: '',
-          stderr: `the dev container failed to start: ${tail(`${up.stderr}\n${up.stdout}`.trim(), 8000)}`,
-          durationMs: up.durationMs,
-          ranAt: Date.now(),
-        }
-      }
-    }
-
-    const result = await runProjectCommand(argv, cwd, {
-      container: opts.container,
-      binary: this.devcontainerBinary,
-      timeoutMs: TEST_TIMEOUT_MS,
-      signal: opts.signal,
-    })
-    return {
-      command: trimmed,
-      exitCode: result.exitCode,
-      signal: result.signal,
-      timedOut: result.timedOut,
-      stdout: tail(result.stdout, 8000),
-      stderr: tail(result.stderr, 8000),
-      durationMs: result.durationMs,
-      ranAt: Date.now(),
-    }
-  }
-
-  /**
-   * Runs the milestone's declared break checks and persists their outcomes.
-   *
-   * Shared by execution and adoption so the two paths cannot drift: the same
-   * checks, the same single repair round for stale anchors (always the
-   * reviewer's vendor — the party with no stake in the outcome), the same
-   * record on the milestone row. Callers decide when the stage runs, because
-   * their idea of a green suite differs: execution treats a missing command as
-   * green here and lets the verdict report the un-runnable checks, while
-   * adoption refuses to adopt without a command at all.
-   */
-  private async runMutationStage(input: {
-    milestoneId: Id
-    milestone: Milestone
-    plan: WorkPlan
-    /** Where the milestone executes: the worktree path, or plan.repoPath. */
-    root: string
-    agentEnv?: Record<string, string>
-    reviewer: ReturnType<AgentRegistry['get']>
-    reviewerVendor: Vendor
-    reviewerResumeId: string | null
-    activity: (phase: MilestonePhase, text: string) => void
-    signal?: AbortSignal
-    report: MilestoneReporter
-  }): Promise<{ milestone: Milestone; mutationResults: MutationResult[] }> {
-    const { milestone, plan, root, activity, signal } = input
-    activity(
-      'testing',
-      `checking that the tests catch ${milestone.mutations.length} deliberate break${milestone.mutations.length === 1 ? '' : 's'}`,
-    )
-    let mutationResults = await this.runMutations(milestone, root, this.containerFor(plan), signal)
-    // A stale anchor is expected — the planner wrote it before this code
-    // existed — so it gets one chance to be re-resolved against the file rather
-    // than being shrugged off as unchecked or blocking the milestone on a
-    // guess.
-    if (mutationResults.some((m) => m.skipKind === 'unapplied')) {
-      mutationResults = await this.repairMutations(
-        milestone,
-        mutationResults,
-        {
-          reviewer: input.reviewer,
-          reviewerVendor: input.reviewerVendor,
-          reviewerResumeId: input.reviewerResumeId,
-          root,
-          agentEnv: input.agentEnv,
-        },
-        plan,
-        activity,
-        input.report,
-        signal,
-      )
-    }
-    const survived = mutationResults.filter((m) => !m.caught && !m.skipped)
-    activity(
-      'testing',
-      survived.length === 0
-        ? 'every deliberate break was caught'
-        : `${survived.length} deliberate break${survived.length === 1 ? '' : 's'} went undetected`,
-    )
-    const updated = input.report.record({ kind: 'mutations', results: mutationResults })
-    return { milestone: updated, mutationResults }
-  }
-
-  /**
-   * Re-resolves mutation anchors that did not match the code as written.
-   *
-   * Runs before the review, using the reviewer's vendor — never the executor's.
-   * The executor is the party graded by the outcome of these checks, so letting it
-   * choose where they point would be self-verification by another name.
-   *
-   * Returns the merged results. A mutation that still cannot be applied after this
-   * is left with `skipKind: 'unapplied'`, and the caller fails the milestone on it:
-   * one stale guess is expected, but a check that cannot be expressed against the
-   * finished code twice over is not a guess any more.
-   */
-  private async repairMutations(
-    milestone: Milestone,
-    results: MutationResult[],
-    input: {
-      reviewer: ReturnType<AgentRegistry['get']>
-      reviewerVendor: Vendor
-      reviewerResumeId: string | null
-      /** Where the milestone executes: the worktree path, or plan.repoPath. */
-      root: string
-      agentEnv?: Record<string, string>
-    },
-    plan: WorkPlan,
-    activity: (phase: MilestonePhase, text: string) => void,
-    report: MilestoneReporter,
-    signal?: AbortSignal,
-  ): Promise<MutationResult[]> {
-    // Position in `milestone.mutations` is the identity used with the model, so the
-    // original index has to survive the filter.
-    const stale = results
-      .map((result, at) => ({ result, at }))
-      .filter(({ result }) => result.skipKind === 'unapplied')
-    if (!stale.length) return results
-
-    // One record per asked-about mutation, carrying its own position in
-    // `milestone.mutations`. Deliberately not two parallel arrays: the model is given
-    // 1-based indices into this list and the answer has to map back to the right
-    // mutation, and a pair of arrays kept aligned only by adjacent pushes would let a
-    // later edit send check B's repair to check A — which re-runs green and reports a
-    // check as caught that was never relocated at all.
-    const asked: {
-      at: number
-      mutation: Mutation
-      item: { describes: string; file: string; find: string; reason: string; contents: string }
-    }[] = []
-    for (const { result, at } of stale) {
-      const mutation = milestone.mutations[at]
-      if (!mutation) continue
-      const target = join(input.root, mutation.file)
-      // Nothing to re-anchor against if the file is not there; that is a different
-      // failure and the existing skip reason already says so.
-      if (!existsSync(target)) continue
-      let contents: string
-      try {
-        contents = readFileSync(target, 'utf8')
-      } catch {
-        continue
-      }
-      asked.push({
-        at,
-        mutation,
-        item: {
-          describes: mutation.describes,
-          file: mutation.file,
-          find: mutation.find,
-          reason: result.skipped,
-          contents: contents.length > 20000 ? `${contents.slice(0, 20000)}\n… truncated …` : contents,
-        },
-      })
-    }
-    if (!asked.length) return results
-    const items = asked.map((a) => a.item)
-
-    activity(
-      'testing',
-      `re-anchoring ${items.length} verification check${items.length === 1 ? '' : 's'} against the code as written`,
-    )
-    const reply = await input.reviewer.run({
-      onActivity: (text) => activity('testing', text),
-      systemPrompt:
-        'You relocate a verification check to match code written by a different agent. You may not weaken what it checks. You are read-only.',
-      prompt: mutationRepairPrompt(items),
-      cfg: reviewerConfig(plan.reviewer, input.reviewerVendor),
-      capability: 'read',
-      cwd: input.root,
-      env: input.agentEnv,
-      resumeId: input.reviewerResumeId,
-      signal,
-      timeoutMs: STAGE_TIMEOUT_MS,
-    })
-    report.record({ kind: 'spend', usage: reply.usage })
-    if (reply.error) {
-      activity('testing', `the re-anchoring could not be completed: ${reply.error}`)
-      return results
-    }
-
-    const { repairs, impossible } = parseMutationRepairs(reply.text)
-    const merged = [...results]
-    for (const [position, { at, mutation: original }] of asked.entries()) {
-      const slot = position + 1 // the model is given 1-based indices
-
-      const why = impossible.get(slot)
-      if (why) {
-        merged[at] = { ...merged[at]!, skipped: `${merged[at]!.skipped}; cannot be checked here: ${why}` }
-        continue
-      }
-      const repair = repairs.get(slot)
-      if (!repair) continue
-
-      const outcome = await withMutationApplied(
-        input.root,
-        { ...original, ...repair },
-        () => this.runTests(milestone.testCommand, input.root, { container: this.containerFor(plan), signal }),
-      )
-      const judged = judgeMutation(original, outcome)
-      merged[at] = judged.skipKind === 'unapplied'
-        ? { ...judged, skipped: `the re-anchored edit also failed: ${judged.skipped}` }
-        : judged
-    }
-
-    const fixed = merged.filter((m, at) => results[at]?.skipKind === 'unapplied' && m.skipKind !== 'unapplied')
-    activity(
-      'testing',
-      fixed.length
-        ? `re-anchored ${fixed.length} of ${items.length} check${items.length === 1 ? '' : 's'}`
-        : 'none of the checks could be re-anchored',
-    )
-    return merged
-  }
-
-  /**
-   * Applies each declared mutation and requires the verification command to fail.
-   *
-   * The point is to test the tests. A green suite says the code works on the
-   * paths someone thought to exercise; it says nothing about whether a plausible
-   * wrong implementation would have been caught, and that is where every serious
-   * defect in this pipeline's first real use actually lived.
-   *
-   * Files are edited in place and restored in a `finally`, deliberately rather
-   * than working on a copy: the verification command is only known to work in the
-   * real tree, where its relative paths, installed dependencies and engine
-   * project files all resolve. The window is one test run, the original content
-   * is held in memory throughout, and a failure to restore is reported loudly
-   * rather than swallowed — leaving a mutated file behind would be far worse than
-   * skipping the check.
-   *
-   * Only ever called once the tests have already passed. Running mutations
-   * against a red suite proves nothing, since every mutation would "fail".
-   */
-  private async runMutations(
-    milestone: Milestone,
-    repoPath: string,
-    container: boolean,
-    signal?: AbortSignal,
-  ): Promise<MutationResult[]> {
-    const results: MutationResult[] = []
-    for (const mutation of milestone.mutations) {
-      const outcome = await withMutationApplied(repoPath, mutation, () =>
-        this.runTests(milestone.testCommand, repoPath, { container, signal }),
-      )
-      results.push(judgeMutation(mutation, outcome))
-    }
-    return results
-  }
-
   private setStatus(planId: Id, status: WorkPlan['status']): void {
     this.repo.setPlanStatus(planId, status)
     this.emit({ type: 'plan.status', planId, status })
@@ -2380,53 +1459,6 @@ export function structuralConcerns(milestone: Pick<Milestone, 'mutations' | 'tes
     )
   }
   return out
-}
-
-/**
- * Reads the reply to {@link mutationRepairPrompt}.
- *
- * `impossible` is treated as a real answer rather than a failure. A reviewer that
- * says an intent cannot be checked against this file is telling us something worth
- * recording, and it is a far more useful reply than a fabricated anchor that would
- * pass by accident.
- */
-export function parseMutationRepairs(text: string): {
-  repairs: Map<number, { find: string; replace: string }>
-  impossible: Map<number, string>
-} {
-  const repairs = new Map<number, { find: string; replace: string }>()
-  const impossible = new Map<number, string>()
-  const { data } = extractJson<Record<string, unknown>>(text)
-  if (!data) return { repairs, impossible }
-
-  const index = (item: Record<string, unknown>): number | null => {
-    const raw = item['index']
-    const n = typeof raw === 'number' ? raw : Number.parseInt(String(raw ?? ''), 10)
-    return Number.isInteger(n) && n >= 1 && n <= 10 ? n : null
-  }
-
-  if (Array.isArray(data['repairs'])) {
-    for (const entry of data['repairs'].slice(0, 10)) {
-      if (typeof entry !== 'object' || entry === null) continue
-      const item = entry as Record<string, unknown>
-      const i = index(item)
-      const find = safeString(item['find'], 4000)
-      const replace = safeString(item['replace'], 4000)
-      // A no-op edit is not a check, so it is dropped rather than run.
-      if (i === null || !find.trim() || find === replace) continue
-      repairs.set(i, { find, replace })
-    }
-  }
-  if (Array.isArray(data['impossible'])) {
-    for (const entry of data['impossible'].slice(0, 10)) {
-      if (typeof entry !== 'object' || entry === null) continue
-      const item = entry as Record<string, unknown>
-      const i = index(item)
-      if (i === null || repairs.has(i)) continue
-      impossible.set(i, safeString(item['why'], 500) || 'no reason given')
-    }
-  }
-  return { repairs, impossible }
 }
 
 export function parsePlan(text: string): ParsedPlan | null {
@@ -2554,21 +1586,6 @@ export function alignAudit(
   }
 }
 
-/**
- * The config an agent actually runs with when its vendor was coerced.
- *
- * The pipeline overrides a same-vendor reviewer to the counterpart, but it used
- * to spread the configured record and swap only the vendor field — carrying a
- * vendor-specific model name across the boundary, so the codex CLI could be
- * invoked with a Claude model string. Effort and persona are vendor-neutral and
- * survive; the model does not, so a swap blanks it and the CLI falls back to its
- * own default.
- */
-export function reviewerConfig(configured: AgentConfig, vendor: Vendor): AgentConfig {
-  if (configured.vendor === vendor) return configured
-  return { ...configured, vendor, model: '' }
-}
-
 export function summariseAudit(auditorVendor: string, audit: ParsedAudit | null): string {
   if (!audit) return `${auditorVendor} audited the plan but returned no usable findings.`
   const lines = [`${auditorVendor} audited the plan and judged it ${audit.verdict}.`]
@@ -2627,869 +1644,14 @@ export function parseAudit(text: string): ParsedAudit | null {
   }
 }
 
-export interface ParsedReview {
-  passed: boolean
-  /** Problems that must be fixed. Non-empty means the milestone did not pass. */
-  blocking: string[]
-  /** Recorded, not acted on. Never sent to remediation. */
-  notes: string[]
-  note: string
-}
-
-function stringList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((v): v is string => typeof v === 'string' && v.trim().length > 0).slice(0, 30)
-    : []
-}
-
-export function parseReview(text: string): ParsedReview | null {
-  const { data } = extractJson<Record<string, unknown>>(text)
-  if (!data) return null
-  if (typeof data['passed'] !== 'boolean') return null
-
-  // `concerns` is the old single-list key. A model still using it has ignored
-  // the schema, and the safe reading of an unclassified problem is that it
-  // blocks — erring toward a milestone being handed back rather than shipped.
-  const blocking = stringList(data['blocking'] ?? data['concerns'])
-
-  return {
-    // Derived, not read. The reviewer's own flag is not trusted against its own
-    // findings: on three consecutive milestones a real defect was written down
-    // and passed anyway, so a listed blocking problem now fails the milestone
-    // whether or not the box was ticked. This is the whole point of the split —
-    // it makes "acknowledged but shipped" impossible to express.
-    passed: data['passed'] === true && blocking.length === 0,
-    blocking,
-    notes: stringList(data['notes']),
-    note: safeString(data['note'], 2000),
-  }
-}
-
-// ─── Repository inspection ───────────────────────────────────────────────────
-
-/**
- * A snapshot of the working tree.
- *
- * Captured before *and* after execution. Comparing the two is the only sound way
- * to answer "did this milestone change anything": comparing against a clean tree
- * assumes the repository started clean, and a single stray file — an exported
- * report, a leftover from an earlier attempt — silently defeats that assumption
- * and lets a milestone that wrote nothing proceed to tests and review.
- */
-export interface TreeState {
-  /** True when the directory is not a git repository, so nothing can be judged. */
-  unknown: boolean
-  /** Content-sensitive fingerprint of the whole working tree state. */
-  signature: string
-  /** Paths that differ from HEAD, tracked or not. */
-  paths: string[]
-  diffText: string
-  stagedText: string
-  statText: string
-  untracked: string[]
-  /**
-   * Contents of paths that differ from HEAD.
-   *
-   * The HEAD content distinguishes a path that became clean from one that was
-   * removed. Both sides are bounded, because a dirty `node_modules` would
-   * otherwise be read into memory.
-   */
-  files: TreeFileSnapshot[]
-}
-
-export interface TreeFileSnapshot {
-  path: string
-  text: string | null
-  truncated: boolean
-  exists: boolean
-  digest: string | null
-  /** False when the digest could not be established (a failed git spawn), which
-   * is different from the file being absent — unknown must not read as same. */
-  digestKnown: boolean
-  headText: string | null
-  headTruncated: boolean
-  headExists: boolean
-  headDigest: string | null
-  headDigestKnown: boolean
-}
-
-/**
- * HEAD at this moment, or '' outside a git repository. Recorded beside a
- * baseline so a later resume can prove the world has not moved underneath the
- * preserved state — every signature in a TreeState is relative to HEAD, and a
- * comparison across two different HEADs silently inverts the attribution
- * machinery instead of failing.
- */
 export async function revParseHead(repoPath: string, signal?: AbortSignal): Promise<string> {
   const result = await capture('git', ['rev-parse', 'HEAD'], repoPath, 30_000, signal)
   return result.exitCode === 0 ? result.stdout.trim() : ''
 }
 
-export async function readTree(repoPath: string, signal?: AbortSignal): Promise<TreeState> {
-  const stat = await capture('git', ['--no-pager', 'diff', '--stat'], repoPath, 60_000, signal)
-  if (stat.exitCode !== 0) {
-    return {
-      unknown: true,
-      signature: '',
-      paths: [],
-      diffText: '',
-      stagedText: '',
-      statText: '',
-      untracked: [],
-      files: [],
-    }
-  }
-
-  const [full, staged, stagedStat, others, unstagedNames, stagedNames] = await Promise.all([
-    // --no-renames on the content diffs as well as the name lists: a rename must
-    // reach the reviewer as a removal plus an addition with full content, not as
-    // two lines of content-free metadata.
-    capture('git', ['--no-pager', 'diff', '--no-renames'], repoPath, 120_000, signal),
-    capture('git', ['--no-pager', 'diff', '--no-renames', '--cached'], repoPath, 120_000, signal),
-    capture('git', ['--no-pager', 'diff', '--cached', '--stat'], repoPath, 60_000, signal),
-    capture('git', ['ls-files', '--others', '--exclude-standard'], repoPath, 60_000, signal),
-    capture('git', ['diff', '--no-renames', '--name-only', '-z'], repoPath, 60_000, signal),
-    capture('git', ['diff', '--cached', '--no-renames', '--name-only', '-z'], repoPath, 60_000, signal),
-  ])
-
-  const untracked = others.stdout.split('\n').map((l) => l.trim()).filter(Boolean)
-
-  // Untracked content is not in git, so fingerprint it from the filesystem.
-  // Size and mtime together move on any write, which is all this needs to do.
-  const untrackedStamps = untracked.map((rel) => {
-    try {
-      const info = statSync(join(repoPath, rel))
-      return `${rel}:${info.size}:${info.mtimeMs}`
-    } catch {
-      return `${rel}:missing`
-    }
-  })
-
-  const trackedPaths = new Set(
-    `${unstagedNames.stdout}\0${stagedNames.stdout}`.split('\0').filter(Boolean),
-  )
-
-  const signature = createHash('sha256')
-    .update(full.stdout)
-    .update('\0')
-    .update(staged.stdout)
-    .update('\0')
-    .update(untrackedStamps.join('\n'))
-    .digest('hex')
-
-  const paths = [...trackedPaths, ...untracked].sort()
-
-  return {
-    unknown: false,
-    signature,
-    paths,
-    diffText: full.stdout,
-    stagedText: staged.stdout,
-    statText: [stat.stdout.trim(), stagedStat.stdout.trim()].filter(Boolean).join('\n'),
-    untracked,
-    files: await readChangedFiles(repoPath, paths, signal),
-  }
-}
-
-const MAX_CHANGED_FILES = 40
-const MAX_CHANGED_FILE_CHARS = 6000
-
-/** Reads dirty working-tree and HEAD content so their incremental delta can reach the reviewer. */
-async function readChangedFiles(
-  repoPath: string,
-  paths: string[],
-  signal?: AbortSignal,
-): Promise<TreeFileSnapshot[]> {
-  // Bounded fan-out. This used to Promise.all the whole path list with two git
-  // spawns each — a dirty node_modules meant tens of thousands of concurrent
-  // processes, and a spawn that failed under that load made the file read as
-  // absent on both sides, which sameContent then called unchanged.
-  const CONCURRENT = 8
-  const out: TreeFileSnapshot[] = []
-  for (let start = 0; start < paths.length; start += CONCURRENT) {
-    const batch = paths.slice(start, start + CONCURRENT)
-    const settled = await Promise.all(
-      batch.map((rel, offset) => readOneChangedFile(repoPath, rel, start + offset, signal)),
-    )
-    out.push(...settled)
-  }
-  return out
-}
-
-async function readOneChangedFile(
-  repoPath: string,
-  rel: string,
-  index: number,
-  signal?: AbortSignal,
-): Promise<TreeFileSnapshot> {
-  const object = `HEAD:${rel}`
-  // Absence is a filesystem fact, not a git exit code: hash-object fails the
-  // same way for a missing file and for a spawn that died, and those must land
-  // differently — absent is a real state, unhashable is unknown.
-  const exists = existsSync(join(repoPath, rel))
-  const [currentHash, headHash] = await Promise.all([
-    exists
-      ? capture('git', ['hash-object', `--path=${rel}`, '--', rel], repoPath, 60_000, signal)
-      : Promise.resolve(null),
-    capture('git', ['rev-parse', '--verify', object], repoPath, 60_000, signal),
-  ])
-  const digest = currentHash && currentHash.exitCode === 0 ? currentHash.stdout.trim() : null
-  const digestKnown = !exists || digest !== null
-  const headExists = headHash.exitCode === 0
-  let current = { text: null as string | null, truncated: false }
-  let head = { text: null as string | null, truncated: false }
-
-  if (index < MAX_CHANGED_FILES) {
-    current = readBoundedFile(join(repoPath, rel))
-    if (headExists) {
-      const size = await capture(
-        'git',
-        ['cat-file', '-s', headHash.stdout.trim()],
-        repoPath,
-        60_000,
-        signal,
-      )
-      const bytes = Number.parseInt(size.stdout.trim(), 10)
-      if (size.exitCode === 0 && Number.isFinite(bytes) && bytes <= 2 * MAX_CHANGED_FILE_CHARS * 4) {
-        const shown = await capture('git', ['show', object], repoPath, 60_000, signal)
-        if (shown.exitCode === 0) {
-          head = {
-            text: shown.stdout.slice(0, MAX_CHANGED_FILE_CHARS),
-            truncated: shown.stdout.length > MAX_CHANGED_FILE_CHARS,
-          }
-        }
-      } else {
-        head.truncated = true
-      }
-    }
-  } else {
-    current.truncated = exists
-    head.truncated = headExists
-  }
-
-  return {
-    path: rel,
-    text: current.text,
-    truncated: current.truncated,
-    exists,
-    digest,
-    digestKnown,
-    headText: head.text,
-    headTruncated: head.truncated,
-    headExists,
-    headDigest: headExists ? headHash.stdout.trim() : null,
-    // rev-parse failing for a path legitimately absent from HEAD and failing
-    // because the spawn died are indistinguishable; the conservative reading —
-    // treat it as a new file — over-attributes to the milestone rather than
-    // silently excusing it.
-    headDigestKnown: true,
-  }
-}
-
-function readBoundedFile(full: string): { text: string | null; truncated: boolean } {
-  try {
-    if (!existsSync(full)) return { text: null, truncated: false }
-    // Skip anything too large to be source, rather than reading it to throw
-    // most of it away.
-    if (statSync(full).size > 2 * MAX_CHANGED_FILE_CHARS * 4) {
-      return { text: null, truncated: true }
-    }
-    const text = readFileSync(full, 'utf8')
-    return {
-      text: text.slice(0, MAX_CHANGED_FILE_CHARS),
-      truncated: text.length > MAX_CHANGED_FILE_CHARS,
-    }
-  } catch {
-    // Binary, unreadable, or vanished between the listing and now.
-    return { text: '(unreadable)', truncated: false }
-  }
-}
-
-/**
- * Whether this is a new project rather than an existing codebase.
- *
- * Tracked files, not commits: a repository someone has `git init`-ed and left
- * empty is greenfield, and so is one holding only the untracked debris of an
- * interrupted attempt. A directory that is not a repository at all counts as
- * greenfield when it holds nothing but dotfiles.
- *
- * The distinction matters because the planner and auditor prompts are otherwise
- * built on an assumption that does not hold — that there is prior work to read
- * and existing paths to check against.
- */
-export async function isGreenfield(repoPath: string, signal?: AbortSignal): Promise<boolean> {
-  const tracked = await capture('git', ['ls-files'], repoPath, 60_000, signal)
-  if (tracked.exitCode === 0) return tracked.stdout.trim() === ''
-
-  try {
-    return readdirSync(repoPath).filter((name) => !name.startsWith('.')).length === 0
-  } catch {
-    return false
-  }
-}
-
-/** A baseline meaning "nothing was here before", for adoption reviews. */
-export function emptyTree(): TreeState {
-  return {
-    unknown: true,
-    signature: '',
-    paths: [],
-    diffText: '',
-    stagedText: '',
-    statText: '',
-    untracked: [],
-    files: [],
-  }
-}
-
-/** True when the milestone provably changed nothing. Unknown trees never qualify. */
-export function treeUnchanged(before: TreeState, after: TreeState): boolean {
-  if (before.unknown || after.unknown) return false
-  return before.signature === after.signature
-}
-
-interface FileContent {
-  text: string | null
-  truncated: boolean
-  exists: boolean
-  digest: string | null
-  digestKnown: boolean
-}
-
-function contentAt(state: TreeState, other: TreeState, path: string): FileContent | undefined {
-  const own = state.files.find((file) => file.path === path)
-  if (own) {
-    return {
-      text: own.text,
-      truncated: own.truncated,
-      exists: own.exists,
-      digest: own.digest,
-      digestKnown: own.digestKnown,
-    }
-  }
-
-  if (state.paths.includes(path)) return undefined
-
-  const counterpart = other.files.find((file) => file.path === path)
-  if (!counterpart) return undefined
-  return {
-    text: counterpart.headText,
-    truncated: counterpart.headTruncated,
-    exists: counterpart.headExists,
-    digest: counterpart.headDigest,
-    digestKnown: counterpart.headDigestKnown,
-  }
-}
-
-function sameContent(left: FileContent, right: FileContent): boolean {
-  // Two genuinely absent sides are the one same-without-a-digest case. Anything
-  // else without both digests is UNKNOWN, and unknown must never read as
-  // unchanged: the failure mode this guards against is a git spawn failing under
-  // load, both sides reporting not-exists, and a file the milestone edited being
-  // filed under "NOT part of this milestone" because two failures compared equal.
-  if (!left.exists && !right.exists) return left.digestKnown && right.digestKnown
-  if (!left.exists || !right.exists) return false
-  return left.digest !== null && right.digest !== null && left.digest === right.digest
-}
-
-function contentPatch(path: string, before: FileContent, after: FileContent): string {
-  const oldLines = before.text?.split('\n') ?? []
-  const newLines = after.text?.split('\n') ?? []
-  if (oldLines.at(-1) === '') oldLines.pop()
-  if (newLines.at(-1) === '') newLines.pop()
-
-  // A real per-line diff, not a single prefix/suffix hunk. The collapse version
-  // rendered an edit at line 5 plus an edit at line 145 as one hunk that removed
-  // and re-added every line between them — attributing ~140 untouched lines to
-  // the milestone, which is the exact misattribution this renderer exists to end.
-  // Inputs are bounded snapshots (≤ MAX_CHANGED_FILE_CHARS), so quadratic LCS is
-  // a few hundred lines square at worst.
-  const ops = diffLines(oldLines, newLines)
-
-  const CONTEXT = 3
-  const hunks: string[][] = []
-  let current: string[] | null = null
-  let oldLine = 0
-  let newLine = 0
-  let hunkOldStart = 0
-  let hunkNewStart = 0
-  let hunkOldCount = 0
-  let hunkNewCount = 0
-  let trailingContext = 0
-
-  const flush = (): void => {
-    if (!current) return
-    // Trim context beyond CONTEXT lines at the hunk's tail.
-    while (trailingContext > CONTEXT) {
-      current.pop()
-      trailingContext -= 1
-      hunkOldCount -= 1
-      hunkNewCount -= 1
-    }
-    hunks.push([
-      `@@ -${hunkOldStart + 1},${hunkOldCount} +${hunkNewStart + 1},${hunkNewCount} @@`,
-      ...current,
-    ])
-    current = null
-  }
-
-  for (const op of ops) {
-    if (op.kind === 'same') {
-      if (current) {
-        current.push(` ${op.line}`)
-        trailingContext += 1
-        hunkOldCount += 1
-        hunkNewCount += 1
-        // Once enough context has accumulated after a change, the hunk can close;
-        // a later change opens a fresh one instead of dragging this one along.
-        if (trailingContext >= CONTEXT * 2) flush()
-      }
-      oldLine += 1
-      newLine += 1
-      continue
-    }
-    if (!current) {
-      const lead = Math.min(CONTEXT, oldLine, newLine)
-      hunkOldStart = oldLine - lead
-      hunkNewStart = newLine - lead
-      hunkOldCount = lead
-      hunkNewCount = lead
-      current = oldLines.slice(oldLine - lead, oldLine).map((line) => ` ${line}`)
-    }
-    trailingContext = 0
-    if (op.kind === 'del') {
-      current.push(`-${op.line}`)
-      hunkOldCount += 1
-      oldLine += 1
-    } else {
-      current.push(`+${op.line}`)
-      hunkNewCount += 1
-      newLine += 1
-    }
-  }
-  flush()
-
-  const body = hunks.flat()
-  if (before.truncated || after.truncated) body.push('[snapshot truncated]')
-  return [`--- a/${path}`, `+++ b/${path}`, ...body].join('\n')
-}
-
-/** Line-level LCS diff. Bounded inputs only — this is quadratic by design. */
-function diffLines(
-  oldLines: string[],
-  newLines: string[],
-): Array<{ kind: 'same' | 'del' | 'add'; line: string }> {
-  const n = oldLines.length
-  const m = newLines.length
-  // lcs[i][j] = longest common subsequence length of old[i..] and new[j..]
-  const lcs: Int32Array[] = Array.from({ length: n + 1 }, () => new Int32Array(m + 1))
-  for (let i = n - 1; i >= 0; i -= 1) {
-    for (let j = m - 1; j >= 0; j -= 1) {
-      lcs[i]![j] =
-        oldLines[i] === newLines[j]
-          ? lcs[i + 1]![j + 1]! + 1
-          : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!)
-    }
-  }
-  const ops: Array<{ kind: 'same' | 'del' | 'add'; line: string }> = []
-  let i = 0
-  let j = 0
-  while (i < n && j < m) {
-    if (oldLines[i] === newLines[j]) {
-      ops.push({ kind: 'same', line: oldLines[i]! })
-      i += 1
-      j += 1
-    } else if (lcs[i + 1]![j]! >= lcs[i]![j + 1]!) {
-      ops.push({ kind: 'del', line: oldLines[i]! })
-      i += 1
-    } else {
-      ops.push({ kind: 'add', line: newLines[j]! })
-      j += 1
-    }
-  }
-  while (i < n) ops.push({ kind: 'del', line: oldLines[i++]! })
-  while (j < m) ops.push({ kind: 'add', line: newLines[j++]! })
-  return ops
-}
-
-/** The paths dirty before execution whose observed contents did not change. */
-export function preExistingUntouched(before: TreeState, after: TreeState): string[] {
-  if (before.unknown || after.unknown) return []
-  return before.paths.filter((path) => {
-    const oldContent = contentAt(before, after, path)
-    const newContent = contentAt(after, before, path)
-    return oldContent !== undefined && newContent !== undefined && sameContent(oldContent, newContent)
-  })
-}
-
-/** A pure rendering of only the changes observed between two tree snapshots. */
-export function incrementalDelta(
-  before: TreeState,
-  after: TreeState,
-  scope?: ReadonlySet<string>,
-): string {
-  if (after.unknown) return ''
-
-  const sections: string[] = []
-  const paths = [...new Set([...before.paths, ...after.paths])]
-    .filter((path) => !scope || scope.has(path))
-    .sort()
-  for (const path of paths) {
-    const oldContent = contentAt(before, after, path)
-    const newContent = contentAt(after, before, path)
-    if (!oldContent || !newContent) {
-      if (!after.paths.includes(path)) {
-        sections.push(`--- removed file: ${path} ---\n(contents not shown)`)
-      } else if (!before.paths.includes(path)) {
-        sections.push(`--- new file: ${path} ---\n(contents not shown)`)
-      }
-      continue
-    }
-    if (sameContent(oldContent, newContent)) continue
-
-    if (!oldContent.exists) {
-      const detail = newContent.text === null
-        ? '(contents not shown — bounded snapshot unavailable)'
-        : contentPatch(path, oldContent, newContent)
-      sections.push(`--- new file: ${path} ---\n${detail}`)
-    } else if (!newContent.exists) {
-      const detail = oldContent.text === null
-        ? '(contents not shown — bounded snapshot unavailable)'
-        : contentPatch(path, oldContent, newContent)
-      sections.push(`--- removed file: ${path} ---\n${detail}`)
-    } else {
-      const detail = oldContent.text === null ||
-        newContent.text === null ||
-        (oldContent.text === newContent.text && (oldContent.truncated || newContent.truncated))
-        ? '(contents differ beyond the bounded snapshot)'
-        : contentPatch(path, oldContent, newContent)
-      sections.push(`--- changed file: ${path} ---\n${detail}`)
-    }
-  }
-  return sections.join('\n\n')
-}
-
-/**
- * Renders the diff for review, naming anything that predates the milestone.
- *
- * A reviewer told to judge "the diff" against a milestone's scope will otherwise
- * count unrelated pre-existing changes against it, or credit them to it.
- */
-/**
- * The reviewer's evidence, in three layers that each do the one thing they are
- * good at.
- *
- * Git's own diff is the primary channel: full hunks, up to the overall budget,
- * for every tracked change — an edit deep in a 2,000-line file arrives as real
- * code, which the first version of this renderer lost by replacing git's output
- * with 6KB snapshots (a milestone editing this repo's own pipeline.ts reached
- * its reviewer as "(contents differ beyond the bounded snapshot)" and nothing
- * else). Untracked files, which git diff omits entirely, come from the bounded
- * snapshots. The digest layer then does what git cannot: separate this
- * milestone's work from dirt that predates it — the untouched list only ever
- * names digest-verified paths, and pre-existing dirty paths the milestone DID
- * touch get their own bounded incremental delta so the reviewer can tell which
- * part of the combined diff is the milestone's.
- */
-export function renderDiffForReview(after: TreeState, before: TreeState): string {
-  if (after.unknown) {
-    return '(no diff available — this directory is not a git repository, so the change could not be shown for review)'
-  }
-
-  const preExisting = preExistingUntouched(before, after)
-  const sections: string[] = []
-
-  if (preExisting.length) {
-    sections.push(
-      `--- NOT part of this milestone ---\nThese paths were already modified before this milestone ran, and their content is byte-identical to before it ran. ` +
-        `Do not attribute them to it:\n${preExisting.map((p) => `  ${p}`).join('\n')}`,
-    )
-  }
-
-  const statText = [after.statText].filter(Boolean).join('\n')
-  sections.push(`--- diffstat ---\n${statText || '(no tracked changes)'}`)
-
-  const trackedDiff = [after.diffText.trim(), after.stagedText.trim()].filter(Boolean).join('\n')
-  const preExistingDirty = new Set(
-    before.unknown ? [] : before.paths.filter((path) => !preExisting.includes(path)),
-  )
-  sections.push(
-    `--- combined diff vs HEAD (tracked files; includes pre-existing edits on any dirty paths listed above or below) ---\n${trackedDiff || '(empty)'}`,
-  )
-
-  // Untracked files never appear in git diff, so their content has to come from
-  // the snapshots. Only the milestone's own new files belong here — untracked
-  // paths that predate the milestone are covered by the delta section below.
-  const newFileSections: string[] = []
-  for (const file of after.files) {
-    if (!after.untracked.includes(file.path)) continue
-    if (preExistingDirty.has(file.path) || preExisting.includes(file.path)) continue
-    newFileSections.push(
-      `--- new file: ${file.path} ---\n${
-        file.text ?? '(contents not shown — too large or unreadable)'
-      }${file.truncated ? '\n[truncated]' : ''}`,
-    )
-  }
-  sections.push(...newFileSections)
-
-  if (preExistingDirty.size) {
-    sections.push(
-      `--- this milestone's own changes to already-dirty paths ---\n${
-        incrementalDelta(before, after, preExistingDirty) || '(none — every already-dirty path is byte-identical)'
-      }`,
-    )
-  }
-
-  const joined = sections.join('\n\n')
-  return joined.length > MAX_DIFF_CHARS
-    ? `${joined.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated at ${MAX_DIFF_CHARS} characters]`
-    : joined
-}
-
-/** Which of the plan's expected paths the executor actually produced. */
-export function missingExpectedPaths(repoPath: string, expected: string[]): string[] {
-  return expected.filter((rel) => !existsSync(join(repoPath, rel)))
-}
-
-/**
- * Changed paths that fall outside a milestone's declared scope.
- *
- * A milestone's verification command is written against its own paths, so
- * anything here was included in the review but never exercised by the tests.
- * Matching is prefix-wise in both directions because git reports an untracked
- * directory as `pkg/` while a plan names `pkg/file.go`.
- */
 export function pathsOutsideScope(changed: string[], expected: string[]): string[] {
   if (!expected.length) return changed
   return changed.filter(
     (path) => !expected.some((e) => e === path || e.startsWith(path) || path.startsWith(e)),
   )
-}
-
-export function summariseTests(result: TestResult | null): string {
-  if (!result) {
-    return 'No verification command was defined for this milestone, so nothing was run. Weigh the diff on its own.'
-  }
-  // Three outcomes that all arrive as "non-zero" and call for three different
-  // responses. Told "FAILED", an executor changes the code — right for a real
-  // failure, wrong for a crash, and worse than useless for a hang, where the
-  // code may be perfectly correct and simply never returns.
-  //
-  // The timeout is checked before the signal because a timeout *is* a signal
-  // death: Parley kills with SIGTERM. Reported as "killed by SIGTERM" it looks
-  // like something external intervened, when in fact nothing did — the command
-  // never finished and the deadline ran out.
-  const verdict = result.timedOut
-    ? `DID NOT FINISH — the command was still running after ${(TEST_TIMEOUT_MS / 60000).toFixed(0)} minutes and Parley stopped it, so nothing was verified. Treat this as a hang: something waits for what never arrives. The code may be correct and simply never returns.`
-    : result.signal
-      ? `DID NOT COMPLETE — the runner was killed by ${result.signal}, so nothing was verified. This is a crash in the verification command itself, not a failing test.`
-      : result.exitCode === 0
-        ? 'PASSED'
-        : `FAILED (exit ${result.exitCode})`
-  const output = tail(`${result.stdout}\n${result.stderr}`.trim(), 4000)
-  return `\`${result.command}\` ${verdict} in ${(result.durationMs / 1000).toFixed(1)}s\n\n${output || '(no output)'}`
-}
-
-/**
- * Renders mutation outcomes for the reviewer and the record.
- *
- * Deliberately states the survivors first and plainly. A surviving mutation is
- * the strongest possible evidence that a milestone's tests do not pin its claim
- * — stronger than any reading of the diff, because it was tried.
- */
-/**
- * Decides whether one applied mutation was caught.
- *
- * Pulled out as its own function because the tempting shorthand — treating
- * anything that did not obviously pass as caught — turns an unapplied mutation
- * into a free pass, which is the exact false-green the mutation stage exists to
- * catch. `caught` is therefore only ever true on real evidence: the tests ran,
- * and they failed. Everything else is a skip, reported as not checked rather
- * than counted either way.
- */
-export function judgeMutation(
-  mutation: Pick<Mutation, 'describes' | 'file'>,
-  outcome: { applied: true; result: TestResult | null } | { applied: false; reason: string },
-): MutationResult {
-  const base = { describes: mutation.describes, file: mutation.file }
-  if (!outcome.applied) {
-    return { ...base, caught: false, skipped: outcome.reason, skipKind: 'unapplied', exitCode: null }
-  }
-  const test = outcome.result
-  if (test === null) {
-    return {
-      ...base,
-      caught: false,
-      skipped: 'this milestone has no verification command',
-      skipKind: 'no-test-command',
-      exitCode: null,
-    }
-  }
-  // A crash or a timeout is not the suite noticing the break. A suite that dies on
-  // any malformed input would "catch" every mutation while checking nothing, which
-  // is the precise false green this stage exists to detect — so an abnormal run is
-  // recorded as having proved nothing rather than as a pass. Timeout first: it is
-  // delivered as a SIGTERM and would otherwise read as a crash.
-  if (test.timedOut) {
-    return {
-      ...base,
-      caught: false,
-      skipped: 'the suite timed out under this mutation, so it proved nothing',
-      skipKind: 'crashed',
-      exitCode: test.exitCode,
-    }
-  }
-  if (test.signal) {
-    return {
-      ...base,
-      caught: false,
-      skipped: `the suite was killed by ${test.signal} under this mutation, so it proved nothing`,
-      skipKind: 'crashed',
-      exitCode: test.exitCode,
-    }
-  }
-  return { ...base, caught: test.exitCode !== 0, skipped: '', skipKind: '', exitCode: test.exitCode }
-}
-
-/**
- * Applies one mutation, runs something, and restores the file whatever happens.
- *
- * Split out of the pipeline because this is the only part of Parley that
- * deliberately corrupts a file in the user's repository, and it must be provable
- * in isolation that it always puts it back. The original content is held in
- * memory for the duration and rewritten in a `finally`; a failure to restore
- * throws loudly rather than being swallowed, because a silently mutated file
- * would poison every subsequent run and every review after it.
- *
- * Edited in place rather than on a copy on purpose: the verification command is
- * only known to work in the real tree, where relative paths, installed
- * dependencies and engine project files resolve. A mutation check that ran
- * somewhere else would be measuring a different thing.
- */
-export async function withMutationApplied<T>(
-  repoPath: string,
-  mutation: Mutation,
-  run: () => Promise<T>,
-): Promise<{ applied: true; result: T } | { applied: false; reason: string }> {
-  const target = join(repoPath, mutation.file)
-
-  // `file` comes from a model, so it is checked rather than trusted.
-  const lexicalRelative = relative_(repoPath, target)
-  if (lexicalRelative.startsWith('..') || isAbsolute(lexicalRelative) || lexicalRelative === '') {
-    return { applied: false, reason: 'that path resolves outside the repository' }
-  }
-  if (!existsSync(target)) return { applied: false, reason: 'that file does not exist' }
-
-  // Resolved, not lexical. `relative()` compares strings, so a symlink that lives
-  // inside the repository but points outside it passes the check — and writeFileSync
-  // follows the link. The path comes from a model, so the containment has to hold
-  // against the real filesystem rather than against how the path is spelled.
-  let realTarget: string
-  let realRoot: string
-  try {
-    realTarget = realpathSync(target)
-    realRoot = realpathSync(repoPath)
-  } catch (err) {
-    return { applied: false, reason: `could not resolve it: ${err instanceof Error ? err.message : String(err)}` }
-  }
-  const relative = relative_(realRoot, realTarget)
-  if (relative.startsWith('..') || isAbsolute(relative) || relative === '') {
-    return { applied: false, reason: 'that path resolves outside the repository' }
-  }
-
-  let original: string
-  try {
-    original = readFileSync(target, 'utf8')
-  } catch (err) {
-    return { applied: false, reason: `could not read it: ${err instanceof Error ? err.message : String(err)}` }
-  }
-
-  // Exactly once, or the edit is ambiguous and so is any conclusion from it.
-  const occurrences = original.split(mutation.find).length - 1
-  if (occurrences !== 1) {
-    return {
-      applied: false,
-      reason:
-        occurrences === 0
-          ? 'the text to replace was not found'
-          : `the text to replace appears ${occurrences} times, so the edit is ambiguous`,
-    }
-  }
-
-  try {
-    writeFileSync(target, original.replace(mutation.find, mutation.replace), 'utf8')
-    return { applied: true, result: await run() }
-  } finally {
-    try {
-      writeFileSync(target, original, 'utf8')
-    } catch (err) {
-      throw new PipelineError(
-        `A mutation check could not restore ${mutation.file}: ${err instanceof Error ? err.message : String(err)}. ` +
-          `That file is left modified and must be reverted by hand before trusting anything else.`,
-      )
-    }
-  }
-}
-
-/**
- * Decides whether the deterministic half of a milestone passed.
- *
- * Separate from the reviewer's judgement, and pure, because these are the facts:
- * a command exited non-zero, a declared break went unnoticed, a declared break
- * could not be applied at all. None of them is a matter of opinion, so none of
- * them is left to one.
- *
- * The three failing conditions are deliberately all fatal. Earlier only the first
- * two were, and the third — a check that could not be applied — passed silently on
- * the assumption the reviewer would notice the gap. That is the same soft signal
- * this pipeline keeps having to remove: it works exactly until the one time it
- * matters.
- */
-export function milestoneVerdict(
-  testResult: TestResult | null,
-  mutationResults: MutationResult[],
-): {
-  testsPassed: boolean
-  surviving: MutationResult[]
-  unverifiable: MutationResult[]
-  notRunnable: MutationResult[]
-} {
-  const surviving = mutationResults.filter((m) => !m.caught && !m.skipped)
-  const unverifiable = mutationResults.filter(
-    (m) => m.skipKind === 'unapplied' || m.skipKind === 'crashed',
-  )
-  const notRunnable = mutationResults.filter((m) => m.skipKind === 'no-test-command')
-  const testsPassed =
-    (testResult === null || testResult.exitCode === 0) &&
-    surviving.length === 0 &&
-    unverifiable.length === 0
-  return { testsPassed, surviving, unverifiable, notRunnable }
-}
-
-export function summariseMutations(results: MutationResult[]): string {
-  if (!results.length) return ''
-  const lines: string[] = []
-  for (const r of results) {
-    if (r.skipKind === 'unapplied') {
-      // Named as blocking here because it is: the reviewer should not read this as a
-      // harmless gap it may wave through, having already had a repair round.
-      lines.push(
-        `  COULD NOT BE CHECKED (blocking) — ${r.file}: ${r.describes}. ${r.skipped}.`,
-      )
-    } else if (r.skipped) {
-      lines.push(`  NOT CHECKED — ${r.file}: ${r.describes}. ${r.skipped}.`)
-    } else if (r.caught) {
-      lines.push(`  CAUGHT — ${r.file}: ${r.describes}. The suite failed as it should.`)
-    } else {
-      lines.push(
-        `  SURVIVED — ${r.file}: ${r.describes}. The suite still passed, so nothing in it pins this.`,
-      )
-    }
-  }
-  return lines.join('\n')
-}
-
-function tail(text: string, max: number): string {
-  if (text.length <= max) return text
-  return `…${text.slice(-max)}`
 }

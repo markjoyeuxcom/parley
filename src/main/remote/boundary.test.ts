@@ -18,8 +18,8 @@ import { describe, expect, it } from 'vitest'
 
 const repoRoot = resolve(__dirname, '..', '..', '..')
 
-/** Bundles a module in isolation and reports what npm code it dragged in. */
-function npmInputsFor(entry: string): string[] {
+/** Bundles a module in isolation and reports every module it dragged in. */
+function graphOf(entry: string): string[] {
   const script = `
     const path = require('path')
     import('esbuild').then(async (esbuild) => {
@@ -29,8 +29,7 @@ function npmInputsFor(entry: string): string[] {
         packages: 'bundle', write: false, metafile: true, logLevel: 'silent',
         alias: { '@shared': path.resolve('src/shared'), '@main': path.resolve('src/main') },
       })
-      const npm = Object.keys(r.metafile.inputs).filter((i) => i.includes('node_modules'))
-      process.stdout.write(JSON.stringify(npm))
+      process.stdout.write(JSON.stringify(Object.keys(r.metafile.inputs)))
     })
   `
   const out = execFileSync(process.execPath, ['-e', script], {
@@ -39,6 +38,10 @@ function npmInputsFor(entry: string): string[] {
     timeout: 120_000,
   })
   return JSON.parse(out) as string[]
+}
+
+function npmInputsFor(entry: string): string[] {
+  return graphOf(entry).filter((input) => input.includes('node_modules'))
 }
 
 describe('the dependency boundary', () => {
@@ -60,6 +63,30 @@ describe('the dependency boundary', () => {
 
   it('keeps the shipped remote entry free of npm code', () => {
     expect(npmInputsFor('src/remote/main.ts')).toEqual([])
+  }, 120_000)
+
+  it('keeps the execution core unable to reach the record', () => {
+    // The architectural assertion m3b2a exists for, and it is checked by
+    // BUNDLING rather than by reading imports: the first version of the core
+    // pulled in ipc/ledger transitively — through helpers that still lived in
+    // the facade — while every import statement in the file looked innocent.
+    //
+    // A dependency that cannot be expressed cannot creep back, and this is
+    // what makes it inexpressible: add a store import to the core and the
+    // build of parley-remote fails, rather than the failure waiting to be
+    // discovered on somebody else's host.
+    const core = graphOf('src/main/orchestrator/execution.ts')
+    expect(core.filter((input) => input.includes('/store/'))).toEqual([])
+    expect(core.filter((input) => input.includes('/ipc/'))).toEqual([])
+    expect(core.filter((input) => input.includes('node_modules'))).toEqual([])
+    expect(core).not.toContain('src/main/orchestrator/pipeline.ts')
+  }, 120_000)
+
+  it('keeps the evidence leaf a leaf', () => {
+    const evidence = graphOf('src/main/orchestrator/evidence.ts')
+    expect(evidence.filter((input) => input.includes('/store/'))).toEqual([])
+    expect(evidence.filter((input) => input.includes('node_modules'))).toEqual([])
+    expect(evidence).not.toContain('src/main/orchestrator/execution.ts')
   }, 120_000)
 
   it('still shows the schema library where it legitimately belongs', () => {
