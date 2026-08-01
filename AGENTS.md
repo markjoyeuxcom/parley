@@ -566,6 +566,55 @@ directory and branch. That ordering is load-bearing because
 `markWorktreeLanded` clears `last_error`; the landed-row hold covers both
 verification failures and cleanup litter.
 
+## Remote execution: one snapshot in, one candidate back
+
+Structural rules for anything touching `src/remote/**` or `src/main/remote/**`.
+
+**The execution core may not reach the record.** `src/main/orchestrator/execution.ts`
+runs wherever the repository is, so it states FACTS through a `MilestoneReporter`
+and never writes a row. `boundary.test.ts` proves this by BUNDLING the module
+and asserting its graph contains no `/store/`, no `/ipc/` and no `node_modules`
+— not by reading imports, because the first version of that boundary looked
+clean and pulled in `ipc/ledger` transitively. Adding a store import fails the
+`parley-remote` build.
+
+**The bundle contains no npm code, absolutely.** Not "no npm except X". A
+runtime value that drags a library in belongs in a dependency leaf
+(`src/shared/usage.ts`, `src/main/util/ids.ts` are the precedents). The build
+prints the edge that pulled a package in, because "npm code appeared" is not
+actionable.
+
+**Nothing dynamic reaches an ssh command line, ever.** Not for runs, not for
+installation. The remote command is a compile-time constant; everything that
+varies goes as JSON on stdin. Installation uses `sftp -b -` for bytes and a
+base64-encoded constant `node -e` bootstrap for hash, handshake and activation.
+`scp` is not used: it has spoken SFTP only since OpenSSH 9.0 and `-O` reverts
+it.
+
+**Stdin stays open for the life of a run.** It is how the far end learns the
+connection died, and closing it IS the graceful cancel. A reader that consumed
+to EOF would never return while the link was healthy and would return instantly
+once it was not.
+
+**Frames carry identity; soup is fatal once alive.** Every frame has a runId
+and a sequence contiguous from 1. Before the handshake, unreadable output is
+tolerated (ssh banners, shell profiles). After it, any unframed byte or gap is
+fatal — a run that continues while silently dropping facts writes a record with
+a hole in it. Sequences belong to the CONVERSATION: every frame is admitted to
+the sequencer, not just the ones carrying facts.
+
+**The pipeline never runs in the process ssh talks to.** A worker leads its own
+process group so cancellation reaches every agent and test command; if the
+pipeline ran in the supervisor, killing that group would kill the cleanup.
+
+**A published ref is a candidate.** Ancestry against the submitted snapshot and
+changed-path reconciliation both run locally, against objects this machine
+holds. Replay refuses the whole report if the milestone's fingerprint moved
+while the run was in flight.
+
+**Refusals**: worktree-only, no mock plans, self repo exempt. Checked before
+anything is snapshotted, pushed or spent.
+
 ## The self repo: worktree-only, gate fail-closed, quit never exit
 
 `electron-vite dev` watches and hot-reloads the **renderer only**. The main

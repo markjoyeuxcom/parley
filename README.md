@@ -591,6 +591,53 @@ there. The **In flight** popover beside it answers the other question:
 what is running right now, with each capped run's consumption shown
 against the bounds you set, and every row opening where its work lives.
 
+## Remote execution
+
+A milestone can run on another machine. The boundary is transactional rather
+than conversational: Parley submits one immutable snapshot of the tree, the
+remote runs the **entire** milestone pipeline in its own isolated worktree,
+and one validated result comes back. Nothing about a run straddles two
+filesystems — a pipeline whose commands see one tree while its containment
+checks inspect another has no guarantees, only good manners.
+
+**The host runs an appliance, not a shell.** `parley-remote` is one file with
+no npm dependencies, invoked over ssh as a fixed command with its whole
+request on stdin. OpenSSH joins a remote command's arguments with spaces and
+hands the string to the login shell, so argv does not survive the wire; the
+answer is to send no argv over the wire at all. That rule holds through
+installation too, which uses SFTP for the bytes and a constant `node -e`
+bootstrap for everything after.
+
+**It executes as that host's user.** Their CLI installations, their
+subscriptions, their permission configuration. `parley remote status` reports
+who that is, which agents are actually usable, and each one's permission
+posture — a host whose agy will execute allow-listed tools without asking is
+a materially different host to run on, and you should know before the run
+rather than from a refusal afterwards.
+
+**What comes back is a candidate, not a result.** The remote publishes to
+`refs/parley/runs/<id>/candidate`, and that ref carries no authority: there is
+no way to couple "the remote published it" with "Parley learned it did" across
+a connection that can die between the two. Authority is local. The candidate
+is fetched, its ancestry verified against the exact snapshot that was
+submitted, and its changed paths reconciled independently against git before
+anything is accepted.
+
+**Three plans may not leave.** Worktree-only, for the reason every other
+isolation rule exists — a result built elsewhere lands as a branch you review,
+never on top of the checkout you have open. Mock plans, whose adapters answer
+without running anything. And Parley's own repository, because the self-update
+gate has to observe the build it verifies.
+
+The approval is consumed when the remote announces itself, not when the run is
+requested. Building a snapshot, pushing it and reaching the host at all can
+fail without anything having been spent, and burning a single-use approval on
+a transport failure would make you grant a fresh one to retry something that
+never ran.
+
+Disconnection is reported as disconnection, never as failure. The work may
+have finished; the recovery is to look for its candidate, not to run it again.
+
 ## Dev containers
 
 Some repositories' toolchains live in a `.devcontainer/` image — Terraform,
