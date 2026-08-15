@@ -718,7 +718,11 @@ const HANDLERS: Record<CommandName, Handler> = {
     const result = await ctx.dialogs.showSaveDialog(window, {
       title: 'Save transcript',
       defaultPath: suggestedName,
-      filters: [{ name: 'Text', extensions: ['txt'] }],
+      // Follows the suggested name: a room transcript is markdown and saving
+      // it as .txt would strip the structure the file exists to preserve.
+      filters: suggestedName.endsWith('.md')
+        ? [{ name: 'Markdown', extensions: ['md'] }]
+        : [{ name: 'Text', extensions: ['txt'] }],
     })
     if (result.canceled || !result.filePath) return { saved: false, path: null }
     await writeFile(result.filePath, text, 'utf8')

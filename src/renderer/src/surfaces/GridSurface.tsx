@@ -36,6 +36,7 @@ import { useStore } from '../state'
 import { TerminalPane } from '../components/TerminalPane'
 import { RosterDialog } from '../components/RosterDialog'
 import { RoomPane } from '../components/RoomPane'
+import { roomTranscript } from '@shared/room'
 import { Chip, Dialog, Dot, Empty, Field, Menu, MenuItem, MenuSection } from '../components/ui'
 import {
   KIND_LABEL as PANE_KIND_LABEL,
@@ -65,6 +66,11 @@ const DEFAULT_ROOM_SEAT: AgentConfig = { vendor: 'claude', model: '', effort: 'h
  * be a number that never fires pretending to be a safeguard.
  */
 const DEFAULT_ROOM_CAPS: RoomCaps = { turns: 40, costUsd: 0 }
+
+/** The folder's own name, for labelling a saved file. */
+function basenameOf(path: string): string {
+  return path.replace(/\/+$/, '').split('/').pop() || 'room'
+}
 
 let slotSeq = 0
 const mintSlotId = (): Id => `slot-${Date.now().toString(36)}-${(slotSeq += 1)}`
@@ -840,7 +846,36 @@ export function GridSurface(): ReactNode {
                         >
                           Review this in Parley…
                         </MenuItem>
-                        {slot.paneId ? (
+                        {slot.roomId ? (
+                          <MenuItem
+                            onClick={() => {
+                              close()
+                              const roomId = slot.roomId
+                              if (!roomId) return
+                              // Read from main rather than the pane's state:
+                              // the record is there, and until rooms persist
+                              // this file is the only copy that survives quit.
+                              void attempt(async () => {
+                                const room = await api.getRoom(roomId)
+                                if (!room || room.turns.length === 0) {
+                                  notify('warn', 'Nothing said in this room yet.')
+                                  return null
+                                }
+                                const label = (slot.title ?? basenameOf(slot.cwd)).replace(/[^\w-]+/g, '-')
+                                return api.savePaneTranscript(
+                                  `ROOM-${label}.md`,
+                                  roomTranscript(room),
+                                )
+                              }).then((result) => {
+                                if (result?.saved && result.path) {
+                                  notify('info', `Transcript saved to ${result.path}`)
+                                }
+                              })
+                            }}
+                          >
+                            Save transcript…
+                          </MenuItem>
+                        ) : slot.paneId ? (
                           <MenuItem
                             onClick={() => {
                               close()

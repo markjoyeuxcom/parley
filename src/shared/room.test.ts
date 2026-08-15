@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { parseAddress, seatName, uniqueSeatName, AddressError } from './room'
+import { emptyUsage } from './usage'
+import { parseAddress, roomTranscript, seatName, uniqueSeatName, AddressError } from './room'
 
 /**
  * Who a message is for.
@@ -111,6 +112,70 @@ describe('addressing', () => {
 
   it('refuses a message that is nothing but mentions', () => {
     expect(() => parseAddress('@reviewer', seats)).toThrow(/nothing to say/)
+  })
+})
+
+describe('transcript', () => {
+  const room = {
+    id: 'room-1',
+    cwd: '/Users/me/Personal/prax',
+    seats: [
+      { id: 's1', name: 'auditor', config: { vendor: 'claude' as const, model: 'opus', effort: 'high' as const, persona: '', profile: 'Auditor' } },
+      { id: 's2', name: 'sceptic', config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' } },
+    ],
+    caps: { turns: 40, costUsd: 0 },
+    turnsSpent: 2,
+    status: 'idle' as const,
+    usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, reasoningTokens: 0, costUsd: 10.47 },
+    mock: false,
+    createdAt: 1_700_000_000_000,
+    turns: [
+      {
+        id: 't1', roomId: 'room-1', author: 'human' as const, seat: '', vendor: null, profile: '',
+        text: 'Is the decomposition right?', usage: emptyUsage(), startedAt: 1, endedAt: 1, error: null,
+      },
+      {
+        id: 't2', roomId: 'room-1', author: 'agent' as const, seat: 'auditor', vendor: 'claude' as const,
+        profile: 'Auditor', text: '## Verdict\nMeasurement-first.', usage: emptyUsage(),
+        startedAt: 2, endedAt: 3, error: null,
+      },
+      {
+        id: 't3', roomId: 'room-1', author: 'agent' as const, seat: 'sceptic', vendor: 'claude' as const,
+        profile: '', text: '', usage: emptyUsage(), startedAt: 4, endedAt: 5, error: 'the CLI exited 1',
+      },
+    ],
+  }
+
+  it('writes every turn under who said it, keeping the markdown intact', () => {
+    const out = roomTranscript(room)
+    expect(out).toContain('## You')
+    expect(out).toContain('Is the decomposition right?')
+    expect(out).toContain('## @auditor')
+    // The reply is already markdown; a transcript that re-escaped it would
+    // destroy the thing being saved.
+    expect(out).toContain('## Verdict\nMeasurement-first.')
+  })
+
+  it('keeps a failed turn instead of dropping it', () => {
+    // A silent gap would misrepresent the conversation as shorter and
+    // smoother than it was.
+    expect(roomTranscript(room)).toContain('the CLI exited 1')
+  })
+
+  it('records the seats and what the room spent', () => {
+    const out = roomTranscript(room)
+    expect(out).toContain('@auditor')
+    expect(out).toContain('claude · opus')
+    expect(out).toContain('2 of 40 turns')
+    expect(out).toContain('$10.47')
+  })
+
+  it('marks a mock room as not real work, first thing', () => {
+    // The same rule the exported reports carry: mock output is structurally
+    // identical to real output, so a saved file that did not say so would be
+    // indistinguishable from evidence.
+    const out = roomTranscript({ ...room, mock: true })
+    expect(out.split('\n')[0]).toContain('NOT REAL WORK')
   })
 })
 

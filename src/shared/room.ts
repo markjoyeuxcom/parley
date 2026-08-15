@@ -1,4 +1,4 @@
-import type { AgentConfig, Id, RoomSeat } from './domain'
+import type { AgentConfig, Id, Room, RoomSeat } from './domain'
 
 export class AddressError extends Error {}
 
@@ -114,6 +114,50 @@ export function parseAddress(
   }
 
   return { seatIds, contextSeatIds, body: resolved }
+}
+
+/**
+ * The whole conversation, as a file.
+ *
+ * Rooms live in memory until persistence lands, so this is currently the only
+ * way anything said in one survives quitting — which makes it worth more than
+ * a convenience. A long room is a real artifact: hours of reading, real money,
+ * and reasoning nobody wants to reproduce.
+ *
+ * Markdown, and the turns are pasted through untouched. Replies already ARE
+ * markdown; escaping them would destroy the structure that makes the file
+ * readable, and this is a transcript rather than a quoting context.
+ */
+export function roomTranscript(room: Room): string {
+  const lines: string[] = []
+
+  // First line, before anything else. Mock output is structurally identical
+  // to real output, so a saved file that did not say so would be
+  // indistinguishable from evidence — the rule exported reports already keep.
+  if (room.mock) lines.push('# NOT REAL WORK — mock adapters, no model was consulted', '')
+
+  lines.push(`# Room — ${room.cwd}`, '')
+  for (const seat of room.seats) {
+    const model = seat.config.model.trim()
+    lines.push(`- **@${seat.name}** — ${seat.config.vendor}${model ? ` · ${model}` : ''}`)
+  }
+  lines.push(
+    '',
+    `${room.turnsSpent} of ${room.caps.turns} turns${room.usage.costUsd > 0 ? ` · $${room.usage.costUsd.toFixed(2)}` : ''}`,
+    '',
+    '---',
+    '',
+  )
+
+  for (const turn of room.turns) {
+    lines.push(`## ${turn.author === 'human' ? 'You' : `@${turn.seat}`}`, '')
+    // A failed turn is kept. A silent gap would misrepresent the conversation
+    // as shorter and smoother than it was.
+    if (turn.error) lines.push(`> **Failed:** ${turn.error}`, '')
+    if (turn.text.trim()) lines.push(turn.text.trim(), '')
+  }
+
+  return lines.join('\n')
 }
 
 /**
