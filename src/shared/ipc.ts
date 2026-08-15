@@ -424,6 +424,12 @@ export const COMMANDS = {
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
     persona: z.string().default(''),
   }),
+  'room.open': z.object({ cwd: z.string().min(1), seat: AgentConfig }),
+  'room.get': z.object({ roomId: Id }),
+  'room.send': z.object({ roomId: Id, text: z.string().min(1).max(100_000) }),
+  'room.setSeat': z.object({ roomId: Id, seat: AgentConfig }),
+  'room.stop': z.object({ roomId: Id }),
+  'room.close': z.object({ roomId: Id }),
   'profile.update': z.object({
     profileId: Id,
     name: z.string().min(1),

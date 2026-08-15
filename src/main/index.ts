@@ -9,6 +9,7 @@ import { Manager } from '@main/orchestrator/manager'
 import { backfillBacklog } from '@main/orchestrator/backlog'
 import { reconcileWorktrees } from '@main/orchestrator/worktrees'
 import { PtyManager } from '@main/pty/manager'
+import { RoomManager } from '@main/rooms/manager'
 import { PreviewManager } from '@main/preview/manager'
 import { disposeIpc, registerIpc } from '@main/ipc/register'
 import { applyFreshBuildFlag } from '@main/ipc/relaunch'
@@ -27,6 +28,7 @@ if (!app.isPackaged) {
 
 let mainWindow: BrowserWindow | null = null
 let pty: PtyManager | null = null
+let rooms: RoomManager | null = null
 let preview: PreviewManager | null = null
 let manager: Manager | null = null
 let health: CliHealth[] = []
@@ -165,9 +167,15 @@ async function bootstrap(): Promise<void> {
     onChanged: (changed) => emit({ type: 'preview.changed', preview: changed }),
   })
 
+  // Rooms hold no record yet (m4), so they are pure process state like the
+  // pane registry — and like it, they die with the app rather than surviving
+  // as rows claiming a conversation that has nothing behind it.
+  rooms = new RoomManager({ registry, emit })
+
   registerIpc({
     manager,
     pty,
+    rooms,
     preview,
     window: () => mainWindow,
     health: () => health,
@@ -292,6 +300,9 @@ app.on('before-quit', () => {
   // Kill every child process explicitly. Orphaned CLI runs would keep consuming
   // the user's subscription quota after the app they belong to has gone.
   pty?.disposeAll()
+  // Abandon every in-flight seat: an orphaned CLI turn keeps consuming the
+  // user's subscription quota after the room it belongs to is gone.
+  rooms?.disposeAll()
   // Before the manager: an orphaned dev server holds its port and cannot be
   // stopped from anywhere the user can see.
   preview?.disposeAll()

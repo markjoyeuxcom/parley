@@ -27,6 +27,17 @@ export function pickCounterpart(
 export type SeatRole =
   | 'debate-seat'
   | 'review-seat'
+  /**
+   * A seat in a free-flow room.
+   *
+   * Bound by the same tool-less rule as every other dispatched seat: a room
+   * seat reads the folder its pane lives in, so a vendor Parley can only
+   * dispatch tool-free cannot hold one. Note the asymmetry this creates and
+   * that it is correct — an agy *pane* is agy's own interactive CLI with
+   * whatever tools it has natively, which is not Parley dispatching it at a
+   * capability at all.
+   */
+  | 'room-seat'
   | 'planner'
   | 'executor'
   | 'reviewer'

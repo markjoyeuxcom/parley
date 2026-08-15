@@ -5,6 +5,7 @@ import { openDatabase } from '@main/store/db'
 import { newId, Repo } from '@main/store/repo'
 import { Manager } from '@main/orchestrator/manager'
 import type { PtyManager } from '@main/pty/manager'
+import type { RoomManager } from '@main/rooms/manager'
 import { PreviewManager } from '@main/preview/manager'
 import { invokeCommand, type IpcContext } from './commands'
 
@@ -40,6 +41,7 @@ function harness(): { ctx: IpcContext; repo: Repo; session: Session } {
     // These tests never open a pane or a dialog; a call reaching either stub is
     // itself a routing bug worth failing on.
     pty: new Proxy({}, { get: () => () => { throw new Error('pty must not be touched') } }) as PtyManager,
+    rooms: new Proxy({}, { get: () => () => { throw new Error('rooms must not be touched') } }) as RoomManager,
     window: () => null,
     health: () => [],
     agyModels: () => registry.agyModels(),
@@ -236,6 +238,7 @@ describe('handler emits and the attention queue', () => {
     const ctx: IpcContext = {
       manager,
       pty: new Proxy({}, { get: () => () => { throw new Error('pty must not be touched') } }) as PtyManager,
+    rooms: new Proxy({}, { get: () => () => { throw new Error('rooms must not be touched') } }) as RoomManager,
       window: () => null,
       health: () => [],
       agyModels: () => Promise.resolve([]),

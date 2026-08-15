@@ -1,4 +1,4 @@
-import type { Id, LayoutNode, PaneKind, SavedLayoutNode } from '@shared/domain'
+import type { Id, LayoutNode, SavedLayoutNode, SlotKind } from '@shared/domain'
 
 /**
  * The grid layout is a binary split tree over *slots*. Splits are addressed by the path taken
@@ -113,9 +113,12 @@ export function previousSlot(node: LayoutNode | null, slotId: Id | null): Id | n
 
 /** What a slot holds. `paneId` is null for a slot whose pane is not running. */
 export interface Slot {
-  kind: PaneKind
+  kind: SlotKind
   cwd: string
+  /** The PTY process, for a process kind. Always null for a room. */
   paneId: Id | null
+  /** The conversation, for a room. Always null for a process kind. */
+  roomId?: Id | null
   /** A human-given name. Survives restarts and rides saved layouts. */
   title?: string
 }

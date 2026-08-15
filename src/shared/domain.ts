@@ -1275,6 +1275,19 @@ export type PaneKind = z.infer<typeof PaneKind>
  */
 export const RESUME_PICKER_KINDS: readonly PaneKind[] = ['claude', 'codex']
 
+/**
+ * What a grid slot holds.
+ *
+ * A superset of {@link PaneKind}, and deliberately a separate type rather than
+ * a fifth member of it. `PaneKind` means "what process the PtyManager spawns",
+ * and a room spawns nothing — it is seats and a transcript. Folding rooms into
+ * PaneKind would put a member into `commandFor` whose only correct answer is
+ * "never call me", and the first caller to forget that would silently open a
+ * login shell. Here the type refuses instead.
+ */
+export const SlotKind = z.union([PaneKind, z.literal('room')])
+export type SlotKind = z.infer<typeof SlotKind>
+
 export const PaneStatus = z.enum(['starting', 'live', 'exited'])
 export type PaneStatus = z.infer<typeof PaneStatus>
 
@@ -1288,6 +1301,62 @@ export const Pane = z.object({
   createdAt: Timestamp,
 })
 export type Pane = z.infer<typeof Pane>
+
+// ─── Rooms (free-flow agent conversation) ────────────────────────────────────
+
+/**
+ * Who spoke.
+ *
+ * The human is a seat, not a side-channel. A scheduled exchange needed one —
+ * hence interjections, their per-seat delivery tracking, and the rule that an
+ * `all` interjection reaches each seat exactly once. A room has no schedule to
+ * interrupt, so a person's message is simply a turn, and the whole delivery
+ * apparatus has nothing left to do.
+ */
+export const RoomTurnAuthor = z.enum(['human', 'agent'])
+export type RoomTurnAuthor = z.infer<typeof RoomTurnAuthor>
+
+export const RoomTurn = z.object({
+  id: Id,
+  roomId: Id,
+  author: RoomTurnAuthor,
+  /** Null on a human turn. */
+  vendor: Vendor.nullable().default(null),
+  /** The profile the seat was picked from, stamped as of this turn. */
+  profile: z.string().default(''),
+  text: z.string().default(''),
+  usage: Usage,
+  startedAt: Timestamp,
+  endedAt: Timestamp.nullable().default(null),
+  error: z.string().nullable().default(null),
+})
+export type RoomTurn = z.infer<typeof RoomTurn>
+
+/** `thinking` means a seat is mid-turn; a room refuses a second send until idle. */
+export const RoomStatus = z.enum(['idle', 'thinking'])
+export type RoomStatus = z.infer<typeof RoomStatus>
+
+/**
+ * One room: a folder, a seat, and everything said in it.
+ *
+ * Single-seat at m2 — `seat` rather than `seats` — because routing between
+ * several is m3's whole subject and a one-element array pretending otherwise
+ * would be vocabulary the engine cannot honour yet.
+ *
+ * In memory only at m2. Persistence is m4, which is also when a room becomes
+ * a `sessions` row and its turns become `turns` rows.
+ */
+export const Room = z.object({
+  id: Id,
+  cwd: z.string(),
+  seat: AgentConfig,
+  status: RoomStatus,
+  turns: z.array(RoomTurn),
+  usage: Usage,
+  mock: z.boolean().default(false),
+  createdAt: Timestamp,
+})
+export type Room = z.infer<typeof Room>
 
 /**
  * Binary split tree for the live grid.
@@ -1321,7 +1390,7 @@ export const LayoutNode: z.ZodType<LayoutNode> = z.lazy(() =>
  * dead process ids.
  */
 export type SavedLayoutNode =
-  | { type: 'leaf'; kind: PaneKind; cwd: string; title?: string }
+  | { type: 'leaf'; kind: SlotKind; cwd: string; title?: string }
   | {
       type: 'split'
       direction: 'row' | 'column'
@@ -1334,7 +1403,7 @@ export const SavedLayoutNode: z.ZodType<SavedLayoutNode> = z.lazy(() =>
   z.union([
     z.object({
       type: z.literal('leaf'),
-      kind: PaneKind,
+      kind: SlotKind,
       cwd: z.string().min(1),
       /** A human-given pane name. Optional so pre-title layouts stay valid. */
       title: z.string().optional(),

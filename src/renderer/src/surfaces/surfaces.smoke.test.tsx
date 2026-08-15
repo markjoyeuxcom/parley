@@ -985,6 +985,93 @@ describe('mounted-surface smoke', () => {
     expect((invoked[0]?.payload as { cwd: string; kind: string }).kind).toBe('shell')
   })
 
+  it('a room opens as a pane, sends a turn, and renders the streamed reply', async () => {
+    // The pivot, end to end through the renderer: a slot that holds a
+    // conversation rather than a process, driven by the same event channel
+    // everything else uses.
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    const room = {
+      id: 'room-1',
+      cwd: '/tmp/smoke-repo',
+      seat: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+      status: 'idle' as const,
+      turns: [],
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
+      mock: true,
+      createdAt: 1_700_000_000_000,
+    }
+    installBridge({
+      'dialog.pickDirectory': () => ({ path: '/tmp/smoke-repo' }),
+      'room.open': (payload) => {
+        invoked.push({ name: 'room.open', payload })
+        return room
+      },
+      'room.get': () => room,
+      'room.send': (payload) => {
+        invoked.push({ name: 'room.send', payload })
+        return { ok: true }
+      },
+    })
+
+    render(
+      <StoreProvider>
+        <GridSurface />
+      </StoreProvider>,
+    )
+
+    // The toolbar already targets a folder (the seeded session's repo), so
+    // opening a room is the one click.
+    fireEvent.click(await screen.findByRole('button', { name: 'Room' }))
+
+    // A room opened without spawning anything: no pane.open in sight.
+    await waitFor(() => expect(invoked.some((i) => i.name === 'room.open')).toBe(true))
+    expect(invoked.some((i) => i.name === 'pane.open')).toBe(false)
+    expect((invoked[0]?.payload as { cwd: string }).cwd).toBe('/tmp/smoke-repo')
+
+    const composer = await screen.findByPlaceholderText('Say something…')
+    fireEvent.change(composer, { target: { value: 'what does this repo do?' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+
+    await waitFor(() => expect(invoked.some((i) => i.name === 'room.send')).toBe(true))
+    expect(await screen.findByText('what does this repo do?')).toBeTruthy()
+
+    // The seat answers over the event channel, in pieces, exactly as a real
+    // adapter streams — and the finished turn replaces the streamed text.
+    const turn = {
+      id: 'turn-2',
+      roomId: 'room-1',
+      author: 'agent' as const,
+      vendor: 'claude' as const,
+      profile: '',
+      text: '',
+      usage: room.usage,
+      startedAt: 1_700_000_000_001,
+      endedAt: null,
+      error: null,
+    }
+    act(() => {
+      appEventListener?.({ type: 'room.turn.started', roomId: 'room-1', turn })
+      appEventListener?.({ type: 'room.turn.delta', roomId: 'room-1', turnId: 'turn-2', text: 'It ' })
+      appEventListener?.({
+        type: 'room.turn.delta',
+        roomId: 'room-1',
+        turnId: 'turn-2',
+        text: 'governs agents.',
+      })
+    })
+    expect(await screen.findByText('It governs agents.')).toBeTruthy()
+
+    act(() => {
+      appEventListener?.({
+        type: 'room.turn.ended',
+        roomId: 'room-1',
+        turn: { ...turn, text: 'It governs agents.', endedAt: 1_700_000_000_002 },
+      })
+    })
+    // Back to idle, so the composer takes the next message.
+    expect(await screen.findByPlaceholderText('Say something…')).toBeTruthy()
+  })
+
   it('the roster lists, edits and forgets a profile without leaving the Grid', async () => {
     // Profiles could be saved and chosen from a seat picker since schema 32,
     // and never listed, corrected or retired — profile.forget shipped with no

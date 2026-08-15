@@ -23,6 +23,7 @@ import { readCodexDefaultModel } from '@main/util/environment'
 import { gitIdentity } from '@main/util/gitIdentity'
 import { TEMPLATES } from '@main/orchestrator/templates'
 import type { PtyManager } from '@main/pty/manager'
+import type { RoomManager } from '@main/rooms/manager'
 import { suggestPreviewCommand, type PreviewManager } from '@main/preview/manager'
 import { disposeLedgerFinding, getSessionDetail, listSessionLedger } from './ledger'
 
@@ -55,6 +56,7 @@ export interface IpcAppControl {
 export interface IpcContext {
   manager: Manager
   pty: PtyManager
+  rooms: RoomManager
   preview: PreviewManager
   /** Injected like the dialogs — commands.ts never loads Electron. */
   openExternal: (url: string) => void
@@ -449,6 +451,45 @@ const HANDLERS: Record<CommandName, Handler> = {
     ctx.manager.repo.createAgentProfile(
       p as { name: string; vendor: 'claude' | 'codex' | 'agy'; model: string; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'; persona: string },
     ),
+  // ── Rooms ──────────────────────────────────────────────────────────────────
+  //
+  // `room.send` deliberately does not await the seat. A turn can run for
+  // minutes and the renderer learns what happened from the room.turn.* events
+  // either way; holding the invoke open would give the surface a promise it
+  // has no use for and a timeout it cannot survive.
+  'room.open': (p, ctx) => {
+    const { cwd, seat } = p as { cwd: string; seat: AgentConfig }
+    return ctx.rooms.open(cwd, seat)
+  },
+  'room.get': (p, ctx) => ctx.rooms.get((p as { roomId: string }).roomId) ?? null,
+  'room.send': (p, ctx) => {
+    const { roomId, text } = p as { roomId: string; text: string }
+    const room = ctx.rooms.get(roomId)
+    if (!room) throw new RequestError('no such room')
+    if (room.status !== 'idle') throw new RequestError('that room is already waiting on a reply')
+    void ctx.rooms.send(roomId, text).catch((err: unknown) => {
+      // The engine records failures on the turn; this catches only what
+      // escapes it, which would otherwise be an unhandled rejection.
+      emit(ctx, {
+        type: 'notice',
+        level: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      })
+    })
+    return { ok: true }
+  },
+  'room.setSeat': (p, ctx) => {
+    const { roomId, seat } = p as { roomId: string; seat: AgentConfig }
+    return ctx.rooms.setSeat(roomId, seat)
+  },
+  'room.stop': (p, ctx) => {
+    ctx.rooms.stop((p as { roomId: string }).roomId)
+    return null
+  },
+  'room.close': (p, ctx) => {
+    ctx.rooms.close((p as { roomId: string }).roomId)
+    return null
+  },
   'profile.update': (p, ctx) => {
     const { profileId, ...fields } = p as {
       profileId: string

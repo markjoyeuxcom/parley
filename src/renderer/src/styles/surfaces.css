@@ -145,6 +145,105 @@
   color: var(--text-tertiary);
 }
 
+/* A room: a pane that is a conversation rather than a process. Shares the
+   pane chrome above it and nothing else — no terminal, no monospace grid. */
+.room {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-sunken);
+}
+
+.room__seat {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--line-faint);
+  flex-shrink: 0;
+}
+
+.room__seat-name {
+  font-size: var(--text-tiny);
+  font-weight: 550;
+  color: var(--text-secondary);
+}
+
+.room__readonly {
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+.room__transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.room__turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  min-width: 0;
+}
+
+.room__author {
+  font-size: var(--text-micro);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Prose, not terminal output: the reply is read, so it gets the reading
+   font and a measure rather than a monospace grid. `pre-wrap` because the
+   CLIs emit real newlines and losing them would run paragraphs together. */
+.room__body {
+  font-size: var(--text-small);
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.room__turn--human .room__body {
+  color: var(--text-secondary);
+}
+
+.room__thinking {
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.room__error {
+  font-size: var(--text-small);
+  color: var(--fail);
+  white-space: pre-wrap;
+}
+
+.room__composer {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s2);
+  padding: var(--s3);
+  border-top: 1px solid var(--line-faint);
+  flex-shrink: 0;
+}
+
+.room__input {
+  flex: 1;
+  resize: none;
+  font-family: inherit;
+  line-height: 1.45;
+}
+
 /* Skills rail: drag one onto a pane to run it there. */
 .skill-rail {
   display: flex;

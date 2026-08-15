@@ -3,11 +3,13 @@ import { Columns2, FolderOpen, Layers, MoreHorizontal, Play, Plus, Radio, Rows2,
 import {
   MAX_PANES,
   RESUME_PICKER_KINDS,
+  type AgentConfig,
   type GridLayout,
   type Id,
   type LayoutNode,
   type PaneKind,
   type Skill,
+  type SlotKind,
 } from '@shared/domain'
 import type { PaneIdentity } from '@shared/ipc'
 import { api } from '../lib/api'
@@ -32,6 +34,7 @@ import { paneSelection, termAccess } from '../lib/termSelection'
 import { useStore } from '../state'
 import { TerminalPane } from '../components/TerminalPane'
 import { RosterDialog } from '../components/RosterDialog'
+import { RoomPane } from '../components/RoomPane'
 import { Chip, Dialog, Dot, Empty, Field, Menu, MenuItem, MenuSection } from '../components/ui'
 import {
   KIND_LABEL as PANE_KIND_LABEL,
@@ -42,6 +45,16 @@ import {
 
 const KIND_LABEL = PANE_KIND_LABEL
 const PANE_KINDS: PaneKind[] = ['shell', 'claude', 'codex', 'agy']
+/** Everything the toolbar can open. A room is last: it is the odd one out. */
+const SLOT_KINDS: SlotKind[] = [...PANE_KINDS, 'room']
+
+/**
+ * The seat a new room opens with.
+ *
+ * Claude because it is the one vendor that is never tool-less, so a room is
+ * usable the moment it exists; the seat control changes it in place.
+ */
+const DEFAULT_ROOM_SEAT: AgentConfig = { vendor: 'claude', model: '', effort: 'high', persona: '' }
 
 let slotSeq = 0
 const mintSlotId = (): Id => `slot-${Date.now().toString(36)}-${(slotSeq += 1)}`
@@ -193,8 +206,16 @@ export function GridSurface(): ReactNode {
   const startSlot = useCallback(
     async (slotId: Id, opts: { resume?: boolean } = {}): Promise<void> => {
       const slot = slots[slotId]
-      if (!slot || slot.paneId) return
-      const pane = await attempt(() => api.openPane(slot.kind, slot.cwd, 80, 24, opts.resume ?? false))
+      if (!slot || slot.paneId || slot.roomId) return
+      const kind = slot.kind
+      if (kind === 'room') {
+        const room = await attempt(() => api.openRoom(slot.cwd, DEFAULT_ROOM_SEAT))
+        if (!room) return
+        setSlots((current) => ({ ...current, [slotId]: { ...slot, roomId: room.id } }))
+        setFocusedSlot(slotId)
+        return
+      }
+      const pane = await attempt(() => api.openPane(kind, slot.cwd, 80, 24, opts.resume ?? false))
       if (!pane) return
       setSlots((current) => ({ ...current, [slotId]: { ...slot, paneId: pane.id } }))
       setFocusedSlot(slotId)
@@ -233,28 +254,42 @@ export function GridSurface(): ReactNode {
    * with its Start button, never half-attached to a dead pane id.
    */
   const relaunchSlot = useCallback(
-    async (slotId: Id, opts: { kind?: PaneKind; resume?: boolean } = {}): Promise<void> => {
+    async (slotId: Id, opts: { kind?: SlotKind; resume?: boolean } = {}): Promise<void> => {
       const slot = slots[slotId]
       if (!slot) return
       if (slot.paneId) {
         void api.closePane(slot.paneId).catch(() => undefined)
         forgetPane(slot.paneId)
       }
+      // Replacing a room's kind ends its conversation, so the seat is
+      // abandoned here rather than left talking into a slot that has moved on.
+      if (slot.roomId) void api.closeRoom(slot.roomId).catch(() => undefined)
       const kind = opts.kind ?? slot.kind
-      const pane = await attempt(() => api.openPane(kind, slot.cwd, 80, 24, opts.resume ?? false))
+      const opened =
+        kind === 'room'
+          ? await attempt(() => api.openRoom(slot.cwd, DEFAULT_ROOM_SEAT))
+          : await attempt(() => api.openPane(kind, slot.cwd, 80, 24, opts.resume ?? false))
       setSlots((current) => {
         const existing = current[slotId]
         if (!existing) return current
-        return { ...current, [slotId]: { ...existing, kind, paneId: pane ? pane.id : null } }
+        return {
+          ...current,
+          [slotId]: {
+            ...existing,
+            kind,
+            paneId: kind === 'room' ? null : (opened?.id ?? null),
+            roomId: kind === 'room' ? (opened?.id ?? null) : null,
+          },
+        }
       })
-      if (pane) setFocusedSlot(slotId)
+      if (opened) setFocusedSlot(slotId)
     },
     [attempt, slots],
   )
 
   const openPane = useCallback(
     async (
-      kind: PaneKind,
+      kind: SlotKind,
       splitFrom?: { slotId: Id; direction: 'row' | 'column' },
       title?: string,
       dirOverride?: string,
@@ -273,13 +308,24 @@ export function GridSurface(): ReactNode {
         notify('warn', 'Choose a folder first.')
         return
       }
-      const pane = await attempt(() => api.openPane(kind, dir, 80, 24))
-      if (!pane) return
+      // A room opens a conversation where a pane opens a process. Same slot
+      // machinery either way — the difference is which id the slot carries.
+      const opened =
+        kind === 'room'
+          ? await attempt(() => api.openRoom(dir, DEFAULT_ROOM_SEAT))
+          : await attempt(() => api.openPane(kind, dir, 80, 24))
+      if (!opened) return
 
       const slotId = mintSlotId()
       setSlots((current) => ({
         ...current,
-        [slotId]: { kind, cwd: dir, paneId: pane.id, ...(title ? { title } : {}) },
+        [slotId]: {
+          kind,
+          cwd: dir,
+          paneId: kind === 'room' ? null : opened.id,
+          roomId: kind === 'room' ? opened.id : null,
+          ...(title ? { title } : {}),
+        },
       }))
       setLayout((current) => {
         if (!current) return leaf(slotId)
@@ -310,6 +356,10 @@ export function GridSurface(): ReactNode {
         void api.closePane(paneId).catch(() => undefined)
         forgetPane(paneId)
       }
+      const roomId = slots[slotId]?.roomId
+      // Abandons any in-flight seat with it: an orphaned turn would keep
+      // spending against the subscription for a room nobody can see.
+      if (roomId) void api.closeRoom(roomId).catch(() => undefined)
       setSlots((current) => {
         const next = { ...current }
         delete next[slotId]
@@ -366,7 +416,7 @@ export function GridSurface(): ReactNode {
       const shells = Object.entries(restored).filter(([, slot]) => slot.kind === 'shell')
       const started: Record<Id, Slot> = {}
       for (const [slotId, slot] of shells) {
-        const pane = await attempt(() => api.openPane(slot.kind, slot.cwd, 80, 24))
+        const pane = await attempt(() => api.openPane('shell', slot.cwd, 80, 24))
         if (pane) started[slotId] = { ...slot, paneId: pane.id }
       }
       if (Object.keys(started).length) {
@@ -494,7 +544,7 @@ export function GridSurface(): ReactNode {
 
         <div className="divider" style={{ width: 1, height: 18, background: 'var(--line)' }} />
 
-        {PANE_KINDS.map((kind) => (
+        {SLOT_KINDS.map((kind) => (
           <button
             key={kind}
             className="btn btn--sm"
@@ -662,6 +712,18 @@ export function GridSurface(): ReactNode {
                   {(close) => (
                     <>
                       <MenuSection>
+                        {/* A room has no process to stop, restart or resume —
+                            only a conversation, which the pane itself owns.
+                            Offering the process verbs here would render
+                            controls that quietly do nothing. */}
+                        {slot.kind === 'room' ? (
+                          !slot.roomId ? (
+                            <MenuItem onClick={() => { close(); void startSlot(id) }}>
+                              Start
+                            </MenuItem>
+                          ) : null
+                        ) : (
+                          <>
                         {running ? (
                           <MenuItem onClick={() => { close(); stopSlot(id) }}>
                             Stop — keep the pane
@@ -694,6 +756,8 @@ export function GridSurface(): ReactNode {
                             Resume a session…
                           </MenuItem>
                         ) : null}
+                          </>
+                        )}
                       </MenuSection>
                       <MenuSection>
                         <MenuItem
@@ -1163,7 +1227,14 @@ function LayoutView(props: LayoutViewProps): ReactNode {
           </button>
         </div>
 
-        {slot?.paneId ? (
+        {slot?.roomId ? (
+          <RoomPane
+            roomId={slot.roomId}
+            focused={focused}
+            onFocus={() => props.onFocus(id)}
+            onOutput={() => props.onOutput(id)}
+          />
+        ) : slot?.paneId ? (
           <TerminalPane
             paneId={slot.paneId}
             focused={focused}

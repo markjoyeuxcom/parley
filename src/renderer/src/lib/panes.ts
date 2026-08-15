@@ -1,12 +1,13 @@
-import type { Pane, PaneKind } from '@shared/domain'
+import type { Pane, SlotKind } from '@shared/domain'
 import type { Slot } from './layout'
 import { shortPath } from './format'
 
-export const KIND_LABEL: Record<PaneKind, string> = {
+export const KIND_LABEL: Record<SlotKind, string> = {
   shell: 'Shell',
   claude: 'Claude',
   codex: 'Codex',
   agy: 'Agy',
+  room: 'Room',
 }
 
 /**
@@ -23,11 +24,19 @@ export function slotPaneTitle(slot: Slot | undefined, pane: Pane | undefined): s
   return pane?.title ?? `${KIND_LABEL[slot.kind]} — ${shortPath(slot.cwd)}`
 }
 
-/** `'idle'` = a slot with no process; `'starting'` = spawned but unheard-from. */
+/**
+ * `'idle'` = a slot with no process; `'starting'` = spawned but unheard-from.
+ *
+ * A room has no process to be starting or exited: it exists or it does not,
+ * so it reports `live` from the moment it is open. Without this branch an open
+ * room reads as idle, which puts a "Start" control on something already
+ * running and a grey dot on something that is not.
+ */
 export function slotPaneStatus(
   slot: Slot | undefined,
   pane: Pane | undefined,
 ): 'idle' | Pane['status'] {
+  if (slot?.kind === 'room') return slot.roomId ? 'live' : 'idle'
   if (!slot?.paneId) return 'idle'
   return pane?.status ?? 'starting'
 }

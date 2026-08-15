@@ -21,6 +21,7 @@ import type {
   Milestone,
   Pane,
   Preview,
+  Room,
   SelfUpdate,
   Session,
   SessionDeletionImpact,
@@ -336,6 +337,20 @@ export const api = {
   listAgentProfiles: (): Promise<AgentProfile[]> => bridge().invoke('profile.list'),
   addAgentProfile: (profile: Omit<AgentProfile, 'id' | 'createdAt'>): Promise<AgentProfile> =>
     bridge().invoke('profile.add', profile),
+  openRoom: (cwd: string, seat: AgentConfig): Promise<Room> =>
+    bridge().invoke('room.open', { cwd, seat }),
+  getRoom: (roomId: Id): Promise<Room | null> => bridge().invoke('room.get', { roomId }),
+  /**
+   * Fire-and-forget by design: the seat's turn can run for minutes and the
+   * pane learns what happened from the room.turn.* events, so awaiting the
+   * dispatch would buy a promise nobody reads and a timeout nobody survives.
+   */
+  sendToRoom: (roomId: Id, text: string): Promise<{ ok: boolean }> =>
+    bridge().invoke('room.send', { roomId, text }),
+  setRoomSeat: (roomId: Id, seat: AgentConfig): Promise<Room> =>
+    bridge().invoke('room.setSeat', { roomId, seat }),
+  stopRoom: (roomId: Id): Promise<null> => bridge().invoke('room.stop', { roomId }),
+  closeRoom: (roomId: Id): Promise<null> => bridge().invoke('room.close', { roomId }),
   updateAgentProfile: (
     profileId: Id,
     profile: Omit<AgentProfile, 'id' | 'createdAt'>,

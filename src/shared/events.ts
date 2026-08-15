@@ -7,6 +7,7 @@ import type {
   Milestone,
   Pane,
   Preview,
+  RoomTurn,
   Session,
   Turn,
   Usage,
@@ -82,6 +83,17 @@ export type AppEvent =
   | { type: 'loop.iteration.ended'; iteration: LoopIteration }
   /** Live telemetry from the running iteration. See `plan.activity`. */
   | { type: 'loop.activity'; loopId: Id; text: string }
+  // Rooms
+  | { type: 'room.turn.started'; roomId: Id; turn: RoomTurn }
+  | { type: 'room.turn.delta'; roomId: Id; turnId: Id; text: string }
+  /**
+   * The finished turn, carrying the complete text.
+   *
+   * Not redundant with the deltas: a client that mounted mid-turn, or dropped
+   * a chunk, is corrected here rather than left holding a partial reply
+   * forever. The same reason `session.turn.ended` ships the whole turn.
+   */
+  | { type: 'room.turn.ended'; roomId: Id; turn: RoomTurn }
   // Grid
   | { type: 'pane.created'; pane: Pane }
   | { type: 'pane.status'; paneId: Id; status: Pane['status']; exitCode?: number | null }
