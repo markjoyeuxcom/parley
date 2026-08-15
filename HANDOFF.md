@@ -1,9 +1,20 @@
 # Parley — continuation handoff
 
+> **Direction changed 2026-08-15. The live plan is [`ROOMS.md`](ROOMS.md).**
+> The Grid becomes the whole product: agent conversation grows into a
+> first-class pane, and the governed engine — debates, reviews, the audited
+> pipeline, loops, backlog, foreman, remote execution, self-update — is
+> retired behind it. Everything below stays accurate **as history** and is
+> still the best account of how the app reached its current shape. It is no
+> longer a description of where it is going. The "Open threads" section is
+> superseded outright; see the note there.
+
 Refreshed 2026-08-01, after the SSH/remote-execution arc landed. Everything a
 fresh session needs that the code and git history do not already say. Schema
-is at **v27**; the suite is **1121 passing, 11 skipped** (the skips are the
-operator-run `PARLEY_LIVE*` arms, by design).
+was at **v27** at that refresh and is **v32** in the code today (agent
+profiles, search and remote-resume landed after); the suite was **1121
+passing, 11 skipped** at that date (the skips are the operator-run
+`PARLEY_LIVE*` arms, by design).
 
 ## What this repo is
 
@@ -17,6 +28,18 @@ This repo is the rebuild called for by the **Parley Flexibility Roadmap**
 added a second arc on top of the roadmap, adapted from studying
 github.com/kunchenguid/firstmate: the prerequisites for Parley building and
 improving *itself* through its own pipeline.
+
+**Both arcs are complete, and neither is the current direction.** The
+self-building loop worked — it ran six laps against this repository, several
+of them fully self-originated. What did not hold is the shape the governed
+surfaces gave to *discussion*: free flow was designed out at
+`debateStages()` in `shared/protocol.ts`, where a debate is a fixed
+alternating stage list demanding structured output, and a human interjection
+lands only at a turn boundary. The **Rooms arc** ([`ROOMS.md`](ROOMS.md))
+keeps the Grid, the CLI adapters and the local record, replaces the scheduled
+protocols with free-flow rooms of agent seats, and deletes the rest — roughly
+two thirds of the codebase, deliberately, with the deletion sequenced last so
+the app keeps working the whole way.
 
 ## How work proceeds here
 
@@ -124,6 +147,18 @@ improving *itself* through its own pipeline.
   Nothing on the by-hand list remains.
 
 ## Open threads (good next candidates)
+
+> **Superseded 2026-08-15 by the Rooms arc ([`ROOMS.md`](ROOMS.md)).**
+> Everything in this section was written while the governed engine was the
+> product. It is kept because it is a genuine record — several entries name
+> real defects, real lessons and the exact reasons a guard fired — but none
+> of it is the next work, and most of it concerns subsystems the Rooms arc
+> retires. Two things below are still worth reading rather than skipping:
+> the **lessons** (live-CLI capture is a privileged act; a stale-position
+> mutation reads as vacuous tests), which outlive the machinery that taught
+> them; and the **by-hand acceptance gaps**, which were never closed and now
+> never will be — they are honest holes in what was proven outside tests, not
+> pending work.
 
 The self-building arc is COMPLETE and has run its **second lap
 (2026-07-29), fully self-originated**: Parley reviewed its own test suite

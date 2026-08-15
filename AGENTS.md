@@ -4,36 +4,69 @@ A local-first macOS workbench that drives Claude Code and Codex through their ow
 CLIs. Three surfaces over one governed engine: parallel terminals, adversarial
 sessions, and capped autonomous loops.
 
+**The direction changed on 2026-08-15**: the Grid becomes the whole product and
+the governed engine is retired behind it. The plan is [`ROOMS.md`](ROOMS.md);
+this guide still describes the app as it stands, because the app still stands
+that way until the arc's deletion pass lands.
+
 ## Product invariants
 
 Break any of these and the product stops being what it is.
 
-1. **Subscription CLIs only.** Every model call goes through the user's local
-   `claude`, `codex` or `agy` binary, against the account it is already signed
-   in to. Never add an API-key path, not even as a fallback.
-2. **No `--dangerously-*` flag, ever.** Not `--dangerously-skip-permissions`, not
+**Status under the Rooms arc.** Retiring the governed engine changes what some
+of these mean — but not yet, and not by default. Every invariant below **holds
+in full for as long as the code it governs exists**. An agent working Rooms
+m1–m5 is working alongside a live pipeline, and "retired at m6" is not
+permission to break it at m2. The tag on each line says what the invariant
+*becomes* once the deletion pass lands, never what is optional today. Four are
+permanent regardless of architecture, three narrow, and three go with the
+engine that gave them meaning.
+
+1. **Subscription CLIs only.** — *permanent.* Every model call goes through the
+   user's local `claude`, `codex` or `agy` binary, against the account it is
+   already signed in to. Never add an API-key path, not even as a fallback.
+2. **No `--dangerously-*` flag, ever.** — *permanent.* Not
+   `--dangerously-skip-permissions`, not
    `--allow-dangerously-skip-permissions`, not
    `--dangerously-bypass-approvals-and-sandbox`, not `danger-full-access`. The
    capability ladder is `none` → `read` → `write` and there is no rung above it.
-3. **Read-only is the default.** Sessions never write. Only the audited pipeline
-   and an explicitly write-capable loop can, and only behind an approval.
-4. **Approval is recorded and single-use.** A write-capable run needs an
-   `approvals` row matching its scope and subject with `consumed_at IS NULL`.
-   Starting the run spends it. Running again needs a fresh one.
-5. **No agent certifies its own work.** The planner is not the executor; the
-   reviewer is never the vendor that wrote the diff; a loop's verifier is a
-   different model family from its worker.
-6. **Exit conditions are observed, not self-reported.** Either Parley runs a real
-   command and reads its exit code, or the other vendor's model inspects the
-   repository. "The agent said it was done" is not a termination condition.
-7. **Caps are enforced by Parley, before dispatch.** An agent cannot see them or
-   argue with them. Hitting one is `exhausted`, never `succeeded`.
-8. **Everything stays local.** SQLite under `app.getPath('userData')`. No sync, no
-   telemetry, no remote anything.
-9. **Dissent is preserved.** Disagreement lowers recorded confidence and the
-   losing side's objection is stored verbatim. Never smooth it away.
-10. **macOS-native restraint.** Hairline rules, small radii, one accent, tabular
-    numerals, system font stack. No gradients, no emoji, no decorative AI tropes.
+   Rooms staff seats on this same ladder; it gains no rung by changing surface.
+3. **Read-only is the default.** — *permanent, narrowed.* Sessions never write.
+   Only the audited pipeline and an explicitly write-capable loop can, and only
+   behind an approval. Under Rooms the subject changes but the default does
+   not: an agent seat is read-only unless its own write flag is set.
+4. **Approval is recorded and single-use.** — *retired with the engine.* A
+   write-capable run needs an `approvals` row matching its scope and subject
+   with `consumed_at IS NULL`. Starting the run spends it. Running again needs a
+   fresh one. Rooms replace this with a per-seat write toggle, which is
+   **standing authorisation, not single-use** — a deliberately weaker guarantee,
+   argued in ROOMS.md rather than allowed to erode quietly. Until m6, the
+   pipeline's version of this is absolute.
+5. **No agent certifies its own work.** — *permanent as a default, not as a
+   rule.* The planner is not the executor; the reviewer is never the vendor that
+   wrote the diff; a loop's verifier is a different model family from its
+   worker. A room may seat two of the same vendor if a human asks it to; the
+   roster should make cross-vendor the obvious choice, not the enforced one.
+6. **Exit conditions are observed, not self-reported.** — *retired with the
+   engine.* Either Parley runs a real command and reads its exit code, or the
+   other vendor's model inspects the repository. "The agent said it was done" is
+   not a termination condition. A room has no exit condition to observe: it ends
+   when a human stops it or its budget does.
+7. **Caps are enforced by Parley, before dispatch.** — *retired in form, kept in
+   substance.* An agent cannot see them or argue with them. Hitting one is
+   `exhausted`, never `succeeded`. The loop machinery goes, but the reason it
+   existed does not — Rooms m3 lands a per-room token budget enforced the same
+   way, before dispatch, unseeable by the seats.
+8. **Everything stays local.** — *permanent.* SQLite under
+   `app.getPath('userData')`. No sync, no telemetry, no remote anything.
+9. **Dissent is preserved.** — *permanent wherever a verdict exists.*
+   Disagreement lowers recorded confidence and the losing side's objection is
+   stored verbatim. Never smooth it away. After m6 the only place a verdict
+   exists is the optional converge action — and this rule governs it there
+   exactly as it governed the closing stage.
+10. **macOS-native restraint.** — *permanent.* Hairline rules, small radii, one
+    accent, tabular numerals, system font stack. No gradients, no emoji, no
+    decorative AI tropes.
 
 ## Commands
 
