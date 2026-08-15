@@ -46,11 +46,22 @@ export function uniqueSeatName(base: string, taken: readonly string[]): string {
  *
  * **An unknown name is refused, never broadcast.** A typo that falls back to
  * everybody spends a turn per seat and looks exactly like success.
+ *
+ * And one rule about what they see rather than who they are:
+ *
+ * **Leading mentions choose who speaks; mid-sentence mentions choose what
+ * they see.** Seats are independent by default — that is the whole reason to
+ * have several — so a seat cannot see another's reply unless somebody says
+ * so. "@auditor check the claims @sceptic just made" is the sentence a person
+ * types when they want exactly that, and it now means what it looks like it
+ * means. A name that matches no seat is prose here rather than an error: the
+ * cost of a mid-sentence mistake is some input tokens, not a turn per seat,
+ * and refusing sentences for containing an `@` would be worse than either.
  */
 export function parseAddress(
   text: string,
   seats: readonly RoomSeat[],
-): { seatIds: Id[]; body: string } {
+): { seatIds: Id[]; contextSeatIds: Id[]; body: string } {
   const tokens = text.trim().split(/\s+/)
   const addressed: Id[] = []
   let everyone = false
@@ -80,7 +91,48 @@ export function parseAddress(
   if (at > 0 && !body) throw new AddressError('that addresses a seat but leaves nothing to say')
 
   const seatIds = everyone || addressed.length === 0 ? seats.map((s) => s.id) : addressed
-  return { seatIds, body: at > 0 ? body : text.trim() }
+  const resolved = at > 0 ? body : text.trim()
+
+  // Mid-sentence mentions choose what the speakers SEE. Unknown names are
+  // ordinary prose here rather than an error — the asymmetry with the leading
+  // position is deliberate, and stated at the top of this function's doc.
+  //
+  // Every mentioned seat is reported, including one that is also speaking.
+  // Whether a given speaker is shown a turn depends on WHICH speaker it is —
+  // a seat never needs its own words relayed back, since it is resumed and
+  // already has them — and that is a per-speaker decision the caller makes.
+  const contextSeatIds: Id[] = []
+  for (const token of resolved.split(/\s+/)) {
+    if (!token.startsWith('@')) continue
+    // "@claude's point" and "@claude," are how people write; the name ends at
+    // the first character that cannot be in one.
+    const name = (/^@([a-z0-9-]+)/i.exec(token)?.[1] ?? '').toLowerCase()
+    if (!name || name === EVERYONE) continue
+    const seat = seats.find((s) => s.name.toLowerCase() === name)
+    if (!seat) continue
+    if (!contextSeatIds.includes(seat.id)) contextSeatIds.push(seat.id)
+  }
+
+  return { seatIds, contextSeatIds, body: resolved }
+}
+
+/**
+ * A message with another seat's words attached.
+ *
+ * The relayed turn comes first and is fenced by an attribution line, so the
+ * seat can tell what it is being shown from what it is being asked. Without
+ * the separation a long quoted turn reads as the instruction, and the actual
+ * question arrives as an afterthought at the bottom.
+ */
+export function contextPrompt(
+  relays: ReadonlyArray<{ speaker: string; text: string }>,
+  body: string,
+): string {
+  if (relays.length === 0) return body
+  const quoted = relays
+    .map(({ speaker, text }) => `@${speaker} said:\n\n${text}`)
+    .join('\n\n───\n\n')
+  return `${quoted}\n\n───\n\n${body}`
 }
 
 /**

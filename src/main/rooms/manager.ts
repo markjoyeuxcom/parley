@@ -3,7 +3,14 @@ import type { AgentConfig, Id, Room, RoomCaps, RoomSeat, RoomTurn, Usage } from 
 import type { AppEvent } from '@shared/events'
 import { emptyUsage } from '@shared/usage'
 import { seatingRefusals } from '@shared/vendors'
-import { parseAddress, relayPrompt, roomSeatSystemPrompt, seatName, uniqueSeatName } from '@shared/room'
+import {
+  contextPrompt,
+  parseAddress,
+  relayPrompt,
+  roomSeatSystemPrompt,
+  seatName,
+  uniqueSeatName,
+} from '@shared/room'
 import type { AgentRegistry } from '@main/agents'
 
 /**
@@ -27,8 +34,9 @@ import type { AgentRegistry } from '@main/agents'
  * unaddressed message reaches every seat concurrently and independently, so
  * two answers are two reads rather than one read and an agreement. That
  * property is the whole reason to have more than one seat, and sequencing
- * them for tidiness would quietly remove it. `advance` is the opposite mode,
- * for when they should hear each other.
+ * them for tidiness would quietly remove it. Sharing is therefore an explicit
+ * act: naming a seat mid-sentence relays its last turn, and `advance` is the
+ * mode where every seat hears the one before it.
  *
  * **Read-only.** A room seat reads the folder its pane lives in and writes
  * nothing. The per-seat write opt-in is m5; until then there is no code path
@@ -210,7 +218,20 @@ export class RoomManager {
 
     // Addressing is resolved BEFORE anything is recorded or spent, so a typo
     // costs nothing and leaves no turn behind.
-    const { seatIds, body } = parseAddress(text, live.room.seats)
+    const { seatIds, contextSeatIds, body } = parseAddress(text, live.room.seats)
+
+    // A named seat that has never spoken is refused rather than quietly
+    // dropped. Silently sending the message without the context it asked for
+    // reproduces the exact failure this rule exists to fix — a seat replying
+    // "I cannot see what you are referring to" — except now it also looks
+    // like the feature worked.
+    for (const seatId of contextSeatIds) {
+      const seat = live.room.seats.find((s) => s.id === seatId)
+      if (!seat) continue
+      if (!this.lastTurnOf(live.room, seat.name)) {
+        throw new RoomError(`@${seat.name} has not said anything yet, so there is nothing to show`)
+      }
+    }
     const refusal = this.exceeded(live.room, seatIds.length)
     if (refusal) {
       live.room = { ...live.room, status: 'exhausted' }
@@ -237,7 +258,26 @@ export class RoomManager {
     this.deps.emit({ type: 'room.turn.ended', roomId, turn: said })
 
     const seats = live.room.seats.filter((seat) => seatIds.includes(seat.id))
-    return this.speak(live, seats.map((seat) => ({ seat, prompt: body })))
+    return this.speak(
+      live,
+      seats.map((seat) => ({
+        seat,
+        // Per speaker, because "self" differs by speaker: a seat is resumed
+        // and already holds its own words, while the others in the same
+        // message genuinely need them. Filtering this in the parser would
+        // have starved every other seat whenever one of them was mentioned.
+        prompt: contextPrompt(
+          contextSeatIds
+            .filter((id) => id !== seat.id)
+            .flatMap((id) => {
+              const from = live.room.seats.find((s) => s.id === id)
+              const last = from ? this.lastTurnOf(live.room, from.name) : null
+              return from && last ? [{ speaker: from.name, text: last.text }] : []
+            }),
+          body,
+        ),
+      })),
+    )
   }
 
   /**
@@ -410,6 +450,15 @@ export class RoomManager {
   /** Every room, abandoned. Called when the app is quitting. */
   disposeAll(): void {
     for (const id of [...this.rooms.keys()]) this.close(id)
+  }
+
+  /** The most recent thing a seat actually said, or null. */
+  private lastTurnOf(room: Room, seatName: string): RoomTurn | null {
+    for (let i = room.turns.length - 1; i >= 0; i -= 1) {
+      const turn = room.turns[i]
+      if (turn && turn.author === 'agent' && turn.seat === seatName && turn.text.trim()) return turn
+    }
+    return null
   }
 
   private require(roomId: Id): LiveRoom {

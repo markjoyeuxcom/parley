@@ -272,6 +272,71 @@ describe('rooms', () => {
     expect(rooms.get(room.id)?.turns).toHaveLength(0)
   })
 
+  it('relays a named seat’s last turn to whoever was addressed', async () => {
+    // The failure this fixes, verbatim from a real room: "@auditor check the
+    // claims @sceptic just made" reached the auditor with no idea who sceptic
+    // was, and it correctly answered that it could not see them.
+    let n = 0
+    const { registry, seen } = fakeRegistry(() => ({ text: `answer ${(n += 1)}` }))
+    const rooms = new RoomManager({ registry, emit: () => {} })
+
+    const room = rooms.open(
+      '/tmp/repo',
+      [{ ...SEAT, profile: 'Sceptic' }, { ...SEAT, profile: 'Auditor' }],
+      CAPS,
+    )
+    await rooms.send(room.id, '@sceptic open')
+    await rooms.send(room.id, '@auditor check what @sceptic just said')
+
+    expect(seen).toHaveLength(2)
+    // The auditor is shown the sceptic's words, attributed, ahead of the ask.
+    expect(seen[1]?.prompt).toContain('@sceptic said')
+    expect(seen[1]?.prompt).toContain('answer 1')
+    expect(seen[1]?.prompt).toContain('check what @sceptic just said')
+    // And it is one turn, not two: relaying is context, not a dispatch.
+    expect(rooms.get(room.id)?.turnsSpent).toBe(2)
+  })
+
+  it('never relays a seat its own words back', async () => {
+    // Every seat but the mentioned one is shown the turn; the mentioned seat
+    // is resumed and already has it, so paying to send it again would be
+    // paying twice for the same sentence.
+    let n = 0
+    const { registry, seen } = fakeRegistry(() => ({ text: `answer ${(n += 1)}` }))
+    const rooms = new RoomManager({ registry, emit: () => {} })
+
+    const room = rooms.open(
+      '/tmp/repo',
+      [{ ...SEAT, profile: 'Sceptic' }, { ...SEAT, profile: 'Auditor' }],
+      CAPS,
+    )
+    await rooms.send(room.id, '@sceptic open')
+    await rooms.send(room.id, 'what do you both make of @sceptic’s point?')
+
+    const [, sceptic, auditor] = seen
+    expect(sceptic?.prompt).not.toContain('@sceptic said')
+    expect(auditor?.prompt).toContain('@sceptic said')
+  })
+
+  it('refuses to reference a seat that has not spoken', async () => {
+    // Sending anyway would reproduce the exact bug — a seat replying "I
+    // cannot see what you mean" — except now it would look like the feature
+    // had worked.
+    const { registry, seen } = fakeRegistry(() => ({ text: 'ok' }))
+    const rooms = new RoomManager({ registry, emit: () => {} })
+
+    const room = rooms.open(
+      '/tmp/repo',
+      [{ ...SEAT, profile: 'Sceptic' }, { ...SEAT, profile: 'Auditor' }],
+      CAPS,
+    )
+    await expect(rooms.send(room.id, '@auditor check what @sceptic said')).rejects.toThrow(
+      /has not said anything yet/,
+    )
+    expect(seen).toHaveLength(0)
+    expect(rooms.get(room.id)?.turns).toHaveLength(0)
+  })
+
   it('advances seat to seat, each hearing the one before', async () => {
     // Round-robin: the mode where seats actually talk to each other rather
     // than answering the same question in parallel.

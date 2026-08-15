@@ -20,6 +20,7 @@ describe('addressing', () => {
     // this is also what makes an unaddressed message behave as it always has.
     expect(parseAddress('what does this repo do?', seats)).toEqual({
       seatIds: ['s1', 's2'],
+      contextSeatIds: [],
       body: 'what does this repo do?',
     })
   })
@@ -27,6 +28,7 @@ describe('addressing', () => {
   it('addresses one seat and strips the mention', () => {
     expect(parseAddress('@reviewer check that claim', seats)).toEqual({
       seatIds: ['s2'],
+      contextSeatIds: [],
       body: 'check that claim',
     })
   })
@@ -34,12 +36,17 @@ describe('addressing', () => {
   it('addresses several seats at once', () => {
     expect(parseAddress('@claude @reviewer go', seats)).toEqual({
       seatIds: ['s1', 's2'],
+      contextSeatIds: [],
       body: 'go',
     })
   })
 
   it('treats @all as the room', () => {
-    expect(parseAddress('@all go', seats)).toEqual({ seatIds: ['s1', 's2'], body: 'go' })
+    expect(parseAddress('@all go', seats)).toEqual({
+      seatIds: ['s1', 's2'],
+      contextSeatIds: [],
+      body: 'go',
+    })
   })
 
   it('matches a name whatever its casing', () => {
@@ -54,12 +61,52 @@ describe('addressing', () => {
   })
 
   it('only reads mentions at the start, so prose keeps its @ signs', () => {
-    // "email me @ work" and "the @reviewer decorator" are text. Addressing
-    // stops at the first token that is not a mention.
+    // Addressing stops at the first token that is not a mention: a mention
+    // further in never changes WHO answers.
     expect(parseAddress('ask the @reviewer about it', seats)).toEqual({
       seatIds: ['s1', 's2'],
+      contextSeatIds: ['s2'],
       body: 'ask the @reviewer about it',
     })
+  })
+
+  it('reads a mention mid-sentence as whose turn to include', () => {
+    // Leading mentions choose who speaks; mid-sentence mentions choose what
+    // they see. The sentence somebody naturally types — "@reviewer check the
+    // claims @claude just made" — then means what it looks like it means.
+    expect(parseAddress('@reviewer check the claims @claude just made', seats)).toEqual({
+      seatIds: ['s2'],
+      contextSeatIds: ['s1'],
+      body: 'check the claims @claude just made',
+    })
+  })
+
+  it('ignores an unknown name mid-sentence rather than refusing', () => {
+    // The asymmetry is deliberate. A bad name at the START changes who
+    // answers and costs a turn per seat, so it is refused. Mid-sentence it is
+    // ordinary prose — an email address, a decorator, a handle — and refusing
+    // would make the room reject sentences for containing an @.
+    expect(parseAddress('mail me @ work about the @revewer thing', seats)).toEqual({
+      seatIds: ['s1', 's2'],
+      contextSeatIds: [],
+      body: 'mail me @ work about the @revewer thing',
+    })
+  })
+
+  it('reports a mentioned seat even when it is the one speaking', () => {
+    // Parsing says what was mentioned; who is shown what is decided per
+    // speaker, because a seat never needs its own words relayed back and the
+    // other seats in the same message do. Collapsing that here would mean
+    // "@all what about @sceptic's point" silently starved everybody else.
+    expect(parseAddress('@reviewer expand on what @reviewer said', seats).contextSeatIds).toEqual([
+      's2',
+    ])
+  })
+
+  it('strips punctuation from a mid-sentence mention', () => {
+    // "@claude's point" and "@claude," are how people actually write.
+    expect(parseAddress('@reviewer is @claude, right?', seats).contextSeatIds).toEqual(['s1'])
+    expect(parseAddress("@reviewer take @claude's point", seats).contextSeatIds).toEqual(['s1'])
   })
 
   it('refuses a message that is nothing but mentions', () => {

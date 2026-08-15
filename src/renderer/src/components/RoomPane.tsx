@@ -247,7 +247,11 @@ export function RoomPane({
         {turns.length === 0 ? (
           <Empty
             title={`${room.seats.map((s) => `@${s.name}`).join(', ')} seated`}
-            body="Say something and every seat answers, independently. Address one with @name."
+            body={
+              room.seats.length > 1
+                ? 'Say something and every seat answers independently. Start with @name to ask one of them; name a seat mid-sentence to show them what it said.'
+                : 'Say something. The seat reads this folder and answers; nothing here can change a file.'
+            }
             compact
           />
         ) : null}
@@ -271,7 +275,7 @@ export function RoomPane({
               : room.status === 'exhausted'
                 ? 'Budget spent — raise it to continue.'
                 : room.seats.length > 1
-                  ? 'Say something to the room, or @name one seat…'
+                  ? 'Everyone answers. @name asks one; naming a seat mid-sentence shows them its last turn.'
                   : 'Say something…'
           }
           value={draft}
