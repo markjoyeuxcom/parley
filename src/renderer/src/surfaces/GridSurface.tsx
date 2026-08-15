@@ -484,12 +484,26 @@ export function GridSurface(): ReactNode {
 
   const runSkillOnSlot = async (slotId: Id, skill: Skill): Promise<void> => {
     const slot = slots[slotId]
-    if (!slot?.paneId) {
+    if (!slot) return
+    // A room takes a skill as what the person said — the prompt lands on the
+    // transcript as their turn. Checked before the paneId guard below, which a
+    // room can never satisfy and which used to tell you to start something
+    // that was already running.
+    if (slot.kind === 'room') {
+      if (!slot.roomId) {
+        notify('warn', 'Start this room before sending a skill to it.')
+        return
+      }
+      const done = await attempt(() => api.runSkillInRoom(slot.roomId as Id, skill.id))
+      if (done) notify('info', `Sent “${skill.name}” to the room.`)
+      return
+    }
+    if (!slot.paneId) {
       notify('warn', 'Start this pane before sending a skill to it.')
       return
     }
     if (slot.kind === 'shell') {
-      notify('warn', `“${skill.name}” is a prompt — drop it on a Claude or Codex pane.`)
+      notify('warn', `“${skill.name}” is a prompt — drop it on an agent pane or a room.`)
       return
     }
     const done = await attempt(() => api.runSkill(slot.paneId as Id, skill.id))
@@ -923,7 +937,7 @@ export function GridSurface(): ReactNode {
         )}
         <div className="spacer" />
         <span className="dimmer" style={{ fontSize: 'var(--text-micro)', flexShrink: 0 }}>
-          Drag onto an agent pane
+          Drag onto an agent pane or a room
         </span>
       </div>
 

@@ -161,7 +161,21 @@ export const SaveTranscriptReq = z.object({
   text: z.string().max(5_000_000),
 })
 
-export const RunSkillReq = z.object({ paneId: Id, skillId: Id })
+/**
+ * Where a skill lands.
+ *
+ * A discriminated target rather than an optional paneId: a skill reaches a
+ * pane as keystrokes into a live TUI and a room as a message to its seat, and
+ * those are different deliveries with different failure modes. Making the
+ * caller name which one keeps a room from ever being handed to `pty.submit`.
+ */
+export const SkillTarget = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('pane'), paneId: Id }),
+  z.object({ kind: z.literal('room'), roomId: Id }),
+])
+export type SkillTarget = z.infer<typeof SkillTarget>
+
+export const RunSkillReq = z.object({ target: SkillTarget, skillId: Id })
 export const SaveSkillReq = Skill.omit({ builtIn: true })
 
 export const SaveLayoutReq = z.object({

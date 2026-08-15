@@ -7,7 +7,7 @@ import { realpathSync } from 'node:fs'
 // register.ts and reaches the handlers through the context.
 import type { BrowserWindow } from 'electron'
 import { z } from 'zod'
-import { COMMANDS, type CliHealth, type CommandName, type PaneIdentity } from '@shared/ipc'
+import { COMMANDS, type CliHealth, type CommandName, type PaneIdentity, type SkillTarget } from '@shared/ipc'
 import type { AppEvent } from '@shared/events'
 import {
   MAX_PANES,
@@ -721,10 +721,23 @@ const HANDLERS: Record<CommandName, Handler> = {
     })
   },
   'skill.run': (p, ctx) => {
-    const { paneId, skillId } = p as { paneId: string; skillId: string }
+    const { target, skillId } = p as { target: SkillTarget; skillId: string }
     const skill = ctx.manager.repo.getSkill(skillId)
     if (!skill) throw new Error('no such skill')
-    ctx.pty.submit(paneId, skill.prompt)
+    if (target.kind === 'room') {
+      const room = ctx.rooms.get(target.roomId)
+      if (!room) throw new RequestError('no such room')
+      if (room.status !== 'idle') {
+        throw new RequestError('that room is already waiting on a reply')
+      }
+      // A skill is a prompt, so in a room it is simply what the person said —
+      // it lands on the transcript as their turn, exactly as typing it would.
+      void ctx.rooms.send(target.roomId, skill.prompt).catch(() => {
+        /* The engine records failures on the turn. */
+      })
+      return { ok: true }
+    }
+    ctx.pty.submit(target.paneId, skill.prompt)
     return { ok: true }
   },
 

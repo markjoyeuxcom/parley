@@ -3,6 +3,7 @@ import { Square, Send } from 'lucide-react'
 import type { AgentConfig, AgentProfile, Id, Room, RoomTurn } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import { api } from '../lib/api'
+import { parseMarkdown, type TextSpan } from '../lib/markdown'
 import { Empty } from './ui'
 
 /**
@@ -291,8 +292,85 @@ function RoomTurnView({
       ) : waiting ? (
         <div className="room__thinking">Thinking…</div>
       ) : (
-        <div className="room__body">{body}</div>
+        <Markdown text={body} />
       )}
     </div>
+  )
+}
+
+/**
+ * A reply, read rather than scanned.
+ *
+ * Rendering to React elements — never an HTML string — is what makes this safe
+ * to point at model output: there is no parse step that could produce markup,
+ * so the whole injection class is closed by construction rather than by
+ * sanitising.
+ *
+ * The human's own turns go through the same renderer. Somebody pasting a path
+ * in backticks should see it set as code in their own message too, and having
+ * one path means the transcript cannot develop two typographies.
+ */
+function Markdown({ text }: { text: string }): ReactNode {
+  const blocks = useMemo(() => parseMarkdown(text), [text])
+
+  return (
+    <div className="room__body">
+      {blocks.map((block, index) => {
+        const key = `${block.kind}-${index}`
+        if (block.kind === 'code') {
+          return (
+            <pre className="room__code" key={key}>
+              <code>{block.text}</code>
+            </pre>
+          )
+        }
+        if (block.kind === 'heading') {
+          // Capped at h4 and styled by level rather than by tag size: a room
+          // is not a document, and an h1 inside a pane would outweigh the
+          // app's own chrome.
+          const Tag = (`h${Math.min(block.level + 2, 6)}`) as 'h3'
+          return (
+            <Tag className={`room__heading room__heading--${block.level}`} key={key}>
+              <Spans spans={block.spans} />
+            </Tag>
+          )
+        }
+        if (block.kind === 'list') {
+          const Tag = block.ordered ? 'ol' : 'ul'
+          return (
+            <Tag className="room__list" key={key}>
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex}>
+                  <Spans spans={item} />
+                </li>
+              ))}
+            </Tag>
+          )
+        }
+        return (
+          <p className="room__para" key={key}>
+            <Spans spans={block.spans} />
+          </p>
+        )
+      })}
+    </div>
+  )
+}
+
+function Spans({ spans }: { spans: TextSpan[] }): ReactNode {
+  return (
+    <>
+      {spans.map((span, index) => {
+        if (span.kind === 'strong') return <strong key={index}>{span.text}</strong>
+        if (span.kind === 'em') return <em key={index}>{span.text}</em>
+        if (span.kind === 'code')
+          return (
+            <code className="room__inline-code" key={index}>
+              {span.text}
+            </code>
+          )
+        return <span key={index}>{span.text}</span>
+      })}
+    </>
   )
 }

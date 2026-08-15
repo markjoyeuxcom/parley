@@ -455,7 +455,10 @@ export const api = {
   // Skills
   listSkills: (): Promise<Skill[]> => bridge().invoke('skill.list'),
   saveSkill: (skill: Omit<Skill, 'builtIn'>): Promise<Skill> => bridge().invoke('skill.save', skill),
-  runSkill: (paneId: Id, skillId: Id): Promise<unknown> => bridge().invoke('skill.run', { paneId, skillId }),
+  runSkillInRoom: (roomId: Id, skillId: Id): Promise<{ ok: boolean }> =>
+    bridge().invoke('skill.run', { target: { kind: 'room', roomId }, skillId }),
+  runSkill: (paneId: Id, skillId: Id): Promise<unknown> =>
+    bridge().invoke('skill.run', { target: { kind: 'pane', paneId }, skillId }),
 
   // Dialogs
   pickDirectory: (title = 'Choose a folder'): Promise<{ path: string | null }> =>

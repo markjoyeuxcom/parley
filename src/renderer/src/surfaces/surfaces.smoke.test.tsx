@@ -1072,6 +1072,52 @@ describe('mounted-surface smoke', () => {
     expect(await screen.findByPlaceholderText('Say something…')).toBeTruthy()
   })
 
+  it('a skill dropped on a room reaches its seat, not the pty', async () => {
+    // The m2 regression: rooms became a pane kind that skills silently
+    // rejected, with a message telling you to start something already running.
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    const room = {
+      id: 'room-1',
+      cwd: '/tmp/smoke-repo',
+      seat: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+      status: 'idle' as const,
+      turns: [],
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
+      mock: true,
+      createdAt: 1_700_000_000_000,
+    }
+    installBridge({
+      'skill.list': () => [
+        { id: 'skill-1', name: 'Orient me', description: '', prompt: 'Orient me.', vendorHint: null, builtIn: true },
+      ],
+      'room.open': () => room,
+      'room.get': () => room,
+      'skill.run': (payload) => {
+        invoked.push({ name: 'skill.run', payload })
+        return { ok: true }
+      },
+    })
+
+    render(
+      <StoreProvider>
+        <GridSurface />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Room' }))
+    await screen.findByPlaceholderText('Say something…')
+
+    // Double-clicking a skill runs it on the focused slot — the room.
+    fireEvent.doubleClick(await screen.findByText('Orient me'))
+
+    await waitFor(() => expect(invoked).toHaveLength(1))
+    // Addressed as a room, so main can never hand it to pty.submit.
+    expect(invoked[0]?.payload).toMatchObject({
+      skillId: 'skill-1',
+      target: { kind: 'room', roomId: 'room-1' },
+    })
+  })
+
   it('the roster lists, edits and forgets a profile without leaving the Grid', async () => {
     // Profiles could be saved and chosen from a seat picker since schema 32,
     // and never listed, corrected or retired — profile.forget shipped with no
