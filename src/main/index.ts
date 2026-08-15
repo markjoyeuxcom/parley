@@ -116,6 +116,9 @@ async function bootstrap(): Promise<void> {
   // interrupted local run, the work may be sitting finished on a host.
   repo.reconcileRemoteRuns()
   repo.reconcileWorkspaces()
+  // Rooms nobody spoke in are not a record of anything. One that was used
+  // always survives, closed or not.
+  repo.reconcileRooms()
 
   const registry = new AgentRegistry()
 
@@ -167,10 +170,10 @@ async function bootstrap(): Promise<void> {
     onChanged: (changed) => emit({ type: 'preview.changed', preview: changed }),
   })
 
-  // Rooms hold no record yet (m4), so they are pure process state like the
-  // pane registry — and like it, they die with the app rather than surviving
-  // as rows claiming a conversation that has nothing behind it.
-  rooms = new RoomManager({ registry, emit })
+  // The manager holds the live half — which seats are mid-turn, which vendor
+  // thread each resumes on. Everything durable is written through to the
+  // record as it happens.
+  rooms = new RoomManager({ registry, repo, emit })
 
   registerIpc({
     manager,

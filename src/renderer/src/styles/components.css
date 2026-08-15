@@ -1219,3 +1219,26 @@ button.chip:hover {
   font-size: var(--text-small);
   color: var(--text-secondary);
 }
+
+/* A full-width row that is a button — a list where picking is the only action.
+   Used by the reopen-a-room picker; deliberately quiet, because the list is
+   the content and the affordance is that the whole row responds. */
+.row-button {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line-faint);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--text-small);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--fast) var(--ease);
+}
+
+.row-button:hover {
+  border-color: var(--line-strong);
+}

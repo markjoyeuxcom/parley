@@ -3,8 +3,8 @@
 The arc that makes the Grid the whole product: multi-agent conversation as a
 first-class pane, and the governed engine retired behind it.
 
-**Status.** **m1–m3 landed 2026-08-15**; m4–m6 planned. Written against schema
-v32, which this arc has not yet needed to move — rooms are in memory until m4.
+**Status.** **m1–m4 landed** (m1–m3.2 on 2026-08-15, m4 on 2026-08-16);
+m5–m6 planned. Schema is at **v33**: rooms persist.
 Read `AGENTS.md` first — some of its invariants survive this arc and some are
 deliberately retired, and the difference is stated in "What the invariants
 become" below.
@@ -113,16 +113,23 @@ room to end in one.
 
 ### Tables — 9 of 38
 
-Surviving: `meta`, `grid_layouts`, `skills`, `agent_profiles`, `sessions`,
-`turns`, `agent_threads`, `verdicts`, `search_index`.
+Surviving: `meta`, `grid_layouts`, `skills`, `agent_profiles`, `rooms`,
+`room_turns`, `verdicts`, `search_index`.
 
-`agent_threads` (PK `session_id, seat`) is reused verbatim — it is what keeps
-token cost linear in turn count, and a room needs exactly that.
+**Corrected at m4.** This plan said rooms would become `sessions` and `turns`
+rows. They did not, and the reason is in the schema comment: a human turn has
+no vendor and `turns.vendor` is NOT NULL, `turns.seat` is an integer index
+into a two-sided seating order while a room seat has a name, and
+`sessions.matter` is the question a debate exists to settle. Each is
+survivable alone; together they would have made rooms a tenant of a schema
+shaped for something else — and since the sessions tables are scheduled for
+deletion, a repurposed half of them would have to survive as legacy instead of
+going with the rest. `agent_threads` is not reused either: vendor resume ids
+deliberately do not persist, because a stale one fails at the next turn in a
+way that looks like the seat breaking rather than the thread being gone.
 
-`search_index` arrives nearly free: its triggers already cover `sessions` and
-`turns`, so full-text search across every agent conversation lands with m4
-rather than as its own project. See "Schema notes" for the one trigger that
-needs attention.
+`search_index` still arrives nearly free — the same trigger shape, pointed at
+`room_turns`, so every room turn is searchable by the seat that said it.
 
 Going: everything else — the ledger tables, plans, milestones, approvals, loops,
 backlog, learnings, foreman proposals, worktrees, envelopes, acceptances,

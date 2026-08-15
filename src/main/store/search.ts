@@ -1,4 +1,7 @@
+import type { SearchKind } from '@shared/domain'
 import type { Db } from './db'
+
+export type { SearchKind }
 
 /**
  * Asking the record a question in words.
@@ -8,15 +11,6 @@ import type { Db } from './db'
  * spread across a debate, a milestone's intent, a reviewer's finding and a
  * backlog item filed six weeks later, in four tables nothing joins.
  */
-
-export type SearchKind =
-  | 'session'
-  | 'turn'
-  | 'plan'
-  | 'milestone'
-  | 'finding'
-  | 'backlog'
-  | 'learning'
 
 export interface SearchHit {
   kind: SearchKind

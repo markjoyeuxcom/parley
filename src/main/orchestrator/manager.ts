@@ -473,6 +473,7 @@ export class Manager {
         sessionId: null as Id | null,
         planId: null as Id | null,
         milestoneId: null as Id | null,
+        roomId: null as Id | null,
         repoPath: null as string | null,
       }
       switch (hit.kind) {
@@ -481,6 +482,9 @@ export class Manager {
         case 'turn':
         case 'finding':
           return { ...base, sessionId: hit.scope }
+        // A room turn's scope IS its room, and the room is the only door.
+        case 'room-turn':
+          return { ...base, roomId: hit.scope }
         case 'plan': {
           const plan = this.repo.getPlan(hit.refId)
           return { ...base, planId: hit.refId, sessionId: plan?.sessionId ?? null, repoPath: hit.scope }

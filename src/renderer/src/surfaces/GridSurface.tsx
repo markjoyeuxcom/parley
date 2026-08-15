@@ -8,6 +8,7 @@ import {
   type Id,
   type LayoutNode,
   type PaneKind,
+  type Room,
   type RoomCaps,
   type Skill,
   type SlotKind,
@@ -99,6 +100,8 @@ export function GridSurface(): ReactNode {
   const [renaming, setRenaming] = useState<{ slotId: Id; value: string } | null>(null)
   const [broadcasting, setBroadcasting] = useState(false)
   const [roster, setRoster] = useState(false)
+  /** The slot a recorded room is being chosen for. */
+  const [reopening, setReopening] = useState<Id | null>(null)
   /** Null = closed; a string = the live query against the focused pane. */
   const [finding, setFinding] = useState<string | null>(null)
   const [maximizedSlot, setMaximizedSlot] = useState<Id | null>(null)
@@ -748,9 +751,14 @@ export function GridSurface(): ReactNode {
                             controls that quietly do nothing. */}
                         {slot.kind === 'room' ? (
                           !slot.roomId ? (
-                            <MenuItem onClick={() => { close(); void startSlot(id) }}>
-                              Start
-                            </MenuItem>
+                            <>
+                              <MenuItem onClick={() => { close(); void startSlot(id) }}>
+                                Start a new room
+                              </MenuItem>
+                              <MenuItem onClick={() => { close(); setReopening(id) }}>
+                                Reopen a room…
+                              </MenuItem>
+                            </>
                           ) : null
                         ) : (
                           <>
@@ -1005,6 +1013,24 @@ export function GridSurface(): ReactNode {
       ) : null}
 
       {roster ? <RosterDialog onClose={() => setRoster(false)} /> : null}
+
+      {reopening ? (
+        <ReopenRoomDialog
+          onClose={() => setReopening(null)}
+          onPick={(roomId) => {
+            const slotId = reopening
+            setReopening(null)
+            void attempt(() => api.reopenRoom(roomId)).then((room) => {
+              if (!room) return
+              setSlots((current) => {
+                const slot = current[slotId]
+                return slot ? { ...current, [slotId]: { ...slot, roomId: room.id } } : current
+              })
+              setFocusedSlot(slotId)
+            })
+          }}
+        />
+      ) : null}
 
       {renaming ? (
         <Dialog
@@ -1368,5 +1394,62 @@ function Handle({
         window.addEventListener('mouseup', up)
       }}
     />
+  )
+}
+
+/**
+ * Rooms in the record, for putting one back in a slot.
+ *
+ * Saved layouts deliberately do NOT carry a room id — a layout describes what
+ * each pane IS, not which conversation it held, and minting fresh slots is the
+ * rule that keeps a restored arrangement from resurrecting dead process ids.
+ * So reopening is its own act: you pick the conversation you meant.
+ */
+function ReopenRoomDialog({
+  onClose,
+  onPick,
+}: {
+  onClose: () => void
+  onPick: (roomId: Id) => void
+}): ReactNode {
+  const [rooms, setRooms] = useState<Room[] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void api
+      .listRooms()
+      .then((rows) => {
+        if (!cancelled) setRooms(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        if (!cancelled) setRooms([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  return (
+    <Dialog title="Reopen a room" subtitle="Its transcript comes back; no seat starts." onClose={onClose}>
+      {rooms === null ? (
+        <Empty title="Reading the record…" compact />
+      ) : rooms.length === 0 ? (
+        <Empty title="No rooms recorded yet" body="Open one and say something." compact />
+      ) : (
+        <div className="stack stack--tight">
+          {rooms.map((room) => (
+            <button key={room.id} className="row-button" onClick={() => onPick(room.id)}>
+              <span className="spacer" style={{ textAlign: 'left' }}>
+                {shortPath(room.cwd)}
+                {room.mock ? ' · mock' : ''}
+              </span>
+              <span className="dimmer" style={{ fontSize: 'var(--text-micro)' }}>
+                {room.seats.map((seat) => `@${seat.name}`).join(' ')}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </Dialog>
   )
 }

@@ -463,6 +463,9 @@ const HANDLERS: Record<CommandName, Handler> = {
     return ctx.rooms.open(cwd, seats, caps)
   },
   'room.get': (p, ctx) => ctx.rooms.get((p as { roomId: string }).roomId) ?? null,
+  /** Every room the record holds, newest first. Turns are not loaded. */
+  'room.list': (_p, ctx) => ctx.rooms.listStored(),
+  'room.reopen': (p, ctx) => ctx.rooms.reopen((p as { roomId: string }).roomId),
   'room.send': (p, ctx) => {
     const { roomId, text } = p as { roomId: string; text: string }
     const room = ctx.rooms.get(roomId)

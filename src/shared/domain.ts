@@ -1302,6 +1302,27 @@ export const Pane = z.object({
 })
 export type Pane = z.infer<typeof Pane>
 
+/**
+ * What kind of row a search hit came from.
+ *
+ * Here rather than beside the FTS query because both the store that produces
+ * hits and the IPC contract that ships them need it, and the two drifted the
+ * moment a new kind was added — the duplicate silently type-errored at the
+ * boundary instead of at either definition.
+ */
+export const SearchKind = z.enum([
+  'session',
+  'turn',
+  'plan',
+  'milestone',
+  'finding',
+  'backlog',
+  'learning',
+  /** One thing said in a room — the only place a long argument lives. */
+  'room-turn',
+])
+export type SearchKind = z.infer<typeof SearchKind>
+
 // ─── Rooms (free-flow agent conversation) ────────────────────────────────────
 
 /**

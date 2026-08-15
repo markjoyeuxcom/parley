@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AppEvent } from '@shared/events'
 import { emptyUsage } from '@shared/usage'
 import type { AgentRegistry, RunRequest, RunResult } from '@main/agents'
+import { openDatabase } from '@main/store/db'
+import { Repo } from '@main/store/repo'
 import { RoomManager, RoomError } from './manager'
+
+/** A real store — rooms write through, so a fake would test nothing. */
+const store = (): Repo => new Repo(openDatabase(':memory:'))
 
 /**
  * Free-flow rooms.
@@ -54,7 +59,7 @@ describe('rooms', () => {
     // said it — not retroactively, once a reply arrives to attach it to.
     const events: AppEvent[] = []
     const { registry } = fakeRegistry(() => ({ text: 'An answer.' }))
-    const rooms = new RoomManager({ registry, emit: (event) => events.push(event) })
+    const rooms = new RoomManager({ registry, repo: store(), emit: (event) => events.push(event) })
 
     const room = rooms.open('/tmp/repo', [SEAT], CAPS)
     const sending = rooms.send(room.id, 'A question.')
@@ -68,7 +73,7 @@ describe('rooms', () => {
   it('streams the reply and closes the turn with the whole text', async () => {
     const events: AppEvent[] = []
     const { registry } = fakeRegistry(() => ({ text: 'one two three' }))
-    const rooms = new RoomManager({ registry, emit: (event) => events.push(event) })
+    const rooms = new RoomManager({ registry, repo: store(), emit: (event) => events.push(event) })
 
     const room = rooms.open('/tmp/repo', [SEAT], CAPS)
     await rooms.send(room.id, 'go')
@@ -96,7 +101,7 @@ describe('rooms', () => {
     // happening NOW, and the durable account of the turn is the turn.
     const events: AppEvent[] = []
     const { registry } = fakeRegistry(() => ({ text: 'done' }))
-    const rooms = new RoomManager({ registry, emit: (event) => events.push(event) })
+    const rooms = new RoomManager({ registry, repo: store(), emit: (event) => events.push(event) })
 
     const room = rooms.open('/tmp/repo', [SEAT], CAPS)
     await rooms.send(room.id, 'go')
@@ -117,7 +122,7 @@ describe('rooms', () => {
       text: 'ok',
       resumeId: req.resumeId ? 'thread-1' : 'thread-1',
     }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT], CAPS)
     await rooms.send(room.id, 'first')
@@ -132,7 +137,7 @@ describe('rooms', () => {
 
   it('reads the folder it sits in, and never writes', async () => {
     const { registry, seen } = fakeRegistry(() => ({ text: 'ok' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT], CAPS)
     await rooms.send(room.id, 'go')
@@ -145,7 +150,7 @@ describe('rooms', () => {
 
   it('refuses a tool-less vendor as a seat, at open and at reseat', () => {
     const { registry } = fakeRegistry(() => ({ text: 'ok' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     expect(() => rooms.open('/tmp/repo', [{ ...SEAT, vendor: 'agy' }], CAPS)).toThrow(/tool-less/)
 
@@ -158,7 +163,7 @@ describe('rooms', () => {
     // work, and losing access to it because one turn errored is unrecoverable
     // in a way the error itself is not.
     const { registry } = fakeRegistry(() => ({ error: 'the CLI exited 1', exitCode: 1 }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT], CAPS)
     await rooms.send(room.id, 'go')
@@ -169,7 +174,7 @@ describe('rooms', () => {
 
   it('refuses a second send while a seat is mid-turn', async () => {
     const { registry } = fakeRegistry(() => ({ text: 'ok' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT], CAPS)
     const first = rooms.send(room.id, 'one')
@@ -184,7 +189,7 @@ describe('rooms', () => {
       text: 'ok',
       usage: { ...emptyUsage(), inputTokens: 10, outputTokens: 5, costUsd: 0.5 },
     }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT], CAPS)
     await rooms.send(room.id, 'one')
@@ -208,7 +213,7 @@ describe('rooms', () => {
           }),
       }),
     } as unknown as AgentRegistry
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT], CAPS)
     const sending = rooms.send(room.id, 'go')
@@ -222,7 +227,7 @@ describe('rooms', () => {
 
   it('names its seats, disambiguating a repeat', () => {
     const { registry } = fakeRegistry(() => ({ text: 'ok' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT, { ...SEAT, profile: 'Fast reviewer' }, SEAT], CAPS)
     expect(room.seats.map((s) => s.name)).toEqual(['claude', 'fast-reviewer', 'claude-2'])
@@ -233,7 +238,7 @@ describe('rooms', () => {
     // answering the same question must not see each other's replies, or the
     // second one is agreeing with the first rather than answering.
     const { registry, seen } = fakeRegistry(() => ({ text: 'an answer' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT, { ...SEAT, profile: 'Reviewer' }], CAPS)
     const turns = await rooms.send(room.id, 'what does this do?')
@@ -248,7 +253,7 @@ describe('rooms', () => {
 
   it('sends an addressed message to that seat alone', async () => {
     const { registry, seen } = fakeRegistry(() => ({ text: 'ok' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT, { ...SEAT, profile: 'Reviewer' }], CAPS)
     const turns = await rooms.send(room.id, '@reviewer check that')
@@ -262,7 +267,7 @@ describe('rooms', () => {
 
   it('refuses a misaddressed message without spending anything', async () => {
     const { registry, seen } = fakeRegistry(() => ({ text: 'ok' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT], CAPS)
     await expect(rooms.send(room.id, '@nobody go')).rejects.toThrow(/no seat called/)
@@ -278,7 +283,7 @@ describe('rooms', () => {
     // was, and it correctly answered that it could not see them.
     let n = 0
     const { registry, seen } = fakeRegistry(() => ({ text: `answer ${(n += 1)}` }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open(
       '/tmp/repo',
@@ -303,7 +308,7 @@ describe('rooms', () => {
     // paying twice for the same sentence.
     let n = 0
     const { registry, seen } = fakeRegistry(() => ({ text: `answer ${(n += 1)}` }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open(
       '/tmp/repo',
@@ -323,7 +328,7 @@ describe('rooms', () => {
     // cannot see what you mean" — except now it would look like the feature
     // had worked.
     const { registry, seen } = fakeRegistry(() => ({ text: 'ok' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open(
       '/tmp/repo',
@@ -342,7 +347,7 @@ describe('rooms', () => {
     // than answering the same question in parallel.
     let n = 0
     const { registry, seen } = fakeRegistry(() => ({ text: `reply ${(n += 1)}` }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT, { ...SEAT, profile: 'Reviewer' }], CAPS)
     await rooms.send(room.id, '@claude open')
@@ -362,7 +367,7 @@ describe('rooms', () => {
     // Invariant 7, kept in substance: the bound is checked before dispatch,
     // reaching it is exhausted rather than success, and a seat never sees it.
     const { registry, seen } = fakeRegistry(() => ({ text: 'ok' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT], { turns: 2, costUsd: 0 })
     await rooms.send(room.id, 'one')
@@ -382,7 +387,7 @@ describe('rooms', () => {
     // Two seats and one turn left is not "answer with one of them": which
     // seat got dropped would be arbitrary, and the answer would look complete.
     const { registry, seen } = fakeRegistry(() => ({ text: 'ok' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT, { ...SEAT, profile: 'Reviewer' }], {
       turns: 1,
@@ -397,7 +402,7 @@ describe('rooms', () => {
       text: 'ok',
       usage: { ...emptyUsage(), costUsd: 0.4 },
     }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT], { turns: 100, costUsd: 1 })
     await rooms.send(room.id, 'one')
@@ -410,7 +415,7 @@ describe('rooms', () => {
 
   it('raising the budget revives an exhausted room', async () => {
     const { registry } = fakeRegistry(() => ({ text: 'ok' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT], { turns: 1, costUsd: 0 })
     await rooms.send(room.id, 'one')
@@ -423,7 +428,7 @@ describe('rooms', () => {
 
   it('advance stops on the budget rather than running to its round count', async () => {
     const { registry, seen } = fakeRegistry(() => ({ text: 'ok' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT, { ...SEAT, profile: 'Reviewer' }], {
       turns: 3,
@@ -437,14 +442,48 @@ describe('rooms', () => {
     expect(rooms.get(room.id)?.status).toBe('exhausted')
   })
 
-  it('closing forgets the room; a send afterwards is refused, not ignored', async () => {
+  it('closing lets go of the room without losing it', async () => {
+    // Closing a pane is not a decision to destroy hours of reading. The live
+    // room goes; the transcript stays readable, and a send is refused until
+    // somebody deliberately reopens it.
     const { registry } = fakeRegistry(() => ({ text: 'ok' }))
-    const rooms = new RoomManager({ registry, emit: () => {} })
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
 
     const room = rooms.open('/tmp/repo', [SEAT], CAPS)
+    await rooms.send(room.id, 'worth keeping')
     rooms.close(room.id)
 
-    expect(rooms.get(room.id)).toBeUndefined()
     await expect(rooms.send(room.id, 'go')).rejects.toThrow(/no such room/)
+    expect(rooms.get(room.id)?.turns[0]?.text).toBe('worth keeping')
+  })
+
+  it('reopens a room with its transcript and no seat running', async () => {
+    // The saved-layout rule applied to seats: nothing begins against a
+    // subscription without being asked for. And the vendor thread does NOT
+    // come back — a stale resume id fails at the next turn in a way that
+    // looks like the seat breaking rather than the thread being gone.
+    const { registry, seen } = fakeRegistry(() => ({ text: 'an answer', resumeId: 'thread-1' }))
+    const repo = store()
+    const rooms = new RoomManager({ registry, repo, emit: () => {} })
+
+    const room = rooms.open('/tmp/repo', [SEAT], CAPS)
+    await rooms.send(room.id, 'first')
+    rooms.close(room.id)
+
+    // A fresh manager over the same record: what a restart looks like.
+    const after = new RoomManager({ registry, repo, emit: () => {} })
+    const reopened = after.reopen(room.id)
+    expect(reopened.turns.map((t) => t.text)).toEqual(['first', 'an answer'])
+    expect(reopened.status).toBe('idle')
+    expect(reopened.turnsSpent).toBe(1)
+
+    await after.send(room.id, 'second')
+    expect(seen[1]?.resumeId ?? null).toBe(null)
+  })
+
+  it('refuses to reopen something that was never recorded', async () => {
+    const { registry } = fakeRegistry(() => ({ text: 'ok' }))
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
+    expect(() => rooms.reopen('room-nope')).toThrow(/no such room/)
   })
 })

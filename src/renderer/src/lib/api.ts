@@ -350,6 +350,10 @@ export const api = {
   advanceRoom: (roomId: Id, turns: number): Promise<{ ok: boolean }> =>
     bridge().invoke('room.advance', { roomId, turns }),
   getRoom: (roomId: Id): Promise<Room | null> => bridge().invoke('room.get', { roomId }),
+  /** Rooms in the record, newest first. Turns are not included. */
+  listRooms: (): Promise<Room[]> => bridge().invoke('room.list'),
+  /** Brings a recorded room back, with its transcript and no seat running. */
+  reopenRoom: (roomId: Id): Promise<Room> => bridge().invoke('room.reopen', { roomId }),
   /**
    * Fire-and-forget by design: the seat's turn can run for minutes and the
    * pane learns what happened from the room.turn.* events, so awaiting the

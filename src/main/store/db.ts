@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 32
+export const SCHEMA_VERSION = 33
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -618,6 +618,57 @@ CREATE TABLE IF NOT EXISTS remote_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_remote_runs_state ON remote_runs(state, created_at);
 
+-- A free-flow room, and everything said in it.
+--
+-- Its own tables rather than the sessions/turns pair, which ROOMS.md planned
+-- for and which the room model then argued out of. The columns do not fit: a
+-- human turn has no vendor and turns.vendor is NOT NULL; turns.seat is an
+-- integer index into a two-sided seating order while a room seat has a name;
+-- sessions.matter is the question a debate exists to settle and a room has
+-- none. Every one of those is survivable alone and together they would make
+-- rooms a tenant of a schema shaped for something else — which matters
+-- because the sessions tables are scheduled for deletion, and a repurposed
+-- half of them would have to survive as legacy rather than going with the
+-- rest.
+--
+-- Only what cannot be recomputed is stored. Turns spent is the count of agent
+-- turns, usage is their sum, and status is idle unless the caps are spent —
+-- so none of them are columns, and none of them can drift from the turns they
+-- summarise. The same rule the holds queue and the in-flight list follow.
+CREATE TABLE IF NOT EXISTS rooms (
+  id         TEXT PRIMARY KEY,
+  cwd        TEXT NOT NULL,
+  -- RoomSeat[] as JSON: id, address name, and the seat's config.
+  seats      TEXT NOT NULL,
+  caps       TEXT NOT NULL,
+  mock       INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  -- When its pane was closed. The record survives: a long room is hours of
+  -- reading and real money, and closing a pane is not a decision to destroy
+  -- it. Startup drops only the ones that never held a turn.
+  closed_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_rooms_created ON rooms(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS room_turns (
+  id         TEXT PRIMARY KEY,
+  room_id    TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  idx        INTEGER NOT NULL,
+  author     TEXT NOT NULL,
+  -- The seat's name as of this turn, empty for a human. A name and not an id
+  -- for the journal's reason: what a seat was called when it spoke is a fact
+  -- that outlives the seat being renamed or removed.
+  seat       TEXT NOT NULL DEFAULT '',
+  vendor     TEXT,
+  profile    TEXT NOT NULL DEFAULT '',
+  text       TEXT NOT NULL DEFAULT '',
+  usage      TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at   INTEGER,
+  error      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_room_turns_room ON room_turns(room_id, idx);
+
 -- One index over everything anybody wrote down.
 --
 -- The record already answers "what is the state of this plan" perfectly and
@@ -736,6 +787,24 @@ CREATE TRIGGER IF NOT EXISTS search_learnings_au AFTER UPDATE ON learnings BEGIN
 END;
 CREATE TRIGGER IF NOT EXISTS search_learnings_ad AFTER DELETE ON learnings BEGIN
   DELETE FROM search_index WHERE kind = 'learning' AND ref_id = old.id;
+END;
+
+-- A room turn is indexed by the seat that said it, scoped to its room. The
+-- text arrives empty on insert and is filled when the turn ends, so the
+-- update trigger is the one that does the real work here.
+CREATE TRIGGER IF NOT EXISTS search_room_turns_ai AFTER INSERT ON room_turns BEGIN
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('room-turn', new.id, new.room_id,
+          CASE WHEN new.author = 'human' THEN 'You' ELSE '@' || new.seat END, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS search_room_turns_au AFTER UPDATE ON room_turns BEGIN
+  DELETE FROM search_index WHERE kind = 'room-turn' AND ref_id = old.id;
+  INSERT INTO search_index (kind, ref_id, scope, title, body)
+  VALUES ('room-turn', new.id, new.room_id,
+          CASE WHEN new.author = 'human' THEN 'You' ELSE '@' || new.seat END, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS search_room_turns_ad AFTER DELETE ON room_turns BEGIN
+  DELETE FROM search_index WHERE kind = 'room-turn' AND ref_id = old.id;
 END;
 `
 
@@ -1229,6 +1298,11 @@ export function migrate(db: Db): void {
     } catch {
       // Already present, because SCHEMA above created the table fresh.
     }
+  }
+  if (current < 33) {
+    // rooms and room_turns are additive — SCHEMA creates both, and their
+    // search triggers with them. Nothing to backfill: rooms did not exist
+    // before this version, so there is no earlier conversation to sweep in.
   }
   db.run(
     `INSERT INTO meta (key, value) VALUES ('schema_version', ?)

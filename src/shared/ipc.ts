@@ -14,6 +14,7 @@ import {
   PaneKind,
   RoomCaps,
   SavedLayoutNode,
+  type SearchKind,
   SessionKind,
   Skill,
   WorkPlanKind,
@@ -445,6 +446,8 @@ export const COMMANDS = {
     caps: RoomCaps,
   }),
   'room.get': z.object({ roomId: Id }),
+  'room.list': null,
+  'room.reopen': z.object({ roomId: Id }),
   'room.send': z.object({ roomId: Id, text: z.string().min(1).max(100_000) }),
   'room.setSeat': z.object({ roomId: Id, seat: AgentConfig }),
   'room.addSeat': z.object({ roomId: Id, seat: AgentConfig }),
@@ -516,7 +519,7 @@ export type CommandPayload<K extends CommandName> = (typeof COMMANDS)[K] extends
  * of the join in four components.
  */
 export interface RecordSearchHit {
-  kind: 'session' | 'turn' | 'plan' | 'milestone' | 'finding' | 'backlog' | 'learning'
+  kind: SearchKind
   refId: Id
   title: string
   /** The matching text, with the query's words marked by «…». */
@@ -524,6 +527,7 @@ export interface RecordSearchHit {
   sessionId: Id | null
   planId: Id | null
   milestoneId: Id | null
+  roomId: Id | null
   repoPath: string | null
 }
 

@@ -12,6 +12,7 @@ import {
   uniqueSeatName,
 } from '@shared/room'
 import type { AgentRegistry } from '@main/agents'
+import type { Repo } from '@main/store/repo'
 
 /**
  * Free-flow rooms.
@@ -45,7 +46,16 @@ import type { AgentRegistry } from '@main/agents'
  * **A failed turn is a recorded turn.** The transcript is the work; wedging a
  * room because one dispatch errored would lose something the error did not.
  *
- * In memory only. Persistence is m4.
+ * The record is the store; this holds the live half — which seats are mid-turn
+ * and which vendor thread each one resumes on. Everything durable is written
+ * through as it happens, so a crash mid-answer loses the answer and not the
+ * question.
+ *
+ * Resume ids deliberately do NOT persist. A vendor thread belongs to a CLI
+ * process's own history, and Parley cannot know whether it still exists after
+ * a restart — a stale one fails at the next turn, in a way that looks like the
+ * seat breaking rather than the thread being gone. A reopened room starts its
+ * seats fresh against a transcript they can read.
  */
 
 export class RoomError extends Error {}
@@ -55,6 +65,7 @@ const TURN_TIMEOUT_MS = 25 * 60 * 1000
 
 export interface RoomManagerDeps {
   registry: AgentRegistry
+  repo: Repo
   emit: (event: AppEvent) => void
 }
 
@@ -116,12 +127,40 @@ export class RoomManager {
       mock: this.deps.registry.mock,
       createdAt: Date.now(),
     }
+    this.deps.repo.createRoom({
+      id: room.id,
+      cwd: room.cwd,
+      seats: room.seats,
+      caps: room.caps,
+      mock: room.mock,
+    })
     this.rooms.set(room.id, { room, resumeIds: new Map(), inFlight: new Map() })
     return room
   }
 
+  /**
+   * Brings a room back from the record.
+   *
+   * Its seats are restored but nothing is running and no thread is resumed —
+   * the saved-layout rule, applied to seats: no CLI session begins against a
+   * subscription without somebody asking for one.
+   */
+  reopen(roomId: Id): Room {
+    const live = this.rooms.get(roomId)
+    if (live) return live.room
+    const stored = this.deps.repo.getRoom(roomId)
+    if (!stored) throw new RoomError('no such room')
+    this.rooms.set(roomId, { room: stored, resumeIds: new Map(), inFlight: new Map() })
+    return stored
+  }
+
+  /** Every room the record holds, newest first. Turns are not loaded. */
+  listStored(limit?: number): Room[] {
+    return this.deps.repo.listRooms(limit)
+  }
+
   get(roomId: Id): Room | undefined {
-    return this.rooms.get(roomId)?.room
+    return this.rooms.get(roomId)?.room ?? this.deps.repo.getRoom(roomId)
   }
 
   list(): Room[] {
@@ -148,6 +187,7 @@ export class RoomManager {
       ...live.room,
       seats: [{ ...existing, name: seatName(config), config }],
     }
+    this.deps.repo.setRoomSeats(roomId, live.room.seats)
     return live.room
   }
 
@@ -160,6 +200,7 @@ export class RoomManager {
       config,
     }
     live.room = { ...live.room, seats: [...live.room.seats, seat] }
+    this.deps.repo.setRoomSeats(roomId, live.room.seats)
     return live.room
   }
 
@@ -168,6 +209,7 @@ export class RoomManager {
     if (live.room.seats.length <= 1) throw new RoomError('a room needs at least one seat')
     live.resumeIds.delete(seatId)
     live.room = { ...live.room, seats: live.room.seats.filter((s) => s.id !== seatId) }
+    this.deps.repo.setRoomSeats(roomId, live.room.seats)
     return live.room
   }
 
@@ -181,6 +223,7 @@ export class RoomManager {
   setCaps(roomId: Id, caps: RoomCaps): Room {
     const live = this.require(roomId)
     live.room = { ...live.room, caps }
+    this.deps.repo.setRoomCaps(roomId, caps)
     if (live.room.status === 'exhausted' && this.exceeded(live.room, 1) === null) {
       live.room = { ...live.room, status: 'idle' }
     }
@@ -255,6 +298,7 @@ export class RoomManager {
       error: null,
     }
     this.append(live, said)
+    this.deps.repo.appendRoomTurn(roomId, said)
     this.deps.emit({ type: 'room.turn.ended', roomId, turn: said })
 
     const seats = live.room.seats.filter((seat) => seatIds.includes(seat.id))
@@ -351,6 +395,10 @@ export class RoomManager {
         error: null,
       }
       this.append(live, turn)
+      // Written when it STARTS, with no text. A crash mid-answer then loses
+      // the answer and not the question — and the question is the expensive
+      // half to reconstruct.
+      this.deps.repo.appendRoomTurn(roomId, turn)
       this.deps.emit({ type: 'room.turn.started', roomId, turn })
       return { seat, prompt, turn }
     })
@@ -418,6 +466,7 @@ export class RoomManager {
       endedAt: Date.now(),
       error: result.error,
     }
+    this.deps.repo.finishRoomTurn(done)
     if (!this.rooms.has(roomId)) return done
 
     if (result.resumeId) live.resumeIds.set(seat.id, result.resumeId)
@@ -440,11 +489,16 @@ export class RoomManager {
     for (const control of live.inFlight.values()) control.abort()
   }
 
+  /**
+   * Lets go of the live room. The record keeps everything said in it — a pane
+   * being closed is not a decision to destroy hours of reading.
+   */
   close(roomId: Id): void {
     const live = this.rooms.get(roomId)
     if (!live) return
     for (const control of live.inFlight.values()) control.abort()
     this.rooms.delete(roomId)
+    this.deps.repo.closeRoom(roomId)
   }
 
   /** Every room, abandoned. Called when the app is quitting. */

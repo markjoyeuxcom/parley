@@ -4,6 +4,10 @@ import type { RemoteRunRecord, RemoteTarget } from '@shared/remote'
 import type { RunEvent } from '@shared/journal'
 import {
   type AgentProfile,
+  type Room,
+  type RoomCaps,
+  type RoomSeat,
+  type RoomTurn,
   type CorrectionDisposition,
   addUsage,
   emptyUsage,
@@ -2168,6 +2172,151 @@ export class Repo {
    */
   search(query: string, options: SearchOptions = {}): SearchHit[] {
     return searchRecord(this.db, query, options)
+  }
+
+  /* ── Rooms ───────────────────────────────────────────────────────────── */
+
+  createRoom(input: {
+    id: Id
+    cwd: string
+    seats: RoomSeat[]
+    caps: RoomCaps
+    mock: boolean
+  }): void {
+    this.db.run(
+      `INSERT INTO rooms (id, cwd, seats, caps, mock, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      input.id,
+      input.cwd,
+      JSON.stringify(input.seats),
+      JSON.stringify(input.caps),
+      input.mock ? 1 : 0,
+      Date.now(),
+    )
+  }
+
+  setRoomSeats(roomId: Id, seats: RoomSeat[]): void {
+    this.db.run(`UPDATE rooms SET seats = ? WHERE id = ?`, JSON.stringify(seats), roomId)
+  }
+
+  setRoomCaps(roomId: Id, caps: RoomCaps): void {
+    this.db.run(`UPDATE rooms SET caps = ? WHERE id = ?`, JSON.stringify(caps), roomId)
+  }
+
+  /** Stamps the close. The row and its turns stay — see the schema comment. */
+  closeRoom(roomId: Id): void {
+    this.db.run(`UPDATE rooms SET closed_at = ? WHERE id = ? AND closed_at IS NULL`, Date.now(), roomId)
+  }
+
+  appendRoomTurn(roomId: Id, turn: RoomTurn): void {
+    const next = num(
+      this.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM room_turns WHERE room_id = ?`, roomId)?.n,
+    )
+    this.db.run(
+      `INSERT INTO room_turns
+         (id, room_id, idx, author, seat, vendor, profile, text, usage, started_at, ended_at, error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      turn.id,
+      roomId,
+      next,
+      turn.author,
+      turn.seat,
+      turn.vendor,
+      turn.profile,
+      turn.text,
+      JSON.stringify(turn.usage),
+      turn.startedAt,
+      turn.endedAt,
+      turn.error,
+    )
+  }
+
+  /** Fills in a turn that was written when it started. */
+  finishRoomTurn(turn: RoomTurn): void {
+    this.db.run(
+      `UPDATE room_turns SET text = ?, usage = ?, ended_at = ?, error = ? WHERE id = ?`,
+      turn.text,
+      JSON.stringify(turn.usage),
+      turn.endedAt,
+      turn.error,
+      turn.id,
+    )
+  }
+
+  getRoom(roomId: Id): Room | undefined {
+    const row = this.db.get(`SELECT * FROM rooms WHERE id = ?`, roomId)
+    if (!row) return undefined
+    const turns = this.db
+      .all(`SELECT * FROM room_turns WHERE room_id = ? ORDER BY idx ASC`, roomId)
+      .map((t) => this.toRoomTurn(t))
+    return this.toRoom(row, turns)
+  }
+
+  /** Newest first. Closed rooms are included: the record is the point. */
+  listRooms(limit = 100): Room[] {
+    return this.db
+      .all(`SELECT * FROM rooms ORDER BY created_at DESC LIMIT ?`, limit)
+      .map((row) => this.toRoom(row, []))
+  }
+
+  /**
+   * Drops closed rooms that never held a turn, and returns how many went.
+   *
+   * An accidentally-opened pane should not accumulate as a record; a room
+   * somebody actually spoke in always survives. Guarded on `closed_at` so a
+   * room the app is currently holding is never swept out from under it —
+   * this runs at startup, but the guard is what makes that incidental rather
+   * than load-bearing.
+   */
+  reconcileRooms(): number {
+    return this.db.run(
+      `DELETE FROM rooms
+        WHERE closed_at IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM room_turns WHERE room_turns.room_id = rooms.id)`,
+    ).changes
+  }
+
+  private toRoomTurn(row: Row): RoomTurn {
+    return {
+      id: str(row['id']),
+      roomId: str(row['room_id']),
+      author: str(row['author']) as RoomTurn['author'],
+      seat: str(row['seat']),
+      vendor: (row['vendor'] as RoomTurn['vendor']) ?? null,
+      profile: str(row['profile']),
+      text: str(row['text']),
+      usage: parseJson<Usage>(row['usage'], emptyUsage()),
+      startedAt: num(row['started_at']),
+      endedAt: row['ended_at'] === null ? null : num(row['ended_at']),
+      error: row['error'] === null ? null : str(row['error']),
+    }
+  }
+
+  /**
+   * Rebuilds a room from its row and its turns.
+   *
+   * Everything summarising the turns is recomputed here rather than read: the
+   * spend is their sum, the turn count is how many an agent took, and the
+   * status is idle unless the caps are spent — after a restart nothing is
+   * mid-turn, so `thinking` is not a state the record can be in.
+   */
+  private toRoom(row: Row, turns: RoomTurn[]): Room {
+    const caps = JSON.parse(str(row['caps'], '{}')) as RoomCaps
+    const usage = turns.reduce<Usage>((total, turn) => addUsage(total, turn.usage), emptyUsage())
+    const turnsSpent = turns.filter((turn) => turn.author === 'agent').length
+    const spent =
+      turnsSpent >= caps.turns || (caps.costUsd > 0 && usage.costUsd >= caps.costUsd)
+    return {
+      id: str(row['id']),
+      cwd: str(row['cwd']),
+      seats: JSON.parse(str(row['seats'], '[]')) as RoomSeat[],
+      caps,
+      turnsSpent,
+      status: spent ? 'exhausted' : 'idle',
+      turns,
+      usage,
+      mock: num(row['mock']) === 1,
+      createdAt: num(row['created_at']),
+    }
   }
 
   listRunEvents(runId: Id): RunEvent[] {
