@@ -153,6 +153,11 @@
   display: flex;
   flex-direction: column;
   background: var(--bg-sunken);
+
+  /* One definition of the reading measure, applied to prose blocks and to
+     nothing else. Prose loses the reader on the return sweep at full pane
+     width; code and the chrome around it want every pixel there is. */
+  --room-measure: 76ch;
 }
 
 .room__seat {
@@ -186,15 +191,15 @@
   gap: var(--s4);
 }
 
-/* A measure. Prose is read left-to-right and a 180-character line loses the
-   reader on the return sweep — the terminal pane gets away with full width
-   because monospace output is scanned, not read. Code blocks opt out below. */
+/* The turn takes the pane; the measure goes on the prose inside it. Putting
+   it here instead trapped code blocks at 76ch, where a long line clipped
+   silently while half the pane sat empty — the measure is a reading aid, and
+   code is not read that way. */
 .room__turn {
   display: flex;
   flex-direction: column;
   gap: var(--s1);
   min-width: 0;
-  max-width: 76ch;
   width: 100%;
 }
 
@@ -227,6 +232,7 @@
   margin: 0 0 var(--s3);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  max-width: var(--room-measure);
 }
 
 .room__body > *:last-child {
@@ -240,6 +246,7 @@
   font-weight: 600;
   line-height: 1.3;
   color: var(--text-primary);
+  max-width: var(--room-measure);
 }
 
 .room__heading--1 {
@@ -268,6 +275,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--s2);
+  max-width: var(--room-measure);
 }
 
 .room__list li {
@@ -278,8 +286,9 @@
   color: var(--text-tertiary);
 }
 
-/* Code opts out of the measure and scrolls itself, so a long command neither
-   wraps into nonsense nor widens the pane. */
+/* Code takes the full pane and scrolls itself: wrapping code lines makes them
+   unreadable, and constraining them to the prose measure hid the right-hand
+   half of every long line behind a scrollbar nobody had a reason to look for. */
 .room__code {
   margin: 0 0 var(--s3);
   padding: var(--s3) var(--s4);
