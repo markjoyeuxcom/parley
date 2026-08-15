@@ -185,6 +185,9 @@ export class RoomManager {
         timeoutMs: TURN_TIMEOUT_MS,
         onDelta: (delta) =>
           this.deps.emit({ type: 'room.turn.delta', roomId, turnId: turn.id, text: delta }),
+        // Relayed, never recorded. A tool call is what is happening now; the
+        // turn is what happened.
+        onActivity: (text) => this.deps.emit({ type: 'room.activity', roomId, text }),
       })
     } catch (err) {
       // An adapter that throws rather than returning an error result. Same

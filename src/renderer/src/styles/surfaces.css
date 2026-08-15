@@ -181,6 +181,20 @@
   font-family: var(--font-mono);
 }
 
+/* What the seat is doing, in the seat line rather than the transcript: it
+   changes several times a turn, and anything that reflows the reply while it
+   is being read costs more than it tells you. Truncates instead of wrapping —
+   a Bash line can be 160 characters and the seat line is one row. */
+.room__activity {
+  font-size: var(--text-micro);
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
 .room__transcript {
   flex: 1;
   min-height: 0;

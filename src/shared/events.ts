@@ -87,6 +87,16 @@ export type AppEvent =
   | { type: 'room.turn.started'; roomId: Id; turn: RoomTurn }
   | { type: 'room.turn.delta'; roomId: Id; turnId: Id; text: string }
   /**
+   * What the seat is doing right now — "Read src/index.ts", "Bash npm test".
+   *
+   * Ephemeral and never persisted, exactly like `plan.activity`. It exists
+   * because a terminal pane shows tool calls scrolling past and a room showed
+   * nothing at all between "Thinking…" and prose, which is most of what made
+   * a headless seat feel dead next to the CLI's own TUI. The durable account
+   * of a turn is the turn.
+   */
+  | { type: 'room.activity'; roomId: Id; text: string }
+  /**
    * The finished turn, carrying the complete text.
    *
    * Not redundant with the deltas: a client that mounted mid-turn, or dropped

@@ -41,6 +41,8 @@ export function RoomPane({
   const [streaming, setStreaming] = useState<{ turnId: Id; text: string } | null>(null)
   const [draft, setDraft] = useState('')
   const [profiles, setProfiles] = useState<AgentProfile[]>([])
+  /** What the seat is doing right now. Never recorded; cleared when it stops. */
+  const [activity, setActivity] = useState('')
   const scroller = useRef<HTMLDivElement>(null)
   const composer = useRef<HTMLTextAreaElement>(null)
 
@@ -84,6 +86,12 @@ export function RoomPane({
             current ? { ...current, status: 'thinking', turns: [...current.turns, event.turn] } : current,
           )
           setStreaming({ turnId: event.turn.id, text: '' })
+          setActivity('')
+        } else if (event.type === 'room.activity') {
+          // Last one wins: this is a status line, not a log. The scrolling
+          // history of tool calls belongs to a terminal pane; here it would
+          // compete with the reply for the reader's attention.
+          setActivity(event.text)
         } else if (event.type === 'room.turn.delta') {
           setStreaming((current) =>
             current && current.turnId === event.turnId
@@ -93,6 +101,7 @@ export function RoomPane({
           onOutput()
         } else if (event.type === 'room.turn.ended') {
           setStreaming(null)
+          setActivity('')
           setRoom((current) =>
             current
               ? {
@@ -200,6 +209,11 @@ export function RoomPane({
             ))}
           </select>
         ) : null}
+        {activity ? (
+          <span className="room__activity" title={activity}>
+            {activity}
+          </span>
+        ) : null}
         <span className="spacer" />
         <span className="room__readonly" title="A room seat reads this folder and writes nothing.">
           read-only
@@ -220,6 +234,7 @@ export function RoomPane({
             turn={turn}
             seatName={seatLabel(room.seat)}
             live={streaming?.turnId === turn.id ? streaming.text : null}
+            activity={streaming?.turnId === turn.id ? activity : ''}
           />
         ))}
       </div>
@@ -272,10 +287,12 @@ function RoomTurnView({
   turn,
   seatName,
   live,
+  activity,
 }: {
   turn: RoomTurn
   seatName: string
   live: string | null
+  activity: string
 }): ReactNode {
   // While streaming, the live text IS the turn: the row's own text is empty
   // until the turn ends.
@@ -290,7 +307,9 @@ function RoomTurnView({
           {turn.error}
         </div>
       ) : waiting ? (
-        <div className="room__thinking">Thinking…</div>
+        // Before the first delta there is nothing to read, so this is the one
+        // place the tool call is the whole message rather than a status line.
+        <div className="room__thinking">{activity || 'Thinking…'}</div>
       ) : (
         <Markdown text={body} />
       )}

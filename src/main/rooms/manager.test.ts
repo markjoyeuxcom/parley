@@ -25,6 +25,9 @@ function fakeRegistry(
       run: async (req: RunRequest): Promise<RunResult> => {
         seen.push(req)
         const answer = reply(req)
+        // A tool use lands before any text, which is the shape that matters:
+        // it is the silence before the first delta that a room has to fill.
+        req.onActivity?.('Read src/index.ts')
         // Deltas arrive before the result, exactly as a real adapter streams.
         answer.text?.split(' ').forEach((word) => req.onDelta?.(`${word} `))
         return {
@@ -80,6 +83,27 @@ describe('rooms', () => {
       text: 'one two three',
       error: null,
     })
+  })
+
+  it('reports what the seat is doing, without recording it', async () => {
+    // The gap against a TUI pane: a terminal shows tool calls scrolling past,
+    // so you can see work happening. A room saw nothing between "Thinking…"
+    // and prose. Activity is ephemeral like plan.activity — it says what is
+    // happening NOW, and the durable account of the turn is the turn.
+    const events: AppEvent[] = []
+    const { registry } = fakeRegistry(() => ({ text: 'done' }))
+    const rooms = new RoomManager({ registry, emit: (event) => events.push(event) })
+
+    const room = rooms.open('/tmp/repo', SEAT)
+    await rooms.send(room.id, 'go')
+
+    expect(events.filter((e) => e.type === 'room.activity')).toEqual([
+      { type: 'room.activity', roomId: room.id, text: 'Read src/index.ts' },
+    ])
+    // Nothing about it reaches the record.
+    const turn = rooms.get(room.id)?.turns.at(-1)
+    expect(turn?.text).toBe('done')
+    expect(JSON.stringify(turn)).not.toContain('src/index.ts')
   })
 
   it('resumes the seat instead of replaying the transcript', async () => {

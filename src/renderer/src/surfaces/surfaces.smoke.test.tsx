@@ -1035,6 +1035,14 @@ describe('mounted-surface smoke', () => {
     await waitFor(() => expect(invoked.some((i) => i.name === 'room.send')).toBe(true))
     expect(await screen.findByText('what does this repo do?')).toBeTruthy()
 
+    // Before a single delta, the seat says what it is doing. This is the
+    // whole gap against a terminal pane, which shows tool calls scrolling by
+    // while a room used to show nothing at all.
+    act(() => {
+      appEventListener?.({ type: 'room.activity', roomId: 'room-1', text: 'Read src/index.ts' })
+    })
+    expect(await screen.findByText('Read src/index.ts')).toBeTruthy()
+
     // The seat answers over the event channel, in pieces, exactly as a real
     // adapter streams — and the finished turn replaces the streamed text.
     const turn = {
@@ -1068,8 +1076,10 @@ describe('mounted-surface smoke', () => {
         turn: { ...turn, text: 'It governs agents.', endedAt: 1_700_000_000_002 },
       })
     })
-    // Back to idle, so the composer takes the next message.
+    // Back to idle, so the composer takes the next message — and the activity
+    // line is gone, because nothing is happening for it to describe.
     expect(await screen.findByPlaceholderText('Say something…')).toBeTruthy()
+    expect(screen.queryByText('Read src/index.ts')).toBeNull()
   })
 
   it('a skill dropped on a room reaches its seat, not the pty', async () => {
