@@ -993,7 +993,15 @@ describe('mounted-surface smoke', () => {
     const room = {
       id: 'room-1',
       cwd: '/tmp/smoke-repo',
-      seat: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+      seats: [
+        {
+          id: 'seat-1',
+          name: 'claude',
+          config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+        },
+      ],
+      caps: { turns: 40, costUsd: 0 },
+      turnsSpent: 0,
       status: 'idle' as const,
       turns: [],
       usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
@@ -1033,13 +1041,40 @@ describe('mounted-surface smoke', () => {
     fireEvent.keyDown(composer, { key: 'Enter' })
 
     await waitFor(() => expect(invoked.some((i) => i.name === 'room.send')).toBe(true))
+
+    // The human's own message is announced by main rather than optimistically
+    // drawn here — one source of truth, so a refused send leaves no ghost.
+    act(() => {
+      appEventListener?.({
+        type: 'room.turn.ended',
+        roomId: 'room-1',
+        turn: {
+          id: 'turn-1',
+          roomId: 'room-1',
+          author: 'human',
+          seat: '',
+          vendor: null,
+          profile: '',
+          text: 'what does this repo do?',
+          usage: room.usage,
+          startedAt: 1_700_000_000_000,
+          endedAt: 1_700_000_000_000,
+          error: null,
+        },
+      })
+    })
     expect(await screen.findByText('what does this repo do?')).toBeTruthy()
 
     // Before a single delta, the seat says what it is doing. This is the
     // whole gap against a terminal pane, which shows tool calls scrolling by
     // while a room used to show nothing at all.
     act(() => {
-      appEventListener?.({ type: 'room.activity', roomId: 'room-1', text: 'Read src/index.ts' })
+      appEventListener?.({
+        type: 'room.activity',
+        roomId: 'room-1',
+        seat: 'claude',
+        text: 'Read src/index.ts',
+      })
     })
     expect(await screen.findByText('Read src/index.ts')).toBeTruthy()
 
@@ -1049,6 +1084,7 @@ describe('mounted-surface smoke', () => {
       id: 'turn-2',
       roomId: 'room-1',
       author: 'agent' as const,
+      seat: 'claude',
       vendor: 'claude' as const,
       profile: '',
       text: '',
@@ -1076,10 +1112,88 @@ describe('mounted-surface smoke', () => {
         turn: { ...turn, text: 'It governs agents.', endedAt: 1_700_000_000_002 },
       })
     })
+    // Idle arrives with room.changed, not with a turn ending: with several
+    // seats, one finishing says nothing about whether the room is free.
+    act(() => {
+      appEventListener?.({
+        type: 'room.changed',
+        roomId: 'room-1',
+        room: { ...room, status: 'idle', turnsSpent: 1 },
+      })
+    })
+
     // Back to idle, so the composer takes the next message — and the activity
     // line is gone, because nothing is happening for it to describe.
     expect(await screen.findByPlaceholderText('Say something…')).toBeTruthy()
     expect(screen.queryByText('Read src/index.ts')).toBeNull()
+  })
+
+  it('a room shows its seats, its spend, and stops at the budget', async () => {
+    // m3's shape in one mount: several named seats, a visible bound, and an
+    // exhausted room that refuses rather than quietly continuing.
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    const seats = [
+      {
+        id: 'seat-1',
+        name: 'claude',
+        config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+      },
+      {
+        id: 'seat-2',
+        name: 'reviewer',
+        config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '', profile: 'Reviewer' },
+      },
+    ]
+    const room = {
+      id: 'room-1',
+      cwd: '/tmp/smoke-repo',
+      seats,
+      caps: { turns: 4, costUsd: 0 },
+      turnsSpent: 2,
+      status: 'idle' as const,
+      turns: [],
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0.25 },
+      mock: true,
+      createdAt: 1_700_000_000_000,
+    }
+    installBridge({
+      'room.open': () => room,
+      'room.get': () => room,
+      'room.setCaps': (payload) => {
+        invoked.push({ name: 'room.setCaps', payload })
+        return { ...room, caps: { turns: 24, costUsd: 0 }, status: 'idle' }
+      },
+    })
+
+    render(
+      <StoreProvider>
+        <GridSurface />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Room' }))
+
+    // Both seats are named and addressable, and the spend is on screen with
+    // turns leading — the cap that actually bites on a subscription.
+    expect(await screen.findByText('@claude')).toBeTruthy()
+    expect(screen.getByText('@reviewer')).toBeTruthy()
+    expect(screen.getByText(/2\/4 turns/)).toBeTruthy()
+    expect(screen.getByText(/\$0\.25/)).toBeTruthy()
+
+    // Spending the budget closes the composer and offers the only way on.
+    act(() => {
+      appEventListener?.({
+        type: 'room.changed',
+        roomId: 'room-1',
+        room: { ...room, turnsSpent: 4, status: 'exhausted' },
+      })
+    })
+    const composer = await screen.findByPlaceholderText('Budget spent — raise it to continue.')
+    expect((composer as HTMLTextAreaElement).disabled).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Raise budget' }))
+    await waitFor(() => expect(invoked).toHaveLength(1))
+    expect(invoked[0]?.payload).toMatchObject({ roomId: 'room-1', caps: { turns: 24 } })
   })
 
   it('a skill dropped on a room reaches its seat, not the pty', async () => {
@@ -1089,7 +1203,15 @@ describe('mounted-surface smoke', () => {
     const room = {
       id: 'room-1',
       cwd: '/tmp/smoke-repo',
-      seat: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+      seats: [
+        {
+          id: 'seat-1',
+          name: 'claude',
+          config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+        },
+      ],
+      caps: { turns: 40, costUsd: 0 },
+      turnsSpent: 0,
       status: 'idle' as const,
       turns: [],
       usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },

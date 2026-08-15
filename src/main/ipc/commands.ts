@@ -15,6 +15,7 @@ import {
   type ApprovalScope,
   type EnvelopeCaps,
   type GridLayout,
+  type RoomCaps,
   type Skill,
 } from '@shared/domain'
 import { RequestError, type Manager } from '@main/orchestrator/manager'
@@ -458,8 +459,8 @@ const HANDLERS: Record<CommandName, Handler> = {
   // either way; holding the invoke open would give the surface a promise it
   // has no use for and a timeout it cannot survive.
   'room.open': (p, ctx) => {
-    const { cwd, seat } = p as { cwd: string; seat: AgentConfig }
-    return ctx.rooms.open(cwd, seat)
+    const { cwd, seats, caps } = p as { cwd: string; seats: AgentConfig[]; caps: RoomCaps }
+    return ctx.rooms.open(cwd, seats, caps)
   },
   'room.get': (p, ctx) => ctx.rooms.get((p as { roomId: string }).roomId) ?? null,
   'room.send': (p, ctx) => {
@@ -481,6 +482,34 @@ const HANDLERS: Record<CommandName, Handler> = {
   'room.setSeat': (p, ctx) => {
     const { roomId, seat } = p as { roomId: string; seat: AgentConfig }
     return ctx.rooms.setSeat(roomId, seat)
+  },
+  'room.addSeat': (p, ctx) => {
+    const { roomId, seat } = p as { roomId: string; seat: AgentConfig }
+    return ctx.rooms.addSeat(roomId, seat)
+  },
+  'room.removeSeat': (p, ctx) => {
+    const { roomId, seatId } = p as { roomId: string; seatId: string }
+    return ctx.rooms.removeSeat(roomId, seatId)
+  },
+  'room.setCaps': (p, ctx) => {
+    const { roomId, caps } = p as { roomId: string; caps: RoomCaps }
+    return ctx.rooms.setCaps(roomId, caps)
+  },
+  // Fire-and-forget for the same reason as room.send: an advance can run for
+  // many minutes and the pane learns everything from the room.* events.
+  'room.advance': (p, ctx) => {
+    const { roomId, turns } = p as { roomId: string; turns: number }
+    const room = ctx.rooms.get(roomId)
+    if (!room) throw new RequestError('no such room')
+    if (room.status !== 'idle') throw new RequestError('that room is not idle')
+    void ctx.rooms.advance(roomId, turns).catch((err: unknown) => {
+      emit(ctx, {
+        type: 'notice',
+        level: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      })
+    })
+    return { ok: true }
   },
   'room.stop': (p, ctx) => {
     ctx.rooms.stop((p as { roomId: string }).roomId)

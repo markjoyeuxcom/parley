@@ -7,6 +7,7 @@ import type {
   Milestone,
   Pane,
   Preview,
+  Room,
   RoomTurn,
   Session,
   Turn,
@@ -95,7 +96,20 @@ export type AppEvent =
    * a headless seat feel dead next to the CLI's own TUI. The durable account
    * of a turn is the turn.
    */
-  | { type: 'room.activity'; roomId: Id; text: string }
+  | { type: 'room.activity'; roomId: Id; seat: string; text: string }
+  /**
+   * The room's own shape changed — status, seats, spend, budget.
+   *
+   * A snapshot rather than deltas, on the plan.milestones precedent: a room
+   * is small, several seats mutate it concurrently, and shipping the whole
+   * thing makes the pane's fold trivially correct instead of a merge that has
+   * to be right under interleaving.
+   *
+   * Carries `roomId` beside the room it is about, redundantly, so that every
+   * room event can be filtered by one predicate. A pane that had to special-
+   * case which events identify their room would get it wrong exactly once.
+   */
+  | { type: 'room.changed'; roomId: Id; room: Room }
   /**
    * The finished turn, carrying the complete text.
    *

@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import type { AgentConfig, Id, Room, RoomTurn, Usage } from '@shared/domain'
+import type { AgentConfig, Id, Room, RoomCaps, RoomSeat, RoomTurn, Usage } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import { emptyUsage } from '@shared/usage'
 import { seatingRefusals } from '@shared/vendors'
-import { roomSeatSystemPrompt } from '@shared/room'
+import { parseAddress, relayPrompt, roomSeatSystemPrompt, seatName, uniqueSeatName } from '@shared/room'
 import type { AgentRegistry } from '@main/agents'
 
 /**
@@ -13,28 +13,31 @@ import type { AgentRegistry } from '@main/agents'
  * mechanics, resume threading and delivery — all of which a conversation
  * needs — wrapped around a fixed stage list and a structured verdict contract,
  * which is what made a debate feel like a form with two respondents. This is
- * the same mechanics with no schedule: the person typing decides who speaks
- * and when, and a turn's prompt is the message, not a stage's declared input.
+ * the same mechanics with no schedule: a person decides who speaks and when.
  *
- * Three properties carry over deliberately:
+ * Four properties carry the design:
  *
  * **The seat is resumed, never replayed.** The CLI keeps its own conversation
- * and Parley relays only the new message, so token cost grows linearly with
- * turn count rather than quadratically. This is the property that makes a long
- * room affordable at all, and the one a "just re-send the transcript"
- * implementation would silently destroy.
+ * and Parley relays only what is new, so token cost grows linearly with turn
+ * count rather than quadratically. This is what makes a long room affordable,
+ * and the one a "re-send the transcript" implementation would silently
+ * destroy.
+ *
+ * **Seats answering the same question do not hear each other.** An
+ * unaddressed message reaches every seat concurrently and independently, so
+ * two answers are two reads rather than one read and an agreement. That
+ * property is the whole reason to have more than one seat, and sequencing
+ * them for tidiness would quietly remove it. `advance` is the opposite mode,
+ * for when they should hear each other.
  *
  * **Read-only.** A room seat reads the folder its pane lives in and writes
- * nothing. The per-seat write opt-in is m5; until it exists there is no code
- * path here that can reach `write`.
+ * nothing. The per-seat write opt-in is m5; until then there is no code path
+ * here that can reach `write`.
  *
  * **A failed turn is a recorded turn.** The transcript is the work; wedging a
- * room because one dispatch errored would lose something the error itself did
- * not.
+ * room because one dispatch errored would lose something the error did not.
  *
- * In memory only. Persistence is m4 — rooms become `sessions` rows and their
- * turns become `turns` rows, which is also when a restart stops costing you
- * the conversation.
+ * In memory only. Persistence is m4.
  */
 
 export class RoomError extends Error {}
@@ -49,10 +52,10 @@ export interface RoomManagerDeps {
 
 interface LiveRoom {
   room: Room
-  /** The seat's vendor thread, so the next turn resumes rather than restarts. */
-  resumeId: string | null
-  /** Present only while a turn is in flight. */
-  inFlight: AbortController | null
+  /** Vendor threads by seat id, so each seat resumes its own conversation. */
+  resumeIds: Map<Id, string | null>
+  /** One per in-flight turn; several run at once when a room is addressed. */
+  inFlight: Map<Id, AbortController>
 }
 
 function addUsage(total: Usage, next: Usage): Usage {
@@ -66,13 +69,12 @@ function addUsage(total: Usage, next: Usage): Usage {
 }
 
 /**
- * Refuses a seat this app cannot dispatch, with the reason the rest of the app
- * already gives. Checked at open AND at reseat: a room that could be edited
- * into an impossible seat would fail at the next message instead of at the
- * moment somebody chose it.
+ * Refuses a seat this app cannot dispatch, with the reason the rest of the
+ * app already gives. Checked wherever a seat is chosen, so an impossible seat
+ * fails at the moment somebody picked it rather than at the next message.
  */
-function assertSeatable(seat: AgentConfig): void {
-  const refusals = seatingRefusals([{ vendor: seat.vendor, role: 'room-seat', toolFree: false }])
+function assertSeatable(config: AgentConfig): void {
+  const refusals = seatingRefusals([{ vendor: config.vendor, role: 'room-seat', toolFree: false }])
   if (refusals.length > 0) throw new RoomError(refusals.join('; '))
 }
 
@@ -81,19 +83,32 @@ export class RoomManager {
 
   constructor(private readonly deps: RoomManagerDeps) {}
 
-  open(cwd: string, seat: AgentConfig): Room {
-    assertSeatable(seat)
+  open(cwd: string, configs: AgentConfig[], caps: RoomCaps): Room {
+    if (configs.length === 0) throw new RoomError('a room needs at least one seat')
+    for (const config of configs) assertSeatable(config)
+
+    const seats: RoomSeat[] = []
+    for (const config of configs) {
+      seats.push({
+        id: `seat-${randomUUID()}`,
+        name: uniqueSeatName(seatName(config), seats.map((s) => s.name)),
+        config,
+      })
+    }
+
     const room: Room = {
       id: `room-${randomUUID()}`,
       cwd,
-      seat,
+      seats,
+      caps,
+      turnsSpent: 0,
       status: 'idle',
       turns: [],
       usage: emptyUsage(),
       mock: this.deps.registry.mock,
       createdAt: Date.now(),
     }
-    this.rooms.set(room.id, { room, resumeId: null, inFlight: null })
+    this.rooms.set(room.id, { room, resumeIds: new Map(), inFlight: new Map() })
     return room
   }
 
@@ -106,41 +121,110 @@ export class RoomManager {
   }
 
   /**
-   * Reseats the room.
+   * Replaces the room's only seat.
    *
-   * The thread does not travel: a resume id belongs to one CLI's conversation,
-   * and handing Claude's thread to Codex would at best fail and at worst
-   * resume something unrelated. So the new seat starts fresh, and the
-   * transcript above it stays — which is the honest reading, since what was
-   * said was said, just not by this seat.
+   * The thread does not travel: a resume id belongs to one CLI's
+   * conversation, and handing Claude's to Codex would at best fail. The new
+   * seat starts fresh and the transcript above it stays — what was said was
+   * said, just not by this seat.
    */
-  setSeat(roomId: Id, seat: AgentConfig): Room {
-    assertSeatable(seat)
-    const live = this.require(roomId)
-    if (live.room.status !== 'idle') {
-      throw new RoomError('that room is mid-turn; stop it before changing the seat')
+  setSeat(roomId: Id, config: AgentConfig): Room {
+    assertSeatable(config)
+    const live = this.requireIdle(roomId, 'change the seat')
+    const [existing] = live.room.seats
+    if (live.room.seats.length !== 1 || !existing) {
+      throw new RoomError('this room has several seats — add or remove them instead')
     }
-    live.room = { ...live.room, seat }
-    live.resumeId = null
+    live.resumeIds.delete(existing.id)
+    live.room = {
+      ...live.room,
+      seats: [{ ...existing, name: seatName(config), config }],
+    }
+    return live.room
+  }
+
+  addSeat(roomId: Id, config: AgentConfig): Room {
+    assertSeatable(config)
+    const live = this.requireIdle(roomId, 'add a seat')
+    const seat: RoomSeat = {
+      id: `seat-${randomUUID()}`,
+      name: uniqueSeatName(seatName(config), live.room.seats.map((s) => s.name)),
+      config,
+    }
+    live.room = { ...live.room, seats: [...live.room.seats, seat] }
+    return live.room
+  }
+
+  removeSeat(roomId: Id, seatId: Id): Room {
+    const live = this.requireIdle(roomId, 'remove a seat')
+    if (live.room.seats.length <= 1) throw new RoomError('a room needs at least one seat')
+    live.resumeIds.delete(seatId)
+    live.room = { ...live.room, seats: live.room.seats.filter((s) => s.id !== seatId) }
     return live.room
   }
 
   /**
-   * One exchange: the person's message, then the seat's reply.
+   * Raises or lowers the bound, and revives a room that stopped at one.
    *
-   * Resolves when the seat is done. The human turn is on the record before the
-   * dispatch, so what was asked survives a crash mid-answer.
+   * Reviving is the whole point of keeping `exhausted` as a state rather than
+   * an error: reaching a cap is a decision point, and continuing past it
+   * should be a deliberate act with a number attached.
    */
-  async send(roomId: Id, text: string): Promise<RoomTurn> {
+  setCaps(roomId: Id, caps: RoomCaps): Room {
     const live = this.require(roomId)
-    if (live.room.status !== 'idle') {
+    live.room = { ...live.room, caps }
+    if (live.room.status === 'exhausted' && this.exceeded(live.room, 1) === null) {
+      live.room = { ...live.room, status: 'idle' }
+    }
+    return live.room
+  }
+
+  /**
+   * The reason a room may not spend `count` more turns, or null.
+   *
+   * Checked before dispatch and never shown to a seat: an agent that can see
+   * its budget can argue about it, and one that can argue about it will.
+   */
+  private exceeded(room: Room, count: number): string | null {
+    if (room.turnsSpent + count > room.caps.turns) {
+      return `this room's turn budget is spent (${room.turnsSpent} of ${room.caps.turns}); raise it to continue`
+    }
+    if (room.caps.costUsd > 0 && room.usage.costUsd >= room.caps.costUsd) {
+      return `this room has reached its cost ceiling ($${room.usage.costUsd.toFixed(2)} of $${room.caps.costUsd.toFixed(2)}); raise it to continue`
+    }
+    return null
+  }
+
+  /**
+   * One exchange: the person's message, then a reply from every seat it
+   * addresses.
+   *
+   * Addressed seats run concurrently and see only the human's message — never
+   * each other's answers. Resolves when they are all done.
+   */
+  async send(roomId: Id, text: string): Promise<RoomTurn[]> {
+    const live = this.require(roomId)
+    if (live.room.status === 'thinking') {
       throw new RoomError('that room is already waiting on a reply')
     }
 
-    this.append(live, {
+    // Addressing is resolved BEFORE anything is recorded or spent, so a typo
+    // costs nothing and leaves no turn behind.
+    const { seatIds, body } = parseAddress(text, live.room.seats)
+    const refusal = this.exceeded(live.room, seatIds.length)
+    if (refusal) {
+      live.room = { ...live.room, status: 'exhausted' }
+      throw new RoomError(refusal)
+    }
+
+    // Announced, not just recorded. The person's own message has to appear the
+    // moment they send it, and an optimistic copy in the pane would be a
+    // second source of truth that drifts the first time a send is refused.
+    const said: RoomTurn = {
       id: `turn-${randomUUID()}`,
       roomId,
       author: 'human',
+      seat: '',
       vendor: null,
       profile: '',
       text,
@@ -148,50 +232,135 @@ export class RoomManager {
       startedAt: Date.now(),
       endedAt: Date.now(),
       error: null,
-    })
+    }
+    this.append(live, said)
+    this.deps.emit({ type: 'room.turn.ended', roomId, turn: said })
 
-    const seat = live.room.seat
-    const turn: RoomTurn = {
-      id: `turn-${randomUUID()}`,
-      roomId,
-      author: 'agent',
-      vendor: seat.vendor,
-      profile: seat.profile ?? '',
-      text: '',
-      usage: emptyUsage(),
-      startedAt: Date.now(),
-      endedAt: null,
-      error: null,
+    const seats = live.room.seats.filter((seat) => seatIds.includes(seat.id))
+    return this.speak(live, seats.map((seat) => ({ seat, prompt: body })))
+  }
+
+  /**
+   * Round-robin: each seat in turn, hearing the one before it.
+   *
+   * The other half of routing, and the opposite trade to `send`. Here the
+   * seats are talking to each other, so each is relayed the previous reply —
+   * which means later speakers are anchored by earlier ones. That is what a
+   * conversation is; it is also why it is not the default.
+   *
+   * Bounded twice: by the turns asked for, and by the budget, which wins.
+   *
+   * The unit is TURNS, not rounds. A round over three seats is three turns
+   * and three dispatches, and a control labelled "2 rounds" would quietly
+   * mean six — the same unit the budget counts in is the only one that can be
+   * reasoned about.
+   */
+  async advance(roomId: Id, turns: number): Promise<void> {
+    const live = this.require(roomId)
+    if (live.room.status === 'thinking') throw new RoomError('that room is already waiting on a reply')
+    if (live.room.seats.length < 2) throw new RoomError('advancing needs at least two seats')
+
+    for (let i = 0; i < turns; i += 1) {
+      const refusal = this.exceeded(live.room, 1)
+      if (refusal) {
+        live.room = { ...live.room, status: 'exhausted' }
+        this.deps.emit({ type: 'room.changed', roomId: live.room.id, room: live.room })
+        return
+      }
+      const last = [...live.room.turns].reverse().find((turn) => turn.author === 'agent')
+      if (!last) throw new RoomError('nothing has been said yet for a seat to answer')
+
+      // Whoever spoke last hands over to the next seat in order.
+      const spokeAt = live.room.seats.findIndex((seat) => seat.name === last.seat)
+      const next = live.room.seats[(spokeAt + 1) % live.room.seats.length]
+      if (!next) return
+
+      const [turn] = await this.speak(live, [
+        { seat: next, prompt: relayPrompt(last.seat, last.text) },
+      ])
+      // A seat that failed ends the round rather than handing an error on as
+      // though it were an argument.
+      if (!turn || turn.error) return
+    }
+  }
+
+  /** Runs one or more seats concurrently, recording each as its own turn. */
+  private async speak(
+    live: LiveRoom,
+    work: Array<{ seat: RoomSeat; prompt: string }>,
+  ): Promise<RoomTurn[]> {
+    const roomId = live.room.id
+    live.room = {
+      ...live.room,
+      status: 'thinking',
+      turnsSpent: live.room.turnsSpent + work.length,
     }
 
-    live.room = { ...live.room, status: 'thinking' }
-    live.inFlight = new AbortController()
-    this.append(live, turn)
-    this.deps.emit({ type: 'room.turn.started', roomId, turn })
+    const started = work.map(({ seat, prompt }) => {
+      const turn: RoomTurn = {
+        id: `turn-${randomUUID()}`,
+        roomId,
+        author: 'agent',
+        seat: seat.name,
+        vendor: seat.config.vendor,
+        profile: seat.config.profile ?? '',
+        text: '',
+        usage: emptyUsage(),
+        startedAt: Date.now(),
+        endedAt: null,
+        error: null,
+      }
+      this.append(live, turn)
+      this.deps.emit({ type: 'room.turn.started', roomId, turn })
+      return { seat, prompt, turn }
+    })
+
+    const finished = await Promise.all(
+      started.map(({ seat, prompt, turn }) => this.dispatch(live, seat, prompt, turn)),
+    )
+
+    // The room may have been closed while its seats were thinking.
+    if (!this.rooms.has(roomId)) return finished
+
+    live.room = {
+      ...live.room,
+      status: this.exceeded(live.room, 1) ? 'exhausted' : 'idle',
+    }
+    this.deps.emit({ type: 'room.changed', roomId: live.room.id, room: live.room })
+    return finished
+  }
+
+  private async dispatch(
+    live: LiveRoom,
+    seat: RoomSeat,
+    prompt: string,
+    turn: RoomTurn,
+  ): Promise<RoomTurn> {
+    const roomId = live.room.id
+    const control = new AbortController()
+    live.inFlight.set(turn.id, control)
 
     let result
     try {
-      result = await this.deps.registry.get(seat.vendor).run({
-        systemPrompt: roomSeatSystemPrompt(seat),
-        // The message alone. The seat is resumed, so the conversation it is
-        // replying to is already in the CLI's own history — sending the
-        // transcript too would pay for it twice and grow every turn.
-        prompt: text,
-        cfg: seat,
+      result = await this.deps.registry.get(seat.config.vendor).run({
+        systemPrompt: roomSeatSystemPrompt(seat.config),
+        prompt,
+        cfg: seat.config,
         capability: 'read',
         cwd: live.room.cwd,
-        resumeId: live.resumeId,
-        signal: live.inFlight.signal,
+        resumeId: live.resumeIds.get(seat.id) ?? null,
+        signal: control.signal,
         timeoutMs: TURN_TIMEOUT_MS,
         onDelta: (delta) =>
           this.deps.emit({ type: 'room.turn.delta', roomId, turnId: turn.id, text: delta }),
         // Relayed, never recorded. A tool call is what is happening now; the
         // turn is what happened.
-        onActivity: (text) => this.deps.emit({ type: 'room.activity', roomId, text }),
+        onActivity: (text) =>
+          this.deps.emit({ type: 'room.activity', roomId, seat: seat.name, text }),
       })
     } catch (err) {
       // An adapter that throws rather than returning an error result. Same
-      // treatment: the turn records what happened and the room stays usable.
+      // treatment: the turn records what happened, the room stays usable.
       result = {
         text: '',
         usage: emptyUsage(),
@@ -201,43 +370,40 @@ export class RoomManager {
       }
     }
 
-    const finished: RoomTurn = {
+    live.inFlight.delete(turn.id)
+    const done: RoomTurn = {
       ...turn,
       text: result.text,
       usage: result.usage,
       endedAt: Date.now(),
       error: result.error,
     }
+    if (!this.rooms.has(roomId)) return done
 
-    // The room may have been closed while the seat was thinking; nothing to
-    // update, and no event worth sending about a room nobody can see.
-    if (!this.rooms.has(roomId)) return finished
-
-    live.resumeId = result.resumeId ?? live.resumeId
-    live.inFlight = null
+    if (result.resumeId) live.resumeIds.set(seat.id, result.resumeId)
     live.room = {
       ...live.room,
-      status: 'idle',
       usage: addUsage(live.room.usage, result.usage),
-      turns: live.room.turns.map((t) => (t.id === turn.id ? finished : t)),
+      turns: live.room.turns.map((t) => (t.id === turn.id ? done : t)),
     }
-    this.deps.emit({ type: 'room.turn.ended', roomId, turn: finished })
-    return finished
+    this.deps.emit({ type: 'room.turn.ended', roomId, turn: done })
+    return done
   }
 
   /**
-   * Abandons the in-flight turn. The room survives, and so does everything
+   * Abandons every in-flight turn. The room survives, and so does everything
    * said in it — this is a stop, not a close.
    */
   stop(roomId: Id): void {
     const live = this.rooms.get(roomId)
-    live?.inFlight?.abort()
+    if (!live) return
+    for (const control of live.inFlight.values()) control.abort()
   }
 
   close(roomId: Id): void {
     const live = this.rooms.get(roomId)
     if (!live) return
-    live.inFlight?.abort()
+    for (const control of live.inFlight.values()) control.abort()
     this.rooms.delete(roomId)
   }
 
@@ -249,6 +415,14 @@ export class RoomManager {
   private require(roomId: Id): LiveRoom {
     const live = this.rooms.get(roomId)
     if (!live) throw new RoomError('no such room')
+    return live
+  }
+
+  private requireIdle(roomId: Id, action: string): LiveRoom {
+    const live = this.require(roomId)
+    if (live.room.status === 'thinking') {
+      throw new RoomError(`that room is mid-turn; stop it before you ${action}`)
+    }
     return live
   }
 

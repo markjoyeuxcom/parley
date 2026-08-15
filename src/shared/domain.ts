@@ -1320,6 +1320,8 @@ export const RoomTurn = z.object({
   id: Id,
   roomId: Id,
   author: RoomTurnAuthor,
+  /** Which seat spoke, by name as of this turn. Empty on a human turn. */
+  seat: z.string().default(''),
   /** Null on a human turn. */
   vendor: Vendor.nullable().default(null),
   /** The profile the seat was picked from, stamped as of this turn. */
@@ -1332,24 +1334,60 @@ export const RoomTurn = z.object({
 })
 export type RoomTurn = z.infer<typeof RoomTurn>
 
-/** `thinking` means a seat is mid-turn; a room refuses a second send until idle. */
-export const RoomStatus = z.enum(['idle', 'thinking'])
+/**
+ * `thinking` means at least one seat is mid-turn; a room refuses a second send
+ * until idle. `exhausted` means a cap was reached — terminal until a human
+ * raises the budget, and never reported as success.
+ */
+export const RoomStatus = z.enum(['idle', 'thinking', 'exhausted'])
 export type RoomStatus = z.infer<typeof RoomStatus>
 
 /**
- * One room: a folder, a seat, and everything said in it.
+ * A named chair in a room.
  *
- * Single-seat at m2 — `seat` rather than `seats` — because routing between
- * several is m3's whole subject and a one-element array pretending otherwise
- * would be vocabulary the engine cannot honour yet.
+ * The name is how the seat is addressed (`@reviewer`) and how its turns are
+ * attributed, so it is a slug rather than free text — an address with a space
+ * in it cannot be parsed out of a sentence.
+ */
+export const RoomSeat = z.object({
+  id: Id,
+  name: z.string().min(1).max(40),
+  config: AgentConfig,
+})
+export type RoomSeat = z.infer<typeof RoomSeat>
+
+/**
+ * What a room may spend before it stops.
  *
- * In memory only at m2. Persistence is m4, which is also when a room becomes
- * a `sessions` row and its turns become `turns` rows.
+ * The useful half of the retired caps invariant. A terminal pane burns quota
+ * only while a person types; seats on auto-advance are a furnace with no TUI
+ * to watch and no natural pause, so the bound is checked by Parley before
+ * every dispatch and is never visible to a seat — an agent that can see its
+ * budget can argue about it.
+ *
+ * `costUsd: 0` means no cost ceiling, which is the honest default: Codex
+ * reports no cost at all and Claude reports a notional figure, so turns are
+ * the cap actually doing the work.
+ */
+export const RoomCaps = z.object({
+  turns: z.number().int().positive().max(500),
+  costUsd: z.number().nonnegative(),
+})
+export type RoomCaps = z.infer<typeof RoomCaps>
+
+/**
+ * One room: a folder, its seats, and everything said in it.
+ *
+ * In memory only. Persistence is m4, which is also when a room becomes a
+ * `sessions` row and its turns become `turns` rows.
  */
 export const Room = z.object({
   id: Id,
   cwd: z.string(),
-  seat: AgentConfig,
+  seats: z.array(RoomSeat),
+  caps: RoomCaps,
+  /** Agent turns spent. Human turns are free and are not counted. */
+  turnsSpent: z.number().int().nonnegative().default(0),
   status: RoomStatus,
   turns: z.array(RoomTurn),
   usage: Usage,

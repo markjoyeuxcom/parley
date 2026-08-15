@@ -175,6 +175,66 @@
   color: var(--text-secondary);
 }
 
+/* One seat. The chip grows its activity line inline while that seat works, so
+   several seats running at once are legible as several things happening
+   rather than one blurred status. */
+.room__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  max-width: 46ch;
+  min-width: 0;
+  padding: 1px var(--s2);
+  border: 1px solid var(--line-faint);
+  border-radius: var(--r-md);
+  font-size: var(--text-micro);
+  color: var(--text-secondary);
+  flex-shrink: 1;
+}
+
+.room__chip.is-working {
+  border-color: var(--accent-line);
+}
+
+.room__chip-name {
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.room__chip-x {
+  display: inline-flex;
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.room__chip-x:hover {
+  color: var(--text-primary);
+}
+
+/* Turns lead, cost trails: turns are the cap doing the real work, because the
+   subscriptions report cost either notionally or not at all. */
+.room__spend {
+  font-size: var(--text-micro);
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.room__spend.is-spent {
+  color: var(--fail);
+}
+
+.room__error--banner {
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--line-faint);
+  font-size: var(--text-micro);
+  flex-shrink: 0;
+}
+
 .room__readonly {
   font-size: var(--text-micro);
   color: var(--text-tertiary);

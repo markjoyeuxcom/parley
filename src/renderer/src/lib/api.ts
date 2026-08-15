@@ -22,6 +22,7 @@ import type {
   Pane,
   Preview,
   Room,
+  RoomCaps,
   SelfUpdate,
   Session,
   SessionDeletionImpact,
@@ -337,8 +338,17 @@ export const api = {
   listAgentProfiles: (): Promise<AgentProfile[]> => bridge().invoke('profile.list'),
   addAgentProfile: (profile: Omit<AgentProfile, 'id' | 'createdAt'>): Promise<AgentProfile> =>
     bridge().invoke('profile.add', profile),
-  openRoom: (cwd: string, seat: AgentConfig): Promise<Room> =>
-    bridge().invoke('room.open', { cwd, seat }),
+  openRoom: (cwd: string, seats: AgentConfig[], caps: RoomCaps): Promise<Room> =>
+    bridge().invoke('room.open', { cwd, seats, caps }),
+  addRoomSeat: (roomId: Id, seat: AgentConfig): Promise<Room> =>
+    bridge().invoke('room.addSeat', { roomId, seat }),
+  removeRoomSeat: (roomId: Id, seatId: Id): Promise<Room> =>
+    bridge().invoke('room.removeSeat', { roomId, seatId }),
+  setRoomCaps: (roomId: Id, caps: RoomCaps): Promise<Room> =>
+    bridge().invoke('room.setCaps', { roomId, caps }),
+  /** Turns, not rounds. Fire-and-forget; the pane follows the events. */
+  advanceRoom: (roomId: Id, turns: number): Promise<{ ok: boolean }> =>
+    bridge().invoke('room.advance', { roomId, turns }),
   getRoom: (roomId: Id): Promise<Room | null> => bridge().invoke('room.get', { roomId }),
   /**
    * Fire-and-forget by design: the seat's turn can run for minutes and the

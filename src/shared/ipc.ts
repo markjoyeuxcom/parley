@@ -12,6 +12,7 @@ import {
   EnvelopeCaps,
   LoopExitCondition,
   PaneKind,
+  RoomCaps,
   SavedLayoutNode,
   SessionKind,
   Skill,
@@ -438,10 +439,19 @@ export const COMMANDS = {
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
     persona: z.string().default(''),
   }),
-  'room.open': z.object({ cwd: z.string().min(1), seat: AgentConfig }),
+  'room.open': z.object({
+    cwd: z.string().min(1),
+    seats: z.array(AgentConfig).min(1).max(6),
+    caps: RoomCaps,
+  }),
   'room.get': z.object({ roomId: Id }),
   'room.send': z.object({ roomId: Id, text: z.string().min(1).max(100_000) }),
   'room.setSeat': z.object({ roomId: Id, seat: AgentConfig }),
+  'room.addSeat': z.object({ roomId: Id, seat: AgentConfig }),
+  'room.removeSeat': z.object({ roomId: Id, seatId: Id }),
+  'room.setCaps': z.object({ roomId: Id, caps: RoomCaps }),
+  /** Turns, not rounds — the unit the budget counts in. */
+  'room.advance': z.object({ roomId: Id, turns: z.number().int().positive().max(100) }),
   'room.stop': z.object({ roomId: Id }),
   'room.close': z.object({ roomId: Id }),
   'profile.update': z.object({

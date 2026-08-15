@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Square, Send } from 'lucide-react'
-import type { AgentConfig, AgentProfile, Id, Room, RoomTurn } from '@shared/domain'
+import { Plus, Send, Square, X } from 'lucide-react'
+import type { AgentProfile, Id, Room, RoomSeat, RoomTurn } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import { api } from '../lib/api'
 import { parseMarkdown, type TextSpan } from '../lib/markdown'
@@ -20,12 +20,6 @@ import { Empty } from './ui'
  * channel, one level up.
  */
 
-function seatLabel(seat: AgentConfig): string {
-  const profile = seat.profile?.trim()
-  if (profile) return profile
-  return seat.model.trim() ? `${seat.vendor} · ${seat.model.trim()}` : seat.vendor
-}
-
 export function RoomPane({
   roomId,
   focused,
@@ -38,13 +32,15 @@ export function RoomPane({
   onOutput: () => void
 }): ReactNode {
   const [room, setRoom] = useState<Room | null>(null)
-  const [streaming, setStreaming] = useState<{ turnId: Id; text: string } | null>(null)
+  /** Live text per in-flight turn — several seats can stream at once. */
+  const [streaming, setStreaming] = useState<Record<Id, string>>({})
   const [draft, setDraft] = useState('')
   const [profiles, setProfiles] = useState<AgentProfile[]>([])
-  /** What the seat is doing right now. Never recorded; cleared when it stops. */
-  const [activity, setActivity] = useState('')
+  /** What each seat is doing right now. Never recorded; cleared when it stops. */
+  const [activity, setActivity] = useState<Record<string, string>>({})
+  const [error, setError] = useState('')
+  const [adding, setAdding] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
-  const composer = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -83,38 +79,53 @@ export function RoomPane({
         if (!('roomId' in event) || event.roomId !== roomId) return
         if (event.type === 'room.turn.started') {
           setRoom((current) =>
-            current ? { ...current, status: 'thinking', turns: [...current.turns, event.turn] } : current,
+            current
+              ? { ...current, status: 'thinking', turns: [...current.turns, event.turn] }
+              : current,
           )
-          setStreaming({ turnId: event.turn.id, text: '' })
-          setActivity('')
+          setStreaming((current) => ({ ...current, [event.turn.id]: '' }))
         } else if (event.type === 'room.activity') {
-          // Last one wins: this is a status line, not a log. The scrolling
-          // history of tool calls belongs to a terminal pane; here it would
-          // compete with the reply for the reader's attention.
-          setActivity(event.text)
+          // Per seat, and last one wins within a seat: this is a status line,
+          // not a log. The scrolling history of tool calls belongs to a
+          // terminal pane; here it would compete with the reply.
+          setActivity((current) => ({ ...current, [event.seat]: event.text }))
         } else if (event.type === 'room.turn.delta') {
           setStreaming((current) =>
-            current && current.turnId === event.turnId
-              ? { ...current, text: current.text + event.text }
+            event.turnId in current
+              ? { ...current, [event.turnId]: (current[event.turnId] ?? '') + event.text }
               : current,
           )
           onOutput()
         } else if (event.type === 'room.turn.ended') {
-          setStreaming(null)
-          setActivity('')
-          setRoom((current) =>
-            current
-              ? {
-                  ...current,
-                  status: 'idle',
-                  // The ended turn is authoritative over anything streamed: a
-                  // dropped chunk corrects itself here rather than leaving a
-                  // silently truncated reply on screen.
-                  turns: current.turns.map((t) => (t.id === event.turn.id ? event.turn : t)),
-                }
-              : current,
-          )
+          setStreaming((current) => {
+            const next = { ...current }
+            delete next[event.turn.id]
+            return next
+          })
+          setActivity((current) => {
+            const next = { ...current }
+            delete next[event.turn.seat]
+            return next
+          })
+          setRoom((current) => {
+            if (!current) return current
+            // Upsert, not replace. The ended turn is authoritative over
+            // anything streamed — a dropped chunk corrects itself here — and
+            // appending when it is unknown is what carries the human's own
+            // message, and any turn that began before this pane was mounted.
+            const known = current.turns.some((t) => t.id === event.turn.id)
+            return {
+              ...current,
+              turns: known
+                ? current.turns.map((t) => (t.id === event.turn.id ? event.turn : t))
+                : [...current.turns, event.turn],
+            }
+          })
           onOutput()
+        } else if (event.type === 'room.changed') {
+          // The authoritative shape — status, seats, spend, budget. Turns are
+          // kept from local state, which is ahead of it while streaming.
+          setRoom((current) => (current ? { ...event.room, turns: current.turns } : event.room))
         }
       }),
     [roomId, onOutput],
@@ -127,41 +138,26 @@ export function RoomPane({
     if (!el) return
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120
     if (nearBottom) el.scrollTop = el.scrollHeight
-  }, [room?.turns.length, streaming?.text])
+  }, [room?.turns.length, streaming])
+
+  const act = async <T,>(work: Promise<T>): Promise<T | null> => {
+    try {
+      setError('')
+      return await work
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      return null
+    }
+  }
 
   const send = async (): Promise<void> => {
     const text = draft.trim()
     if (!text || !room || room.status !== 'idle') return
     setDraft('')
-    // Optimistic, and honest about being so: the human turn is on the record in
-    // main the moment this resolves, but the person should see what they typed
-    // land immediately rather than after a round trip.
-    setRoom((current) =>
-      current
-        ? {
-            ...current,
-            status: 'thinking',
-            turns: [
-              ...current.turns,
-              {
-                id: `pending-${Date.now()}`,
-                roomId,
-                author: 'human',
-                vendor: null,
-                profile: '',
-                text,
-                usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
-                startedAt: Date.now(),
-                endedAt: Date.now(),
-                error: null,
-              },
-            ],
-          }
-        : current,
-    )
-    await api.sendToRoom(roomId, text).catch(() => {
-      setRoom((current) => (current ? { ...current, status: 'idle' } : current))
-    })
+    const sent = await act(api.sendToRoom(roomId, text))
+    // A refused message — a bad address, a spent budget — must put the text
+    // back rather than swallowing what somebody typed.
+    if (!sent) setDraft(text)
   }
 
   const turns = useMemo(() => room?.turns ?? [], [room])
@@ -174,57 +170,84 @@ export function RoomPane({
     )
   }
 
+  const busy = room.status === 'thinking'
+  const unseated = profiles.filter(
+    (profile) => !room.seats.some((seat) => seat.config.profile === profile.name),
+  )
+
   return (
     <div className="room" onClick={onFocus} onFocusCapture={onFocus}>
       <div className="room__seat">
-        <span className="room__seat-name">{seatLabel(room.seat)}</span>
-        {profiles.length > 0 ? (
-          <select
-            className="select"
-            aria-label="Seat"
-            value={room.seat.profile ?? ''}
-            disabled={room.status !== 'idle'}
-            onChange={(event) => {
-              const chosen = profiles.find((p) => p.name === event.target.value)
-              if (!chosen) return
-              void api
-                .setRoomSeat(roomId, {
-                  vendor: chosen.vendor,
-                  model: chosen.model,
-                  effort: chosen.effort,
-                  persona: chosen.persona,
-                  profile: chosen.name,
-                })
-                .then((updated) => setRoom(updated))
-                .catch(() => {
-                  /* A refused seat leaves the one that works in place. */
-                })
-            }}
-          >
-            <option value="">{room.seat.profile ? 'Change seat…' : 'Seat from a profile…'}</option>
-            {profiles.map((profile) => (
-              <option key={profile.id} value={profile.name}>
-                {profile.name}
-              </option>
-            ))}
-          </select>
+        {room.seats.map((seat) => (
+          <SeatChip
+            key={seat.id}
+            seat={seat}
+            activity={activity[seat.name] ?? ''}
+            removable={room.seats.length > 1 && !busy}
+            onRemove={() => void act(api.removeRoomSeat(roomId, seat.id)).then((r) => r && setRoom({ ...r, turns: room.turns }))}
+          />
+        ))}
+
+        {!busy && unseated.length > 0 ? (
+          adding ? (
+            <select
+              className="select"
+              aria-label="Add a seat"
+              autoFocus
+              defaultValue=""
+              onChange={(event) => {
+                const chosen = unseated.find((p) => p.name === event.target.value)
+                setAdding(false)
+                if (!chosen) return
+                void act(
+                  api.addRoomSeat(roomId, {
+                    vendor: chosen.vendor,
+                    model: chosen.model,
+                    effort: chosen.effort,
+                    persona: chosen.persona,
+                    profile: chosen.name,
+                  }),
+                ).then((r) => r && setRoom({ ...r, turns: room.turns }))
+              }}
+              onBlur={() => setAdding(false)}
+            >
+              <option value="">Seat a profile…</option>
+              {unseated.map((profile) => (
+                <option key={profile.id} value={profile.name}>
+                  {profile.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <button
+              className="btn btn--subtle btn--icon btn--sm"
+              aria-label="Add a seat"
+              title="Seat another profile in this room"
+              onClick={() => setAdding(true)}
+            >
+              <Plus size={12} strokeWidth={2} />
+            </button>
+          )
         ) : null}
-        {activity ? (
-          <span className="room__activity" title={activity}>
-            {activity}
-          </span>
-        ) : null}
+
         <span className="spacer" />
+        <Spend room={room} />
         <span className="room__readonly" title="A room seat reads this folder and writes nothing.">
           read-only
         </span>
       </div>
 
+      {error ? (
+        <div className="room__error room__error--banner" role="alert">
+          {error}
+        </div>
+      ) : null}
+
       <div className="room__transcript" ref={scroller}>
         {turns.length === 0 ? (
           <Empty
-            title={`${seatLabel(room.seat)} is seated`}
-            body="Say something. The seat reads this folder and answers; nothing here can change a file."
+            title={`${room.seats.map((s) => `@${s.name}`).join(', ')} seated`}
+            body="Say something and every seat answers, independently. Address one with @name."
             compact
           />
         ) : null}
@@ -232,20 +255,27 @@ export function RoomPane({
           <RoomTurnView
             key={turn.id}
             turn={turn}
-            seatName={seatLabel(room.seat)}
-            live={streaming?.turnId === turn.id ? streaming.text : null}
-            activity={streaming?.turnId === turn.id ? activity : ''}
+            live={turn.id in streaming ? (streaming[turn.id] ?? '') : null}
+            activity={activity[turn.seat] ?? ''}
           />
         ))}
       </div>
 
       <div className="room__composer">
         <textarea
-          ref={composer}
           className="input room__input"
           rows={2}
-          placeholder={room.status === 'thinking' ? 'Waiting on the seat…' : 'Say something…'}
+          placeholder={
+            busy
+              ? 'Waiting on the seat…'
+              : room.status === 'exhausted'
+                ? 'Budget spent — raise it to continue.'
+                : room.seats.length > 1
+                  ? 'Say something to the room, or @name one seat…'
+                  : 'Say something…'
+          }
           value={draft}
+          disabled={room.status === 'exhausted'}
           onChange={(event) => setDraft(event.target.value)}
           onFocus={onFocus}
           onKeyDown={(event) => {
@@ -257,7 +287,7 @@ export function RoomPane({
             }
           }}
         />
-        {room.status === 'thinking' ? (
+        {busy ? (
           <button
             className="btn btn--sm"
             onClick={() => void api.stopRoom(roomId)}
@@ -266,15 +296,41 @@ export function RoomPane({
             <Square size={12} strokeWidth={2} />
             Stop
           </button>
-        ) : (
+        ) : room.status === 'exhausted' ? (
           <button
             className="btn btn--primary btn--sm"
-            disabled={!draft.trim()}
-            onClick={() => void send()}
-            aria-label="Send"
+            onClick={() =>
+              void act(
+                api.setRoomCaps(roomId, {
+                  turns: room.caps.turns + 20,
+                  costUsd: room.caps.costUsd,
+                }),
+              ).then((r) => r && setRoom({ ...r, turns: room.turns }))
+            }
+            title="Twenty more turns"
           >
-            <Send size={12} strokeWidth={2} />
+            Raise budget
           </button>
+        ) : (
+          <>
+            {room.seats.length > 1 && turns.some((t) => t.author === 'agent') ? (
+              <button
+                className="btn btn--sm"
+                onClick={() => void act(api.advanceRoom(roomId, room.seats.length))}
+                title="Let the seats answer each other — one turn per seat"
+              >
+                Advance
+              </button>
+            ) : null}
+            <button
+              className="btn btn--primary btn--sm"
+              disabled={!draft.trim()}
+              onClick={() => void send()}
+              aria-label="Send"
+            >
+              <Send size={12} strokeWidth={2} />
+            </button>
+          </>
         )}
       </div>
 
@@ -283,14 +339,60 @@ export function RoomPane({
   )
 }
 
+function SeatChip({
+  seat,
+  activity,
+  removable,
+  onRemove,
+}: {
+  seat: RoomSeat
+  activity: string
+  removable: boolean
+  onRemove: () => void
+}): ReactNode {
+  return (
+    <span className={`room__chip ${activity ? 'is-working' : ''}`} title={seat.config.vendor}>
+      <span className="room__chip-name">@{seat.name}</span>
+      {activity ? <span className="room__activity">{activity}</span> : null}
+      {removable ? (
+        <button
+          className="room__chip-x"
+          aria-label={`Remove @${seat.name}`}
+          onClick={onRemove}
+        >
+          <X size={10} strokeWidth={2.5} />
+        </button>
+      ) : null}
+    </span>
+  )
+}
+
+/**
+ * What this room has spent, against what it may.
+ *
+ * Turns lead because they are the cap doing the real work: Codex reports no
+ * cost at all and Claude reports a notional figure, so a dollar total alone
+ * would be the least trustworthy number on screen presented as the headline.
+ */
+function Spend({ room }: { room: Room }): ReactNode {
+  const cost = room.usage.costUsd
+  return (
+    <span
+      className={`room__spend ${room.status === 'exhausted' ? 'is-spent' : ''}`}
+      title={`${room.turnsSpent} of ${room.caps.turns} turns spent${room.caps.costUsd > 0 ? `, ceiling $${room.caps.costUsd.toFixed(2)}` : ''}`}
+    >
+      {room.turnsSpent}/{room.caps.turns} turns
+      {cost > 0 ? ` · $${cost.toFixed(2)}` : ''}
+    </span>
+  )
+}
+
 function RoomTurnView({
   turn,
-  seatName,
   live,
   activity,
 }: {
   turn: RoomTurn
-  seatName: string
   live: string | null
   activity: string
 }): ReactNode {
@@ -301,7 +403,7 @@ function RoomTurnView({
 
   return (
     <div className={`room__turn room__turn--${turn.author}`}>
-      <div className="room__author">{turn.author === 'human' ? 'You' : seatName}</div>
+      <div className="room__author">{turn.author === 'human' ? 'You' : `@${turn.seat}`}</div>
       {turn.error ? (
         <div className="room__error" role="alert">
           {turn.error}
@@ -344,10 +446,10 @@ function Markdown({ text }: { text: string }): ReactNode {
           )
         }
         if (block.kind === 'heading') {
-          // Capped at h4 and styled by level rather than by tag size: a room
-          // is not a document, and an h1 inside a pane would outweigh the
-          // app's own chrome.
-          const Tag = (`h${Math.min(block.level + 2, 6)}`) as 'h3'
+          // Capped and styled by level rather than by tag size: a room is not
+          // a document, and an h1 inside a pane would outweigh the app's own
+          // chrome.
+          const Tag = `h${Math.min(block.level + 2, 6)}` as 'h3'
           return (
             <Tag className={`room__heading room__heading--${block.level}`} key={key}>
               <Spans spans={block.spans} />

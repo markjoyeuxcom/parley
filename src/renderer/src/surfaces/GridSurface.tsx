@@ -8,6 +8,7 @@ import {
   type Id,
   type LayoutNode,
   type PaneKind,
+  type RoomCaps,
   type Skill,
   type SlotKind,
 } from '@shared/domain'
@@ -55,6 +56,15 @@ const SLOT_KINDS: SlotKind[] = [...PANE_KINDS, 'room']
  * usable the moment it exists; the seat control changes it in place.
  */
 const DEFAULT_ROOM_SEAT: AgentConfig = { vendor: 'claude', model: '', effort: 'high', persona: '' }
+
+/**
+ * What a new room may spend before it stops and asks.
+ *
+ * Forty turns is a long conversation and a bounded one; no cost ceiling by
+ * default because the subscriptions barely report cost, so a dollar cap would
+ * be a number that never fires pretending to be a safeguard.
+ */
+const DEFAULT_ROOM_CAPS: RoomCaps = { turns: 40, costUsd: 0 }
 
 let slotSeq = 0
 const mintSlotId = (): Id => `slot-${Date.now().toString(36)}-${(slotSeq += 1)}`
@@ -209,7 +219,7 @@ export function GridSurface(): ReactNode {
       if (!slot || slot.paneId || slot.roomId) return
       const kind = slot.kind
       if (kind === 'room') {
-        const room = await attempt(() => api.openRoom(slot.cwd, DEFAULT_ROOM_SEAT))
+        const room = await attempt(() => api.openRoom(slot.cwd, [DEFAULT_ROOM_SEAT], DEFAULT_ROOM_CAPS))
         if (!room) return
         setSlots((current) => ({ ...current, [slotId]: { ...slot, roomId: room.id } }))
         setFocusedSlot(slotId)
@@ -267,7 +277,7 @@ export function GridSurface(): ReactNode {
       const kind = opts.kind ?? slot.kind
       const opened =
         kind === 'room'
-          ? await attempt(() => api.openRoom(slot.cwd, DEFAULT_ROOM_SEAT))
+          ? await attempt(() => api.openRoom(slot.cwd, [DEFAULT_ROOM_SEAT], DEFAULT_ROOM_CAPS))
           : await attempt(() => api.openPane(kind, slot.cwd, 80, 24, opts.resume ?? false))
       setSlots((current) => {
         const existing = current[slotId]
@@ -312,7 +322,7 @@ export function GridSurface(): ReactNode {
       // machinery either way — the difference is which id the slot carries.
       const opened =
         kind === 'room'
-          ? await attempt(() => api.openRoom(dir, DEFAULT_ROOM_SEAT))
+          ? await attempt(() => api.openRoom(dir, [DEFAULT_ROOM_SEAT], DEFAULT_ROOM_CAPS))
           : await attempt(() => api.openPane(kind, dir, 80, 24))
       if (!opened) return
 
