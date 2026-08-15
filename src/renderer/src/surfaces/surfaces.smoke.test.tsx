@@ -985,6 +985,70 @@ describe('mounted-surface smoke', () => {
     expect((invoked[0]?.payload as { cwd: string; kind: string }).kind).toBe('shell')
   })
 
+  it('the roster lists, edits and forgets a profile without leaving the Grid', async () => {
+    // Profiles could be saved and chosen from a seat picker since schema 32,
+    // and never listed, corrected or retired — profile.forget shipped with no
+    // caller. This pins the missing half, including that an edit routes
+    // through profile.update rather than a delete-and-recreate.
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    const profiles = [
+      {
+        id: 'prof-1',
+        name: 'Fast reviewer',
+        vendor: 'codex' as const,
+        model: 'gpt-5.6-sol',
+        effort: 'low' as const,
+        persona: 'terse',
+        createdAt: 1_700_000_000_000,
+      },
+    ]
+    installBridge({
+      'profile.list': () => profiles,
+      'profile.update': (payload) => {
+        invoked.push({ name: 'profile.update', payload })
+        return { ...profiles[0], name: 'Careful reviewer' }
+      },
+      'profile.forget': (payload) => {
+        invoked.push({ name: 'profile.forget', payload })
+        return null
+      },
+    })
+
+    render(
+      <StoreProvider>
+        <GridSurface />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Roster' }))
+    // Scoped to the dialog throughout: the Grid toolbar carries its own
+    // "Codex" button, and an unscoped query would match the wrong surface.
+    const dialog = within(await screen.findByRole('dialog'))
+
+    // The stored profile is shown with the vocabulary a seat picker uses —
+    // the CLI's label, not its enum value.
+    expect(await dialog.findByText('Fast reviewer')).toBeTruthy()
+    expect(dialog.getByText('Codex')).toBeTruthy()
+    expect(dialog.getByText('gpt-5.6-sol')).toBeTruthy()
+
+    fireEvent.click(dialog.getByRole('button', { name: 'Edit Fast reviewer' }))
+    const nameField = dialog.getByDisplayValue('Fast reviewer')
+    fireEvent.change(nameField, { target: { value: 'Careful reviewer' } })
+    fireEvent.click(dialog.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(invoked).toHaveLength(1))
+    expect(invoked[0]?.name).toBe('profile.update')
+    // The id travels, which is what makes this an edit and not a new row.
+    expect((invoked[0]?.payload as { profileId: string }).profileId).toBe('prof-1')
+
+    // Forgetting asks first: a roster row is cheap to recreate but the name is
+    // stamped on work, so a stray click should not silently retire it.
+    fireEvent.click(dialog.getByRole('button', { name: 'Forget Fast reviewer' }))
+    fireEvent.click(dialog.getByRole('button', { name: 'Forget' }))
+    await waitFor(() => expect(invoked).toHaveLength(2))
+    expect(invoked[1]?.name).toBe('profile.forget')
+  })
+
   it('offers an unattended run on a worktree plan, states its bounds, and grants the envelope', async () => {
     const invoked: Array<{ name: CommandName; payload: unknown }> = []
     const worktreePlan = { ...smokePlan, isolation: 'worktree' as const }

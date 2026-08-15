@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Columns2, FolderOpen, Layers, MoreHorizontal, Play, Plus, Radio, Rows2, Terminal, X } from 'lucide-react'
+import { Columns2, FolderOpen, Layers, MoreHorizontal, Play, Plus, Radio, Rows2, Terminal, Users, X } from 'lucide-react'
 import {
   MAX_PANES,
+  RESUME_PICKER_KINDS,
   type GridLayout,
   type Id,
   type LayoutNode,
@@ -30,6 +31,7 @@ import { shortPath } from '../lib/format'
 import { paneSelection, termAccess } from '../lib/termSelection'
 import { useStore } from '../state'
 import { TerminalPane } from '../components/TerminalPane'
+import { RosterDialog } from '../components/RosterDialog'
 import { Chip, Dialog, Dot, Empty, Field, Menu, MenuItem, MenuSection } from '../components/ui'
 import {
   KIND_LABEL as PANE_KIND_LABEL,
@@ -39,7 +41,7 @@ import {
 } from '../lib/panes'
 
 const KIND_LABEL = PANE_KIND_LABEL
-const PANE_KINDS: PaneKind[] = ['shell', 'claude', 'codex']
+const PANE_KINDS: PaneKind[] = ['shell', 'claude', 'codex', 'agy']
 
 let slotSeq = 0
 const mintSlotId = (): Id => `slot-${Date.now().toString(36)}-${(slotSeq += 1)}`
@@ -67,6 +69,7 @@ export function GridSurface(): ReactNode {
   const [saving, setSaving] = useState(false)
   const [renaming, setRenaming] = useState<{ slotId: Id; value: string } | null>(null)
   const [broadcasting, setBroadcasting] = useState(false)
+  const [roster, setRoster] = useState(false)
   /** Null = closed; a string = the live query against the focused pane. */
   const [finding, setFinding] = useState<string | null>(null)
   const [maximizedSlot, setMaximizedSlot] = useState<Id | null>(null)
@@ -491,7 +494,7 @@ export function GridSurface(): ReactNode {
 
         <div className="divider" style={{ width: 1, height: 18, background: 'var(--line)' }} />
 
-        {(['shell', 'claude', 'codex'] as PaneKind[]).map((kind) => (
+        {PANE_KINDS.map((kind) => (
           <button
             key={kind}
             className="btn btn--sm"
@@ -514,6 +517,15 @@ export function GridSurface(): ReactNode {
             Broadcast
           </button>
         ) : null}
+
+        <button
+          className="btn btn--sm"
+          onClick={() => setRoster(true)}
+          title="Named ways of configuring a seat"
+        >
+          <Users size={12} strokeWidth={2} />
+          Roster
+        </button>
 
         {finding !== null && focusedSlot ? (
           <input
@@ -645,7 +657,6 @@ export function GridSurface(): ReactNode {
               if (!slot) return null
               const status = slotPaneStatus(slot, slot.paneId ? paneById.get(slot.paneId) : undefined)
               const running = status === 'live' || status === 'starting'
-              const agent = slot.kind !== 'shell'
               return (
                 <Menu label={<MoreHorizontal size={12} strokeWidth={2} />} title="Pane actions">
                   {(close) => (
@@ -671,7 +682,7 @@ export function GridSurface(): ReactNode {
                             Start
                           </MenuItem>
                         ) : null}
-                        {agent && !running ? (
+                        {RESUME_PICKER_KINDS.includes(slot.kind) && !running ? (
                           <MenuItem
                             onClick={() => {
                               close()
@@ -789,7 +800,7 @@ export function GridSurface(): ReactNode {
             title="No panes open"
             body={
               cwd
-                ? 'Open a shell, or an interactive Claude or Codex session. Split with ⌘D, close with ⌘W, cycle with ⌘]. Panes can live in different folders — each keeps the one it started in.'
+                ? 'Open a shell, or an interactive agent session — every CLI in the toolbar. Split with ⌘D, close with ⌘W, cycle with ⌘]. Panes can live in different folders — each keeps the one it started in.'
                 : 'Choose a folder, then open a shell or an interactive agent session in it. You can work across several folders at once.'
             }
             action={
@@ -869,6 +880,8 @@ export function GridSurface(): ReactNode {
           }}
         />
       ) : null}
+
+      {roster ? <RosterDialog onClose={() => setRoster(false)} /> : null}
 
       {renaming ? (
         <Dialog

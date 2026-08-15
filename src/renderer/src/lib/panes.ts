@@ -6,6 +6,7 @@ export const KIND_LABEL: Record<PaneKind, string> = {
   shell: 'Shell',
   claude: 'Claude',
   codex: 'Codex',
+  agy: 'Agy',
 }
 
 /**

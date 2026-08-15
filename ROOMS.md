@@ -3,7 +3,8 @@
 The arc that makes the Grid the whole product: multi-agent conversation as a
 first-class pane, and the governed engine retired behind it.
 
-**Status.** Planned, nothing landed. Written 2026-08-15 against schema v32.
+**Status.** **m1 landed 2026-08-15**; m2–m6 planned. Written against schema
+v32, which this arc has not yet needed to move.
 Read `AGENTS.md` first — some of its invariants survive this arc and some are
 deliberately retired, and the difference is stated in "What the invariants
 become" below.

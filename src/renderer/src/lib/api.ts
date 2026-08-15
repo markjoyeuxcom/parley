@@ -336,6 +336,10 @@ export const api = {
   listAgentProfiles: (): Promise<AgentProfile[]> => bridge().invoke('profile.list'),
   addAgentProfile: (profile: Omit<AgentProfile, 'id' | 'createdAt'>): Promise<AgentProfile> =>
     bridge().invoke('profile.add', profile),
+  updateAgentProfile: (
+    profileId: Id,
+    profile: Omit<AgentProfile, 'id' | 'createdAt'>,
+  ): Promise<AgentProfile> => bridge().invoke('profile.update', { profileId, ...profile }),
   forgetAgentProfile: (profileId: Id): Promise<null> =>
     bridge().invoke('profile.forget', { profileId }),
   searchRecord: (query: string, limit?: number): Promise<RecordSearchHit[]> =>

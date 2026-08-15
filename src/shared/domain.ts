@@ -1256,8 +1256,24 @@ export type Loop = z.infer<typeof Loop>
 
 // ─── Grid (parallel terminal panes) ──────────────────────────────────────────
 
-export const PaneKind = z.enum(['shell', 'claude', 'codex'])
+export const PaneKind = z.enum(['shell', 'claude', 'codex', 'agy'])
 export type PaneKind = z.infer<typeof PaneKind>
+
+/**
+ * Pane kinds whose CLI offers its own interactive session picker.
+ *
+ * "Resume a session…" opens that picker inside the pane — `claude --resume`,
+ * `codex resume` — and Parley's governed resume ids never reach it. Agy is
+ * absent deliberately: it resumes by id (`--conversation <id>`), which is a
+ * different thing entirely. A pane offering it would either need an id the
+ * Grid has no business holding, or an invented flag; both are worse than the
+ * menu item simply not being there.
+ *
+ * Shared rather than duplicated per process, because the main side spawns the
+ * command and the renderer decides whether to offer it — and the two silently
+ * disagreeing would show a menu item that does nothing.
+ */
+export const RESUME_PICKER_KINDS: readonly PaneKind[] = ['claude', 'codex']
 
 export const PaneStatus = z.enum(['starting', 'live', 'exited'])
 export type PaneStatus = z.infer<typeof PaneStatus>

@@ -67,6 +67,16 @@ export function commandFor(kind: PaneKind, resume = false): { file: string; args
       return { file: 'claude', args: resume ? ['--resume'] : [] }
     case 'codex':
       return { file: 'codex', args: resume ? ['resume'] : [] }
+    case 'agy':
+      // Bare, always. Agy's headless mode is triggered by a non-TTY stdin (see
+      // the adapter's buildAgyArgs) — a pane gives it a real TTY, so no flag is
+      // needed to get the interactive session, and none is passed.
+      //
+      // `resume` is ignored rather than honoured: agy resumes by id, not
+      // through a picker, so it is not in RESUME_PICKER_KINDS and the menu
+      // item never appears. Ignoring it here keeps that true even if some
+      // caller passes the flag anyway.
+      return { file: 'agy', args: [] }
     default:
       // -l so the shell reads the user's profile.
       return { file: loginShell(), args: ['-l'] }

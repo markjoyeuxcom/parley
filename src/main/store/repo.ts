@@ -2282,6 +2282,49 @@ export class Repo {
   }
 
   /**
+   * Rewrites a profile in place.
+   *
+   * In place and not delete-plus-recreate, for two reasons that only show up
+   * later: the id is what a roster row is keyed by, and `createdAt` is the
+   * only ordering fact a profile carries — both would be silently replaced by
+   * a recreate, and the roster would reshuffle under the hand that edited it.
+   *
+   * Renaming onto another profile is refused by the NOCASE unique index, which
+   * is exactly the create path's rule applied to the same question. Renaming a
+   * profile to its own name in a different casing is NOT a collision: the
+   * index is checked against other rows, and this one is the row being edited.
+   *
+   * An edit does not chase the stamps it left behind. A plan or journal entry
+   * naming "Fast reviewer" records what the seat was called when it ran, and a
+   * later rename cannot reach back and make that untrue.
+   */
+  updateAgentProfile(id: Id, input: Omit<AgentProfile, 'id' | 'createdAt'>): AgentProfile {
+    const name = input.name.trim()
+    if (!name) throw new Error('a profile needs a name')
+    const existing = this.db.get(`SELECT created_at FROM agent_profiles WHERE id = ?`, id)
+    if (!existing) throw new Error('no such profile')
+    this.db.run(
+      `UPDATE agent_profiles SET name = ?, vendor = ?, model = ?, effort = ?, persona = ?
+       WHERE id = ?`,
+      name,
+      input.vendor,
+      input.model,
+      input.effort,
+      input.persona,
+      id,
+    )
+    return {
+      id,
+      name,
+      vendor: input.vendor,
+      model: input.model,
+      effort: input.effort,
+      persona: input.persona,
+      createdAt: num(existing['created_at']),
+    }
+  }
+
+  /**
    * Deletes the profile and nothing else.
    *
    * Configs that were stamped from it keep their stamp: the journal and every

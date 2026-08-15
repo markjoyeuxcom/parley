@@ -449,6 +449,17 @@ const HANDLERS: Record<CommandName, Handler> = {
     ctx.manager.repo.createAgentProfile(
       p as { name: string; vendor: 'claude' | 'codex' | 'agy'; model: string; effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'; persona: string },
     ),
+  'profile.update': (p, ctx) => {
+    const { profileId, ...fields } = p as {
+      profileId: string
+      name: string
+      vendor: 'claude' | 'codex' | 'agy'
+      model: string
+      effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+      persona: string
+    }
+    return ctx.manager.repo.updateAgentProfile(profileId, fields)
+  },
   'profile.forget': (p, ctx) => {
     ctx.manager.repo.forgetAgentProfile((p as { profileId: string }).profileId)
     return null

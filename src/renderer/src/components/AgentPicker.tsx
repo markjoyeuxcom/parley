@@ -33,8 +33,9 @@ const MODEL_HINTS: Record<Vendor, string[]> = {
   agy: [],
 }
 
-const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
-const VENDORS = [
+/** Exported so the roster offers exactly the seat vocabulary a picker does. */
+export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+export const VENDORS = [
   { vendor: 'claude', label: 'Claude Code' },
   { vendor: 'codex', label: 'Codex' },
   { vendor: 'agy', label: 'Agy' },
