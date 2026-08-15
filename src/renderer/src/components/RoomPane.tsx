@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Plus, Send, Square, X } from 'lucide-react'
-import type { AgentProfile, Id, Room, RoomSeat, RoomTurn } from '@shared/domain'
+import { Gavel, Pencil, Plus, Send, Square, X } from 'lucide-react'
+import type { AgentProfile, Id, Room, RoomSeat, RoomTurn, RoomVerdict } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import { api } from '../lib/api'
 import { parseMarkdown, type TextSpan } from '../lib/markdown'
-import { Empty } from './ui'
+import { Dialog, Empty, Field } from './ui'
 
 /**
  * A room, in a grid slot.
@@ -40,6 +40,8 @@ export function RoomPane({
   const [activity, setActivity] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
   const [adding, setAdding] = useState(false)
+  const [verdicts, setVerdicts] = useState<RoomVerdict[]>([])
+  const [converging, setConverging] = useState<string | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -55,6 +57,14 @@ export function RoomPane({
     return () => {
       cancelled = true
     }
+    void api
+      .listRoomVerdicts(roomId)
+      .then((rows) => {
+        if (!cancelled) setVerdicts(Array.isArray(rows) ? rows : [])
+      })
+      .catch(() => {
+        /* A room with no verdicts is the normal case. */
+      })
   }, [roomId])
 
   // The roster, so a seat can be staffed from a name rather than re-typed.
@@ -122,6 +132,8 @@ export function RoomPane({
             }
           })
           onOutput()
+        } else if (event.type === 'room.verdict') {
+          setVerdicts((current) => [event.verdict, ...current])
         } else if (event.type === 'room.changed') {
           // The authoritative shape — status, seats, spend, budget. Turns are
           // kept from local state, which is ahead of it while streaming.
@@ -184,7 +196,13 @@ export function RoomPane({
             seat={seat}
             activity={activity[seat.name] ?? ''}
             removable={room.seats.length > 1 && !busy}
+            editable={!busy}
             onRemove={() => void act(api.removeRoomSeat(roomId, seat.id)).then((r) => r && setRoom({ ...r, turns: room.turns }))}
+            onToggleWrite={() =>
+              void act(api.setRoomSeatWrite(roomId, seat.id, !seat.write)).then(
+                (r) => r && setRoom({ ...r, turns: room.turns }),
+              )
+            }
           />
         ))}
 
@@ -232,9 +250,7 @@ export function RoomPane({
 
         <span className="spacer" />
         <Spend room={room} />
-        <span className="room__readonly" title="A room seat reads this folder and writes nothing.">
-          read-only
-        </span>
+        <WriteState seats={room.seats} />
       </div>
 
       {error ? (
@@ -264,6 +280,8 @@ export function RoomPane({
           />
         ))}
       </div>
+
+      {verdicts.length > 0 ? <VerdictStrip verdicts={verdicts} /> : null}
 
       <div className="room__composer">
         <textarea
@@ -326,6 +344,16 @@ export function RoomPane({
                 Advance
               </button>
             ) : null}
+            {turns.some((t) => t.author === 'agent') ? (
+              <button
+                className="btn btn--sm"
+                onClick={() => setConverging(draft.trim())}
+                title="Ask every seat to record its own verdict, independently"
+              >
+                <Gavel size={12} strokeWidth={2} />
+                Converge
+              </button>
+            ) : null}
             <button
               className="btn btn--primary btn--sm"
               disabled={!draft.trim()}
@@ -338,6 +366,19 @@ export function RoomPane({
         )}
       </div>
 
+      {converging !== null ? (
+        <ConvergeDialog
+          seats={room.seats.length}
+          question={converging}
+          onClose={() => setConverging(null)}
+          onConfirm={(question) => {
+            setConverging(null)
+            setDraft('')
+            void act(api.convergeRoom(roomId, question))
+          }}
+        />
+      ) : null}
+
       {focused ? null : <div className="room__unfocused" aria-hidden />}
     </div>
   )
@@ -347,17 +388,38 @@ function SeatChip({
   seat,
   activity,
   removable,
+  editable,
   onRemove,
+  onToggleWrite,
 }: {
   seat: RoomSeat
   activity: string
   removable: boolean
+  editable: boolean
   onRemove: () => void
+  onToggleWrite: () => void
 }): ReactNode {
   return (
-    <span className={`room__chip ${activity ? 'is-working' : ''}`} title={seat.config.vendor}>
+    <span
+      className={`room__chip ${activity ? 'is-working' : ''} ${seat.write ? 'can-write' : ''}`}
+      title={seat.config.vendor}
+    >
       <span className="room__chip-name">@{seat.name}</span>
       {activity ? <span className="room__activity">{activity}</span> : null}
+      {editable ? (
+        <button
+          className="room__chip-x"
+          aria-label={seat.write ? `Make @${seat.name} read-only` : `Let @${seat.name} write`}
+          title={
+            seat.write
+              ? 'This seat can change files here. Click to make it read-only.'
+              : 'Let this seat change files in this folder.'
+          }
+          onClick={onToggleWrite}
+        >
+          <Pencil size={10} strokeWidth={2.5} />
+        </button>
+      ) : null}
       {removable ? (
         <button
           className="room__chip-x"
@@ -367,6 +429,32 @@ function SeatChip({
           <X size={10} strokeWidth={2.5} />
         </button>
       ) : null}
+    </span>
+  )
+}
+
+/**
+ * What the seats may do, stated without being asked.
+ *
+ * The room header carries this permanently because a per-seat write flag is
+ * STANDING authorisation — it lasts until somebody turns it off — and a
+ * capability that persists silently is one nobody remembers granting.
+ */
+function WriteState({ seats }: { seats: readonly RoomSeat[] }): ReactNode {
+  const writers = seats.filter((seat) => seat.write)
+  if (writers.length === 0) {
+    return (
+      <span className="room__readonly" title="Every seat reads this folder and changes nothing.">
+        read-only
+      </span>
+    )
+  }
+  return (
+    <span
+      className="room__readonly is-writing"
+      title="These seats can change files in this folder until you turn it off."
+    >
+      {writers.map((seat) => `@${seat.name}`).join(' ')} can write
     </span>
   )
 }
@@ -497,5 +585,100 @@ function Spans({ spans }: { spans: TextSpan[] }): ReactNode {
         return <span key={index}>{span.text}</span>
       })}
     </>
+  )
+}
+
+/**
+ * The confirmation before a converge.
+ *
+ * Converging costs one turn per seat and produces the one artifact in a room
+ * that reads as a conclusion, so it is worth a beat — and the beat is where
+ * the question gets stated, which is the difference between a verdict on
+ * something and a verdict on nothing in particular.
+ */
+function ConvergeDialog({
+  seats,
+  question,
+  onClose,
+  onConfirm,
+}: {
+  seats: number
+  question: string
+  onClose: () => void
+  onConfirm: (question: string) => void
+}): ReactNode {
+  const [text, setText] = useState(question)
+  return (
+    <Dialog
+      title="Converge"
+      subtitle={`Every seat records its own verdict, independently. ${seats} turn${seats === 1 ? '' : 's'}.`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn--primary" onClick={() => onConfirm(text)}>
+            Ask the seats
+          </button>
+        </>
+      }
+    >
+      <Field
+        label="Question"
+        hint="Leave empty to converge on whatever the room has been discussing."
+      >
+        <input
+          className="input"
+          autoFocus
+          placeholder="Should we decompose renderApp, or measure first?"
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') onConfirm(text)
+          }}
+        />
+      </Field>
+    </Dialog>
+  )
+}
+
+/**
+ * What the room has concluded, newest first.
+ *
+ * Confidence and agreement are shown side by side because they answer
+ * different questions — how sure the seats were, and how much they actually
+ * agreed — and collapsing them into one number is exactly what makes a
+ * confident-sounding verdict misleading. Dissent gets its own line whenever
+ * there is any, because it is the first thing a summary would drop.
+ */
+function VerdictStrip({ verdicts }: { verdicts: readonly RoomVerdict[] }): ReactNode {
+  const [open, setOpen] = useState(false)
+  const latest = verdicts[0]
+  if (!latest) return null
+
+  return (
+    <div className="room__verdict">
+      <button className="room__verdict-head" onClick={() => setOpen((v) => !v)}>
+        <span className="room__verdict-decision">{latest.decision}</span>
+        <span className="spacer" />
+        <span className="room__verdict-meta">
+          confidence {latest.confidence.toFixed(2)}
+          {latest.singleSource
+            ? ' · one seat only'
+            : ` · agreement ${latest.agreement.toFixed(2)}`}
+          {verdicts.length > 1 ? ` · ${verdicts.length} verdicts` : ''}
+        </span>
+      </button>
+      {open ? (
+        <div className="room__verdict-body">
+          <Markdown text={latest.report} />
+        </div>
+      ) : latest.dissent.trim() ? (
+        <div className="room__verdict-dissent" title={latest.dissent}>
+          Dissent: {latest.dissent.split('\n')[0]}
+        </div>
+      ) : null}
+    </div>
   )
 }

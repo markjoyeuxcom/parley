@@ -453,6 +453,9 @@ export const COMMANDS = {
   'room.addSeat': z.object({ roomId: Id, seat: AgentConfig }),
   'room.removeSeat': z.object({ roomId: Id, seatId: Id }),
   'room.setCaps': z.object({ roomId: Id, caps: RoomCaps }),
+  'room.setSeatWrite': z.object({ roomId: Id, seatId: Id, write: z.boolean() }),
+  'room.converge': z.object({ roomId: Id, question: z.string().max(2000).default('') }),
+  'room.verdicts': z.object({ roomId: Id }),
   /** Turns, not rounds — the unit the budget counts in. */
   'room.advance': z.object({ roomId: Id, turns: z.number().int().positive().max(100) }),
   'room.stop': z.object({ roomId: Id }),

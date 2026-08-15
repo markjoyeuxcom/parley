@@ -23,6 +23,7 @@ import type {
   Preview,
   Room,
   RoomCaps,
+  RoomVerdict,
   SelfUpdate,
   Session,
   SessionDeletionImpact,
@@ -346,6 +347,14 @@ export const api = {
     bridge().invoke('room.removeSeat', { roomId, seatId }),
   setRoomCaps: (roomId: Id, caps: RoomCaps): Promise<Room> =>
     bridge().invoke('room.setCaps', { roomId, caps }),
+  /** Standing authorisation, not single-use — see the room header. */
+  setRoomSeatWrite: (roomId: Id, seatId: Id, write: boolean): Promise<Room> =>
+    bridge().invoke('room.setSeatWrite', { roomId, seatId, write }),
+  /** Fire-and-forget; the verdict arrives as a room.verdict event. */
+  convergeRoom: (roomId: Id, question: string): Promise<{ ok: boolean }> =>
+    bridge().invoke('room.converge', { roomId, question }),
+  listRoomVerdicts: (roomId: Id): Promise<RoomVerdict[]> =>
+    bridge().invoke('room.verdicts', { roomId }),
   /** Turns, not rounds. Fire-and-forget; the pane follows the events. */
   advanceRoom: (roomId: Id, turns: number): Promise<{ ok: boolean }> =>
     bridge().invoke('room.advance', { roomId, turns }),

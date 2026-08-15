@@ -8,6 +8,7 @@ import {
   type RoomCaps,
   type RoomSeat,
   type RoomTurn,
+  type RoomVerdict,
   type CorrectionDisposition,
   addUsage,
   emptyUsage,
@@ -2273,6 +2274,51 @@ export class Repo {
         WHERE closed_at IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM room_turns WHERE room_turns.room_id = rooms.id)`,
     ).changes
+  }
+
+  saveRoomVerdict(verdict: RoomVerdict): RoomVerdict {
+    this.db.run(
+      `INSERT INTO room_verdicts
+         (id, room_id, question, decision, rationale, scores, confidence,
+          agreement, single_source, dissent, report, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      verdict.id,
+      verdict.roomId,
+      verdict.question,
+      verdict.decision,
+      verdict.rationale,
+      JSON.stringify(verdict.scores),
+      verdict.confidence,
+      verdict.agreement,
+      verdict.singleSource ? 1 : 0,
+      verdict.dissent,
+      verdict.report,
+      verdict.createdAt,
+    )
+    return verdict
+  }
+
+  /** Newest first: a room's later conclusions supersede without erasing. */
+  listRoomVerdicts(roomId: Id): RoomVerdict[] {
+    return this.db
+      // rowid breaks the tie: two verdicts asked for in the same millisecond
+      // would otherwise come back in an arbitrary order, and which one a room
+      // reached LAST is the whole point of keeping both.
+      .all(`SELECT * FROM room_verdicts WHERE room_id = ? ORDER BY created_at DESC, rowid DESC`, roomId)
+      .map((row) => ({
+        id: str(row['id']),
+        roomId: str(row['room_id']),
+        question: str(row['question']),
+        decision: str(row['decision']),
+        rationale: str(row['rationale']),
+        scores: JSON.parse(str(row['scores'], '{}')) as RoomVerdict['scores'],
+        confidence: num(row['confidence']),
+        agreement: num(row['agreement']),
+        singleSource: num(row['single_source']) === 1,
+        dissent: str(row['dissent']),
+        report: str(row['report']),
+        createdAt: num(row['created_at']),
+      }))
   }
 
   private toRoomTurn(row: Row): RoomTurn {

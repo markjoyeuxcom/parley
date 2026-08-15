@@ -494,6 +494,27 @@ const HANDLERS: Record<CommandName, Handler> = {
     const { roomId, seatId } = p as { roomId: string; seatId: string }
     return ctx.rooms.removeSeat(roomId, seatId)
   },
+  'room.setSeatWrite': (p, ctx) => {
+    const { roomId, seatId, write } = p as { roomId: string; seatId: string; write: boolean }
+    return ctx.rooms.setSeatWrite(roomId, seatId, write)
+  },
+  'room.verdicts': (p, ctx) => ctx.rooms.listVerdicts((p as { roomId: string }).roomId),
+  // Fire-and-forget like send: every seat has to answer, which takes as long
+  // as a turn each, and the pane learns the outcome from room.verdict.
+  'room.converge': (p, ctx) => {
+    const { roomId, question } = p as { roomId: string; question: string }
+    const room = ctx.rooms.get(roomId)
+    if (!room) throw new RequestError('no such room')
+    if (room.status !== 'idle') throw new RequestError('that room is not idle')
+    void ctx.rooms.converge(roomId, question).catch((err: unknown) => {
+      emit(ctx, {
+        type: 'notice',
+        level: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      })
+    })
+    return { ok: true }
+  },
   'room.setCaps': (p, ctx) => {
     const { roomId, caps } = p as { roomId: string; caps: RoomCaps }
     return ctx.rooms.setCaps(roomId, caps)

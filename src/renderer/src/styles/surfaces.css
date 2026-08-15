@@ -196,6 +196,13 @@
   border-color: var(--accent-line);
 }
 
+/* A seat that can change files. Marked on the chip AND stated in the header,
+   because the flag is standing authorisation rather than single-use. */
+.room__chip.can-write {
+  border-color: var(--warn, var(--fail));
+  color: var(--text-primary);
+}
+
 .room__chip-name {
   font-family: var(--font-mono);
   flex-shrink: 0;
@@ -239,6 +246,61 @@
   font-size: var(--text-micro);
   color: var(--text-tertiary);
   font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.room__readonly.is-writing {
+  color: var(--fail);
+}
+
+/* What the room concluded. Above the composer rather than in the transcript:
+   a verdict is an artifact about the conversation, not a turn in it, and
+   burying it in scrollback would lose it in a long room. */
+.room__verdict {
+  border-top: 1px solid var(--line-faint);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow-y: auto;
+}
+
+.room__verdict-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.room__verdict-decision {
+  font-size: var(--text-small);
+  font-weight: 550;
+  color: var(--text-primary);
+}
+
+.room__verdict-meta,
+.room__verdict-dissent {
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.room__verdict-dissent {
+  padding: 0 var(--s3) var(--s2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.room__verdict-body {
+  padding: 0 var(--s3) var(--s3);
 }
 
 /* What the seat is doing, in the seat line rather than the transcript: it

@@ -1374,6 +1374,16 @@ export const RoomSeat = z.object({
   id: Id,
   name: z.string().min(1).max(40),
   config: AgentConfig,
+  /**
+   * Whether this seat may change files in the room's folder.
+   *
+   * Off by default and off for every seat a room opens with. Turning it on is
+   * STANDING authorisation, not single-use — it lasts until somebody turns it
+   * off — which is a materially weaker guarantee than the recorded, spent-on-
+   * start approval the audited pipeline required, and the reason the room
+   * header states which seats hold it without being asked.
+   */
+  write: z.boolean().default(false),
 })
 export type RoomSeat = z.infer<typeof RoomSeat>
 
@@ -1416,6 +1426,38 @@ export const Room = z.object({
   createdAt: Timestamp,
 })
 export type Room = z.infer<typeof Room>
+
+/**
+ * What a room's seats concluded, when somebody asked them to.
+ *
+ * Its own row with its own id rather than one per room: a room is a
+ * conversation that can reach several conclusions over its life, and
+ * overwriting the first the moment a second is asked for would destroy the
+ * more interesting half of the record — what they thought before, and what
+ * changed their minds.
+ */
+export const RoomVerdict = z.object({
+  id: Id,
+  roomId: Id,
+  /** What the seats were asked to settle. */
+  question: z.string(),
+  decision: z.string(),
+  rationale: z.string(),
+  scores: z.record(ScoreDimension, z.number().min(0).max(10)),
+  /** 0–1, and lowered by disagreement. Agreement is not confidence. */
+  confidence: z.number().min(0).max(1),
+  /** 0–1: how closely the seats' scores aligned. Stored rather than folded
+   * away, so a surface can say "they disagreed" instead of only showing the
+   * reduced number that resulted. */
+  agreement: z.number().min(0).max(1),
+  /** True when only one seat produced anything usable. */
+  singleSource: z.boolean(),
+  /** Positions a seat still holds. Preserved verbatim, never summarised. */
+  dissent: z.string(),
+  report: z.string(),
+  createdAt: Timestamp,
+})
+export type RoomVerdict = z.infer<typeof RoomVerdict>
 
 /**
  * Binary split tree for the live grid.

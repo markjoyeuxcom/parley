@@ -16,6 +16,7 @@ const SEATS = [
     id: 'seat-1',
     name: 'auditor',
     config: { vendor: 'claude' as const, model: 'opus', effort: 'high' as const, persona: '' },
+    write: false,
   },
 ]
 const CAPS = { turns: 40, costUsd: 0 }
@@ -136,7 +137,12 @@ describe('rooms in the record', () => {
     repo.createRoom({ id: 'room-1', cwd: '/tmp/repo', seats: SEATS, caps: CAPS, mock: false })
     const grown = [
       ...SEATS,
-      { id: 'seat-2', name: 'sceptic', config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' } },
+      {
+        id: 'seat-2',
+        name: 'sceptic',
+        config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+        write: false,
+      },
     ]
     repo.setRoomSeats('room-1', grown)
     repo.setRoomCaps('room-1', { turns: 60, costUsd: 5 })

@@ -1,17 +1,31 @@
 import { randomUUID } from 'node:crypto'
-import type { AgentConfig, Id, Room, RoomCaps, RoomSeat, RoomTurn, Usage } from '@shared/domain'
+import type {
+  AgentConfig,
+  Capability,
+  Id,
+  Room,
+  RoomCaps,
+  RoomSeat,
+  RoomTurn,
+  RoomVerdict,
+  Usage,
+} from '@shared/domain'
+import { VERDICT_CONTRACT } from '@shared/protocol'
+import { mergeVerdicts, parseSeatVerdict } from '@main/orchestrator/verdict'
 import type { AppEvent } from '@shared/events'
 import { emptyUsage } from '@shared/usage'
 import { seatingRefusals } from '@shared/vendors'
 import {
   contextPrompt,
+  convergePrompt,
   parseAddress,
   relayPrompt,
+  renderRoomVerdict,
   roomSeatSystemPrompt,
   seatName,
   uniqueSeatName,
 } from '@shared/room'
-import type { AgentRegistry } from '@main/agents'
+import { assertCapability, type AgentRegistry } from '@main/agents'
 import type { Repo } from '@main/store/repo'
 
 /**
@@ -112,6 +126,9 @@ export class RoomManager {
         id: `seat-${randomUUID()}`,
         name: uniqueSeatName(seatName(config), seats.map((s) => s.name)),
         config,
+        // Every seat arrives read-only. Writing is a deliberate act with a
+        // control of its own, never a property of how a room was opened.
+        write: false,
       })
     }
 
@@ -198,6 +215,7 @@ export class RoomManager {
       id: `seat-${randomUUID()}`,
       name: uniqueSeatName(seatName(config), live.room.seats.map((s) => s.name)),
       config,
+      write: false,
     }
     live.room = { ...live.room, seats: [...live.room.seats, seat] }
     this.deps.repo.setRoomSeats(roomId, live.room.seats)
@@ -211,6 +229,82 @@ export class RoomManager {
     live.room = { ...live.room, seats: live.room.seats.filter((s) => s.id !== seatId) }
     this.deps.repo.setRoomSeats(roomId, live.room.seats)
     return live.room
+  }
+
+  /**
+   * Turns a seat's ability to change files on or off.
+   *
+   * Refused mid-turn, because the dispatch a flip would change has already
+   * happened — a toggle that appears to take effect and does not is worse
+   * than one that refuses.
+   */
+  setSeatWrite(roomId: Id, seatId: Id, write: boolean): Room {
+    const live = this.requireIdle(roomId, 'change what a seat may do')
+    live.room = {
+      ...live.room,
+      seats: live.room.seats.map((seat) => (seat.id === seatId ? { ...seat, write } : seat)),
+    }
+    this.deps.repo.setRoomSeats(roomId, live.room.seats)
+    this.deps.emit({ type: 'room.changed', roomId, room: live.room })
+    return live.room
+  }
+
+  /**
+   * Asks every seat what it concluded, independently, and merges the answers.
+   *
+   * The one thing genuinely lost to free flow, kept as an action rather than
+   * a schedule. In an unscheduled room the seats converge on whoever spoke
+   * last; here each is asked from its own resumed reading and none is shown
+   * another's verdict — which is what makes disagreement mean something, and
+   * why disagreement LOWERS the recorded confidence rather than being
+   * averaged away.
+   *
+   * Returns null when nothing usable came back. A converge that produced
+   * prose instead of a contract has established nothing, and a row claiming
+   * otherwise would be the worst kind of record.
+   */
+  async converge(roomId: Id, question: string): Promise<RoomVerdict | null> {
+    const live = this.require(roomId)
+    if (live.room.status === 'thinking') throw new RoomError('that room is already waiting on a reply')
+    if (!live.room.turns.some((turn) => turn.author === 'agent')) {
+      throw new RoomError('nothing has been said yet for the seats to conclude on')
+    }
+    const refusal = this.exceeded(live.room, live.room.seats.length)
+    if (refusal) {
+      live.room = { ...live.room, status: 'exhausted' }
+      throw new RoomError(refusal)
+    }
+
+    const prompt = convergePrompt(question, VERDICT_CONTRACT)
+    const spoken = await this.speak(
+      live,
+      live.room.seats.map((seat) => ({ seat, prompt })),
+    )
+
+    const merged = mergeVerdicts(spoken.map((turn) => parseSeatVerdict(turn.text)))
+    if (!merged) return null
+
+    const verdict: RoomVerdict = {
+      id: `verdict-${randomUUID()}`,
+      roomId,
+      question: question.trim(),
+      decision: merged.decision,
+      rationale: merged.rationale,
+      scores: merged.scores,
+      confidence: merged.confidence,
+      agreement: merged.agreement,
+      singleSource: merged.singleSource,
+      dissent: merged.dissent,
+      report: renderRoomVerdict(live.room, question, merged),
+      createdAt: Date.now(),
+    }
+    this.deps.repo.saveRoomVerdict(verdict)
+    this.deps.emit({ type: 'room.verdict', roomId, verdict })
+    return verdict
+  }
+
+  listVerdicts(roomId: Id): RoomVerdict[] {
+    return this.deps.repo.listRoomVerdicts(roomId)
   }
 
   /**
@@ -428,13 +522,21 @@ export class RoomManager {
     const control = new AbortController()
     live.inFlight.set(turn.id, control)
 
+    const capability: Capability = seat.write ? 'write' : 'read'
+    // The last place a write could slip through. It cannot fire while the
+    // capability is derived from the same flag it checks — which is the
+    // point: any future path that sets one without the other is refused.
+    assertCapability(capability, seat.write)
+
     let result
     try {
       result = await this.deps.registry.get(seat.config.vendor).run({
         systemPrompt: roomSeatSystemPrompt(seat.config),
         prompt,
         cfg: seat.config,
-        capability: 'read',
+        // Derived from the seat rather than passed alongside it, so the two
+        // cannot disagree. assertCapability below is the belt to this brace.
+        capability,
         cwd: live.room.cwd,
         resumeId: live.resumeIds.get(seat.id) ?? null,
         signal: control.signal,

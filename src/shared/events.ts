@@ -9,6 +9,7 @@ import type {
   Preview,
   Room,
   RoomTurn,
+  RoomVerdict,
   Session,
   Turn,
   Usage,
@@ -110,6 +111,8 @@ export type AppEvent =
    * case which events identify their room would get it wrong exactly once.
    */
   | { type: 'room.changed'; roomId: Id; room: Room }
+  /** The seats concluded something. Kept, never replaced — see RoomVerdict. */
+  | { type: 'room.verdict'; roomId: Id; verdict: RoomVerdict }
   /**
    * The finished turn, carrying the complete text.
    *

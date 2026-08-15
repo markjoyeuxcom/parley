@@ -3,8 +3,8 @@
 The arc that makes the Grid the whole product: multi-agent conversation as a
 first-class pane, and the governed engine retired behind it.
 
-**Status.** **m1–m4 landed** (m1–m3.2 on 2026-08-15, m4 on 2026-08-16);
-m5–m6 planned. Schema is at **v33**: rooms persist.
+**Status.** **m1–m5 landed** (m1–m3.2 on 2026-08-15, m4–m5 on 2026-08-16);
+**m6 — the deletion pass — is all that remains.** Schema is at **v34**.
 Read `AGENTS.md` first — some of its invariants survive this arc and some are
 deliberately retired, and the difference is stated in "What the invariants
 become" below.
@@ -253,15 +253,31 @@ Search over room transcripts arrives with the triggers already in place.
 *Done when*: a room survives a restart with its transcript intact and no seat
 running, and its text is findable in search.
 
-### m5 — converge, and the write toggle
+### m5 — converge, and the write toggle — LANDED
 
-`verdict.ts` as an optional room action, rendering through the surviving
-`VerdictPanel`. Per-seat write opt-in, gated by `assertCapability`, with the
-room header stating which seats can write.
+Converging asks every seat for its own verdict, independently and
+concurrently, and merges them through the existing `mergeVerdicts` — which
+was already n-seat and needed no change. No seat sees another's verdict, which
+is what makes disagreement mean something and why it *lowers* the recorded
+confidence rather than being averaged away. A room can converge more than
+once and every verdict is kept: what the seats thought before, and what
+changed their minds, is the more interesting half of the record. That answers
+the open question in the schema notes below — `room_verdicts` carries its own
+id rather than keying on the room.
 
-*Done when*: a room can be asked to converge and produces a scored verdict with
-dissent preserved; a write-enabled seat can edit a file and a read-only one is
-refused at dispatch.
+Nothing usable back means nothing recorded. A converge that produced prose
+instead of a contract has established nothing, and a row saying otherwise
+would be the worst kind of record.
+
+Write is per seat, off on every seat a room opens with, and the capability is
+**derived** from the flag rather than passed beside it so the two cannot
+disagree. The room header states who holds it permanently — standing
+authorisation that nobody is reminded of is authorisation nobody remembers
+granting.
+
+*Done when*: a room can be asked to converge and produces a scored verdict
+with dissent preserved; a write-enabled seat dispatches at `write` and a
+read-only one at `read`. **Met.**
 
 ### m6 — the deletion pass
 
@@ -305,10 +321,10 @@ schedule that rationale dies, and the cap becomes a cost decision rather than a
 protocol one. The floor should drop to 1 (a room with you and one agent is
 legitimate, and a room should be able to open empty).
 
-**`verdicts.session_id` is a PRIMARY KEY** — one verdict per session. A room may
-reasonably be asked to converge more than once over its life. Either accept
-last-write-wins or give the table its own id at m5; decide there, not by
-accident.
+**`verdicts.session_id` is a PRIMARY KEY** — one verdict per session.
+**Decided at m5**: rooms got `room_verdicts` with its own id, so a room can
+converge repeatedly and every conclusion is kept. The sessions-era table keeps
+its one-per-session shape and goes with the rest at m6.
 
 ---
 

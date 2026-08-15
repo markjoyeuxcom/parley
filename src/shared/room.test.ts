@@ -10,10 +10,14 @@ import { parseAddress, roomTranscript, seatName, uniqueSeatName, AddressError } 
  * turns, and a mistyped name silently reaching everybody spends three more.
  */
 
-const seats = [
-  { id: 's1', name: 'claude', config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' } },
-  { id: 's2', name: 'reviewer', config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' } },
-]
+const seat = (id: string, name: string, over = {}) => ({
+  id,
+  name,
+  config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+  write: false,
+  ...over,
+})
+const seats = [seat('s1', 'claude'), seat('s2', 'reviewer')]
 
 describe('addressing', () => {
   it('sends an unaddressed message to every seat', () => {
@@ -120,8 +124,10 @@ describe('transcript', () => {
     id: 'room-1',
     cwd: '/Users/me/Personal/prax',
     seats: [
-      { id: 's1', name: 'auditor', config: { vendor: 'claude' as const, model: 'opus', effort: 'high' as const, persona: '', profile: 'Auditor' } },
-      { id: 's2', name: 'sceptic', config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' } },
+      seat('s1', 'auditor', {
+        config: { vendor: 'claude' as const, model: 'opus', effort: 'high' as const, persona: '', profile: 'Auditor' },
+      }),
+      seat('s2', 'sceptic'),
     ],
     caps: { turns: 40, costUsd: 0 },
     turnsSpent: 2,

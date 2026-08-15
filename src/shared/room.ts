@@ -180,6 +180,76 @@ export function contextPrompt(
 }
 
 /**
+ * The verdict as a document.
+ *
+ * Dissent gets its own section and is never folded into the rationale — it is
+ * the most perishable output of an adversarial room, and the one a summary
+ * would smooth away first. Agreement is printed beside confidence rather than
+ * only inside it, so a reader can see that two seats disagreed rather than
+ * only that the number came out low.
+ */
+export function renderRoomVerdict(
+  room: { cwd: string; seats: readonly RoomSeat[] },
+  question: string,
+  merged: {
+    decision: string
+    rationale: string
+    confidence: number
+    agreement: number
+    singleSource: boolean
+    scores: Record<string, number>
+    dissent: string
+  },
+): string {
+  const lines = [
+    `# ${merged.decision}`,
+    '',
+    question.trim() ? `**Question:** ${question.trim()}` : '**Question:** the matter under discussion',
+    `**Room:** ${room.cwd}`,
+    `**Seats:** ${room.seats.map((seat) => `@${seat.name}`).join(', ')}`,
+    '',
+    `**Confidence:** ${merged.confidence.toFixed(2)}`,
+    merged.singleSource
+      ? '**Corroboration:** none — one seat produced a usable verdict, so this confidence is capped and is not a cross-checked result.'
+      : `**Agreement:** ${merged.agreement.toFixed(2)} across the seats' scores.`,
+    '',
+    '## Rationale',
+    '',
+    merged.rationale || '_none given_',
+    '',
+    '## Scores',
+    '',
+    ...Object.entries(merged.scores).map(([dim, value]) => `- ${dim}: ${value}`),
+    '',
+  ]
+  // Only when there is one. An empty "Dissent: none" reads as an assurance
+  // that the seats agreed, which is a different claim entirely.
+  if (merged.dissent.trim()) lines.push('## Dissent', '', merged.dissent.trim(), '')
+  return lines.join('\n')
+}
+
+/**
+ * Asks one seat, independently, to record what it concluded.
+ *
+ * No transcript travels with it: the seat is resumed and holds the whole
+ * conversation already, so "the matter you have been discussing" is a
+ * complete reference. That is also what keeps the seats independent at the
+ * one moment independence matters most — each is answering from its own
+ * reading, not from a summary somebody else wrote.
+ */
+export function convergePrompt(question: string, contract: string): string {
+  const matter = question.trim()
+  return [
+    'Independently record your own verdict now.',
+    matter
+      ? `THE QUESTION:\n${matter}`
+      : 'The question is the matter you have been discussing in this room.',
+    'This is your own reading. Do not soften it toward anything another seat said, and do not inflate your confidence to signal agreement.',
+    contract,
+  ].join('\n\n')
+}
+
+/**
  * What a room seat is told it is.
  *
  * Deliberately thin next to the session protocols it replaces. A debate seat

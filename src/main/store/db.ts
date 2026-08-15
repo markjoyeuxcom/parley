@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 33
+export const SCHEMA_VERSION = 34
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -669,6 +669,32 @@ CREATE TABLE IF NOT EXISTS room_turns (
 );
 CREATE INDEX IF NOT EXISTS idx_room_turns_room ON room_turns(room_id, idx);
 
+-- What a room's seats concluded, when somebody asked them to.
+--
+-- Its own id rather than one row per room: a conversation can reach several
+-- conclusions over its life, and overwriting the first the moment a second is
+-- asked for would destroy the more interesting half of the record — what they
+-- thought before, and what changed their minds. The sessions-era verdicts
+-- table keys on session_id and could hold only one; that was a limit nobody
+-- noticed because a debate ended when its schedule did.
+CREATE TABLE IF NOT EXISTS room_verdicts (
+  id            TEXT PRIMARY KEY,
+  room_id       TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  question      TEXT NOT NULL DEFAULT '',
+  decision      TEXT NOT NULL,
+  rationale     TEXT NOT NULL DEFAULT '',
+  scores        TEXT NOT NULL,
+  confidence    REAL NOT NULL,
+  -- Kept beside the confidence it already lowered, so a surface can say the
+  -- seats disagreed rather than only showing the reduced number.
+  agreement     REAL NOT NULL DEFAULT 0,
+  single_source INTEGER NOT NULL DEFAULT 0,
+  dissent       TEXT NOT NULL DEFAULT '',
+  report        TEXT NOT NULL,
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_room_verdicts_room ON room_verdicts(room_id, created_at DESC);
+
 -- One index over everything anybody wrote down.
 --
 -- The record already answers "what is the state of this plan" perfectly and
@@ -1298,6 +1324,10 @@ export function migrate(db: Db): void {
     } catch {
       // Already present, because SCHEMA above created the table fresh.
     }
+  }
+  if (current < 34) {
+    // room_verdicts is additive; SCHEMA creates it. Nothing to backfill —
+    // no room has ever been asked to converge before this version.
   }
   if (current < 33) {
     // rooms and room_turns are additive — SCHEMA creates both, and their

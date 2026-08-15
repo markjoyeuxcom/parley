@@ -50,6 +50,8 @@ const OUT_OF_SCOPE: Readonly<Record<string, string>> = {
     'A room sits in a FOLDER, which need not be a repository at all, and it produces none of the plan, backlog or hold state the Repos surface summarises — so a repository appearing there on the strength of a conversation would report attention with nothing behind it. Rooms and that surface are also on opposite sides of the arc that removes it (see ROOMS.md m6); coupling them now would create a join that milestone has to unpick.',
   room_turns:
     'What was said in a room, and out of scope for the same reason the room is. Its FK parent is rooms, which is itself out of scope, so the child rule cannot reach it.',
+  room_verdicts:
+    'What a room concluded, out of scope for the same reason the room is. Its FK parent is rooms, which is itself out of scope, so the child rule cannot reach it.',
 }
 
 const WRITE_EXEMPTIONS: Readonly<Record<string, string>> = {

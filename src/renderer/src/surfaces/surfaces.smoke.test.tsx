@@ -998,6 +998,7 @@ describe('mounted-surface smoke', () => {
           id: 'seat-1',
           name: 'claude',
           config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+          write: false,
         },
       ],
       caps: { turns: 40, costUsd: 0 },
@@ -1137,11 +1138,13 @@ describe('mounted-surface smoke', () => {
         id: 'seat-1',
         name: 'claude',
         config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+        write: false,
       },
       {
         id: 'seat-2',
         name: 'reviewer',
         config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '', profile: 'Reviewer' },
+        write: false,
       },
     ]
     const room = {
@@ -1196,6 +1199,116 @@ describe('mounted-surface smoke', () => {
     expect(invoked[0]?.payload).toMatchObject({ roomId: 'room-1', caps: { turns: 24 } })
   })
 
+  it('a room states who may write, and converges on a stated question', async () => {
+    // The two halves of m5 in one mount. The write state is header furniture
+    // rather than a setting you go looking for, because the flag is standing
+    // authorisation and a capability nobody is reminded of is one nobody
+    // remembers granting.
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    const seats = [
+      {
+        id: 'seat-1',
+        name: 'auditor',
+        config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+        write: false,
+      },
+    ]
+    const room = {
+      id: 'room-1',
+      cwd: '/tmp/smoke-repo',
+      seats,
+      caps: { turns: 40, costUsd: 0 },
+      turnsSpent: 1,
+      status: 'idle' as const,
+      turns: [
+        {
+          id: 'turn-1',
+          roomId: 'room-1',
+          author: 'agent' as const,
+          seat: 'auditor',
+          vendor: 'claude' as const,
+          profile: '',
+          text: 'the gate is unsound',
+          usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
+          startedAt: 1_700_000_000_000,
+          endedAt: 1_700_000_000_001,
+          error: null,
+        },
+      ],
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
+      mock: true,
+      createdAt: 1_700_000_000_000,
+    }
+    installBridge({
+      'room.open': () => room,
+      'room.get': () => room,
+      'room.verdicts': () => [],
+      'room.setSeatWrite': (payload) => {
+        invoked.push({ name: 'room.setSeatWrite', payload })
+        return { ...room, seats: [{ ...seats[0]!, write: true }] }
+      },
+      'room.converge': (payload) => {
+        invoked.push({ name: 'room.converge', payload })
+        return { ok: true }
+      },
+    })
+
+    render(
+      <StoreProvider>
+        <GridSurface />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Room' }))
+    expect(await screen.findByText('read-only')).toBeTruthy()
+
+    // Granting write is one click, and the header stops saying read-only.
+    fireEvent.click(screen.getByRole('button', { name: 'Let @auditor write' }))
+    await waitFor(() => expect(invoked).toHaveLength(1))
+    expect(invoked[0]?.payload).toMatchObject({ seatId: 'seat-1', write: true })
+    expect(await screen.findByText('@auditor can write')).toBeTruthy()
+    expect(screen.queryByText('read-only')).toBeNull()
+
+    // Converging asks for the question first — a verdict on nothing in
+    // particular is the failure the beat exists to prevent.
+    fireEvent.click(screen.getByRole('button', { name: 'Converge' }))
+    const question = await screen.findByPlaceholderText(/Should we decompose/)
+    fireEvent.change(question, { target: { value: 'ship or measure?' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask the seats' }))
+
+    await waitFor(() => expect(invoked).toHaveLength(2))
+    expect(invoked[1]?.payload).toMatchObject({ roomId: 'room-1', question: 'ship or measure?' })
+
+    // The verdict lands as an event and reports confidence AND agreement —
+    // two different questions that one number would hide.
+    act(() => {
+      appEventListener?.({
+        type: 'room.verdict',
+        roomId: 'room-1',
+        verdict: {
+          id: 'v1',
+          roomId: 'room-1',
+          question: 'ship or measure?',
+          decision: 'measure first',
+          rationale: 'the gate cannot detect the change',
+          scores: { correctness: 5, robustness: 5, clarity: 5, maintainability: 5, risk: 5 },
+          confidence: 0.27,
+          agreement: 0.3,
+          singleSource: false,
+          dissent: 'Side B: the decomposition still stands on its own merits',
+          report: '# measure first',
+          createdAt: 1_700_000_000_002,
+        },
+      })
+    })
+    expect(await screen.findByText('measure first')).toBeTruthy()
+    expect(screen.getByText(/confidence 0\.27/)).toBeTruthy()
+    expect(screen.getByText(/agreement 0\.30/)).toBeTruthy()
+    // Dissent is surfaced without being opened — it is the first thing a
+    // summary would drop.
+    expect(screen.getByText(/the decomposition still stands/)).toBeTruthy()
+  })
+
   it('a skill dropped on a room reaches its seat, not the pty', async () => {
     // The m2 regression: rooms became a pane kind that skills silently
     // rejected, with a message telling you to start something already running.
@@ -1208,6 +1321,7 @@ describe('mounted-surface smoke', () => {
           id: 'seat-1',
           name: 'claude',
           config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+          write: false,
         },
       ],
       caps: { turns: 40, costUsd: 0 },

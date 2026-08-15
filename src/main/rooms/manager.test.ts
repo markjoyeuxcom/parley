@@ -143,8 +143,8 @@ describe('rooms', () => {
     await rooms.send(room.id, 'go')
 
     expect(seen[0]?.cwd).toBe('/tmp/repo')
-    // m5 adds the per-seat write opt-in. Until then a room seat is read-only,
-    // and this is the assertion that has to be deliberately changed to move it.
+    // A seat with its write flag off dispatches at read, and every seat a
+    // room opens with has it off. Turning it on is a separate, deliberate act.
     expect(seen[0]?.capability).toBe('read')
   })
 
@@ -440,6 +440,141 @@ describe('rooms', () => {
 
     expect(seen).toHaveLength(3)
     expect(rooms.get(room.id)?.status).toBe('exhausted')
+  })
+
+  it('dispatches a write seat at write, and everyone else at read', async () => {
+    // The one escalation in the arc. Capability is DERIVED from the seat's
+    // flag rather than passed alongside it, so the two cannot disagree.
+    const { registry, seen } = fakeRegistry(() => ({ text: 'ok' }))
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
+
+    const room = rooms.open('/tmp/repo', [SEAT, { ...SEAT, profile: 'Writer' }], CAPS)
+    const writer = room.seats[1]!
+    rooms.setSeatWrite(room.id, writer.id, true)
+    await rooms.send(room.id, 'go')
+
+    expect(seen.map((r) => r.capability)).toEqual(['read', 'write'])
+  })
+
+  it('turns write off again, and refuses while a seat is mid-turn', async () => {
+    const { registry, seen } = fakeRegistry(() => ({ text: 'ok' }))
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
+
+    const room = rooms.open('/tmp/repo', [SEAT], CAPS)
+    const only = room.seats[0]!
+    rooms.setSeatWrite(room.id, only.id, true)
+    // Mid-turn is exactly when a flip would be ambiguous: the dispatch it
+    // would change has already happened.
+    const sending = rooms.send(room.id, 'go')
+    expect(() => rooms.setSeatWrite(room.id, only.id, false)).toThrow(/mid-turn/)
+    await sending
+
+    rooms.setSeatWrite(room.id, only.id, false)
+    await rooms.send(room.id, 'again')
+    expect(seen.map((r) => r.capability)).toEqual(['write', 'read'])
+  })
+
+  it('converges: every seat scores independently, and the merge is recorded', async () => {
+    // The one thing genuinely lost to free flow, kept as an action rather
+    // than a schedule. Seats do not see each other's verdicts — that is the
+    // whole reason a merged confidence means anything.
+    const verdicts = [
+      '```json\n{"decision":"ship it","rationale":"a","confidence":0.9,"scores":{"correctness":9,"robustness":9,"clarity":9,"maintainability":9,"risk":9},"dissent":""}\n```',
+      '```json\n{"decision":"do not ship","rationale":"b","confidence":0.9,"scores":{"correctness":2,"robustness":2,"clarity":2,"maintainability":2,"risk":2},"dissent":"the gate is unsound"}\n```',
+    ]
+    // Keyed on the prompt rather than a call counter: the opening message goes
+    // to every seat too, and counting calls fed the canned verdicts to the
+    // discussion instead of the closing.
+    let v = 0
+    const { registry, seen } = fakeRegistry((req) =>
+      req.prompt.includes('record your own verdict')
+        ? { text: verdicts[v++] ?? verdicts[0] }
+        : { text: 'discussion' },
+    )
+    const repo = store()
+    const rooms = new RoomManager({ registry, repo, emit: () => {} })
+
+    const room = rooms.open('/tmp/repo', [SEAT, { ...SEAT, profile: 'Sceptic' }], CAPS)
+    await rooms.send(room.id, 'open')
+    const verdict = await rooms.converge(room.id, 'should we ship?')
+
+    expect(verdict).not.toBeNull()
+    // Seven points apart on every dimension: two seats each claiming 0.9 have
+    // not produced a confident answer, and the record must not say they did.
+    expect(verdict!.confidence).toBeLessThan(0.9)
+    expect(verdict!.agreement).toBeLessThan(0.5)
+    expect(verdict!.singleSource).toBe(false)
+    // The losing side's objection survives verbatim.
+    expect(verdict!.dissent).toContain('the gate is unsound')
+    expect(repo.listRoomVerdicts(room.id)).toHaveLength(1)
+
+    // Neither seat was shown the other's verdict.
+    const closing = seen.slice(-2)
+    for (const req of closing) {
+      expect(req.prompt).not.toContain('ship it')
+      expect(req.prompt).not.toContain('do not ship')
+    }
+  })
+
+  it('keeps every verdict, so a room can change its mind on the record', async () => {
+    const { registry } = fakeRegistry(() => ({
+      text: '```json\n{"decision":"d","rationale":"r","confidence":0.5,"scores":{"correctness":5,"robustness":5,"clarity":5,"maintainability":5,"risk":5},"dissent":""}\n```',
+    }))
+    const repo = store()
+    const rooms = new RoomManager({ registry, repo, emit: () => {} })
+
+    const room = rooms.open('/tmp/repo', [SEAT], CAPS)
+    await rooms.send(room.id, 'open')
+    await rooms.converge(room.id, 'first question')
+    await rooms.converge(room.id, 'second question')
+
+    // Newest first, and the earlier one is still there — what they thought
+    // before is the more interesting half.
+    expect(repo.listRoomVerdicts(room.id).map((v) => v.question)).toEqual([
+      'second question',
+      'first question',
+    ])
+  })
+
+  it('caps a lone seat’s confidence rather than reporting it as corroborated', async () => {
+    const { registry } = fakeRegistry(() => ({
+      text: '```json\n{"decision":"d","rationale":"r","confidence":0.95,"scores":{"correctness":9,"robustness":9,"clarity":9,"maintainability":9,"risk":9},"dissent":""}\n```',
+    }))
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
+
+    const room = rooms.open('/tmp/repo', [SEAT], CAPS)
+    await rooms.send(room.id, 'open')
+    const verdict = await rooms.converge(room.id, 'q')
+
+    expect(verdict!.singleSource).toBe(true)
+    expect(verdict!.confidence).toBeLessThanOrEqual(0.6)
+  })
+
+  it('refuses to converge on a budget it cannot pay, and on an empty room', async () => {
+    const { registry, seen } = fakeRegistry(() => ({ text: 'ok' }))
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
+
+    const empty = rooms.open('/tmp/repo', [SEAT], CAPS)
+    await expect(rooms.converge(empty.id, 'q')).rejects.toThrow(/nothing has been said/)
+
+    const room = rooms.open('/tmp/repo', [SEAT, { ...SEAT, profile: 'Two' }], { turns: 2, costUsd: 0 })
+    await rooms.send(room.id, 'open')
+    // Two turns spent, two seats to hear from, two allowed: no room to close.
+    await expect(rooms.converge(room.id, 'q')).rejects.toThrow(/turn budget/)
+    expect(seen).toHaveLength(2)
+  })
+
+  it('records nothing when no seat produces a usable verdict', async () => {
+    // A converge that yielded prose instead of a contract has established
+    // nothing, and a row saying otherwise would be the worst kind of record.
+    const { registry } = fakeRegistry(() => ({ text: 'I would rather not answer in JSON.' }))
+    const repo = store()
+    const rooms = new RoomManager({ registry, repo, emit: () => {} })
+
+    const room = rooms.open('/tmp/repo', [SEAT], CAPS)
+    await rooms.send(room.id, 'open')
+    expect(await rooms.converge(room.id, 'q')).toBeNull()
+    expect(repo.listRoomVerdicts(room.id)).toHaveLength(0)
   })
 
   it('closing lets go of the room without losing it', async () => {
