@@ -611,7 +611,9 @@ function CodeBlock({ lang, text }: { lang: string; text: string }): ReactNode {
       <button className="room__fold-head" onClick={() => setOpen((v) => !v)}>
         {open ? '▾' : '▸'} {lang || 'text'} · {lines.length} lines
       </button>
-      <pre className="room__code room__code--folded">
+      {/* Height-capped rather than line-capped while folded: lines wrap now,
+          so three source lines can still be a screenful. */}
+      <pre className={`room__code ${open ? '' : 'room__code--folded'}`}>
         <code>{open ? text : lines.slice(0, 3).join('\n')}</code>
       </pre>
     </div>

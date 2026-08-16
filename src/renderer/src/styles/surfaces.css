@@ -333,8 +333,15 @@
   color: var(--text-primary);
 }
 
-.room__fold .room__code--folded {
+.room__fold .room__code {
   margin: 0;
+}
+
+/* A peek, not a preview: two or three visual lines whatever the source lines
+   wrap to, so a folded block is always the same small size. */
+.room__code--folded {
+  max-height: 4.5em;
+  overflow: hidden;
 }
 
 /* What the seat is doing, in the seat line rather than the transcript: it
@@ -456,9 +463,13 @@
   color: var(--text-tertiary);
 }
 
-/* Code takes the full pane and scrolls itself: wrapping code lines makes them
-   unreadable, and constraining them to the prose measure hid the right-hand
-   half of every long line behind a scrollbar nobody had a reason to look for. */
+/* Code takes the full pane and WRAPS.
+   This reverses an earlier call here, which weighed wrapping against
+   horizontal scrolling and missed that macOS hides the scrollbar until you
+   scroll — so the outcome in practice was neither, it was silently clipped.
+   A converge answers in a contract whose string values run to hundreds of
+   characters on one line, and a wrapped line is legible while a cut one is
+   not. Vertical scrolling stays, bounded by max-height. */
 .room__code {
   margin: 0 0 var(--s3);
   padding: var(--s3) var(--s4);
@@ -468,8 +479,10 @@
   /* Bounded on both axes. A seat can emit a hundred lines of JSON or source,
      and an unbounded block pushes every later turn off the screen. */
   max-height: 22em;
-  overflow: auto;
+  overflow-y: auto;
   min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   font-family: var(--font-mono);
   font-size: var(--text-micro);
   line-height: 1.5;
