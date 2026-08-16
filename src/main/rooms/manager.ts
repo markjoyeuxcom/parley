@@ -546,7 +546,7 @@ export class RoomManager {
         // Relayed, never recorded. A tool call is what is happening now; the
         // turn is what happened.
         onActivity: (text) =>
-          this.deps.emit({ type: 'room.activity', roomId, seat: seat.name, text }),
+          this.deps.emit({ type: 'room.activity', roomId, turnId: turn.id, seat: seat.name, text }),
       })
     } catch (err) {
       // An adapter that throws rather than returning an error result. Same

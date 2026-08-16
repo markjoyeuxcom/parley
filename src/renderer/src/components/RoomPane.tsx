@@ -3,6 +3,7 @@ import { Gavel, Pencil, Plus, Send, Square, X } from 'lucide-react'
 import type { AgentProfile, Id, Room, RoomSeat, RoomTurn, RoomVerdict } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import { api } from '../lib/api'
+import { formatDuration } from '../lib/format'
 import { parseMarkdown, type TextSpan } from '../lib/markdown'
 import { Dialog, Empty, Field } from './ui'
 
@@ -39,8 +40,18 @@ export function RoomPane({
   const [streaming, setStreaming] = useState<Record<Id, string>>({})
   const [draft, setDraft] = useState('')
   const [profiles, setProfiles] = useState<AgentProfile[]>([])
-  /** What each seat is doing right now. Never recorded; cleared when it stops. */
-  const [activity, setActivity] = useState<Record<string, string>>({})
+  /**
+   * What each seat did on its way to an answer, per turn and in order.
+   *
+   * Ephemeral, like the events themselves: a reopened room shows its turns
+   * without the actions behind them, because what a seat read is not part of
+   * what it said. Kept as a LIST rather than a latest-wins line so a finished
+   * turn can show its working — the thing a terminal pane has always had and
+   * a room did not.
+   */
+  const [activity, setActivity] = useState<Record<Id, string[]>>({})
+  /** Ticks while a seat is working, so an in-flight turn can show its age. */
+  const [now, setNow] = useState(() => Date.now())
   const [error, setError] = useState('')
   const [adding, setAdding] = useState(false)
   const [verdicts, setVerdicts] = useState<RoomVerdict[]>([])
@@ -98,10 +109,10 @@ export function RoomPane({
           )
           setStreaming((current) => ({ ...current, [event.turn.id]: '' }))
         } else if (event.type === 'room.activity') {
-          // Per seat, and last one wins within a seat: this is a status line,
-          // not a log. The scrolling history of tool calls belongs to a
-          // terminal pane; here it would compete with the reply.
-          setActivity((current) => ({ ...current, [event.seat]: event.text }))
+          setActivity((current) => ({
+            ...current,
+            [event.turnId]: [...(current[event.turnId] ?? []), event.text],
+          }))
         } else if (event.type === 'room.turn.delta') {
           setStreaming((current) =>
             event.turnId in current
@@ -113,11 +124,6 @@ export function RoomPane({
           setStreaming((current) => {
             const next = { ...current }
             delete next[event.turn.id]
-            return next
-          })
-          setActivity((current) => {
-            const next = { ...current }
-            delete next[event.turn.seat]
             return next
           })
           setRoom((current) => {
@@ -145,6 +151,15 @@ export function RoomPane({
       }),
     [roomId, onOutput],
   )
+
+  // One ticker while anything is in flight, so a turn can say how long it has
+  // been going. Stopped the moment the room is idle: a timer running all day
+  // for a number nobody is watching is the thing this is meant to avoid.
+  useEffect(() => {
+    if (room?.status !== 'thinking') return
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [room?.status])
 
   // Follow the tail while a seat is talking. Only when already near the bottom,
   // so scrolling back to re-read something is not yanked away mid-sentence.
@@ -197,7 +212,7 @@ export function RoomPane({
           <SeatChip
             key={seat.id}
             seat={seat}
-            activity={activity[seat.name] ?? ''}
+            activity={latestFor(turns, activity, seat.name)}
             removable={room.seats.length > 1 && !busy}
             editable={!busy}
             onRemove={() => void act(api.removeRoomSeat(roomId, seat.id)).then((r) => r && setRoom({ ...r, turns: room.turns }))}
@@ -288,7 +303,8 @@ export function RoomPane({
             key={turn.id}
             turn={turn}
             live={turn.id in streaming ? (streaming[turn.id] ?? '') : null}
-            activity={activity[turn.seat] ?? ''}
+            actions={activity[turn.id] ?? []}
+            now={now}
           />
         ))}
       </div>
@@ -491,32 +507,76 @@ function Spend({ room }: { room: Room }): ReactNode {
   )
 }
 
+/** The last thing the seat's in-flight turn reported doing, for its chip. */
+function latestFor(
+  turns: readonly RoomTurn[],
+  activity: Record<Id, string[]>,
+  seat: string,
+): string {
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const turn = turns[i]
+    if (turn && turn.seat === seat && !turn.endedAt) {
+      return activity[turn.id]?.at(-1) ?? ''
+    }
+  }
+  return ''
+}
+
 function RoomTurnView({
   turn,
   live,
-  activity,
+  actions,
+  now,
 }: {
   turn: RoomTurn
   live: string | null
-  activity: string
+  actions: readonly string[]
+  /** Ticks only while something is in flight; unused once a turn has ended. */
+  now: number
 }): ReactNode {
+  const [openActions, setOpenActions] = useState(false)
   // While streaming, the live text IS the turn: the row's own text is empty
   // until the turn ends.
   const body = live !== null && !turn.endedAt ? live : turn.text
   const waiting = live !== null && !turn.endedAt && !live
+  const running = turn.author === 'agent' && !turn.endedAt
+  // Live while it runs, from the record once it has finished — so a duration
+  // survives a reload even though the actions behind it do not.
+  const elapsed = running ? now - turn.startedAt : (turn.endedAt ?? 0) - turn.startedAt
 
   return (
     <div className={`room__turn room__turn--${turn.author}`}>
-      <div className="room__author">{turn.author === 'human' ? 'You' : `@${turn.seat}`}</div>
+      <div className="room__author">
+        {turn.author === 'human' ? 'You' : `@${turn.seat}`}
+        {turn.author === 'agent' && elapsed > 0 ? (
+          <span className="room__elapsed">{formatDuration(elapsed)}</span>
+        ) : null}
+      </div>
+
+      {actions.length > 0 ? (
+        <div className="room__actions">
+          <button className="room__actions-head" onClick={() => setOpenActions((v) => !v)}>
+            {openActions ? '▾' : '▸'} {actions.length} action{actions.length === 1 ? '' : 's'}
+            {openActions ? '' : ` · ${actions[actions.length - 1] ?? ''}`}
+          </button>
+          {openActions ? (
+            <ol className="room__actions-list">
+              {actions.map((action, index) => (
+                <li key={index}>{action}</li>
+              ))}
+            </ol>
+          ) : null}
+        </div>
+      ) : null}
+
       {turn.error ? (
         <div className="room__error" role="alert">
           {turn.error}
         </div>
-      ) : waiting ? (
-        // Before the first delta there is nothing to read, so this is the one
-        // place the tool call is the whole message rather than a status line.
-        <div className="room__thinking">{activity || 'Thinking…'}</div>
-      ) : (
+      ) : waiting && actions.length === 0 ? (
+        // Nothing read and nothing said yet: the only honest thing to show.
+        <div className="room__thinking">Thinking…</div>
+      ) : waiting ? null : (
         <Markdown text={body} />
       )}
     </div>

@@ -106,9 +106,13 @@ describe('rooms', () => {
     const room = rooms.open('/tmp/repo', [SEAT], CAPS)
     await rooms.send(room.id, 'go')
 
-    expect(events.filter((e) => e.type === 'room.activity')).toEqual([
-      { type: 'room.activity', roomId: room.id, seat: 'claude', text: 'Read src/index.ts' },
-    ])
+    const acted = events.filter((e) => e.type === 'room.activity')
+    expect(acted).toHaveLength(1)
+    expect(acted[0]).toMatchObject({ roomId: room.id, seat: 'claude', text: 'Read src/index.ts' })
+    // Attributed to the turn, so the pane can keep a list per turn rather
+    // than only the latest line per seat.
+    const spoken = rooms.get(room.id)?.turns.at(-1)
+    expect(acted[0]).toMatchObject({ turnId: spoken?.id })
     // Nothing about it reaches the record.
     const turn = rooms.get(room.id)?.turns.at(-1)
     expect(turn?.text).toBe('done')

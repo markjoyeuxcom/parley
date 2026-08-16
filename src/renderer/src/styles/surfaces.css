@@ -310,6 +310,57 @@
   padding: 0 var(--s3) var(--s3);
 }
 
+/* How long a turn took, beside who took it. Live while it runs, from the
+   record once it has ended — so the number survives a reload even though the
+   actions behind it do not. */
+.room__elapsed {
+  margin-left: var(--s2);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-tertiary);
+}
+
+/* What a seat read on its way to an answer. Folded, because it is the working
+   rather than the answer — but present, which a status line alone never was. */
+.room__actions {
+  margin: 0 0 var(--s2);
+  min-width: 0;
+}
+
+.room__actions-head {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room__actions-head:hover {
+  color: var(--text-primary);
+}
+
+.room__actions-list {
+  margin: var(--s1) 0 0;
+  padding-left: var(--s5);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+  max-width: var(--room-measure);
+  overflow-wrap: anywhere;
+}
+
 /* A folded block: three lines and a header saying how much is behind it. */
 .room__fold {
   margin: 0 0 var(--s3);

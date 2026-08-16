@@ -245,19 +245,6 @@ describe('mounted-surface smoke', () => {
     })
     expect(await screen.findByText('what does this repo do?')).toBeTruthy()
 
-    // Before a single delta, the seat says what it is doing. This is the
-    // whole gap against a terminal pane, which shows tool calls scrolling by
-    // while a room used to show nothing at all.
-    act(() => {
-      appEventListener?.({
-        type: 'room.activity',
-        roomId: 'room-1',
-        seat: 'claude',
-        text: 'Read src/index.ts',
-      })
-    })
-    expect(await screen.findByText('Read src/index.ts')).toBeTruthy()
-
     // The seat answers over the event channel, in pieces, exactly as a real
     // adapter streams — and the finished turn replaces the streamed text.
     const turn = {
@@ -275,6 +262,45 @@ describe('mounted-surface smoke', () => {
     }
     act(() => {
       appEventListener?.({ type: 'room.turn.started', roomId: 'room-1', turn })
+    })
+
+    // Before a single delta, the seat says what it is doing. This is the
+    // whole gap against a terminal pane, which shows tool calls scrolling by
+    // while a room used to show nothing at all.
+    act(() => {
+      appEventListener?.({
+        type: 'room.activity',
+        roomId: 'room-1',
+        turnId: 'turn-2',
+        seat: 'claude',
+        text: 'Read src/index.ts',
+      })
+    })
+    // Collapsed, the header names the count and the most recent action.
+    expect(
+      await screen.findByRole('button', { name: /1 action · Read src\/index\.ts/ }),
+    ).toBeTruthy()
+
+    // A second action accumulates rather than replacing the first — a room
+    // showing only the latest could never say what a seat actually read.
+    act(() => {
+      appEventListener?.({
+        type: 'room.activity',
+        roomId: 'room-1',
+        turnId: 'turn-2',
+        seat: 'claude',
+        text: 'Grep renderApp',
+      })
+    })
+    const fold = await screen.findByRole('button', { name: /2 actions/ })
+    fireEvent.click(fold)
+    // Scoped to the list: the seat chip also shows the latest action, which is
+    // the point of having both — a live status line and the working behind it.
+    const actions = within(screen.getByRole('list'))
+    expect(actions.getByText('Read src/index.ts')).toBeTruthy()
+    expect(actions.getByText('Grep renderApp')).toBeTruthy()
+
+    act(() => {
       appEventListener?.({ type: 'room.turn.delta', roomId: 'room-1', turnId: 'turn-2', text: 'It ' })
       appEventListener?.({
         type: 'room.turn.delta',
@@ -305,7 +331,9 @@ describe('mounted-surface smoke', () => {
     // Back to idle, so the composer takes the next message — and the activity
     // line is gone, because nothing is happening for it to describe.
     expect(await screen.findByPlaceholderText('Say something…')).toBeTruthy()
-    expect(screen.queryByText('Read src/index.ts')).toBeNull()
+    // The finished turn keeps what it did — it is the working behind the
+    // answer, and a terminal pane has always shown it.
+    expect(screen.getByRole('button', { name: /2 actions/ })).toBeTruthy()
 
     // A verdict reached earlier is fetched on mount, not only received live.
     // The call that does it sat below the effect's cleanup return and never
@@ -335,9 +363,9 @@ describe('mounted-surface smoke', () => {
     })
     // The prose stays visible; the block collapses behind a count.
     expect(await screen.findByText('My verdict.')).toBeTruthy()
-    const fold = screen.getByRole('button', { name: /json · 20 lines/ })
+    const codeFold = screen.getByRole('button', { name: /json · 20 lines/ })
     expect(screen.queryByText(/"line19"/)).toBeNull()
-    fireEvent.click(fold)
+    fireEvent.click(codeFold)
     expect(screen.getByText(/"line19"/)).toBeTruthy()
   })
 

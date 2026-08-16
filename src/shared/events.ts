@@ -18,8 +18,13 @@ export type AppEvent =
    * tool calls scrolling past and a room showed nothing at all between
    * "Thinking…" and prose, which is most of what made a headless seat feel
    * dead next to the CLI's own TUI. The durable account of a turn is the turn.
+   *
+   * Carries the turn so the pane can keep a per-turn list rather than only a
+   * latest-per-seat line: what a seat read on its way to an answer is worth
+   * being able to look at afterwards, and a status line can only ever show
+   * the last one.
    */
-  | { type: 'room.activity'; roomId: Id; seat: string; text: string }
+  | { type: 'room.activity'; roomId: Id; turnId: Id; seat: string; text: string }
   /**
    * The finished turn, carrying the complete text.
    *
