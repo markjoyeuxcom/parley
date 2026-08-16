@@ -273,13 +273,29 @@ export function Dialog({
   const surfaceRef = useRef<HTMLDivElement>(null)
   const restoreTo = useRef<Element | null>(null)
 
+  /**
+   * Focus the first field, once, and give it back on the way out.
+   *
+   * Deliberately `[]` and not `[onClose]`. Callers pass an inline arrow, so
+   * `onClose` is a new identity on every render of whatever owns the dialog —
+   * and an autofocus keyed on it re-ran on every one of those, dragging focus
+   * back to the first field. Clicking the second field gave it up instantly,
+   * which made the roster's CLI, model and effort controls unusable.
+   */
   useEffect(() => {
     restoreTo.current = document.activeElement
     const first = surfaceRef.current?.querySelector<HTMLElement>(
       'input, textarea, select, button:not([disabled])',
     )
     first?.focus()
+    return () => {
+      if (restoreTo.current instanceof HTMLElement) restoreTo.current.focus()
+    }
+  }, [])
 
+  // The key handler DOES want the current onClose, and rebinding a listener
+  // costs nothing — it is only focus that must not be touched again.
+  useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         event.stopPropagation()
@@ -287,10 +303,7 @@ export function Dialog({
       }
     }
     document.addEventListener('keydown', onKey, true)
-    return () => {
-      document.removeEventListener('keydown', onKey, true)
-      if (restoreTo.current instanceof HTMLElement) restoreTo.current.focus()
-    }
+    return () => document.removeEventListener('keydown', onKey, true)
   }, [onClose])
 
   return (
