@@ -54,9 +54,6 @@ export function RoomPane({
       .catch(() => {
         /* A room that cannot be read renders its empty state, not a crash. */
       })
-    return () => {
-      cancelled = true
-    }
     void api
       .listRoomVerdicts(roomId)
       .then((rows) => {
@@ -65,6 +62,9 @@ export function RoomPane({
       .catch(() => {
         /* A room with no verdicts is the normal case. */
       })
+    return () => {
+      cancelled = true
+    }
   }, [roomId])
 
   // The roster, so a seat can be staffed from a name rather than re-typed.

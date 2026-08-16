@@ -177,6 +177,24 @@ describe('mounted-surface smoke', () => {
         return room
       },
       'room.get': () => room,
+      // A verdict this room reached earlier, so the mount-time fetch has
+      // something to find.
+      'room.verdicts': () => [
+        {
+          id: 'v-earlier',
+          roomId: 'room-1',
+          question: 'was the gate sound?',
+          decision: 'the gate is unsound',
+          rationale: 'the statistic is bimodal',
+          scores: { correctness: 5, robustness: 5, clarity: 5, maintainability: 5, risk: 5 },
+          confidence: 0.4,
+          agreement: 0.5,
+          singleSource: false,
+          dissent: '',
+          report: '# the gate is unsound',
+          createdAt: 1_700_000_000_000,
+        },
+      ],
       'room.send': (payload) => {
         invoked.push({ name: 'room.send', payload })
         return { ok: true }
@@ -288,6 +306,11 @@ describe('mounted-surface smoke', () => {
     // line is gone, because nothing is happening for it to describe.
     expect(await screen.findByPlaceholderText('Say something…')).toBeTruthy()
     expect(screen.queryByText('Read src/index.ts')).toBeNull()
+
+    // A verdict reached earlier is fetched on mount, not only received live.
+    // The call that does it sat below the effect's cleanup return and never
+    // ran — through a clean typecheck and a green suite.
+    expect(screen.getByText('the gate is unsound')).toBeTruthy()
   })
 
   it('a room shows its seats, its spend, and stops at the budget', async () => {

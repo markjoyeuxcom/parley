@@ -11,6 +11,11 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
+    // A statement after a return is always a mistake, and one shipped: the
+    // room pane's verdict fetch sat below its cleanup return and never ran,
+    // through a typecheck and a full suite. TypeScript reports this as a
+    // suggestion by default, which is to say it reports it to nobody.
+    "allowUnreachableCode": false,
     "exactOptionalPropertyTypes": false,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
