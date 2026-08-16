@@ -3,8 +3,14 @@
 The arc that makes the Grid the whole product: multi-agent conversation as a
 first-class pane, and the governed engine retired behind it.
 
-**Status.** **m1–m5 landed** (m1–m3.2 on 2026-08-15, m4–m5 on 2026-08-16);
-**m6 — the deletion pass — is all that remains.** Schema is at **v34**.
+> **Complete. m1–m6 landed, m6 on 2026-08-16.** This file is now the record of
+> why the app has the shape it has, not a plan for changing it. The rules the
+> arc settled live in [`AGENTS.md`](AGENTS.md), which describes the present;
+> what follows is the argument that got there, kept because the reasoning is
+> the expensive part and several of the decisions look arbitrary without it.
+
+**Schema is at v35: seven tables.** The 31 the governed engine owned were
+dropped, along with about two thirds of the code.
 Read `AGENTS.md` first — some of its invariants survive this arc and some are
 deliberately retired, and the difference is stated in "What the invariants
 become" below.

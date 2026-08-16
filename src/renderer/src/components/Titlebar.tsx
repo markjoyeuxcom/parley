@@ -1,42 +1,13 @@
-import { useState, type ReactNode } from 'react'
-import { Command, FolderGit2, Repeat, Scale, Terminal } from 'lucide-react'
+import { type ReactNode } from 'react'
+import { Command } from 'lucide-react'
 import { isToolless } from '@shared/vendors'
-import { useStore, type Surface, type ThemeChoice } from '../state'
-import { HoldsButton } from './HoldsPanel'
-import { InFlightButton, InFlightPopover, useInFlight } from './InFlightPanel'
+import { useStore, type ThemeChoice } from '../state'
 import { Dot } from './ui'
 
-const SURFACES: Array<{ id: Surface; label: string; icon: ReactNode }> = [
-  { id: 'grid', label: 'Grid', icon: <Terminal size={13} strokeWidth={2} /> },
-  { id: 'parley', label: 'Parley', icon: <Scale size={13} strokeWidth={2} /> },
-  { id: 'loops', label: 'Loops', icon: <Repeat size={13} strokeWidth={2} /> },
-  // The id stays 'backlog' (⌘4, every literal, zero churn); only the face
-  // changed when the surface grew from a board into the repository home.
-  { id: 'backlog', label: 'Repos', icon: <FolderGit2 size={13} strokeWidth={2} /> },
-]
-
-const THEME_ORDER: ThemeChoice[] = ['system', 'light', 'dark']
+const THEME_ORDER: ThemeChoice[] = ['auto', 'light', 'dark']
 
 export function Titlebar(): ReactNode {
   const { state, dispatch } = useStore()
-  // Polled while open, once otherwise: the badge should be right when you
-  // glance at it, without a timer running all day for a number nobody is
-  // looking at.
-  const [inFlightOpen, setInFlightOpen] = useState(false)
-  const inFlight = useInFlight(inFlightOpen)
-
-  const activeSessions = state.sessions.filter((s) => s.status === 'running' || s.status === 'paused').length
-  const activeLoops = state.loops.filter((l) => l.status === 'running' || l.status === 'paused').length
-  const counts: Record<Surface, number> = {
-    grid: state.panes.filter((p) => p.status !== 'exited').length,
-    parley: activeSessions,
-    loops: activeLoops,
-    // Pending triage, matching the backlog-review hold: proposals in, human
-    // answer not yet given.
-    backlog: state.backlogItems.filter(
-      (i) => i.state === 'proposed' || i.state === 'closure-proposed',
-    ).length,
-  }
 
   return (
     <header className="titlebar">
@@ -44,49 +15,17 @@ export function Titlebar(): ReactNode {
         <div className="wordmark">
           Parley
         </div>
-        {state.selfRepoPath !== null ? (
-          // The instance marker: this build runs from the checkout, against
-          // the parley-dev record — a packaged install never shows it. One
-          // glance answers "which Parley is this window".
-          <span
-            className="chip chip--caution no-drag"
-            title={`Development build — running from ${state.selfRepoPath}; data in parley-dev`}
-          >
-            dev
+        {state.mock ? (
+          // Unmissable, permanently. A mock room produces turns that look
+          // exactly like real ones while consulting no model.
+          <span className="chip chip--caution no-drag" title="Deterministic adapters — no model is consulted">
+            mock
           </span>
         ) : null}
       </div>
 
-      <nav className="segmented no-drag" role="tablist" aria-label="Surface">
-        {SURFACES.map((surface) => (
-          <button
-            key={surface.id}
-            role="tab"
-            aria-selected={state.surface === surface.id}
-            className={`segmented__item ${state.surface === surface.id ? 'is-active' : ''}`}
-            onClick={() => dispatch({ type: 'surface', surface: surface.id })}
-          >
-            {surface.icon}
-            {surface.label}
-            {counts[surface.id] > 0 ? (
-              <span className="segmented__count tnum">{counts[surface.id]}</span>
-            ) : null}
-          </button>
-        ))}
-      </nav>
-
-      {inFlightOpen ? (
-        <InFlightPopover rows={inFlight} onClose={() => setInFlightOpen(false)} />
-      ) : null}
-
       <div className="titlebar__right">
         <CliStatus />
-        <InFlightButton
-          open={inFlightOpen}
-          onToggle={() => setInFlightOpen((open) => !open)}
-          count={inFlight.length}
-        />
-        <HoldsButton />
         <button
           className="btn btn--subtle btn--sm"
           onClick={() => dispatch({ type: 'palette', open: true })}
@@ -99,11 +38,11 @@ export function Titlebar(): ReactNode {
           className="btn btn--subtle btn--sm"
           onClick={() => {
             const next = THEME_ORDER[(THEME_ORDER.indexOf(state.theme) + 1) % THEME_ORDER.length]
-            dispatch({ type: 'theme', theme: next ?? 'system' })
+            dispatch({ type: 'theme', theme: next ?? 'auto' })
           }}
           title={`Appearance: ${state.theme}`}
         >
-          {state.theme === 'system' ? 'Auto' : state.theme === 'light' ? 'Light' : 'Dark'}
+          {state.theme === 'auto' ? 'Auto' : state.theme === 'light' ? 'Light' : 'Dark'}
         </button>
       </div>
     </header>
@@ -116,8 +55,9 @@ export function Titlebar(): ReactNode {
  * Shown permanently rather than only on failure: the whole app depends on these
  * being signed in, and a silent "not authenticated" is the single most likely
  * reason a session produces nothing. A missing tool-less vendor is the one
- * exception — agy only ever fills optional debate seats, so its absence is a
- * configuration, not a failure, and gets the neutral dot instead of red.
+ * exception — agy is tool-less in Parley's dispatch and can only hold a pane,
+ * so its absence is a configuration rather than a failure, and gets the
+ * neutral dot instead of red.
  */
 function CliStatus(): ReactNode {
   const { state } = useStore()

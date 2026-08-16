@@ -7,7 +7,7 @@ import * as domain from './domain'
  *
  * The boundary this module exists to protect — that the remote execution
  * bundle contains no npm code — is asserted in
- * src/main/remote/boundary.test.ts, which needs Node APIs that shared/ is not
+ * a bundle boundary test that needed Node APIs shared/ is not
  * typechecked for.
  */
 

@@ -180,6 +180,35 @@ export function contextPrompt(
 }
 
 /**
+ * The shape a seat answers a converge in.
+ *
+ * Moved here from the session protocols when those were deleted: it is the
+ * only piece of that contract vocabulary a room still uses, and the merge it
+ * feeds — independent scores, dissent kept verbatim — is the one thing the
+ * scheduled exchange did that free flow cannot.
+ */
+export const VERDICT_CONTRACT = `
+End your message with a single fenced JSON block, exactly in this shape:
+
+\`\`\`json
+{
+  "decision": "one sentence: what should be done",
+  "rationale": "why, in at most 120 words",
+  "confidence": 0.0,
+  "scores": {
+    "correctness": 0,
+    "robustness": 0,
+    "clarity": 0,
+    "maintainability": 0,
+    "risk": 0
+  },
+  "dissent": "what you still disagree with, or empty string if nothing"
+}
+\`\`\`
+
+Scores are 0–10 and describe the *recommended course of action*, not the debate. "risk" is scored so that 10 means lowest risk. "confidence" is 0–1 and is your own credence — do not inflate it to signal agreement. If you still disagree with the other advisor on something material, put it in "dissent" rather than dropping it.`.trim()
+
+/**
  * The verdict as a document.
  *
  * Dissent gets its own section and is never folded into the rationale — it is

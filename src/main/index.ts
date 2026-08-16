@@ -5,17 +5,10 @@ import { CH, type CliHealth } from '@shared/ipc'
 import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
 import { Repo } from '@main/store/repo'
-import { Manager } from '@main/orchestrator/manager'
-import { backfillBacklog } from '@main/orchestrator/backlog'
-import { reconcileWorktrees } from '@main/orchestrator/worktrees'
 import { PtyManager } from '@main/pty/manager'
 import { RoomManager } from '@main/rooms/manager'
-import { PreviewManager } from '@main/preview/manager'
 import { disposeIpc, registerIpc } from '@main/ipc/register'
-import { applyFreshBuildFlag } from '@main/ipc/relaunch'
 import { applyResolvedPath, preflightPty } from '@main/util/environment'
-
-const freshBuild = applyFreshBuildFlag(process.argv, process.env)
 
 // Dev and packaged installs must never share a record. The dev checkout
 // migrates the schema ahead of any frozen .dmg — whose downgrade guard would
@@ -29,8 +22,6 @@ if (!app.isPackaged) {
 let mainWindow: BrowserWindow | null = null
 let pty: PtyManager | null = null
 let rooms: RoomManager | null = null
-let preview: PreviewManager | null = null
-let manager: Manager | null = null
 let health: CliHealth[] = []
 
 const databasePath = join(app.getPath('userData'), 'parley.db')
@@ -101,60 +92,11 @@ async function bootstrap(): Promise<void> {
 
   const repo = new Repo(openDatabase(databasePath))
 
-  // Resolve anything the last shutdown left mid-flight, before the UI can show
-  // it as still running. Runners live only in memory, so a row claiming to be
-  // "executing" after a restart has nothing behind it.
-  const stranded = repo.reconcileInterrupted()
-  const strandedTotal =
-    stranded.sessions + stranded.loops + stranded.plans + stranded.milestones
-  // Foreman attempts the last shutdown left `running` become recorded
-  // failures; the pending proposal they never superseded stays as it was.
-  repo.reconcileForemanAttempts()
-  repo.reconcileSelfUpdates()
-  repo.reconcileEnvelopes()
-  // A run marked in-flight belongs to a process that is gone. Unlike an
-  // interrupted local run, the work may be sitting finished on a host.
-  repo.reconcileRemoteRuns()
-  repo.reconcileWorkspaces()
-  // Rooms nobody spoke in are not a record of anything. One that was used
-  // always survives, closed or not.
+  // A room nobody ever spoke in is not a record of anything. One that was
+  // used always survives, closed or not.
   repo.reconcileRooms()
 
   const registry = new AgentRegistry()
-
-  manager = new Manager({
-    repo,
-    registry,
-    emit,
-    worktreesRoot: join(app.getPath('userData'), 'worktrees'),
-    // Dev only: the checkout this process was built from is the repository
-    // Parley must treat as itself (worktree-only plans, the self-update gate).
-    // Packaged, getAppPath is inside the asar — not a repo — so null keeps
-    // every self rule dormant.
-    selfRepoPath: app.isPackaged ? null : app.getAppPath(),
-    // The same call, kept apart on purpose: packaged, this is inside the
-    // asar and is still exactly where the shipped remote runner is found
-    // (beside it, in app.asar.unpacked). selfRepoPath must stay null there;
-    // this must not.
-    appPath: app.getAppPath(),
-    userDataPath: app.getPath('userData'),
-    // One native banner per newly-appearing hold — the push half of the
-    // attention queue. Supplementary by design: the stamp is written either
-    // way, and the durable surface is the holds list itself, so a denied
-    // notification permission degrades to the in-app badge, silently.
-    notifyUser: (title, body) => {
-      if (Notification.isSupported()) new Notification({ title, body }).show()
-    },
-    // 'prevent-app-suspension' defers IDLE sleep so an overnight run is not
-    // stranded mid-milestone. It cannot defeat a closed lid — the docs say so
-    // and so do we, everywhere the user is offered an unattended run.
-    keepAwake: () => {
-      const id = powerSaveBlocker.start('prevent-app-suspension')
-      return () => {
-        if (powerSaveBlocker.isStarted(id)) powerSaveBlocker.stop(id)
-      }
-    },
-  })
 
   pty = new PtyManager({
     // Terminal output bypasses the validated event channel: a busy pane emits
@@ -166,20 +108,17 @@ async function bootstrap(): Promise<void> {
     onStatus: (paneId, status, exitCode) => emit({ type: 'pane.status', paneId, status, exitCode }),
   })
 
-  preview = new PreviewManager({
-    onChanged: (changed) => emit({ type: 'preview.changed', preview: changed }),
-  })
-
   // The manager holds the live half — which seats are mid-turn, which vendor
   // thread each resumes on. Everything durable is written through to the
   // record as it happens.
   rooms = new RoomManager({ registry, repo, emit })
 
   registerIpc({
-    manager,
+    repo,
+    registry,
     pty,
     rooms,
-    preview,
+    emit,
     window: () => mainWindow,
     health: () => health,
     agyModels: () => registry.agyModels(),
@@ -194,63 +133,6 @@ async function bootstrap(): Promise<void> {
     // Wait for the renderer, or the notice lands before anyone can see it.
     mainWindow?.webContents.once('did-finish-load', () => {
       emit({ type: 'notice', level: 'error', message: ptyCheck.detail })
-    })
-  }
-
-  // The self-relaunch announces itself: without this line, a successful
-  // update is indistinguishable from an ordinary restart, and the user has
-  // no confirmation the bytes actually changed generation.
-  if (freshBuild) {
-    mainWindow?.webContents.once('did-finish-load', () => {
-      emit({
-        type: 'notice',
-        level: 'info',
-        message: 'Running the freshly landed build from out/.',
-      })
-    })
-  }
-
-  // Replayable by construction (content-hash dedupe), so this both heals the
-  // crash window between a verdict committing and its ingestion committing,
-  // and deliberately back-ingests reviews completed before the backlog
-  // existed — the surface opens populated from record. The count is only
-  // announced when something genuinely new was filed.
-  const backfilled = backfillBacklog(repo)
-  if (backfilled.filed > 0) {
-    mainWindow?.webContents.once('did-finish-load', () => {
-      emit({
-        type: 'notice',
-        level: 'info',
-        message: `${backfilled.filed} backlog item${backfilled.filed > 1 ? 's were' : ' was'} filed from past review sessions.`,
-      })
-    })
-  }
-
-  // Same honesty pass for execution worktrees: a directory or origin that
-  // vanished while the app was closed is flagged now, not discovered as a
-  // silently disabled diff guard mid-run. Never deletes anything.
-  void reconcileWorktrees(repo).then(({ orphaned }) => {
-    if (orphaned === 0) return
-    mainWindow?.webContents.once('did-finish-load', () => {
-      emit({
-        type: 'notice',
-        level: 'warn',
-        message: `${orphaned} execution worktree${orphaned > 1 ? 's' : ''} lost ${orphaned > 1 ? 'their' : 'its'} directory or origin and ${orphaned > 1 ? 'were' : 'was'} marked orphaned. The branches survive.`,
-      })
-    })
-  })
-
-  if (strandedTotal > 0) {
-    const parts: string[] = []
-    if (stranded.milestones) parts.push(`${stranded.milestones} milestone${stranded.milestones > 1 ? 's' : ''}`)
-    if (stranded.sessions) parts.push(`${stranded.sessions} session${stranded.sessions > 1 ? 's' : ''}`)
-    if (stranded.loops) parts.push(`${stranded.loops} loop${stranded.loops > 1 ? 's' : ''}`)
-    mainWindow?.webContents.once('did-finish-load', () => {
-      emit({
-        type: 'notice',
-        level: 'warn',
-        message: `${parts.join(', ')} were still running when Parley last quit and have been marked interrupted. They can be retried.`,
-      })
     })
   }
 
@@ -306,9 +188,5 @@ app.on('before-quit', () => {
   // Abandon every in-flight seat: an orphaned CLI turn keeps consuming the
   // user's subscription quota after the room it belongs to is gone.
   rooms?.disposeAll()
-  // Before the manager: an orphaned dev server holds its port and cannot be
-  // stopped from anywhere the user can see.
-  preview?.disposeAll()
-  manager?.disposeAll()
   disposeIpc()
 })

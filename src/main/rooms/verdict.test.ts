@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { mergeVerdicts, parseFindings, parseSeatVerdict, similarDecision, type SeatVerdict } from './verdict'
+import {
+  mergeVerdicts,
+  parseSeatVerdict,
+  similarDecision,
+  type SeatVerdict,
+} from './verdict'
 
 function side(overrides: Partial<SeatVerdict> = {}): SeatVerdict {
   return {
@@ -204,64 +209,5 @@ describe('similarDecision', () => {
 
   it('does not flag a divergence when one side said nothing meaningful', () => {
     expect(similarDecision('', 'anything')).toBe(true)
-  })
-})
-
-describe('parseFindings', () => {
-  it('parses findings with their evidence', () => {
-    const text = [
-      '```json',
-      JSON.stringify({
-        findings: [
-          {
-            title: 'Unbounded retry',
-            detail: 'spins on a persistent outage',
-            priority: 'P1',
-            status: 'confirmed',
-            evidence: [{ path: 'src/net.ts', line: 88, symbol: 'retry', excerpt: 'while (true)' }],
-          },
-        ],
-      }),
-      '```',
-    ].join('\n')
-
-    const findings = parseFindings(text, 'session-1', 1)
-    expect(findings).toHaveLength(1)
-    expect(findings[0]?.priority).toBe('P1')
-    expect(findings[0]?.status).toBe('confirmed')
-    expect(findings[0]?.evidence[0]?.line).toBe(88)
-    expect(findings[0]?.raisedBy).toBe(1)
-  })
-
-  it('downgrades a confirmed finding that carries no evidence', () => {
-    // An agent asserting a bug it cannot point at is exactly what the review
-    // protocol exists to catch, so the claim is not taken on trust.
-    const text = '```json\n{"findings":[{"title":"Race condition","status":"confirmed","evidence":[]}]}\n```'
-    const findings = parseFindings(text, 's', 0)
-    expect(findings[0]?.status).toBe('unsupported')
-  })
-
-  it('keeps a dismissed finding, because the record of what was cleared matters', () => {
-    const text = '```json\n{"findings":[{"title":"Not actually a leak","status":"dismissed","evidence":[]}]}\n```'
-    expect(parseFindings(text, 's', 0)[0]?.status).toBe('dismissed')
-  })
-
-  it('defaults an unknown priority to the lowest rather than the highest', () => {
-    const text = '```json\n{"findings":[{"title":"x","priority":"URGENT","status":"unsupported"}]}\n```'
-    expect(parseFindings(text, 's', 0)[0]?.priority).toBe('P3')
-  })
-
-  it('drops entries with no title and evidence entries with no path', () => {
-    const text =
-      '```json\n{"findings":[{"detail":"no title"},{"title":"ok","evidence":[{"line":3},{"path":"a.ts"}]}]}\n```'
-    const findings = parseFindings(text, 's', 0)
-    expect(findings).toHaveLength(1)
-    expect(findings[0]?.evidence).toHaveLength(1)
-    expect(findings[0]?.evidence[0]?.path).toBe('a.ts')
-  })
-
-  it('returns nothing for malformed or absent blocks', () => {
-    expect(parseFindings('prose only', 's', 0)).toEqual([])
-    expect(parseFindings('```json\n{"findings":"not an array"}\n```', 's', 0)).toEqual([])
   })
 })

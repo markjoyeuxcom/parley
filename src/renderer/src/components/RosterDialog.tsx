@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Pencil, Plus, Trash2 } from 'lucide-react'
 import type { AgentProfile, Effort, Id, Vendor } from '@shared/domain'
 import { api } from '../lib/api'
-import { EFFORTS, VENDORS } from './AgentPicker'
+import { EFFORTS, VENDORS } from '../lib/seats'
 import { Chip, Dialog, Empty, Field } from './ui'
 
 /**

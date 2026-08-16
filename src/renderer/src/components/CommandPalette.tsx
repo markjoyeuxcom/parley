@@ -27,7 +27,7 @@ export interface PaletteAction {
  * absorb.
  */
 export function CommandPalette({ actions }: { actions: PaletteAction[] }): ReactNode {
-  const { state, dispatch, openSession, openPlan } = useStore()
+  const { state, dispatch } = useStore()
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
   const [hits, setHits] = useState<RecordSearchHit[]>([])
@@ -86,22 +86,9 @@ export function CommandPalette({ actions }: { actions: PaletteAction[] }): React
   const total = results.length + hits.length
 
   const openHit = (hit: RecordSearchHit): void => {
-    // The same doors the holds use. A hit that still has its session opens
-    // there, landing on the plan and milestone when it names them; work whose
-    // session is gone — or that never had one — opens on its repository.
-    if (hit.sessionId) {
-      dispatch({ type: 'surface', surface: 'parley' })
-      void openSession(hit.sessionId).then(async () => {
-        if (hit.planId) await openPlan(hit.planId)
-        if (hit.milestoneId) dispatch({ type: 'focusMilestone', milestoneId: hit.milestoneId })
-      })
-      return
-    }
-    if (hit.repoPath) {
-      const tab = hit.kind === 'backlog' ? 'backlog' : hit.kind === 'learning' ? 'learnings' : 'plans'
-      dispatch({ type: 'focusBacklogRepo', repoPath: hit.repoPath, tab })
-      dispatch({ type: 'surface', surface: 'backlog' })
-    }
+    // A hit lives in a room, and the only place a room can be read is a pane.
+    // The Grid consumes this and clears it.
+    if (hit.roomId) dispatch({ type: 'focusRoom', roomId: hit.roomId })
   }
 
   const commit = (index: number): void => {

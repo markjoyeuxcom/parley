@@ -10,12 +10,12 @@ import type {
   RoomVerdict,
   Usage,
 } from '@shared/domain'
-import { VERDICT_CONTRACT } from '@shared/protocol'
-import { mergeVerdicts, parseSeatVerdict } from '@main/orchestrator/verdict'
+import { mergeVerdicts, parseSeatVerdict } from './verdict'
 import type { AppEvent } from '@shared/events'
 import { emptyUsage } from '@shared/usage'
 import { seatingRefusals } from '@shared/vendors'
 import {
+  VERDICT_CONTRACT,
   contextPrompt,
   convergePrompt,
   parseAddress,

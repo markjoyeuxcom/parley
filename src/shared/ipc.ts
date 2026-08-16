@@ -1,28 +1,14 @@
 import { z } from 'zod'
-import type { AppJourney } from './domain'
-import type { JourneyProgress, JourneyStage } from './journey'
 import {
   AgentConfig,
-  Capability,
-  ApprovalScope,
-  FindingDispositionState,
+  Effort,
   Id,
-  InterjectionTarget,
-  LoopCaps,
-  EnvelopeCaps,
-  LoopExitCondition,
   PaneKind,
   RoomCaps,
   SavedLayoutNode,
-  type SearchKind,
-  SessionKind,
   Skill,
-  WorkPlanKind,
-  WorktreeIsolation,
-  type Vendor,
-  type FindingDisposition,
-  type FindingOccurrence,
-  type LedgerFinding,
+  Vendor,
+  type SearchKind,
 } from './domain'
 
 /** Channel names. Namespaced so nothing collides with Electron internals. */
@@ -38,104 +24,6 @@ export const CH = {
 // schema. The main process validates against these before touching anything;
 // an unrecognised command or a payload that fails to parse is rejected.
 
-export const StartSessionReq = z.object({
-  kind: SessionKind,
-  matter: z.string().min(1).max(20_000),
-  project: z.string().max(200).default(''),
-  repoPath: z.string().nullable().default(null),
-  /**
-   * The seats, in order. Seats 0 and 1 hold the exchange; any further seat
-   * observes it and records an independent verdict. Capped at four: the
-   * exchange schedule is two-seat, so extra chairs are assessors, and a bench
-   * of more than two of them is spend without conversation.
-   */
-  participants: z.array(AgentConfig).min(2).max(4),
-  maxTurns: z.number().int().min(2).max(40).default(6),
-})
-
-export const InterjectReq = z.object({
-  sessionId: Id,
-  target: InterjectionTarget,
-  text: z.string().min(1).max(10_000),
-})
-
-export const SessionControlReq = z.object({ sessionId: Id })
-
-export const CreatePlanReq = z.object({
-  /** Where milestones execute — see {@link WorktreeIsolation}. */
-  isolation: WorktreeIsolation.default('checkout'),
-  /** Shell-free command run once at worktree creation (e.g. `npm ci`). */
-  setupCommand: z.string().trim().max(400).default(''),
-  /** Open backlog items this plan targets. Capped by construction. */
-  backlogItemIds: z.array(Id).max(12).default([]),
-  /** A pending foreman proposal this creation accepts — atomically, in the
-   * same transaction as the plan row and the item flips. */
-  foremanProposalId: Id.nullable().default(null),
-  sessionId: Id,
-  kind: WorkPlanKind,
-  repoPath: z.string().min(1),
-  planner: AgentConfig,
-  executor: AgentConfig,
-  reviewer: AgentConfig,
-  /** Free text from the operator. Attributed, never blended into the verdict. */
-  note: z.string().max(20_000).default(''),
-})
-
-export const GrantApprovalReq = z.object({
-  // The canonical enum, not a re-declaration: an inline copy silently rejects
-  // any scope added to the domain, at the one boundary that must accept it.
-  scope: ApprovalScope,
-  subjectId: Id,
-  summary: z.string().min(1),
-})
-
-export const SetTestCommandReq = z.object({
-  milestoneId: Id,
-  command: z.string().max(500),
-})
-
-export const AnswerPlanReq = z.object({
-  planId: Id,
-  answer: z.string().min(1).max(10_000),
-})
-
-export const InspectMilestoneReq = z.object({ milestoneId: Id })
-/** Stops a running milestone at its next boundary. The run state is kept. */
-export const StopMilestoneReq = z.object({ milestoneId: Id })
-/** Resumes from preserved run state. Must reference a fresh unconsumed approval. */
-export const ResumeMilestoneReq = z.object({ milestoneId: Id, approvalId: Id })
-
-/** No approval field: adopting verifies existing work and writes nothing. */
-export const AdoptMilestoneReq = z.object({ milestoneId: Id })
-
-export const RunMilestoneReq = z.object({
-  milestoneId: Id,
-  /** Must reference an unconsumed approval for this milestone. */
-  approvalId: Id,
-})
-
-export const CreateLoopReq = z.object({
-  goal: z.string().min(1).max(20_000),
-  repoPath: z.string().min(1),
-  worker: AgentConfig,
-  verifier: AgentConfig,
-  exit: LoopExitCondition,
-  caps: LoopCaps,
-  capability: Capability,
-})
-
-/**
- * Starting is separate from creating so a write-capable loop can be approved
- * against its own id — which does not exist until the loop record does.
- */
-export const StartLoopReq = z.object({
-  loopId: Id,
-  /** Required when the loop's capability is `write`. */
-  approvalId: Id.nullable().default(null),
-})
-
-export const LoopControlReq = z.object({ loopId: Id })
-
 export const OpenPaneReq = z.object({
   kind: PaneKind,
   cwd: z.string().min(1),
@@ -143,7 +31,8 @@ export const OpenPaneReq = z.object({
   rows: z.number().int().min(2).max(1000),
   /**
    * Launch the CLI's OWN interactive session picker (`claude --resume`,
-   * `codex resume`) — never Parley's governed resume ids. Ignored for shells.
+   * `codex resume`). Ignored for shells, and for agy, which resumes by id
+   * rather than through a picker — see RESUME_PICKER_KINDS.
    */
   resume: z.boolean().default(false),
 })
@@ -157,7 +46,8 @@ export const PaneResizeReq = z.object({
 export const PaneCloseReq = z.object({ paneId: Id })
 export const PaneStopReq = z.object({ paneId: Id })
 export const PaneIdentityReq = z.object({ cwd: z.string().min(1) })
-/** The transcript text travels from the renderer — the buffer lives in xterm. */
+
+/** The text travels from the renderer: a pane's buffer lives in xterm. */
 export const SaveTranscriptReq = z.object({
   suggestedName: z.string().min(1).max(200),
   text: z.string().max(5_000_000),
@@ -186,260 +76,29 @@ export const SaveLayoutReq = z.object({
   tree: SavedLayoutNode,
 })
 export const LayoutIdReq = z.object({ layoutId: Id })
-
 export const PickDirectoryReq = z.object({ title: z.string().default('Choose a folder') })
 
-export const GetSessionReq = z.object({ sessionId: Id })
-export const ListLedgerReq = z.object({ sessionId: Id })
-/** Acknowledges a notice-class hold. Decision-class holds refuse — they clear by acting. */
-export const AckHoldReq = z.object({ holdId: Id })
+const ProfileFields = {
+  name: z.string().min(1),
+  vendor: Vendor,
+  model: z.string().default(''),
+  effort: Effort.default('medium'),
+  persona: z.string().default(''),
+}
 
-export const ListBacklogReq = z.object({
-  repoPath: z.string().optional(),
-  includeArchived: z.boolean().default(false),
-})
-export const DropBacklogItemReq = z.object({
-  itemId: Id,
-  note: z.string().trim().max(2000).default(''),
-})
-/** Reopens a planned or closure-proposed item; the plan edge is cleared. */
-export const ReopenBacklogItemReq = z.object({ itemId: Id })
-export const SetBacklogBlockedByReq = z.object({ itemId: Id, blockedBy: z.array(Id).max(50) })
-/** Confirms a stow proposal into the open backlog. */
-export const ConfirmBacklogItemReq = z.object({ itemId: Id })
-/** Closes a closure-proposed item — the human half of the proposal. */
-export const CloseBacklogItemReq = z.object({
-  itemId: Id,
-  note: z.string().trim().max(2000).default(''),
-})
-export const ListLearningsReq = z.object({
-  repoPath: z.string().optional(),
-  includeArchived: z.boolean().default(false),
-})
-/** One gated read of a repository's backlog by the chosen agent. */
-export const RunForemanReq = z.object({ repoPath: z.string().min(1), cfg: AgentConfig })
-export const ListForemanReq = z.object({ repoPath: z.string().optional() })
-/** Rejects a pending proposal with the reason. Accepting has no endpoint —
- * it rides plan creation, atomically. */
-export const RejectForemanReq = z.object({
-  proposalId: Id,
-  note: z.string().trim().max(2000).default(''),
-})
-/** Closes out a failed or blocked plan: cancelled on the record, items released. */
-export const CancelPlanReq = z.object({ planId: Id })
-/** Starts one unattended run within the bounds the human approved. */
-export const StartEnvelopeReq = z.object({
-  planId: Id,
-  /** Must reference an unconsumed `plan.envelope` approval for this plan. */
-  approvalId: Id,
-  caps: EnvelopeCaps,
-})
-export const EnvelopePlanReq = z.object({ planId: Id })
-/** Creates one new project. The approval names the exact path and template. */
-export const CreateWorkspaceReq = z.object({
-  name: z.string().trim().min(1).max(120),
-  path: z.string().min(1),
-  templateId: z.string().min(1),
-  approvalId: Id,
-})
-export const WorkspacePreviewReq = z.object({ path: z.string().min(1) })
-/** Records a judgement on completed work, filing any notes atomically with it. */
-export const RecordAcceptanceReq = z.object({
-  milestoneId: Id,
-  state: z.enum(['accepted', 'changes-requested']),
-  note: z.string().max(10_000).default(''),
-  /** One item per entry; blank entries are the user's formatting. */
-  changes: z.array(z.string().max(500)).max(30).default([]),
-})
-export const AcceptancePlanReq = z.object({ planId: Id })
-export const CreateJourneyReq = z.object({
-  name: z.string().trim().min(1).max(120),
-  brief: z.string().max(20_000).default(''),
-})
-export const UpdateJourneyReq = z.object({
-  journeyId: Id,
-  brief: z.string().max(20_000).optional(),
-  sessionId: Id.nullable().optional(),
-  workspaceId: Id.nullable().optional(),
-  planId: Id.nullable().optional(),
-  hardenSessionId: Id.nullable().optional(),
-})
-export const JourneyIdReq = z.object({ journeyId: Id })
-export const StartPreviewReq = z.object({
-  repoPath: z.string().min(1),
-  command: z.string().min(1).max(400),
-})
-export const PreviewIdReq = z.object({ previewId: Id })
-export const PreviewSuggestReq = z.object({ repoPath: z.string().min(1) })
-/** Opens a preview's own URL in the user's browser — never in the app. */
-export const OpenPreviewUrlReq = z.object({ previewId: Id })
-/** Boots the freshly built Parley: decides the green offer, then relaunches. */
-export const RelaunchSelfUpdateReq = z.object({ updateId: Id })
-/** Declines the offer; the app keeps running the bytes it started with. */
-export const DeclineSelfUpdateReq = z.object({ updateId: Id })
-/** Confirms a proposed learning; confirmed learnings ride every new brief. */
-export const ConfirmLearningReq = z.object({ learningId: Id })
-/** Retires a learning so it stops riding briefs. Terminal — never deleted. */
-export const RetireLearningReq = z.object({ learningId: Id })
-export const DisposeLedgerFindingReq = z.object({
-  sessionId: Id,
-  findingId: Id,
-  occurrenceId: Id.nullable(),
-  state: FindingDispositionState,
-  note: z.string().trim().min(1).max(4000),
-})
-/** Archiving hides a session from the list. It is reversible and deletes nothing. */
-export const ArchiveSessionReq = z.object({ sessionId: Id, archived: z.boolean() })
-export const ListSessionsReq = z.object({ includeArchived: z.boolean().default(false) })
-export const ListReposReq = z.object({ includeArchived: z.boolean().default(false) })
-export const ArchiveRepoReq = z.object({
-  repoPath: z.string().min(1),
-  archived: z.boolean(),
-})
-export const RepoContainerStatusReq = z.object({ repoPath: z.string().min(1) })
 /**
- * A host Parley may execute on.
+ * The whole privileged surface.
  *
- * `host` is whatever ssh understands — an alias from ~/.ssh/config is the
- * recommended form, because it keeps identity files, ports and jump hosts
- * where they already live. `nodeCommand` is validated against the boring
- * grammar here rather than only at use: a bad one should be refused when it is
- * saved, not discovered on the next run.
- */
-export const AddRemoteTargetReq = z.object({
-  label: z.string().min(1).max(80),
-  host: z
-    .string()
-    .min(1)
-    .max(200)
-    .refine((value) => !/\s/.test(value), 'an ssh destination cannot contain spaces'),
-  nodeCommand: z
-    .string()
-    .max(200)
-    .refine(
-      (value) => value === '' || (/^[A-Za-z0-9._/-]+$/.test(value) && !value.split('/').includes('..')),
-      'a node command must be a plain name or an absolute path, with no arguments',
-    )
-    .optional(),
-})
-export const RemoteTargetIdReq = z.object({ targetId: Id })
-export const MilestoneRunsReq = z.object({ milestoneId: Id })
-export const RunMilestoneRemotelyReq = z.object({
-  milestoneId: Id,
-  approvalId: Id,
-  targetId: Id,
-})
-
-export const SetRepoContainerReq = z.object({
-  repoPath: z.string().min(1),
-  enabled: z.boolean(),
-})
-/** Deleting is permanent. The impact query exists so it is never a blind click. */
-export const DeleteSessionReq = z.object({ sessionId: Id })
-export const GetPlanReq = z.object({ planId: Id })
-/**
- * Null repoPath lists globally (capped); a repoPath lists every plan for
- * that repository, uncapped — history must not fall off a global limit.
- */
-export const ListPlansReq = z.object({
-  repoPath: z.string().min(1).nullable().default(null),
-})
-/**
- * Lands a complete worktree plan's branch on the origin, fast-forward only.
- * Must reference an unconsumed `plan.land` approval — landing is the single
- * moment isolated work reaches the checkout, and it is recorded like every
- * other authorisation to touch it.
- */
-export const LandPlanReq = z.object({ planId: Id, approvalId: Id })
-export const GetLoopReq = z.object({ loopId: Id })
-
-export const ExportReportReq = z.object({ sessionId: Id })
-/** One read-only sweep filing proposed backlog items and learnings. */
-export const StowSessionReq = z.object({ sessionId: Id })
-
-/**
- * The full command table. Keys are the wire command names; values are the
- * request schemas. `null` means the command takes no payload.
+ * One channel with a validated command table rather than one channel per
+ * operation: the renderer is sandboxed and untrusted, and a single audited
+ * chokepoint is far easier to reason about than thirty separate handlers.
+ * Adding capability means adding a command *and* a schema.
  */
 export const COMMANDS = {
   'app.info': null,
   'health.probe': null,
-  'session.start': StartSessionReq,
-  'session.list': ListSessionsReq,
-  'session.archive': ArchiveSessionReq,
-  'session.deletionImpact': DeleteSessionReq,
-  'session.delete': DeleteSessionReq,
-  'session.get': GetSessionReq,
-  'session.interject': InterjectReq,
-  'session.pause': SessionControlReq,
-  'session.resume': SessionControlReq,
-  'session.stop': SessionControlReq,
-  'session.export': ExportReportReq,
-  'session.stow': StowSessionReq,
-  'ledger.list': ListLedgerReq,
-  'ledger.dispose': DisposeLedgerFindingReq,
-  'holds.list': null,
-  'inflight.list': null,
-  'holds.ack': AckHoldReq,
-  'backlog.list': ListBacklogReq,
-  'backlog.drop': DropBacklogItemReq,
-  'backlog.reopen': ReopenBacklogItemReq,
-  'backlog.setBlockedBy': SetBacklogBlockedByReq,
-  'backlog.confirm': ConfirmBacklogItemReq,
-  'backlog.close': CloseBacklogItemReq,
-  'learnings.list': ListLearningsReq,
-  'learnings.confirm': ConfirmLearningReq,
-  'learnings.retire': RetireLearningReq,
-  'foreman.run': RunForemanReq,
-  'foreman.list': ListForemanReq,
-  'foreman.reject': RejectForemanReq,
-  'selfupdate.pending': null,
-  'selfupdate.relaunch': RelaunchSelfUpdateReq,
-  'selfupdate.decline': DeclineSelfUpdateReq,
-  'plan.create': CreatePlanReq,
-  'plan.get': GetPlanReq,
-  'plan.list': ListPlansReq,
-  'plan.cancel': CancelPlanReq,
-  'envelope.start': StartEnvelopeReq,
-  'envelope.stop': EnvelopePlanReq,
-  'envelope.list': EnvelopePlanReq,
-  'workspace.create': CreateWorkspaceReq,
-  'workspace.list': null,
-  'workspace.templates': null,
-  'workspace.preview': WorkspacePreviewReq,
-  'acceptance.record': RecordAcceptanceReq,
-  'acceptance.list': AcceptancePlanReq,
-  'journey.create': CreateJourneyReq,
-  'journey.update': UpdateJourneyReq,
-  'journey.delete': JourneyIdReq,
-  'journey.list': null,
-  'preview.start': StartPreviewReq,
-  'preview.stop': PreviewIdReq,
-  'preview.forget': PreviewIdReq,
-  'preview.logs': PreviewIdReq,
-  'preview.open': OpenPreviewUrlReq,
-  'preview.list': null,
-  'preview.suggest': PreviewSuggestReq,
-  'repos.list': ListReposReq,
-  'repos.archive': ArchiveRepoReq,
-  'repo.containerStatus': RepoContainerStatusReq,
-  'repo.setContainer': SetRepoContainerReq,
-  'plan.milestoneRuns': MilestoneRunsReq,
-  'remote.list': null,
-  'remote.add': AddRemoteTargetReq,
-  'remote.forget': RemoteTargetIdReq,
-  'remote.status': RemoteTargetIdReq,
-  'remote.recover': z.object({ runId: Id }),
-  'remote.unresolved': null,
-  'search.query': z.object({ query: z.string(), limit: z.number().int().positive().max(100).optional() }),
-  'profile.list': null,
-  'profile.add': z.object({
-    name: z.string().min(1),
-    vendor: z.enum(['claude', 'codex', 'agy']),
-    model: z.string().default(''),
-    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
-    persona: z.string().default(''),
-  }),
+
+  // Rooms
   'room.open': z.object({
     cwd: z.string().min(1),
     seats: z.array(AgentConfig).min(1).max(6),
@@ -452,43 +111,22 @@ export const COMMANDS = {
   'room.setSeat': z.object({ roomId: Id, seat: AgentConfig }),
   'room.addSeat': z.object({ roomId: Id, seat: AgentConfig }),
   'room.removeSeat': z.object({ roomId: Id, seatId: Id }),
-  'room.setCaps': z.object({ roomId: Id, caps: RoomCaps }),
   'room.setSeatWrite': z.object({ roomId: Id, seatId: Id, write: z.boolean() }),
-  'room.converge': z.object({ roomId: Id, question: z.string().max(2000).default('') }),
-  'room.verdicts': z.object({ roomId: Id }),
+  'room.setCaps': z.object({ roomId: Id, caps: RoomCaps }),
   /** Turns, not rounds — the unit the budget counts in. */
   'room.advance': z.object({ roomId: Id, turns: z.number().int().positive().max(100) }),
+  'room.converge': z.object({ roomId: Id, question: z.string().max(2000).default('') }),
+  'room.verdicts': z.object({ roomId: Id }),
   'room.stop': z.object({ roomId: Id }),
   'room.close': z.object({ roomId: Id }),
-  'profile.update': z.object({
-    profileId: Id,
-    name: z.string().min(1),
-    vendor: z.enum(['claude', 'codex', 'agy']),
-    model: z.string().default(''),
-    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
-    persona: z.string().default(''),
-  }),
+
+  // The roster
+  'profile.list': null,
+  'profile.add': z.object(ProfileFields),
+  'profile.update': z.object({ profileId: Id, ...ProfileFields }),
   'profile.forget': z.object({ profileId: Id }),
-  'remote.install': RemoteTargetIdReq,
-  'remote.rollback': RemoteTargetIdReq,
-  'plan.runMilestoneRemotely': RunMilestoneRemotelyReq,
-  'plan.runMilestone': RunMilestoneReq,
-  'plan.inspect': InspectMilestoneReq,
-  'plan.answer': AnswerPlanReq,
-  'plan.setTestCommand': SetTestCommandReq,
-  'plan.adoptMilestone': AdoptMilestoneReq,
-  'plan.stopMilestone': StopMilestoneReq,
-  'plan.resumeMilestone': ResumeMilestoneReq,
-  'plan.land': LandPlanReq,
-  'approval.grant': GrantApprovalReq,
-  'approval.list': null,
-  'loop.create': CreateLoopReq,
-  'loop.start': StartLoopReq,
-  'loop.list': null,
-  'loop.get': GetLoopReq,
-  'loop.pause': LoopControlReq,
-  'loop.resume': LoopControlReq,
-  'loop.kill': LoopControlReq,
+
+  // Terminal panes
   'pane.open': OpenPaneReq,
   'pane.write': PaneWriteReq,
   'pane.resize': PaneResizeReq,
@@ -497,47 +135,23 @@ export const COMMANDS = {
   'pane.identity': PaneIdentityReq,
   'pane.saveTranscript': SaveTranscriptReq,
   'pane.list': null,
+
   'layout.save': SaveLayoutReq,
   'layout.list': null,
   'layout.delete': LayoutIdReq,
+
   'skill.list': null,
   'skill.save': SaveSkillReq,
   'skill.run': RunSkillReq,
+
+  'search.query': z.object({
+    query: z.string(),
+    limit: z.number().int().positive().max(100).optional(),
+  }),
   'dialog.pickDirectory': PickDirectoryReq,
 } as const
 
 export type CommandName = keyof typeof COMMANDS
-
-export type CommandPayload<K extends CommandName> = (typeof COMMANDS)[K] extends z.ZodType
-  ? z.infer<(typeof COMMANDS)[K] & z.ZodType>
-  : undefined
-
-/** One stable finding and its append-only occurrence and decision history. */
-/**
- * A search hit, with the door that opens it.
- *
- * The doors are resolved in main, where the record is: a milestone hit knows
- * its plan id but the renderer needs the plan's session and repository to
- * navigate, and asking every surface to look those up would put four copies
- * of the join in four components.
- */
-export interface RecordSearchHit {
-  kind: SearchKind
-  refId: Id
-  title: string
-  /** The matching text, with the query's words marked by «…». */
-  snippet: string
-  sessionId: Id | null
-  planId: Id | null
-  milestoneId: Id | null
-  roomId: Id | null
-  repoPath: string | null
-}
-
-export interface LedgerEntry extends LedgerFinding {
-  occurrences: FindingOccurrence[]
-  dispositions: FindingDisposition[]
-}
 
 /** Uniform envelope so a thrown error in main never becomes an unhandled rejection. */
 export type InvokeResult<T> = { ok: true; value: T } | { ok: false; error: string }
@@ -559,102 +173,43 @@ export interface AppInfo {
   /**
    * True when the deterministic mock adapters are in use.
    *
-   * The UI must show this permanently and unmissably. A mock run produces
-   * sessions, verdicts and reviews that look exactly like real ones while doing
-   * no real work, and a user who does not know which mode they are in will read
+   * The UI must show this permanently and unmissably. A mock room produces
+   * turns and verdicts that look exactly like real ones while consulting no
+   * model, and somebody who does not know which mode they are in will read
    * fabricated output as findings.
-   *
-   * It is not read-only: executing a milestone under the mocks writes one
-   * placeholder file into the repository, because the pipeline's changed-tree gate
-   * cannot otherwise be exercised. Anything claiming mock mode writes nothing is
-   * wrong, and was wrong here.
    */
   mock: boolean
-  /**
-   * The model this machine's `codex` is configured to use, if any.
-   *
-   * Offered as the first suggestion so the picker reflects the user's actual
-   * install rather than a list baked in when the app was written.
-   */
+  /** The model this machine's `codex` is configured to use, if any. */
   codexDefaultModel: string
-  /** Gemini model ids reported by this machine's `agy models` command. */
+  /** Gemini models the installed `agy` actually lists. */
   agyModels: string[]
-  /**
-   * Canonical path of Parley's own checkout when running from source, null
-   * when packaged. The renderer uses it only to explain the worktree-only
-   * rule up front (greying the checkout option); the main process re-enforces
-   * it at plan creation and again at execution, so a stale or absent value
-   * here can never widen what is allowed.
-   */
-  selfRepoPath: string | null
 }
 
-/**
- * One repository as the Repos surface's sidebar sees it. Canonically keyed;
- * item and proposal counts are scoped to the running mode (they drive action
- * chips), plan counts are total.
- */
-export interface RepoSummary {
-  repoPath: string
-  archived: boolean
-  planCount: number
-  /** Plans needing a human: failed, parked, blocked, or complete-unlanded. */
-  attentionPlans: number
-  openItems: number
-  pendingTriage: number
-  hasPendingProposal: boolean
-}
-
-/**
- * A pane header's identity line in one read. `git` is null outside a
- * repository; `worktree` is set only when the folder IS a registered plan
- * worktree — it says landed or not, and never "safe to remove".
- */
-export interface PaneIdentity {
-  git: {
-    root: string
-    branch: string
-    dirty: boolean
-    ahead: number
-    behind: number
-    hasUpstream: boolean
-  } | null
-  worktree: {
-    planId: string
-    originPath: string
-    branch: string
-    landed: boolean
-    orphaned: boolean
-  } | null
-}
-
-/**
- * The Repos Overview's dev-container section in one read: the standing
- * choice, whether the repository declares a configuration, and whether the
- * devcontainer CLI is installed. The cli probe is fresh on every read — a
- * stale "missing" after an install would be worse than the probe's cost.
- */
-/** A journey with the stage its links currently imply. */
-export interface JourneyView {
-  journey: AppJourney
-  progress: JourneyProgress
-  stage: JourneyStage
-  /** The project's path once there is one, so the card can link to it. */
-  repoPath: string | null
-}
-
-export interface RepoContainerStatus {
-  enabled: boolean
-  configPresent: boolean
-  cli: { present: boolean; version: string; detail: string }
-}
-
-/** Result of probing for a governed CLI at startup. */
+/** Result of probing for a CLI at startup. */
 export interface CliHealth {
   vendor: Vendor
   present: boolean
   version: string
   /** True when the CLI reports a logged-in subscription session. */
   authenticated: boolean
+  /** Something a person can act on: what is missing, or how to sign in. */
   detail: string
+}
+
+/** What a pane's folder is, for the header. Refreshed on focus, never on a timer. */
+export interface PaneIdentity {
+  branch: string
+  dirty: boolean
+  ahead: number
+  behind: number
+}
+
+export interface RecordSearchHit {
+  kind: SearchKind
+  refId: Id
+  title: string
+  /** The matching text, with the query's words marked by «…». */
+  snippet: string
+  /** The room a hit lives in — the only door a search result now has. */
+  roomId: Id | null
 }

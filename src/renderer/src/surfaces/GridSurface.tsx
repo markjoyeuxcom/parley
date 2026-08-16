@@ -88,7 +88,7 @@ const mintSlotId = (): Id => `slot-${Date.now().toString(36)}-${(slotSeq += 1)}`
  * be started.
  */
 export function GridSurface(): ReactNode {
-  const { state, dispatch, notify, attempt, openPlan } = useStore()
+  const { state, dispatch, notify, attempt } = useStore()
   const [layout, setLayout] = useState<LayoutNode | null>(null)
   const [slots, setSlots] = useState<Record<Id, Slot>>({})
   const [focusedSlot, setFocusedSlot] = useState<Id | null>(null)
@@ -148,10 +148,8 @@ export function GridSurface(): ReactNode {
     if (cwd) add(cwd)
     for (const path of picked) add(path)
     for (const slot of Object.values(slots)) add(slot.cwd)
-    for (const session of state.sessions) add(session.repoPath)
-    for (const loop of state.loops) add(loop.repoPath)
     return out.slice(0, 8)
-  }, [cwd, picked, slots, state.sessions, state.loops])
+  }, [cwd, picked, slots])
 
   /** Distinct folders the grid currently spans. */
   const activeFolders = useMemo(
@@ -359,14 +357,40 @@ export function GridSurface(): ReactNode {
     [attempt, cwd, focusedSlot, notify, slotCount, slots],
   )
 
-  // Consume the cross-surface knock: another surface asked for a pane here.
-  // Guarded on visibility so the hidden Grid never spawns behind your back.
+  /** Puts an already-open room into a fresh slot. */
+  const openRoomSlot = useCallback(
+    (roomId: Id, dir: string) => {
+      if (slotCount >= MAX_PANES) {
+        notify('warn', `The grid holds at most ${MAX_PANES} panes.`)
+        return
+      }
+      const slotId = mintSlotId()
+      setSlots((current) => ({
+        ...current,
+        [slotId]: { kind: 'room', cwd: dir, paneId: null, roomId },
+      }))
+      setLayout((current) => {
+        if (!current) return leaf(slotId)
+        const target = focusedSlot ?? collectSlotIds(current)[0]
+        return target ? splitLeaf(current, target, 'row', slotId) : leaf(slotId)
+      })
+      setFocusedSlot(slotId)
+      setMaximizedSlot(null)
+    },
+    [focusedSlot, notify, slotCount],
+  )
+
+  // Search asks for a room by id; the Grid is the only place one can be read.
+  // Consumed and cleared, so the same hit twice opens one pane, not two.
   useEffect(() => {
-    const spawn = state.focusGridSpawn
-    if (!spawn || state.surface !== 'grid') return
-    dispatch({ type: 'focusGridSpawn', spawn: null })
-    void openPane(spawn.kind, undefined, undefined, spawn.cwd)
-  }, [state.focusGridSpawn, state.surface, dispatch, openPane])
+    const roomId = state.focusRoomId
+    if (!roomId) return
+    dispatch({ type: 'focusRoom', roomId: null })
+    if (Object.values(slots).some((slot) => slot.roomId === roomId)) return
+    void attempt(() => api.reopenRoom(roomId)).then((room) => {
+      if (room) void openRoomSlot(room.id, room.cwd)
+    })
+  }, [state.focusRoomId, dispatch, attempt, slots, openRoomSlot])
 
   const closeSlot = useCallback(
     (slotId: Id) => {
@@ -453,20 +477,25 @@ export function GridSurface(): ReactNode {
     [attempt, closeAll, liveSlots.length, notify],
   )
 
-  // Default the folder to the last repository the user worked in.
+  // Default the folder to the last one a room was opened in. The record is
+  // the only memory of where work happened now that sessions are gone.
   useEffect(() => {
     if (cwd) return
-    const recent = state.sessions.find((s) => s.repoPath)?.repoPath ?? state.loops[0]?.repoPath
-    if (recent) setCwd(recent)
-  }, [cwd, state.sessions, state.loops])
+    void api
+      .listRooms()
+      .then((rooms) => {
+        const recent = rooms[0]?.cwd
+        if (recent) setCwd(recent)
+      })
+      .catch(() => {
+        /* No memory is not an error; the folder picker still works. */
+      })
+  }, [cwd])
 
   // ⌘D splits right, ⌘⇧D splits down, ⌘W closes, ⌘]/⌘[ cycle, ⌘⏎ maximizes.
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (!event.metaKey) return
-      // The surface stays mounted while hidden; without this guard ⌘W on a
-      // different surface silently closed the focused Grid pane.
-      if (state.surface !== 'grid') return
       const key = event.key.toLowerCase()
       if (key === 'd' && focusedSlot) {
         event.preventDefault()
@@ -490,7 +519,7 @@ export function GridSurface(): ReactNode {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [closeSlot, focusedSlot, layout, openPane, state.surface])
+  }, [closeSlot, focusedSlot, layout, openPane])
 
   const chooseFolder = async (): Promise<void> => {
     const result = await attempt(() => api.pickDirectory('Choose a folder for new panes'))
@@ -723,18 +752,6 @@ export function GridSurface(): ReactNode {
             }}
             unread={(id) => unreadSlots.has(id)}
             onOutput={markOutput}
-            onOpenPlan={(identity) => {
-              if (!identity.worktree) return
-              // The knock-and-consume pattern: the Repos surface owns the
-              // plan panel, opened on the worktree's origin repository.
-              dispatch({
-                type: 'focusBacklogRepo',
-                repoPath: identity.worktree.originPath,
-                tab: 'plans',
-              })
-              dispatch({ type: 'surface', surface: 'backlog' })
-              void openPlan(identity.worktree.planId)
-            }}
             paneMenu={(id) => {
               const slot = slots[id]
               if (!slot) return null
@@ -837,23 +854,6 @@ export function GridSurface(): ReactNode {
                         ))}
                       </MenuSection>
                       <MenuSection>
-                        <MenuItem
-                          onClick={() => {
-                            close()
-                            // Selected terminal text rides along as the brief's
-                            // starting matter; nothing selected still opens the
-                            // dialog on this pane's repository.
-                            const matter = slot.paneId ? paneSelection(slot.paneId) : ''
-                            const dir = slots[id]?.cwd ?? slot.cwd
-                            const repoRoot = identities[dir]?.git?.root ?? dir
-                            dispatch({
-                              type: 'focusNewSession',
-                              request: { kind: 'review', repoPath: repoRoot, matter },
-                            })
-                          }}
-                        >
-                          Review this in Parley…
-                        </MenuItem>
                         {slot.roomId ? (
                           <MenuItem
                             onClick={() => {
@@ -1152,7 +1152,6 @@ interface LayoutViewProps {
   unread: (id: Id) => boolean
   maximizedSlot: Id | null
   onOutput: (id: Id) => void
-  onOpenPlan: (identity: PaneIdentity) => void
   onFocus: (id: Id) => void
   onClose: (id: Id) => void
   onStart: (id: Id) => void
@@ -1211,38 +1210,16 @@ function BroadcastDialog({
  * and opens the plan. It never says "safe to remove"; landing is the plan's
  * record, disposal is the human's call.
  */
-function PaneIdentityChips({
-  identity,
-  onOpenPlan,
-}: {
-  identity: PaneIdentity | null | undefined
-  onOpenPlan: (identity: PaneIdentity) => void
-}): ReactNode {
-  if (!identity?.git) return null
-  const { git } = identity
-  const drift =
-    git.hasUpstream && (git.ahead || git.behind) ? ` ↑${git.ahead}↓${git.behind}` : ''
-  const state = git.dirty ? 'uncommitted changes' : 'clean'
-  const upstream = git.hasUpstream
-    ? `${git.ahead} ahead / ${git.behind} behind upstream`
-    : 'no upstream'
+function PaneIdentityChips({ identity }: { identity: PaneIdentity | null | undefined }): ReactNode {
+  if (!identity) return null
+  const drift = identity.ahead || identity.behind ? ` ↑${identity.ahead}↓${identity.behind}` : ''
+  const state = identity.dirty ? 'uncommitted changes' : 'clean'
   return (
-    <>
-      <Chip tone="chip--mono" title={`${git.root} — ${state}, ${upstream}`}>
-        {git.branch}
-        {git.dirty ? '±' : ''}
-        {drift}
-      </Chip>
-      {identity.worktree ? (
-        <button
-          className={`chip ${identity.worktree.landed ? '' : 'chip--accent'}`}
-          title={`A plan worktree of ${identity.worktree.originPath} — its branch has ${identity.worktree.landed ? 'landed' : 'NOT landed'}. Opens the plan.`}
-          onClick={() => onOpenPlan(identity)}
-        >
-          plan · {identity.worktree.landed ? 'landed' : 'unlanded'}
-        </button>
-      ) : null}
-    </>
+    <Chip tone="chip--mono" title={`${identity.branch} — ${state}`}>
+      {identity.branch}
+      {identity.dirty ? '±' : ''}
+      {drift}
+    </Chip>
   )
 }
 
@@ -1278,10 +1255,7 @@ function LayoutView(props: LayoutViewProps): ReactNode {
           <span className="pane__title" title={slot?.cwd}>
             {props.paneTitle(id)}
           </span>
-          <PaneIdentityChips
-            identity={props.paneIdentity(id)}
-            onOpenPlan={props.onOpenPlan}
-          />
+          <PaneIdentityChips identity={props.paneIdentity(id)} />
           {props.unread(id) && !focused ? (
             <Dot tone="dot--accent" title="new output since you last looked" />
           ) : null}
