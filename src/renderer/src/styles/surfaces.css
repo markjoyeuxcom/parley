@@ -277,10 +277,17 @@
   cursor: pointer;
 }
 
+/* min-width: 0, or a long decision cannot shrink below its own content and
+   pushes the header wider than the pane — flex items size to content by
+   default, and a verdict's decision is a whole sentence. */
 .room__verdict-decision {
   font-size: var(--text-small);
   font-weight: 550;
   color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .room__verdict-meta,
@@ -301,6 +308,33 @@
 
 .room__verdict-body {
   padding: 0 var(--s3) var(--s3);
+}
+
+/* A folded block: three lines and a header saying how much is behind it. */
+.room__fold {
+  margin: 0 0 var(--s3);
+  min-width: 0;
+}
+
+.room__fold-head {
+  display: block;
+  width: 100%;
+  padding: 0 0 var(--s1);
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  color: var(--text-tertiary);
+}
+
+.room__fold-head:hover {
+  color: var(--text-primary);
+}
+
+.room__fold .room__code--folded {
+  margin: 0;
 }
 
 /* What the seat is doing, in the seat line rather than the transcript: it
@@ -431,7 +465,11 @@
   border: 1px solid var(--line-faint);
   border-radius: var(--r-md);
   background: var(--bg-surface);
-  overflow-x: auto;
+  /* Bounded on both axes. A seat can emit a hundred lines of JSON or source,
+     and an unbounded block pushes every later turn off the screen. */
+  max-height: 22em;
+  overflow: auto;
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: var(--text-micro);
   line-height: 1.5;

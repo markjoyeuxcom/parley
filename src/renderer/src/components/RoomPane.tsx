@@ -531,11 +531,7 @@ function Markdown({ text }: { text: string }): ReactNode {
       {blocks.map((block, index) => {
         const key = `${block.kind}-${index}`
         if (block.kind === 'code') {
-          return (
-            <pre className="room__code" key={key}>
-              <code>{block.text}</code>
-            </pre>
-          )
+          return <CodeBlock key={key} lang={block.lang} text={block.text} />
         }
         if (block.kind === 'heading') {
           // Capped and styled by level rather than by tag size: a room is not
@@ -566,6 +562,46 @@ function Markdown({ text }: { text: string }): ReactNode {
           </p>
         )
       })}
+    </div>
+  )
+}
+
+/**
+ * A fenced block, folded when it is long.
+ *
+ * A converge answers in a contract, so every closing turn ends with a JSON
+ * object whose strings run to hundreds of characters — and the parsed version
+ * of exactly that is already on screen in the verdict strip. Left open it
+ * buries the prose the seat wrote above it, which is the part worth reading.
+ *
+ * The rule is about length rather than about verdicts, because a seat pasting
+ * sixty lines of source has the same problem and deserves the same answer.
+ * Nothing is hidden that a click does not reveal, and the header says how much
+ * there is.
+ */
+const FOLD_OVER_LINES = 12
+
+function CodeBlock({ lang, text }: { lang: string; text: string }): ReactNode {
+  const lines = useMemo(() => text.split('\n'), [text])
+  const foldable = lines.length > FOLD_OVER_LINES
+  const [open, setOpen] = useState(false)
+
+  if (!foldable) {
+    return (
+      <pre className="room__code">
+        <code>{text}</code>
+      </pre>
+    )
+  }
+
+  return (
+    <div className="room__fold">
+      <button className="room__fold-head" onClick={() => setOpen((v) => !v)}>
+        {open ? '▾' : '▸'} {lang || 'text'} · {lines.length} lines
+      </button>
+      <pre className="room__code room__code--folded">
+        <code>{open ? text : lines.slice(0, 3).join('\n')}</code>
+      </pre>
     </div>
   )
 }

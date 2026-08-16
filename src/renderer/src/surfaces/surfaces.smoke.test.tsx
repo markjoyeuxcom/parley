@@ -311,6 +311,34 @@ describe('mounted-surface smoke', () => {
     // The call that does it sat below the effect's cleanup return and never
     // ran — through a clean typecheck and a green suite.
     expect(screen.getByText('the gate is unsound')).toBeTruthy()
+
+    // A long fenced block folds rather than burying the prose above it. A
+    // converge always ends in one, and its parsed form is already on screen.
+    act(() => {
+      appEventListener?.({
+        type: 'room.turn.ended',
+        roomId: 'room-1',
+        turn: {
+          id: 'turn-long',
+          roomId: 'room-1',
+          author: 'agent',
+          seat: 'claude',
+          vendor: 'claude',
+          profile: '',
+          text: ['My verdict.', '', '```json', ...Array.from({ length: 20 }, (_, i) => `  "line${i}": 1,`), '```'].join('\n'),
+          usage: room.usage,
+          startedAt: 1_700_000_000_003,
+          endedAt: 1_700_000_000_004,
+          error: null,
+        },
+      })
+    })
+    // The prose stays visible; the block collapses behind a count.
+    expect(await screen.findByText('My verdict.')).toBeTruthy()
+    const fold = screen.getByRole('button', { name: /json · 20 lines/ })
+    expect(screen.queryByText(/"line19"/)).toBeNull()
+    fireEvent.click(fold)
+    expect(screen.getByText(/"line19"/)).toBeTruthy()
   })
 
   it('a room shows its seats, its spend, and stops at the budget', async () => {
