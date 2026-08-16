@@ -767,16 +767,21 @@ export function GridSurface(): ReactNode {
                             Offering the process verbs here would render
                             controls that quietly do nothing. */}
                         {slot.kind === 'room' ? (
-                          !slot.roomId ? (
-                            <>
+                          // A room has no process to stop, restart or resume.
+                          // Reopening is offered whether or not this slot
+                          // already holds one: opening a Room from the toolbar
+                          // mints a fresh one immediately, so gating this on
+                          // an empty slot made it unreachable in practice.
+                          <>
+                            {!slot.roomId ? (
                               <MenuItem onClick={() => { close(); void startSlot(id) }}>
                                 Start a new room
                               </MenuItem>
-                              <MenuItem onClick={() => { close(); setReopening(id) }}>
-                                Reopen a room…
-                              </MenuItem>
-                            </>
-                          ) : null
+                            ) : null}
+                            <MenuItem onClick={() => { close(); setReopening(id) }}>
+                              Reopen a room…
+                            </MenuItem>
+                          </>
                         ) : (
                           <>
                         {running ? (
@@ -919,6 +924,7 @@ export function GridSurface(): ReactNode {
             onSplit={(slotId, direction) => void openPane('shell', { slotId, direction })}
             onRatio={(path, ratio) => setLayout((current) => (current ? setRatio(current, path, ratio) : current))}
             onDropTarget={setDropTarget}
+            onReopenRoom={setReopening}
             onSkillDrop={(slotId) => {
               const skill = draggingSkill.current
               setDropTarget(null)
@@ -1020,8 +1026,15 @@ export function GridSurface(): ReactNode {
           onPick={(roomId) => {
             const slotId = reopening
             setReopening(null)
+            const previous = slots[slotId]?.roomId
             void attempt(() => api.reopenRoom(roomId)).then((room) => {
               if (!room) return
+              // Let go of whatever this slot held. The record keeps it, and a
+              // room opened by accident and never spoken in is swept at
+              // startup rather than accumulating.
+              if (previous && previous !== room.id) {
+                void api.closeRoom(previous).catch(() => undefined)
+              }
               setSlots((current) => {
                 const slot = current[slotId]
                 return slot ? { ...current, [slotId]: { ...slot, roomId: room.id } } : current
@@ -1159,6 +1172,7 @@ interface LayoutViewProps {
   onRatio: (path: SplitPath, ratio: number) => void
   onDropTarget: (id: Id | null) => void
   onSkillDrop: (id: Id) => void
+  onReopenRoom: (id: Id) => void
 }
 
 function BroadcastDialog({
@@ -1292,6 +1306,7 @@ function LayoutView(props: LayoutViewProps): ReactNode {
             focused={focused}
             onFocus={() => props.onFocus(id)}
             onOutput={() => props.onOutput(id)}
+            onReopen={() => props.onReopenRoom(id)}
           />
         ) : slot?.paneId ? (
           <TerminalPane

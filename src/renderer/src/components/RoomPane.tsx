@@ -25,11 +25,14 @@ export function RoomPane({
   focused,
   onFocus,
   onOutput,
+  onReopen,
 }: {
   roomId: Id
   focused: boolean
   onFocus: () => void
   onOutput: () => void
+  /** Offered from the empty state — see the Empty below for why it is here. */
+  onReopen: () => void
 }): ReactNode {
   const [room, setRoom] = useState<Room | null>(null)
   /** Live text per in-flight turn — several seats can stream at once. */
@@ -267,6 +270,15 @@ export function RoomPane({
               room.seats.length > 1
                 ? 'Say something and every seat answers independently. Start with @name to ask one of them; name a seat mid-sentence to show them what it said.'
                 : 'Say something. The seat reads this folder and answers; nothing here can change a file.'
+            }
+            action={
+              // An empty room is exactly where somebody looking for an earlier
+              // conversation ends up: the toolbar mints a fresh one, so this
+              // is the moment to offer the record instead of only burying it
+              // in the pane menu.
+              <button className="btn btn--sm" onClick={onReopen}>
+                Reopen an earlier room…
+              </button>
             }
             compact
           />

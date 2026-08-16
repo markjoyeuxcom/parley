@@ -521,6 +521,51 @@ describe('mounted-surface smoke', () => {
     expect(screen.getByText(/the decomposition still stands/)).toBeTruthy()
   })
 
+  it('offers the record from a room that already has one, and from an empty one', async () => {
+    // The path this closes: the toolbar mints a room immediately, so a room
+    // pane never exists WITHOUT one — and "Reopen a room…" was gated on an
+    // empty slot, which made it unreachable in the only situation anybody
+    // wants it, right after a reload.
+    const room = {
+      id: 'room-fresh',
+      cwd: '/tmp/smoke-repo',
+      seats: [
+        {
+          id: 'seat-1',
+          name: 'claude',
+          config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+          write: false,
+        },
+      ],
+      caps: { turns: 40, costUsd: 0 },
+      turnsSpent: 0,
+      status: 'idle' as const,
+      turns: [],
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
+      mock: true,
+      createdAt: 1_700_000_000_000,
+    }
+    const earlier = { ...room, id: 'room-earlier', cwd: '/tmp/older-repo' }
+    installBridge({
+      'room.open': () => room,
+      'room.get': () => room,
+      'room.list': () => [earlier],
+    })
+
+    render(
+      <StoreProvider>
+        <GridSurface />
+      </StoreProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Room' }))
+
+    // The empty room offers the record where somebody looking for it lands.
+    fireEvent.click(await screen.findByRole('button', { name: 'Reopen an earlier room…' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByText(/older-repo/)).toBeTruthy()
+  })
+
   it('a skill dropped on a room reaches its seat, not the pty', async () => {
     // The m2 regression: rooms became a pane kind that skills silently
     // rejected, with a message telling you to start something already running.
