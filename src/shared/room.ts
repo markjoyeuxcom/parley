@@ -1,4 +1,4 @@
-import type { AgentConfig, Id, Room, RoomSeat } from './domain'
+import type { AgentConfig, Id, Room, RoomSeat, RoomTurn } from './domain'
 
 export class AddressError extends Error {}
 
@@ -114,6 +114,140 @@ export function parseAddress(
   }
 
   return { seatIds, contextSeatIds, body: resolved }
+}
+
+/**
+ * What a message will do, before it is sent.
+ *
+ * Parley's addressing has semantics none of its neighbours have — a leading
+ * mention changes who answers, a mid-sentence one changes what they see, and
+ * the cost varies with how many seats end up speaking. All of it was
+ * invisible until after the send, which is the wrong side of a decision that
+ * spends money.
+ *
+ * Deliberately quiet while the message is still only an address: somebody
+ * typing `@rev` has not made a mistake yet, and an app that says "there is no
+ * seat called rev" after every keystroke is worse than one that says nothing.
+ * The refusal appears once there is something to send.
+ */
+export interface AudiencePreview {
+  /** Seat names that will answer, in order. */
+  speakers: string[]
+  /** Seat names whose last turn will be attached to the message. */
+  relaying: string[]
+  /** Agent turns this message spends — one per speaker. */
+  turns: number
+  /** Why it cannot be sent as typed, or null. */
+  error: string | null
+}
+
+export function previewAudience(text: string, seats: readonly RoomSeat[]): AudiencePreview | null {
+  const nothingYet: AudiencePreview = {
+    speakers: [],
+    relaying: [],
+    turns: 0,
+    error: null,
+  }
+  const trimmed = text.trim()
+  if (!trimmed) return null
+
+  // Quietness is decided BEFORE parsing, not from the error. A half-typed name
+  // fails as an unknown one — `@rev` and `@revewer` are the same throw — so
+  // catching it would put a refusal under every keystroke of a correct name.
+  if (trimmed.split(/\s+/).every((token) => token.startsWith('@'))) return nothingYet
+
+  try {
+    const { seatIds, contextSeatIds } = parseAddress(text, seats)
+    const name = (id: Id): string => seats.find((seat) => seat.id === id)?.name ?? id
+    return {
+      speakers: seatIds.map(name),
+      relaying: contextSeatIds.map(name),
+      turns: seatIds.length,
+      error: null,
+    }
+  } catch (err) {
+    return {
+      ...nothingYet,
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
+/**
+ * The seat name being typed at the caret, if one is.
+ *
+ * Addressing only pays for itself if it is discoverable, and a name that must
+ * be spelled exactly — a slug, possibly numbered — is not something to make
+ * somebody remember. This finds the `@token` the caret sits in so the composer
+ * can offer the matching seats.
+ *
+ * Position matters, not just the text: completing a mention halfway through a
+ * sentence is as useful as completing a leading one, since mid-sentence
+ * mentions are what relay a turn. But the caret must be INSIDE the token —
+ * having typed past a finished mention is not a request to complete it again.
+ */
+export function mentionAt(text: string, caret: number): { query: string; from: number } | null {
+  const before = text.slice(0, caret)
+  const at = before.lastIndexOf('@')
+  if (at < 0) return null
+  const query = before.slice(at + 1)
+  // A mention is one token: any whitespace ends it, and so does a character
+  // that cannot appear in a seat name — the caret is in prose by then.
+  if (!/^[a-z0-9-]*$/i.test(query)) return null
+  // "@" must start a token, or "user@host" would offer the room's seats.
+  if (at > 0 && !/\s/.test(text[at - 1] as string)) return null
+  return { query, from: at }
+}
+
+/** The seats a half-typed mention could mean, best match first. */
+export function matchSeats(query: string, seats: readonly RoomSeat[]): RoomSeat[] {
+  const q = query.toLowerCase()
+  return seats
+    .filter((seat) => seat.name.toLowerCase().includes(q))
+    .sort((a, b) => {
+      // A prefix match is what somebody typing means; a substring match is a
+      // rescue for a name they half-remember.
+      const rank = (name: string): number => (name.toLowerCase().startsWith(q) ? 0 : 1)
+      return rank(a.name) - rank(b.name) || a.name.localeCompare(b.name)
+    })
+}
+
+/**
+ * One line naming what a turn was, for an index of a long room.
+ *
+ * A room that ran to twenty-seven turns is a document, and a document with no
+ * table of contents is read by scrolling. This is the entry: enough of a turn
+ * to recognise it, taken from the turn itself rather than from anything
+ * generated — an index that cost a model call would be an index nobody could
+ * afford to keep accurate.
+ *
+ * Prose is preferred over structure. The first line of a reply is very often a
+ * heading or a fence, and "```ts" identifies nothing.
+ */
+export function turnOutline(turn: RoomTurn): string {
+  if (turn.error) return turn.error
+
+  let fenced = false
+  let fallback = ''
+  for (const raw of turn.text.split('\n')) {
+    const line = raw.trim()
+    if (line.startsWith('```')) {
+      fenced = !fenced
+      continue
+    }
+    if (!line) continue
+    // Whatever came first, in case the whole reply turns out to be code.
+    if (!fallback) fallback = line
+    if (fenced) continue
+    const plain = line
+      .replace(/^[#>\s]+/, '')
+      .replace(/^[-*+]\s+/, '')
+      .replace(/^\d+\.\s+/, '')
+      .replace(/[*_`]/g, '')
+      .trim()
+    if (plain) return plain
+  }
+  return fallback || 'no reply'
 }
 
 /**
@@ -233,7 +367,9 @@ export function renderRoomVerdict(
   const lines = [
     `# ${merged.decision}`,
     '',
-    question.trim() ? `**Question:** ${question.trim()}` : '**Question:** the matter under discussion',
+    question.trim()
+      ? `**Question:** ${question.trim()}`
+      : '**Question:** the matter under discussion',
     `**Room:** ${room.cwd}`,
     `**Seats:** ${room.seats.map((seat) => `@${seat.name}`).join(', ')}`,
     '',

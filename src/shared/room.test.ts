@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { emptyUsage } from './usage'
-import { parseAddress, roomTranscript, seatName, uniqueSeatName, AddressError } from './room'
+import {
+  matchSeats,
+  mentionAt,
+  parseAddress,
+  previewAudience,
+  roomTranscript,
+  turnOutline,
+  seatName,
+  uniqueSeatName,
+  AddressError,
+} from './room'
 
 /**
  * Who a message is for.
@@ -13,7 +23,12 @@ import { parseAddress, roomTranscript, seatName, uniqueSeatName, AddressError } 
 const seat = (id: string, name: string, over = {}) => ({
   id,
   name,
-  config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+  config: {
+    vendor: 'claude' as const,
+    model: '',
+    effort: 'high' as const,
+    persona: '',
+  },
   write: false,
   ...over,
 })
@@ -119,35 +134,146 @@ describe('addressing', () => {
   })
 })
 
+describe('audience preview', () => {
+  it('says who answers and what it spends', () => {
+    expect(previewAudience('what does this do?', seats)).toEqual({
+      speakers: ['claude', 'reviewer'],
+      relaying: [],
+      turns: 2,
+      error: null,
+    })
+    expect(previewAudience('@reviewer check that', seats)).toMatchObject({
+      speakers: ['reviewer'],
+      turns: 1,
+    })
+  })
+
+  it('names the seat whose turn will be attached', () => {
+    expect(previewAudience('@reviewer check what @claude said', seats)).toMatchObject({
+      speakers: ['reviewer'],
+      relaying: ['claude'],
+      turns: 1,
+    })
+  })
+
+  it('stays quiet while the message is still only an address', () => {
+    // Typing "@rev" is not a mistake yet, and an app that objects after every
+    // keystroke is worse than one that waits.
+    expect(previewAudience('@rev', seats)).toEqual({
+      speakers: [],
+      relaying: [],
+      turns: 0,
+      error: null,
+    })
+    expect(previewAudience('@reviewer', seats)?.error).toBeNull()
+    expect(previewAudience('   ', seats)).toBeNull()
+  })
+
+  it('surfaces the refusal once there is something to send', () => {
+    expect(previewAudience('@revewer go', seats)?.error).toMatch(/no seat called/)
+    expect(previewAudience('@revewer go', seats)?.turns).toBe(0)
+  })
+})
+
+describe('mention completion', () => {
+  it('finds the mention the caret is inside', () => {
+    expect(mentionAt('@rev', 4)).toEqual({ query: 'rev', from: 0 })
+    expect(mentionAt('@', 1)).toEqual({ query: '', from: 0 })
+  })
+
+  it('completes a mention mid-sentence, since those relay a turn', () => {
+    expect(mentionAt('@reviewer check what @cla said', 25)).toEqual({
+      query: 'cla',
+      from: 21,
+    })
+  })
+
+  it('stops offering once the caret leaves the token', () => {
+    // Having typed past a finished mention is not a request to complete it.
+    expect(mentionAt('@reviewer go', 12)).toBeNull()
+    expect(mentionAt('@reviewer ', 10)).toBeNull()
+  })
+
+  it('ignores an @ that is not starting a token', () => {
+    // Otherwise "mark@example.com" opens a list of seats.
+    expect(mentionAt('mail me at mark@example', 23)).toBeNull()
+  })
+
+  it('offers prefix matches before substring ones', () => {
+    const pool = [seat('s1', 'code-reviewer'), seat('s2', 'reviewer')]
+    expect(matchSeats('rev', pool).map((s) => s.name)).toEqual(['reviewer', 'code-reviewer'])
+    expect(matchSeats('', pool)).toHaveLength(2)
+    expect(matchSeats('zzz', pool)).toHaveLength(0)
+  })
+})
+
 describe('transcript', () => {
   const room = {
     id: 'room-1',
     cwd: '/Users/me/Personal/prax',
     seats: [
       seat('s1', 'auditor', {
-        config: { vendor: 'claude' as const, model: 'opus', effort: 'high' as const, persona: '', profile: 'Auditor' },
+        config: {
+          vendor: 'claude' as const,
+          model: 'opus',
+          effort: 'high' as const,
+          persona: '',
+          profile: 'Auditor',
+        },
       }),
       seat('s2', 'sceptic'),
     ],
     caps: { turns: 40, costUsd: 0 },
     turnsSpent: 2,
     status: 'idle' as const,
-    usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, reasoningTokens: 0, costUsd: 10.47 },
+    usage: {
+      inputTokens: 10,
+      cachedInputTokens: 0,
+      outputTokens: 5,
+      reasoningTokens: 0,
+      costUsd: 10.47,
+    },
     mock: false,
     createdAt: 1_700_000_000_000,
     turns: [
       {
-        id: 't1', roomId: 'room-1', author: 'human' as const, seat: '', vendor: null, profile: '',
-        text: 'Is the decomposition right?', usage: emptyUsage(), startedAt: 1, endedAt: 1, error: null,
+        id: 't1',
+        roomId: 'room-1',
+        author: 'human' as const,
+        seat: '',
+        vendor: null,
+        profile: '',
+        text: 'Is the decomposition right?',
+        usage: emptyUsage(),
+        startedAt: 1,
+        endedAt: 1,
+        error: null,
       },
       {
-        id: 't2', roomId: 'room-1', author: 'agent' as const, seat: 'auditor', vendor: 'claude' as const,
-        profile: 'Auditor', text: '## Verdict\nMeasurement-first.', usage: emptyUsage(),
-        startedAt: 2, endedAt: 3, error: null,
+        id: 't2',
+        roomId: 'room-1',
+        author: 'agent' as const,
+        seat: 'auditor',
+        vendor: 'claude' as const,
+        profile: 'Auditor',
+        text: '## Verdict\nMeasurement-first.',
+        usage: emptyUsage(),
+        startedAt: 2,
+        endedAt: 3,
+        error: null,
       },
       {
-        id: 't3', roomId: 'room-1', author: 'agent' as const, seat: 'sceptic', vendor: 'claude' as const,
-        profile: '', text: '', usage: emptyUsage(), startedAt: 4, endedAt: 5, error: 'the CLI exited 1',
+        id: 't3',
+        roomId: 'room-1',
+        author: 'agent' as const,
+        seat: 'sceptic',
+        vendor: 'claude' as const,
+        profile: '',
+        text: '',
+        usage: emptyUsage(),
+        startedAt: 4,
+        endedAt: 5,
+        error: 'the CLI exited 1',
       },
     ],
   }
@@ -185,15 +311,65 @@ describe('transcript', () => {
   })
 })
 
-describe('seat naming', () => {
-  it('slugs a profile name, because an address cannot contain a space', () => {
-    expect(seatName({ vendor: 'claude', model: '', effort: 'high', persona: '', profile: 'Fast reviewer' })).toBe(
-      'fast-reviewer',
+describe('turn outline', () => {
+  const turn = (over: Record<string, unknown>) => ({
+    id: 't',
+    roomId: 'r',
+    author: 'agent' as const,
+    seat: 'claude',
+    vendor: 'claude' as const,
+    profile: '',
+    text: '',
+    usage: emptyUsage(),
+    startedAt: 1,
+    endedAt: 2,
+    error: null,
+    ...over,
+  })
+
+  it('takes the first line of prose, not the markup around it', () => {
+    expect(turnOutline(turn({ text: '## Verdict\n\nMeasurement first.' }))).toBe('Verdict')
+    expect(turnOutline(turn({ text: '- **the gate** is unsound' }))).toBe('the gate is unsound')
+  })
+
+  it('looks past a code fence, since "```ts" identifies nothing', () => {
+    expect(turnOutline(turn({ text: '```ts\nconst x = 1\n```\n\nThat is the bug.' }))).toBe(
+      'That is the bug.',
     )
   })
 
+  it('falls back to the first line when the whole reply is code', () => {
+    expect(turnOutline(turn({ text: '```ts\nconst x = 1\n```' }))).toBe('const x = 1')
+  })
+
+  it('shows the failure for a turn that failed, and says so for an empty one', () => {
+    expect(turnOutline(turn({ text: '', error: 'the CLI exited 1' }))).toBe('the CLI exited 1')
+    expect(turnOutline(turn({ text: '   ' }))).toBe('no reply')
+  })
+})
+
+describe('seat naming', () => {
+  it('slugs a profile name, because an address cannot contain a space', () => {
+    expect(
+      seatName({
+        vendor: 'claude',
+        model: '',
+        effort: 'high',
+        persona: '',
+        profile: 'Fast reviewer',
+      }),
+    ).toBe('fast-reviewer')
+  })
+
   it('falls back to the vendor when there is no profile', () => {
-    expect(seatName({ vendor: 'codex', model: 'gpt-5.6-sol', effort: 'high', persona: '' })).toBe('codex')
+    expect(
+      seatName({
+        vendor: 'codex',
+        model: 'gpt-5.6-sol',
+        effort: 'high',
+        persona: '',
+      }),
+    ).toBe('codex')
   })
 
   it('numbers a name that is already taken', () => {

@@ -409,6 +409,84 @@
   min-width: 0;
 }
 
+/* Holds the transcript and the jump button that floats over it. */
+.room__body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/*
+ * Back to the tail. Only while the reader is away from it — a button that is
+ * always there is a button nobody reads.
+ */
+.room__jump {
+  position: absolute;
+  right: var(--s4);
+  bottom: var(--s3);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-float);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+
+.room__jump:hover {
+  color: var(--text-primary);
+}
+
+/* A folded turn, standing in for what it said. */
+.room__fold {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: var(--text-tiny);
+  cursor: pointer;
+}
+
+.room__fold:hover {
+  color: var(--text-secondary);
+}
+
+.room__gist {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: var(--text-small);
+  font-style: italic;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+/* The index: who said it, then enough of it to recognise. */
+.room__index-who {
+  font-family: var(--font-mono);
+  font-size: var(--text-tiny);
+  color: var(--text-secondary);
+  margin-right: var(--s2);
+}
+
+.room__index-gist {
+  color: var(--text-primary);
+}
+
 .room__transcript {
   flex: 1;
   min-height: 0;
@@ -562,7 +640,33 @@
   white-space: pre-wrap;
 }
 
+/*
+ * The audience line. Sits directly above the composer and reads as part of
+ * it — a caption on the box, not a status bar of its own.
+ */
+.room__audience {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  padding: var(--s2) var(--s3) 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  border-top: 1px solid var(--line-faint);
+  flex-shrink: 0;
+}
+
+.room__audience--bad {
+  color: var(--fail);
+}
+
+/* The composer's own border would double the audience line's. */
+.room__audience + .room__composer {
+  border-top: 0;
+}
+
 .room__composer {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: var(--s2);
@@ -576,6 +680,49 @@
   resize: none;
   font-family: inherit;
   line-height: 1.45;
+}
+
+/*
+ * The seat completion list. Opens upward: the composer sits at the bottom of
+ * the pane, and a list below it would be off the pane entirely.
+ */
+.room__complete {
+  position: absolute;
+  bottom: calc(100% - var(--s2));
+  left: var(--s3);
+  z-index: 20;
+  min-width: 220px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: var(--s1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-float);
+}
+
+.room__complete-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-small);
+  text-align: left;
+  cursor: pointer;
+}
+
+.room__complete-item.is-picked {
+  background: var(--bg-selected);
+}
+
+.room__complete-name {
+  font-family: var(--font-mono);
 }
 
 /* Skills rail: drag one onto a pane to run it there. */

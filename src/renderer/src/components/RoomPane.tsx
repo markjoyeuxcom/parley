@@ -1,11 +1,18 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Gavel, Pencil, Plus, Send, Square, X } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { ArrowDown, Gavel, List, Pencil, Plus, Send, Square, X } from 'lucide-react'
 import type { AgentProfile, Id, Room, RoomSeat, RoomTurn, RoomVerdict } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
 import { api } from '../lib/api'
 import { formatDuration } from '../lib/format'
+import {
+  matchSeats,
+  mentionAt,
+  previewAudience,
+  turnOutline,
+  type AudiencePreview,
+} from '@shared/room'
 import { parseMarkdown, type TextSpan } from '../lib/markdown'
-import { Dialog, Empty, Field } from './ui'
+import { Dialog, Empty, Field, Menu, MenuItem, MenuSection } from './ui'
 
 /**
  * A room, in a grid slot.
@@ -39,6 +46,29 @@ export function RoomPane({
   /** Live text per in-flight turn — several seats can stream at once. */
   const [streaming, setStreaming] = useState<Record<Id, string>>({})
   const [draft, setDraft] = useState('')
+  /**
+   * Where the caret is, and which completion is highlighted.
+   *
+   * The caret is state rather than something read on demand because the
+   * completion list depends on it: `@rev` offers seats, and the same text with
+   * the caret past the space does not.
+   */
+  const [caret, setCaret] = useState(0)
+  const [pick, setPick] = useState(0)
+  /** Escape closes the list without closing the mention. Typing reopens it. */
+  const [dismissed, setDismissed] = useState(false)
+  /**
+   * Turns folded down to their one-line summary.
+   *
+   * Held here rather than inside each turn so the index can fold the whole
+   * room at once — folding twenty turns one at a time is not navigation. A
+   * view state and nothing else: what was said is untouched, and a reload
+   * comes back fully expanded, because a transcript that remembered what it
+   * had been hiding would be a transcript that edits itself.
+   */
+  const [folded, setFolded] = useState<ReadonlySet<Id>>(new Set())
+  /** False once the reader has scrolled away from the tail. */
+  const [atBottom, setAtBottom] = useState(true)
   const [profiles, setProfiles] = useState<AgentProfile[]>([])
   /**
    * What each seat did on its way to an answer, per turn and in order.
@@ -57,6 +87,11 @@ export function RoomPane({
   const [verdicts, setVerdicts] = useState<RoomVerdict[]>([])
   const [converging, setConverging] = useState<string | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
+  const input = useRef<HTMLTextAreaElement>(null)
+  /** Every turn's element, so the index can scroll to one. */
+  const anchors = useRef(new Map<Id, HTMLDivElement>())
+  /** Where to put the caret once a completion has re-rendered the box. */
+  const pendingCaret = useRef<number | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -104,7 +139,11 @@ export function RoomPane({
         if (event.type === 'room.turn.started') {
           setRoom((current) =>
             current
-              ? { ...current, status: 'thinking', turns: [...current.turns, event.turn] }
+              ? {
+                  ...current,
+                  status: 'thinking',
+                  turns: [...current.turns, event.turn],
+                }
               : current,
           )
           setStreaming((current) => ({ ...current, [event.turn.id]: '' }))
@@ -116,7 +155,10 @@ export function RoomPane({
         } else if (event.type === 'room.turn.delta') {
           setStreaming((current) =>
             event.turnId in current
-              ? { ...current, [event.turnId]: (current[event.turnId] ?? '') + event.text }
+              ? {
+                  ...current,
+                  [event.turnId]: (current[event.turnId] ?? '') + event.text,
+                }
               : current,
           )
           onOutput()
@@ -190,6 +232,17 @@ export function RoomPane({
     if (!sent) setDraft(text)
   }
 
+  // A completion rewrites the box, and a controlled textarea puts the caret at
+  // the end of whatever it is given — which would strand it after a mention
+  // completed mid-sentence. Restored after the render that changed the value.
+  useLayoutEffect(() => {
+    const at = pendingCaret.current
+    if (at === null) return
+    pendingCaret.current = null
+    input.current?.focus()
+    input.current?.setSelectionRange(at, at)
+  }, [draft])
+
   const turns = useMemo(() => room?.turns ?? [], [room])
 
   if (!room) {
@@ -198,6 +251,29 @@ export function RoomPane({
         <Empty title="Room not started" compact />
       </div>
     )
+  }
+
+  const mention = mentionAt(draft, caret)
+  const completing: RoomSeat[] =
+    dismissed || !mention || room.status === 'exhausted'
+      ? []
+      : matchSeats(mention.query, room.seats)
+
+  /** Replace the half-typed mention with a real seat name, then keep typing. */
+  const complete = (name: string): void => {
+    if (!mention) return
+    const at = mention.from + name.length + 2
+    setDraft(`${draft.slice(0, mention.from)}@${name} ${draft.slice(caret)}`)
+    setCaret(at)
+    pendingCaret.current = at
+  }
+
+  const jumpTo = (id: Id): void => {
+    anchors.current.get(id)?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
+  }
+  const jumpToLatest = (): void => {
+    const el = scroller.current
+    if (el) el.scrollTop = el.scrollHeight
   }
 
   const busy = room.status === 'thinking'
@@ -215,7 +291,11 @@ export function RoomPane({
             activity={latestFor(turns, activity, seat.name)}
             removable={room.seats.length > 1 && !busy}
             editable={!busy}
-            onRemove={() => void act(api.removeRoomSeat(roomId, seat.id)).then((r) => r && setRoom({ ...r, turns: room.turns }))}
+            onRemove={() =>
+              void act(api.removeRoomSeat(roomId, seat.id)).then(
+                (r) => r && setRoom({ ...r, turns: room.turns }),
+              )
+            }
             onToggleWrite={() =>
               void act(api.setRoomSeatWrite(roomId, seat.id, !seat.write)).then(
                 (r) => r && setRoom({ ...r, turns: room.turns }),
@@ -267,6 +347,50 @@ export function RoomPane({
         ) : null}
 
         <span className="spacer" />
+        {turns.length > 2 ? (
+          <Menu
+            label={
+              <>
+                <List size={12} strokeWidth={2} />
+                {turns.length}
+              </>
+            }
+            title="Jump to a turn"
+          >
+            {(close) => (
+              <>
+                <MenuSection>
+                  <MenuItem
+                    onClick={() => {
+                      setFolded(
+                        folded.size === turns.length ? new Set() : new Set(turns.map((t) => t.id)),
+                      )
+                      close()
+                    }}
+                  >
+                    {folded.size === turns.length ? 'Expand every turn' : 'Collapse every turn'}
+                  </MenuItem>
+                </MenuSection>
+                <MenuSection>
+                  {turns.map((turn) => (
+                    <MenuItem
+                      key={turn.id}
+                      onClick={() => {
+                        jumpTo(turn.id)
+                        close()
+                      }}
+                    >
+                      <span className="room__index-who">
+                        {turn.author === 'human' ? 'You' : `@${turn.seat}`}
+                      </span>
+                      <span className="room__index-gist">{gist(turn)}</span>
+                    </MenuItem>
+                  ))}
+                </MenuSection>
+              </>
+            )}
+          </Menu>
+        ) : null}
         <Spend room={room} />
         <WriteState seats={room.seats} />
       </div>
@@ -277,42 +401,99 @@ export function RoomPane({
         </div>
       ) : null}
 
-      <div className="room__transcript" ref={scroller}>
-        {turns.length === 0 ? (
-          <Empty
-            title={`${room.seats.map((s) => `@${s.name}`).join(', ')} seated`}
-            body={
-              room.seats.length > 1
-                ? 'Say something and every seat answers independently. Start with @name to ask one of them; name a seat mid-sentence to show them what it said.'
-                : 'Say something. The seat reads this folder and answers; nothing here can change a file.'
-            }
-            action={
-              // An empty room is exactly where somebody looking for an earlier
-              // conversation ends up: the toolbar mints a fresh one, so this
-              // is the moment to offer the record instead of only burying it
-              // in the pane menu.
-              <button className="btn btn--sm" onClick={onReopen}>
-                Reopen an earlier room…
-              </button>
-            }
-            compact
-          />
+      <div className="room__body">
+        <div
+          className="room__transcript"
+          ref={scroller}
+          onScroll={(event) => {
+            const el = event.currentTarget
+            setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 120)
+          }}
+        >
+          {turns.length === 0 ? (
+            <Empty
+              title={`${room.seats.map((s) => `@${s.name}`).join(', ')} seated`}
+              body={
+                room.seats.length > 1
+                  ? 'Say something and every seat answers independently. Start with @name to ask one of them; name a seat mid-sentence to show them what it said.'
+                  : 'Say something. The seat reads this folder and answers; nothing here can change a file.'
+              }
+              action={
+                // An empty room is exactly where somebody looking for an earlier
+                // conversation ends up: the toolbar mints a fresh one, so this
+                // is the moment to offer the record instead of only burying it
+                // in the pane menu.
+                <button className="btn btn--sm" onClick={onReopen}>
+                  Reopen an earlier room…
+                </button>
+              }
+              compact
+            />
+          ) : null}
+          {turns.map((turn) => (
+            <RoomTurnView
+              key={turn.id}
+              turn={turn}
+              live={turn.id in streaming ? (streaming[turn.id] ?? '') : null}
+              actions={activity[turn.id] ?? []}
+              now={now}
+              folded={folded.has(turn.id)}
+              onFold={() =>
+                setFolded((was) => {
+                  const next = new Set(was)
+                  if (!next.delete(turn.id)) next.add(turn.id)
+                  return next
+                })
+              }
+              anchor={(el) => {
+                if (el) anchors.current.set(turn.id, el)
+                else anchors.current.delete(turn.id)
+              }}
+            />
+          ))}
+        </div>
+
+        {!atBottom && turns.length > 0 ? (
+          <button className="room__jump" onClick={jumpToLatest}>
+            <ArrowDown size={12} strokeWidth={2} />
+            Latest
+          </button>
         ) : null}
-        {turns.map((turn) => (
-          <RoomTurnView
-            key={turn.id}
-            turn={turn}
-            live={turn.id in streaming ? (streaming[turn.id] ?? '') : null}
-            actions={activity[turn.id] ?? []}
-            now={now}
-          />
-        ))}
       </div>
 
       {verdicts.length > 0 ? <VerdictStrip verdicts={verdicts} /> : null}
 
+      <AudienceLine
+        preview={previewAudience(draft, room.seats) ?? everyone(room)}
+        remaining={room.caps.turns - room.turnsSpent}
+      />
+
       <div className="room__composer">
+        {completing.length > 0 ? (
+          <div className="room__complete" role="listbox" aria-label="Seats">
+            {completing.map((seat, index) => (
+              <button
+                key={seat.id}
+                role="option"
+                aria-selected={index === pick}
+                className={`room__complete-item ${index === pick ? 'is-picked' : ''}`}
+                // Mouse-down, not click: the textarea must not lose focus, or
+                // the caret we are about to set has nowhere to go.
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  complete(seat.name)
+                }}
+                onMouseEnter={() => setPick(index)}
+              >
+                <span className="room__complete-name">@{seat.name}</span>
+                <span className="dim">{seat.config.profile || seat.config.vendor}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         <textarea
+          ref={input}
+          onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
           className="input room__input"
           rows={2}
           placeholder={
@@ -321,14 +502,40 @@ export function RoomPane({
               : room.status === 'exhausted'
                 ? 'Budget spent — raise it to continue.'
                 : room.seats.length > 1
-                  ? 'Everyone answers. @name asks one; naming a seat mid-sentence shows them its last turn.'
+                  ? '@name asks one seat; naming a seat mid-sentence shows them its last turn.'
                   : 'Say something…'
           }
           value={draft}
           disabled={room.status === 'exhausted'}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value)
+            setCaret(event.target.selectionStart)
+            setPick(0)
+            setDismissed(false)
+          }}
           onFocus={onFocus}
           onKeyDown={(event) => {
+            // While the seat list is open it owns the keys a list owns —
+            // otherwise ⏎ would send a message ending in a half-typed name,
+            // which is the exact mistake the list exists to prevent.
+            if (completing.length > 0) {
+              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault()
+                const step = event.key === 'ArrowDown' ? 1 : completing.length - 1
+                setPick((at) => (at + step) % completing.length)
+                return
+              }
+              if (event.key === 'Enter' || event.key === 'Tab') {
+                event.preventDefault()
+                complete((completing[pick] as RoomSeat).name)
+                return
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault()
+                setDismissed(true)
+                return
+              }
+            }
             // ⏎ sends, ⇧⏎ makes a paragraph. The inverse of a code editor and
             // the right way round for a conversation.
             if (event.key === 'Enter' && !event.shiftKey) {
@@ -412,6 +619,90 @@ export function RoomPane({
   )
 }
 
+/**
+ * A turn's index entry, cut to one line.
+ *
+ * An index is for scanning, and an entry that wraps to three lines is a
+ * paragraph. The cut is here rather than in CSS because a clamped box and an
+ * inline label do not compose, and a fixed length is easier to trust.
+ */
+function gist(turn: RoomTurn): string {
+  const line = turnOutline(turn)
+  return line.length > 80 ? `${line.slice(0, 79).trimEnd()}…` : line
+}
+
+/** What an unaddressed message does — the resting reading, before anything is typed. */
+function everyone(room: Room): AudiencePreview {
+  return {
+    speakers: room.seats.map((seat) => seat.name),
+    relaying: [],
+    turns: room.seats.length,
+    error: null,
+  }
+}
+
+/**
+ * Who will hear this, and what it will cost — before ⏎, not after.
+ *
+ * Addressing is the one part of a room with semantics nothing else has: a
+ * leading mention changes who answers, a mid-sentence one changes what they
+ * see, and an unaddressed line spends a turn per seat. All of that used to be
+ * legible only in the placeholder and provable only by sending, which put the
+ * explanation on the wrong side of the spend.
+ *
+ * Always rendered, including with an empty box, for two reasons. The line
+ * appearing on the first keystroke moved the composer under the cursor. And
+ * the resting state is worth stating on its own: a room whose seats you have
+ * not looked at in an hour still answers as a room, and this says so.
+ */
+function AudienceLine({
+  preview,
+  remaining,
+}: {
+  preview: AudiencePreview
+  remaining: number
+}): ReactNode {
+  if (preview.error) {
+    return (
+      <div className="room__audience room__audience--bad" role="status">
+        {preview.error}
+      </div>
+    )
+  }
+
+  // Mid-address: the name may yet be finished, so this says nothing about cost.
+  if (preview.speakers.length === 0) {
+    return (
+      <div className="room__audience" role="status">
+        Choosing who answers…
+      </div>
+    )
+  }
+
+  const who =
+    preview.turns > 1 && preview.speakers.length > 1
+      ? `Everyone · ${preview.speakers.length} independent seats`
+      : preview.speakers.map((name) => `@${name}`).join(' ')
+  const over = preview.turns > remaining
+
+  return (
+    <div className="room__audience" role="status">
+      <span>{who}</span>
+      <span className={over ? 'room__audience--bad' : 'dim'}>
+        {over
+          ? `needs ${preview.turns} turn${preview.turns === 1 ? '' : 's'}, ${remaining} left`
+          : `spends ${preview.turns} turn${preview.turns === 1 ? '' : 's'}`}
+      </span>
+      {preview.relaying.length > 0 ? (
+        <span className="dim">
+          sees {preview.relaying.map((name) => `@${name}`).join(', ')}
+          {preview.relaying.length === 1 ? "'s last turn" : "'s last turns"}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
 function SeatChip({
   seat,
   activity,
@@ -449,11 +740,7 @@ function SeatChip({
         </button>
       ) : null}
       {removable ? (
-        <button
-          className="room__chip-x"
-          aria-label={`Remove @${seat.name}`}
-          onClick={onRemove}
-        >
+        <button className="room__chip-x" aria-label={`Remove @${seat.name}`} onClick={onRemove}>
           <X size={10} strokeWidth={2.5} />
         </button>
       ) : null}
@@ -527,12 +814,18 @@ function RoomTurnView({
   live,
   actions,
   now,
+  folded,
+  onFold,
+  anchor,
 }: {
   turn: RoomTurn
   live: string | null
   actions: readonly string[]
   /** Ticks only while something is in flight; unused once a turn has ended. */
   now: number
+  folded: boolean
+  onFold: () => void
+  anchor: (el: HTMLDivElement | null) => void
 }): ReactNode {
   const [openActions, setOpenActions] = useState(false)
   // While streaming, the live text IS the turn: the row's own text is empty
@@ -543,20 +836,29 @@ function RoomTurnView({
   // Live while it runs, from the record once it has finished — so a duration
   // survives a reload even though the actions behind it do not.
   const elapsed = running ? now - turn.startedAt : (turn.endedAt ?? 0) - turn.startedAt
+  // Nothing in flight is ever folded: a turn still arriving is the one thing
+  // in the room worth watching.
+  const foldable = !running && body.length > 800
 
   return (
-    <div className={`room__turn room__turn--${turn.author}`}>
+    <div className={`room__turn room__turn--${turn.author}`} ref={anchor}>
       <div className="room__author">
         {turn.author === 'human' ? 'You' : `@${turn.seat}`}
         {turn.author === 'agent' && elapsed > 0 ? (
           <span className="room__elapsed">{formatDuration(elapsed)}</span>
+        ) : null}
+        {foldable ? (
+          <button className="room__fold" onClick={onFold} aria-expanded={!folded}>
+            {folded ? 'Expand' : 'Collapse'}
+          </button>
         ) : null}
       </div>
 
       {actions.length > 0 ? (
         <div className="room__actions">
           <button className="room__actions-head" onClick={() => setOpenActions((v) => !v)}>
-            {openActions ? '▾' : '▸'} {actions.length} action{actions.length === 1 ? '' : 's'}
+            {openActions ? '▾' : '▸'} {actions.length} action
+            {actions.length === 1 ? '' : 's'}
             {openActions ? '' : ` · ${actions[actions.length - 1] ?? ''}`}
           </button>
           {openActions ? (
@@ -569,7 +871,11 @@ function RoomTurnView({
         </div>
       ) : null}
 
-      {turn.error ? (
+      {foldable && folded ? (
+        <button className="room__gist" onClick={onFold} title="Expand">
+          {turnOutline(turn)}
+        </button>
+      ) : turn.error ? (
         <div className="room__error" role="alert">
           {turn.error}
         </div>
@@ -774,9 +1080,7 @@ function VerdictStrip({ verdicts }: { verdicts: readonly RoomVerdict[] }): React
         <span className="spacer" />
         <span className="room__verdict-meta">
           confidence {latest.confidence.toFixed(2)}
-          {latest.singleSource
-            ? ' · one seat only'
-            : ` · agreement ${latest.agreement.toFixed(2)}`}
+          {latest.singleSource ? ' · one seat only' : ` · agreement ${latest.agreement.toFixed(2)}`}
           {verdicts.length > 1 ? ` · ${verdicts.length} verdicts` : ''}
         </span>
       </button>

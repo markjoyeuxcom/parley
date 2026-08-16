@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { Pane, Usage } from '@shared/domain'
 import type { AppEvent } from '@shared/events'
@@ -32,8 +32,18 @@ const usage: Usage = {
   costUsd: 0,
 }
 
-const claude = { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' }
-const codex = { vendor: 'codex' as const, model: '', effort: 'high' as const, persona: '' }
+const claude = {
+  vendor: 'claude' as const,
+  model: '',
+  effort: 'high' as const,
+  persona: '',
+}
+const codex = {
+  vendor: 'codex' as const,
+  model: '',
+  effort: 'high' as const,
+  persona: '',
+}
 
 let appEventListener: ((event: AppEvent) => void) | null = null
 
@@ -72,7 +82,13 @@ function installBridge(
         turnsSpent: 0,
         status: 'idle',
         turns: [],
-        usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
+        usage: {
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+          costUsd: 0,
+        },
         mock: true,
         createdAt: 1_700_000_000_000,
       },
@@ -110,7 +126,9 @@ async function assertLedgerGateActionsDisabled(invoked: CommandName[]): Promise<
   const buttons = [
     screen.getByRole('button', { name: 'Approve and run' }),
     await screen.findByRole('button', { name: 'Resume from where it stopped' }),
-    await screen.findByRole('button', { name: 'Adopt & verify the existing work' }),
+    await screen.findByRole('button', {
+      name: 'Adopt & verify the existing work',
+    }),
   ]
 
   for (const button of buttons) {
@@ -124,9 +142,27 @@ describe('mounted-surface smoke', () => {
   it('a missing agy gets the neutral dot while a missing required CLI stays red', async () => {
     installBridge({
       'health.probe': () => [
-        { vendor: 'claude', present: true, version: '2.1.0', authenticated: true, detail: 'Signed in.' },
-        { vendor: 'codex', present: false, version: '', authenticated: false, detail: 'codex was not found on PATH.' },
-        { vendor: 'agy', present: false, version: '', authenticated: false, detail: 'agy was not found on PATH.' },
+        {
+          vendor: 'claude',
+          present: true,
+          version: '2.1.0',
+          authenticated: true,
+          detail: 'Signed in.',
+        },
+        {
+          vendor: 'codex',
+          present: false,
+          version: '',
+          authenticated: false,
+          detail: 'codex was not found on PATH.',
+        },
+        {
+          vendor: 'agy',
+          present: false,
+          version: '',
+          authenticated: false,
+          detail: 'agy was not found on PATH.',
+        },
       ],
     })
     render(
@@ -158,7 +194,12 @@ describe('mounted-surface smoke', () => {
         {
           id: 'seat-1',
           name: 'claude',
-          config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+          config: {
+            vendor: 'claude' as const,
+            model: '',
+            effort: 'high' as const,
+            persona: '',
+          },
           write: false,
         },
       ],
@@ -166,7 +207,13 @@ describe('mounted-surface smoke', () => {
       turnsSpent: 0,
       status: 'idle' as const,
       turns: [],
-      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        costUsd: 0,
+      },
       mock: true,
       createdAt: 1_700_000_000_000,
     }
@@ -186,7 +233,13 @@ describe('mounted-surface smoke', () => {
           question: 'was the gate sound?',
           decision: 'the gate is unsound',
           rationale: 'the statistic is bimodal',
-          scores: { correctness: 5, robustness: 5, clarity: 5, maintainability: 5, risk: 5 },
+          scores: {
+            correctness: 5,
+            robustness: 5,
+            clarity: 5,
+            maintainability: 5,
+            risk: 5,
+          },
           confidence: 0.4,
           agreement: 0.5,
           singleSource: false,
@@ -217,7 +270,9 @@ describe('mounted-surface smoke', () => {
     expect((invoked[0]?.payload as { cwd: string }).cwd).toBe('/tmp/smoke-repo')
 
     const composer = await screen.findByPlaceholderText('Say something…')
-    fireEvent.change(composer, { target: { value: 'what does this repo do?' } })
+    fireEvent.change(composer, {
+      target: { value: 'what does this repo do?' },
+    })
     fireEvent.keyDown(composer, { key: 'Enter' })
 
     await waitFor(() => expect(invoked.some((i) => i.name === 'room.send')).toBe(true))
@@ -278,7 +333,9 @@ describe('mounted-surface smoke', () => {
     })
     // Collapsed, the header names the count and the most recent action.
     expect(
-      await screen.findByRole('button', { name: /1 action · Read src\/index\.ts/ }),
+      await screen.findByRole('button', {
+        name: /1 action · Read src\/index\.ts/,
+      }),
     ).toBeTruthy()
 
     // A second action accumulates rather than replacing the first — a room
@@ -301,7 +358,12 @@ describe('mounted-surface smoke', () => {
     expect(actions.getByText('Grep renderApp')).toBeTruthy()
 
     act(() => {
-      appEventListener?.({ type: 'room.turn.delta', roomId: 'room-1', turnId: 'turn-2', text: 'It ' })
+      appEventListener?.({
+        type: 'room.turn.delta',
+        roomId: 'room-1',
+        turnId: 'turn-2',
+        text: 'It ',
+      })
       appEventListener?.({
         type: 'room.turn.delta',
         roomId: 'room-1',
@@ -315,7 +377,11 @@ describe('mounted-surface smoke', () => {
       appEventListener?.({
         type: 'room.turn.ended',
         roomId: 'room-1',
-        turn: { ...turn, text: 'It governs agents.', endedAt: 1_700_000_000_002 },
+        turn: {
+          ...turn,
+          text: 'It governs agents.',
+          endedAt: 1_700_000_000_002,
+        },
       })
     })
     // Idle arrives with room.changed, not with a turn ending: with several
@@ -353,7 +419,13 @@ describe('mounted-surface smoke', () => {
           seat: 'claude',
           vendor: 'claude',
           profile: '',
-          text: ['My verdict.', '', '```json', ...Array.from({ length: 20 }, (_, i) => `  "line${i}": 1,`), '```'].join('\n'),
+          text: [
+            'My verdict.',
+            '',
+            '```json',
+            ...Array.from({ length: 20 }, (_, i) => `  "line${i}": 1,`),
+            '```',
+          ].join('\n'),
           usage: room.usage,
           startedAt: 1_700_000_000_003,
           endedAt: 1_700_000_000_004,
@@ -369,6 +441,192 @@ describe('mounted-surface smoke', () => {
     expect(screen.getByText(/"line19"/)).toBeTruthy()
   })
 
+  it('says who will answer before ⏎, and completes a half-typed seat name', async () => {
+    // Addressing is the one part of a room with semantics nothing else has,
+    // and until now it was legible only in a placeholder and provable only by
+    // spending. Both halves of the fix are here: the reading of what is in the
+    // box, and the list that makes a name typable without remembering it.
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    const room = {
+      id: 'room-1',
+      cwd: '/tmp/smoke-repo',
+      seats: [
+        { id: 'seat-1', name: 'claude', config: claude, write: false },
+        { id: 'seat-2', name: 'code-reviewer', config: codex, write: false },
+      ],
+      caps: { turns: 3, costUsd: 0 },
+      turnsSpent: 0,
+      status: 'idle' as const,
+      turns: [],
+      usage,
+      mock: true,
+      createdAt: 1_700_000_000_000,
+    }
+    installBridge({
+      'room.open': () => room,
+      'room.get': () => room,
+      'room.send': (payload) => {
+        invoked.push({ name: 'room.send', payload })
+        return { ok: true }
+      },
+    })
+
+    render(
+      <StoreProvider>
+        <GridSurface />
+      </StoreProvider>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Room' }))
+
+    // At rest, with an empty box: what an unaddressed message would do.
+    const composer = await screen.findByRole('textbox', { name: '' })
+    const audience = (): string => screen.getByRole('status').textContent ?? ''
+    await waitFor(() => expect(audience()).toContain('2 independent seats'))
+    expect(audience()).toContain('spends 2 turns')
+
+    // Addressing one seat is one turn, and the reading follows the keystroke.
+    fireEvent.change(composer, {
+      target: { value: '@code-reviewer check that' },
+    })
+    await waitFor(() => expect(audience()).toContain('@code-reviewer'))
+    expect(audience()).toContain('spends 1 turn')
+    expect(audience()).not.toContain('2 independent seats')
+
+    // A mid-sentence mention relays a turn rather than spending one.
+    fireEvent.change(composer, {
+      target: { value: '@code-reviewer check what @claude said' },
+    })
+    await waitFor(() => expect(audience()).toContain("@claude's last turn"))
+    expect(audience()).toContain('spends 1 turn')
+
+    // A name that matches nothing is refused HERE, before the send.
+    fireEvent.change(composer, { target: { value: '@revewer go' } })
+    await waitFor(() => expect(audience()).toContain('no seat called'))
+
+    // Completion: type an @ and a fragment, arrow to the right seat, ⏎ takes
+    // it instead of sending — the mistake the list exists to prevent.
+    fireEvent.change(composer, {
+      target: { value: '@rev', selectionStart: 4 },
+    })
+    const options = await screen.findAllByRole('option')
+    expect(options.map((o) => o.textContent)).toEqual(['@code-reviewercodex'])
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    expect(invoked).toEqual([])
+    await waitFor(() => expect((composer as HTMLTextAreaElement).value).toBe('@code-reviewer '))
+
+    // And with the list closed, ⏎ sends again.
+    fireEvent.change(composer, {
+      target: { value: '@code-reviewer go', selectionStart: 17 },
+    })
+    expect(screen.queryAllByRole('option')).toHaveLength(0)
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await waitFor(() => expect(invoked).toHaveLength(1))
+    expect((invoked[0]?.payload as { text: string }).text).toBe('@code-reviewer go')
+  })
+
+  it('indexes a long room, jumps to a turn, and folds one down to its gist', async () => {
+    // A room that ran long is a document, and until now the only way through
+    // it was the scrollbar.
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    const turn = (id: string, over: Record<string, unknown>) => ({
+      id,
+      roomId: 'room-1',
+      author: 'agent' as const,
+      seat: 'claude',
+      vendor: 'claude' as const,
+      profile: '',
+      text: '',
+      usage,
+      startedAt: 1,
+      endedAt: 2,
+      error: null,
+      ...over,
+    })
+    const room = {
+      id: 'room-1',
+      cwd: '/tmp/smoke-repo',
+      seats: [{ id: 'seat-1', name: 'claude', config: claude, write: false }],
+      caps: { turns: 40, costUsd: 0 },
+      turnsSpent: 2,
+      status: 'idle' as const,
+      turns: [
+        turn('t1', {
+          author: 'human' as const,
+          seat: '',
+          vendor: null,
+          text: 'Is the gate sound?',
+        }),
+        turn('t2', {
+          text: `## Verdict\n\n${'The gate is unsound. '.repeat(60)}`,
+        }),
+        turn('t3', {
+          author: 'human' as const,
+          seat: '',
+          vendor: null,
+          text: 'Say more.',
+        }),
+      ],
+      usage,
+      mock: true,
+      createdAt: 1_700_000_000_000,
+    }
+    installBridge({ 'room.open': () => room, 'room.get': () => room })
+
+    render(
+      <StoreProvider>
+        <GridSurface />
+      </StoreProvider>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Room' }))
+
+    // The index is titled by how much there is to index.
+    const index = await screen.findByRole('button', { name: '3' })
+    fireEvent.click(index)
+
+    // Each entry names who spoke and enough of the turn to recognise it — the
+    // heading, not the "## " in front of it.
+    const entries = await screen.findAllByRole('menuitem')
+    expect(entries.map((e) => e.textContent)).toEqual([
+      'Collapse every turn',
+      'YouIs the gate sound?',
+      '@claudeVerdict',
+      'YouSay more.',
+    ])
+
+    fireEvent.click(entries[2] as HTMLElement)
+    expect(scrollIntoView).toHaveBeenCalled()
+
+    // Folding replaces a long turn with its one line. Only the long one: a
+    // short turn has nothing to gain and would just lose its text.
+    expect(screen.getByText(/The gate is unsound/)).toBeTruthy()
+    fireEvent.click(index)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Collapse every turn' }))
+    await waitFor(() => expect(screen.queryByText(/The gate is unsound/)).toBeNull())
+    expect(screen.getByText('Verdict')).toBeTruthy()
+    expect(screen.getByText('Is the gate sound?')).toBeTruthy()
+
+    // And what was said comes back.
+    fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
+    await waitFor(() => expect(screen.getByText(/The gate is unsound/)).toBeTruthy())
+
+    // Scrolled away from the tail, there is a way back to it — and only then,
+    // because a button that is always there is a button nobody reads.
+    expect(screen.queryByRole('button', { name: 'Latest' })).toBeNull()
+    const transcript = document.querySelector('.room__transcript') as HTMLElement
+    Object.defineProperty(transcript, 'scrollHeight', {
+      value: 2000,
+      configurable: true,
+    })
+    Object.defineProperty(transcript, 'clientHeight', {
+      value: 400,
+      configurable: true,
+    })
+    fireEvent.scroll(transcript)
+    fireEvent.click(await screen.findByRole('button', { name: 'Latest' }))
+    expect(transcript.scrollTop).toBe(2000)
+  })
+
   it('a room shows its seats, its spend, and stops at the budget', async () => {
     // m3's shape in one mount: several named seats, a visible bound, and an
     // exhausted room that refuses rather than quietly continuing.
@@ -377,13 +635,24 @@ describe('mounted-surface smoke', () => {
       {
         id: 'seat-1',
         name: 'claude',
-        config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+        config: {
+          vendor: 'claude' as const,
+          model: '',
+          effort: 'high' as const,
+          persona: '',
+        },
         write: false,
       },
       {
         id: 'seat-2',
         name: 'reviewer',
-        config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '', profile: 'Reviewer' },
+        config: {
+          vendor: 'claude' as const,
+          model: '',
+          effort: 'high' as const,
+          persona: '',
+          profile: 'Reviewer',
+        },
         write: false,
       },
     ]
@@ -395,7 +664,13 @@ describe('mounted-surface smoke', () => {
       turnsSpent: 2,
       status: 'idle' as const,
       turns: [],
-      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0.25 },
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        costUsd: 0.25,
+      },
       mock: true,
       createdAt: 1_700_000_000_000,
     }
@@ -436,7 +711,10 @@ describe('mounted-surface smoke', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Raise budget' }))
     await waitFor(() => expect(invoked).toHaveLength(1))
-    expect(invoked[0]?.payload).toMatchObject({ roomId: 'room-1', caps: { turns: 24 } })
+    expect(invoked[0]?.payload).toMatchObject({
+      roomId: 'room-1',
+      caps: { turns: 24 },
+    })
   })
 
   it('a room states who may write, and converges on a stated question', async () => {
@@ -449,7 +727,12 @@ describe('mounted-surface smoke', () => {
       {
         id: 'seat-1',
         name: 'auditor',
-        config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+        config: {
+          vendor: 'claude' as const,
+          model: '',
+          effort: 'high' as const,
+          persona: '',
+        },
         write: false,
       },
     ]
@@ -469,13 +752,25 @@ describe('mounted-surface smoke', () => {
           vendor: 'claude' as const,
           profile: '',
           text: 'the gate is unsound',
-          usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
+          usage: {
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningTokens: 0,
+            costUsd: 0,
+          },
           startedAt: 1_700_000_000_000,
           endedAt: 1_700_000_000_001,
           error: null,
         },
       ],
-      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        costUsd: 0,
+      },
       mock: true,
       createdAt: 1_700_000_000_000,
     }
@@ -505,7 +800,10 @@ describe('mounted-surface smoke', () => {
     // Granting write is one click, and the header stops saying read-only.
     fireEvent.click(screen.getByRole('button', { name: 'Let @auditor write' }))
     await waitFor(() => expect(invoked).toHaveLength(1))
-    expect(invoked[0]?.payload).toMatchObject({ seatId: 'seat-1', write: true })
+    expect(invoked[0]?.payload).toMatchObject({
+      seatId: 'seat-1',
+      write: true,
+    })
     expect(await screen.findByText('@auditor can write')).toBeTruthy()
     expect(screen.queryByText('read-only')).toBeNull()
 
@@ -517,7 +815,10 @@ describe('mounted-surface smoke', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Ask the seats' }))
 
     await waitFor(() => expect(invoked).toHaveLength(2))
-    expect(invoked[1]?.payload).toMatchObject({ roomId: 'room-1', question: 'ship or measure?' })
+    expect(invoked[1]?.payload).toMatchObject({
+      roomId: 'room-1',
+      question: 'ship or measure?',
+    })
 
     // The verdict lands as an event and reports confidence AND agreement —
     // two different questions that one number would hide.
@@ -531,7 +832,13 @@ describe('mounted-surface smoke', () => {
           question: 'ship or measure?',
           decision: 'measure first',
           rationale: 'the gate cannot detect the change',
-          scores: { correctness: 5, robustness: 5, clarity: 5, maintainability: 5, risk: 5 },
+          scores: {
+            correctness: 5,
+            robustness: 5,
+            clarity: 5,
+            maintainability: 5,
+            risk: 5,
+          },
           confidence: 0.27,
           agreement: 0.3,
           singleSource: false,
@@ -561,7 +868,12 @@ describe('mounted-surface smoke', () => {
         {
           id: 'seat-1',
           name: 'claude',
-          config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+          config: {
+            vendor: 'claude' as const,
+            model: '',
+            effort: 'high' as const,
+            persona: '',
+          },
           write: false,
         },
       ],
@@ -569,7 +881,13 @@ describe('mounted-surface smoke', () => {
       turnsSpent: 0,
       status: 'idle' as const,
       turns: [],
-      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        costUsd: 0,
+      },
       mock: true,
       createdAt: 1_700_000_000_000,
     }
@@ -605,7 +923,12 @@ describe('mounted-surface smoke', () => {
         {
           id: 'seat-1',
           name: 'claude',
-          config: { vendor: 'claude' as const, model: '', effort: 'high' as const, persona: '' },
+          config: {
+            vendor: 'claude' as const,
+            model: '',
+            effort: 'high' as const,
+            persona: '',
+          },
           write: false,
         },
       ],
@@ -613,13 +936,26 @@ describe('mounted-surface smoke', () => {
       turnsSpent: 0,
       status: 'idle' as const,
       turns: [],
-      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0 },
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        costUsd: 0,
+      },
       mock: true,
       createdAt: 1_700_000_000_000,
     }
     installBridge({
       'skill.list': () => [
-        { id: 'skill-1', name: 'Orient me', description: '', prompt: 'Orient me.', vendorHint: null, builtIn: true },
+        {
+          id: 'skill-1',
+          name: 'Orient me',
+          description: '',
+          prompt: 'Orient me.',
+          vendorHint: null,
+          builtIn: true,
+        },
       ],
       'room.open': () => room,
       'room.get': () => room,
