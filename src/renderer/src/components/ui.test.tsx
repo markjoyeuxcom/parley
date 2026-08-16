@@ -33,13 +33,30 @@ function Host(): ReactNode {
 }
 
 describe('Dialog', () => {
+  it('focuses the first field, not the close button', () => {
+    // The header precedes the body, so a naive search for the first focusable
+    // element in the whole surface lands on Close — and a dialog you have to
+    // click into before typing is a dialog that wasted the click.
+    render(<Host />)
+    expect(document.activeElement).toBe(screen.getByLabelText('Name'))
+  })
+
+  it('falls back to the surface when the body has nothing to focus', () => {
+    // Focus still has to be trapped inside the dialog; a body of pure prose
+    // is a reason to fall back, not a reason to leave focus outside.
+    render(
+      <Dialog title="Nothing here" onClose={() => {}}>
+        <p>Just prose.</p>
+      </Dialog>,
+    )
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close' }))
+  })
+
   it('takes focus once, and does not take it back', () => {
     render(<Host />)
     const cli = screen.getByLabelText('CLI')
 
-    // Move to a later control, the way a person clicking one would. Which
-    // element the dialog focuses on the way in is not the point here; that it
-    // stops afterwards is.
+    // Move to a later control, the way a person clicking one would.
     cli.focus()
     expect(document.activeElement).toBe(cli)
 

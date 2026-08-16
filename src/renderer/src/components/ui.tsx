@@ -271,6 +271,7 @@ export function Dialog({
   children: ReactNode
 }): ReactNode {
   const surfaceRef = useRef<HTMLDivElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
   const restoreTo = useRef<Element | null>(null)
 
   /**
@@ -281,12 +282,19 @@ export function Dialog({
    * and an autofocus keyed on it re-ran on every one of those, dragging focus
    * back to the first field. Clicking the second field gave it up instantly,
    * which made the roster's CLI, model and effort controls unusable.
+   *
+   * The body is searched before the surface, because the header comes first in
+   * the DOM and its close button would otherwise win — so opening a dialog and
+   * typing went nowhere. The surface is the fallback rather than the rule: a
+   * dialog whose body holds nothing focusable still has to trap focus
+   * somewhere inside itself.
    */
   useEffect(() => {
     restoreTo.current = document.activeElement
-    const first = surfaceRef.current?.querySelector<HTMLElement>(
-      'input, textarea, select, button:not([disabled])',
-    )
+    const FOCUSABLE = 'input, textarea, select, button:not([disabled])'
+    const first =
+      bodyRef.current?.querySelector<HTMLElement>(FOCUSABLE) ??
+      surfaceRef.current?.querySelector<HTMLElement>(FOCUSABLE)
     first?.focus()
     return () => {
       if (restoreTo.current instanceof HTMLElement) restoreTo.current.focus()
@@ -329,7 +337,9 @@ export function Dialog({
           </div>
           {subtitle ? <div className="dialog__subtitle">{subtitle}</div> : null}
         </div>
-        <div className="dialog__body">{children}</div>
+        <div className="dialog__body" ref={bodyRef}>
+          {children}
+        </div>
         {footer ? <div className="dialog__footer">{footer}</div> : null}
       </div>
     </div>
