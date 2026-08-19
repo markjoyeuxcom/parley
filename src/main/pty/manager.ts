@@ -37,6 +37,31 @@ export interface PtyManagerCallbacks {
 
 export class PaneLimitError extends Error {}
 export class PaneCwdError extends Error {}
+
+/**
+ * What a pane's process is told about where it is running.
+ *
+ * A CLI in a pane has no idea it is in one. Asked to "say hello to the agy
+ * pane", a Claude Code session did the only thing it could see how to do:
+ * launched a SECOND Parley with a remote debugging port and drove that over
+ * CDP — building a whole app to reach a neighbour it was already sitting
+ * beside. Nothing in its environment said otherwise.
+ *
+ * These are facts, not instructions. An agent that checks its environment can
+ * tell it is inside Parley, which pane it is, and which instance — enough to
+ * know that starting another one is the wrong move.
+ */
+export function paneEnv(paneId: Id, kind: PaneKind, appPid = process.pid): Record<string, string> {
+  return {
+    // Kept as it was: a user's rc files key off this.
+    PARLEY_PANE: '1',
+    PARLEY_PANE_ID: paneId,
+    PARLEY_PANE_KIND: kind,
+    // Which running Parley this pane belongs to. Two instances are a real
+    // situation — the mistake is reaching the wrong one, or starting a third.
+    PARLEY_APP_PID: String(appPid),
+  }
+}
 /** The command could not be started. Carries a cause the user can act on. */
 export class PaneSpawnError extends Error {}
 
@@ -307,8 +332,7 @@ export class PtyManager {
         env: {
           ...process.env,
           TERM: 'xterm-256color',
-          // Marks the session so a user's rc files can adjust if they want to.
-          PARLEY_PANE: '1',
+          ...paneEnv(id, kind),
         } as Record<string, string>,
       })
     } catch (err) {

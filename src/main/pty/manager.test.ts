@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RESUME_PICKER_KINDS } from '@shared/domain'
-import { PaneInputReadiness, PanePromptSubmitter, commandFor } from './manager'
+import { PaneInputReadiness, PanePromptSubmitter, commandFor, paneEnv } from './manager'
 
 afterEach(() => vi.useRealTimers())
 
@@ -235,5 +235,24 @@ describe('pane command construction', () => {
   it('a shell reads the login profile, and resume means nothing to it', () => {
     expect(commandFor('shell').args).toEqual(['-l'])
     expect(commandFor('shell', true).args).toEqual(['-l'])
+  })
+})
+
+describe('what a pane tells its process about itself', () => {
+  it('names the pane and the instance it belongs to', () => {
+    // A Claude Code session asked to reach the agy pane beside it launched a
+    // second Parley and drove it over CDP, because nothing in its environment
+    // said it was already inside one.
+    const env = paneEnv('pane-7', 'claude', 4242)
+    expect(env).toMatchObject({
+      PARLEY_PANE: '1',
+      PARLEY_PANE_ID: 'pane-7',
+      PARLEY_PANE_KIND: 'claude',
+      PARLEY_APP_PID: '4242',
+    })
+  })
+
+  it('keeps PARLEY_PANE, which rc files already key off', () => {
+    expect(paneEnv('p', 'shell').PARLEY_PANE).toBe('1')
   })
 })

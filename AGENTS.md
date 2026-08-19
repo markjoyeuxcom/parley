@@ -297,6 +297,19 @@ relay passes. Task boards, worktree lifecycles, review queues and orchestration
 all fail it, which a parked branch called `feat/workbench-ux` demonstrated at a
 cost of ten thousand lines.
 
+### If you are reading this from inside a pane
+
+A CLI running in a Parley pane has `PARLEY_PANE=1` in its environment, with
+`PARLEY_PANE_ID`, `PARLEY_PANE_KIND` and `PARLEY_APP_PID` beside it. If those
+are set, you are already inside the app.
+
+**Do not start another instance.** Asked to send something to a neighbouring
+pane, a Claude Code session launched a second Parley with a remote debugging
+port and drove it over CDP — building an entire app to reach a pane it was
+sitting next to, because nothing told it where it was. There is no way to relay
+from inside a pane today: relaying is a menu action the person takes, which is
+the design rather than an omission. Say so and let them do it.
+
 ## The Grid is multi-folder, and saved layouts do not change that
 
 Each pane is spawned with its own `cwd` and keeps it for life. The toolbar
