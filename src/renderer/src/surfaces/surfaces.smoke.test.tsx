@@ -247,6 +247,7 @@ describe('mounted-surface smoke', () => {
     // Stand in for xterm's own selection.
     registerTerm('pane-1', {
       getSelection: () => 'function add(a, b) {\n  return a + b\n}',
+      lastOutput: () => '',
       serialize: () => '',
       findNext: () => false, findPrevious: () => false, clearSearch: () => {},
     })
@@ -294,6 +295,7 @@ describe('mounted-surface smoke', () => {
     // A CLI holding the mouse: no selection, and none obtainable by dragging.
     registerTerm('pane-1', {
       getSelection: () => '',
+      lastOutput: () => '',
       serialize: () => '',
       findNext: () => false, findPrevious: () => false, clearSearch: () => {},
     })
@@ -301,7 +303,7 @@ describe('mounted-surface smoke', () => {
     fireEvent.click(screen.getAllByTitle('Pane actions')[0] as HTMLElement)
     const menu = await screen.findByRole('menu')
     expect(menu.textContent).toContain('hold ⌥ while dragging')
-    expect(menu.textContent).toContain('Select text to relay it')
+    expect(menu.textContent).toContain('Nothing to relay yet')
   })
 
   it('still relays a selection whose highlight has since gone', async () => {
@@ -332,6 +334,7 @@ describe('mounted-surface smoke', () => {
     // The terminal reports NOTHING selected — the highlight is gone…
     registerTerm('pane-1', {
       getSelection: () => '',
+      lastOutput: () => '',
       serialize: () => '',
       findNext: () => false, findPrevious: () => false, clearSearch: () => {},
     })
@@ -347,6 +350,53 @@ describe('mounted-surface smoke', () => {
     await waitFor(() => expect(invoked).toHaveLength(1))
     const { text } = invoked[0]!.payload as { text: string }
     expect(text).toContain('function add(a, b) {\n  return a + b\n}')
+  })
+
+  it('relays the last answer when nothing is selected', async () => {
+    // The actual loop: read what Claude said, hand it to Codex. Making
+    // somebody drag a rectangle over a redrawing TUI to express that is asking
+    // them to do the terminal's job — and in a CLI that has claimed the mouse
+    // they cannot do it without holding ⌥ anyway.
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    let opened = 0
+    installBridge({
+      'pane.open': (payload) => {
+        opened += 1
+        const kind = (payload as { kind: string }).kind as Pane['kind']
+        return {
+          id: `pane-${opened}`, kind, title: kind, cwd: '/tmp/smoke-repo',
+          status: 'live', exitCode: null, createdAt: opened,
+        }
+      },
+      'pane.paste': (payload) => { invoked.push({ name: 'pane.paste', payload }); return { ok: true } },
+    })
+
+    render(<StoreProvider><GridSurface /></StoreProvider>)
+    fireEvent.click(await screen.findByTitle('New Claude pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(1))
+    fireEvent.click(await screen.findByTitle('New Codex pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(2))
+
+    // Nothing selected, ever — but the CLI has answered.
+    registerTerm('pane-1', {
+      getSelection: () => '',
+      lastOutput: () => 'The parser drops the closing brace on line 42.',
+      serialize: () => '',
+      findNext: () => false, findPrevious: () => false, clearSearch: () => {},
+    })
+
+    fireEvent.click(screen.getAllByTitle('Pane actions')[0] as HTMLElement)
+    const menu = await screen.findByRole('menu')
+    // Named as the answer, not as a selection, so it is clear what is going.
+    expect(menu.textContent).toContain('Send last answer to codex')
+    expect(menu.textContent).toContain('The parser drops the closing brace')
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Send last answer to codex/i }))
+    await waitFor(() => expect(invoked).toHaveLength(1))
+    const { paneId, text } = invoked[0]!.payload as { paneId: string; text: string }
+    expect(paneId).toBe('pane-2')
+    expect(text).toContain('The parser drops the closing brace on line 42.')
+    expect(text.toLowerCase()).toContain('said:')
   })
 
   it('a room opens as a pane, sends a turn, and renders the streamed reply', async () => {

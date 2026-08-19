@@ -581,15 +581,18 @@ export function GridSurface(): ReactNode {
    * where it came from, and an unattributed wall of someone else's reasoning
    * reads as the user's own words.
    */
-  const relaySelection = async (fromSlotId: Id, toSlotId: Id): Promise<void> => {
+  const relay = async (fromSlotId: Id, toSlotId: Id): Promise<void> => {
     const from = slots[fromSlotId]
     const to = slots[toSlotId]
     const selection = from?.paneId ? paneSelection(from.paneId) : ''
-    if (!selection.trim() || !to?.paneId) {
-      notify('warn', 'Select something in the pane first.')
+    // A selection wins when there is one: choosing text is somebody saying
+    // "this part", and sending the whole answer instead would override them.
+    const body = selection.trim() || (from?.paneId ? termAccess(from.paneId)?.lastOutput() ?? '' : '')
+    if (!body.trim() || !to?.paneId) {
+      notify('warn', 'Nothing to relay from that pane yet.')
       return
     }
-    const relayed = `${paneName(fromSlotId)} said:\n\n${selection.trim()}`
+    const relayed = `${paneName(fromSlotId)} said:\n\n${body.trim()}`
     const sent = await attempt(() => api.pastePane(to.paneId as Id, relayed))
     if (!sent) return
     setFocusedSlot(toSlotId)
@@ -914,47 +917,53 @@ export function GridSurface(): ReactNode {
                             before the drag would offer a stale selection.
                           */}
                           {(() => {
+                            const term = termAccess(slot.paneId as Id)
                             const selection = paneSelection(slot.paneId as Id)
+                            const output = term?.lastOutput() ?? ''
                             const state = relayState({
                               targets: relayTargets(id).length,
                               selection,
+                              lastOutput: output,
                             })
                             if (state === 'no-targets') {
                               return <div className="menu__note">Open another agent pane to relay into.</div>
                             }
-                            if (state === 'needs-selection') {
-                              // ⌥ is named for every pane because a CLI that
-                              // claims the mouse — Claude Code does — leaves a
-                              // plain drag going to the application, which
-                              // highlights its own text and looks selected.
+                            if (state === 'nothing') {
+                              // ⌥ is named because a CLI that claims the mouse
+                              // — Claude Code does — leaves a plain drag going
+                              // to the application, which highlights its own
+                              // text and looks selected.
                               return (
                                 <div className="menu__note">
-                                  Select text to relay it — hold ⌥ while dragging if the CLI
-                                  captures the mouse.
+                                  Nothing to relay yet. Ask this CLI something, or select text —
+                                  hold ⌥ while dragging if it captures the mouse.
                                 </div>
                               )
                             }
+                            const sending = state === 'selection' ? selection : output
+                            const label = state === 'selection' ? 'selection' : 'last answer'
                             return (
                               <>
                                 {/*
-                                  What will be sent, in the menu. The selection
-                                  may no longer be highlighted — releasing ⌥
-                                  drops it, and the CLI redraws over it — so
-                                  relaying blind would be relaying a guess.
+                                  What will be sent, in the menu. Neither source
+                                  is visible as such — a selection may have lost
+                                  its highlight, and the last answer was never
+                                  highlighted at all — so relaying without
+                                  showing it would be relaying a guess.
                                 */}
-                                <div className="menu__note" title={selection}>
-                                  “{selection.trim().replace(/\s+/g, ' ').slice(0, 60)}
-                                  {selection.trim().length > 60 ? '…' : ''}”
+                                <div className="menu__note" title={sending}>
+                                  “{sending.trim().replace(/\s+/g, ' ').slice(0, 60)}
+                                  {sending.trim().length > 60 ? '…' : ''}”
                                 </div>
                                 {relayTargets(id).map((target) => (
                                   <MenuItem
                                     key={target.slotId}
                                     onClick={() => {
                                       close()
-                                      void relaySelection(id, target.slotId)
+                                      void relay(id, target.slotId)
                                     }}
                                   >
-                                    Send selection to {target.name}
+                                    Send {label} to {target.name}
                                   </MenuItem>
                                 ))}
                               </>

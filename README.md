@@ -14,11 +14,18 @@ TUI and its own permission prompts — or a **room**.
 The loop this exists for: Claude asks something, you want Codex's read on it,
 then you want that answer back in Claude. People run it with ⌘C.
 
-Select text in any agent pane, open the pane menu, and **Send selection to**
-another. It arrives attributed — the receiving CLI has no idea where it came
-from, and an unattributed wall of someone else's reasoning reads as your own
-words — and it arrives as a *paste*, so newlines survive and a diff stays a
-diff. Nothing is submitted until the paste completes.
+Open a pane's menu and **Send last answer to** another — no selecting. It takes
+what the CLI has drawn since you last pressed Enter, lifts the box-drawing
+frame off it, and hands it over. Select text first if you want only part of it,
+and the menu offers that instead; either way it shows you what it is about to
+send. It arrives attributed — the receiving CLI has no idea where it came from, and
+an unattributed wall of someone else's reasoning reads as your own words — and
+it arrives as a *paste*, so newlines survive and a diff stays a diff. Nothing
+is submitted until the paste completes.
+
+Selecting inside a CLI that has claimed the mouse (Claude Code does) needs ⌥
+held while you drag; a plain drag goes to the application, which highlights its
+own text and looks selected while the terminal has nothing.
 
 No vendor will build this. Claude Code's subagents take Claude models and
 nothing else; Codex's threads are OpenAI's. Every agent system is a closed loop

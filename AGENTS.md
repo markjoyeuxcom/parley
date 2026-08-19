@@ -273,6 +273,19 @@ message cut off after its opening line. `paste` wraps the payload in bracketed
 paste, which is what ⌘V already does, and normalises carriage returns first
 since content copied out of a terminal is full of them.
 
+**A selection is not required, and not trusted to still exist.** The default
+is the last answer — everything drawn since the person last pressed Enter,
+tracked with an xterm marker — because "hand me its answer" is the actual
+request and dragging a rectangle over a redrawing TUI is asking somebody to do
+the terminal's job. A selection wins when there is one, and the last real
+selection per pane is remembered, since letting go of ⌥ drops the highlight and
+a live TUI redraws over it constantly.
+
+**The frame comes off before sending.** A terminal buffer is a picture, and
+`│ Welcome back Mark! │` is noise pretending to be a message. `cleanRelayText`
+strips box-drawing characters only — never ASCII `-` or `|`, which are diffs,
+fences and flags, and are the most valuable thing the relay carries.
+
 **Relayed content carries where it came from.** The receiving CLI has no idea,
 and an unattributed wall of another model's reasoning reads as the user's own
 words.

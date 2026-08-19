@@ -8,6 +8,15 @@ import type { Id } from '@shared/domain'
  */
 export interface TermAccess {
   getSelection: () => string
+  /**
+   * Everything the CLI has drawn since the person last submitted something.
+   *
+   * The relay's whole point is "hand me its answer", and making somebody drag
+   * a rectangle over a redrawing TUI to express that is asking them to do the
+   * terminal's job. The boundary is the last Enter they pressed, which is
+   * exactly where their question ended and the answer began.
+   */
+  lastOutput: () => string
   /** The full buffer as text — the transcript a save writes. */
   serialize: () => string
   findNext: (query: string) => boolean
@@ -80,9 +89,19 @@ export function paneSelection(paneId: Id): string {
  * on it would be wrong half the time. One sentence that is true either way
  * beats a detector that is confidently wrong.
  */
-export type RelayState = 'ready' | 'no-targets' | 'needs-selection'
+export type RelayState = 'no-targets' | 'selection' | 'output' | 'nothing'
 
-export function relayState(input: { targets: number; selection: string }): RelayState {
+/**
+ * A selection wins when there is one: choosing text is somebody saying "this
+ * part", and quietly sending the whole answer instead would be overriding
+ * them. Without one, the last output is what they almost certainly mean.
+ */
+export function relayState(input: {
+  targets: number
+  selection: string
+  lastOutput: string
+}): RelayState {
   if (input.targets === 0) return 'no-targets'
-  return input.selection.trim() ? 'ready' : 'needs-selection'
+  if (input.selection.trim()) return 'selection'
+  return input.lastOutput.trim() ? 'output' : 'nothing'
 }

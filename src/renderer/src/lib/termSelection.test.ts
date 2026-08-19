@@ -2,25 +2,34 @@ import { describe, expect, it } from 'vitest'
 import { forgetSelection, paneSelection, registerTerm, rememberSelection, relayState } from './termSelection'
 
 describe('relay state', () => {
-  it('is ready once there is a selection and somewhere to send it', () => {
-    expect(relayState({ targets: 2, selection: 'const x = 1' })).toBe('ready')
+  it('sends the selection when there is one', () => {
+    // Choosing text is somebody saying "this part". Sending the whole answer
+    // instead would be overriding them.
+    expect(relayState({ targets: 2, selection: 'const x = 1', lastOutput: 'the whole reply' }))
+      .toBe('selection')
+  })
+
+  it('falls back to the last output, which is what they almost certainly mean', () => {
+    expect(relayState({ targets: 1, selection: '', lastOutput: 'the whole reply' })).toBe('output')
   })
 
   it('says so when there is nowhere to send', () => {
-    expect(relayState({ targets: 0, selection: 'anything' })).toBe('no-targets')
+    expect(relayState({ targets: 0, selection: 'anything', lastOutput: 'anything' })).toBe('no-targets')
   })
 
-  it('treats whitespace as nothing selected', () => {
-    // A stray click leaves an empty selection, and offering to relay it would
-    // paste a blank line into another CLI and press Enter.
-    expect(relayState({ targets: 1, selection: '   \n  ' })).toBe('needs-selection')
-    expect(relayState({ targets: 1, selection: '' })).toBe('needs-selection')
+  it('treats whitespace as nothing, on both paths', () => {
+    // A stray click leaves an empty selection, and a pane that has only drawn
+    // its own furniture leaves empty output. Relaying either would paste a
+    // blank line into another CLI and press Enter.
+    expect(relayState({ targets: 1, selection: '   \n  ', lastOutput: '  ' })).toBe('nothing')
+    expect(relayState({ targets: 1, selection: '', lastOutput: '' })).toBe('nothing')
   })
 })
 
 describe('the last selection survives losing the highlight', () => {
   const term = (selection: string) => ({
     getSelection: () => selection,
+    lastOutput: () => '',
     serialize: () => '',
     findNext: () => false,
     findPrevious: () => false,

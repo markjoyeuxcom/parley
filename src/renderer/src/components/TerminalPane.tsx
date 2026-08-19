@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { Terminal } from '@xterm/xterm'
+import type { IMarker } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { SerializeAddon } from '@xterm/addon-serialize'
@@ -8,6 +9,7 @@ import type { Id } from '@shared/domain'
 import { api } from '../lib/api'
 import { attachPane } from '../lib/ptyBuffer'
 import { registerTerm, rememberSelection } from '../lib/termSelection'
+import { cleanRelayText } from '../lib/relayText'
 
 /**
  * Reads the xterm palette out of the app's own CSS custom properties.
@@ -125,8 +127,20 @@ export function TerminalPane({
     // that then has to be corrected visibly.
     requestAnimationFrame(() => requestAnimationFrame(syncSize))
 
+    // Where the person's last question ended and the answer began.
+    //
+    // Marked on Enter rather than on every keystroke: typing a prompt would
+    // otherwise walk the boundary forward character by character, and "the
+    // last output" would end up meaning whatever arrived after the final
+    // letter they typed. The marker tracks its line as the buffer scrolls and
+    // reports -1 once it falls out of scrollback.
+    let submitted: IMarker | undefined
     const dataSub = term.onData((data) => {
       void api.writePane(paneId, data)
+      if (data.includes('\r') || data.includes('\n')) {
+        submitted?.dispose()
+        submitted = term.registerMarker(0)
+      }
     })
 
     const detach = attachPane(paneId, (data) => {
@@ -144,6 +158,20 @@ export function TerminalPane({
 
     const unregisterSelection = registerTerm(paneId, {
       getSelection: () => term.getSelection(),
+      lastOutput: () => {
+        const buffer = term.buffer.active
+        // Without a boundary — nothing submitted yet this session, or it has
+        // scrolled away — fall back to a bounded tail rather than the whole
+        // scrollback, which can be twelve thousand lines.
+        const from = submitted && submitted.line >= 0
+          ? submitted.line + 1
+          : Math.max(0, buffer.length - 300)
+        const lines: string[] = []
+        for (let at = from; at < buffer.length; at += 1) {
+          lines.push(buffer.getLine(at)?.translateToString(true) ?? '')
+        }
+        return cleanRelayText(lines)
+      },
       serialize: () => serialize.serialize(),
       findNext: (query) => search.findNext(query),
       findPrevious: (query) => search.findPrevious(query),
@@ -157,6 +185,7 @@ export function TerminalPane({
       observer.disconnect()
       detach()
       unregisterSelection()
+      submitted?.dispose()
       selectionWatch.dispose()
       dataSub.dispose()
       term.dispose()
