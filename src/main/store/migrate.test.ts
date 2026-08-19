@@ -118,6 +118,26 @@ describe('migrate', () => {
     expect(tables.has('ledger_sightings')).toBe(false)
   })
 
+  it('seeds the durable folder list from the folders already in use', () => {
+    // Folders you add lived only in renderer state, so closing the app lost
+    // them. Making them durable is only half the fix: an upgrade that started
+    // the list empty would still read as "my folders are gone".
+    const db = openDatabase(':memory:')
+    db.run(`DELETE FROM folders`)
+    db.run(`UPDATE meta SET value = '35' WHERE key = 'schema_version'`)
+    db.run(`INSERT INTO rooms (id, cwd, seats, caps, created_at) VALUES ('r1', '/tmp/alpha', '[]', '{}', 20)`)
+    db.run(`INSERT INTO rooms (id, cwd, seats, caps, created_at) VALUES ('r2', '/tmp/alpha', '[]', '{}', 10)`)
+    db.run(`INSERT INTO rooms (id, cwd, seats, caps, created_at) VALUES ('r3', '/tmp/beta', '[]', '{}', 30)`)
+
+    migrate(db)
+
+    // One row per distinct folder, earliest use first, nothing duplicated.
+    expect(db.all<{ path: string }>(`SELECT path FROM folders ORDER BY added_at, path`))
+      .toEqual([{ path: '/tmp/alpha' }, { path: '/tmp/beta' }])
+    expect(db.get<{ added_at: number }>(`SELECT added_at FROM folders WHERE path = '/tmp/alpha'`)?.added_at)
+      .toBe(10)
+  })
+
   it('refuses a database written by a newer build', () => {
     // The dev checkout migrates ahead of any frozen install; opening the
     // newer record with older code would be a silent downgrade.

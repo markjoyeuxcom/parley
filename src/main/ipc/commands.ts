@@ -273,6 +273,9 @@ const HANDLERS: Record<CommandName, Handler> = {
     const input = p as { name: string; defaultFolder: string; tree: GridLayout['tree'] }
     return ctx.repo.saveLayout({ id: newId(), ...input })
   },
+  'folder.list': (_p, ctx) => ctx.repo.listFolders(),
+  'folder.remember': (p, ctx) => ctx.repo.rememberFolder((p as { path: string }).path),
+  'folder.forget': (p, ctx) => ctx.repo.forgetFolder((p as { path: string }).path),
   'layout.list': (_p, ctx) => ctx.repo.listLayouts(),
   'layout.delete': (p, ctx) => {
     ctx.repo.deleteLayout((p as { layoutId: string }).layoutId)

@@ -858,6 +858,41 @@ button.chip:hover {
   line-height: 1.4;
 }
 
+/* A menu entry with an edit affordance beside it, not just a destination. */
+.menu__row {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.menu__row .menu__item {
+  flex: 1;
+  min-width: 0;
+}
+
+.menu__row-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-quaternary);
+  cursor: pointer;
+}
+
+.menu__row:hover .menu__row-x {
+  color: var(--text-secondary);
+}
+
+.menu__row-x:hover {
+  background: var(--bg-selected);
+  color: var(--text-primary);
+}
+
 .menu__section {
   padding: var(--s3) var(--s3) var(--s2);
   border-top: 1px solid var(--line-faint);

@@ -131,10 +131,20 @@ export function GridSurface(): ReactNode {
     void refreshLayouts()
   }, [refreshLayouts])
 
+  // The folders somebody added, from the record. Held in state as well so the
+  // menu can offer them before anything is open in one.
+  useEffect(() => {
+    void attempt(() => api.listFolders()).then((folders) => {
+      if (!folders) return
+      setPicked(folders)
+      // Where they were last working; a room's folder is only the fallback.
+      setCwd((current) => current || folders[folders.length - 1] || '')
+    })
+  }, [attempt])
+
 
   /**
-   * Folders worth offering, newest intent first. Drawn from what the user is
-   * already working in rather than a stored list.
+   * Folders worth offering: the durable list first, then whatever is open.
    */
   const recentFolders = useMemo(() => {
     const seen = new Set<string>()
@@ -145,10 +155,13 @@ export function GridSurface(): ReactNode {
       seen.add(trimmed)
       out.push(trimmed)
     }
-    if (cwd) add(cwd)
+    // Folders somebody added come first and come whole: slicing a list a
+    // person curated is how it starts feeling lost again. Live pane folders
+    // follow, so somewhere opened transiently is still reachable.
     for (const path of picked) add(path)
+    if (cwd) add(cwd)
     for (const slot of Object.values(slots)) add(slot.cwd)
-    return out.slice(0, 8)
+    return out.slice(0, 20)
   }, [cwd, picked, slots])
 
   /** Distinct folders the grid currently spans. */
@@ -526,8 +539,16 @@ export function GridSurface(): ReactNode {
     if (result?.path) {
       const chosen = result.path
       setCwd(chosen)
-      setPicked((current) => [chosen, ...current.filter((p) => p !== chosen)].slice(0, 8))
+      // Written through rather than held here: a folder somebody added has to
+      // survive the window closing, which is the whole point of adding one.
+      const folders = await attempt(() => api.rememberFolder(chosen))
+      if (folders) setPicked(folders)
     }
+  }
+
+  const forgetFolder = async (path: string): Promise<void> => {
+    const folders = await attempt(() => api.forgetFolder(path))
+    if (folders) setPicked(folders)
   }
 
   /** What a pane is called when another pane is told where something came from. */
@@ -622,16 +643,32 @@ export function GridSurface(): ReactNode {
           {(close) => (
             <>
               {recentFolders.map((folder) => (
-                <MenuItem
-                  key={folder}
-                  selected={folder === cwd}
-                  onClick={() => {
-                    setCwd(folder)
-                    close()
-                  }}
-                >
-                  {shortPath(folder)}
-                </MenuItem>
+                <div className="menu__row" key={folder}>
+                  <MenuItem
+                    selected={folder === cwd}
+                    onClick={() => {
+                      setCwd(folder)
+                      close()
+                    }}
+                  >
+                    {shortPath(folder)}
+                  </MenuItem>
+                  {picked.includes(folder) ? (
+                    <button
+                      className="menu__row-x"
+                      title={`Forget ${folder}`}
+                      aria-label={`Forget ${folder}`}
+                      onClick={(event) => {
+                        // A list edit, not a navigation: the menu stays open so
+                        // several can go in one visit.
+                        event.stopPropagation()
+                        void forgetFolder(folder)
+                      }}
+                    >
+                      <X size={11} strokeWidth={2} />
+                    </button>
+                  ) : null}
+                </div>
               ))}
               <MenuItem
                 onClick={() => {

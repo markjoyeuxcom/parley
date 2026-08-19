@@ -120,6 +120,9 @@ export const api = {
     defaultFolder: string
     tree: GridLayout['tree']
   }): Promise<GridLayout> => bridge().invoke('layout.save', input),
+  listFolders: (): Promise<string[]> => bridge().invoke('folder.list'),
+  rememberFolder: (path: string): Promise<string[]> => bridge().invoke('folder.remember', { path }),
+  forgetFolder: (path: string): Promise<string[]> => bridge().invoke('folder.forget', { path }),
   listLayouts: (): Promise<GridLayout[]> => bridge().invoke('layout.list'),
   deleteLayout: (layoutId: Id): Promise<unknown> => bridge().invoke('layout.delete', { layoutId }),
 

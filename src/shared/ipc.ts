@@ -80,6 +80,7 @@ export const SaveLayoutReq = z.object({
   defaultFolder: z.string().default(''),
   tree: SavedLayoutNode,
 })
+export const FolderReq = z.object({ path: z.string().min(1) })
 export const LayoutIdReq = z.object({ layoutId: Id })
 export const PickDirectoryReq = z.object({ title: z.string().default('Choose a folder') })
 
@@ -143,6 +144,9 @@ export const COMMANDS = {
   'pane.list': null,
 
   'layout.save': SaveLayoutReq,
+  'folder.list': null,
+  'folder.remember': FolderReq,
+  'folder.forget': FolderReq,
   'layout.list': null,
   'layout.delete': LayoutIdReq,
 

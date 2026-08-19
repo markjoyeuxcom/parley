@@ -385,6 +385,39 @@ export class Repo {
     }
   }
 
+  // ─── Folders ───────────────────────────────────────────────────────────────
+
+  /**
+   * Where the person works, in the order they added it.
+   *
+   * Oldest first rather than most-recent-first: this is a list somebody built
+   * up on purpose, and a menu that reshuffles itself every time you use it is
+   * one you have to read instead of aim at.
+   */
+  listFolders(): string[] {
+    return this.db
+      .all<{ path: string }>(`SELECT path FROM folders ORDER BY added_at ASC, path ASC`)
+      .map((row) => row.path)
+  }
+
+  /** Idempotent: re-adding a folder keeps its original place in the list. */
+  rememberFolder(path: string): string[] {
+    const trimmed = path.trim()
+    if (trimmed) {
+      this.db.run(
+        `INSERT INTO folders (path, added_at) VALUES (?, ?) ON CONFLICT(path) DO NOTHING`,
+        trimmed,
+        Date.now(),
+      )
+    }
+    return this.listFolders()
+  }
+
+  forgetFolder(path: string): string[] {
+    this.db.run(`DELETE FROM folders WHERE path = ?`, path.trim())
+    return this.listFolders()
+  }
+
   listLayouts(): GridLayout[] {
     // Name breaks the tie so two layouts saved in the same millisecond do not
     // swap places between calls.

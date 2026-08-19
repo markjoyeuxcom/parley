@@ -168,3 +168,23 @@ describe('rooms in the record', () => {
     expect(hit?.title).toBe('@auditor')
   })
 })
+
+describe('folders in the record', () => {
+  it('keeps the folders somebody added, in the order they added them', () => {
+    const repo = new Repo(openDatabase(':memory:'))
+    expect(repo.listFolders()).toEqual([])
+
+    repo.rememberFolder('/tmp/alpha')
+    repo.rememberFolder('/tmp/beta')
+    expect(repo.listFolders()).toEqual(['/tmp/alpha', '/tmp/beta'])
+
+    // Re-adding must not jump it to the end. This is a list somebody built on
+    // purpose, and a menu that reshuffles is one you have to read rather than
+    // aim at.
+    repo.rememberFolder('/tmp/alpha')
+    expect(repo.listFolders()).toEqual(['/tmp/alpha', '/tmp/beta'])
+
+    expect(repo.rememberFolder('   ')).toEqual(['/tmp/alpha', '/tmp/beta'])
+    expect(repo.forgetFolder('/tmp/alpha')).toEqual(['/tmp/beta'])
+  })
+})

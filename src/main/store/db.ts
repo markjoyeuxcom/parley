@@ -26,7 +26,7 @@ export interface Db {
   close(): void
 }
 
-export const SCHEMA_VERSION = 35
+export const SCHEMA_VERSION = 36
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS meta (
 
 -- Saved grid arrangements. The tree is stored without ids: it describes what
 -- each pane is, so restoring mints fresh slots rather than reviving dead ones.
+-- Folders the person has put to work.
+--
+-- These lived in renderer state, so every folder added during a session was
+-- gone the moment the window closed — the app forgot where you work. Nor is a
+-- folder derivable from anything else: a room pins one only for as long as it
+-- exists, and the whole point of adding a folder is to open something there
+-- BEFORE any of that is true.
+CREATE TABLE IF NOT EXISTS folders (
+  path     TEXT PRIMARY KEY,
+  added_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS grid_layouts (
   id             TEXT PRIMARY KEY,
   name           TEXT NOT NULL,
@@ -389,6 +401,23 @@ export function migrate(db: Db): void {
       db.run(`DELETE FROM search_index WHERE kind <> 'room-turn'`)
     } catch {
       // A fresh index has nothing to sweep.
+    }
+  }
+
+  if (current > 0 && current < 36) {
+    // An upgrade that started the list empty would read exactly like the bug
+    // being fixed, so it is seeded from the folders already in use. Earliest
+    // use wins, and one folder usually holds several rooms.
+    try {
+      db.run(
+        `INSERT INTO folders (path, added_at)
+         SELECT cwd, MIN(created_at) FROM rooms
+          WHERE cwd IS NOT NULL AND trim(cwd) <> ''
+          GROUP BY cwd
+         ON CONFLICT(path) DO NOTHING`,
+      )
+    } catch {
+      // A database with no rooms has nothing to seed from.
     }
   }
 
