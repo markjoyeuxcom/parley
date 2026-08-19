@@ -8,7 +8,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import type { Id } from '@shared/domain'
 import { api } from '../lib/api'
 import { attachPane } from '../lib/ptyBuffer'
-import { registerTerm, rememberSelection } from '../lib/termSelection'
+import { forgetSelection, registerTerm, rememberSelection } from '../lib/termSelection'
 import { cleanRelayText } from '../lib/relayText'
 
 /**
@@ -140,6 +140,9 @@ export function TerminalPane({
       if (data.includes('\r') || data.includes('\n')) {
         submitted?.dispose()
         submitted = term.registerMarker(0)
+        // A new question ends the old selection. Keeping it meant one stray
+        // word chosen an hour ago outranked every answer since.
+        forgetSelection(paneId)
       }
     })
 
@@ -166,9 +169,23 @@ export function TerminalPane({
         const from = submitted && submitted.line >= 0
           ? submitted.line + 1
           : Math.max(0, buffer.length - 300)
+        // Stop at the cursor. Below it is the CLI's input line, and anything
+        // half-typed there is a question being drafted — relaying somebody's
+        // unfinished thought back out as part of the answer is not what they
+        // asked for.
+        const until = Math.min(buffer.length, buffer.baseY + buffer.cursorY)
         const lines: string[] = []
-        for (let at = from; at < buffer.length; at += 1) {
-          lines.push(buffer.getLine(at)?.translateToString(true) ?? '')
+        for (let at = from; at < until; at += 1) {
+          const line = buffer.getLine(at)
+          if (!line) continue
+          // A row that xterm marked wrapped is the SAME line continuing: the
+          // break is the pane's width, not the text's. Joining them back means
+          // a relayed command or sentence is not chopped at column 80.
+          if (line.isWrapped && lines.length > 0) {
+            lines[lines.length - 1] += line.translateToString(true)
+            continue
+          }
+          lines.push(line.translateToString(true))
         }
         return cleanRelayText(lines)
       },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { forgetSelection, paneSelection, registerTerm, rememberSelection, relayState } from './termSelection'
+import { canReceiveRelay, forgetSelection, paneSelection, registerTerm, rememberSelection, relayState } from './termSelection'
 
 describe('relay state', () => {
   it('sends the selection when there is one', () => {
@@ -63,5 +63,24 @@ describe('the last selection survives losing the highlight', () => {
     rememberSelection('p4', 'something')
     forgetSelection('p4')
     expect(paneSelection('p4')).toBe('')
+  })
+})
+
+describe('who can receive a relay', () => {
+  it('takes a live agent pane', () => {
+    expect(canReceiveRelay('claude', 'live')).toBe(true)
+    expect(canReceiveRelay('codex', undefined)).toBe(true)
+  })
+
+  it('refuses a pane that is still booting', () => {
+    // A paste during a CLI's startup splash, before raw mode, is swallowed —
+    // and the relay would report success over a message never received.
+    expect(canReceiveRelay('codex', 'starting')).toBe(false)
+  })
+
+  it('refuses a dead pane, a shell and a room', () => {
+    expect(canReceiveRelay('claude', 'exited')).toBe(false)
+    expect(canReceiveRelay('shell', 'live')).toBe(false)
+    expect(canReceiveRelay('room', 'live')).toBe(false)
   })
 })

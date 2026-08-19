@@ -396,7 +396,10 @@ export class PtyManager {
 
   paste(paneId: Id, text: string): void {
     const handle = this.panes.get(paneId)
-    if (!handle || handle.pane.status === 'exited') return
+    // Loudly, like submit. Returning quietly meant the IPC replied ok, the UI
+    // said "Relayed to codex", and the payload went nowhere — a green notice
+    // over a dropped message is worse than an error.
+    if (!handle || handle.pane.status === 'exited') throw new Error('the pane is no longer live')
     this.submitter.paste(paneId, text)
   }
 

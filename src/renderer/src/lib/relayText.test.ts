@@ -72,6 +72,30 @@ describe('cleaning what a TUI drew before relaying it', () => {
     expect(out).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
   })
 
+  it('keeps a directory tree, which is branches not borders', () => {
+    // Found by Gemini. `├` and `└` are box-drawing, so TITLE_LEAD ate the
+    // branch off every `├── src/` — and a tree is one of the most ordinary
+    // things anybody relays.
+    expect(cleanRelayText(['├── src/', '│   └── main.ts', '└── package.json']))
+      .toBe('├── src/\n│   └── main.ts\n└── package.json')
+  })
+
+  it('still unwraps a real titled border, which is closed at both ends', () => {
+    expect(cleanRelayText(['╭─── Findings ───╮'])).toBe('Findings')
+    expect(cleanRelayText(['├──── Findings ────┤'])).toBe('Findings')
+  })
+
+  it('finds a code fence drawn inside a box', () => {
+    // The fence test ran on the raw line, so `│ ```ts │` never matched and the
+    // protection never applied where TUI output actually puts code.
+    expect(cleanRelayText([
+      '│ ```ts       │',
+      '│ ──────      │',
+      '│     x = 1   │',
+      '│ ```         │',
+    ])).toBe('```ts\n──────\n    x = 1\n```')
+  })
+
   it('never touches ASCII dashes, because those are diffs and prose', () => {
     // `─` is U+2500 and only a terminal draws it. `-` is what every diff
     // header, front-matter fence and command flag is made of, and eating those

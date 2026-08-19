@@ -44,6 +44,15 @@ export function rememberSelection(paneId: Id, text: string): void {
   if (text.trim()) lastSelection.set(paneId, text)
 }
 
+/**
+ * Ends the remembered selection.
+ *
+ * Called when the person submits something to the pane, and after a relay
+ * consumes one. Without it the memory was permanent: selecting a single word
+ * once meant the menu offered that word forever, and the last answer could
+ * never be relayed again from that pane — the memory that made the feature
+ * work also broke it.
+ */
 export function forgetSelection(paneId: Id): void {
   lastSelection.delete(paneId)
 }
@@ -104,4 +113,22 @@ export function relayState(input: {
   if (input.targets === 0) return 'no-targets'
   if (input.selection.trim()) return 'selection'
   return input.lastOutput.trim() ? 'output' : 'nothing'
+}
+
+/**
+ * Whether a pane can receive a relay.
+ *
+ * A shell has no conversation to relay into, and a room takes a turn rather
+ * than keystrokes. A pane still booting is the interesting one: a paste
+ * arriving during a CLI's startup splash — before it has put its terminal in
+ * raw mode — is swallowed, and the relay would report success over a message
+ * that was never received.
+ *
+ * An unknown status counts as ready. The registry catches up over an event,
+ * and refusing until it does would make the relay unavailable for the first
+ * moments of every pane's life.
+ */
+export function canReceiveRelay(kind: string, status: string | undefined): boolean {
+  if (kind === 'shell' || kind === 'room') return false
+  return status !== 'exited' && status !== 'starting'
 }

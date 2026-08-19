@@ -46,7 +46,19 @@ const codex = {
   persona: '',
 }
 
-let appEventListener: ((event: AppEvent) => void) | null = null
+/**
+ * Every subscriber, not just the last one.
+ *
+ * The real bridge is `ipcRenderer.on`, which fans out. Holding a single
+ * listener here silently dropped all but the most recent subscriber — and both
+ * the store and the Grid subscribe, so the store never saw an event and its
+ * pane registry stayed empty through every test that tried to populate it.
+ * Tests then passed against behaviour the app does not have.
+ */
+let appEventListeners: Array<(event: AppEvent) => void> = []
+const appEventListener = (event: AppEvent): void => {
+  for (const listener of [...appEventListeners]) listener(event)
+}
 
 /** The palette, mounted open — it renders nothing while closed. */
 function OpenPalette(): ReactNode {
@@ -107,9 +119,9 @@ function installBridge(
       return unwrapInvokeResult(result)
     },
     onEvent: (listener) => {
-      appEventListener = listener
+      appEventListeners.push(listener)
       return () => {
-        if (appEventListener === listener) appEventListener = null
+        appEventListeners = appEventListeners.filter((each) => each !== listener)
       }
     },
     onPtyData: () => () => {},
@@ -145,7 +157,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
-  appEventListener = null
+  appEventListeners = []
 })
 
 async function assertLedgerGateActionsDisabled(invoked: CommandName[]): Promise<void> {

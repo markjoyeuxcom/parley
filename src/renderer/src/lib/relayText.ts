@@ -19,13 +19,25 @@
  */
 
 /**
- * Vertical rules a TUI uses as a left or right edge.
+ * The vertical rules a TUI uses as a left and right edge.
  *
  * Box-drawing block only. ASCII `|` is a markdown table column, a shell pipe
  * and a regex alternation — treating it as furniture turned every relayed
  * table into prose.
+ *
+ * BOTH ends are required, which is what tells a box from its lookalikes. A
+ * leading `│` alone is far more often content: the connector in a directory
+ * tree, or a glyph inside a code block. A box is closed.
  */
-const EDGE = /^[│┃┆┇┊┋║]\s?|\s?[│┃┆┇┊┋║]$/g
+const EDGE_LEAD = /^[│┃┆┇┊┋║]\s?/
+const EDGE_TAIL = /\s*[│┃┆┇┊┋║]$/
+
+function unbox(line: string): string {
+  const trimmed = line.replace(/\s+$/, '')
+  return EDGE_LEAD.test(trimmed) && EDGE_TAIL.test(trimmed)
+    ? trimmed.replace(EDGE_LEAD, '').replace(EDGE_TAIL, '').replace(/\s+$/, '')
+    : trimmed
+}
 
 /** Box-drawing characters, and nothing else. `─` is U+2500; `-` is not. */
 const BOX = '─━═╌╍┄┅┈┉╭╮╰╯┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬│┃┆┇┊┋║'
@@ -39,7 +51,14 @@ const BOX = '─━═╌╍┄┅┈┉╭╮╰╯┌┐└┘├┤┬┴┼�
  */
 const RULE = new RegExp(`^[\\s${BOX}]*$`)
 
-/** The decoration wrapped around a titled border — `╭─── Findings ───╮`. */
+/**
+ * The decoration wrapped around a titled border — `╭─── Findings ───╮`.
+ *
+ * Both ends are required. `├` and `└` are box-drawing too, and matching a
+ * leading run alone ate the branch off every `├── src/` in a directory tree —
+ * one of the most ordinary things anybody relays. A border is closed; a tree
+ * branch is not.
+ */
 const TITLE_LEAD = new RegExp(`^[${BOX}]+\\s*`)
 const TITLE_TAIL = new RegExp(`\\s*[${BOX}]+$`)
 
@@ -50,17 +69,27 @@ const DEFAULT_MAX = 40_000
 export function cleanRelayText(lines: readonly string[], maxChars = DEFAULT_MAX): string {
   const stripped: string[] = []
   let fenced = false
+  // Whether the fence we are inside was itself drawn in a box. If it was, its
+  // contents are boxed too and the edges come off; if it was not, a `│` on a
+  // line inside it is a character somebody typed.
+  let fenceBoxed = false
 
   for (const raw of lines) {
-    if (FENCE.test(raw)) {
+    // Edges come off BEFORE the fence is looked for. A TUI draws code blocks
+    // inside its own box, so the fence arrives as `│ ```ts │` and a check
+    // against the raw line never matched — the protection never applied
+    // anywhere it was actually needed.
+    const bare = unbox(raw)
+    if (FENCE.test(bare)) {
+      if (!fenced) fenceBoxed = bare !== raw.replace(/\s+$/, '')
       fenced = !fenced
-      stripped.push(raw.replace(/\s+$/, ''))
+      stripped.push(bare)
       continue
     }
-    // Inside a fence every character is content: a `│` is a glyph somebody
-    // typed, a blank line is structure, indentation is meaning.
+    // Inside a fence every character is content: a blank line is structure and
+    // indentation is meaning. Only the box around it, if there was one, goes.
     if (fenced) {
-      stripped.push(raw.replace(/\s+$/, ''))
+      stripped.push(fenceBoxed ? bare : raw.replace(/\s+$/, ''))
       continue
     }
 
@@ -69,7 +98,7 @@ export function cleanRelayText(lines: readonly string[], maxChars = DEFAULT_MAX)
     // markdown hard break is indistinguishable from a hundred columns of
     // filler — leaking the filler into another CLI's prompt is the worse of
     // the two mistakes.
-    const withoutEdges = raw.replace(/\s+$/, '').replace(EDGE, '')
+    const withoutEdges = bare
     if (RULE.test(withoutEdges)) {
       // A rule is a blank line's worth of separation, not a line of content.
       stripped.push('')
@@ -78,7 +107,8 @@ export function cleanRelayText(lines: readonly string[], maxChars = DEFAULT_MAX)
     // A border with a title in it is a heading wearing a frame — but only when
     // the line BEGINS with box-drawing, so `    const rule = "─"` keeps the
     // indentation that makes it code.
-    const titled = TITLE_LEAD.test(withoutEdges)
+    // Closed at BOTH ends or it is not a border.
+    const titled = TITLE_LEAD.test(withoutEdges) && TITLE_TAIL.test(withoutEdges)
       ? withoutEdges.replace(TITLE_LEAD, '').replace(TITLE_TAIL, '')
       : withoutEdges
     stripped.push(titled.replace(/\s+$/, ''))

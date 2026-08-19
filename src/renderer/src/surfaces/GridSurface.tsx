@@ -32,7 +32,8 @@ import {
   type SplitPath,
 } from '../lib/layout'
 import { shortPath } from '../lib/format'
-import { paneSelection, relayState, termAccess } from '../lib/termSelection'
+import { canReceiveRelay, forgetSelection, paneSelection, relayState, termAccess } from '../lib/termSelection'
+import { cleanRelayText } from '../lib/relayText'
 import { useStore } from '../state'
 import { TerminalPane } from '../components/TerminalPane'
 import { RosterDialog } from '../components/RosterDialog'
@@ -564,8 +565,8 @@ export function GridSurface(): ReactNode {
       .filter((slotId) => slotId !== fromSlotId)
       .filter((slotId) => {
         const slot = slots[slotId]
-        if (!slot?.paneId || slot.kind === 'shell' || slot.kind === 'room') return false
-        return paneById.get(slot.paneId)?.status !== 'exited'
+        if (!slot?.paneId) return false
+        return canReceiveRelay(slot.kind, paneById.get(slot.paneId)?.status)
       })
       .map((slotId) => ({ slotId, name: paneName(slotId) }))
 
@@ -587,7 +588,12 @@ export function GridSurface(): ReactNode {
     const selection = from?.paneId ? paneSelection(from.paneId) : ''
     // A selection wins when there is one: choosing text is somebody saying
     // "this part", and sending the whole answer instead would override them.
-    const body = selection.trim() || (from?.paneId ? termAccess(from.paneId)?.lastOutput() ?? '' : '')
+    // A selection is dragged across the same boxes the buffer is drawn in, so
+    // it needs the same frame taken off — and the same bound, since the IPC
+    // schema refuses an oversized payload and a whole scrollback can exceed it.
+    const body = selection.trim()
+      ? cleanRelayText(selection.split('\n'))
+      : (from?.paneId ? termAccess(from.paneId)?.lastOutput() ?? '' : '')
     if (!body.trim() || !to?.paneId) {
       notify('warn', 'Nothing to relay from that pane yet.')
       return
@@ -595,6 +601,9 @@ export function GridSurface(): ReactNode {
     const relayed = `${paneName(fromSlotId)} said:\n\n${body.trim()}`
     const sent = await attempt(() => api.pastePane(to.paneId as Id, relayed))
     if (!sent) return
+    // Consumed. The next relay from this pane should offer its next answer,
+    // not the selection that has already been sent.
+    if (from?.paneId) forgetSelection(from.paneId)
     setFocusedSlot(toSlotId)
     notify('info', `Relayed to ${paneName(toSlotId)}.`)
   }
