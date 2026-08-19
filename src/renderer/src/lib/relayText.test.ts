@@ -32,6 +32,46 @@ describe('cleaning what a TUI drew before relaying it', () => {
     expect(cleanRelayText(['├──── Findings ────┤'])).toBe('Findings')
   })
 
+  it('never touches ASCII pipes, because those are markdown tables', () => {
+    // Found by Codex, reviewing this file through the relay. The EDGE class
+    // included ASCII `|` — so every markdown table relayed between two CLIs
+    // lost its columns and became prose, while the commit message claimed
+    // ASCII was never touched.
+    expect(cleanRelayText(['| value |', '| --- |', '| `x` |']))
+      .toBe('| value |\n| --- |\n| `x` |')
+  })
+
+  it('keeps indentation on a line that merely contains a box glyph', () => {
+    // TITLE_FRAME had \s in its class, so any line holding a `─` anywhere had
+    // its leading whitespace eaten — which is exactly the code the relay is
+    // most often carrying.
+    expect(cleanRelayText(['```ts', '    const rule = "─"', '```']))
+      .toBe('```ts\n    const rule = "─"\n```')
+  })
+
+  it('leaves everything inside a code fence exactly as it was', () => {
+    // Inside a fence a `│` is content, and a blank line is structure.
+    expect(cleanRelayText(['```text', '│ literal', '', '', 'still code', '```']))
+      .toBe('```text\n│ literal\n\n\nstill code\n```')
+  })
+
+  it('does not mistake a conflict marker for a rule', () => {
+    // `>` and `v` were in the rule class as TUI arrows. A bare conflict marker
+    // is made of nothing else, and losing it silently changes what a diff says.
+    expect(cleanRelayText(['<<<<<<< HEAD', 'ours', '=======', 'theirs', '>>>>>>>']))
+      .toBe('<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>>')
+  })
+
+  it('keeps a whole first line when the cut lands exactly on a boundary', () => {
+    expect(cleanRelayText(['abc', 'def', 'ghi'], 7)).toBe('def\nghi')
+  })
+
+  it('never splits a surrogate pair', () => {
+    const out = cleanRelayText(['A\u{1F44D}B'], 3)
+    expect(out).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
+    expect(out).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
+  })
+
   it('never touches ASCII dashes, because those are diffs and prose', () => {
     // `─` is U+2500 and only a terminal draws it. `-` is what every diff
     // header, front-matter fence and command flag is made of, and eating those

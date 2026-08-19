@@ -134,6 +134,60 @@ describe('interactive prompt submission', () => {
     expect((writes[0] as string).slice(6, -6)).not.toContain('\r')
   })
 
+  it('neutralises a closing paste marker inside the payload', () => {
+    // Found by Codex reviewing the relay. The payload is another model's
+    // output, and if it contains the closing marker the receiving TUI leaves
+    // paste mode early — everything after it is then interpreted as typing,
+    // in a CLI that runs commands. Relayed content must never be able to
+    // decide where the paste ends.
+    vi.useFakeTimers()
+    const writes: string[] = []
+    const submitter = new PanePromptSubmitter((_, data) => writes.push(data), 200)
+
+    submitter.paste('pane-1', 'harmless \u001b[201~ rm -rf something')
+    const body = writes[0] as string
+    expect(body.startsWith('\u001b[200~')).toBe(true)
+    expect(body.endsWith('\u001b[201~')).toBe(true)
+    // Exactly one opening and one closing marker: the ones we put there.
+    expect(body.split('\u001b[201~')).toHaveLength(2)
+    expect(body.split('\u001b[200~')).toHaveLength(2)
+    expect(body).toContain('rm -rf something')
+  })
+
+  it('submits the first relay before starting a second', () => {
+    // Two relays inside the settle window: the second used to clear the
+    // first's timer, so the first body never got its Enter and both were
+    // submitted together as one run-on message.
+    vi.useFakeTimers()
+    const writes: string[] = []
+    const submitter = new PanePromptSubmitter((_, data) => writes.push(data), 200)
+
+    submitter.paste('pane-1', 'first')
+    vi.advanceTimersByTime(100)
+    submitter.paste('pane-1', 'second')
+    vi.advanceTimersByTime(200)
+
+    // first body, its Enter, second body, its Enter — in that order.
+    expect(writes.filter((w) => w === '\r')).toHaveLength(2)
+    expect(writes.indexOf('\r')).toBeLessThan(writes.findIndex((w) => w.includes('second')))
+  })
+
+  it('submits the first prompt before starting a second', () => {
+    // Codex only looked at paste, but submit had the identical race: two
+    // skills, or a broadcast onto a pane already mid-submit, merged into one
+    // run-on message.
+    vi.useFakeTimers()
+    const writes: string[] = []
+    const submitter = new PanePromptSubmitter((_, data) => writes.push(data), 200)
+
+    submitter.submit('pane-1', 'first')
+    vi.advanceTimersByTime(100)
+    submitter.submit('pane-1', 'second')
+    vi.advanceTimersByTime(200)
+
+    expect(writes).toEqual(['first', '\r', 'second', '\r'])
+  })
+
   it('does not press Enter after the pane has exited', () => {
     vi.useFakeTimers()
     const writes: string[] = []

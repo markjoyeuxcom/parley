@@ -7,61 +7,118 @@
  * pretending to be a message, and the receiving model has to guess which
  * characters were the point.
  *
- * So the frame comes off and the text stays. Deliberately conservative: only
- * characters that can ONLY be furniture are removed, and indentation inside
- * the frame survives untouched, because relaying code is most of the point and
- * two leading spaces are load-bearing there.
+ * So the frame comes off and the text stays. The bias is heavily towards
+ * leaving things alone: anything that could plausibly be content is content.
+ *
+ * The first version was not careful enough, and Codex — reviewing this file
+ * through the relay itself — found four ways it corrupted real output: ASCII
+ * table pipes read as box edges, indentation eaten from any line that merely
+ * contained a `─`, code fences reflowed, and a bare `>>>>>>>` conflict marker
+ * deleted as a rule. Every one of those is the relay damaging exactly what it
+ * exists to carry, which is worse than relaying a stray `│`.
  */
-
-/** Vertical rules a TUI uses as a left or right edge. */
-const EDGE = /^[│┃┆┇┊┋║|]\s?|\s?[│┃┆┇┊┋║|]$/g
 
 /**
- * The decoration around a titled border — `╭─── Findings ───╮`.
+ * Vertical rules a TUI uses as a left or right edge.
  *
- * Only the box-drawing block, never ASCII. `─` is U+2500 and nothing but a
- * terminal draws it; `-` is what every diff header, fence and command flag is
- * made of, and eating those would corrupt the most valuable thing the relay
- * carries.
+ * Box-drawing block only. ASCII `|` is a markdown table column, a shell pipe
+ * and a regex alternation — treating it as furniture turned every relayed
+ * table into prose.
  */
-const TITLE_FRAME = /^[\s╭╮╰╯┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬─━═╌╍┄┅┈┉]+|[\s╭╮╰╯┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬─━═╌╍┄┅┈┉]+$/g
+const EDGE = /^[│┃┆┇┊┋║]\s?|\s?[│┃┆┇┊┋║]$/g
 
-/** A line that is only a horizontal rule, corner or junction. */
-const RULE = /^[\s─━═╌╍┄┅┈┉╭╮╰╯┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬<>v^]*$/
+/** Box-drawing characters, and nothing else. `─` is U+2500; `-` is not. */
+const BOX = '─━═╌╍┄┅┈┉╭╮╰╯┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬│┃┆┇┊┋║'
+
+/**
+ * A line that is only furniture.
+ *
+ * `<`, `>`, `v` and `^` were once in here as TUI arrows. A bare `>>>>>>>` is
+ * made of nothing else, and silently deleting a conflict marker changes what a
+ * diff says.
+ */
+const RULE = new RegExp(`^[\\s${BOX}]*$`)
+
+/** The decoration wrapped around a titled border — `╭─── Findings ───╮`. */
+const TITLE_LEAD = new RegExp(`^[${BOX}]+\\s*`)
+const TITLE_TAIL = new RegExp(`\\s*[${BOX}]+$`)
+
+const FENCE = /^\s*(?:```|~~~)/
 
 const DEFAULT_MAX = 40_000
 
 export function cleanRelayText(lines: readonly string[], maxChars = DEFAULT_MAX): string {
   const stripped: string[] = []
+  let fenced = false
+
   for (const raw of lines) {
-    // Right edge first: trailing padding inside the box is not indentation.
+    if (FENCE.test(raw)) {
+      fenced = !fenced
+      stripped.push(raw.replace(/\s+$/, ''))
+      continue
+    }
+    // Inside a fence every character is content: a `│` is a glyph somebody
+    // typed, a blank line is structure, indentation is meaning.
+    if (fenced) {
+      stripped.push(raw.replace(/\s+$/, ''))
+      continue
+    }
+
+    // Trailing spaces go first, and deliberately. They are the padding a cell
+    // grid produces, and by the time text reaches a buffer an authored
+    // markdown hard break is indistinguishable from a hundred columns of
+    // filler — leaking the filler into another CLI's prompt is the worse of
+    // the two mistakes.
     const withoutEdges = raw.replace(/\s+$/, '').replace(EDGE, '')
     if (RULE.test(withoutEdges)) {
       // A rule is a blank line's worth of separation, not a line of content.
       stripped.push('')
       continue
     }
-    // A border with a title in it is a heading wearing a frame. Only unwrapped
-    // when the line actually carries box-drawing characters, so indentation on
-    // an ordinary line is never mistaken for decoration.
-    const titled = /[╭╮╰╯┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬─━═╌╍┄┅┈┉]/.test(withoutEdges)
-      ? withoutEdges.replace(TITLE_FRAME, '')
+    // A border with a title in it is a heading wearing a frame — but only when
+    // the line BEGINS with box-drawing, so `    const rule = "─"` keeps the
+    // indentation that makes it code.
+    const titled = TITLE_LEAD.test(withoutEdges)
+      ? withoutEdges.replace(TITLE_LEAD, '').replace(TITLE_TAIL, '')
       : withoutEdges
     stripped.push(titled.replace(/\s+$/, ''))
   }
 
   const out: string[] = []
+  let inFence = false
   for (const line of stripped) {
-    // Three blank lines say nothing the first one did not.
-    if (!line.trim() && !out.at(-1)?.trim() && out.length > 0) continue
+    if (FENCE.test(line)) inFence = !inFence
+    // Three blank lines say nothing the first one did not — outside a fence,
+    // where a run of them may be the shape of the code.
+    if (!inFence && !line.trim() && !out.at(-1)?.trim() && out.length > 0) continue
     out.push(line)
   }
   while (out.length && !out[0]?.trim()) out.shift()
   while (out.length && !out.at(-1)?.trim()) out.pop()
 
-  const text = out.join('\n')
+  return trimToEnd(out.join('\n'), maxChars)
+}
+
+/**
+ * The last `maxChars`, cut at a line boundary and never mid-character.
+ *
+ * Keeps the END: the answer is the last thing said, and a relay carrying the
+ * first 40 KB of a long session would carry everything except it.
+ */
+function trimToEnd(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text
-  // Keep the END. The answer is the last thing said, and a relay that carried
-  // the first 40 KB of a long session would carry everything except it.
-  return text.slice(text.length - maxChars).replace(/^[^\n]*\n/, '')
+  let at = text.length - maxChars
+
+  // Never start inside a surrogate pair. Half of one is an ill-formed string
+  // that renders as a replacement character wherever it lands.
+  if (at > 0 && /[\uD800-\uDBFF]/.test(text[at - 1] as string)) at += 1
+
+  const window = text.slice(at)
+  // A cut landing just after a newline already begins a whole line; advancing
+  // to the next one would discard a complete line for nothing.
+  if (at === 0 || text[at - 1] === '\n') return window
+  const nextLine = window.indexOf('\n')
+  // No boundary in the window at all: it is one partial line, and relaying
+  // half a line as though it were whole misrepresents what was said.
+  return nextLine === -1 ? '' : window.slice(nextLine + 1)
 }

@@ -9,6 +9,7 @@ import { PtyManager } from '@main/pty/manager'
 import { RoomManager } from '@main/rooms/manager'
 import { disposeIpc, registerIpc } from '@main/ipc/register'
 import { applyResolvedPath, preflightPty } from '@main/util/environment'
+import { sendToRenderer } from '@main/util/renderer'
 
 // Dev and packaged installs must never share a record. The dev checkout
 // migrates the schema ahead of any frozen .dmg — whose downgrade guard would
@@ -27,9 +28,11 @@ let health: CliHealth[] = []
 const databasePath = join(app.getPath('userData'), 'parley.db')
 
 function send(channel: string, payload: unknown): void {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(channel, payload)
-  }
+  // Guarding the WINDOW is not enough: its render frame can be disposed while
+  // the window object is alive, and every PTY chunk then throws. See
+  // sendToRenderer, which owns that distinction and the race behind it.
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  sendToRenderer(mainWindow.webContents, channel, payload)
 }
 
 const emit = (event: AppEvent): void => send(CH.event, event)

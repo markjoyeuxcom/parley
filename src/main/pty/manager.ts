@@ -140,11 +140,18 @@ export class PanePromptSubmitter {
    * follows.
    */
   paste(paneId: Id, text: string): void {
-    const pending = this.timers.get(paneId)
-    if (pending) clearTimeout(pending)
+    // Submit whatever is already waiting before starting another paste.
+    // Clearing the pending timer instead meant the first body never got its
+    // Enter, and both arrived at the CLI as one run-on message.
+    this.flush(paneId)
     // A CR inside the payload IS Enter to the receiving TUI, and content
     // copied out of a terminal is full of them.
-    const body = text.replace(/\r\n?/g, '\n')
+    //
+    // The markers go too. The payload is another model's output, and a closing
+    // marker inside it would end paste mode early — everything after it then
+    // read as typing, in a CLI that runs commands. Relayed content does not
+    // get to decide where the paste ends.
+    const body = text.replace(/\r\n?/g, '\n').replace(/\u001b\[20[01]~/g, '')
     this.write(paneId, `\u001b[200~${body}\u001b[201~`)
     this.timers.set(paneId, setTimeout(() => {
       this.timers.delete(paneId)
@@ -152,9 +159,19 @@ export class PanePromptSubmitter {
     }, this.settleMs))
   }
 
-  submit(paneId: Id, text: string): void {
+  /** Sends the Enter a pending body is still waiting for, if there is one. */
+  private flush(paneId: Id): void {
     const pending = this.timers.get(paneId)
-    if (pending) clearTimeout(pending)
+    if (!pending) return
+    clearTimeout(pending)
+    this.timers.delete(paneId)
+    this.write(paneId, '\r')
+  }
+
+  submit(paneId: Id, text: string): void {
+    // Same race as paste: two skills, or a broadcast landing on a pane that
+    // was already mid-submit, used to merge into one run-on message.
+    this.flush(paneId)
     this.write(paneId, text.replace(/\r?\n/g, ' '))
     this.timers.set(paneId, setTimeout(() => {
       this.timers.delete(paneId)
