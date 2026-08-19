@@ -850,6 +850,14 @@ button.chip:hover {
   min-width: 0;
 }
 
+/* A line of explanation inside a menu, not an action. */
+.menu__note {
+  padding: var(--s2) var(--s3);
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+  line-height: 1.4;
+}
+
 .menu__section {
   padding: var(--s3) var(--s3) var(--s2);
   border-top: 1px solid var(--line-faint);

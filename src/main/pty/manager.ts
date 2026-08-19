@@ -124,6 +124,34 @@ export class PanePromptSubmitter {
     private readonly settleMs = 200,
   ) {}
 
+  /**
+   * Hands a pane pasted content, the way ⌘V does.
+   *
+   * The relay carries what one CLI said into another — code blocks, file
+   * listings, numbered findings — and neither of the obvious deliveries
+   * works. `submit` flattens newlines to spaces, which is right for a
+   * one-line instruction and ruins a diff. Writing the newlines raw is worse:
+   * a TUI reads the first one as Enter and submits a message cut off after
+   * its opening line.
+   *
+   * Bracketed paste is the mechanism the terminal already has for exactly
+   * this. The CLI reads the span between the markers as pasted content rather
+   * than as typing, newlines survive, and nothing is submitted until Enter
+   * follows.
+   */
+  paste(paneId: Id, text: string): void {
+    const pending = this.timers.get(paneId)
+    if (pending) clearTimeout(pending)
+    // A CR inside the payload IS Enter to the receiving TUI, and content
+    // copied out of a terminal is full of them.
+    const body = text.replace(/\r\n?/g, '\n')
+    this.write(paneId, `\u001b[200~${body}\u001b[201~`)
+    this.timers.set(paneId, setTimeout(() => {
+      this.timers.delete(paneId)
+      this.write(paneId, '\r')
+    }, this.settleMs))
+  }
+
   submit(paneId: Id, text: string): void {
     const pending = this.timers.get(paneId)
     if (pending) clearTimeout(pending)
@@ -347,6 +375,12 @@ export class PtyManager {
     } catch {
       // Already gone; the exit handler records it.
     }
+  }
+
+  paste(paneId: Id, text: string): void {
+    const handle = this.panes.get(paneId)
+    if (!handle || handle.pane.status === 'exited') return
+    this.submitter.paste(paneId, text)
   }
 
   submit(paneId: Id, text: string): void {

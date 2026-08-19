@@ -215,6 +215,11 @@ const HANDLERS: Record<CommandName, Handler> = {
     ctx.pty.write(paneId, data)
     return { ok: true }
   },
+  'pane.paste': (p, ctx) => {
+    const { paneId, text } = p as { paneId: string; text: string }
+    ctx.pty.paste(paneId, text)
+    return { ok: true }
+  },
   'pane.resize': (p, ctx) => {
     const { paneId, cols, rows } = p as { paneId: string; cols: number; rows: number }
     ctx.pty.resize(paneId, cols, rows)

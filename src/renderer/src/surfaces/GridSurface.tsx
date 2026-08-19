@@ -530,6 +530,51 @@ export function GridSurface(): ReactNode {
     }
   }
 
+  /** What a pane is called when another pane is told where something came from. */
+  const paneName = (slotId: Id): string => {
+    const slot = slots[slotId]
+    const pane = slot?.paneId ? paneById.get(slot.paneId) : undefined
+    return pane?.title?.trim() || slot?.kind || 'pane'
+  }
+
+  /** The other live agent panes — a shell has no conversation to relay into. */
+  const relayTargets = (fromSlotId: Id): Array<{ slotId: Id; name: string }> =>
+    liveSlots
+      .filter((slotId) => slotId !== fromSlotId)
+      .filter((slotId) => {
+        const slot = slots[slotId]
+        if (!slot?.paneId || slot.kind === 'shell' || slot.kind === 'room') return false
+        return paneById.get(slot.paneId)?.status !== 'exited'
+      })
+      .map((slotId) => ({ slotId, name: paneName(slotId) }))
+
+  /**
+   * Hand what one CLI said to another.
+   *
+   * The loop this app exists for, which people run by hand: read Claude's
+   * answer, copy it, paste it into Codex, paste the reply back. Both halves
+   * were already here — every terminal registers a selection accessor, and
+   * `pane.paste` types into a running session — and nothing joined them.
+   *
+   * Attribution travels with the text because the receiving CLI has no idea
+   * where it came from, and an unattributed wall of someone else's reasoning
+   * reads as the user's own words.
+   */
+  const relaySelection = async (fromSlotId: Id, toSlotId: Id): Promise<void> => {
+    const from = slots[fromSlotId]
+    const to = slots[toSlotId]
+    const selection = from?.paneId ? (termAccess(from.paneId)?.getSelection() ?? '') : ''
+    if (!selection.trim() || !to?.paneId) {
+      notify('warn', 'Select something in the pane first.')
+      return
+    }
+    const relayed = `${paneName(fromSlotId)} said:\n\n${selection.trim()}`
+    const sent = await attempt(() => api.pastePane(to.paneId as Id, relayed))
+    if (!sent) return
+    setFocusedSlot(toSlotId)
+    notify('info', `Relayed to ${paneName(toSlotId)}.`)
+  }
+
   const runSkillOnSlot = async (slotId: Id, skill: Skill): Promise<void> => {
     const slot = slots[slotId]
     if (!slot) return
@@ -819,6 +864,39 @@ export function GridSurface(): ReactNode {
                           </>
                         )}
                       </MenuSection>
+                      {slot.kind !== 'room' && slot.paneId ? (
+                        <MenuSection>
+                          {/*
+                            The relay. Every pane has registered a selection
+                            accessor since the find bar landed and nothing has
+                            ever called it — meanwhile the loop this app exists
+                            for was somebody copying an answer out of one CLI
+                            and pasting it into another by hand.
+
+                            Read at open time, not at render: a menu built
+                            before the drag would offer a stale selection.
+                          */}
+                          {relayTargets(id).length === 0 ? (
+                            <div className="menu__note">Open another agent pane to relay into.</div>
+                          ) : termAccess(slot.paneId)?.getSelection().trim() ? (
+                            relayTargets(id).map((target) => (
+                              <MenuItem
+                                key={target.slotId}
+                                onClick={() => {
+                                  close()
+                                  void relaySelection(id, target.slotId)
+                                }}
+                              >
+                                Send selection to {target.name}
+                              </MenuItem>
+                            ))
+                          ) : (
+                            <div className="menu__note">
+                              Select text in this pane to relay it to another.
+                            </div>
+                          )}
+                        </MenuSection>
+                      ) : null}
                       <MenuSection>
                         <MenuItem
                           onClick={() => {

@@ -102,6 +102,38 @@ describe('interactive prompt submission', () => {
     expect(writes).toEqual(['line one line two', '\r'])
   })
 
+  it('pastes relayed content instead of typing it, so newlines survive', () => {
+    // The relay carries what one CLI said into another: code blocks, file
+    // listings, numbered findings. `submit` flattens newlines to spaces, which
+    // is right for a one-line instruction and destroys everything else — and
+    // sending the newlines raw would submit at the first one, cutting the
+    // message off after its opening line.
+    //
+    // Bracketed paste is what ⌘V does: the CLI reads it as pasted content,
+    // keeps the newlines, and submits nothing until Enter arrives.
+    vi.useFakeTimers()
+    const writes: string[] = []
+    const submitter = new PanePromptSubmitter((_, data) => writes.push(data), 200)
+
+    submitter.paste('pane-1', 'function add(a, b) {\n  return a + b\n}')
+    expect(writes).toEqual(['\u001b[200~function add(a, b) {\n  return a + b\n}\u001b[201~'])
+
+    vi.advanceTimersByTime(200)
+    expect(writes[1]).toBe('\r')
+  })
+
+  it('normalises carriage returns so a paste cannot submit early', () => {
+    // A CR inside pasted content is Enter as far as the TUI is concerned, and
+    // content copied from a terminal is full of them.
+    vi.useFakeTimers()
+    const writes: string[] = []
+    const submitter = new PanePromptSubmitter((_, data) => writes.push(data), 200)
+
+    submitter.paste('pane-1', 'one\r\ntwo\rthree')
+    expect(writes[0]).toBe('\u001b[200~one\ntwo\nthree\u001b[201~')
+    expect((writes[0] as string).slice(6, -6)).not.toContain('\r')
+  })
+
   it('does not press Enter after the pane has exited', () => {
     vi.useFakeTimers()
     const writes: string[] = []

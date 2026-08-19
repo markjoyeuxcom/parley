@@ -38,6 +38,11 @@ export const OpenPaneReq = z.object({
 })
 
 export const PaneWriteReq = z.object({ paneId: Id, data: z.string() })
+/**
+ * Relayed content. Bounded, because this is one CLI's output going into
+ * another's prompt and an unbounded paste is somebody's whole scrollback.
+ */
+export const PanePasteReq = z.object({ paneId: Id, text: z.string().min(1).max(200_000) })
 export const PaneResizeReq = z.object({
   paneId: Id,
   cols: z.number().int().min(2).max(2000),
@@ -129,6 +134,7 @@ export const COMMANDS = {
   // Terminal panes
   'pane.open': OpenPaneReq,
   'pane.write': PaneWriteReq,
+  'pane.paste': PanePasteReq,
   'pane.resize': PaneResizeReq,
   'pane.close': PaneCloseReq,
   'pane.stop': PaneStopReq,

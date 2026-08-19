@@ -14,6 +14,7 @@ import { StoreProvider, useStore } from '../state'
 import { Titlebar } from '../components/Titlebar'
 import { CommandPalette } from '../components/CommandPalette'
 import { GridSurface } from './GridSurface'
+import { registerTerm } from '../lib/termSelection'
 
 /**
  * Mounted-tree smoke tests.
@@ -116,7 +117,32 @@ function installBridge(
   }
 }
 
-beforeEach(() => installBridge())
+beforeEach(() => {
+  installBridge()
+  // A real terminal pane needs two browser APIs jsdom does not ship: xterm
+  // asks the window for its colour scheme, and the pane watches its own box
+  // for resizes. Without both, mounting one throws during render and the whole
+  // tree comes back empty — which reads as "the button is missing".
+  if (!('ResizeObserver' in globalThis)) {
+    ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+  }
+  {
+    window.matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia
+  }
+})
 afterEach(() => {
   cleanup()
   appEventListener = null
@@ -180,6 +206,63 @@ describe('mounted-surface smoke', () => {
     expect(chip('agy').getAttribute('title')).toContain('optional')
     expect(chip('codex').querySelector('.dot--fail')).toBeTruthy()
     expect(chip('claude').querySelector('.dot--pass')).toBeTruthy()
+  })
+
+  it('relays a selection from one CLI pane into another, attributed and pasted', async () => {
+    // The loop this app exists for: read Claude's answer, hand it to Codex,
+    // hand the reply back. Both halves were already present — every terminal
+    // registers a selection accessor, and a pane can be typed into — and
+    // nothing joined them, so people did it with ⌘C.
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    let opened = 0
+    const born: Pane[] = []
+    installBridge({
+      'pane.open': (payload) => {
+        opened += 1
+        const kind = (payload as { kind: string }).kind as Pane['kind']
+        const pane: Pane = {
+          id: `pane-${opened}`, kind, title: kind === 'claude' ? 'Claude' : 'Codex',
+          cwd: '/tmp/smoke-repo', status: 'live', exitCode: null, createdAt: opened,
+        }
+        born.push(pane)
+        return pane
+      },
+      'pane.paste': (payload) => {
+        invoked.push({ name: 'pane.paste', payload })
+        return { ok: true }
+      },
+    })
+
+    render(<StoreProvider><GridSurface /></StoreProvider>)
+    fireEvent.click(await screen.findByTitle('New Claude pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(1))
+    fireEvent.click(await screen.findByTitle('New Codex pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(2))
+    // The registry is fed by the event, not the invoke result — without it a
+    // pane has no title and the relay would name it by vendor.
+    act(() => {
+      for (const pane of born) appEventListener?.({ type: 'pane.created', pane })
+    })
+
+    // Stand in for xterm's own selection.
+    registerTerm('pane-1', {
+      getSelection: () => 'function add(a, b) {\n  return a + b\n}',
+      serialize: () => '', findNext: () => false, findPrevious: () => false, clearSearch: () => {},
+    })
+
+    const menus = await screen.findAllByTitle('Pane actions')
+    fireEvent.click(menus[0] as HTMLElement)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Send selection to codex/i }))
+
+    await waitFor(() => expect(invoked).toHaveLength(1))
+    const { paneId, text } = invoked[0]!.payload as { paneId: string; text: string }
+    // Into the OTHER pane, carrying where it came from, with its newlines.
+    expect(paneId).toBe('pane-2')
+    // Named by its title when the registry has one, by its vendor otherwise —
+    // either way the receiving CLI is told where this came from, because an
+    // unattributed wall of someone else's reasoning reads as the user's own.
+    expect(text.toLowerCase()).toContain('claude said:')
+    expect(text).toContain('function add(a, b) {\n  return a + b\n}')
   })
 
   it('a room opens as a pane, sends a turn, and renders the streamed reply', async () => {
