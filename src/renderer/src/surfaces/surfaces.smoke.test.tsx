@@ -14,7 +14,7 @@ import { StoreProvider, useStore } from '../state'
 import { Titlebar } from '../components/Titlebar'
 import { CommandPalette } from '../components/CommandPalette'
 import { GridSurface } from './GridSurface'
-import { registerTerm } from '../lib/termSelection'
+import { registerTerm, rememberSelection } from '../lib/termSelection'
 
 /**
  * Mounted-tree smoke tests.
@@ -302,6 +302,51 @@ describe('mounted-surface smoke', () => {
     const menu = await screen.findByRole('menu')
     expect(menu.textContent).toContain('hold ⌥ while dragging')
     expect(menu.textContent).toContain('Select text to relay it')
+  })
+
+  it('still relays a selection whose highlight has since gone', async () => {
+    // Selecting in a CLI that has claimed the mouse needs ⌥ held, and letting
+    // go of ⌥ drops the highlight — so by the time the menu is open xterm
+    // reports nothing selected. Reading the selection at menu-open time made
+    // the relay unusable from exactly the pane it exists to relay out of.
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    let opened = 0
+    installBridge({
+      'pane.open': (payload) => {
+        opened += 1
+        const kind = (payload as { kind: string }).kind as Pane['kind']
+        return {
+          id: `pane-${opened}`, kind, title: kind, cwd: '/tmp/smoke-repo',
+          status: 'live', exitCode: null, createdAt: opened,
+        }
+      },
+      'pane.paste': (payload) => { invoked.push({ name: 'pane.paste', payload }); return { ok: true } },
+    })
+
+    render(<StoreProvider><GridSurface /></StoreProvider>)
+    fireEvent.click(await screen.findByTitle('New Claude pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(1))
+    fireEvent.click(await screen.findByTitle('New Codex pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(2))
+
+    // The terminal reports NOTHING selected — the highlight is gone…
+    registerTerm('pane-1', {
+      getSelection: () => '',
+      serialize: () => '',
+      findNext: () => false, findPrevious: () => false, clearSearch: () => {},
+    })
+    // …but this is what was selected a moment ago.
+    rememberSelection('pane-1', 'function add(a, b) {\n  return a + b\n}')
+
+    fireEvent.click(screen.getAllByTitle('Pane actions')[0] as HTMLElement)
+    const menu = await screen.findByRole('menu')
+    // Never blind: the menu shows what it is about to send.
+    expect(menu.textContent).toContain('function add(a, b) {')
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Send selection to codex/i }))
+
+    await waitFor(() => expect(invoked).toHaveLength(1))
+    const { text } = invoked[0]!.payload as { text: string }
+    expect(text).toContain('function add(a, b) {\n  return a + b\n}')
   })
 
   it('a room opens as a pane, sends a turn, and renders the streamed reply', async () => {

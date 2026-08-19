@@ -17,10 +17,35 @@ export interface TermAccess {
 
 const terms = new Map<Id, TermAccess>()
 
+/**
+ * The last thing actually selected in each pane.
+ *
+ * Selecting in a CLI that has claimed the mouse needs ⌥ held, and letting go
+ * of ⌥ drops the highlight — so by the time the menu is open, xterm reports
+ * nothing selected and the relay has nothing to send. The same happens when
+ * the CLI redraws over the selection, which a live TUI does constantly.
+ *
+ * What somebody selected is not unselected by their hand leaving the
+ * keyboard, so it is kept until they select something else or the pane goes.
+ * A live selection always wins over the remembered one.
+ */
+const lastSelection = new Map<Id, string>()
+
+export function rememberSelection(paneId: Id, text: string): void {
+  if (text.trim()) lastSelection.set(paneId, text)
+}
+
+export function forgetSelection(paneId: Id): void {
+  lastSelection.delete(paneId)
+}
+
 export function registerTerm(paneId: Id, access: TermAccess): () => void {
   terms.set(paneId, access)
   return () => {
-    if (terms.get(paneId) === access) terms.delete(paneId)
+    if (terms.get(paneId) === access) {
+      terms.delete(paneId)
+      lastSelection.delete(paneId)
+    }
   }
 }
 
@@ -29,11 +54,13 @@ export function termAccess(paneId: Id): TermAccess | null {
 }
 
 export function paneSelection(paneId: Id): string {
+  let live = ''
   try {
-    return terms.get(paneId)?.getSelection() ?? ''
+    live = terms.get(paneId)?.getSelection() ?? ''
   } catch {
-    return ''
+    live = ''
   }
+  return live.trim() ? live : (lastSelection.get(paneId) ?? '')
 }
 
 /**

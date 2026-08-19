@@ -7,7 +7,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import type { Id } from '@shared/domain'
 import { api } from '../lib/api'
 import { attachPane } from '../lib/ptyBuffer'
-import { registerTerm } from '../lib/termSelection'
+import { registerTerm, rememberSelection } from '../lib/termSelection'
 
 /**
  * Reads the xterm palette out of the app's own CSS custom properties.
@@ -137,6 +137,11 @@ export function TerminalPane({
     term.loadAddon(search)
     const serialize = new SerializeAddon()
     term.loadAddon(serialize)
+    // Recorded as it happens, not read when the menu opens. Releasing ⌥ drops
+    // the highlight, and a live TUI redrawing over it does the same — by then
+    // xterm reports nothing selected and the relay would have nothing to send.
+    const selectionWatch = term.onSelectionChange(() => rememberSelection(paneId, term.getSelection()))
+
     const unregisterSelection = registerTerm(paneId, {
       getSelection: () => term.getSelection(),
       serialize: () => serialize.serialize(),
@@ -152,6 +157,7 @@ export function TerminalPane({
       observer.disconnect()
       detach()
       unregisterSelection()
+      selectionWatch.dispose()
       dataSub.dispose()
       term.dispose()
       termRef.current = null

@@ -584,7 +584,7 @@ export function GridSurface(): ReactNode {
   const relaySelection = async (fromSlotId: Id, toSlotId: Id): Promise<void> => {
     const from = slots[fromSlotId]
     const to = slots[toSlotId]
-    const selection = from?.paneId ? (termAccess(from.paneId)?.getSelection() ?? '') : ''
+    const selection = from?.paneId ? paneSelection(from.paneId) : ''
     if (!selection.trim() || !to?.paneId) {
       notify('warn', 'Select something in the pane first.')
       return
@@ -914,10 +914,10 @@ export function GridSurface(): ReactNode {
                             before the drag would offer a stale selection.
                           */}
                           {(() => {
-                            const term = termAccess(slot.paneId as Id)
+                            const selection = paneSelection(slot.paneId as Id)
                             const state = relayState({
                               targets: relayTargets(id).length,
-                              selection: term?.getSelection() ?? '',
+                              selection,
                             })
                             if (state === 'no-targets') {
                               return <div className="menu__note">Open another agent pane to relay into.</div>
@@ -934,17 +934,31 @@ export function GridSurface(): ReactNode {
                                 </div>
                               )
                             }
-                            return relayTargets(id).map((target) => (
-                              <MenuItem
-                                key={target.slotId}
-                                onClick={() => {
-                                  close()
-                                  void relaySelection(id, target.slotId)
-                                }}
-                              >
-                                Send selection to {target.name}
-                              </MenuItem>
-                            ))
+                            return (
+                              <>
+                                {/*
+                                  What will be sent, in the menu. The selection
+                                  may no longer be highlighted — releasing ⌥
+                                  drops it, and the CLI redraws over it — so
+                                  relaying blind would be relaying a guess.
+                                */}
+                                <div className="menu__note" title={selection}>
+                                  “{selection.trim().replace(/\s+/g, ' ').slice(0, 60)}
+                                  {selection.trim().length > 60 ? '…' : ''}”
+                                </div>
+                                {relayTargets(id).map((target) => (
+                                  <MenuItem
+                                    key={target.slotId}
+                                    onClick={() => {
+                                      close()
+                                      void relaySelection(id, target.slotId)
+                                    }}
+                                  >
+                                    Send selection to {target.name}
+                                  </MenuItem>
+                                ))}
+                              </>
+                            )
                           })()}
                         </MenuSection>
                       ) : null}
