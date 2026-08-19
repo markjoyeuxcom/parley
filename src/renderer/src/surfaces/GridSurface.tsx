@@ -32,7 +32,7 @@ import {
   type SplitPath,
 } from '../lib/layout'
 import { shortPath } from '../lib/format'
-import { paneSelection, termAccess } from '../lib/termSelection'
+import { paneSelection, relayState, termAccess } from '../lib/termSelection'
 import { useStore } from '../state'
 import { TerminalPane } from '../components/TerminalPane'
 import { RosterDialog } from '../components/RosterDialog'
@@ -913,10 +913,28 @@ export function GridSurface(): ReactNode {
                             Read at open time, not at render: a menu built
                             before the drag would offer a stale selection.
                           */}
-                          {relayTargets(id).length === 0 ? (
-                            <div className="menu__note">Open another agent pane to relay into.</div>
-                          ) : termAccess(slot.paneId)?.getSelection().trim() ? (
-                            relayTargets(id).map((target) => (
+                          {(() => {
+                            const term = termAccess(slot.paneId as Id)
+                            const state = relayState({
+                              targets: relayTargets(id).length,
+                              selection: term?.getSelection() ?? '',
+                            })
+                            if (state === 'no-targets') {
+                              return <div className="menu__note">Open another agent pane to relay into.</div>
+                            }
+                            if (state === 'needs-selection') {
+                              // ⌥ is named for every pane because a CLI that
+                              // claims the mouse — Claude Code does — leaves a
+                              // plain drag going to the application, which
+                              // highlights its own text and looks selected.
+                              return (
+                                <div className="menu__note">
+                                  Select text to relay it — hold ⌥ while dragging if the CLI
+                                  captures the mouse.
+                                </div>
+                              )
+                            }
+                            return relayTargets(id).map((target) => (
                               <MenuItem
                                 key={target.slotId}
                                 onClick={() => {
@@ -927,11 +945,7 @@ export function GridSurface(): ReactNode {
                                 Send selection to {target.name}
                               </MenuItem>
                             ))
-                          ) : (
-                            <div className="menu__note">
-                              Select text in this pane to relay it to another.
-                            </div>
-                          )}
+                          })()}
                         </MenuSection>
                       ) : null}
                       <MenuSection>

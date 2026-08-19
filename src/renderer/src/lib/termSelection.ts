@@ -35,3 +35,27 @@ export function paneSelection(paneId: Id): string {
     return ''
   }
 }
+
+/**
+ * Why the relay cannot send from this pane yet, if it cannot.
+ *
+ * The awkward case: a CLI that draws clickable UI turns on mouse tracking, and
+ * xterm then hands a drag to the application instead of selecting locally. The
+ * application highlights the text itself, so it LOOKS selected while
+ * `getSelection()` stays empty and the relay offers nothing. Claude Code does
+ * this; selecting in its pane is impossible without `macOptionClickForcesSelection`
+ * and a held ⌥.
+ *
+ * The hint mentions ⌥ unconditionally rather than detecting the mode.
+ * `mouseTrackingMode` was measured against the real CLIs and came back
+ * identical for Claude, whose pane cannot be drag-selected, and Codex, whose
+ * pane can — so the mode does not distinguish the two cases and a hint keyed
+ * on it would be wrong half the time. One sentence that is true either way
+ * beats a detector that is confidently wrong.
+ */
+export type RelayState = 'ready' | 'no-targets' | 'needs-selection'
+
+export function relayState(input: { targets: number; selection: string }): RelayState {
+  if (input.targets === 0) return 'no-targets'
+  return input.selection.trim() ? 'ready' : 'needs-selection'
+}

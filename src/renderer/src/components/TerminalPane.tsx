@@ -84,6 +84,12 @@ export function TerminalPane({
       allowProposedApi: true,
       // macOS convention: ⌥+arrow moves by word in the shell.
       macOptionIsMeta: true,
+      // ⌥+drag takes the selection back from a CLI that has claimed the mouse.
+      // Claude Code draws clickable UI, so it turns mouse tracking on and
+      // every drag goes to the application — it highlights the text itself,
+      // which looks like a selection while xterm has none. Without this there
+      // is no way to select in that pane at all, and the relay is dead there.
+      macOptionClickForcesSelection: true,
       theme: themeFromTokens(),
     })
 

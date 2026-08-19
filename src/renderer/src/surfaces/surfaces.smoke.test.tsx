@@ -247,7 +247,8 @@ describe('mounted-surface smoke', () => {
     // Stand in for xterm's own selection.
     registerTerm('pane-1', {
       getSelection: () => 'function add(a, b) {\n  return a + b\n}',
-      serialize: () => '', findNext: () => false, findPrevious: () => false, clearSearch: () => {},
+      serialize: () => '',
+      findNext: () => false, findPrevious: () => false, clearSearch: () => {},
     })
 
     const menus = await screen.findAllByTitle('Pane actions')
@@ -263,6 +264,44 @@ describe('mounted-surface smoke', () => {
     // unattributed wall of someone else's reasoning reads as the user's own.
     expect(text.toLowerCase()).toContain('claude said:')
     expect(text).toContain('function add(a, b) {\n  return a + b\n}')
+  })
+
+  it('names ⌥ in the relay hint, because a plain drag cannot select in every CLI', async () => {
+    // Claude Code draws clickable UI, so it turns mouse tracking on and xterm
+    // hands every drag to the application. The CLI highlights the text itself
+    // — it LOOKS selected — while getSelection() stays empty and the relay
+    // offers nothing. "Select text in this pane" was advice that could not be
+    // followed, and it made the relay look broken from the one pane people
+    // most want to relay OUT of.
+    let opened = 0
+    installBridge({
+      'pane.open': (payload) => {
+        opened += 1
+        const kind = (payload as { kind: string }).kind as Pane['kind']
+        return {
+          id: `pane-${opened}`, kind, title: kind, cwd: '/tmp/smoke-repo',
+          status: 'live', exitCode: null, createdAt: opened,
+        }
+      },
+    })
+
+    render(<StoreProvider><GridSurface /></StoreProvider>)
+    fireEvent.click(await screen.findByTitle('New Claude pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(1))
+    fireEvent.click(await screen.findByTitle('New Codex pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(2))
+
+    // A CLI holding the mouse: no selection, and none obtainable by dragging.
+    registerTerm('pane-1', {
+      getSelection: () => '',
+      serialize: () => '',
+      findNext: () => false, findPrevious: () => false, clearSearch: () => {},
+    })
+
+    fireEvent.click(screen.getAllByTitle('Pane actions')[0] as HTMLElement)
+    const menu = await screen.findByRole('menu')
+    expect(menu.textContent).toContain('hold ⌥ while dragging')
+    expect(menu.textContent).toContain('Select text to relay it')
   })
 
   it('a room opens as a pane, sends a turn, and renders the streamed reply', async () => {
