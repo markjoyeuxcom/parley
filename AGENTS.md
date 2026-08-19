@@ -256,6 +256,34 @@ the next turn in a way that reads as the seat breaking.
 it can hold a *pane*, which is agy's own CLI with whatever tools it has
 natively. That asymmetry is correct, not an oversight.
 
+## The relay is the point
+
+A grid of real CLIs that can hand work to each other. That is the product, and
+it is the one thing no vendor will build: Claude Code's subagents take Claude
+models, Codex's threads take OpenAI's, and every agent system is a closed loop
+around its own models. The copy-and-paste people do between two terminals
+exists because of that, and closing it is what this app is for.
+
+Two rules fall out of it.
+
+**Relayed content is pasted, never typed.** `submit` flattens newlines to
+spaces — right for a one-line instruction, ruinous for a diff — and raw
+newlines are worse, because a TUI reads the first one as Enter and sends a
+message cut off after its opening line. `paste` wraps the payload in bracketed
+paste, which is what ⌘V already does, and normalises carriage returns first
+since content copied out of a terminal is full of them.
+
+**Relayed content carries where it came from.** The receiving CLI has no idea,
+and an unattributed wall of another model's reasoning reads as the user's own
+words.
+
+The scope test for anything new: *could Claude Code do this on its own?* If yes,
+do not build it — the vendor owns the model and the session and will do it
+better. If no, it is cross-vendor, and it is this app's. The grid passes. The
+relay passes. Task boards, worktree lifecycles, review queues and orchestration
+all fail it, which a parked branch called `feat/workbench-ux` demonstrated at a
+cost of ten thousand lines.
+
 ## The Grid is multi-folder, and saved layouts do not change that
 
 Each pane is spawned with its own `cwd` and keeps it for life. The toolbar

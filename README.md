@@ -9,6 +9,21 @@ One surface: a splittable grid of panes. A pane is either a real interactive
 terminal — a shell, or a live `claude` / `codex` / `agy` session with its own
 TUI and its own permission prompts — or a **room**.
 
+## Passing work between CLIs
+
+The loop this exists for: Claude asks something, you want Codex's read on it,
+then you want that answer back in Claude. People run it with ⌘C.
+
+Select text in any agent pane, open the pane menu, and **Send selection to**
+another. It arrives attributed — the receiving CLI has no idea where it came
+from, and an unattributed wall of someone else's reasoning reads as your own
+words — and it arrives as a *paste*, so newlines survive and a diff stays a
+diff. Nothing is submitted until the paste completes.
+
+No vendor will build this. Claude Code's subagents take Claude models and
+nothing else; Codex's threads are OpenAI's. Every agent system is a closed loop
+around its own models, which is exactly why the copy-paste existed.
+
 ## Rooms
 
 A room is a pane that holds a conversation instead of a process: one or more
