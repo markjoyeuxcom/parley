@@ -52,6 +52,15 @@ interface Flow {
   writing: boolean
   /** We have asked the main process to stop reading this pty. */
   paused: boolean
+  /**
+   * Which terminal the in-flight write belongs to.
+   *
+   * Bumped every time a pane attaches. A pane unmounted mid-write leaves a
+   * `done` that belongs to a terminal which no longer exists — it may never
+   * arrive, or it may arrive long after a new terminal has taken over. Neither
+   * should touch the live one.
+   */
+  generation: number
 }
 
 const pending = new Map<Id, string>()
@@ -61,7 +70,7 @@ const flows = new Map<Id, Flow>()
 function flowFor(paneId: Id): Flow {
   const existing = flows.get(paneId)
   if (existing) return existing
-  const fresh: Flow = { queue: '', writing: false, paused: false }
+  const fresh: Flow = { queue: '', writing: false, paused: false, generation: 0 }
   flows.set(paneId, fresh)
   return fresh
 }
@@ -94,7 +103,11 @@ function pump(paneId: Id, flow: Flow): void {
   flow.writing = true
   applyPressure(paneId, flow)
 
+  const generation = flow.generation
   sink(chunk, () => {
+    // From a terminal that has since been replaced. Ignoring it is the point:
+    // acting on it would drive the live terminal from a dead one's schedule.
+    if (generation !== flow.generation) return
     flow.writing = false
     applyPressure(paneId, flow)
     pump(paneId, flow)
@@ -142,6 +155,15 @@ try {
 export function attachPane(paneId: Id, sink: PaneSink): () => void {
   sinks.set(paneId, sink)
   const flow = flowFor(paneId)
+
+  // A new terminal, so nothing is in flight for it — whatever the last one was
+  // told to draw went with it. Without this reset a pane unmounted mid-write
+  // stayed `writing` for ever, `pump` returned early every time, and the
+  // remounted terminal never drew again: a blank pane, no error anywhere. The
+  // grid remounts panes whenever the layout is rearranged, so this is the
+  // ordinary path, not an edge case.
+  flow.generation += 1
+  flow.writing = false
 
   const buffered = pending.get(paneId)
   if (buffered) {

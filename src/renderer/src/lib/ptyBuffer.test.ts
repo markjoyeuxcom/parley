@@ -170,3 +170,52 @@ describe('output that arrives before anything is mounted', () => {
     forgetPane(pane)
   })
 })
+
+describe('a pane that is unmounted mid-write', () => {
+  it('draws again when it comes back', () => {
+    // The layout is a split tree, and rearranging it remounts panes. If a
+    // write was in flight when one unmounted, `writing` stayed true, and the
+    // remounted terminal's pump returned early for ever — a pane that never
+    // drew again. Which is a blank pane, with nothing in any log.
+    const pane = 'p-remount'
+    const first = slowTerminal()
+    const detach = attachPane(pane, first.sink)
+
+    send(pane, 'before')
+    expect(first.writes).toEqual(['before'])
+
+    // Unmounted while xterm still had that chunk: `done` is never called,
+    // because the terminal it belonged to is gone.
+    detach()
+
+    const second = slowTerminal()
+    attachPane(pane, second.sink)
+    send(pane, 'after')
+
+    expect(second.writes).toEqual(['after'])
+    forgetPane(pane)
+  })
+
+  it('ignores the old terminal\'s callback if it does arrive late', () => {
+    const pane = 'p-stale'
+    const first = slowTerminal()
+    const detach = attachPane(pane, first.sink)
+    send(pane, 'one')
+    detach()
+
+    const second = slowTerminal()
+    attachPane(pane, second.sink)
+    send(pane, 'two')
+    expect(second.writes).toEqual(['two'])
+
+    // The dead terminal finally answers. It must not drive the live one.
+    first.drain()
+    send(pane, 'three')
+    expect(second.writes).toEqual(['two'])
+
+    second.drain()
+    expect(second.writes).toEqual(['two', 'three'])
+    forgetPane(pane)
+  })
+})
+
