@@ -12,10 +12,14 @@ import { api } from './api'
  * which reads as a broken terminal.
  *
  * After mount: xterm parses on the main thread, and `write` queues whatever it
- * cannot get through. Nothing bounded that queue. Three panes redrawing faster
- * than one thread could parse grew the backlog until Chromium killed the
- * renderer — measured at 11.3GB and eight minutes, with scrollback capped and
- * WebGL on, so it was neither the buffer nor the glyphs. It was the backlog.
+ * cannot get through. Nothing bounded that queue, and three panes redrawing
+ * faster than one thread could parse grew the backlog until Chromium killed
+ * the renderer — measured at 11.3GB and eight minutes.
+ *
+ * This comment used to end "It was the backlog." That was wrong, and the
+ * measurement that disproved it is the one below: bounding the queue moved
+ * time-to-death from eight minutes to past an hour without stopping the climb,
+ * so the backlog was a real cost and not the cause. See AGENTS.md.
  *
  * The fix is the one a terminal has always had. Hand xterm one write at a time
  * and wait to be told it landed; let what arrives meanwhile pile into a single

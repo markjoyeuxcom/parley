@@ -508,11 +508,37 @@ shape is a steady state with GC keeping pace, not a slow climb. Worth
 stating precisely, because the same curve read at minute seventeen looks
 like a straight line to death and was called one.
 
+**The ceiling has a name.** PartitionAlloc reserves a pool whose maximum is
+`kPoolMaxSize = 16 * kGiB` — 17.18GB in decimal — and all eight crashes sit at
+16.7-17.3G. That is address space reserved, not bytes resident: the crash
+reports say `written=18.6M(0%) unallocated=17.3G(100%)` while `ps` showed 9-11GB
+RSS, and both are true of different quantities. Two consequences. A larger
+machine changes nothing, because the ceiling is a constant. And the pool can be
+exhausted by *fragmentation* without resident memory growing to match — which
+is the leading explanation for why bounding the write queue moved the number so
+little.
+
+Credit where due: found by another model reading Chromium's
+partition_alloc_constants.h against these crash reports, not by me.
+
 **What is still open.** The top of that oscillation is close to the ceiling that
 used to kill it, and the residual allocation has no name yet: it is not the write queue, not
 scrollback, and not the GPU process, which sat at ~100MB throughout. Something
 in xterm's parse or render path holds finished work. A heap snapshot under load
-would name it. Until then, treat four or more busy agent panes as unproven.
+would name it — but note that "name the retainer" presumes there is one, and
+fragmentation of a fixed-size pool has no retainer to find. The cheaper first
+cut, which distinguishes the two: log `performance.memory.usedJSHeapSize`
+against process RSS every few seconds. A JS heap in the gigabytes tracking RSS
+means JS-side retention; a JS heap in the hundreds of megabytes beside
+multi-gigabyte RSS means the growth is native, and the question becomes
+fragmentation versus a native cache.
+
+One correction to an earlier reading of the curve: RSS falling from 11.6 to
+8.2GB was taken here as garbage collection keeping pace. It is not evidence of
+that. PartitionAlloc decommitting spans produces the same shape, and nothing
+measured distinguished them.
+
+Until then, treat four or more busy agent panes as unproven.
 
 **What was considered and rejected.** Replacing xterm.js with libghostty-vt via
 Node bindings parses at 78MB/s off-thread and bounds cost to screen size rather

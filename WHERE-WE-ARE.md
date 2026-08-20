@@ -53,10 +53,15 @@ commits, so nobody re-derives them.
 
 ## Open, in the order I would take them
 
-1. **Name the retainer.** With the write queue bounded and scrollback capped,
-   memory still tracks output actually parsed and rendered. One heap snapshot
-   under load (`webContents.takeHeapSnapshot()`) would say what holds it. This
-   is the highest-value unknown in the repo and it is one measurement.
+1. **Find out whether there is a retainer at all.** The ceiling turns out to be
+   PartitionAlloc's fixed 16 GiB pool reservation, not the machine's memory, so
+   the pool can be exhausted by fragmentation with nothing holding anything.
+   Before hunting a retainer, run the cheap split: log
+   `performance.memory.usedJSHeapSize` against process RSS every few seconds
+   under load. Gigabytes of JS heap tracking RSS means JS-side retention and a
+   heap snapshot is next; a few hundred megabytes beside multi-gigabyte RSS
+   means it is native, and the question is fragmentation versus a native cache.
+   Highest-value unknown in the repo, and it is one measurement.
 
 2. **The app cannot be shipped.** No signing identity, no notarisation, and one
    entitlement whose necessity could not be tested without a Developer ID —
