@@ -11,9 +11,9 @@
       inheritance rules block exactly that, which surfaces as "posix_spawnp
       failed" for every pane — including a plain shell.
 
-      allow-jit and allow-unsigned-executable-memory are what V8 needs; the two
-      disable-* keys are what lets a signed app exec helper and user binaries it
-      did not sign itself.
+      allow-jit and allow-unsigned-executable-memory are what V8 needs.
+      disable-library-validation is what lets a signed app exec a helper and
+      user binaries it did not sign itself.
     -->
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
@@ -21,18 +21,43 @@
     <true/>
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
+
+    <!--
+      STILL OPEN, and it needs somebody with a signing identity.
+
+      allow-dyld-environment-variables lets DYLD_INSERT_LIBRARIES inject code
+      into the signed app, which alongside disable-library-validation lowers
+      the bar for a local attacker persisting inside it. Both audits flagged
+      it, and nothing here appears to need it: an earlier version of the
+      comment above credited "the two disable-* keys" when there has only ever
+      been one, so this looks like it was grouped in with the entitlement that
+      does the work.
+
+      It stays until somebody can prove it is unnecessary, because the failure
+      mode is every pane failing to spawn in a shipped build.
+
+      What was tried, so nobody repeats it: package:mac:dir, then ad-hoc sign
+      with --options runtime and these entitlements, then spawn a pty inside
+      the signed binary through ELECTRON_RUN_AS_NODE. That reports
+      "posix_spawnp failed" with this key AND without it — the control fails
+      too, so the harness cannot tell the two apart. Ad-hoc signing has no team
+      identifier, and the inheritance rules that let a hardened app exec its
+      helper do not apply the same way without one. The check needs a real
+      Developer ID; there are zero identities on the machine this was written
+      on, and electron-builder skips signing entirely there.
+    -->
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>
 
     <!--
-      Parley reads and writes repositories the user explicitly chooses through
-      the system folder picker.
+      Two more used to live here: files.user-selected.read-write and
+      network.client. Both are App Sandbox entitlements, and this app does not
+      set com.apple.security.app-sandbox — so neither did anything, while their
+      comments described a folder picker being scoped and network access being
+      granted. That reads as protection the app has never had, which is worse
+      than no entitlement at all, because the next reader believes it. Removed;
+      no test needed, since an App Sandbox key outside the App Sandbox is inert
+      by definition.
     -->
-    <key>com.apple.security.files.user-selected.read-write</key>
-    <true/>
-
-    <!-- The CLIs talk to their vendors' APIs on the user's behalf. -->
-    <key>com.apple.security.network.client</key>
-    <true/>
   </dict>
 </plist>
