@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Parley",
+  "version": "0.1.0",
+  "identifier": "com.markjoyeux.parley",
+  "build": {
+    "frontendDist": "../out/renderer",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev:renderer",
+    "beforeBuildCommand": "npm run build:renderer"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Parley",
+        "width": 1440,
+        "height": 940,
+        "minWidth": 1040,
+        "minHeight": 680,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "dmg"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ]
+  }
+}

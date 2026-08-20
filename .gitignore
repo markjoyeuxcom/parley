@@ -24,3 +24,6 @@ coverage/
 
 # Logs
 *.log
+
+# Rust build output for the Tauri migration
+src-tauri/target/
