@@ -250,6 +250,32 @@ describe('mounted-surface smoke', () => {
     await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(2))
   })
 
+  it('paints the appearance the titlebar claims, and follows the system on auto', async () => {
+    // The reducer stored the choice and nothing ever put it on the document,
+    // so the button cycled Auto, Light and Dark while the window stayed
+    // exactly as it was. tokens.css had all three palettes waiting.
+    localStorage.removeItem('parley.theme')
+    render(<StoreProvider><Titlebar /></StoreProvider>)
+
+    // matchMedia is stubbed to `matches: false`, so auto must resolve to light.
+    await waitFor(() =>
+      expect(document.documentElement.getAttribute('data-theme')).toBe('light'),
+    )
+
+    const appearance = await screen.findByTitle(/^Appearance:/)
+    fireEvent.click(appearance) // auto -> light
+    await waitFor(() =>
+      expect(document.documentElement.getAttribute('data-theme')).toBe('light'),
+    )
+
+    fireEvent.click(appearance) // light -> dark
+    await waitFor(() =>
+      expect(document.documentElement.getAttribute('data-theme')).toBe('dark'),
+    )
+    // And it is remembered, or the choice is lost on every launch.
+    expect(localStorage.getItem('parley.theme')).toBe('dark')
+  })
+
   it('rearranges the grid without starting or stopping anything', async () => {
     // The property that makes an arrange safe to offer at all: it rebuilds the
     // split tree over the same slot ids. If it ever closed and reopened panes

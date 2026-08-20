@@ -72,8 +72,28 @@ export type Action =
   | { type: 'palette'; open: boolean }
   | { type: 'focusRoom'; roomId: string | null }
 
+/**
+ * Where the appearance choice is kept.
+ *
+ * localStorage rather than the SQLite store: it is a property of this window
+ * on this machine, it is needed before the first paint to avoid a flash of the
+ * wrong theme, and routing it through IPC would mean rendering once in the
+ * wrong colours while waiting for the answer.
+ */
+const THEME_KEY = 'parley.theme'
+
+function rememberedTheme(): ThemeChoice {
+  try {
+    const saved = localStorage.getItem(THEME_KEY)
+    return saved === 'light' || saved === 'dark' || saved === 'auto' ? saved : 'auto'
+  } catch {
+    // Storage can be unavailable; following the system is the right default.
+    return 'auto'
+  }
+}
+
 export const INITIAL: State = {
-  theme: 'auto',
+  theme: rememberedTheme(),
   mock: false,
   codexDefaultModel: '',
   agyModels: [],
@@ -153,6 +173,44 @@ const StoreContext = createContext<Store | null>(null)
 export function StoreProvider({ children }: { children: ReactNode }): ReactNode {
   const [state, dispatch] = useReducer(reduce, INITIAL)
   const nextNotice = useRef(1)
+
+  /**
+   * Puts the chosen appearance on the document, which is what actually paints.
+   *
+   * This was the missing half. `tokens.css` has had three palettes in it all
+   * along — a light one on `:root`, a dark one behind the media query, and a
+   * dark one behind `[data-theme='dark']` — and the reducer has stored the
+   * choice. Nothing joined them, so the titlebar button cycled Auto, Light and
+   * Dark while the window never changed.
+   *
+   * `auto` is resolved here rather than left to the media query alone, and
+   * re-resolved when the system flips. Relying on the bare media query means
+   * relying on the embedder to notice an OS appearance change and invalidate
+   * it; writing the attribute makes the result the same either way, and makes
+   * "the app is stuck dark" impossible to reach without the attribute being
+   * visibly wrong in the inspector.
+   */
+  useEffect(() => {
+    const root = document.documentElement
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+
+    const apply = (): void => {
+      const resolved = state.theme === 'auto' ? (media.matches ? 'dark' : 'light') : state.theme
+      root.setAttribute('data-theme', resolved)
+    }
+
+    apply()
+    try {
+      localStorage.setItem(THEME_KEY, state.theme)
+    } catch {
+      // A choice that cannot be remembered still applies for this session.
+    }
+
+    // Only 'auto' cares what the system does next.
+    if (state.theme !== 'auto') return
+    media.addEventListener('change', apply)
+    return () => media.removeEventListener('change', apply)
+  }, [state.theme])
 
   const store = useMemo<Store>(() => {
     const notify = (level: Notice['level'], message: string): void => {
