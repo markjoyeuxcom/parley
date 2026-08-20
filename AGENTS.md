@@ -496,12 +496,20 @@ later from the code.
    as against a real terminal nobody is reading.
 
 **The measurement.** Three panes full-redrawing flat out — a harsher load than
-real CLIs, which pause to think. Before: 11.3GB by minute three, renderer dead
-at about nineteen. After: ran past forty-seven minutes and was still going when
-it was stopped, oscillating between 8 and 12GB with GC keeping pace.
+real CLIs, which pause to think.
 
-**What is still open.** That plateau is close to the ceiling that used to kill
-it, and the residual growth has no name yet: it is not the write queue, not
+Before: 11.3GB by minute three, renderer dead at about nineteen.
+
+After: sixty-two minutes, killed by hand rather than dying, zero renderer
+deaths logged. It rose to a peak of 11.9GB at minute twenty-five and then
+oscillated for the next thirty-seven — 8.2GB at forty-seven, 9.3 at
+fifty-six, 5.5 at sixty-two, its lowest reading since minute eight. That
+shape is a steady state with GC keeping pace, not a slow climb. Worth
+stating precisely, because the same curve read at minute seventeen looks
+like a straight line to death and was called one.
+
+**What is still open.** The top of that oscillation is close to the ceiling that
+used to kill it, and the residual allocation has no name yet: it is not the write queue, not
 scrollback, and not the GPU process, which sat at ~100MB throughout. Something
 in xterm's parse or render path holds finished work. A heap snapshot under load
 would name it. Until then, treat four or more busy agent panes as unproven.
