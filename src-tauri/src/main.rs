@@ -77,6 +77,11 @@ fn pane_resize(panes: State<'_, Panes>, pane_id: String, cols: u16, rows: u16) -
 }
 
 #[tauri::command]
+fn pane_flow(panes: State<'_, Panes>, pane_id: String, paused: bool) -> Result<(), String> {
+    panes.set_flow(&pane_id, paused)
+}
+
+#[tauri::command]
 fn pane_close(panes: State<'_, Panes>, pane_id: String) {
     panes.close(&pane_id)
 }
@@ -164,6 +169,7 @@ fn main() {
             pane_write,
             pane_resize,
             pane_close,
+            pane_flow,
             pane_list,
             default_cwd
         ])

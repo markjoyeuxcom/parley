@@ -478,6 +478,25 @@ export class PtyManager {
     this.submitter.submit(paneId, text)
   }
 
+  /**
+   * Stops or restarts reading a pane's output.
+   *
+   * Paused, the kernel's pty buffer fills and the child blocks on its next
+   * write — ordinary terminal behaviour, and the only thing that actually
+   * bounds a renderer that cannot parse as fast as three CLIs can draw.
+   * Nothing is dropped; it arrives when we ask for it again.
+   */
+  setFlow(paneId: Id, paused: boolean): void {
+    const handle = this.panes.get(paneId)
+    if (!handle) return
+    try {
+      if (paused) handle.proc.pause()
+      else handle.proc.resume()
+    } catch {
+      // A pane that exited between the renderer deciding and us acting.
+    }
+  }
+
   close(paneId: Id): void {
     const handle = this.panes.get(paneId)
     if (!handle) return

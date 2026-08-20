@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -122,6 +122,11 @@ struct Live {
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// For tests, which otherwise cannot ask whether the child really went.
     pid: Option<u32>,
+    /// Set when the renderer cannot keep up. The reader thread stops reading,
+    /// the kernel's pty buffer fills, and the child blocks on its next write —
+    /// which is the only thing that actually bounds a webview parsing terminal
+    /// output on one thread.
+    paused: Arc<AtomicBool>,
 }
 
 /// Clone shares the panes rather than copying them — every field is an `Arc`.
@@ -222,6 +227,8 @@ impl Panes {
             .map_err(|e| format!("could not start {resolved}: {e}"))?;
         let killer = child.clone_killer();
         let pid = child.process_id();
+        let paused = Arc::new(AtomicBool::new(false));
+        let reader_paused = Arc::clone(&paused);
 
         let writer = pair
             .master
@@ -244,7 +251,7 @@ impl Panes {
 
         self.live.lock().insert(
             id.clone(),
-            Live { pane: pane.clone(), pair, writer, killer, pid },
+            Live { pane: pane.clone(), pair, writer, killer, pid, paused },
         );
 
         // Output pump. One thread per pane rather than async: a PTY read is a
@@ -259,6 +266,11 @@ impl Panes {
         std::thread::spawn(move || {
             let mut buffer = [0u8; 8 * 1024];
             loop {
+                // Not a drop: nothing is read, so nothing is lost. The bytes
+                // wait in the pty until the renderer asks for them again.
+                while reader_paused.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
                 match reader.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
@@ -364,6 +376,14 @@ impl Panes {
     /// safety of the feature should not rest on picking the right method name.
     pub fn paste_only(&self, pane_id: &str, text: &str) -> Result<(), String> {
         self.write(pane_id, &bracketed(text))
+    }
+
+    /// Stops or restarts reading a pane's output. See {@link Live::paused}.
+    pub fn set_flow(&self, pane_id: &str, paused: bool) -> Result<(), String> {
+        let live = self.live.lock();
+        let entry = live.get(pane_id).ok_or("that pane is no longer open")?;
+        entry.paused.store(paused, Ordering::Relaxed);
+        Ok(())
     }
 
     pub fn resize(&self, pane_id: &str, cols: u16, rows: u16) -> Result<(), String> {
@@ -693,6 +713,37 @@ mod lifecycle_tests {
             panes.get(&pane.id).map(|p| p.status)
         );
         panes.close(&pane.id);
+    }
+
+    #[test]
+    fn a_paused_pane_stops_delivering_and_starts_again() {
+        // Not a drop: the bytes wait in the pty. A pane that lost output while
+        // paused would corrupt its own screen, because a terminal stream cut
+        // in the middle is an escape sequence cut in half.
+        let app = app();
+        let panes = Panes::default();
+        let pane = panes.open(app.handle(), "shell", "/tmp", 80, 24).expect("open");
+        assert!(wait_until(|| panes.get(&pane.id).map(|p| p.status) == Some("live".into())));
+
+        panes.set_flow(&pane.id, true).expect("pause");
+        panes.write(&pane.id, "echo paused-marker\r").expect("write");
+        std::thread::sleep(Duration::from_millis(400));
+
+        // Resuming must not error, and the pane must still be usable after.
+        panes.set_flow(&pane.id, false).expect("resume");
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(panes.get(&pane.id).map(|p| p.status), Some("live".into()));
+        assert!(panes.write(&pane.id, "\r").is_ok(), "a resumed pane still takes input");
+        panes.close(&pane.id);
+    }
+
+    #[test]
+    fn flow_control_on_a_pane_that_has_gone_is_refused_not_ignored() {
+        let app = app();
+        let panes = Panes::default();
+        let pane = panes.open(app.handle(), "shell", "/tmp", 80, 24).expect("open");
+        panes.close(&pane.id);
+        assert!(panes.set_flow(&pane.id, true).is_err());
     }
 
     #[test]

@@ -220,6 +220,12 @@ const HANDLERS: Record<CommandName, Handler> = {
     ctx.pty.paste(paneId, text)
     return { ok: true }
   },
+  'pane.flow': (p, ctx) => {
+    const { paneId, paused } = p as { paneId: string; paused: boolean }
+    ctx.pty.setFlow(paneId, paused)
+    return { ok: true }
+  },
+
   'pane.resize': (p, ctx) => {
     const { paneId, cols, rows } = p as { paneId: string; cols: number; rows: number }
     ctx.pty.resize(paneId, cols, rows)

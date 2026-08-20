@@ -174,8 +174,12 @@ export function TerminalPane({
       }
     })
 
-    const detach = attachPane(paneId, (data) => {
-      term.write(data)
+    // `done` is the whole point: xterm calls it once the chunk has actually
+    // been parsed, which is the only signal that says whether this terminal is
+    // keeping up. Without it the buffer could only guess, and it guessed by
+    // writing everything immediately and growing until Chromium intervened.
+    const detach = attachPane(paneId, (data, done) => {
+      term.write(data, done)
       onOutputRef.current?.()
     })
     const search = new SearchAddon()

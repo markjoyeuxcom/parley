@@ -48,6 +48,17 @@ export const PaneResizeReq = z.object({
   cols: z.number().int().min(2).max(2000),
   rows: z.number().int().min(2).max(1000),
 })
+/**
+ * Flow control, from the renderer that cannot keep up.
+ *
+ * xterm parses on the main thread and `write` queues whatever it cannot get
+ * through. Nothing bounded that queue, so three panes redrawing faster than one
+ * thread could parse grew the backlog until Chromium killed the renderer —
+ * measured at 11.3GB and eight minutes. Pausing the pty is what a real terminal
+ * does when its reader falls behind: the child blocks on write, which costs it
+ * nothing and bounds us.
+ */
+export const PaneFlowReq = z.object({ paneId: Id, paused: z.boolean() })
 export const PaneCloseReq = z.object({ paneId: Id })
 export const PaneStopReq = z.object({ paneId: Id })
 export const PaneIdentityReq = z.object({ cwd: z.string().min(1) })
@@ -137,6 +148,7 @@ export const COMMANDS = {
   'pane.write': PaneWriteReq,
   'pane.paste': PanePasteReq,
   'pane.resize': PaneResizeReq,
+  'pane.flow': PaneFlowReq,
   'pane.close': PaneCloseReq,
   'pane.stop': PaneStopReq,
   'pane.identity': PaneIdentityReq,

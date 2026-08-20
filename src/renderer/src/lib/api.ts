@@ -104,6 +104,9 @@ export const api = {
   pastePane: (paneId: Id, text: string): Promise<unknown> => bridge().invoke('pane.paste', { paneId, text }),
   resizePane: (paneId: Id, cols: number, rows: number): Promise<unknown> =>
     bridge().invoke('pane.resize', { paneId, cols, rows }),
+  /** Backpressure: stop the child writing while xterm catches up. */
+  setPaneFlow: (paneId: Id, paused: boolean): Promise<unknown> =>
+    bridge().invoke('pane.flow', { paneId, paused }),
   closePane: (paneId: Id): Promise<unknown> => bridge().invoke('pane.close', { paneId }),
   stopPane: (paneId: Id): Promise<unknown> => bridge().invoke('pane.stop', { paneId }),
   paneIdentity: (cwd: string): Promise<PaneIdentity> => bridge().invoke('pane.identity', { cwd }),

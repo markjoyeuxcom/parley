@@ -28,6 +28,7 @@ const IMPLEMENTED: Partial<Record<CommandName, string>> = {
   'pane.write': 'pane_write',
   'pane.resize': 'pane_resize',
   'pane.close': 'pane_close',
+  'pane.flow': 'pane_flow',
   'pane.list': 'pane_list',
   'folder.list': 'default_cwd',
 }
