@@ -36,8 +36,13 @@ try {
       combined.length > MAX_BUFFERED_CHARS ? combined.slice(-MAX_BUFFERED_CHARS) : combined,
     )
   })
-} catch {
-  // No bridge, no pty stream — panes cannot exist here either.
+} catch (err) {
+  // Loudly. This was silent, and a renderer with no pty subscription looks
+  // exactly like a terminal whose child said nothing: a blank pane, no error,
+  // and the two need opposite fixes. Found while wiring Tauri, where the
+  // bridge and this module's load order genuinely can differ.
+  // eslint-disable-next-line no-console
+  console.error('parley: pane output is not subscribed —', err)
 }
 
 /**

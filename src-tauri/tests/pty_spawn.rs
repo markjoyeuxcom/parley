@@ -9,7 +9,7 @@
 //! `cargo check` passing says nothing about any of that. These spawn real
 //! processes on this machine.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
@@ -88,4 +88,41 @@ fn starts_a_real_agent_cli() {
     // hardened runtime and code-signing rules.
     let out = spawn(&["claude", "--version"]);
     assert!(!out.trim().is_empty(), "claude produced nothing: {out:?}");
+}
+
+/// A keystroke reaches the child and its echo comes back.
+///
+/// This is the other direction of the terminal, and it is the half that looked
+/// fine for longest: output was visibly broken, so it got the attention, while
+/// nothing at all proved a typed character ever left the app. `Panes::write`
+/// is `write_all` then `flush` on the master — the flush is the part worth
+/// pinning, since a buffered writer loses a keystroke silently and a terminal
+/// that swallows every third character is a miserable thing to diagnose later.
+#[test]
+fn a_keystroke_reaches_the_child_and_echoes_back() {
+    let system = NativePtySystem::default();
+    let pair = system
+        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .expect("openpty");
+    let mut child = pair.slave.spawn_command(CommandBuilder::new("cat")).expect("spawn cat");
+
+    let mut writer = pair.master.take_writer().expect("writer");
+    writer.write_all(b"parley\n").expect("write");
+    writer.flush().expect("flush");
+
+    let mut reader = pair.master.try_clone_reader().expect("reader");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut seen = String::new();
+    let mut buf = [0u8; 4096];
+    while Instant::now() < deadline && !seen.contains("parley") {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => seen.push_str(&String::from_utf8_lossy(&buf[..n])),
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(seen.contains("parley"), "typed text never came back; saw {seen:?}");
 }

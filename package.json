@@ -26,9 +26,14 @@
     "rebuild": "electron-rebuild -v 43.2.0 -f -m . -o node-pty",
     "postinstall": "npm run rebuild",
     "package:mac": "npm run build && electron-builder --mac --arm64",
-    "package:mac:dir": "npm run build && electron-builder --mac --arm64 --dir"
+    "package:mac:dir": "npm run build && electron-builder --mac --arm64 --dir",
+    "dev:renderer": "vite --config vite.tauri.config.ts",
+    "build:renderer": "vite build --config vite.tauri.config.ts",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-search": "0.16.0",
     "@xterm/addon-serialize": "^0.14.0",
@@ -43,6 +48,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "4.2.0",
+    "@tauri-apps/cli": "^2.11.4",
     "@testing-library/react": "^16.3.2",
     "@types/node": "24.9.0",
     "@types/react": "19.2.17",

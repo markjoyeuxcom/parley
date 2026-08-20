@@ -5,7 +5,7 @@
   "identifier": "com.markjoyeux.parley",
   "build": {
     "frontendDist": "../out/renderer",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:5173/tauri.html",
     "beforeDevCommand": "npm run dev:renderer",
     "beforeBuildCommand": "npm run build:renderer"
   },
@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:5173 http://localhost:5173"
     }
   },
   "bundle": {

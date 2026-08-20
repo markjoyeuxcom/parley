@@ -42,6 +42,7 @@ function toSnake(payload: unknown): Record<string, unknown> {
 }
 
 export function installTauriBridge(): void {
+  if (window.parley) return
   window.parley = {
     invoke: async <T,>(command: CommandName, payload?: unknown): Promise<T> => {
       const rust = IMPLEMENTED[command]
@@ -70,3 +71,10 @@ export function installTauriBridge(): void {
     platform: 'darwin',
   }
 }
+
+// Installed on import, not by a caller. `ptyBuffer` subscribes to pane output
+// at module load — that is what stops a shell's first prompt being lost between
+// spawn and mount — so anything importing it before the bridge existed would
+// subscribe to nothing at all. Making the install a side effect of importing
+// this module removes the ordering question instead of documenting it.
+installTauriBridge()

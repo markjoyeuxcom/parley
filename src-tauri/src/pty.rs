@@ -145,7 +145,16 @@ impl Panes {
                     Ok(0) => break,
                     Ok(n) => {
                         let data = String::from_utf8_lossy(&buffer[..n]).to_string();
-                        let _ = handle.emit("pty:data", PtyChunk { pane_id: pane_id.clone(), data });
+                        // Never swallowed. A pane that draws nothing looks
+                        // identical whether the child said nothing or the
+                        // event never reached the webview, and those need
+                        // opposite fixes.
+                        if let Err(err) = handle.emit(
+                            "pty:data",
+                            PtyChunk { pane_id: pane_id.clone(), data },
+                        ) {
+                            eprintln!("parley: pane {pane_id} output could not be delivered: {err}");
+                        }
                     }
                     Err(_) => break,
                 }
