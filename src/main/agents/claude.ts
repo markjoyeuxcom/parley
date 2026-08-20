@@ -261,24 +261,43 @@ export class ClaudeAdapter implements AgentAdapter {
         detail: version.stderr.trim().slice(0, 300) || `${binary} could not be run.`,
       }
     }
-    // A trivial tool-free prompt is the only reliable way to tell "installed"
-    // from "installed and signed in". It costs a handful of tokens.
-    const auth = await capture(
-      binary,
-      ['-p', '--tools', '', '--model', 'haiku', 'Reply with exactly: ready'],
-      process.cwd(),
-      90_000,
-    )
-    const ok = auth.exitCode === 0 && /ready/i.test(auth.stdout)
+    // `auth status`, not a turn. This used to send a trivial prompt to haiku —
+    // cheap, but still a billed turn every launch to draw a status dot, and it
+    // reports a spent quota as a sign-in problem.
+    const auth = await capture(binary, ['auth', 'status'], process.cwd(), 20_000)
+    const ok = claudeLoggedIn(auth.stdout)
     return {
       vendor: 'claude',
       present: true,
       version: version.stdout.trim().split('\n')[0] ?? '',
       authenticated: ok,
+      // Deliberately NOT auth.stdout: `auth status` answers with the account's
+      // email address and organisation id, and this string is shown in the UI
+      // and carried in notices. Whether somebody is signed in is the question;
+      // who they are is not ours to repeat.
       detail: ok
         ? 'Signed in. Usage bills against your Claude subscription.'
-        : (auth.stderr.trim() || auth.stdout.trim()).slice(0, 300) ||
-          'claude is installed but did not answer. Run `claude` once to sign in.',
+        : auth.stderr.trim().slice(0, 300) ||
+          'claude is installed but not signed in. Run `claude auth login`.',
     }
   }
+}
+
+/**
+ * Reads `claude auth status`, which answers in JSON.
+ *
+ * Parsed rather than pattern-matched where possible, with the pattern as a
+ * fallback: the shape is not ours and a future field ordering should not turn
+ * a signed-in account red.
+ */
+function claudeLoggedIn(stdout: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(stdout)
+    if (parsed && typeof parsed === 'object' && 'loggedIn' in parsed) {
+      return (parsed as { loggedIn: unknown }).loggedIn === true
+    }
+  } catch {
+    // Not JSON — an older CLI, or an error printed plainly.
+  }
+  return /"loggedIn"\s*:\s*true/.test(stdout)
 }

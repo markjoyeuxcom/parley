@@ -315,19 +315,18 @@ export class AgyAdapter implements AgentAdapter {
     // stdin every seat uses. Slug from discovery, cheapest tier first: the
     // hardcoded fallback only matters when `agy models` itself failed, and
     // then the run's own error is the diagnostic. "Use no tools" matters:
-    // agy's default agent reaches for tools on even trivial prompts, and a
-    // tool step would fail the probe's turn.
-    const models = await this.models()
-    const probeModel = models.find((m) => m.endsWith('-low')) ?? models[0] ?? 'gemini-3.6-flash-low'
-    const auth = await this.run({
-      systemPrompt: 'Use no tools. You answer with exactly the requested word and nothing else.',
-      prompt: 'Reply with exactly: ready',
-      cfg: { vendor: 'agy', model: probeModel, effort: 'low', persona: '' },
-      capability: 'none',
-      cwd: process.cwd(),
-      timeoutMs: 120_000,
-    })
-    const ok = auth.error === null && /ready/i.test(auth.text)
+    // Listing models, not running one. This used to send a real prompt to a
+    // -low model on every launch — a billed turn to draw a status dot, and one
+    // that reports a spent quota as a sign-in problem.
+    //
+    // `agy models` reaches the vendor and comes back with a list, which needs
+    // the same credentials a turn would and costs nothing. Captured directly
+    // rather than through `this.models()`, which memoises: a probe that cached
+    // one failure would stay red until the app restarted, even after the user
+    // signed in.
+    const listed = await capture(binary, ['models'], process.cwd(), 20_000)
+    const available = listed.exitCode === 0 ? parseAgyModels(listed.stdout) : []
+    const ok = available.length > 0
     return {
       vendor: 'agy',
       present: true,
@@ -335,7 +334,8 @@ export class AgyAdapter implements AgentAdapter {
       authenticated: ok,
       detail: ok
         ? 'Signed in. Usage bills against your Google subscription.'
-        : auth.error || 'agy is installed but did not answer. Run `agy` once to sign in.',
+        : listed.stderr.trim().slice(0, 300) ||
+          'agy is installed but listed no models. Run `agy` once to sign in.',
     }
   }
 }
