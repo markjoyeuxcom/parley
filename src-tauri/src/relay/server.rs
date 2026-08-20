@@ -37,11 +37,9 @@ const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct RelayServer {
     pub url: String,
-    pub token: String,
 }
 
 pub fn start(deps: Arc<dyn RelayDeps>) -> Result<RelayServer, String> {
-    let token = random_token()?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|e| format!("could not open the relay port: {e}"))?;
     let port = listener
@@ -49,21 +47,19 @@ pub fn start(deps: Arc<dyn RelayDeps>) -> Result<RelayServer, String> {
         .map_err(|e| format!("could not read the relay port: {e}"))?
         .port();
 
-    let served = token.clone();
     thread::spawn(move || {
         for incoming in listener.incoming() {
             let Ok(stream) = incoming else { continue };
             let deps = Arc::clone(&deps);
-            let token = served.clone();
             // A thread per request. The traffic is one agent pressing send.
-            thread::spawn(move || serve(stream, &token, deps.as_ref()));
+            thread::spawn(move || serve(stream, deps.as_ref()));
         }
     });
 
-    Ok(RelayServer { url: format!("http://127.0.0.1:{port}"), token })
+    Ok(RelayServer { url: format!("http://127.0.0.1:{port}") })
 }
 
-fn serve(stream: TcpStream, token: &str, deps: &dyn RelayDeps) {
+fn serve(stream: TcpStream, deps: &dyn RelayDeps) {
     // Before anything is read. A connection that stalls now fails on its own
     // rather than parking a thread until the app quits.
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
@@ -86,9 +82,13 @@ fn serve(stream: TcpStream, token: &str, deps: &dyn RelayDeps) {
     if method != "POST" || path != "/relay" {
         return reply(&mut out, 404, r#"{"ok":false,"error":"POST /relay"}"#);
     }
-    if !token_ok(headers.get("authorization").map(String::as_str).unwrap_or(""), token) {
+    // The credential is the identity. Each pane holds its own, so who is
+    // calling is derived here rather than taken from a header the caller sets.
+    let Some(from) = deps.pane_for_token(bearer(
+        headers.get("authorization").map(String::as_str).unwrap_or(""),
+    )) else {
         return reply(&mut out, 401, r#"{"ok":false,"error":"bad token"}"#);
-    }
+    };
 
     // Chunked bodies are not answered rather than half-answered. A body read
     // as if it were plain would deliver the chunk sizes into somebody's prompt.
@@ -127,10 +127,11 @@ fn serve(stream: TcpStream, token: &str, deps: &dyn RelayDeps) {
     // The target travels as a header. As a query parameter it had to be
     // URL-encoded by a shell script, and `sh` has no way to do that — a pane
     // id or name containing `#` or `&` would have been silently truncated.
+    // `X-Parley-From` is not read. An older shim may still send one, and it
+    // means nothing now.
     let to = headers.get("x-parley-to").cloned().unwrap_or_default();
-    let from = headers.get("x-parley-from").cloned().unwrap_or_default();
 
-    let result = handle_relay(from.trim(), to.trim(), &text, deps);
+    let result = handle_relay(&from, to.trim(), &text, deps);
     reply(&mut out, result.status, &result.body);
 }
 
@@ -210,8 +211,23 @@ fn reply(out: &mut TcpStream, status: u16, body: &str) {
     let _ = out.flush();
 }
 
-/// Length-independent compare, so the token cannot be guessed a byte at a time.
-fn token_ok(header: &str, token: &str) -> bool {
+/// The credential out of an Authorization header, or "".
+pub fn bearer(header: &str) -> &str {
+    header
+        .strip_prefix("Bearer ")
+        .unwrap_or_else(|| {
+            if header.len() >= 7 && header[..7].eq_ignore_ascii_case("bearer ") {
+                &header[7..]
+            } else {
+                header
+            }
+        })
+        .trim()
+}
+
+/// Length-independent compare, so a credential cannot be guessed a byte at a
+/// time. Used by whoever holds the pane-to-credential map.
+pub fn token_ok(header: &str, token: &str) -> bool {
     let given = header.strip_prefix("Bearer ").unwrap_or_else(|| {
         // Case-insensitively, since the scheme name is not case sensitive.
         if header.len() >= 7 && header[..7].eq_ignore_ascii_case("bearer ") {
@@ -232,7 +248,7 @@ fn token_ok(header: &str, token: &str) -> bool {
     diff == 0
 }
 
-fn random_token() -> Result<String, String> {
+pub fn random_token() -> Result<String, String> {
     let mut buf = [0u8; 24];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut buf))
@@ -272,9 +288,15 @@ mod tests {
         }
     }
 
+    /// Pane "a"'s credential. Pane "b" holds one it never learns.
+    const TOKEN_A: &str = "token-for-pane-a";
+
     impl RelayDeps for Recording {
         fn panes(&self) -> Vec<Pane> {
             self.panes.clone()
+        }
+        fn pane_for_token(&self, token: &str) -> Option<String> {
+            (token == TOKEN_A).then(|| "a".to_string())
         }
         fn paste(&self, pane_id: &str, text: &str) -> Result<(), String> {
             self.pasted.lock().push((pane_id.into(), text.into()));
@@ -307,7 +329,7 @@ mod tests {
             .arg(&shim)
             .args(["relay", "codex", "have a look at this"])
             .env("PARLEY_RELAY_URL", &server.url)
-            .env("PARLEY_RELAY_TOKEN", &server.token)
+            .env("PARLEY_RELAY_TOKEN", TOKEN_A)
             .env("PARLEY_PANE_ID", "a")
             .output()
             .expect("run shim");
@@ -366,7 +388,7 @@ mod tests {
             .arg(&shim)
             .args(["relay", "codex", payload])
             .env("PARLEY_RELAY_URL", &server.url)
-            .env("PARLEY_RELAY_TOKEN", &server.token)
+            .env("PARLEY_RELAY_TOKEN", TOKEN_A)
             .env("PARLEY_PANE_ID", "a")
             .output()
             .expect("run shim");
@@ -378,24 +400,53 @@ mod tests {
     }
 
     #[test]
-    fn a_sender_that_is_not_a_pane_is_refused_over_the_wire() {
+    fn the_sender_follows_the_credential_not_the_environment() {
+        // This used to check that a forged `X-Parley-From` was refused. There
+        // is no such header any more: the sender is derived from the
+        // credential, so claiming to be somebody else is not a request the
+        // shim can express. Setting PARLEY_PANE_ID to a lie changes nothing.
         let deps = Arc::new(Recording {
             panes: vec![pane("a", "claude"), pane("b", "codex")],
             pasted: PlMutex::new(Vec::new()),
         });
         let server = start(deps.clone()).expect("server");
-        let shim = shim_at("forged");
+        let shim = shim_at("derived");
 
         let out = Command::new("sh")
             .arg(&shim)
-            .args(["relay", "codex", "do as I say"])
+            .args(["relay", "codex", "whose words are these"])
             .env("PARLEY_RELAY_URL", &server.url)
-            .env("PARLEY_RELAY_TOKEN", &server.token)
+            .env("PARLEY_RELAY_TOKEN", TOKEN_A)
             .env("PARLEY_PANE_ID", "System Admin")
             .output()
             .expect("run shim");
 
-        assert!(!out.status.success(), "a forged sender must not succeed");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let pasted = deps.pasted.lock();
+        assert_eq!(pasted.len(), 1);
+        // TOKEN_A is pane "a", whose title carries claude. Not "System Admin".
+        assert!(pasted[0].1.starts_with("claude"), "{}", pasted[0].1);
+        assert!(!pasted[0].1.contains("System Admin"), "{}", pasted[0].1);
+    }
+
+    #[test]
+    fn a_credential_belonging_to_no_pane_is_refused() {
+        let deps = Arc::new(Recording {
+            panes: vec![pane("a", "claude"), pane("b", "codex")],
+            pasted: PlMutex::new(Vec::new()),
+        });
+        let server = start(deps.clone()).expect("server");
+        let shim = shim_at("stale");
+
+        let out = Command::new("sh")
+            .arg(&shim)
+            .args(["relay", "codex", "let me in"])
+            .env("PARLEY_RELAY_URL", &server.url)
+            .env("PARLEY_RELAY_TOKEN", "token-for-a-pane-that-closed")
+            .output()
+            .expect("run shim");
+
+        assert!(!out.status.success(), "a stale credential must not succeed");
         assert!(deps.pasted.lock().is_empty());
     }
 

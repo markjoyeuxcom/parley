@@ -17,6 +17,11 @@ import { resolveRelayTarget } from './target'
  */
 export interface RelayDeps {
   panes: () => readonly Pane[]
+  /**
+   * Which pane holds this credential, or null. The sender is derived from it
+   * rather than taken from a header, so a pane cannot post as its neighbour.
+   */
+  paneForToken: (token: string) => Id | null
   /** Pastes without submitting. Throws if the pane cannot receive it. */
   paste: (paneId: Id, text: string) => void
   nameOf: (paneId: Id) => string

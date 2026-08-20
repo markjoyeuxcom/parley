@@ -37,6 +37,10 @@ impl RelayDeps for PaneRelay {
         self.panes.list()
     }
 
+    fn pane_for_token(&self, token: &str) -> Option<String> {
+        self.panes.pane_for_token(token)
+    }
+
     fn paste(&self, pane_id: &str, text: &str) -> Result<(), String> {
         self.panes.paste_only(pane_id, text)
     }
@@ -142,7 +146,6 @@ fn start_relay(app: &tauri::App, panes: &Panes) -> Result<String, String> {
     let server = relay::server::start(Arc::new(PaneRelay { panes: panes.clone() }))?;
     panes.set_relay(RelayEnv {
         url: server.url.clone(),
-        token: server.token,
         bin_dir: bin_dir.to_string_lossy().to_string(),
     });
     Ok(server.url)

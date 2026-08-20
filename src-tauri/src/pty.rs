@@ -95,7 +95,6 @@ const READY_CEILING: Duration = Duration::from_secs(3);
 #[derive(Clone, Default)]
 pub struct RelayEnv {
     pub url: String,
-    pub token: String,
     pub bin_dir: String,
 }
 
@@ -136,6 +135,10 @@ struct Live {
 pub struct Panes {
     live: Arc<Mutex<HashMap<String, Live>>>,
     relay: Arc<Mutex<Option<RelayEnv>>>,
+    /// One relay credential per pane, so the relay derives the sender instead
+    /// of being told. Every pane used to hold the same token, and the endpoint
+    /// read the sender from a header — so a pane could post as its neighbour.
+    tokens: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl Panes {
@@ -152,6 +155,20 @@ impl Panes {
     /// half of what closing is supposed to mean.
     pub fn pid_of(&self, pane_id: &str) -> Option<u32> {
         self.live.lock().get(pane_id).and_then(|l| l.pid)
+    }
+
+    /// Which pane holds this relay credential, or None.
+    ///
+    /// Every candidate is compared in full and the loop does not stop early,
+    /// so the work does not depend on which pane matched.
+    pub fn pane_for_token(&self, token: &str) -> Option<String> {
+        let mut found = None;
+        for (pane_id, known) in self.tokens.lock().iter() {
+            if crate::relay::server::token_ok(token, known) {
+                found = Some(pane_id.clone());
+            }
+        }
+        found
     }
 
     /// Set once at startup, before any pane exists, so no pane can start
@@ -214,7 +231,11 @@ impl Panes {
         // because nothing in its environment said otherwise.
         if let Some(relay) = self.relay.lock().clone() {
             cmd.env("PARLEY_RELAY_URL", &relay.url);
-            cmd.env("PARLEY_RELAY_TOKEN", &relay.token);
+            // This pane's own credential, not one shared with every other.
+            if let Ok(token) = crate::relay::server::random_token() {
+                self.tokens.lock().insert(id.clone(), token.clone());
+                cmd.env("PARLEY_RELAY_TOKEN", token);
+            }
             // Prepended, so `parley` resolves to the shim rather than to
             // anything of that name the user happens to have installed.
             let inherited = std::env::var("PATH").unwrap_or_default();
@@ -404,6 +425,8 @@ impl Panes {
         // SIGHUP, or one whose CLI traps it to clean up, would have gone on
         // running with nothing left pointing at it. The Electron build calls
         // proc.kill() here for the same reason.
+        // The credential dies with the pane rather than ageing out.
+        self.tokens.lock().remove(pane_id);
         if let Some(mut entry) = self.live.lock().remove(pane_id) {
             let _ = entry.killer.kill();
         }

@@ -168,10 +168,12 @@ async function bootstrap(): Promise<void> {
     get: (id) => livePty.get(id),
     // pasteOnly, never paste: a person in the target pane presses Enter.
     pasteOnly: (paneId, text) => livePty.pasteOnly(paneId, text),
+    paneForToken: (token) => livePty.paneForToken(token),
   }))
+  // No shared token here any more. Each pane gets its own through paneEnv, so
+  // the relay can tell who is calling instead of being told.
   pty.setPaneEnv({
     PARLEY_RELAY_URL: relay.url,
-    PARLEY_RELAY_TOKEN: relay.token,
     PATH: `${binDir}:${process.env['PATH'] ?? ''}`,
   })
 

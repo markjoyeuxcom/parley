@@ -12,6 +12,7 @@ describe('what the relay is allowed to call', () => {
     const deps = relayDepsFor({
       list: () => [],
       get: () => null,
+      paneForToken: () => null,
       pasteOnly,
       paste,
     })
@@ -25,6 +26,7 @@ describe('what the relay is allowed to call', () => {
     const deps = relayDepsFor({
       list: () => [],
       get: (id) => (id === 'known' ? ({ id, kind: 'codex', title: 'codex — repo' } as never) : null),
+      paneForToken: () => null,
       pasteOnly: vi.fn(),
       paste: vi.fn(),
     })

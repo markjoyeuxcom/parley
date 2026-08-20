@@ -20,11 +20,14 @@ export interface RelayPty {
   pasteOnly: (paneId: Id, text: string) => void
   /** Present so the test can prove it is never reached. */
   paste?: (paneId: Id, text: string) => void
+  /** One credential per pane; see relay/tokens.ts. */
+  paneForToken: (token: string) => Id | null
 }
 
 export function relayDepsFor(pty: RelayPty): RelayDeps {
   return {
     panes: () => pty.list(),
+    paneForToken: (token) => pty.paneForToken(token),
     paste: (paneId, text) => pty.pasteOnly(paneId, text),
     nameOf: (paneId) => {
       const pane = pty.get(paneId)

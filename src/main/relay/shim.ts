@@ -53,7 +53,6 @@ else
   cat
 fi | curl -sS --fail-with-body -X POST \\
   -H "Authorization: Bearer \${PARLEY_RELAY_TOKEN:-}" \\
-  -H "X-Parley-From: \${PARLEY_PANE_ID:-}" \\
   -H "X-Parley-To: $target" \\
   -H "Content-Type: text/plain" \\
   --data-binary @- \\

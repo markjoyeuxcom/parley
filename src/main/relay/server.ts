@@ -1,5 +1,4 @@
 import { createServer, type Server } from 'node:http'
-import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { handleRelay, type RelayDeps } from './handle'
 
 /**
@@ -20,7 +19,6 @@ import { handleRelay, type RelayDeps } from './handle'
  */
 export interface RelayServer {
   url: string
-  token: string
   close: () => void
 }
 
@@ -28,7 +26,6 @@ export interface RelayServer {
 const MAX_BODY = 200_000
 
 export async function startRelayServer(deps: RelayDeps): Promise<RelayServer> {
-  const token = randomBytes(24).toString('hex')
 
   const server: Server = createServer((req, res) => {
     const reply = (status: number, body: unknown): void => {
@@ -41,7 +38,11 @@ export async function startRelayServer(deps: RelayDeps): Promise<RelayServer> {
       reply(404, { ok: false, error: 'POST /relay?to=<pane>' })
       return
     }
-    if (!authorised(req.headers.authorization, token)) {
+    // The credential *is* the identity. Each pane holds its own, so who is
+    // calling is derived here rather than read from a header the caller could
+    // set to anything. See relay/tokens.ts.
+    const from = deps.paneForToken(bearer(req.headers.authorization))
+    if (!from) {
       reply(401, { ok: false, error: 'bad token' })
       return
     }
@@ -63,10 +64,10 @@ export async function startRelayServer(deps: RelayDeps): Promise<RelayServer> {
       // URL-encoded by a shell script, and `sh` has no way to do that — a pane
       // id or name containing `#` or `&` would have been silently truncated.
       const to = req.headers['x-parley-to'] ?? url.searchParams.get('to') ?? ''
-      const result = handleRelay(
-        { from: req.headers['x-parley-from'], to, text: body },
-        deps,
-      )
+      // `from` came from the token, not from the request. `X-Parley-From` is
+      // ignored entirely — an older shim may still send it, and it means
+      // nothing now.
+      const result = handleRelay({ from, to, text: body }, deps)
       reply(result.status, result.body)
     })
   })
@@ -76,15 +77,11 @@ export async function startRelayServer(deps: RelayDeps): Promise<RelayServer> {
   const port = typeof address === 'object' && address ? address.port : 0
   return {
     url: `http://127.0.0.1:${port}`,
-    token,
     close: () => server.close(),
   }
 }
 
-/** Length-independent compare, so the token cannot be guessed a byte at a time. */
-function authorised(header: string | undefined, token: string): boolean {
-  const given = (header ?? '').replace(/^Bearer\s+/i, '')
-  const a = Buffer.from(given)
-  const b = Buffer.from(token)
-  return a.length === b.length && timingSafeEqual(a, b)
+/** The credential out of an Authorization header, or '' — never undefined. */
+function bearer(header: string | undefined): string {
+  return (header ?? '').replace(/^Bearer\s+/i, '').trim()
 }

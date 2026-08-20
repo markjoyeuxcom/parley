@@ -9,6 +9,7 @@ const panes = [
 const deps = (paste = vi.fn()) => ({
   panes: () => panes,
   paste,
+  paneForToken: (t: string) => (t === 'tok-a' ? 'a' : null),
   nameOf: (id: string) => (id === 'a' ? 'claude' : 'codex'),
 })
 

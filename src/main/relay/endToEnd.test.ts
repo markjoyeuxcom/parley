@@ -22,6 +22,9 @@ const panes = [
 
 let server: RelayServer | null = null
 const dirs: string[] = []
+/** Pane 'a''s relay credential. Pane 'b' would hold a different one. */
+const TOKEN_A = 'token-for-pane-a'
+
 afterEach(() => {
   server?.close(); server = null
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
@@ -32,6 +35,8 @@ async function shell(paste = vi.fn()): Promise<{ bin: string; env: Record<string
     panes: () => panes,
     paste,
     nameOf: (id) => (id === 'a' ? 'claude' : 'codex'),
+    // The credential is the identity now: this one belongs to pane 'a'.
+    paneForToken: (token) => (token === TOKEN_A ? 'a' : null),
   })
   const dir = mkdtempSync(join(tmpdir(), 'parley-e2e-'))
   dirs.push(dir)
@@ -41,7 +46,7 @@ async function shell(paste = vi.fn()): Promise<{ bin: string; env: Record<string
     env: {
       PATH: '/usr/bin:/bin',
       PARLEY_RELAY_URL: server.url,
-      PARLEY_RELAY_TOKEN: server.token,
+      PARLEY_RELAY_TOKEN: TOKEN_A,
       PARLEY_PANE_ID: 'a',
     },
     paste,

@@ -29,6 +29,9 @@ const MAX_TEXT: usize = 100_000;
 /// in another agent's session.
 pub trait RelayDeps: Send + Sync {
     fn panes(&self) -> Vec<Pane>;
+    /// Which pane holds this credential, or None. The sender is derived from
+    /// it rather than taken from a header, so a pane cannot post as another.
+    fn pane_for_token(&self, token: &str) -> Option<String>;
     /// Pastes without submitting. Errs if the pane cannot receive it.
     fn paste(&self, pane_id: &str, text: &str) -> Result<(), String>;
     fn name_of(&self, pane_id: &str) -> String;
@@ -128,6 +131,9 @@ mod tests {
     impl RelayDeps for Fake {
         fn panes(&self) -> Vec<Pane> {
             self.panes.clone()
+        }
+        fn pane_for_token(&self, token: &str) -> Option<String> {
+            (token == "tok-a").then(|| "a".to_string())
         }
         fn paste(&self, pane_id: &str, text: &str) -> Result<(), String> {
             self.pasted.lock().push((pane_id.into(), text.into()));

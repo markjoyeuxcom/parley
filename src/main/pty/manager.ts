@@ -1,3 +1,4 @@
+import { RelayTokens } from '@main/relay/tokens'
 import { createRequire } from 'node:module'
 import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -88,8 +89,16 @@ function bracketed(text: string): string {
  * tell it is inside Parley, which pane it is, and which instance — enough to
  * know that starting another one is the wrong move.
  */
-export function paneEnv(paneId: Id, kind: PaneKind, appPid = process.pid): Record<string, string> {
+export function paneEnv(
+  paneId: Id,
+  kind: PaneKind,
+  appPid = process.pid,
+  relayToken?: string,
+): Record<string, string> {
   return {
+    // This pane's own relay credential. Not shared: the relay derives who is
+    // calling from it, so a pane cannot post as its neighbour.
+    ...(relayToken ? { PARLEY_RELAY_TOKEN: relayToken } : {}),
     // Kept as it was: a user's rc files key off this.
     PARLEY_PANE: '1',
     PARLEY_PANE_ID: paneId,
@@ -323,6 +332,8 @@ export class PtyManager {
   private extraEnv: Record<string, string> = {}
   private readonly readiness: PaneInputReadiness
   private readonly submitter: PanePromptSubmitter
+  /** One relay credential per pane, so the relay derives the sender. */
+  private readonly tokens = new RelayTokens()
 
   constructor(private readonly cb: PtyManagerCallbacks) {
     this.readiness = new PaneInputReadiness((paneId) => {
@@ -340,6 +351,11 @@ export class PtyManager {
 
   get count(): number {
     return this.panes.size
+  }
+
+  /** Which pane holds this relay credential, or null. See relay/tokens.ts. */
+  paneForToken(token: string): Id | null {
+    return this.tokens.paneFor(token)
   }
 
   setPaneEnv(env: Record<string, string>): void {
@@ -392,7 +408,7 @@ export class PtyManager {
         env: {
           ...process.env,
           TERM: 'xterm-256color',
-          ...paneEnv(id, kind),
+          ...paneEnv(id, kind, process.pid, this.tokens.mint(id)),
           ...this.extraEnv,
         } as Record<string, string>,
       })
@@ -525,6 +541,8 @@ export class PtyManager {
     if (!handle) return
     this.readiness.forget(paneId)
     this.submitter.forget(paneId)
+    // The credential dies with the pane rather than ageing out.
+    this.tokens.forget(paneId)
     this.panes.delete(paneId)
     if (handle.pane.status !== 'exited') {
       try {

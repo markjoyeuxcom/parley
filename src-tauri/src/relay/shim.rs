@@ -61,7 +61,6 @@ else
   cat
 fi | curl -sS --fail-with-body -X POST \
   -H "Authorization: Bearer ${PARLEY_RELAY_TOKEN:-}" \
-  -H "X-Parley-From: ${PARLEY_PANE_ID:-}" \
   -H "X-Parley-To: $target" \
   -H "Content-Type: text/plain" \
   --data-binary @- \
@@ -86,9 +85,15 @@ mod tests {
 
     #[test]
     fn speaks_the_wire_contract_the_server_answers() {
+        // The sender is derived from the credential now, so the shim must not
+        // send a name at all — a header the server ignores is a header the
+        // next reader will think still means something.
+        assert!(
+            !SHIM.contains("X-Parley-From"),
+            "the shim still claims a sender; the relay derives it from the token",
+        );
         for required in [
             "Authorization: Bearer ${PARLEY_RELAY_TOKEN:-}",
-            "X-Parley-From: ${PARLEY_PANE_ID:-}",
             "X-Parley-To: $target",
             "${PARLEY_RELAY_URL}/relay",
             "--data-binary @-",
