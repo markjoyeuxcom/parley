@@ -61,6 +61,33 @@ export function TauriShell(): ReactNode {
   }, [])
 
   /**
+   * A pane whose CLI has gone says so.
+   *
+   * Without this the grid showed a dead codex exactly like a live one — same
+   * header, same last screenful, still offered as a relay target by a name
+   * that would be refused. The pane is kept rather than removed: what the CLI
+   * said before it exited is usually the reason it exited, and closing the
+   * pane is the person's call.
+   */
+  useEffect(() => {
+    const stop = listen<{ paneId: string; status: string; exitCode: number | null }>(
+      'pane:status',
+      (e) => {
+        const update = e.payload
+        if (!update?.paneId) return
+        setPanes((current) =>
+          current.map((pane) =>
+            pane.id === update.paneId
+              ? { ...pane, status: update.status as Pane['status'], exitCode: update.exitCode }
+              : pane,
+          ),
+        )
+      },
+    )
+    return () => void stop.then((off) => off())
+  }, [])
+
+  /**
    * Adopt whatever Rust already has.
    *
    * The panes outlive this window, deliberately — that is the same promise the
@@ -177,6 +204,11 @@ export function TauriShell(): ReactNode {
                     same shape as the Electron build, because this string is
                     also the attribution the relay quotes it by. */}
                 <span className="tauri-pane__title">{pane.title}</span>
+                {pane.status === 'exited' ? (
+                  <span className="tauri-pane__gone">
+                    exited{pane.exitCode == null ? '' : ` (${pane.exitCode})`}
+                  </span>
+                ) : null}
                 <span className="spacer" />
                 <button
                   className="btn btn--icon btn--sm"

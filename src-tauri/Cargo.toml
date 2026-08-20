@@ -16,6 +16,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 parking_lot = "0.12"
 
+[dev-dependencies]
+# `test` gives us mock_app(), and with it an AppHandle — the only thing
+# standing between the pane lifecycle and a test that exercises it for real
+# rather than through pure helpers.
+tauri = { version = "2.11", features = ["test"] }
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

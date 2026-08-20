@@ -202,7 +202,14 @@ export class RoomManager {
     live.resumeIds.delete(existing.id)
     live.room = {
       ...live.room,
-      seats: [{ ...existing, name: seatName(config), config }],
+      // `write` does NOT carry over. It is standing authorisation granted to a
+      // seat as it was — a particular vendor, model and persona — and this
+      // replaces all three. Spreading it meant authorising a careful reviewer
+      // to touch files and then reseating the room handed that to whatever
+      // came next, with nobody asked a second time. The room header would have
+      // gone on reporting the seat as a writer, correctly, which is worse than
+      // being wrong: the display was accurate and the authorisation was not.
+      seats: [{ ...existing, name: seatName(config), config, write: false }],
     }
     this.deps.repo.setRoomSeats(roomId, live.room.seats)
     return live.room

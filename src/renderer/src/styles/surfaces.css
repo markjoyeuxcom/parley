@@ -2503,3 +2503,11 @@
 .tauri-pane--focused .tauri-pane__title {
   color: var(--text-primary);
 }
+
+/* A pane whose process has gone. Stated, not shouted — an agent finishing is
+   the normal end of a pane, not a failure. */
+.tauri-pane__gone {
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}

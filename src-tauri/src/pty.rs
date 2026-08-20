@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, NativePtySystem, PtyPair, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +55,34 @@ pub struct PtyChunk {
 /// keystrokes written during that window are discarded. A short quiet period
 /// is the boundary instead.
 const QUIET_MS: u64 = 750;
+
+/// The same limits the Electron build's Zod schemas enforce, restated because
+/// Rust cannot import them: `MAX_PANES` in src/shared/domain.ts, and the
+/// dimension bounds in `OpenPaneReq` / `PaneResizeReq` in src/shared/ipc.ts.
+/// Restated, and therefore able to drift — so a divergence should be a failing
+/// test here rather than a surprise in one runtime and not the other.
+///
+/// The renderer validated all of this and Rust took the caller's word for it,
+/// which is only a boundary if both ends check. A pane is a process, a thread
+/// and a PTY; unbounded, "open a pane" is a way to ask the machine for all of
+/// them at once.
+const MAX_PANES: usize = 16;
+const MIN_COLS: u16 = 2;
+const MAX_COLS: u16 = 2000;
+const MIN_ROWS: u16 = 2;
+const MAX_ROWS: u16 = 1000;
+
+/// Checked on the way in, for open and for resize alike. `openpty` will
+/// happily take 65535 x 65535 and try to allocate a scrollback for it.
+fn check_size(cols: u16, rows: u16) -> Result<(), String> {
+    if !(MIN_COLS..=MAX_COLS).contains(&cols) {
+        return Err(format!("{cols} columns is outside {MIN_COLS}-{MAX_COLS}"));
+    }
+    if !(MIN_ROWS..=MAX_ROWS).contains(&rows) {
+        return Err(format!("{rows} rows is outside {MIN_ROWS}-{MAX_ROWS}"));
+    }
+    Ok(())
+}
 /// A CLI that never says anything on startup would otherwise stay `starting`
 /// for as long as it lived, and a relay to it would be refused forever.
 const READY_CEILING: Duration = Duration::from_secs(3);
@@ -69,6 +97,20 @@ pub struct RelayEnv {
     pub url: String,
     pub token: String,
     pub bin_dir: String,
+}
+
+/// A pane changing state, named rather than positional.
+///
+/// This went over as a bare tuple, which arrives in JavaScript as `[id,
+/// status, code]` — readable only next to the Rust that sent it. Every other
+/// payload here is camelCase named fields, and the renderer should not have to
+/// know which one it is looking at.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneStatus {
+    pub pane_id: String,
+    pub status: String,
+    pub exit_code: Option<i32>,
 }
 
 struct Live {
@@ -101,15 +143,24 @@ impl Panes {
         *self.relay.lock() = Some(env);
     }
 
-    pub fn open(
+    /// Generic over the runtime so the tests can drive it with `mock_app`.
+    /// Nothing here cares which runtime it is; hard-coding Wry only meant this
+    /// layer could not be exercised without a window on screen.
+    pub fn open<R: Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         kind: &str,
         cwd: &str,
         cols: u16,
         rows: u16,
     ) -> Result<Pane, String> {
-        let (file, args) = command_for(kind);
+        check_size(cols, rows)?;
+        let (file, args) = command_for(kind)?;
+        // Counted before spawning, not after. The Electron build refuses at the
+        // same number.
+        if self.live.lock().len() >= MAX_PANES {
+            return Err(format!("the grid holds at most {MAX_PANES} panes"));
+        }
         let resolved = which(&file).ok_or_else(|| {
             // The same distinction the Electron build draws: "the CLI is not
             // installed" and "the pty layer is broken" produce identical
@@ -218,7 +269,10 @@ impl Panes {
                 entry.pane.status = "exited".into();
                 entry.pane.exit_code = code;
             }
-            let _ = handle.emit("pane:status", (pane_id.clone(), "exited", code));
+            let _ = handle.emit(
+                "pane:status",
+                PaneStatus { pane_id: pane_id.clone(), status: "exited".into(), exit_code: code },
+            );
         });
 
         self.watch_for_ready(app, &id, last_output);
@@ -233,7 +287,12 @@ impl Panes {
     /// route out of `starting` at all, so every relay to one would have been
     /// refused forever — the port carried the PTY across and left the state
     /// machine behind.
-    fn watch_for_ready(&self, app: &AppHandle, pane_id: &str, last_output: Arc<AtomicU64>) {
+    fn watch_for_ready<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        pane_id: &str,
+        last_output: Arc<AtomicU64>,
+    ) {
         let live = Arc::clone(&self.live);
         let handle = app.clone();
         let pane_id = pane_id.to_string();
@@ -261,7 +320,10 @@ impl Panes {
                 }
             };
             if announced {
-                let _ = handle.emit("pane:status", (pane_id, "live", Option::<i32>::None));
+                let _ = handle.emit(
+                    "pane:status",
+                    PaneStatus { pane_id, status: "live".into(), exit_code: None },
+                );
             }
         });
     }
@@ -291,6 +353,7 @@ impl Panes {
     }
 
     pub fn resize(&self, pane_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+        check_size(cols, rows)?;
         let live = self.live.lock();
         let entry = live.get(pane_id).ok_or("that pane is no longer open")?;
         entry
@@ -360,15 +423,24 @@ fn bracketed(text: &str) -> String {
 }
 
 /// The CLIs, run bare and interactively — their own TUIs, their own permissions.
-fn command_for(kind: &str) -> (String, Vec<String>) {
+///
+/// The wildcard arm used to fall through to a login shell, so `pane_open` with
+/// any string at all opened one. Not injection — every unknown kind collapsed
+/// to the same shell, not to a caller-chosen argv — but a boundary that
+/// answers a name it does not recognise is not one, and the renderer's
+/// `PaneKind` enum was the only thing saying what the four kinds are.
+fn command_for(kind: &str) -> Result<(String, Vec<String>), String> {
     match kind {
-        "claude" => ("claude".into(), vec![]),
-        "codex" => ("codex".into(), vec![]),
+        "claude" => Ok(("claude".into(), vec![])),
+        "codex" => Ok(("codex".into(), vec![])),
         // Agy's headless mode is triggered by a non-TTY stdin; a pane gives it a
         // real TTY, so no flag is needed and none is passed.
-        "agy" => ("agy".into(), vec![]),
+        "agy" => Ok(("agy".into(), vec![])),
         // -l so the shell reads the user's profile.
-        _ => (login_shell(), vec!["-l".into()]),
+        "shell" => Ok((login_shell(), vec!["-l".into()])),
+        other => Err(format!(
+            "\u{201c}{other}\u{201d} is not a kind of pane — Parley opens shell, claude, codex or agy"
+        )),
     }
 }
 
@@ -478,5 +550,166 @@ mod title_tests {
     #[test]
     fn a_short_path_is_left_alone() {
         assert_eq!(shorten_path("/tmp"), "/tmp");
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::{check_size, command_for, MAX_COLS, MAX_PANES, MAX_ROWS};
+
+    #[test]
+    fn the_four_kinds_resolve() {
+        for kind in ["shell", "claude", "codex", "agy"] {
+            assert!(command_for(kind).is_ok(), "{kind} should be a pane kind");
+        }
+    }
+
+    #[test]
+    fn an_unknown_kind_is_refused_rather_than_given_a_shell() {
+        // The wildcard arm used to hand any string a login shell, so the
+        // renderer's PaneKind enum was the only thing saying what a pane is.
+        for kind in ["", "bash", "Claude", "shell; rm -rf /", "../../bin/sh"] {
+            let refusal = command_for(kind).expect_err("should be refused");
+            assert!(refusal.contains("not a kind of pane"), "{kind}: {refusal}");
+        }
+    }
+
+    #[test]
+    fn a_pane_cannot_be_opened_at_an_absurd_size() {
+        // openpty takes 65535 x 65535 without complaint and then tries to find
+        // memory for it.
+        assert!(check_size(u16::MAX, u16::MAX).is_err());
+        assert!(check_size(0, 0).is_err());
+        assert!(check_size(1, 24).is_err());
+        assert!(check_size(80, 1).is_err());
+        assert!(check_size(MAX_COLS + 1, 24).is_err());
+        assert!(check_size(80, MAX_ROWS + 1).is_err());
+    }
+
+    #[test]
+    fn ordinary_terminal_sizes_pass() {
+        for (cols, rows) in [(80, 24), (120, 34), (MAX_COLS, MAX_ROWS), (2, 2)] {
+            assert!(check_size(cols, rows).is_ok(), "{cols}x{rows} should be allowed");
+        }
+    }
+
+    #[test]
+    fn the_limits_match_the_ones_the_renderer_enforces() {
+        // Restated from src/shared/domain.ts and src/shared/ipc.ts, which Rust
+        // cannot import. If someone changes those, this is where it surfaces.
+        assert_eq!(MAX_PANES, 16, "MAX_PANES in src/shared/domain.ts");
+        assert_eq!(MAX_COLS, 2000, "OpenPaneReq.cols in src/shared/ipc.ts");
+        assert_eq!(MAX_ROWS, 1000, "OpenPaneReq.rows in src/shared/ipc.ts");
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Spawning a pane needs an AppHandle, which is why this layer went
+    /// untested for as long as it did — the pure helpers were easy and the
+    /// interesting behaviour was not. `mock_app` closes that: these open real
+    /// PTYs with real children and then take them away.
+    fn app() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_app()
+    }
+
+    fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+        for _ in 0..100 {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn a_closed_pane_is_gone_from_the_list_and_its_child_is_dead() {
+        let app = app();
+        let panes = Panes::default();
+        let pane = panes.open(app.handle(), "shell", "/tmp", 80, 24).expect("open");
+        assert_eq!(panes.list().len(), 1);
+
+        panes.close(&pane.id);
+        assert!(panes.list().is_empty(), "a closed pane must leave the list");
+        assert!(panes.get(&pane.id).is_none());
+        // And nothing may still be written to it — that would be a write into
+        // a pane the caller believes is gone.
+        assert!(panes.write(&pane.id, "echo\r").is_err());
+        assert!(panes.paste_only(&pane.id, "text").is_err());
+        assert!(panes.resize(&pane.id, 100, 30).is_err());
+    }
+
+    #[test]
+    fn closing_one_pane_leaves_the_others_alone() {
+        let app = app();
+        let panes = Panes::default();
+        let a = panes.open(app.handle(), "shell", "/tmp", 80, 24).expect("a");
+        let b = panes.open(app.handle(), "shell", "/tmp", 80, 24).expect("b");
+
+        panes.close(&a.id);
+        assert_eq!(panes.list().len(), 1);
+        assert!(panes.get(&b.id).is_some());
+        assert!(panes.write(&b.id, "\r").is_ok(), "the survivor must still take input");
+    }
+
+    #[test]
+    fn a_pane_leaves_starting_on_its_own() {
+        // The status the relay refuses to paste into. Rust panes had no route
+        // out of it at all, so every relay to one would have been refused for
+        // as long as the pane lived.
+        let app = app();
+        let panes = Panes::default();
+        let pane = panes.open(app.handle(), "shell", "/tmp", 80, 24).expect("open");
+        assert_eq!(pane.status, "starting");
+
+        let live = wait_until(|| panes.get(&pane.id).map(|p| p.status) == Some("live".into()));
+        assert!(live, "a pane that never goes live can never be relayed to");
+        panes.close(&pane.id);
+    }
+
+    #[test]
+    fn the_grid_refuses_the_seventeenth_pane() {
+        let app = app();
+        let panes = Panes::default();
+        let mut opened = Vec::new();
+        for i in 0..MAX_PANES {
+            opened.push(
+                panes
+                    .open(&app.handle(), "shell", "/tmp", 80, 24)
+                    .unwrap_or_else(|e| panic!("pane {i} should open: {e}")),
+            );
+        }
+        let refusal = panes
+            .open(&app.handle(), "shell", "/tmp", 80, 24)
+            .expect_err("the limit must hold");
+        assert!(refusal.contains("at most"), "{refusal}");
+
+        // And the limit is a limit, not a ceiling that never lowers: closing
+        // one makes room again.
+        panes.close(&opened[0].id);
+        assert!(panes.open(app.handle(), "shell", "/tmp", 80, 24).is_ok());
+        for pane in panes.list() {
+            panes.close(&pane.id);
+        }
+    }
+
+    #[test]
+    fn an_absurd_size_is_refused_before_a_pty_is_opened() {
+        let app = app();
+        let panes = Panes::default();
+        assert!(panes.open(app.handle(), "shell", "/tmp", u16::MAX, u16::MAX).is_err());
+        assert!(panes.list().is_empty(), "a refused pane must leave nothing behind");
+    }
+
+    #[test]
+    fn an_unknown_kind_starts_nothing() {
+        let app = app();
+        let panes = Panes::default();
+        assert!(panes.open(app.handle(), "bash", "/tmp", 80, 24).is_err());
+        assert!(panes.list().is_empty());
     }
 }

@@ -162,6 +162,28 @@ describe('rooms', () => {
     expect(() => rooms.setSeat(room.id, { ...SEAT, vendor: 'agy' })).toThrow(/tool-less/)
   })
 
+  it('drops write authorisation when the seat behind it is replaced', () => {
+    // `write` is standing authorisation, and it is granted to a seat as it is
+    // at the time — a particular vendor, model and persona. setSeat replaces
+    // all three and kept the flag, so authorising a careful reviewer to touch
+    // files and then reseating the room silently handed that to whatever came
+    // next. Nobody was asked a second time, and the room header would have
+    // gone on reporting the seat as a writer, correctly, which is worse.
+    const { registry } = fakeRegistry(() => ({ text: 'ok' }))
+    const rooms = new RoomManager({ registry, repo: store(), emit: () => {} })
+
+    const room = rooms.open('/tmp/repo', [SEAT], CAPS)
+    const [seat] = room.seats
+    rooms.setSeatWrite(room.id, seat!.id, true)
+    expect(rooms.get(room.id)?.seats[0]?.write).toBe(true)
+
+    const reseated = rooms.setSeat(room.id, { ...SEAT, model: 'a-different-model' })
+    expect(reseated.seats[0]?.write).toBe(false)
+    // And it has to survive the reload, or the room is only safe until it is
+    // reopened.
+    expect(rooms.get(room.id)?.seats[0]?.write).toBe(false)
+  })
+
   it('keeps a failed turn on the record and leaves the room usable', async () => {
     // A wedged room would be the worst failure here: the transcript is the
     // work, and losing access to it because one turn errored is unrecoverable
