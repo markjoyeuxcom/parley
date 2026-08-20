@@ -82,7 +82,12 @@ export function TerminalPane({
       cursorBlink: true,
       cursorStyle: 'bar',
       cursorWidth: 2,
-      scrollback: 12_000,
+      // Twelve thousand before. Scrollback is not just retained memory per
+      // pane — xterm reflows the whole of it on every resize, and this app
+      // resizes on window changes and on the grid's own column control. Three
+      // thousand lines is still three times xterm's default and far more than
+      // the relay's "send last answer" ever reaches back for.
+      scrollback: 3_000,
       allowProposedApi: true,
       // macOS convention: ⌥+arrow moves by word in the shell.
       macOptionIsMeta: true,
@@ -99,22 +104,33 @@ export function TerminalPane({
     term.loadAddon(fit)
     term.open(host)
 
-    // WebGL is off by default, and that is a bug hunt rather than a taste.
+    // WebGL on, which is the opposite of what this said before.
     //
-    // The renderer was being killed roughly every ten minutes — Chromium's
-    // PartitionAlloc trapping on a failed allocation, which macOS reports as
-    // SIGTRAP and Electron as `crashed`. Coalescing PTY output into one message
-    // per frame did not move that number at all: 8-14 minutes before, 11.1
-    // after. That rules out the volume of data and points at something
-    // accumulating per rendered glyph instead, which is what xterm has an open
-    // report of under varying colour — exactly what an agent TUI produces.
+    // The old reasoning: the renderer died every ten minutes or so, batching
+    // PTY output changed nothing (8-14 minutes before, 11.1 after), so
+    // something must accumulate per rendered glyph — and WebGL was left off as
+    // the suspect.
     //
-    // It is a large win on a 16-pane grid when it behaves, so it is a switch
-    // rather than a deletion. Set PARLEY_WEBGL=1 and compare: the measurement
-    // is how many minutes a renderer survives with three busy panes.
-    if (import.meta.env.VITE_PARLEY_WEBGL === '1') {
+    // It was pointing the wrong way. xterm.js is main-thread bound end to end,
+    // and its maintainers put numbers on the split: parsing and VT emulation
+    // 60-90% of the load, rendering 10-40% — where DOM is the ~40% end and
+    // WebGL the ~10% one. Two terminals already halve the frame rate, four
+    // quarter it (xtermjs/xterm.js#3368). An agent TUI full-redraws at
+    // 46-384KB a frame against 1-5KB for incremental output, so three of them
+    // saturate one thread and the backlog is what runs out of memory.
+    //
+    // Batching did nothing because the cost was never the messages; it was
+    // parse plus render. This cannot fix the parse half — nothing here can,
+    // short of leaving xterm — but the DOM renderer was the most expensive
+    // option available and it was the one in use.
+    //
+    // VITE_PARLEY_WEBGL=0 goes back to the DOM renderer, which is how the two
+    // get compared rather than argued about.
+    if (import.meta.env.VITE_PARLEY_WEBGL !== '0') {
       try {
         const webgl = new WebglAddon()
+        // A lost context leaves a blank pane otherwise. Disposing drops us
+        // back to the DOM renderer, which is slow but visible.
         webgl.onContextLoss(() => webgl.dispose())
         term.loadAddon(webgl)
       } catch {
