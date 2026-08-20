@@ -12,6 +12,7 @@ import { disposeIpc, registerIpc } from '@main/ipc/register'
 import { applyResolvedPath, preflightPty } from '@main/util/environment'
 import { sendToRenderer } from '@main/util/renderer'
 import { startRelayServer, type RelayServer } from '@main/relay/server'
+import { prepareIsolatedCodexHome } from '@main/agents/codexHome'
 import { installShim } from '@main/relay/shim'
 import { relayDepsFor } from '@main/relay/deps'
 
@@ -150,6 +151,16 @@ async function bootstrap(): Promise<void> {
   // the target pane still presses Enter. Started after the pty manager because
   // it reads the pane list from it, and its environment reaches panes through
   // setPaneEnv, which is why panes may only open afterwards.
+  // A Codex configuration with no MCP servers, for governed seats only. Panes
+  // keep the user's own configuration; see codexHome.ts.
+  const codexHome = prepareIsolatedCodexHome(join(app.getPath('userData'), 'codex-home'))
+  process.env['PARLEY_CODEX_HOME'] = codexHome.path
+  if (!codexHome.authLinked) {
+    // Not fatal, and not silent. A seat will report that it cannot sign in,
+    // and this says why before it does.
+    console.warn('parley: no Codex credentials found — codex seats will not authenticate')
+  }
+
   const binDir = installShim(app.getPath('userData'))
   const livePty = pty
   relay = await startRelayServer(relayDepsFor({

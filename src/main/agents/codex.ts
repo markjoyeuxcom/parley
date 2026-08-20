@@ -3,6 +3,18 @@ import { emptyUsage } from '@shared/usage'
 import type { CliHealth } from '@shared/ipc'
 import { capture, runJsonl } from '@main/util/spawn'
 import { findExecutable } from '@main/util/environment'
+
+/**
+ * The isolated configuration directory, if the app prepared one.
+ *
+ * Read at call time rather than at import, so a test can set it. Absent — in a
+ * unit test, or if preparing it failed — the adapter runs as it always did
+ * rather than refusing, and `agentToolPolicy` is what reports the difference.
+ */
+function codexEnv(): Record<string, string> {
+  const home = process.env['PARLEY_CODEX_HOME']?.trim()
+  return home ? { CODEX_HOME: home } : {}
+}
 import { describeCommand } from './activity'
 import type { AgentAdapter, RunRequest, RunResult } from './types'
 
@@ -158,7 +170,11 @@ export class CodexAdapter implements AgentAdapter {
       command: binary,
       args,
       cwd: req.cwd,
-      env: req.env,
+      // CODEX_HOME points at a config with no MCP servers — see codexHome.ts.
+      // Without it a seat dispatched as `read` still inherits whatever tools
+      // the user has configured globally, and the filesystem sandbox has no
+      // opinion about what an MCP server does.
+      env: { ...(req.env ?? {}), ...codexEnv() },
       stdin: body,
       signal: req.signal,
       timeoutMs: req.timeoutMs,
