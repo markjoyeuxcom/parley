@@ -2442,3 +2442,64 @@
   overflow: hidden;
   white-space: normal;
 }
+
+
+/* ─────────────────────────────────────────────────────────────────────────
+   The Tauri shell's grid.
+
+   Its own block, kept apart from the real Grid's styles, because this is the
+   harness the migration is being driven from and it should be deletable in one
+   cut when GridSurface can run on Rust.
+
+   `.pane__term` is `flex: 1`, which only means anything inside a flex column.
+   It was wrapped in a plain block div here, so it fell back to its content
+   height — thirty-four rows, about five hundred pixels — and every pane
+   stopped short of the window no matter how tall the window got.
+   ───────────────────────────────────────────────────────────────────────── */
+.tauri-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  /* The gap is the divider: one pixel of line colour showing between panes. */
+  gap: 1px;
+  background: var(--line);
+}
+
+.tauri-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-canvas);
+}
+
+.tauri-pane__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+/* The focused pane is the one the keyboard is talking to. With five terminals
+   open and only one taking keystrokes, that has to be visible without being
+   loud. */
+.tauri-pane--focused .tauri-pane__head {
+  background: var(--bg-raised);
+}
+
+.tauri-pane__title {
+  font-size: var(--text-tiny);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tauri-pane--focused .tauri-pane__title {
+  color: var(--text-primary);
+}

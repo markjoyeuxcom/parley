@@ -31,14 +31,22 @@ const IMPLEMENTED: Partial<Record<CommandName, string>> = {
   'pane.list': 'pane_list',
 }
 
-/** Tauri takes snake_case argument names; the renderer speaks camelCase. */
-function toSnake(payload: unknown): Record<string, unknown> {
-  if (!payload || typeof payload !== 'object') return {}
-  const out: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
-    out[key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)] = value
-  }
-  return out
+/**
+ * Arguments go over as they are.
+ *
+ * This used to rename `paneId` to `pane_id` on the way out, on the reasonable
+ * sounding theory that Rust wants snake_case. Tauri's command macro does the
+ * opposite: it lower-camel-cases each parameter name and looks that key up, so
+ * a snake_case key is simply not found. The renderer already speaks camelCase,
+ * which is what Tauri wants, and the translation was the whole problem.
+ *
+ * It hid because `pane_open` takes kind, cwd, cols and rows — four single
+ * words, identical in both cases. So panes opened, CLIs started, output
+ * streamed, and the app looked entirely healthy while every keystroke went to
+ * `pane_write` with no pane id at all.
+ */
+function argsFor(payload: unknown): Record<string, unknown> {
+  return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
 }
 
 export function installTauriBridge(): void {
@@ -52,7 +60,7 @@ export function installTauriBridge(): void {
           `“${command}” is not on Tauri yet. Implemented so far: ${Object.keys(IMPLEMENTED).join(', ')}.`,
         )
       }
-      return invoke<T>(rust, toSnake(payload))
+      return invoke<T>(rust, argsFor(payload))
     },
 
     onEvent: (handler: (event: AppEvent) => void) => {
