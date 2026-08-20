@@ -47,8 +47,31 @@ export class PaneCwdError extends Error {}
  * everything after it then read as typing, in a CLI that runs commands.
  * Relayed content does not get to decide where the paste ends.
  */
+/**
+ * Everything a terminal acts on, except tab and newline.
+ *
+ * C0 minus \t and \n, plus DEL and the C1 block — which matters because
+ * U+009B is an 8-bit CSI that some parsers honour exactly like `ESC [`.
+ */
+const CONTROL_BYTES = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g
+
 function bracketed(text: string): string {
-  const body = text.replace(/\r\n?/g, '\n').replace(/\u001b\[20[01]~/g, '')
+  // An allowlist, not a blocklist. This used to strip the two paste markers by
+  // name, and `String.replace` scans once without re-examining what it
+  // produced — so removing an inner marker could splice the bytes around it
+  // into a fresh one:
+  //
+  //     ESC[2  +  ESC[201~  +  01~   ->   ESC[2 + 01~  =  ESC[201~
+  //
+  // which put a live closing marker inside the payload, with a newline after
+  // it that a raw-mode TUI reads as Enter. Relayed text could leave paste mode
+  // and submit itself in another agent's session — the exact thing this
+  // function exists to prevent.
+  //
+  // Removing every control byte instead closes the whole class rather than
+  // that one instance of it, and costs nothing real: relayed content is prose
+  // and code, which has no legitimate use for an escape sequence.
+  const body = text.replace(/\r\n?/g, '\n').replace(CONTROL_BYTES, '')
   return `\u001b[200~${body}\u001b[201~`
 }
 

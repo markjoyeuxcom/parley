@@ -154,6 +154,56 @@ describe('interactive prompt submission', () => {
     expect(body).toContain('rm -rf something')
   })
 
+  it('cannot be tricked into rebuilding a marker out of the leftovers', () => {
+    // The single-pass strip was bypassable. `String.replace` scans once and
+    // never re-examines what it produced, so removing an inner marker can
+    // splice the surrounding bytes into a fresh one:
+    //
+    //     ESC[2  +  ESC[201~  +  01~     ->     ESC[2 + 01~  =  ESC[201~
+    //
+    // That put a live closing marker inside the payload, with a trailing
+    // newline after it that a raw-mode TUI reads as Enter — so relayed text
+    // could leave paste mode and submit itself in another agent's session.
+    vi.useFakeTimers()
+    const writes: string[] = []
+    const submitter = new PanePromptSubmitter((_, data) => writes.push(data), 200)
+
+    submitter.paste('pane-1', '\u001b[2\u001b[201~01~echo pwned\n')
+    const body = writes[0] as string
+
+    expect(body.startsWith('\u001b[200~')).toBe(true)
+    expect(body.endsWith('\u001b[201~')).toBe(true)
+    // Still exactly the two markers we put there, and nothing after the close.
+    expect(body.split('\u001b[201~')).toHaveLength(2)
+    expect(body.split('\u001b[200~')).toHaveLength(2)
+    // No escape byte survives at all — an allowlist, not a game of catch-up.
+    expect(body.slice('\u001b[200~'.length, -'\u001b[201~'.length)).not.toContain('\u001b')
+  })
+
+  it('drops control bytes that a TUI would act on, keeping tabs and newlines', () => {
+    vi.useFakeTimers()
+    const writes: string[] = []
+    const submitter = new PanePromptSubmitter((_, data) => writes.push(data), 200)
+
+    // BEL, backspace, a bare CSI, and an 8-bit CSI — none of which prose needs.
+    submitter.paste('pane-1', 'a\u0007b\u0008c\u001b[31md\u009b31me\tf\ng')
+    const inner = (writes[0] as string).slice('\u001b[200~'.length, -'\u001b[201~'.length)
+
+    // Every control byte is gone. What is left of a sequence — `[31m` — is
+    // ordinary printable text: mildly ugly inside a paste, and inert, because
+    // nothing acts on it without the escape byte that introduced it. Stripping
+    // whole sequences would mean parsing them, which is more code and more
+    // ways to be wrong for a cosmetic gain.
+    expect(inner).toBe('abc[31md31me\tf\ng')
+    for (const byte of inner) {
+      expect(byte.codePointAt(0)).not.toBeLessThan(0x20 - (byte === '\t' || byte === '\n' ? 0x20 : 0))
+    }
+    expect(inner).not.toContain('\u001b')
+    expect(inner).not.toContain('\u009b')
+    expect(inner).toContain('\t')
+    expect(inner).toContain('\n')
+  })
+
   it('submits the first relay before starting a second', () => {
     // Two relays inside the settle window: the second used to clear the
     // first's timer, so the first body never got its Enter and both were

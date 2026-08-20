@@ -456,12 +456,34 @@ fn shorten_path(dir: &str) -> String {
 /// early, with everything after it read as typing in a CLI that runs commands.
 /// Relayed content does not get to decide where the paste ends.
 fn bracketed(text: &str) -> String {
-    let body = text
+    // An allowlist, not a blocklist. This used to strip the two markers by
+    // name, and `str::replace` scans once without re-examining what it
+    // produced — so removing an inner marker could splice the bytes around it
+    // into a fresh one:
+    //
+    //     ESC[2  +  ESC[201~  +  01~   ->   ESC[2 + 01~  =  ESC[201~
+    //
+    // which put a live closing marker inside the payload, with a newline after
+    // it that a raw-mode TUI reads as Enter. Relayed text could leave paste
+    // mode and submit itself in another agent's session.
+    //
+    // Dropping every control character closes the whole class instead of that
+    // one instance. Tab and newline stay; C1 goes too, because U+009B is an
+    // 8-bit CSI that some parsers honour exactly like `ESC [`. What survives
+    // of a sequence is printable text, which nothing acts on.
+    let body: String = text
         .replace("\r\n", "\n")
         .replace('\r', "\n")
-        .replace("\u{1b}[200~", "")
-        .replace("\u{1b}[201~", "");
+        .chars()
+        .filter(|c| *c == '\n' || *c == '\t' || !is_control_char(*c))
+        .collect();
     format!("\u{1b}[200~{body}\u{1b}[201~")
+}
+
+/// C0, DEL and C1 — everything a terminal parser treats as a command.
+fn is_control_char(c: char) -> bool {
+    let n = c as u32;
+    n < 0x20 || (0x7f..=0x9f).contains(&n)
 }
 
 /// The CLIs, run bare and interactively — their own TUIs, their own permissions.
@@ -551,6 +573,30 @@ mod tests {
         let out = bracketed("one\r\ntwo\rthree\nfour");
         assert!(!out.contains('\r'), "{out:?}");
         assert!(out.contains("one\ntwo\nthree\nfour"), "{out:?}");
+    }
+
+    #[test]
+    fn a_marker_cannot_be_rebuilt_from_what_the_strip_left_behind() {
+        // Found by Claude auditing the relay from inside a pane. Stripping the
+        // markers by name is single-pass, so the leftovers around a removed
+        // marker could form a new one that was never rescanned.
+        // A bare `ESC[2`, not the opening marker: the splice needs the two
+        // halves of a marker to end up adjacent after the middle one goes.
+        let payload = format!("\u{1b}[2{END}01~echo pwned\n");
+        let out = bracketed(&payload);
+
+        assert_eq!(out.matches(END).count(), 1, "{out:?}");
+        assert!(out.ends_with(END), "{out:?}");
+        let inner = &out[START.len()..out.len() - END.len()];
+        assert!(!inner.contains('\u{1b}'), "no escape byte may survive: {inner:?}");
+    }
+
+    #[test]
+    fn control_characters_go_but_tabs_and_newlines_stay() {
+        let out = bracketed("a\u{7}b\u{8}c\u{1b}[31md\u{9b}31me\tf\ng");
+        let inner = &out[START.len()..out.len() - END.len()];
+        assert_eq!(inner, "abc[31md31me\tf\ng");
+        assert!(inner.contains('\t') && inner.contains('\n'));
     }
 
     #[test]
