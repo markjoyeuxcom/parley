@@ -53,15 +53,13 @@ commits, so nobody re-derives them.
 
 ## Open, in the order I would take them
 
-1. **Find out whether there is a retainer at all.** The ceiling turns out to be
-   PartitionAlloc's fixed 16 GiB pool reservation, not the machine's memory, so
-   the pool can be exhausted by fragmentation with nothing holding anything.
-   Before hunting a retainer, run the cheap split: log
-   `performance.memory.usedJSHeapSize` against process RSS every few seconds
-   under load. Gigabytes of JS heap tracking RSS means JS-side retention and a
-   heap snapshot is next; a few hundred megabytes beside multi-gigabyte RSS
-   means it is native, and the question is fragmentation versus a native cache.
-   Highest-value unknown in the repo, and it is one measurement.
+1. **Fragmentation or a native cache.** The split has been run: the JS heap
+   stays in a 37-133MB band while renderer RSS climbs to 7.9GB, and is capped
+   at 4192MB regardless — so the growth is native and a heap snapshot would
+   show nothing. See AGENTS.md for the curve. What remains is fragmentation of
+   PartitionAlloc's fixed 16 GiB pool versus a native cache. The clean test is
+   the CDP harness run twice, fixed colour against rotating, moving one
+   variable; the eight-colour repro makes the glyph atlas an unlikely driver.
 
 2. **The app cannot be shipped.** No signing identity, no notarisation, and one
    entitlement whose necessity could not be tested without a Developer ID —

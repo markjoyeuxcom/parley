@@ -525,18 +525,37 @@ partition_alloc_constants.h against these crash reports, not by me.
 used to kill it, and the residual allocation has no name yet: it is not the write queue, not
 scrollback, and not the GPU process, which sat at ~100MB throughout. Something
 in xterm's parse or render path holds finished work. A heap snapshot under load
-would name it — but note that "name the retainer" presumes there is one, and
-fragmentation of a fixed-size pool has no retainer to find. The cheaper first
-cut, which distinguishes the two: log `performance.memory.usedJSHeapSize`
-against process RSS every few seconds. A JS heap in the gigabytes tracking RSS
-means JS-side retention; a JS heap in the hundreds of megabytes beside
-multi-gigabyte RSS means the growth is native, and the question becomes
-fragmentation versus a native cache.
+would have shown nothing. That was measured rather than argued.
 
-One correction to an earlier reading of the curve: RSS falling from 11.6 to
-8.2GB was taken here as garbage collection keeping pace. It is not evidence of
-that. PartitionAlloc decommitting spans produces the same shape, and nothing
-measured distinguished them.
+**The growth is native, not JavaScript.** Twelve minutes of three-pane load,
+sampling `performance.memory.usedJSHeapSize` against renderer RSS every fifteen
+seconds over CDP:
+
+    t=0.0   js  83MB   rss   741MB   ratio 0.112
+    t=3.0   js 105MB   rss  3802MB   ratio 0.028
+    t=6.0   js  57MB   rss  6716MB   ratio 0.008
+    t=7.3   js  72MB   rss  7893MB   ratio 0.009   <- peak
+    t=7.5   js  66MB   rss  3873MB                 <- 4GB released in 15s
+    t=11.8  js  64MB   rss  5382MB   ratio 0.012
+
+The JS heap never leaves a 37-133MB band while RSS grows by seven gigabytes. It
+is also hard-capped: `jsHeapSizeLimit` reads 4192MB, so JavaScript could not
+account for an 11GB renderer even if it were full. A heap snapshot is therefore
+the wrong instrument, and looking for a retainer in JS is looking in the wrong
+process half.
+
+That 4GB drop at 7.5 minutes settles something else. It was called garbage
+collection here earlier, on no evidence. The JS heap moved 72MB to 66MB across
+it — nothing in JavaScript was released — so it is a decommit, which is what
+PartitionAlloc does and what produces this shape. The earlier reading was
+unearned and is corrected.
+
+**What is left.** Fragmentation of the fixed pool versus a native cache — the
+glyph atlas, canvas backing stores, GPU transfer buffers. The repro rotates
+eight SGR colours, so the atlas key space is under a hundred entries and every
+key repeats within a frame, which is a poor driver for a style-keyed cache. That
+leaves fragmentation as the leading explanation. The clean test is the same
+harness run twice, fixed colour against rotating, which moves one variable.
 
 Until then, treat four or more busy agent panes as unproven.
 
