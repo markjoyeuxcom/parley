@@ -1,5 +1,3 @@
-import { readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 /**
@@ -15,16 +13,17 @@ import { describe, expect, it } from 'vitest'
  * The wrapper's `display: flex` therefore applied to the markdown too, so
  * every paragraph, heading and list became a flex item in a row, and an
  * agent's reply rendered as forty narrow vertical strips. Nothing failed. It
- * shipped, and was found by looking at it.
+ * shipped, and was found by a person looking at the screen.
+ *
+ * Read through Vite rather than `node:fs`: this file is compiled by the web
+ * tsconfig, which has no node types, and reaching for `readFileSync` here
+ * broke `typecheck:web` while every test still passed.
  */
 
-const STYLES = join(__dirname)
-
-function sheets(): Array<{ name: string; text: string }> {
-  return readdirSync(STYLES)
-    .filter((file) => file.endsWith('.css'))
-    .map((name) => ({ name, text: readFileSync(join(STYLES, name), 'utf8') }))
-}
+const SHEETS = import.meta.glob('./*.css', { query: '?raw', import: 'default', eager: true }) as Record<
+  string,
+  string
+>
 
 /** Top-level `.thing {` rules, with comments removed so examples do not count. */
 function bareClassSelectors(css: string): string[] {
@@ -33,7 +32,7 @@ function bareClassSelectors(css: string): string[] {
 }
 
 describe('no class is declared twice', () => {
-  for (const { name, text } of sheets()) {
+  for (const [name, text] of Object.entries(SHEETS)) {
     it(`${name} declares each bare class selector once`, () => {
       const seen = new Map<string, number>()
       for (const selector of bareClassSelectors(text)) {
@@ -41,7 +40,7 @@ describe('no class is declared twice', () => {
       }
       const duplicated = [...seen.entries()]
         .filter(([, count]) => count > 1)
-        .map(([selector, count]) => `${selector} (${count}×)`)
+        .map(([selector, count]) => `${selector} (${count}x)`)
 
       // If a duplicate is deliberate, merge the two rules instead of adding an
       // exception: two rules for one selector is the same thing written twice,
@@ -52,7 +51,7 @@ describe('no class is declared twice', () => {
 })
 
 describe('the stylesheets parse as balanced', () => {
-  for (const { name, text } of sheets()) {
+  for (const [name, text] of Object.entries(SHEETS)) {
     it(`${name} has matching braces`, () => {
       const withoutComments = text.replace(/\/\*[\s\S]*?\*\//g, '')
       const open = (withoutComments.match(/\{/g) ?? []).length
@@ -62,4 +61,9 @@ describe('the stylesheets parse as balanced', () => {
       expect({ file: name, open, close }).toEqual({ file: name, open, close: open })
     })
   }
+})
+
+it('actually found the stylesheets', () => {
+  // A glob that matches nothing would make every test above vacuously pass.
+  expect(Object.keys(SHEETS).length).toBeGreaterThanOrEqual(4)
 })
