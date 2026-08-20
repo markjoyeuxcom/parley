@@ -99,15 +99,27 @@ export function TerminalPane({
     term.loadAddon(fit)
     term.open(host)
 
-    // WebGL is a large win on a 16-pane grid, but it fails on some GPU/driver
-    // combinations and in software rendering. Falling back to the DOM renderer
-    // is correct; refusing to open a terminal is not.
-    try {
-      const webgl = new WebglAddon()
-      webgl.onContextLoss(() => webgl.dispose())
-      term.loadAddon(webgl)
-    } catch {
-      /* DOM renderer it is. */
+    // WebGL is off by default, and that is a bug hunt rather than a taste.
+    //
+    // The renderer was being killed roughly every ten minutes — Chromium's
+    // PartitionAlloc trapping on a failed allocation, which macOS reports as
+    // SIGTRAP and Electron as `crashed`. Coalescing PTY output into one message
+    // per frame did not move that number at all: 8-14 minutes before, 11.1
+    // after. That rules out the volume of data and points at something
+    // accumulating per rendered glyph instead, which is what xterm has an open
+    // report of under varying colour — exactly what an agent TUI produces.
+    //
+    // It is a large win on a 16-pane grid when it behaves, so it is a switch
+    // rather than a deletion. Set PARLEY_WEBGL=1 and compare: the measurement
+    // is how many minutes a renderer survives with three busy panes.
+    if (import.meta.env.VITE_PARLEY_WEBGL === '1') {
+      try {
+        const webgl = new WebglAddon()
+        webgl.onContextLoss(() => webgl.dispose())
+        term.loadAddon(webgl)
+      } catch {
+        /* DOM renderer it is. */
+      }
     }
 
     termRef.current = term
