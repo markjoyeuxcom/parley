@@ -250,6 +250,42 @@ describe('mounted-surface smoke', () => {
     await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(2))
   })
 
+  it('rearranges the grid without starting or stopping anything', async () => {
+    // The property that makes an arrange safe to offer at all: it rebuilds the
+    // split tree over the same slot ids. If it ever closed and reopened panes
+    // to get the shape it wanted, it would cost somebody a running agent.
+    let opened = 0
+    const closed: string[] = []
+    installBridge({
+      'pane.open': (payload) => {
+        opened += 1
+        const kind = (payload as { kind: string }).kind as Pane['kind']
+        return {
+          id: `pane-${opened}`, kind, title: kind, cwd: '/tmp/smoke-repo',
+          status: 'live', exitCode: null, createdAt: opened,
+        } satisfies Pane
+      },
+      'pane.close': (payload) => {
+        closed.push((payload as { paneId: string }).paneId)
+        return { ok: true }
+      },
+    })
+
+    render(<StoreProvider><GridSurface /></StoreProvider>)
+    fireEvent.click(await screen.findByTitle('New Claude pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(1))
+    fireEvent.click(await screen.findByTitle('New Codex pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(2))
+
+    fireEvent.click(await screen.findByTitle('Arrange the open panes into even columns'))
+    fireEvent.click(await screen.findByText('2 columns'))
+
+    // Both panes still on the grid, and nothing was asked to close.
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(2))
+    expect(closed).toEqual([])
+    expect(opened).toBe(2)
+  })
+
   it('relays a selection from one CLI pane into another, attributed and pasted', async () => {
     // The loop this app exists for: read Claude's answer, hand it to Codex,
     // hand the reply back. Both halves were already present — every terminal

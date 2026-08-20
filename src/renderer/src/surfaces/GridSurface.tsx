@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Columns2, FolderOpen, Layers, MoreHorizontal, Play, Plus, Radio, Rows2, Terminal, Users, X } from 'lucide-react'
+import { Columns2, FolderOpen, Grid2x2, Layers, MoreHorizontal, Play, Plus, Radio, Rows2, Terminal, Users, X } from 'lucide-react'
 import {
   MAX_PANES,
   RESUME_PICKER_KINDS,
@@ -28,6 +28,8 @@ import {
   setRatio,
   splitLeaf,
   toSavedLayout,
+  arrangeInColumns,
+  autoColumns,
   type Slot,
   type SplitPath,
 } from '../lib/layout'
@@ -491,6 +493,26 @@ export function GridSurface(): ReactNode {
   )
 
   /**
+   * Rearranges what is open into even columns.
+   *
+   * An action, not a mode. The Tauri shell could treat this as a live setting
+   * because it lays panes out with CSS grid, where the count is just a number.
+   * Here the layout is a split tree somebody edits by hand — ⌘D to split, drag
+   * to set a ratio — and a mode that rebuilt it whenever a pane appeared would
+   * quietly undo that. So it happens when asked, and never on its own.
+   *
+   * Nothing is opened, closed or restarted: the tree is rebuilt over the same
+   * slot ids, so an arrange cannot cost anybody a running CLI.
+   */
+  const arrange = useCallback((cols: number | 'auto') => {
+    setLayout((current) => {
+      const ids = collectSlotIds(current)
+      if (ids.length < 2) return current
+      return arrangeInColumns(ids, cols === 'auto' ? autoColumns(ids.length) : cols)
+    })
+  }, [])
+
+  /**
    * Tears the whole grid down. Used before restoring a saved layout.
    *
    * Rooms are closed as well as panes. They were not, so opening a saved
@@ -828,6 +850,44 @@ export function GridSurface(): ReactNode {
         ) : null}
 
         <div className="divider" style={{ width: 1, height: 18, background: 'var(--line)' }} />
+
+        <Menu
+          title="Arrange the open panes into even columns"
+          label={
+            <>
+              <Grid2x2 size={12} strokeWidth={2} />
+              Arrange
+            </>
+          }
+        >
+          {(close) => (
+            <>
+              <MenuItem
+                onClick={() => {
+                  close()
+                  arrange('auto')
+                }}
+              >
+                Auto ({autoColumns(slotCount)} column{autoColumns(slotCount) === 1 ? '' : 's'})
+              </MenuItem>
+              {[1, 2, 3, 4].map((cols) => (
+                <MenuItem
+                  key={cols}
+                  onClick={() => {
+                    close()
+                    arrange(cols)
+                  }}
+                >
+                  {cols} column{cols === 1 ? '' : 's'}
+                </MenuItem>
+              ))}
+              <MenuSection>
+                Rearranges what is already open — no pane is started or stopped.
+                Splitting by hand still works; this never runs on its own.
+              </MenuSection>
+            </>
+          )}
+        </Menu>
 
         <Menu
           title="Saved layouts"

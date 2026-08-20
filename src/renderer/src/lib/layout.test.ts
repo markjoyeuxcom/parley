@@ -1,18 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  collectSlotIds,
-  countSlots,
-  leaf,
-  nextSlot,
-  previousSlot,
-  fromSavedLayout,
-  removeLeaf,
-  setRatio,
-  splitLeaf,
-  swapLeaves,
-  toSavedLayout,
-  type Slot,
-} from './layout'
+import { arrangeInColumns, autoColumns, collectSlotIds, countSlots, fromSavedLayout, leaf, nextSlot, previousSlot, removeLeaf, setRatio, splitLeaf, swapLeaves, toSavedLayout, type Slot } from './layout'
 
 describe('pane layout tree', () => {
   it('splits a single pane into two', () => {
@@ -220,3 +207,66 @@ describe('pane cycling', () => {
     expect(previousSlot(null, 'a')).toBeNull()
   })
 })
+
+describe('arranging panes into columns', () => {
+  const ids = (n: number): string[] => Array.from({ length: n }, (_, i) => `s${i + 1}`)
+
+  it('picks a squarish column count on its own', () => {
+    // Five in a row is five slivers. Five in three columns is two rows of
+    // terminals somebody can actually read.
+    expect(autoColumns(1)).toBe(1)
+    expect(autoColumns(2)).toBe(2)
+    expect(autoColumns(4)).toBe(2)
+    expect(autoColumns(5)).toBe(3)
+    expect(autoColumns(9)).toBe(3)
+  })
+
+  it('never goes past four, however many panes there are', () => {
+    // Past four a terminal is too narrow for the CLIs this app runs.
+    expect(autoColumns(16)).toBe(4)
+    expect(autoColumns(100)).toBe(4)
+  })
+
+  it('keeps every slot, and only rearranges them', () => {
+    // The whole reason an arrange is safe: it rebuilds the tree over the same
+    // slot ids, so nothing is opened, closed or restarted.
+    const before = ids(7)
+    const arranged = arrangeInColumns(before, 3)
+    expect(countSlots(arranged)).toBe(7)
+    expect([...collectSlotIds(arranged)].sort()).toEqual([...before].sort())
+  })
+
+  it('reads left to right across the top row', () => {
+    // Round-robin, not sequential chunks: with four panes in two columns the
+    // second pane belongs beside the first, not underneath it.
+    const arranged = arrangeInColumns(ids(4), 2)
+    expect(arranged?.type).toBe('split')
+    if (arranged?.type !== 'split') throw new Error('expected a split')
+    expect(arranged.direction).toBe('row')
+    expect(collectSlotIds(arranged.a)).toEqual(['s1', 's3'])
+    expect(collectSlotIds(arranged.b)).toEqual(['s2', 's4'])
+  })
+
+  it('splits evenly rather than halving the leftovers', () => {
+    // Folding one at a time gives the first pane half the window and the last
+    // an eighth. Four panes in one column should be four quarters.
+    const arranged = arrangeInColumns(ids(4), 1)
+    if (arranged?.type !== 'split') throw new Error('expected a split')
+    expect(arranged.ratio).toBeCloseTo(0.5)
+    expect(arranged.direction).toBe('column')
+  })
+
+  it('asks for more columns than panes and gets one pane each', () => {
+    const arranged = arrangeInColumns(ids(2), 4)
+    expect(countSlots(arranged)).toBe(2)
+    if (arranged?.type !== 'split') throw new Error('expected a split')
+    expect(collectSlotIds(arranged.a)).toEqual(['s1'])
+    expect(collectSlotIds(arranged.b)).toEqual(['s2'])
+  })
+
+  it('handles one pane and none at all', () => {
+    expect(arrangeInColumns(ids(1), 3)).toEqual({ type: 'leaf', slotId: 's1' })
+    expect(arrangeInColumns([], 3)).toBeNull()
+  })
+})
+

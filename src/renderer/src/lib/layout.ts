@@ -47,6 +47,63 @@ export function removeLeaf(node: LayoutNode, slotId: Id): LayoutNode | null {
   return { ...node, a, b }
 }
 
+/**
+ * How many columns a given number of panes wants, left to itself.
+ *
+ * Squarish. Five panes in three columns is two rows of readable terminals;
+ * five in a row is five slivers, which is what the Tauri shell started as.
+ * Capped at four because past that a terminal is too narrow for the CLIs
+ * this app exists to run — Claude Code's own boxes start wrapping.
+ */
+export function autoColumns(count: number): number {
+  if (count <= 1) return 1
+  return Math.min(4, Math.ceil(Math.sqrt(count)))
+}
+
+/**
+ * Builds a balanced tree over `nodes`, so every pane ends up the same size.
+ *
+ * Halving rather than folding one at a time: `a | (b | (c | d))` gives the
+ * first pane half the window and the last an eighth, which is a layout nobody
+ * asked for. The ratio carries the proportion of the split so the two halves
+ * stay honest when the counts are uneven.
+ */
+function balanced(nodes: LayoutNode[], direction: 'row' | 'column'): LayoutNode {
+  if (nodes.length === 1) return nodes[0] as LayoutNode
+  const half = Math.ceil(nodes.length / 2)
+  return {
+    type: 'split',
+    direction,
+    ratio: half / nodes.length,
+    a: balanced(nodes.slice(0, half), direction),
+    b: balanced(nodes.slice(half), direction),
+  }
+}
+
+/**
+ * Rearranges existing slots into `cols` even columns, reading left to right.
+ *
+ * A rebuild of the tree only — slots are referenced by id and nothing is
+ * opened, closed or restarted, so an arrange never costs anybody a running
+ * CLI. That is why this is an action rather than a mode: the Grid also lets
+ * people split with ⌘D and drag the dividers, and a layout that rearranged
+ * itself whenever a pane appeared would undo that work without being asked.
+ */
+export function arrangeInColumns(slotIds: readonly Id[], cols: number): LayoutNode | null {
+  if (slotIds.length === 0) return null
+  const width = Math.max(1, Math.min(Math.floor(cols), slotIds.length))
+
+  // Round-robin, so the reading order runs across the top row first rather
+  // than down the first column.
+  const columns: Id[][] = Array.from({ length: width }, () => [])
+  slotIds.forEach((id, index) => (columns[index % width] as Id[]).push(id))
+
+  const stacks = columns
+    .filter((column) => column.length > 0)
+    .map((column) => balanced(column.map(leaf), 'column'))
+  return balanced(stacks, 'row')
+}
+
 export function collectSlotIds(node: LayoutNode | null): Id[] {
   if (!node) return []
   if (node.type === 'leaf') return [node.slotId]
