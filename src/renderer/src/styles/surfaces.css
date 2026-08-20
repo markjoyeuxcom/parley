@@ -291,19 +291,17 @@
 }
 
 .room__verdict-meta,
-.room__verdict-dissent {
-  font-size: var(--text-micro);
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  flex-shrink: 0;
-}
-
+/* One rule, not two. It was declared twice and the second quietly won on
+   font-family; this is what the pair actually computed to. */
 .room__verdict-dissent {
   padding: 0 var(--s3) var(--s2);
+  font-size: var(--text-micro);
+  font-family: inherit;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: inherit;
 }
 
 .room__verdict-body {
@@ -410,7 +408,17 @@
 }
 
 /* Holds the transcript and the jump button that floats over it. */
-.room__body {
+/*
+ * The scroll wrapper: the transcript plus the jump-to-latest button that is
+ * positioned against it.
+ *
+ * Not `room__body`, which it used to be called. That name already belonged to
+ * the rendered markdown of a single turn, so both rules applied to both
+ * elements and the markdown inherited `display: flex` — every paragraph,
+ * heading and list becoming a flex item in a row, and a reply rendering as
+ * forty narrow vertical strips.
+ */
+.room__viewport {
   position: relative;
   flex: 1;
   min-height: 0;
@@ -444,7 +452,10 @@
 }
 
 /* A folded turn, standing in for what it said. */
-.room__fold {
+/* The Expand/Collapse control on a long turn. Named apart from `room__fold`,
+   the code-block wrapper, which was picking up this button reset while this
+   button picked up that wrapper's bottom margin. */
+.room__fold-toggle {
   padding: 0;
   border: 0;
   background: transparent;

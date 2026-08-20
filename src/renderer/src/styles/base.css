@@ -210,12 +210,9 @@ h3 {
 .titlebar__right {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--s3);
   min-width: 0;
-}
-
-.titlebar__right {
-  justify-content: flex-end;
 }
 
 /* Anything interactive must opt back out of the drag region. */

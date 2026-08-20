@@ -401,7 +401,7 @@ export function RoomPane({
         </div>
       ) : null}
 
-      <div className="room__body">
+      <div className="room__viewport">
         <div
           className="room__transcript"
           ref={scroller}
@@ -848,7 +848,7 @@ function RoomTurnView({
           <span className="room__elapsed">{formatDuration(elapsed)}</span>
         ) : null}
         {foldable ? (
-          <button className="room__fold" onClick={onFold} aria-expanded={!folded}>
+          <button className="room__fold-toggle" onClick={onFold} aria-expanded={!folded}>
             {folded ? 'Expand' : 'Collapse'}
           </button>
         ) : null}
