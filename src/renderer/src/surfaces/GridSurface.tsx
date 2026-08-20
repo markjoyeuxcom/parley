@@ -122,9 +122,51 @@ export function GridSurface(): ReactNode {
   // Reconcile the pane registry once at mount: events cover everything after
   // this moment, and the one-shot list covers panes born before the surface
   // was ready to hear about them.
+  //
+  // And put them back on the grid. Closing the window on macOS deliberately
+  // leaves the panes running — that is what stops a stray ⌘W ending an agent
+  // mid-task — but the Grid mounted with an empty layout, so reopening showed
+  // nothing while claude and codex carried on spending against a subscription
+  // with no way left to reach them or stop them. The registry knew; the
+  // surface did not ask.
+  //
+  // Only when the grid is empty. A surface that already has a layout is one
+  // the person is using, and adopting panes into it would rearrange their work
+  // underneath them.
   useEffect(() => {
     void attempt(() => api.listPanes()).then((panes) => {
-      if (panes) dispatch({ type: 'panes', panes })
+      if (!panes) return
+      dispatch({ type: 'panes', panes })
+
+      const adoptable = panes.filter((pane) => pane.status !== 'exited')
+      if (adoptable.length === 0) return
+      setLayout((current) => {
+        if (current) return current
+        const rebuilt: Record<Id, Slot> = {}
+        let tree: LayoutNode | null = null
+        adoptable.forEach((pane, index) => {
+          const slotId = mintSlotId()
+          rebuilt[slotId] = {
+            kind: pane.kind,
+            cwd: pane.cwd,
+            paneId: pane.id,
+            roomId: null,
+            ...(pane.title ? { title: pane.title } : {}),
+          }
+          if (!tree) tree = leaf(slotId)
+          else {
+            const target = collectSlotIds(tree)[index - 1]
+            // Alternating, so four adopted panes come back as a grid rather
+            // than four slivers in a row.
+            tree = target
+              ? splitLeaf(tree, target, index % 2 === 1 ? 'row' : 'column', slotId)
+              : tree
+          }
+        })
+        setSlots(rebuilt)
+        setFocusedSlot(Object.keys(rebuilt)[0] ?? null)
+        return tree
+      })
     })
   }, [attempt, dispatch])
 
@@ -173,6 +215,19 @@ export function GridSurface(): ReactNode {
 
   const liveSlots = useMemo(
     () => collectSlotIds(layout).filter((id) => slots[id]?.paneId),
+    [layout, slots],
+  )
+
+  /**
+   * Rooms currently on the grid. Counted separately from `liveSlots`, which
+   * several callers use to mean "has a pty" — a room has none.
+   *
+   * They exist because the confirmation before replacing the grid counted
+   * panes only, so a grid holding nothing but a thinking room offered to
+   * replace "0 panes" and then dropped the room without asking.
+   */
+  const liveRoomSlots = useMemo(
+    () => collectSlotIds(layout).filter((id) => slots[id]?.roomId),
     [layout, slots],
   )
 
@@ -435,13 +490,22 @@ export function GridSurface(): ReactNode {
     [slots],
   )
 
-  /** Tears the whole grid down. Used before restoring a saved layout. */
+  /**
+   * Tears the whole grid down. Used before restoring a saved layout.
+   *
+   * Rooms are closed as well as panes. They were not, so opening a saved
+   * layout cleared the slot and left the room running in the main process —
+   * mid-turn, still spending, with nothing on screen pointing at it. Removing
+   * a single slot has always closed its room; only the wholesale teardown
+   * forgot to.
+   */
   const closeAll = useCallback(() => {
     for (const slot of Object.values(slots)) {
       if (slot.paneId) {
         void api.closePane(slot.paneId).catch(() => undefined)
         forgetPane(slot.paneId)
       }
+      if (slot.roomId) void api.closeRoom(slot.roomId).catch(() => undefined)
     }
     setSlots({})
     setLayout(null)
@@ -457,9 +521,13 @@ export function GridSurface(): ReactNode {
    */
   const openLayout = useCallback(
     async (saved: GridLayout) => {
-      if (liveSlots.length) {
+      const losing = [
+        liveSlots.length ? `${liveSlots.length} pane${liveSlots.length === 1 ? '' : 's'}` : '',
+        liveRoomSlots.length ? `${liveRoomSlots.length} room${liveRoomSlots.length === 1 ? '' : 's'}` : '',
+      ].filter(Boolean)
+      if (losing.length) {
         const ok = window.confirm(
-          `Opening “${saved.name}” closes the ${liveSlots.length} pane${liveSlots.length === 1 ? '' : 's'} currently running. Continue?`,
+          `Opening “${saved.name}” closes the ${losing.join(' and ')} currently open. Continue?`,
         )
         if (!ok) return
       }
@@ -488,7 +556,7 @@ export function GridSurface(): ReactNode {
           : `Opened “${saved.name}”.`,
       )
     },
-    [attempt, closeAll, liveSlots.length, notify],
+    [attempt, closeAll, liveRoomSlots.length, liveSlots.length, notify],
   )
 
   // Default the folder to the last one a room was opened in. The record is

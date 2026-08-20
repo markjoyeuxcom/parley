@@ -220,6 +220,36 @@ describe('mounted-surface smoke', () => {
     expect(chip('claude').querySelector('.dot--pass')).toBeTruthy()
   })
 
+  it('puts panes that outlived the window back on the grid', async () => {
+    // Closing the window on macOS leaves the panes running on purpose — that
+    // is what stops a stray ⌘W ending an agent mid-task. But the Grid mounted
+    // with an empty layout, so reopening showed nothing while claude and codex
+    // carried on spending against a subscription, unreachable and unstoppable.
+    // The registry knew about them; the surface never asked.
+    const survivors: Pane[] = [
+      {
+        id: 'pane-a', kind: 'claude', title: 'Claude', cwd: '/tmp/smoke-repo',
+        status: 'live', exitCode: null, createdAt: 1,
+      },
+      {
+        id: 'pane-b', kind: 'codex', title: 'Codex', cwd: '/tmp/smoke-repo',
+        status: 'live', exitCode: null, createdAt: 2,
+      },
+      // Already finished. Adopting this one would put a dead pane on the grid
+      // and offer it as a relay target.
+      {
+        id: 'pane-c', kind: 'codex', title: 'Codex', cwd: '/tmp/smoke-repo',
+        status: 'exited', exitCode: 0, createdAt: 3,
+      },
+    ]
+    installBridge({ 'pane.list': () => survivors })
+
+    render(<StoreProvider><GridSurface /></StoreProvider>)
+
+    // Two, not three: the exited one stays off the grid.
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(2))
+  })
+
   it('relays a selection from one CLI pane into another, attributed and pasted', async () => {
     // The loop this app exists for: read Claude's answer, hand it to Codex,
     // hand the reply back. Both halves were already present — every terminal

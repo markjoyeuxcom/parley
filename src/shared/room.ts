@@ -450,6 +450,22 @@ export function relayPrompt(speaker: string, text: string): string {
  * The toggle appeared to do nothing, which reads as the feature being broken
  * rather than the prompt contradicting it.
  */
+/**
+ * Did a seat actually finish saying something here?
+ *
+ * A turn is written to the record the moment it starts — that is deliberate,
+ * and it is what stops a crash losing the fact that money was spent. The cost
+ * is that the record can hold a turn that never finished: no text, no
+ * `endedAt`, and after a restart it looks like any other row.
+ *
+ * Anything that treats a turn as an answer has to ask this first. Handing an
+ * unfinished one on produces "@seat said:" followed by nothing, in a paid
+ * turn, and the next seat answers a question nobody asked.
+ */
+export function isAnswered(turn: RoomTurn): boolean {
+  return turn.author === 'agent' && turn.endedAt !== null && !turn.error && turn.text.trim() !== ''
+}
+
 export function roomSeatSystemPrompt(seat: AgentConfig, write = false): string {
   const base = [
     'You are one participant in an ongoing conversation with a person, in a working folder they have open.',

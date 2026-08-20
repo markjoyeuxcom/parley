@@ -21,6 +21,7 @@ import {
   parseAddress,
   relayPrompt,
   renderRoomVerdict,
+  isAnswered,
   roomSeatSystemPrompt,
   seatName,
   uniqueSeatName,
@@ -273,7 +274,7 @@ export class RoomManager {
   async converge(roomId: Id, question: string): Promise<RoomVerdict | null> {
     const live = this.require(roomId)
     if (live.room.status === 'thinking') throw new RoomError('that room is already waiting on a reply')
-    if (!live.room.turns.some((turn) => turn.author === 'agent')) {
+    if (!live.room.turns.some(isAnswered)) {
       throw new RoomError('nothing has been said yet for the seats to conclude on')
     }
     const refusal = this.exceeded(live.room, live.room.seats.length)
@@ -452,7 +453,11 @@ export class RoomManager {
         this.deps.emit({ type: 'room.changed', roomId: live.room.id, room: live.room })
         return
       }
-      const last = [...live.room.turns].reverse().find((turn) => turn.author === 'agent')
+      // Answered, not merely started. A turn is written when it begins, so a
+      // room that was killed mid-reply comes back holding a row with no text
+      // — and handing that on spends a turn showing the next seat "@someone
+      // said:" followed by nothing.
+      const last = [...live.room.turns].reverse().find(isAnswered)
       if (!last) throw new RoomError('nothing has been said yet for a seat to answer')
 
       // Whoever spoke last hands over to the next seat in order.

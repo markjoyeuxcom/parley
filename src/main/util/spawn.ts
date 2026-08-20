@@ -57,6 +57,14 @@ export function runJsonl(opts: JsonlRunOptions): Promise<JsonlRunResult> {
       cwd: opts.cwd,
       // shell is never enabled — see the module note.
       env: { ...process.env, ...(opts.env ?? {}) } as NodeJS.ProcessEnv,
+      // Its own process group, so cancelling can reach the whole tree.
+      //
+      // Not optional here, unlike capture(). An agent CLI is a process that
+      // spawns processes — that is what it is for — and SIGTERM to the direct
+      // child left its tool subprocesses running: a build, a test run, or a
+      // file write from a seat that holds write authorisation, still going
+      // after the person pressed Stop and the room said it had stopped.
+      detached: true,
     }
 
     const child = spawn(opts.command, opts.args, spawnOpts)
@@ -140,12 +148,31 @@ export function runJsonl(opts: JsonlRunOptions): Promise<JsonlRunResult> {
       if (stderr.length < MAX_STDERR) stderr += chunk
     })
 
+    /** The whole group the detached child leads, falling back to the child. */
+    const deliver = (sig: NodeJS.Signals): void => {
+      if (child.pid) {
+        try {
+          // Negative pid: the group, not just the process at its head.
+          process.kill(-child.pid, sig)
+          return
+        } catch {
+          // Already gone, or the spawn failed before it led a group; fall
+          // through so the direct child still gets the signal.
+        }
+      }
+      try {
+        child.kill(sig)
+      } catch {
+        // Nothing left to signal.
+      }
+    }
+
     const kill = () => {
       terminated = true
-      child.kill('SIGTERM')
+      deliver('SIGTERM')
       // Escalate if the CLI ignores SIGTERM while mid-request.
       setTimeout(() => {
-        if (!settled) child.kill('SIGKILL')
+        if (!settled) deliver('SIGKILL')
       }, 3000).unref?.()
     }
 

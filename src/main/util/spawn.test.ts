@@ -1,3 +1,5 @@
+import { readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 import { capture, isShellFree, runJsonl, splitCommand } from './spawn'
@@ -201,4 +203,47 @@ describe('runJsonl stdin delivery', () => {
     expect(result.exitCode).toBe(2)
     expect(result.stdinDelivered).toBe(false)
   })
+})
+
+describe('cancelling a turn reaches what the CLI started', () => {
+  const alive = (pid: number): boolean => {
+    try {
+      // Signal 0 tests for existence without delivering anything.
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+  it('kills the whole group, not just the process at its head', async () => {
+    // An agent CLI is a process that spawns processes — that is what it is
+    // for. SIGTERM to the direct child left the tool subprocess running: a
+    // build, a test run, or a file write from a write-authorised seat, still
+    // going after the person pressed Stop and the room reported it stopped.
+    const pidFile = join(tmpdir(), `parley-group-${process.pid}-${Date.now()}`)
+    const control = new AbortController()
+
+    // `sh` waits on the grandchild, so signalling only `sh` leaves `sleep`.
+    const run = runJsonl({
+      command: '/bin/sh',
+      args: ['-c', `sleep 30 & echo $! > ${pidFile}; echo '{"ok":true}'; wait`],
+      cwd: tmpdir(),
+      signal: control.signal,
+      onEvent: () => {},
+    })
+
+    await wait(700)
+    const grandchild = Number(readFileSync(pidFile, 'utf8').trim())
+    expect(Number.isFinite(grandchild) && grandchild > 0).toBe(true)
+    expect(alive(grandchild)).toBe(true)
+
+    control.abort()
+    await run
+    await wait(500)
+
+    expect(alive(grandchild)).toBe(false)
+    rmSync(pidFile, { force: true })
+  }, 20_000)
 })

@@ -5,6 +5,7 @@ import {
   mentionAt,
   parseAddress,
   previewAudience,
+  isAnswered,
   roomSeatSystemPrompt,
   roomTranscript,
   turnOutline,
@@ -394,6 +395,41 @@ describe('a seat is told what it may actually do', () => {
     const prompt = roomSeatSystemPrompt(config, true)
     expect(prompt).not.toContain('cannot change anything here')
     expect(prompt).toContain('authorised this seat to write')
+  })
+})
+
+describe('a turn that never finished is not an answer', () => {
+  const base = {
+    id: 't1',
+    roomId: 'r1',
+    author: 'agent',
+    seat: 'reviewer',
+    vendor: 'claude',
+    profile: '',
+    text: 'I would split the queue.',
+    usage: emptyUsage(),
+    startedAt: 1,
+    endedAt: 2,
+    error: null,
+  } as never
+
+  it('accepts a completed answer', () => {
+    expect(isAnswered(base)).toBe(true)
+  })
+
+  it('rejects one still open, which is how a crashed turn comes back', () => {
+    // Turns are written when they start, so this is exactly the row a kill
+    // mid-reply leaves behind: no text, no endedAt, indistinguishable from a
+    // real one after a restart.
+    expect(isAnswered({ ...(base as object), text: '', endedAt: null } as never)).toBe(false)
+  })
+
+  it('rejects one that failed', () => {
+    expect(isAnswered({ ...(base as object), error: 'the CLI exited 1' } as never)).toBe(false)
+  })
+
+  it('rejects what the person said', () => {
+    expect(isAnswered({ ...(base as object), author: 'person' } as never)).toBe(false)
   })
 })
 
