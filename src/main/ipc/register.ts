@@ -1,6 +1,6 @@
-import { dialog, ipcMain, shell } from 'electron'
+import { dialog, ipcMain } from 'electron'
 import { CH, toInvokeResult, type InvokeResult } from '@shared/ipc'
-import { invokeCommand, type IpcContext, type IpcDialogs } from './commands'
+import { invokeCommand, RequestError, type IpcContext, type IpcDialogs } from './commands'
 
 /**
  * The Electron half of the IPC surface, and nothing else.
@@ -26,17 +26,23 @@ const dialogs: IpcDialogs = {
  * operation: the renderer is sandboxed and untrusted, and a single audited
  * chokepoint is far easier to reason about than thirty separate handlers.
  */
-export function registerIpc(ctx: Omit<IpcContext, 'dialogs' | 'openExternal'>): void {
-  const full: IpcContext = {
-    ...ctx,
-    dialogs,
-    // Same reason as the dialogs: the command table never loads Electron.
-    openExternal: (url) => void shell.openExternal(url),
-  }
+export function registerIpc(ctx: Omit<IpcContext, 'dialogs'>): void {
+  const full: IpcContext = { ...ctx, dialogs }
   ipcMain.handle(
     CH.invoke,
-    (_event, raw: unknown): Promise<InvokeResult<unknown>> =>
-      toInvokeResult(() => invokeCommand(full, raw)),
+    (event, raw: unknown): Promise<InvokeResult<unknown>> =>
+      toInvokeResult(() => {
+        // Only the window's own top frame. There is one window, no <webview>
+        // and no iframes, and will-navigate bounces everything — so today this
+        // can only ever be true. It is here because the surface behind it
+        // spawns terminals, writes keystrokes and grants seats write
+        // capability, and "there are no subframes yet" is a property of this
+        // week's code rather than of the boundary.
+        if (event.senderFrame && event.senderFrame !== event.sender.mainFrame) {
+          throw new RequestError('ipc from an unexpected frame')
+        }
+        return invokeCommand(full, raw)
+      }),
   )
 }
 

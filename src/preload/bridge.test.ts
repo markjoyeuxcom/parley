@@ -17,7 +17,16 @@ describe('the invoke envelope bridge', () => {
 
   it('wraps command dispatch in register', () => {
     expect(register).toMatch(/import \{ CH, toInvokeResult,/)
-    expect(register).toMatch(/toInvokeResult\(\(\) => invokeCommand\(full, raw\)\)/)
+    // The property, not the exact expression: dispatch happens inside
+    // `toInvokeResult`, so a throw becomes an error envelope rather than a
+    // rejected promise the preload would have to interpret. The handler grew a
+    // senderFrame check between the two, which is why this no longer matches a
+    // single line.
+    expect(register).toMatch(/toInvokeResult\(/)
+    expect(register).toMatch(/invokeCommand\(full, raw\)/)
+    expect(register.indexOf('toInvokeResult(')).toBeLessThan(
+      register.indexOf('invokeCommand(full, raw)'),
+    )
     expect(register).not.toMatch(/err instanceof Error/)
   })
 })

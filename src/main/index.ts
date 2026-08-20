@@ -1,3 +1,4 @@
+import { isOpenableExternally } from '@main/util/externalUrl'
 import { join } from 'node:path'
 import { app, BrowserWindow, nativeTheme, Notification, powerSaveBlocker, shell } from 'electron'
 import type { AppEvent, PtyChunk } from '@shared/events'
@@ -73,15 +74,18 @@ function createWindow(): void {
   // Any attempt to navigate away, or to open a window, leaves the app entirely
   // and goes to the user's browser. A renderer that can navigate is a renderer
   // that can be steered somewhere unexpected by content it renders.
+  // ...and only if it is a URL worth handing to the OS. Unfiltered, this
+  // passes `file://`, `smb://` and every custom scheme an installed app has
+  // claimed. See util/externalUrl.ts.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (isOpenableExternally(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
   mainWindow.webContents.on('will-navigate', (event, url) => {
     const isDevServer = process.env['ELECTRON_RENDERER_URL'] && url.startsWith(process.env['ELECTRON_RENDERER_URL'])
     if (!isDevServer) {
       event.preventDefault()
-      void shell.openExternal(url)
+      if (isOpenableExternally(url)) void shell.openExternal(url)
     }
   })
 

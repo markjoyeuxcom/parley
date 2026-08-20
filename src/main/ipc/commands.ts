@@ -55,7 +55,6 @@ export interface IpcContext {
   rooms: RoomManager
   emit: (event: AppEvent) => void
   /** Injected like the dialogs — commands.ts never loads Electron. */
-  openExternal: (url: string) => void
   window: () => BrowserWindow | null
   health: () => CliHealth[]
   agyModels: () => Promise<string[]>
@@ -347,9 +346,19 @@ export async function invokeCommand(ctx: IpcContext, raw: unknown): Promise<unkn
   if (!parsed.success) throw new RequestError('malformed request')
 
   const name = parsed.data.command as CommandName
+  // `hasOwn`, not a truthiness check: `name` is an arbitrary renderer string,
+  // so `constructor`, `toString` and `__proto__` all pass a bare lookup. Each
+  // of them happens to die later on `schema.safeParse is not a function`, but
+  // that guard is accidental — it holds only while nothing on Object.prototype
+  // is shaped like a Zod schema.
+  if (!Object.hasOwn(COMMANDS, name)) {
+    throw new RequestError(`unknown command: ${parsed.data.command}`)
+  }
   const schema = COMMANDS[name]
-  if (schema === undefined) throw new RequestError(`unknown command: ${parsed.data.command}`)
 
+  if (!Object.hasOwn(HANDLERS, name)) {
+    throw new RequestError(`unhandled command: ${parsed.data.command}`)
+  }
   const handler = HANDLERS[name]
   if (!handler) throw new RequestError(`unhandled command: ${parsed.data.command}`)
 

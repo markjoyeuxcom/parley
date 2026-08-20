@@ -47,12 +47,19 @@ export async function startRelayServer(deps: RelayDeps): Promise<RelayServer> {
       return
     }
 
-    let body = ''
+    // Bytes until the end, then one decode. Decoding each chunk as it arrives
+    // splits any multi-byte character that straddles a chunk boundary into two
+    // replacement characters — and a relay carries other people's prose, which
+    // is exactly where accented letters and emoji live. The Rust server always
+    // did it this way; this is the parity fix.
+    const chunks: Buffer[] = []
+    let size = 0
     let tooBig = false
     req.on('data', (chunk: Buffer) => {
       if (tooBig) return
-      body += chunk.toString('utf8')
-      if (body.length > MAX_BODY) {
+      chunks.push(chunk)
+      size += chunk.length
+      if (size > MAX_BODY) {
         tooBig = true
         reply(400, { ok: false, error: 'text too long' })
         req.destroy()
@@ -60,6 +67,7 @@ export async function startRelayServer(deps: RelayDeps): Promise<RelayServer> {
     })
     req.on('end', () => {
       if (tooBig) return
+      const body = Buffer.concat(chunks).toString('utf8')
       // The target travels as a header. As a query parameter it had to be
       // URL-encoded by a shell script, and `sh` has no way to do that — a pane
       // id or name containing `#` or `&` would have been silently truncated.
