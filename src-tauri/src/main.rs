@@ -14,9 +14,45 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod pty;
+mod relay;
 
-use pty::{Pane, Panes};
-use tauri::{AppHandle, State};
+use std::sync::Arc;
+
+use pty::{Pane, Panes, RelayEnv};
+use relay::handle::RelayDeps;
+use tauri::{AppHandle, Manager, State};
+
+/// The relay endpoint's view of the panes: list them, name one, paste into one.
+///
+/// Deliberately this narrow. The endpoint reaches a pty through exactly these
+/// three methods and no others — in particular through no submitting write,
+/// because the safety of the entire feature is that relayed text waits for a
+/// person to press Enter.
+struct PaneRelay {
+    panes: Panes,
+}
+
+impl RelayDeps for PaneRelay {
+    fn panes(&self) -> Vec<Pane> {
+        self.panes.list()
+    }
+
+    fn paste(&self, pane_id: &str, text: &str) -> Result<(), String> {
+        self.panes.paste_only(pane_id, text)
+    }
+
+    fn name_of(&self, pane_id: &str) -> String {
+        // No fallback to the id. Falling through to whatever string arrived is
+        // how a forged `X-Parley-From` became "System Admin said:"; a sender
+        // that is not a pane is refused before this ever runs, and anything
+        // that still slips through gets a name claiming nothing.
+        match self.panes.get(pane_id) {
+            Some(pane) if !pane.title.trim().is_empty() => pane.title.trim().to_string(),
+            Some(pane) => pane.kind,
+            None => "an unknown pane".into(),
+        }
+    }
+}
 
 #[tauri::command]
 fn pane_open(
@@ -72,11 +108,42 @@ fn resolve_login_path() {
     }
 }
 
+/// Puts the shim on disk and opens the relay port, then tells the panes how to
+/// reach it. Before any pane exists, so none can start without it — a pane
+/// spawned first would hold no token and have no `parley` on its PATH, and
+/// would look exactly like a relay that is broken.
+fn start_relay(app: &tauri::App, panes: &Panes) -> Result<String, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no application data directory: {e}"))?;
+    let bin_dir = relay::shim::install(&data_dir)
+        .map_err(|e| format!("could not install the relay shim: {e}"))?;
+    let server = relay::server::start(Arc::new(PaneRelay { panes: panes.clone() }))?;
+    panes.set_relay(RelayEnv {
+        url: server.url.clone(),
+        token: server.token,
+        bin_dir: bin_dir.to_string_lossy().to_string(),
+    });
+    Ok(server.url)
+}
+
 fn main() {
     resolve_login_path();
 
     tauri::Builder::default()
         .manage(Panes::default())
+        .setup(|app| {
+            let panes = app.state::<Panes>().inner().clone();
+            match start_relay(app, &panes) {
+                Ok(url) => eprintln!("parley: relay listening on {url}"),
+                // Not fatal. Panes and their CLIs are the app; the relay is a
+                // capability they can do without, and killing the window over
+                // it would trade a missing feature for no app at all.
+                Err(err) => eprintln!("parley: the relay is not available — {err}"),
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             pane_open,
             pane_write,

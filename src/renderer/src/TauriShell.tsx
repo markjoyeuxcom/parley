@@ -173,9 +173,10 @@ export function TauriShell(): ReactNode {
               className={`tauri-pane${focused === pane.id ? ' tauri-pane--focused' : ''}`}
             >
               <div className="tauri-pane__head">
-                <span className="tauri-pane__title">
-                  {pane.kind} — {pane.title}
-                </span>
+                {/* The title already carries the vendor for an agent pane —
+                    same shape as the Electron build, because this string is
+                    also the attribution the relay quotes it by. */}
+                <span className="tauri-pane__title">{pane.title}</span>
                 <span className="spacer" />
                 <button
                   className="btn btn--icon btn--sm"
