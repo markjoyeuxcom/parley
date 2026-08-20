@@ -27,6 +27,11 @@ Selecting inside a CLI that has claimed the mouse (Claude Code does) needs ⌥
 held while you drag; a plain drag goes to the application, which highlights its
 own text and looks selected while the terminal has nothing.
 
+An agent in a pane can relay too: `parley relay codex "have a look at this"` is
+on its PATH. That one **pastes without sending** — the text waits in the other
+CLI's prompt for you to press Enter — so an agent can hand work across without
+anything another model wrote being able to run on its own.
+
 No vendor will build this. Claude Code's subagents take Claude models and
 nothing else; Codex's threads are OpenAI's. Every agent system is a closed loop
 around its own models, which is exactly why the copy-paste existed.

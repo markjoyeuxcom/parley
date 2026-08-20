@@ -188,6 +188,31 @@ describe('interactive prompt submission', () => {
     expect(writes).toEqual(['first', '\r', 'second', '\r'])
   })
 
+  it('can paste without pressing Enter, for a relay an agent asked for', () => {
+    // The property that makes an agent-initiated relay safe: the text lands in
+    // the other CLI's prompt, visible, and a person commits it. Nothing another
+    // model wrote can run on its own — the worst case is unwanted text sitting
+    // in an input box.
+    vi.useFakeTimers()
+    const writes: string[] = []
+    const submitter = new PanePromptSubmitter((_, data) => writes.push(data), 200)
+
+    submitter.pasteOnly('pane-1', 'hello from claude')
+    expect(writes).toEqual(['\u001b[200~hello from claude\u001b[201~'])
+
+    vi.advanceTimersByTime(1_000)
+    expect(writes).toHaveLength(1)
+  })
+
+  it('still neutralises markers when pasting without Enter', () => {
+    vi.useFakeTimers()
+    const writes: string[] = []
+    const submitter = new PanePromptSubmitter((_, data) => writes.push(data), 200)
+
+    submitter.pasteOnly('pane-1', 'a \u001b[201~ b')
+    expect((writes[0] as string).split('\u001b[201~')).toHaveLength(2)
+  })
+
   it('does not press Enter after the pane has exited', () => {
     vi.useFakeTimers()
     const writes: string[] = []

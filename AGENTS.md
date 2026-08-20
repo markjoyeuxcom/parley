@@ -286,6 +286,13 @@ a live TUI redraws over it constantly.
 strips box-drawing characters only — never ASCII `-` or `|`, which are diffs,
 fences and flags, and are the most valuable thing the relay carries.
 
+**An agent-initiated relay never submits.** The menu relay is a person
+deciding what crosses and it presses Enter. `parley relay`, which a CLI in a
+pane can call, deliberately does not: the text lands in the target's prompt and
+waits. That one property is what makes the capability safe to have at all —
+anything a model read on a web page can reach another model's input box, but
+nothing it wrote can run there on its own.
+
 **Relayed content carries where it came from.** The receiving CLI has no idea,
 and an unattributed wall of another model's reasoning reads as the user's own
 words.
@@ -306,9 +313,24 @@ are set, you are already inside the app.
 **Do not start another instance.** Asked to send something to a neighbouring
 pane, a Claude Code session launched a second Parley with a remote debugging
 port and drove it over CDP — building an entire app to reach a pane it was
-sitting next to, because nothing told it where it was. There is no way to relay
-from inside a pane today: relaying is a menu action the person takes, which is
-the design rather than an omission. Say so and let them do it.
+sitting next to, because nothing told it where it was.
+
+To reach another pane, use the `parley` command already on your PATH:
+
+```bash
+parley relay codex "have a look at this"
+some-command 2>&1 | parley relay claude
+```
+
+Name a pane by vendor when only one is running, or by `PARLEY_PANE_ID`. It
+refuses rather than guesses between two of the same kind, and names what is
+open when it refuses.
+
+**It pastes into that pane's prompt and does not send.** A person there presses
+Enter. Say so when you report back — "I've put it in Codex's prompt" is true,
+"I've sent it to Codex" is not. This is deliberate and is not going to change:
+an agent that could submit into another agent's session would be a
+prompt-injection channel with a command runner on the far end.
 
 ## The Grid is multi-folder, and saved layouts do not change that
 

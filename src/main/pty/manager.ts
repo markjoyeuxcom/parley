@@ -39,6 +39,20 @@ export class PaneLimitError extends Error {}
 export class PaneCwdError extends Error {}
 
 /**
+ * A payload wrapped as a terminal paste.
+ *
+ * A CR inside it IS Enter to the receiving TUI, and content copied out of a
+ * terminal is full of them. The markers go too: the payload is another model's
+ * output, and a closing marker inside it would end paste mode early —
+ * everything after it then read as typing, in a CLI that runs commands.
+ * Relayed content does not get to decide where the paste ends.
+ */
+function bracketed(text: string): string {
+  const body = text.replace(/\r\n?/g, '\n').replace(/\u001b\[20[01]~/g, '')
+  return `\u001b[200~${body}\u001b[201~`
+}
+
+/**
  * What a pane's process is told about where it is running.
  *
  * A CLI in a pane has no idea it is in one. Asked to "say hello to the agy
@@ -176,12 +190,24 @@ export class PanePromptSubmitter {
     // marker inside it would end paste mode early — everything after it then
     // read as typing, in a CLI that runs commands. Relayed content does not
     // get to decide where the paste ends.
-    const body = text.replace(/\r\n?/g, '\n').replace(/\u001b\[20[01]~/g, '')
-    this.write(paneId, `\u001b[200~${body}\u001b[201~`)
+    this.write(paneId, bracketed(text))
     this.timers.set(paneId, setTimeout(() => {
       this.timers.delete(paneId)
       this.write(paneId, '\r')
     }, this.settleMs))
+  }
+
+  /**
+   * The same paste, with no Enter after it.
+   *
+   * What makes an agent-initiated relay safe to have at all: the text arrives
+   * in the other CLI's prompt where it can be read and edited, and a person
+   * commits it. Nothing another model wrote executes on its own — the worst
+   * case is unwanted text sitting in an input box.
+   */
+  pasteOnly(paneId: Id, text: string): void {
+    this.flush(paneId)
+    this.write(paneId, bracketed(text))
   }
 
   /** Sends the Enter a pending body is still waiting for, if there is one. */
@@ -265,6 +291,13 @@ function assertUsableCwd(cwd: string): void {
 
 export class PtyManager {
   private readonly panes = new Map<Id, PaneHandle>()
+  /**
+   * Extra environment for every pane, set once the relay is listening.
+   *
+   * Set rather than passed in: the relay's deps read the pane list from this
+   * manager, so the manager has to exist first. Panes open long after both.
+   */
+  private extraEnv: Record<string, string> = {}
   private readonly readiness: PaneInputReadiness
   private readonly submitter: PanePromptSubmitter
 
@@ -284,6 +317,10 @@ export class PtyManager {
 
   get count(): number {
     return this.panes.size
+  }
+
+  setPaneEnv(env: Record<string, string>): void {
+    this.extraEnv = env
   }
 
   list(): Pane[] {
@@ -333,6 +370,7 @@ export class PtyManager {
           ...process.env,
           TERM: 'xterm-256color',
           ...paneEnv(id, kind),
+          ...this.extraEnv,
         } as Record<string, string>,
       })
     } catch (err) {
@@ -425,6 +463,13 @@ export class PtyManager {
     // over a dropped message is worse than an error.
     if (!handle || handle.pane.status === 'exited') throw new Error('the pane is no longer live')
     this.submitter.paste(paneId, text)
+  }
+
+  /** Relayed by an agent: lands in the prompt, waits for a person to send it. */
+  pasteOnly(paneId: Id, text: string): void {
+    const handle = this.panes.get(paneId)
+    if (!handle || handle.pane.status === 'exited') throw new Error('the pane is no longer live')
+    this.submitter.pasteOnly(paneId, text)
   }
 
   submit(paneId: Id, text: string): void {

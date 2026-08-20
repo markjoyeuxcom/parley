@@ -10,6 +10,8 @@ import { RoomManager } from '@main/rooms/manager'
 import { disposeIpc, registerIpc } from '@main/ipc/register'
 import { applyResolvedPath, preflightPty } from '@main/util/environment'
 import { sendToRenderer } from '@main/util/renderer'
+import { startRelayServer, type RelayServer } from '@main/relay/server'
+import { installShim } from '@main/relay/shim'
 
 // Dev and packaged installs must never share a record. The dev checkout
 // migrates the schema ahead of any frozen .dmg — whose downgrade guard would
@@ -21,6 +23,7 @@ if (!app.isPackaged) {
 }
 
 let mainWindow: BrowserWindow | null = null
+let relay: RelayServer | null = null
 let pty: PtyManager | null = null
 let rooms: RoomManager | null = null
 let health: CliHealth[] = []
@@ -111,6 +114,23 @@ async function bootstrap(): Promise<void> {
     onStatus: (paneId, status, exitCode) => emit({ type: 'pane.status', paneId, status, exitCode }),
   })
 
+  // The door an agent in a pane knocks on to reach a neighbour. Loopback, a
+  // token minted this run, and a paste that is never submitted — a person in
+  // the target pane still presses Enter. Started after the pty manager because
+  // it reads the pane list from it, and its environment reaches panes through
+  // setPaneEnv, which is why panes may only open afterwards.
+  const binDir = installShim(app.getPath('userData'))
+  relay = await startRelayServer({
+    panes: () => pty?.list() ?? [],
+    paste: (paneId, text) => pty?.pasteOnly(paneId, text),
+    nameOf: (paneId) => pty?.get(paneId)?.title || pty?.get(paneId)?.kind || paneId,
+  })
+  pty.setPaneEnv({
+    PARLEY_RELAY_URL: relay.url,
+    PARLEY_RELAY_TOKEN: relay.token,
+    PATH: `${binDir}:${process.env['PATH'] ?? ''}`,
+  })
+
   // The manager holds the live half — which seats are mid-turn, which vendor
   // thread each resumes on. Everything durable is written through to the
   // record as it happens.
@@ -187,6 +207,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   // Kill every child process explicitly. Orphaned CLI runs would keep consuming
   // the user's subscription quota after the app they belong to has gone.
+  relay?.close()
   pty?.disposeAll()
   // Abandon every in-flight seat: an orphaned CLI turn keeps consuming the
   // user's subscription quota after the room it belongs to is gone.
