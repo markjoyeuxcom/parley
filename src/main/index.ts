@@ -6,6 +6,7 @@ import { AgentRegistry } from '@main/agents'
 import { openDatabase } from '@main/store/db'
 import { Repo } from '@main/store/repo'
 import { PtyManager } from '@main/pty/manager'
+import { PtyOutputBatcher } from '@main/pty/batch'
 import { RoomManager } from '@main/rooms/manager'
 import { disposeIpc, registerIpc } from '@main/ipc/register'
 import { applyResolvedPath, preflightPty } from '@main/util/environment'
@@ -25,6 +26,7 @@ if (!app.isPackaged) {
 
 let mainWindow: BrowserWindow | null = null
 let relay: RelayServer | null = null
+let ptyOutput: PtyOutputBatcher | null = null
 let pty: PtyManager | null = null
 let rooms: RoomManager | null = null
 let health: CliHealth[] = []
@@ -82,6 +84,25 @@ function createWindow(): void {
     }
   })
 
+  /**
+   * Why the window went black.
+   *
+   * Without this, a renderer that Chromium killed left no trace in the app at
+   * all — only PTY output failing to reach a frame that no longer existed,
+   * which reads as an IPC bug and is not one. Working out that it was an
+   * out-of-memory kill took reading macOS crash reports and symbolicating a
+   * stripped Electron binary. The reason is one line away and worth having.
+   */
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    // eslint-disable-next-line no-console
+    console.error(
+      `Parley: the window's renderer died (${details.reason}, exit ${details.exitCode}).`,
+      details.reason === 'oom'
+        ? 'Out of memory — the terminal panes outgrew the renderer.'
+        : 'Reopen the window to carry on; the panes are still running.',
+    )
+  })
+
   mainWindow.on('closed', () => {
     mainWindow = null
   })
@@ -105,13 +126,22 @@ async function bootstrap(): Promise<void> {
 
   const registry = new AgentRegistry()
 
+  // One message per frame, not one per chunk. Three agent TUIs redrawing put
+  // the renderer permanently behind and Chromium killed it at ~15 GB; the
+  // black window and the "Render frame was disposed" spam were both downstream
+  // of that.
+  ptyOutput = new PtyOutputBatcher((paneId, data) => send(CH.ptyData, { paneId, data } satisfies PtyChunk))
+
   pty = new PtyManager({
     // Terminal output bypasses the validated event channel: a busy pane emits
     // thousands of chunks a second and schema-parsing each one would dominate
     // the frame budget for no safety gain — it is opaque bytes either way.
-    onData: (paneId, data) => send(CH.ptyData, { paneId, data } satisfies PtyChunk),
+    onData: (paneId, data) => ptyOutput?.push(paneId, data),
     onCreated: (pane) => emit({ type: 'pane.created', pane }),
-    onClosed: (paneId) => emit({ type: 'pane.closed', paneId }),
+    onClosed: (paneId) => {
+      ptyOutput?.forget(paneId)
+      emit({ type: 'pane.closed', paneId })
+    },
     onStatus: (paneId, status, exitCode) => emit({ type: 'pane.status', paneId, status, exitCode }),
   })
 
@@ -211,6 +241,7 @@ app.on('before-quit', () => {
   // Kill every child process explicitly. Orphaned CLI runs would keep consuming
   // the user's subscription quota after the app they belong to has gone.
   relay?.close()
+  ptyOutput?.dispose()
   pty?.disposeAll()
   // Abandon every in-flight seat: an orphaned CLI turn keeps consuming the
   // user's subscription quota after the room it belongs to is gone.

@@ -18,6 +18,13 @@
  *
  * So the throw is swallowed and nothing is remembered. The window comes back —
  * that is what a reload is — and the next chunk has to find the channel open.
+ *
+ * One correction, found by Agy reading Electron's source: this catch does NOT
+ * silence the "Error sending from webFrameMain" line in the terminal.
+ * `webContents.send` catches that internally and logs it itself, so it never
+ * reaches here. What this guard prevents is the throw escaping into Parley's
+ * own call stacks; the log is Electron's, and the way to stop it is to stop
+ * sending to a dead frame — which is what the renderer not dying achieves.
  */
 export interface RendererTarget {
   isDestroyed: () => boolean
