@@ -16,6 +16,14 @@ describe('which pane an agent means', () => {
     expect(resolveRelayTarget(panes, 'c', 'a')).toEqual({ ok: true, paneId: 'c' })
   })
 
+  it('counts the panes it will not choose between', () => {
+    const many = [...panes, pane('d', 'codex'), pane('e', 'codex')]
+    const out = resolveRelayTarget(many, 'codex', 'a')
+    expect(out.ok).toBe(false)
+    expect(out.ok === false && out.error).not.toContain('two panes')
+    expect(out.ok === false && out.error).toContain('3')
+  })
+
   it('refuses to guess between two of the same vendor', () => {
     // Picking one silently would send somebody's work to the wrong agent, and
     // the sender cannot see which pane it went to.

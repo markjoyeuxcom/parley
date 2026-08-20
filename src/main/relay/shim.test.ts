@@ -34,6 +34,27 @@ describe('the parley shim', () => {
     expect(stderr).toMatch(/not running inside a Parley pane/)
   })
 
+  it('terminates when given no message, instead of blocking on stdin', () => {
+    // `parley relay codex` with nothing to say used to fall into `cat` and
+    // wait forever — an agent hanging its own shell. Guarded with `[ -t 0 ]`
+    // for a real terminal; here stdin is /dev/null, which proves the other
+    // half: it reads to EOF and finishes rather than waiting.
+    const bin = join(install(), 'parley')
+    let finished = false
+    try {
+      execFileSync('/bin/sh', [bin, 'relay', 'codex'], {
+        env: { PATH: '/usr/bin:/bin', PARLEY_RELAY_URL: 'http://127.0.0.1:1', PARLEY_RELAY_TOKEN: 't' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 5_000,
+      })
+      finished = true
+    } catch (err) {
+      // A non-zero exit is fine — the port is closed. A timeout is not.
+      finished = (err as { signal?: string }).signal !== 'SIGTERM'
+    }
+    expect(finished).toBe(true)
+  })
+
   it('explains itself when misused', () => {
     const bin = join(install(), 'parley')
     let stderr = ''

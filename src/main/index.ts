@@ -12,6 +12,7 @@ import { applyResolvedPath, preflightPty } from '@main/util/environment'
 import { sendToRenderer } from '@main/util/renderer'
 import { startRelayServer, type RelayServer } from '@main/relay/server'
 import { installShim } from '@main/relay/shim'
+import { relayDepsFor } from '@main/relay/deps'
 
 // Dev and packaged installs must never share a record. The dev checkout
 // migrates the schema ahead of any frozen .dmg — whose downgrade guard would
@@ -120,11 +121,13 @@ async function bootstrap(): Promise<void> {
   // it reads the pane list from it, and its environment reaches panes through
   // setPaneEnv, which is why panes may only open afterwards.
   const binDir = installShim(app.getPath('userData'))
-  relay = await startRelayServer({
-    panes: () => pty?.list() ?? [],
-    paste: (paneId, text) => pty?.pasteOnly(paneId, text),
-    nameOf: (paneId) => pty?.get(paneId)?.title || pty?.get(paneId)?.kind || paneId,
-  })
+  const livePty = pty
+  relay = await startRelayServer(relayDepsFor({
+    list: () => livePty.list(),
+    get: (id) => livePty.get(id),
+    // pasteOnly, never paste: a person in the target pane presses Enter.
+    pasteOnly: (paneId, text) => livePty.pasteOnly(paneId, text),
+  }))
   pty.setPaneEnv({
     PARLEY_RELAY_URL: relay.url,
     PARLEY_RELAY_TOKEN: relay.token,

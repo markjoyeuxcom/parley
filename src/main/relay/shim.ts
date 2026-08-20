@@ -40,6 +40,13 @@ if [ -z "$target" ]; then
 fi
 shift 2
 
+if [ "$#" -eq 0 ] && [ -t 0 ]; then
+  # No message and nothing piped in. Reading stdin here would wait forever on
+  # a terminal that is never going to type anything.
+  echo "nothing to relay: give the text as arguments or pipe it in" >&2
+  exit 2
+fi
+
 if [ "$#" -gt 0 ]; then
   printf '%s' "$*"
 else
@@ -47,9 +54,10 @@ else
 fi | curl -sS --fail-with-body -X POST \\
   -H "Authorization: Bearer \${PARLEY_RELAY_TOKEN:-}" \\
   -H "X-Parley-From: \${PARLEY_PANE_ID:-}" \\
+  -H "X-Parley-To: $target" \\
   -H "Content-Type: text/plain" \\
   --data-binary @- \\
-  "\${PARLEY_RELAY_URL}/relay?to=\${target}"
+  "\${PARLEY_RELAY_URL}/relay"
 `
 
 /** Writes the shim and returns the directory to put on a pane's PATH. */

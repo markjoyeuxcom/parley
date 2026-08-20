@@ -39,6 +39,14 @@ export function handleRelay(input: unknown, deps: RelayDeps): RelayResult {
   if (!from || !to || !text.trim()) {
     return { status: 400, body: { ok: false, error: 'need from, to and text' } }
   }
+  // The sender must BE a pane. X-Parley-From arrived on trust and fell through
+  // to the raw string, so anything holding the token could post as "System
+  // Admin said:" — and every pane holds the token. Attribution is the only
+  // thing telling the reader where relayed words came from; it cannot be
+  // whatever the caller typed.
+  if (!deps.panes().some((pane) => pane.id === from)) {
+    return { status: 400, body: { ok: false, error: 'unknown sender pane' } }
+  }
   if (text.length > MAX_TEXT) {
     return { status: 400, body: { ok: false, error: `text too long (max ${MAX_TEXT} characters)` } }
   }

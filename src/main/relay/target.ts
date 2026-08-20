@@ -45,7 +45,10 @@ export function resolveRelayTarget(
     // Never guess. The sender cannot see which pane it went to, so picking one
     // silently would put somebody's work in front of the wrong agent.
     const ids = matches.map((pane) => pane.id).join(', ')
-    return { ok: false, error: `two panes are “${target}” — name one by id: ${ids}` }
+    return {
+      ok: false,
+      error: `${matches.length} panes are “${target}” — name one by id: ${ids}`,
+    }
   }
 
   const found = matches[0] as Pane

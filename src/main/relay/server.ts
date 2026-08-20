@@ -59,8 +59,12 @@ export async function startRelayServer(deps: RelayDeps): Promise<RelayServer> {
     })
     req.on('end', () => {
       if (tooBig) return
+      // The target travels as a header. As a query parameter it had to be
+      // URL-encoded by a shell script, and `sh` has no way to do that — a pane
+      // id or name containing `#` or `&` would have been silently truncated.
+      const to = req.headers['x-parley-to'] ?? url.searchParams.get('to') ?? ''
       const result = handleRelay(
-        { from: req.headers['x-parley-from'], to: url.searchParams.get('to') ?? '', text: body },
+        { from: req.headers['x-parley-from'], to, text: body },
         deps,
       )
       reply(result.status, result.body)
