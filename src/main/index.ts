@@ -1,6 +1,6 @@
 import { isOpenableExternally } from '@main/util/externalUrl'
 import { join } from 'node:path'
-import { app, BrowserWindow, nativeTheme, Notification, powerSaveBlocker, shell } from 'electron'
+import { app, BrowserWindow, nativeImage, nativeTheme, Notification, powerSaveBlocker, shell } from 'electron'
 import type { AppEvent, PtyChunk } from '@shared/events'
 import { CH, type CliHealth } from '@shared/ipc'
 import { AgentRegistry } from '@main/agents'
@@ -46,6 +46,18 @@ function send(channel: string, payload: unknown): void {
 const emit = (event: AppEvent): void => send(CH.event, event)
 
 function createWindow(): void {
+  // A packaged build takes its icon from the bundle. A dev run shows
+  // Electron's own, which makes Parley indistinguishable from every other
+  // Electron app in the dock while working on it. After `whenReady`, because
+  // `app.dock` is not there before it — and deliberately not in the block that
+  // sets userData, whose ordering is load-bearing for the database path.
+  if (!app.isPackaged) {
+    const devIcon = nativeImage.createFromPath(
+      join(import.meta.dirname, '../../resources/icon.png'),
+    )
+    if (!devIcon.isEmpty()) app.dock?.setIcon(devIcon)
+  }
+
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 940,
