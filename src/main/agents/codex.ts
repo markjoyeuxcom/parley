@@ -266,13 +266,22 @@ export class CodexAdapter implements AgentAdapter {
         detail: version.stderr.trim().slice(0, 300) || `${binary} could not be run.`,
       }
     }
-    const auth = await capture(
-      binary,
-      ['exec', '--json', '--skip-git-repo-check', '-c', 'sandbox_mode="read-only"', 'Reply with exactly: ready'],
-      process.cwd(),
-      120_000,
-    )
-    const ok = auth.exitCode === 0 && /ready/i.test(auth.stdout)
+    // `login status`, not a real turn.
+    //
+    // This used to run `codex exec 'Reply with exactly: ready'` on every
+    // launch, which is a paid turn against the user's ChatGPT subscription
+    // spent to draw a status dot. It also answered the wrong question when it
+    // mattered most: at the usage limit the turn fails, so the app reported
+    // "codex is installed but did not answer — run `codex login`", sending
+    // somebody to re-authenticate an account that was already signed in and
+    // simply out of credit until Tuesday.
+    //
+    // `login status` costs nothing, cannot be defeated by a spent quota, and
+    // answers exactly what the dot claims to show. It exits 0 either way, so
+    // the text is what to read.
+    const auth = await capture(binary, ['login', 'status'], process.cwd(), 20_000)
+    const said = `${auth.stdout} ${auth.stderr}`
+    const ok = /logged in/i.test(said) && !/not logged in/i.test(said)
     return {
       vendor: 'codex',
       present: true,
@@ -281,7 +290,8 @@ export class CodexAdapter implements AgentAdapter {
       detail: ok
         ? 'Signed in. Usage bills against your ChatGPT subscription.'
         : cleanStderr(auth.stderr).slice(0, 300) ||
-          'codex is installed but did not answer. Run `codex login` to sign in.',
+          auth.stdout.trim().slice(0, 300) ||
+          'codex is installed but not signed in. Run `codex login`.',
     }
   }
 }
