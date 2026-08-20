@@ -287,6 +287,17 @@
   flex-shrink: 0;
 }
 
+/* A bar sitting where the window controls are. `titleBarStyle` draws them over
+   the content rather than in a title bar of their own — that is what buys the
+   app the top 52px — so the first thing in the window has to leave room for
+   them, and be draggable, because otherwise the window has no title bar to
+   move it by. `--titlebar-inset` is the same clearance the Electron titlebar
+   uses; both runtimes place the lights at x:18. */
+.bar--overlay {
+  padding-left: var(--titlebar-inset);
+  min-height: var(--titlebar-h);
+}
+
 .bar--footer {
   border-bottom: none;
   border-top: 1px solid var(--line);

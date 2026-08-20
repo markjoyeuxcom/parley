@@ -55,7 +55,11 @@ export function TauriShell(): ReactNode {
 
   return (
     <div className="grid-surface">
-      <div className="bar">
+      {/* data-tauri-drag-region, not -webkit-app-region: WKWebView does not
+          honour the CSS property, and Tauri only drags for an event whose own
+          target carries the attribute — so the buttons below stay clickable
+          without opting out. */}
+      <div className="bar bar--overlay" data-tauri-drag-region>
         <span className="label" style={{ flexShrink: 0 }}>PARLEY ON TAURI</span>
         {(['shell', 'claude', 'codex', 'agy'] as PaneKind[]).map((kind) => (
           <button key={kind} className="btn btn--sm" onClick={() => void open(kind)}>

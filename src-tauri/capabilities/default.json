@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the renderer is allowed to reach. Parley's own commands (pane_open, pane_write, ...) are not listed because Tauri does not gate commands the app itself defines — only the core plugins. `core:default` is here for one of them: the event plugin. Without it `listen()` is denied, and a denied listen is a rejected promise nobody awaited: invoke keeps working, panes keep spawning, Rust keeps emitting, and the terminal stays blank with no error anywhere. That cost an afternoon.",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "What the renderer is allowed to reach. Parley's own commands (pane_open, pane_write, ...) are not listed because Tauri does not gate commands the app itself defines \u2014 only the core plugins. `core:default` is here for one of them: the event plugin. Without it `listen()` is denied, and a denied listen is a rejected promise nobody awaited: invoke keeps working, panes keep spawning, Rust keeps emitting, and the terminal stays blank with no error anywhere. That cost an afternoon. core:window:allow-start-dragging is listed separately because core:window:default does not include it, and a denied drag is as quiet as a denied listen was: the title bar simply stops moving the window.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging"
+  ]
 }
