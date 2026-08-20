@@ -462,6 +462,60 @@ a reviewer's finding and a backlog item, in tables nothing joins.
   and become `<mark>` only at the palette — chosen as characters that cannot
   appear in a git path or survive tokenising.
 
+## The renderer OOM, and what actually fixed it
+
+The window went black roughly every ten minutes with three busy agent panes.
+Chromium's PartitionAlloc trapping on a failed allocation, which macOS reports
+as SIGTRAP and Electron reports as `crashed` rather than `oom`. It cost several
+wrong diagnoses, so the causal story is written down here rather than inferred
+later from the code.
+
+**What did not fix it, measured:**
+
+- **Coalescing pty output into one message per frame.** 8-14 minutes before,
+  11.1 after. `src/main/pty/batch.ts` is still there and is harmless, but it is
+  not why this works — the cost was never message overhead. Do not point at it
+  as the fix.
+- **Switching runtime.** The Tauri port was begun on the theory that Chromium
+  was the ceiling. It is not. xterm.js parses on the main thread in any webview,
+  so WKWebView inherits the identical problem. The port produced good things —
+  the relay in Rust, the pty tests, the pane lifecycle work — but it was never
+  going to fix this.
+
+**What did fix it, in order of size:**
+
+1. **WebGL.** The app was running xterm's DOM renderer, which its maintainers
+   put at ~40% of main-thread load against WebGL's ~10%
+   (xtermjs/xterm.js#3368). It was behind a flag, off, while a leak was hunted
+   elsewhere.
+2. **Scrollback 12,000 to 3,000.** Retained per pane, and reflowed in full on
+   every resize — which the grid's column control triggers on demand.
+3. **Flow control** (`src/renderer/src/lib/ptyBuffer.ts`). One write handed to
+   xterm at a time, everything arriving meanwhile coalesced into the next, and
+   the pty paused above 1MB of backlog. The child then blocks on write, exactly
+   as against a real terminal nobody is reading.
+
+**The measurement.** Three panes full-redrawing flat out — a harsher load than
+real CLIs, which pause to think. Before: 11.3GB by minute three, renderer dead
+at about nineteen. After: ran past forty-seven minutes and was still going when
+it was stopped, oscillating between 8 and 12GB with GC keeping pace.
+
+**What is still open.** That plateau is close to the ceiling that used to kill
+it, and the residual growth has no name yet: it is not the write queue, not
+scrollback, and not the GPU process, which sat at ~100MB throughout. Something
+in xterm's parse or render path holds finished work. A heap snapshot under load
+would name it. Until then, treat four or more busy agent panes as unproven.
+
+**What was considered and rejected.** Replacing xterm.js with libghostty-vt via
+Node bindings parses at 78MB/s off-thread and bounds cost to screen size rather
+than output volume, which is the right shape — but the binding exposes only
+feed, resize and snapshot. Input encoding, mouse tracking, selection, wide
+characters, rendering, search and scrollback would all have to be rebuilt, and
+the one published binding is a two-star beta unchanged since the day it was
+made. A Swift shell around SwiftTerm or GhosttyKit buys a complete terminal, but
+pays for it by rewriting the half of this app that is not broken and is where
+the actual work lives — the adapters, the capability ladder, the relay, rooms.
+
 ## Grid tracks: `minmax(0, 1fr)`, never `1fr`
 
 A bare `1fr` is `minmax(auto, 1fr)`, so the track refuses to shrink below its
