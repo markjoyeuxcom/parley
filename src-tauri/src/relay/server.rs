@@ -20,6 +20,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use super::handle::{handle_relay, RelayDeps};
 
@@ -27,6 +28,12 @@ use super::handle::{handle_relay, RelayDeps};
 const MAX_BODY: usize = 200_000;
 /// A request head far larger than this is not one of ours.
 const MAX_HEAD: usize = 16 * 1024;
+/// A caller that opens a socket and then says nothing holds a thread forever.
+/// Codex found this: thread-per-connection with no deadline is slowloris by
+/// accident, and the caller does not even have to be hostile — a curl killed
+/// mid-request leaves the same stuck thread. Generous, because the client is a
+/// shell script piping a model's output, not a browser.
+const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct RelayServer {
     pub url: String,
@@ -57,6 +64,10 @@ pub fn start(deps: Arc<dyn RelayDeps>) -> Result<RelayServer, String> {
 }
 
 fn serve(stream: TcpStream, token: &str, deps: &dyn RelayDeps) {
+    // Before anything is read. A connection that stalls now fails on its own
+    // rather than parking a thread until the app quits.
+    let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
@@ -124,17 +135,19 @@ fn serve(stream: TcpStream, token: &str, deps: &dyn RelayDeps) {
 }
 
 fn read_head(reader: &mut BufReader<TcpStream>) -> Option<(String, HashMap<String, String>)> {
+    // Bounded per line, not just between lines. `read_line` on a socket that
+    // never sends a newline grows the String until the machine says stop, and
+    // the old cap was only consulted after it returned.
     let mut request_line = String::new();
-    let mut seen = 0usize;
-    if reader.read_line(&mut request_line).ok()? == 0 {
+    if bounded_line(reader, &mut request_line)? == 0 {
         return None;
     }
-    seen += request_line.len();
+    let mut seen = request_line.len();
 
     let mut headers = HashMap::new();
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line).ok()? == 0 {
+        if bounded_line(reader, &mut line)? == 0 {
             return None;
         }
         seen += line.len();
@@ -150,6 +163,34 @@ fn read_head(reader: &mut BufReader<TcpStream>) -> Option<(String, HashMap<Strin
         }
     }
     Some((request_line.trim().to_string(), headers))
+}
+
+/// `read_line` with a ceiling. Returns None once a single line exceeds what a
+/// request head is allowed to be in total, which is the only honest answer:
+/// past that point the sender is not speaking our protocol.
+fn bounded_line(reader: &mut BufReader<TcpStream>, out: &mut String) -> Option<usize> {
+    // Bytes, then one conversion at the end. Pushing each byte as a `char`
+    // would be Latin-1, and a target named in anything but ASCII would arrive
+    // mangled — the relay resolves panes by that string.
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        match reader.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {
+                line.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+                if line.len() > MAX_HEAD {
+                    return None;
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+    out.push_str(&String::from_utf8_lossy(&line));
+    Some(line.len())
 }
 
 fn reply(out: &mut TcpStream, status: u16, body: &str) {
@@ -356,6 +397,36 @@ mod tests {
 
         assert!(!out.status.success(), "a forged sender must not succeed");
         assert!(deps.pasted.lock().is_empty());
+    }
+
+    #[test]
+    fn an_endless_request_line_is_refused_rather_than_buffered() {
+        use std::io::Write as _;
+        use std::net::TcpStream as Client;
+
+        let deps = Arc::new(Recording {
+            panes: vec![pane("a", "claude"), pane("b", "codex")],
+            pasted: PlMutex::new(Vec::new()),
+        });
+        let server = start(deps.clone()).expect("server");
+        let addr = server.url.trim_start_matches("http://").to_string();
+
+        let mut client = Client::connect(&addr).expect("connect");
+        // No newline, ever. Before the cap was enforced inside the read, this
+        // grew a String on the server for as long as the sender kept typing.
+        let junk = "x".repeat(4096);
+        let mut sent = 0usize;
+        while sent < MAX_HEAD * 4 {
+            if client.write_all(junk.as_bytes()).is_err() {
+                break; // The server hung up on us, which is the point.
+            }
+            sent += junk.len();
+        }
+        // Either the write failed or the server closed; either way it must not
+        // still be waiting with a multi-megabyte line in hand.
+        let mut back = String::new();
+        let _ = client.read_to_string(&mut back);
+        assert!(deps.pasted.lock().is_empty(), "junk must never reach a pane");
     }
 
     #[test]

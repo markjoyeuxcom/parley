@@ -86,6 +86,21 @@ fn pane_list(panes: State<'_, Panes>) -> Vec<Pane> {
     panes.list()
 }
 
+/// Where a pane opens when nobody has chosen a folder.
+///
+/// The Tauri shell had the author's own checkout written into it, which worked
+/// on exactly one machine. Choosing a folder is a command that has not been
+/// migrated yet; until it is, home is the default.
+///
+/// Not the working directory, which was the first thing tried: `tauri dev`
+/// runs the binary from src-tauri and a bundled app is launched from `/`, so
+/// it means something different every way the app can start. Home is the same
+/// in all of them, and it is where a person would begin anyway.
+#[tauri::command]
+fn default_cwd() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| "/".into())
+}
+
 /// A GUI app is started by `launchd` with a minimal PATH, so every CLI the user
 /// installed is invisible. Asked of the login shell once, at startup, before
 /// anything is spawned. One fixed literal command with nothing interpolated —
@@ -149,7 +164,8 @@ fn main() {
             pane_write,
             pane_resize,
             pane_close,
-            pane_list
+            pane_list,
+            default_cwd
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Parley");

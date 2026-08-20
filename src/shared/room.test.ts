@@ -5,6 +5,7 @@ import {
   mentionAt,
   parseAddress,
   previewAudience,
+  roomSeatSystemPrompt,
   roomTranscript,
   turnOutline,
   seatName,
@@ -378,3 +379,21 @@ describe('seat naming', () => {
     expect(uniqueSeatName('claude', [])).toBe('claude')
   })
 })
+
+describe('a seat is told what it may actually do', () => {
+  const config = { vendor: 'claude', model: 'opus', persona: '' } as never
+
+  it('tells a read-only seat it cannot change files', () => {
+    expect(roomSeatSystemPrompt(config)).toContain('cannot change anything here')
+  })
+
+  it('tells a write-authorised seat to make the change', () => {
+    // The toggle granted a write sandbox and the prompt still said no, so the
+    // model refused or described an edit instead of making one — which reads
+    // as the feature being broken rather than the prompt contradicting it.
+    const prompt = roomSeatSystemPrompt(config, true)
+    expect(prompt).not.toContain('cannot change anything here')
+    expect(prompt).toContain('authorised this seat to write')
+  })
+})
+

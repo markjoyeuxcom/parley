@@ -211,3 +211,25 @@ describe('similarDecision', () => {
     expect(similarDecision('', 'anything')).toBe(true)
   })
 })
+
+describe('a negated decision is not the same decision', () => {
+  it('does not call "adopt X" and "do not adopt X" similar', () => {
+    // Both normalise to {adopt, queue}: "do" and "not" are shorter than the
+    // four-character filter, so the one word carrying the whole disagreement
+    // was the one thrown away. Two seats saying opposite things then scored as
+    // agreement 1 with no dissent — and this function's own comment says a
+    // missed divergence hides the most important thing in the report.
+    expect(similarDecision('Adopt the queue', 'Do not adopt the queue')).toBe(false)
+  })
+
+  it('still calls two genuine restatements similar', () => {
+    expect(
+      similarDecision('Adopt the queue for backpressure', 'Adopt the queue to handle backpressure'),
+    ).toBe(true)
+  })
+
+  it('does not flag two agreeing negatives as a divergence', () => {
+    expect(similarDecision('Do not adopt the queue', 'We should not adopt the queue')).toBe(true)
+  })
+})
+

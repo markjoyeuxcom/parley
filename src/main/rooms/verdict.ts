@@ -160,7 +160,28 @@ export function mergeVerdicts(verdicts: ReadonlyArray<SeatVerdict | null>): Merg
  * reader, not to adjudicate one. A false flag costs a line of text; a missed
  * divergence hides the most important thing in the report.
  */
+/**
+ * Words that reverse a sentence, and are all too short to survive the filter
+ * below. "Adopt the queue" and "Do not adopt the queue" normalise to the same
+ * two words, so the one word carrying the entire disagreement was the one
+ * being discarded — and two seats saying opposite things scored as complete
+ * agreement, with no dissent recorded, in a report somebody later reads as
+ * settled.
+ */
+const NEGATION = /\b(?:not|never|cannot|can't|won't|don't|doesn't|didn't|shouldn't|no|nor|none)\b/
+
+/** Whether a sentence turns its own claim around. */
+function negates(text: string): boolean {
+  return NEGATION.test(text.toLowerCase())
+}
+
 export function similarDecision(a: string, b: string): boolean {
+  // Checked before the vocabulary overlap, and decisive on its own: two
+  // sentences built from the same words mean opposite things when one of them
+  // negates. Erring toward flagging is this function's stated bias — a false
+  // flag costs a line of text.
+  if (negates(a) !== negates(b)) return false
+
   const norm = (s: string): Set<string> =>
     new Set(
       s

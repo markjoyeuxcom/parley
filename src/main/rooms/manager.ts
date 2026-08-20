@@ -538,7 +538,9 @@ export class RoomManager {
     let result
     try {
       result = await this.deps.registry.get(seat.config.vendor).run({
-        systemPrompt: roomSeatSystemPrompt(seat.config),
+        // The same flag the capability is derived from, so the sandbox a seat
+        // gets and the sentence it is told about that sandbox cannot disagree.
+        systemPrompt: roomSeatSystemPrompt(seat.config, seat.write),
         prompt,
         cfg: seat.config,
         // Derived from the seat rather than passed alongside it, so the two

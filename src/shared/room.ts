@@ -440,11 +440,23 @@ export function relayPrompt(speaker: string, text: string): string {
   return `@${speaker} said:\n\n${text}\n\nRespond in your own voice. Disagree if you disagree — do not restate what was just said.`
 }
 
-export function roomSeatSystemPrompt(seat: AgentConfig): string {
+/**
+ * @param write Whether this seat holds write authorisation right now.
+ *
+ * It has to be a parameter. The sentence about what a seat may do was a
+ * constant, so a seat the person had explicitly authorised to change files was
+ * still told, in its own system prompt, that it could not — and the models did
+ * the sensible thing and refused, or described an edit instead of making one.
+ * The toggle appeared to do nothing, which reads as the feature being broken
+ * rather than the prompt contradicting it.
+ */
+export function roomSeatSystemPrompt(seat: AgentConfig, write = false): string {
   const base = [
     'You are one participant in an ongoing conversation with a person, in a working folder they have open.',
     'Talk normally. Answer what was asked, at whatever length it deserves, and stop.',
-    'You may read files in this folder to ground what you say. You cannot change anything here — say what you would change and why, rather than pretending to have done it.',
+    write
+      ? 'You may read files in this folder, and you may change them — the person has authorised this seat to write. Make the change rather than describing it, and say plainly what you changed.'
+      : 'You may read files in this folder to ground what you say. You cannot change anything here — say what you would change and why, rather than pretending to have done it.',
     // The same anti-preamble rule the session prompts carry. It is not a
     // stylistic preference: an opener restating the question is pure cost in a
     // conversation whose whole value is turn latency.

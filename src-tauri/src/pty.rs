@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use portable_pty::{CommandBuilder, NativePtySystem, PtyPair, PtySize, PtySystem};
+use portable_pty::{ChildKiller, CommandBuilder, NativePtySystem, PtyPair, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Runtime};
 
@@ -117,6 +117,11 @@ struct Live {
     pane: Pane,
     pair: PtyPair,
     writer: Box<dyn Write + Send>,
+    /// Kept so closing a pane can end its process. Dropping the pty does not:
+    /// the reader thread holds a duplicated master fd, so nothing hangs up.
+    killer: Box<dyn ChildKiller + Send + Sync>,
+    /// For tests, which otherwise cannot ask whether the child really went.
+    pid: Option<u32>,
 }
 
 /// Clone shares the panes rather than copying them — every field is an `Arc`.
@@ -135,6 +140,13 @@ impl Panes {
 
     pub fn get(&self, pane_id: &str) -> Option<Pane> {
         self.live.lock().get(pane_id).map(|l| l.pane.clone())
+    }
+
+    /// The process behind a pane. Only the tests ask — but without it they can
+    /// only check that a closed pane left the registry, which is the weaker
+    /// half of what closing is supposed to mean.
+    pub fn pid_of(&self, pane_id: &str) -> Option<u32> {
+        self.live.lock().get(pane_id).and_then(|l| l.pid)
     }
 
     /// Set once at startup, before any pane exists, so no pane can start
@@ -208,6 +220,8 @@ impl Panes {
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("could not start {resolved}: {e}"))?;
+        let killer = child.clone_killer();
+        let pid = child.process_id();
 
         let writer = pair
             .master
@@ -230,7 +244,7 @@ impl Panes {
 
         self.live.lock().insert(
             id.clone(),
-            Live { pane: pane.clone(), pair, writer },
+            Live { pane: pane.clone(), pair, writer, killer, pid },
         );
 
         // Output pump. One thread per pane rather than async: a PTY read is a
@@ -364,7 +378,15 @@ impl Panes {
     }
 
     pub fn close(&self, pane_id: &str) {
-        self.live.lock().remove(pane_id);
+        // Kill, then forget. Dropping the pty does hang up a cooperative
+        // child — a shell takes the SIGHUP and goes — but that is the child
+        // agreeing to die, not this code ending it. A process that ignores
+        // SIGHUP, or one whose CLI traps it to clean up, would have gone on
+        // running with nothing left pointing at it. The Electron build calls
+        // proc.kill() here for the same reason.
+        if let Some(mut entry) = self.live.lock().remove(pane_id) {
+            let _ = entry.killer.kill();
+        }
     }
 }
 
@@ -626,8 +648,69 @@ mod lifecycle_tests {
         false
     }
 
+    /// Is this process still around? `ps` rather than libc, which is not a
+    /// dependency here. A reaped child disappears; a zombie would still be
+    /// listed, which is the point — closing a pane should also collect it.
+    fn alive(pid: u32) -> bool {
+        std::process::Command::new("ps")
+            .args(["-p", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
     #[test]
-    fn a_closed_pane_is_gone_from_the_list_and_its_child_is_dead() {
+    fn closing_a_pane_ends_the_process_behind_it() {
+        // Codex found this auditing from inside the app: close() removed the
+        // registry entry and nothing else. Dropping the pty does not hang the
+        // child up, because the reader thread holds a duplicated master fd, so
+        // a closed claude or codex pane went on running — invisible, and still
+        // spending quota.
+        let app = app();
+        let panes = Panes::default();
+        let pane = panes.open(app.handle(), "shell", "/tmp", 80, 24).expect("open");
+        let pid = panes.pid_of(&pane.id).expect("a spawned pane has a pid");
+        assert!(alive(pid), "the child should be running before we close it");
+
+        panes.close(&pane.id);
+        assert!(wait_until(|| !alive(pid)), "the child outlived the pane that owned it");
+    }
+
+    #[test]
+    fn a_pane_whose_cli_exits_on_its_own_is_reported_exited() {
+        // The other half: not every pane is closed by a person. A CLI that
+        // finishes has to be noticed, or the grid shows a dead pane as live
+        // and the relay offers it as a target.
+        let app = app();
+        let panes = Panes::default();
+        let pane = panes.open(app.handle(), "shell", "/tmp", 80, 24).expect("open");
+        assert!(wait_until(|| panes.get(&pane.id).map(|p| p.status) == Some("live".into())));
+
+        panes.write(&pane.id, "exit\r").expect("write exit");
+        assert!(
+            wait_until(|| panes.get(&pane.id).map(|p| p.status) == Some("exited".into())),
+            "a pane whose shell exited still reports {:?}",
+            panes.get(&pane.id).map(|p| p.status)
+        );
+        panes.close(&pane.id);
+    }
+
+    #[test]
+    fn a_pane_left_open_keeps_its_process() {
+        // The control for the test above. Without this, "the child is gone
+        // after close" would also pass if the shell simply never survived
+        // being spawned, and the close would be taking credit for nothing.
+        let app = app();
+        let panes = Panes::default();
+        let pane = panes.open(app.handle(), "shell", "/tmp", 80, 24).expect("open");
+        let pid = panes.pid_of(&pane.id).expect("pid");
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(alive(pid), "an open pane's process must not wander off");
+        panes.close(&pane.id);
+    }
+
+    #[test]
+    fn a_closed_pane_is_gone_from_the_list() {
         let app = app();
         let panes = Panes::default();
         let pane = panes.open(app.handle(), "shell", "/tmp", 80, 24).expect("open");

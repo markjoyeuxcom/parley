@@ -42,6 +42,8 @@ export function TauriShell(): ReactNode {
   const [error, setError] = useState('')
   /** null means follow the pane count; a number is the user overriding that. */
   const [columns, setColumns] = useState<number | null>(null)
+  /** Asked of Rust rather than written in — see `default_cwd`. */
+  const [cwd, setCwd] = useState<string>('')
   /**
    * Bytes seen arriving, straight from the event channel.
    *
@@ -97,6 +99,12 @@ export function TauriShell(): ReactNode {
    * reach them.
    */
   useEffect(() => {
+    void (window.parley?.invoke<string>('folder.list') as Promise<string> | undefined)
+      ?.then(setCwd)
+      .catch(() => setCwd(''))
+  }, [])
+
+  useEffect(() => {
     api
       .listPanes()
       .then((existing) => {
@@ -112,17 +120,18 @@ export function TauriShell(): ReactNode {
   const open = useCallback(async (kind: PaneKind) => {
     setError('')
     try {
-      // The folder is the checkout for now; choosing one is a command that has
-      // not been migrated, and inventing a second way to pick it would be a
-      // thing to delete later.
-      const pane = await api.openPane(kind, '/Users/markjoyeux/Developer/Personal/parley', 120, 34)
+      // Choosing a folder is a command that has not been migrated, so panes
+      // open where the app was started. What was here before was the author's
+      // own absolute path, which worked on exactly one machine.
+      if (!cwd) throw new Error('still working out which folder to open in — try again in a moment')
+      const pane = await api.openPane(kind, cwd, 120, 34)
       setPanes((current) => [...current, pane])
       setFocused(pane.id)
     } catch (err) {
       // Loudly. A migration's worst failure is the quiet one.
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [])
+  }, [cwd])
 
   const close = useCallback(async (paneId: Id) => {
     // Dropped from the layout first. The process is going either way, and a

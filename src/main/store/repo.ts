@@ -135,12 +135,34 @@ export class Repo {
     return this.toRoom(row, turns)
   }
 
-  /** Newest first. Closed rooms are included: the record is the point. */
-
+  /**
+   * Newest first. Closed rooms are included: the record is the point.
+   *
+   * The turns come too, in one query rather than one per room. They used to be
+   * left empty for speed, but `turnsSpent`, `usage` and `status` are all
+   * derived from them — so every room in the picker read as idle, with nothing
+   * spent, including the ones that had exhausted their budget. The list is the
+   * only place a person sees a room before opening it, and it was the one
+   * place the numbers were not real.
+   */
   listRooms(limit = 100): Room[] {
-    return this.db
-      .all(`SELECT * FROM rooms ORDER BY created_at DESC LIMIT ?`, limit)
-      .map((row) => this.toRoom(row, []))
+    const rows = this.db.all(`SELECT * FROM rooms ORDER BY created_at DESC LIMIT ?`, limit)
+    if (rows.length === 0) return []
+
+    const ids = rows.map((row) => (row as { id: string }).id)
+    const turns = this.db.all(
+      `SELECT * FROM room_turns WHERE room_id IN (${ids.map(() => '?').join(',')})
+       ORDER BY idx ASC`,
+      ...ids,
+    )
+    const byRoom = new Map<string, ReturnType<Repo['toRoomTurn']>[]>()
+    for (const row of turns) {
+      const turn = this.toRoomTurn(row)
+      const bucket = byRoom.get(turn.roomId)
+      if (bucket) bucket.push(turn)
+      else byRoom.set(turn.roomId, [turn])
+    }
+    return rows.map((row) => this.toRoom(row, byRoom.get((row as { id: string }).id) ?? []))
   }
 
   /**

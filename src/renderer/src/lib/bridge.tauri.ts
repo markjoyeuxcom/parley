@@ -29,6 +29,7 @@ const IMPLEMENTED: Partial<Record<CommandName, string>> = {
   'pane.resize': 'pane_resize',
   'pane.close': 'pane_close',
   'pane.list': 'pane_list',
+  'folder.list': 'default_cwd',
 }
 
 /**
@@ -63,9 +64,13 @@ export function installTauriBridge(): void {
       return invoke<T>(rust, argsFor(payload))
     },
 
-    onEvent: (handler: (event: AppEvent) => void) => {
-      const stop = listen<AppEvent>('app:event', (e) => handler(e.payload))
-      return () => void stop.then((off) => off())
+    // Rust does not emit `app:event` yet — the store, rooms and agent adapters
+    // that raise those events have not been migrated. Subscribing to it looked
+    // like plumbing and was a listener on a channel nobody speaks, so it says
+    // so instead. Pane lifecycle travels on `pane:status`, which TauriShell
+    // reads directly.
+    onEvent: (_handler: (event: AppEvent) => void) => {
+      return () => {}
     },
 
     // Its own channel, as in the Electron build: high-volume opaque bytes that
