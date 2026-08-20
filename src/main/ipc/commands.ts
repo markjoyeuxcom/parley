@@ -18,6 +18,7 @@ import { MAX_PANES, type AgentConfig, type GridLayout, type RoomCaps, type Skill
 import { newId, type Repo } from '@main/store/repo'
 import { readCodexDefaultModel } from '@main/util/environment'
 import { gitIdentity } from '@main/util/gitIdentity'
+import { workingDiff } from '@main/util/workingDiff'
 import type { AgentRegistry } from '@main/agents'
 import type { PtyManager } from '@main/pty/manager'
 import { RoomError, type RoomManager } from '@main/rooms/manager'
@@ -242,6 +243,20 @@ const HANDLERS: Record<CommandName, Handler> = {
    * What the pane's folder is. The worktree chip went with the plans it
    * pointed at; a folder's identity is now just git's answer about it.
    */
+  /**
+   * The uncommitted diff for a folder. Null when it is not a repository, which
+   * the caller shows as nothing rather than as an error.
+   *
+   * The wording that turns it into a review request lives in shared/review.ts,
+   * because the author's name is the pane's name and only the renderer knows
+   * that.
+   */
+  'git.workingDiff': async (p) => {
+    const { cwd } = p as { cwd: string }
+    const work = await workingDiff(cwd)
+    return work
+  },
+
   'pane.identity': async (p, ctx) => {
     void ctx
     const { cwd } = p as { cwd: string }

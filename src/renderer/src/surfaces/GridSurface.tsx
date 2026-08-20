@@ -35,6 +35,7 @@ import {
 } from '../lib/layout'
 import { shortPath } from '../lib/format'
 import { canReceiveRelay, forgetSelection, paneSelection, relayState, termAccess } from '../lib/termSelection'
+import { reviewRequest } from '@shared/review'
 import { cleanRelayText } from '../lib/relayText'
 import { useStore } from '../state'
 import { TerminalPane } from '../components/TerminalPane'
@@ -672,6 +673,46 @@ export function GridSurface(): ReactNode {
    * where it came from, and an unattributed wall of someone else's reasoning
    * reads as the user's own words.
    */
+  /**
+   * Hands a pane's uncommitted work to a counterpart for review.
+   *
+   * The same loop as `relay`, one step earlier: rather than copying what a CLI
+   * *said*, this sends what it *did*. A pane already knows its folder, so the
+   * diff is git's answer about that folder — no tracking of which agent touched
+   * what, which would be wrong the moment somebody edits a file themselves.
+   *
+   * The wording lives in shared/review.ts so a diff cannot be sent without the
+   * ask that makes it a review rather than a dump. Pasted, never submitted —
+   * the person in the receiving pane presses Enter, as with every other relay.
+   */
+  const relayChanges = async (fromSlotId: Id, toSlotId: Id): Promise<void> => {
+    const from = slots[fromSlotId]
+    const to = slots[toSlotId]
+    if (!from?.cwd || !to?.paneId) return
+
+    const work = await attempt(() => api.workingDiff(from.cwd))
+    if (!work) {
+      notify('warn', 'That pane is not in a git repository.')
+      return
+    }
+    if (!work.diff.trim() && work.untracked.length === 0) {
+      notify('info', `Nothing uncommitted in ${paneName(fromSlotId)}'s folder.`)
+      return
+    }
+
+    const sent = await attempt(() =>
+      api.pastePane(to.paneId as Id, reviewRequest(paneName(fromSlotId), work)),
+    )
+    if (!sent) return
+    setFocusedSlot(toSlotId)
+    notify(
+      'info',
+      work.truncated
+        ? `Sent a truncated diff to ${paneName(toSlotId)} — it was over the size limit.`
+        : `Sent ${paneName(fromSlotId)}'s changes to ${paneName(toSlotId)}.`,
+    )
+  }
+
   const relay = async (fromSlotId: Id, toSlotId: Id): Promise<void> => {
     const from = slots[fromSlotId]
     const to = slots[toSlotId]
@@ -1106,6 +1147,28 @@ export function GridSurface(): ReactNode {
                               </>
                             )
                           })()}
+                        </MenuSection>
+                      ) : null}
+                      {slot.cwd && relayTargets(id).length > 0 ? (
+                        <MenuSection>
+                          {/* Its own section, not part of the relay one above:
+                              that block refuses when a pane has said nothing
+                              yet, and what an agent has *done* is worth sending
+                              whether or not it has spoken. */}
+                          <div className="menu__note">
+                            Send this folder&rsquo;s uncommitted diff for a second opinion.
+                          </div>
+                          {relayTargets(id).map((target) => (
+                            <MenuItem
+                              key={`changes-${target.slotId}`}
+                              onClick={() => {
+                                close()
+                                void relayChanges(id, target.slotId)
+                              }}
+                            >
+                              Send changes to {target.name}
+                            </MenuItem>
+                          ))}
                         </MenuSection>
                       ) : null}
                       <MenuSection>

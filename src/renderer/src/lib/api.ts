@@ -16,6 +16,7 @@ import type {
   CliHealth,
   CommandName,
   PaneIdentity,
+  WorkingDiff,
   RecordSearchHit,
 } from '@shared/ipc'
 
@@ -101,6 +102,9 @@ export const api = {
   ): Promise<Pane> => bridge().invoke('pane.open', { kind, cwd, cols, rows, resume }),
   writePane: (paneId: Id, data: string): Promise<unknown> => bridge().invoke('pane.write', { paneId, data }),
   /** Relays content into another pane as a paste, keeping its newlines. */
+  /** Uncommitted work in a folder, or null when it is not a repository. */
+  workingDiff: (cwd: string): Promise<WorkingDiff | null> =>
+    bridge().invoke('git.workingDiff', { cwd }),
   pastePane: (paneId: Id, text: string): Promise<unknown> => bridge().invoke('pane.paste', { paneId, text }),
   resizePane: (paneId: Id, cols: number, rows: number): Promise<unknown> =>
     bridge().invoke('pane.resize', { paneId, cols, rows }),

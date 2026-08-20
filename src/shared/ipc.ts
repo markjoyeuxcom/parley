@@ -62,6 +62,8 @@ export const PaneFlowReq = z.object({ paneId: Id, paused: z.boolean() })
 export const PaneCloseReq = z.object({ paneId: Id })
 export const PaneStopReq = z.object({ paneId: Id })
 export const PaneIdentityReq = z.object({ cwd: z.string().min(1) })
+/** Uncommitted work in a folder, for handing to a counterpart to review. */
+export const WorkingDiffReq = z.object({ cwd: z.string().min(1) })
 
 /** The text travels from the renderer: a pane's buffer lives in xterm. */
 export const SaveTranscriptReq = z.object({
@@ -152,6 +154,7 @@ export const COMMANDS = {
   'pane.close': PaneCloseReq,
   'pane.stop': PaneStopReq,
   'pane.identity': PaneIdentityReq,
+  'git.workingDiff': WorkingDiffReq,
   'pane.saveTranscript': SaveTranscriptReq,
   'pane.list': null,
 
@@ -224,6 +227,22 @@ export interface PaneIdentity {
   dirty: boolean
   ahead: number
   behind: number
+}
+
+/**
+ * Uncommitted work in a folder, for handing to a counterpart to review.
+ *
+ * Untracked files are named rather than included: a new file is often the most
+ * interesting thing an agent did, and inlining every one is how a review
+ * payload becomes a scrollback.
+ */
+export interface WorkingDiff {
+  branch: string
+  /** Unified diff against HEAD. Empty when nothing tracked has changed. */
+  diff: string
+  untracked: string[]
+  /** True when the diff was cut at the sending limit. */
+  truncated: boolean
 }
 
 export interface RecordSearchHit {
