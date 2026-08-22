@@ -1,33 +1,25 @@
-# Dependencies
+# SwiftPM output and per-machine workspace state
+native/.build/
+native/.swiftpm/
+
+# The Node helper has no dependencies, but ignore accidental local installs
 node_modules/
 
-# Build output — out/ is the running dev artifact, dist/ is electron-builder's
-out/
+# Future native packaging output
 dist/
-.vite/
-*.tsbuildinfo
+DerivedData/
+*.xcuserstate
+xcuserdata/
 
-# Test coverage
-coverage/
-
-# Local tool state — machine-specific permission grants, not project config
+# Local tool state
 .claude/settings.local.json
 
-# Environment files — Parley has no API-key path, and nothing secret belongs in git either
+# Environment files — Parley has no API-key path
 .env
 .env.*
 
-# Editors and OS noise
+# Editors, macOS and logs
 .DS_Store
 .idea/
 .vscode/
-
-# Logs
 *.log
-
-# Rust build output for the Tauri migration
-src-tauri/target/
-
-# SwiftPM build and per-machine workspace state
-native/.build/
-native/.swiftpm/

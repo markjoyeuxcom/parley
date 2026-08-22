@@ -1,695 +1,277 @@
 # Parley — engineering guide
 
-A local-first macOS workbench that drives Claude Code, Codex and Agy through
-their own CLIs. One surface: a splittable grid of panes, where a pane is either
-a real interactive terminal or a **room** — a conversation with one or more
-agent seats over a single transcript.
+Parley is a native macOS workbench for visible, supervised collaboration
+between AI coding CLIs from different vendors. SwiftUI and SwiftTerm provide the
+application surface; an isolated tmux server owns the real interactive
+processes.
 
-The governed engine this app was built around — debates, codebase reviews, the
-audited execution pipeline, capped loops, the backlog and its foreman, remote
-execution, self-update — was retired in the Rooms arc and is gone. What it was
-for is a room with two seats and a person deciding who speaks.
+There is one application implementation. All product source is under
+`native/`. Do not add a web renderer, embedded browser runtime, second
+terminal stack or compatibility application.
+
+## Product boundary
+
+Parley exists to make cross-vendor work easier. Claude Code, Codex, Agy and
+GitHub Copilot CLI retain their own models, authentication, tools, permission
+prompts and conversation interfaces. Parley supplies the environment around
+them: panes, workspaces, attributed handoffs, correlated consultations and
+visible supervision.
+
+Use this test for proposed scope:
+
+> Could one vendor CLI do this on its own?
+
+If yes, the vendor owns it. If the feature coordinates different vendors or
+makes that coordination visible, safe or recoverable, it belongs in Parley.
 
 ## Product invariants
 
-Break any of these and the product stops being what it is.
+Breaking any of these changes the product.
 
-1. **Subscription CLIs only.** Every model call goes through the user's local
-   `claude`, `codex` or `agy` binary, against the account it is already signed
-   in to. Never add an API-key path, not even as a fallback.
-2. **No `--dangerously-*` flag, ever.** Not `--dangerously-skip-permissions`,
-   not `--allow-dangerously-skip-permissions`, not
-   `--dangerously-bypass-approvals-and-sandbox`, not `danger-full-access`. The
-   capability ladder is `none` → `read` → `write` and there is no rung above it.
-3. **Read-only is the default.** Every seat a room opens with is read-only.
-   Writing is a per-seat flag somebody turns on, the capability is *derived*
-   from that flag rather than passed beside it, and the room header states who
-   holds it — permanently, because it is standing authorisation and a
-   capability nobody is reminded of is one nobody remembers granting.
-4. **Seats answering the same question do not hear each other.** An
-   unaddressed message reaches every seat concurrently and independently. Two
-   answers are two reads rather than one read and an agreement; that property
-   is the whole reason to seat more than one. Sharing is an explicit act —
-   naming a seat mid-sentence relays its last turn, and `advance` is the mode
-   where each hears the one before it.
-5. **Caps are enforced by Parley, before dispatch.** A room's turn budget is
-   checked before every seat is dispatched and is never visible to one: an
-   agent that can see its budget can argue about it. Reaching it is
-   `exhausted`, never done, and continuing takes a deliberate new number.
-6. **Everything stays local.** SQLite under `app.getPath('userData')`. No sync,
-   no telemetry, no remote anything.
-7. **Dissent is preserved.** Where a verdict exists — the optional converge
-   action — disagreement lowers recorded confidence and the losing seat's
-   objection is stored verbatim. Never smooth it away.
-8. **The record outlives the window.** A room's turns are written as they
-   happen, a turn when it *starts* so a crash loses the answer and not the
-   question, and closing a pane never destroys a transcript.
-9. **Mock mode is never invisible.** `PARLEY_MOCK=1` produces turns and
-   verdicts structurally identical to real ones while consulting no model, so
-   the chip is permanent and a saved transcript says NOT REAL WORK on its first
-   line.
-10. **macOS-native restraint.** Hairline rules, small radii, one accent,
-    tabular numerals, system font stack. No gradients, no emoji, no decorative
-    AI tropes.
+1. **Subscription CLIs only.** Use the locally installed and already signed-in
+   vendor binaries. Never add API keys or a direct model API path.
+2. **Real interactive sessions.** Preserve each CLI's own TUI, permission
+   prompts and session behavior. Parley does not replace them with a chat UI.
+3. **No dangerous bypass flags.** Never pass a `--dangerously-*` option,
+   `danger-full-access` or an equivalent approval bypass.
+4. **Cross-vendor by design.** Automatic targets are explicit agent panes from
+   a different vendor. Never broadcast implicitly, target a shell or guess
+   between ambiguous panes.
+5. **Visible and interruptible.** The person can see every participant and
+   handoff, focus either side and stop tracked work. Do not create invisible
+   background agent activity.
+6. **Local coordination.** Parley has no hosted service, sync, telemetry or
+   remote-control path. Vendor CLIs contact their own services as normal.
+7. **Isolated tmux ownership.** Use only Parley's socket and configuration.
+   Never inspect, attach to or mutate the user's default tmux server.
+8. **One shared protocol.** `AgentProtocol.text` is the sole definition of
+   `relay`, `paste`, `ask` and `answer`. Vendor launch adapters may
+   change delivery mechanics, never wording.
+9. **Honest state.** Do not infer thinking, token use, context limits, cost or
+   completion from terminal text. Display only facts Parley owns or structured
+   values a vendor exposes authoritatively.
+10. **macOS-native restraint.** Use the system font stack, hairline rules,
+    small radii, one accent and tabular numerals. No gradients, emoji or
+    decorative AI imagery.
 
 ## Commands
 
 ```bash
-npm run dev          # Electron dev app; HMR is renderer-only
-npm run typecheck    # both projects — must pass clean
-npm test             # deterministic tests, no tokens spent
-npm run build        # production bundles into out/
-npm run package:mac  # signed-runtime .dmg + .zip for Apple Silicon
-npm run native:dev   # native SwiftTerm client over Parley's isolated tmux server
-npm run native:build # compile the native prototype
-npm run native:test  # deterministic native checks; no CLIs or quota
+npm test                 # deterministic native checks; starts no AI CLI
+npm run build            # build the Swift package
+npm run dev              # run the native app from this checkout
+npm run dev:restart-protocol
 ```
 
-`npm run typecheck` deletes its own `.tsbuildinfo` first, and that is not
-tidiness. Both tsconfigs are `composite`, and a stale build info let tsc report
-a clean run over code it had not re-checked — the gate passed while the app
-referenced a field that no longer existed. If you change these scripts, verify
-the fix the only way worth trusting: break a file, see the error, run again
-**unchanged**, and see it again.
+`dev:restart-protocol` is destructive to stale agent conversations. It
+restarts only agent panes whose protocol stamp is missing or outdated. Normal
+launch must never restart a surviving pane.
 
-Two escape hatches:
-
-- `PARLEY_MOCK=1 npm run dev` — deterministic adapters, no subscription usage.
-  Use it for UI work. A mock room's turns are structurally identical to real
-  ones, which is why the chip is permanent and a saved transcript says so.
-- `PARLEY_LIVE=1 npx vitest run src/main/agents/live.test.ts` — the only test
-  that really invokes the CLIs. It spends a little quota and proves the argv
-  and event schemas are still right. Run it after touching an adapter.
-
+The npm scripts are a dependency-free task runner around
+`scripts/run-native-swift.mjs`. Do not run `npm install`; there are no
+JavaScript dependencies. The helper selects a compatible installed macOS SDK
+and gives Swift compiler caches a writable temporary location.
 
 ## Layout
 
+```text
+native/
+  Package.swift
+  Package.resolved
+  Sources/
+    ParleyCore/
+      AgentProtocol.swift  canonical agent-facing contract
+      CommandRunner.swift  bounded argv-based process execution and PATH repair
+      Models.swift         pane and workspace vocabulary
+      Relay.swift          credentials, consultations and command shim
+      RelayHTTPServer.swift authenticated Unix-socket broker
+      RelayText.swift      terminal-frame cleanup
+      TmuxController.swift isolated tmux lifecycle and delivery
+    ParleyNative/
+      AppModel.swift       application state and confirmed user actions
+      ContentView.swift    native workspace, pane and relay UI
+      ParleyNativeApp.swift
+      TerminalHost.swift   SwiftTerm host
+    ParleyCoreChecks/
+      main.swift           deterministic verification executable
+scripts/
+  run-native-swift.mjs
+resources/
+  icon.icns
+  icon.png
 ```
-src/shared/      domain schemas, the IPC contract, room vocabulary, JSON extraction
-src/main/        agents/ (CLI adapters) · rooms/ · store/ · pty/ · ipc/
-src/preload/     the renderer's entire view of the outside world
-src/renderer/    React 19 UI: one surface over a hand-written design system
-native/          SwiftUI + SwiftTerm client and isolated tmux control plane
+
+App behavior belongs in Swift. The Node script is build tooling only.
+
+## Runtime model
+
+Runtime files are under `~/Library/Application Support/Parley Native/`.
+`TmuxController` owns a dedicated socket, configuration and session named
+`parley`.
+
+- A tmux window is a workspace.
+- A tmux pane is a live shell or vendor CLI.
+- Workspace names and default folders are stored as window options.
+- Pane kind, name, relay availability, protocol stamp and legacy Return route
+  are stored as pane options.
+- Closing the UI detaches; tmux panes and processes keep running.
+- Closing a pane or workspace is explicit and ends its processes.
+- A new session starts with one shell. Agent panes start only after a user
+  chooses a vendor.
+
+The workspace folder is a default for new toolbar-created panes. It never
+changes a running pane's working directory. Multiple repositories across
+workspaces and panes are normal.
+
+The relay broker still lives in the application process. A pane survives the UI
+exiting, but an in-flight `parley ask` currently does not. Moving the broker
+to a persistent local core is roadmap milestone one. Until then, never imply
+that a waiting consultation survives an app exit.
+
+## Relay and consultation contract
+
+The `parley` shim connects through an authenticated Unix-domain socket. Each
+agent pane has a durable random credential establishing its real sender. A
+caller cannot choose a different source identity.
+
+- `parley relay <target> <text>` submits one attributed message.
+- `parley paste <target> <text>` places the attributed text without Enter.
+- `parley ask <target> <question>` submits one correlated question, blocks
+  and writes the returned answer to stdout.
+- `parley answer <id> <answer>` completes the exact waiting consultation.
+  Piped multiline input is supported.
+
+`relay` sending automatically is an intentional capability selected by the
+user. Do not silently change it back to paste-only behavior. `paste` is the
+explicit review-before-send path.
+
+Targets resolve by exact pane id or by vendor only when unique. Ambiguous,
+missing, same-vendor, same-pane, shell and busy targets are refused. There is at
+most one unanswered consultation per target until the roadmap introduces
+explicit scheduling.
+
+The human Ask and Return actions submit after an editable preview. A real
+SwiftTerm selection may prefill the editor; otherwise it starts empty.
+`Insert Visible Pane` captures only the current tmux screen. Never insert
+scrollback or an entire conversation implicitly.
+
+Multiline payloads travel through `tmux load-buffer` on stdin, followed by
+bracketed `paste-buffer`. Raw newlines must never be sent as keystrokes because
+the first can submit a truncated prompt. Submission is a separate key event
+after the paste completes.
+
+Agent processes receive the broker credential and shim path, not raw tmux
+control. Remove `TMUX` and `TMUX_PANE` from their environments and do not
+expose the socket path as a shortcut.
+
+## Shared protocol and vendor launch behavior
+
+`AgentProtocol.version` is stamped into the process environment and a tmux
+pane option. Increment it whenever the canonical semantics change. A surviving
+agent with a mismatched stamp must show **RESTART FOR PROTOCOL**; reattaching a
+UI cannot alter the model context of an existing process.
+
+The current injection adapters are load-bearing:
+
+- **Claude Code:** append the canonical text using
+  `--append-system-prompt`; do not replace its default system prompt.
+- **Codex:** pass the canonical text through its
+  `developer_instructions` configuration override.
+- **Agy:** generate a Parley-owned `agent-protocol/AGENTS.md` and pass its
+  directory with `--add-dir`.
+- **Copilot:** add that same directory to
+  `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Permit only
+  `shell(parley)` without an extra tool confirmation; all other tools retain
+  Copilot's normal approval flow.
+
+Copilot ignores Enter after receiving a terminal focus-out event. For a
+submitted handoff, focus the target briefly, paste, wait for the TUI to accept
+the payload, submit and restore the person's previous pane. Refuse delivery
+while Copilot displays its folder-trust prompt.
+
+Do not maintain separate skills or hand-written instructions per vendor.
+
+## Process and environment safety
+
+Spawn fixed executables with argument arrays. Agent-authored content must never
+be interpolated into a shell command.
+
+`EnvironmentResolver` may query `/bin/zsh -lic` for the GUI user's PATH.
+This is a narrow exception: the command is fixed, contains no user or agent
+input, uses sentinel-delimited output and has a hard timeout. This is necessary
+because Finder-launched apps inherit a minimal PATH.
+
+`PARLEY_TMUX` is accepted only as an absolute executable path. Otherwise tmux
+is resolved from the corrected PATH and known macOS locations.
+
+Relay credentials, the socket and generated protocol files are private
+per-user runtime material. Maintain restrictive filesystem permissions. Never
+log credentials or include them in UI diagnostics.
+
+## Verification
+
+Never report work as done because it was written. Run it.
+
+For non-trivial logic, write the failing check first, observe it fail, then
+implement the change and observe it pass. One-line edits and documentation-only
+changes do not need ceremonial tests.
+
+After changing app or core source:
+
+```bash
+npm test
+npm run build
 ```
 
-Types are inferred from the zod schemas in `shared/domain.ts`. There is no
-second hand-written copy of any shape.
+The checks must remain deterministic and must not launch a vendor CLI, consume
+subscription quota, mutate the user's default tmux server or depend on network
+access.
 
-## Security posture
+The SwiftUI package requires macOS, so the current GitLab configuration performs
+security scanning only. Local native checks and build are mandatory until a
+macOS runner is configured. Do not add a Linux job that appears green while
+skipping the application target.
 
-- The renderer has `contextIsolation: true`, `nodeIntegration: false`, no remote
-  module, and a CSP with no remote origins. Navigation and window-open both go to
-  the user's browser instead.
-- One IPC channel (`parley:invoke`) with a validated command table in
-  `shared/ipc.ts`. Adding capability means adding a command *and* a schema.
-  Terminal output uses a second channel deliberately — it is high-volume opaque
-  bytes and validating it would buy nothing.
-- Processes are spawned with an argv array and **never** a shell. Agent-authored
-  strings reach `splitCommand`, so a shell would be an injection vector.
-  `isShellFree` rejects anything needing shell syntax rather than accommodating
-  it.
-- `--strict-mcp-config` is passed to Claude so a room seat cannot silently
-  inherit the user's global MCP servers.
+## Version policy
 
-## Hard-won CLI details
+Never recall package or tool versions from memory. Verify before recommending
+or writing a version string.
 
-These cost real time to find. Changing them will break things quietly.
-
-**claude**
-
-- `--output-format stream-json` *requires* `--verbose`.
-- The prompt goes on **stdin**, not argv.
-- Deltas need `--include-partial-messages`.
-- `assistant` messages carry `thinking` blocks next to `text` blocks; only the
-  text blocks are the reply.
-- The resumable session id comes from the `system`/`init` event; the final
-  `result` event carries the complete text and the usage.
-- `--system-prompt` *replaces* the default, so it is only used at `none`
-  capability where there are no tool instructions to lose. Tool-using turns use
-  `--append-system-prompt`.
-
-**codex**
-
-- **stdin must be closed** or `codex exec` waits forever.
-- `--skip-git-repo-check` is needed outside a git repository.
-- **`codex exec resume` accepts far fewer flags than `codex exec` — no
-  `-s/--sandbox`, no `-C/--cd`.** So the sandbox is set with
-  `-c sandbox_mode="…"`, which both forms accept, and the working directory is
-  set on the spawn. Using `-s` works on turn one and fails on every resumed turn.
-- There is no `--system-prompt`; role instructions are prepended to the first
-  prompt only.
-- `exec` emits no text deltas — the reply arrives whole in `item.completed`.
-- It always prints `Reading additional input from stdin...` to stderr. That is
-  noise, not an error, and is filtered.
-
-**agy**
-
-- Agy is tool-less in Parley. It is eligible only for a repository-free debate
-  seat and every adapter call above `none` capability is refused.
-- The prompt goes on stdin and `--conversation <id>` resumes a conversation.
-- Every run ignores the requested working directory and spawns in a fresh empty
-  temporary directory. Anything written there fails the run.
-- Only explicit `gemini-*` model names are accepted. Parley never passes
-  `--effort`; a discovered tiered model slug carries the selected tier.
-- Never pass `--dangerously-skip-permissions`.
-
-## Native modules
-
-`node-pty` is the only one, loaded through `createRequire` so it survives being
-unpacked from the asar. It is listed in `asarUnpack`. Persistence uses
-`node:sqlite`, which ships inside the Node that Electron embeds — deliberately,
-to avoid a second native dependency. The store's surface is small enough that
-swapping to `better-sqlite3` means rewriting `store/db.ts` and nothing else.
-
-`npm run rebuild` runs `@electron/rebuild` directly, and `postinstall` runs it
-for you. **Do not** switch it to `electron-builder install-app-deps`: that
-command infers the app directory from `main`, looks for `out/package.json`, and
-fails — which silently leaves node-pty half-built.
-
-## Never run npm install from a non-macOS container
-
-If you are working on this repo through a Linux container that mounts the macOS
-checkout (OrbStack, Docker with a bind mount, a devcontainer), **`node_modules`
-is the same directory on both sides and can only hold one platform's binaries at
-a time.** Running `npm install`, `electron-rebuild`, or
-`node node_modules/electron/install.js` from the container replaces the macOS
-binaries with Linux ones and breaks the app on the Mac.
-
-Four packages here are platform-native:
-
-| package | symptom when wrong |
+| Ecosystem | Authoritative source |
 | --- | --- |
-| `electron` | `spawn ENOEXEC` from electron-vite |
-| `node-pty` | `posix_spawnp failed` on every pane |
-| `typescript` (7.x is a native binary) | `Unable to resolve @typescript/typescript-<platform>` |
-| `esbuild` / `rollup` | vite fails to start |
+| Helm charts | `https://artifacthub.io/api/v1/packages/helm/{repo}/{chart}` |
+| npm / Node | `https://registry.npmjs.org/{package}/latest` |
+| Python | `https://pypi.org/pypi/{package}/json` |
+| Go modules | `https://proxy.golang.org/{module}/@latest` |
+| GitHub releases | `https://api.github.com/repos/{owner}/{repo}/releases/latest` |
+| Docker images | `https://hub.docker.com/v2/repositories/{image}/tags` |
 
-`npm run predev` / `prebuild` run `scripts/check-electron.mjs`, which turns the
-cryptic `ENOEXEC` into an actionable message. `npm run fix:electron` re-downloads
-just the Electron binary for the current platform.
+For anything mise manages, `mise latest <tool>` is authoritative and
+`mise ls-remote <tool>` lists available versions. Do not use Homebrew for a
+language toolchain or a tool mise pins. Python work uses uv, Node and Go come
+from mise, and AWS access uses IAM Identity Center through `aws-use <profile>`.
 
-The container is still useful for everything that is not a native build — editing,
-reading, `vitest` (once the host has installed), and reasoning about the code. Run
-`npm install`, `npm run typecheck`, `npm run dev` and packaging **on the Mac**.
+Before changing SwiftTerm's exact pin, verify its current release from GitHub
+and inspect its changelog. Keep `Package.swift` and `Package.resolved`
+consistent.
 
-### Verifying from a container anyway
+## Repository safety
 
-`~/parley-toolchain` (a container-local `npm i typescript@7`) can typecheck the
-macOS tree directly — `tsc` only reads `.ts`/`.d.ts`, so the platform of the
-installed deps is irrelevant:
+- Preserve unrelated user changes in a dirty worktree.
+- Use conventional commit messages.
+- Branch instead of committing directly to `main`.
+- Never force-push `main`.
+- Before every commit, scan staged files for AWS access keys, private keys,
+  passwords and tokens. Stop if any are found.
+- Include this trailer on commits made by an agent:
 
-```bash
-~/parley-toolchain/node_modules/.bin/tsc --noEmit -p tsconfig.node.json
+```text
+Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
-Tests need native esbuild/rollup, so run them from a container-local copy with
-its own Linux deps (`~/parley-verify`: `vitest` + `zod`, source copied fresh each
-run). Never `npm install` inside the mounted tree.
-
-## Mock mode must never be invisible
-
-Mock runs produce sessions, verdicts, findings, plans and reviews that are
-structurally identical to real ones while consulting no model. A user who
-loses track of which mode they are in will read fabricated output as
-evidence — which would break the only thing this tool sells.
-
-So mock-ness is surfaced in four places, and all four are load-bearing:
-
-1. A non-dismissible hazard-striped banner under the titlebar.
-2. A `mock` chip on every session, loop and plan, in lists and headers.
-3. A `mock` column persisted on those three tables, so a record stays
-   identifiable long after the process that made it has gone.
-4. A `NOT REAL WORK` blockquote at the top of the exported Markdown report —
-   that file outlives the app, so the warning has to travel with it.
-
-When a milestone fails with an unchanged tree while mock mode is on, the note
-says the mock executor does write a placeholder — so the likely cause is an
-unwritable repository path, not mock mode itself. That is the one reasoning a
-user cannot reconstruct from the UI, which is why the note spells it out.
-
-## Rooms: what the arc settled
-
-A room is a pane holding seats over one transcript, and the rules that shaped
-it are worth not re-deriving.
-
-**The human is seat 0.** A scheduled exchange needed a side-channel to reach a
-seat mid-schedule; a room has no schedule, so a person's message is simply a
-turn. Two tables and a class of delivery edge cases disappeared with that.
-
-**Seats are resumed, never replayed.** Each CLI keeps its own conversation and
-Parley relays only what is new, so cost grows linearly with turn count. A
-"re-send the transcript" implementation would look correct and quietly destroy
-that.
-
-**Addressing has three rules, each because the alternative spends money.**
-Unaddressed means the whole room. Mentions are read only at the start, so "the
-@reviewer decorator" stays prose. An unknown leading name is refused rather
-than broadcast — a typo that falls back to everybody buys a turn per seat and
-looks exactly like success. Mid-sentence a bad name is prose, because there it
-costs input tokens rather than turns.
-
-**Nothing usable back means nothing recorded.** A converge that produced prose
-instead of a contract established nothing, and a row claiming otherwise is
-worse than no row.
-
-**Vendor resume ids are not persisted.** A thread belongs to a CLI process's
-own history and Parley cannot know it survived a restart; a stale one fails at
-the next turn in a way that reads as the seat breaking.
-
-**Agy is tool-less in Parley's dispatch**, so it cannot hold a room seat — but
-it can hold a *pane*, which is agy's own CLI with whatever tools it has
-natively. That asymmetry is correct, not an oversight.
-
-## The relay is the point
-
-A grid of real CLIs that can hand work to each other. That is the product, and
-it is the one thing no vendor will build: Claude Code's subagents take Claude
-models, Codex's threads take OpenAI's, and every agent system is a closed loop
-around its own models. The copy-and-paste people do between two terminals
-exists because of that, and closing it is what this app is for.
-
-Two rules fall out of it.
-
-**Relayed content is pasted, never typed.** `submit` flattens newlines to
-spaces — right for a one-line instruction, ruinous for a diff — and raw
-newlines are worse, because a TUI reads the first one as Enter and sends a
-message cut off after its opening line. `paste` wraps the payload in bracketed
-paste, which is what ⌘V already does, and normalises carriage returns first
-since content copied out of a terminal is full of them.
-
-**A selection is not required, and not trusted to still exist.** The default
-is the last answer — everything drawn since the person last pressed Enter,
-tracked with an xterm marker — because "hand me its answer" is the actual
-request and dragging a rectangle over a redrawing TUI is asking somebody to do
-the terminal's job. A selection wins when there is one, and the last real
-selection per pane is remembered, since letting go of ⌥ drops the highlight and
-a live TUI redraws over it constantly.
-
-**A human ask remembers the way back.** Asking from one vendor pane submits the
-selection or last answer to a different vendor and records that pair while both
-processes remain the ones that were asked. The receiving pane then offers
-`Return answer` to the requester. Programmatic paste bypasses xterm's keyboard
-callback, so the target's answer marker is advanced explicitly after the ask;
-without that, the return leg reaches into output from before the question.
-Replacing either process invalidates the route rather than handing a new CLI an
-old conversation. Same-vendor panes are not Ask targets — their own vendor
-already supplies that delegation.
-
-**The frame comes off before sending.** A terminal buffer is a picture, and
-`│ Welcome back Mark! │` is noise pretending to be a message. `cleanRelayText`
-strips box-drawing characters only — never ASCII `-` or `|`, which are diffs,
-fences and flags, and are the most valuable thing the relay carries.
-
-**An agent-initiated relay submits.** `parley relay`, which a CLI in a pane can
-call, attributes the exact supplied text, pastes it into one named cross-vendor
-target, and presses Enter. This is deliberately a command-running capability:
-the user chose automatic vendor-to-vendor handoffs. `parley paste` is the
-explicit unsent alternative. Both require the calling pane's credential and
-refuse ambiguous, same-vendor, or non-agent targets.
-
-**An agent-initiated consultation submits once.** In the native workbench,
-`parley ask agy "question"` creates a correlated consultation, submits the
-attributed question, and blocks the calling command. The target returns with `parley answer
-<consultation-id>`, which becomes stdout from the already-running `parley ask`;
-the requesting agent can therefore continue the same turn without Parley
-pasting into its terminal or starting another command. Only one unanswered
-consultation may target a pane at once. The native Return menu is the fallback
-when the target printed an answer but forgot that command. A consultation is
-memory-only because its waiting process and socket connection cannot survive
-the app stopping.
-
-**One protocol, three injection adapters.** `AgentProtocol.text` is the only
-copy of the agent-facing meanings of `relay`, `paste`, `ask`, and `answer`.
-Every newly spawned or deliberately restarted agent receives those same bytes:
-Claude through `--append-system-prompt`, Codex through its per-process
-`developer_instructions` override, and Agy through the generated Parley-owned
-`agent-protocol/AGENTS.md` directory passed with `--add-dir`. Never hand-maintain
-vendor-specific wording. `AgentProtocol.version` travels in the process
-environment and a tmux pane option; an unstamped or mismatched live pane must
-say **RESTART FOR PROTOCOL**, because UI reattachment does not change the model
-context of a surviving process.
-
-Normal launch must never restart those stale processes. The development-only
-`--restart-stale-protocol` launch argument is an explicit destructive migration:
-it respawns only agent panes whose stamp differs, never shells or current panes.
-
-**Relayed content carries where it came from.** The receiving CLI has no idea,
-and an unattributed wall of another model's reasoning reads as the user's own
-words.
-
-The scope test for anything new: *could Claude Code do this on its own?* If yes,
-do not build it — the vendor owns the model and the session and will do it
-better. If no, it is cross-vendor, and it is this app's. The grid passes. The
-relay passes. Task boards, worktree lifecycles, review queues and orchestration
-all fail it, which a parked branch called `feat/workbench-ux` demonstrated at a
-cost of ten thousand lines.
-
-### If you are reading this from inside a pane
-
-A CLI running in a Parley pane has `PARLEY_PANE=1` in its environment, with
-`PARLEY_PANE_ID`, `PARLEY_PANE_KIND` and `PARLEY_APP_PID` beside it. If those
-are set, you are already inside the app.
-
-**Do not start another instance.** Asked to send something to a neighbouring
-pane, a Claude Code session launched a second Parley with a remote debugging
-port and drove it over CDP — building an entire app to reach a pane it was
-sitting next to, because nothing told it where it was.
-
-To reach another pane, use the `parley` command already on your PATH:
-
-```bash
-parley relay codex "have a look at this"
-some-command 2>&1 | parley relay claude
-parley paste agy "leave this in the prompt"
-parley ask agy "Which data structure should this plan use?"
-```
-
-Name a pane by vendor when only one is running, or by `PARLEY_PANE_ID`. It
-refuses rather than guesses between two of the same kind, and names what is
-open when it refuses.
-
-**`parley relay` sends.** Report it as sent only after the command succeeds.
-Use `parley paste` when the text must remain in the target prompt for a person
-to inspect or edit; report that as placed, not sent.
-
-`parley ask` is different: it submits the attributed question once, then waits.
-The target prompt contains the exact `parley answer <id>` route. When the target
-uses it, the answer is returned as the waiting command's output and the
-requesting turn proceeds. If a person asks you to consult another vendor while
-planning, use `parley ask`, not `relay`, and wait for its result.
-
-## The Grid is multi-folder, and saved layouts do not change that
-
-Each pane is spawned with its own `cwd` and keeps it for life. The toolbar
-control is not "the workspace" — it only decides where the *next* toolbar-opened
-pane lands, and a split inherits the folder of the pane it grew out of rather
-than that target. Changing it never affects a running pane.
-
-Do not collapse this into a single workspace folder. Working a change across two
-repositories at once — a library and its consumer, a CLI and the repo it
-provisions — is the normal case, not an edge case. A saved layout stores a
-`defaultFolder` that pre-fills the toolbar, and **each leaf still carries its own
-`cwd`**; the default is a convenience, never a constraint.
-
-### Slots, not panes
-
-The live tree is keyed by *slot*. A slot is a position in the layout that may or
-may not hold a running process (`paneId: null` when it does not). That
-indirection is what makes restoration possible at all — process ids die with the
-app, and a restored agent pane has no process until you start it.
-
-The persisted form (`SavedLayoutNode`) carries **no ids whatsoever**: just kind,
-folder, direction and ratio. Restoring mints fresh slots. Never persist a
-`paneId`; it is meaningless across runs.
-
-### Restoring starts shells only
-
-Opening a saved layout spawns its shells and leaves Claude and Codex panes as
-placeholders with a Start button. Respawning several agent CLIs unprompted would
-begin real sessions against the user's subscription that they did not ask for on
-this launch. A shell costs nothing; an agent session does. `fromSavedLayout`
-returns everything unstarted and lets the caller apply that policy, so the rule
-lives in one place.
-
-Opening a layout over live panes asks first, because it kills them.
-
-### The pane registry, and what "closed" means
-
-`state.panes` is fed by `pane.created`, patched by `pane.status`, and pruned
-by `pane.closed` — and the last two are different ends on purpose. A process
-**exit** is a status (`'exited'`, with the code): the handle stays in the pty
-manager's map and the row stays in the renderer, so the pane can show its
-corpse, its final scrollback, and its exit chip. `pane.closed` means the
-handle is **gone**, which only a user's close does. Wiring exit to closed is
-the exact defect that kept the exit chips unreachable for months. The Grid
-reconciles once at mount via `pane.list`; events carry everything after.
-
-### Grid-local signals never enter the holds queue
-
-The identity line (branch/dirty/drift via the bounded `pane.identity` — four
-git calls, five-second ceiling, never `readTree`), the plan-worktree chip
-(matched realpath-to-realpath because the registry stores raw spellings; it
-says landed or unlanded and NEVER "safe to remove"), and the unread-output
-dot are all deterministic and all Grid-local. The holds queue's authority is
-derived from the durable record; a PTY observation is not a record and must
-not notify like one.
-
-### Cross-surface doors are knocks, and panes are keystrokes
-
-Another surface asks the Grid for a pane via the `focusGridSpawn` knock
-(set → switch → consume, the `focusMilestoneId` shape), consumed only while
-the Grid is visible so the hidden surface never spawns behind the user's
-back. In the other direction, a pane promotes into a review via
-`focusNewSession` with the terminal selection as matter. Resume in a pane is
-the CLI's OWN picker (`claude --resume` bare, `codex resume`) — governed
-resume ids never reach the Grid. Broadcast and Skills share one shape:
-keystrokes into the interactive session (`pane.write`, flattened newlines,
-one `\r`) — never a separate spawn, never a privileged path.
-
-## Agent profiles: a name for a way of configuring a seat
-
-The Buzz idea taken without its luggage: a reusable agent identity is a
-vendor, model, effort and persona under a name — **never credentials**. The
-CLIs hold their own authentication; a profile that carried keys would turn a
-convenience into a vault. `agent_profiles` (schema 32), unique NOCASE name,
-CRUD beside the remote targets it resembles.
-
-The load-bearing decision is that a seat carries the profile's **name as a
-stamp**, not a reference. `AgentConfig.profile` is set at pick time, travels
-wherever the config goes — into the plan row, over the wire to a remote
-worker that holds no record of profiles — and lands in the journal as
-`actor_profile` on every event the seat produced. A name and not an id
-because the journal is read by people and outlives renames: what a seat was
-called when it acted is a fact, and deleting or renaming the profile later
-does not reach it.
-
-A hand edit ends the profile. The picker routes every field change through
-one `edit()` that deletes the stamp, because a config that has drifted from
-its profile is not that profile — leaving the name on would put "Fast
-reviewer" in the journal on a seat somebody quietly retuned. The eligibility
-fallback (vendor auto-corrected for a role) drops it for the same reason.
-
-The Run Room and the CLI's `runs`/`journal` output lead with the profile name
-when one is present ("Fast executor on build-01"); the vendor stays on the
-event for queries.
-
-## Search: one index, kept by triggers
-
-`search_index` (FTS5, `porter unicode61`, schema 30) covers sessions, turns,
-plans, milestones, ledger findings, backlog items and learnings. The record
-could always say what the state of a plan was and never where anybody said
-anything about retries — an answer spread over a debate, a milestone's intent,
-a reviewer's finding and a backlog item, in tables nothing joins.
-
-- **Triggers, not write-through.** An index kept current by remembering to
-  update it is silently wrong the first time somebody adds a write site and
-  forgets. This codebase already has a guard test whose whole job is catching
-  that class of omission; here the database does it instead. Adding a
-  searchable field means editing the INSERT in three triggers and the backfill.
-- **The query language is unreachable, not escaped.** `ftsQuery` splits on
-  non-word characters and re-quotes each token as a literal phrase, so no input
-  arrives at FTS5 as an operator — `"unclosed`, `foo* NEAR/2 bar` and `a AND`
-  are all just words. MATCH throws on malformed syntax, and a search that
-  crashes while somebody is mid-word is worse than no search.
-- Trailing `*` for prefix matching, `AND` between tokens (a second word
-  narrows), and bm25 weighted 10:1 toward the title so a finding whose own
-  sentence matched outranks a turn that mentioned the word in passing.
-- `Repo.search` is the only entry point, so the app and the CLI get the same
-  ranking. The cost is a second copy of the text — roughly doubling what the
-  turns take — which is stated in the schema rather than discovered.
-- **In the app, search lives in the ⌘K palette** — actions first, "In the
-  record" beneath, one cursor across both. `Manager.search` resolves each
-  hit's DOORS (session, plan, milestone, repository) before it leaves main,
-  because a milestone hit's scope is a plan id and only the record knows which
-  session and repository that plan belongs to; four surfaces doing that join
-  would be four copies. Hits route exactly as a hold's jump does: through the
-  session when one survives, to the Repos surface when only the repository
-  does. The «marks» in a snippet are the search layer's highlighting protocol
-  and become `<mark>` only at the palette — chosen as characters that cannot
-  appear in a git path or survive tokenising.
-
-## The renderer OOM, and what actually fixed it
-
-The window went black roughly every ten minutes with three busy agent panes.
-Chromium's PartitionAlloc trapping on a failed allocation, which macOS reports
-as SIGTRAP and Electron reports as `crashed` rather than `oom`. It cost several
-wrong diagnoses, so the causal story is written down here rather than inferred
-later from the code.
-
-**What did not fix it, measured:**
-
-- **Coalescing pty output into one message per frame.** 8-14 minutes before,
-  11.1 after. `src/main/pty/batch.ts` is still there and is harmless, but it is
-  not why this works — the cost was never message overhead. Do not point at it
-  as the fix.
-- **Switching runtime.** The Tauri port was begun on the theory that Chromium
-  was the ceiling. It is not. xterm.js parses on the main thread in any webview,
-  so WKWebView inherits the identical problem. The port produced good things —
-  the relay in Rust, the pty tests, the pane lifecycle work — but it was never
-  going to fix this.
-
-**What did fix it, in order of size:**
-
-1. **WebGL.** The app was running xterm's DOM renderer, which its maintainers
-   put at ~40% of main-thread load against WebGL's ~10%
-   (xtermjs/xterm.js#3368). It was behind a flag, off, while a leak was hunted
-   elsewhere.
-2. **Scrollback 12,000 to 3,000.** Retained per pane, and reflowed in full on
-   every resize — which the grid's column control triggers on demand.
-3. **Flow control** (`src/renderer/src/lib/ptyBuffer.ts`). One write handed to
-   xterm at a time, everything arriving meanwhile coalesced into the next, and
-   the pty paused above 1MB of backlog. The child then blocks on write, exactly
-   as against a real terminal nobody is reading.
-
-**The measurement.** Three panes full-redrawing flat out — a harsher load than
-real CLIs, which pause to think.
-
-Before: 11.3GB by minute three, renderer dead at about nineteen.
-
-After: sixty-two minutes, killed by hand rather than dying, zero renderer
-deaths logged. It rose to a peak of 11.9GB at minute twenty-five and then
-oscillated for the next thirty-seven — 8.2GB at forty-seven, 9.3 at
-fifty-six, 5.5 at sixty-two, its lowest reading since minute eight. That
-shape is a steady state with GC keeping pace, not a slow climb. Worth
-stating precisely, because the same curve read at minute seventeen looks
-like a straight line to death and was called one.
-
-**The ceiling has a name.** PartitionAlloc reserves a pool whose maximum is
-`kPoolMaxSize = 16 * kGiB` — 17.18GB in decimal — and all eight crashes sit at
-16.7-17.3G. That is address space reserved, not bytes resident: the crash
-reports say `written=18.6M(0%) unallocated=17.3G(100%)` while `ps` showed 9-11GB
-RSS, and both are true of different quantities. Two consequences. A larger
-machine changes nothing, because the ceiling is a constant. And the pool can be
-exhausted by *fragmentation* without resident memory growing to match — which
-is the leading explanation for why bounding the write queue moved the number so
-little.
-
-Credit where due: found by another model reading Chromium's
-partition_alloc_constants.h against these crash reports, not by me.
-
-**What is still open.** The top of that oscillation is close to the ceiling that
-used to kill it, and the residual allocation has no name yet: it is not the write queue, not
-scrollback, and not the GPU process, which sat at ~100MB throughout. Something
-in xterm's parse or render path holds finished work. A heap snapshot under load
-would have shown nothing. That was measured rather than argued.
-
-**The growth is native, not JavaScript.** Twelve minutes of three-pane load,
-sampling `performance.memory.usedJSHeapSize` against renderer RSS every fifteen
-seconds over CDP:
-
-    t=0.0   js  83MB   rss   741MB   ratio 0.112
-    t=3.0   js 105MB   rss  3802MB   ratio 0.028
-    t=6.0   js  57MB   rss  6716MB   ratio 0.008
-    t=7.3   js  72MB   rss  7893MB   ratio 0.009   <- peak
-    t=7.5   js  66MB   rss  3873MB                 <- 4GB released in 15s
-    t=11.8  js  64MB   rss  5382MB   ratio 0.012
-
-The JS heap never leaves a 37-133MB band while RSS grows by seven gigabytes. It
-is also hard-capped: `jsHeapSizeLimit` reads 4192MB, so JavaScript could not
-account for an 11GB renderer even if it were full. A heap snapshot is therefore
-the wrong instrument, and looking for a retainer in JS is looking in the wrong
-process half.
-
-That 4GB drop at 7.5 minutes settles something else. It was called garbage
-collection here earlier, on no evidence. The JS heap moved 72MB to 66MB across
-it — nothing in JavaScript was released — so it is a decommit, which is what
-PartitionAlloc does and what produces this shape. The earlier reading was
-unearned and is corrected.
-
-**What is left.** Fragmentation of the fixed pool versus a native cache — the
-glyph atlas, canvas backing stores, GPU transfer buffers. The repro rotates
-eight SGR colours, so the atlas key space is under a hundred entries and every
-key repeats within a frame, which is a poor driver for a style-keyed cache. That
-leaves fragmentation as the leading explanation. The clean test is the same
-harness run twice, fixed colour against rotating, which moves one variable.
-
-Until then, treat four or more busy agent panes as unproven.
-
-**What was considered.** Replacing xterm.js with libghostty-vt via
-Node bindings parses at 78MB/s off-thread and bounds cost to screen size rather
-than output volume, which is the right shape — but the binding exposes only
-feed, resize and snapshot. Input encoding, mouse tracking, selection, wide
-characters, rendering, search and scrollback would all have to be rebuilt, and
-the one published binding is a two-star beta unchanged since the day it was
-made.
-
-The recurring blank screen changed the decision. `native/` is now the first
-vertical slice of a Swift shell around SwiftTerm, with tmux owning processes,
-splits, scrollback and persistence. It deliberately runs beside Electron while
-the product boundary is proved: shell, Claude, Codex and Agy panes; pane menus;
-and the cross-vendor Ask → answer → Return loop. Rooms, the durable record,
-saved layouts and packaging have not moved. Do not claim the native prototype
-has replaced Electron until those surfaces either migrate or are explicitly
-retired.
-
-The native tmux server is isolated at `~/Library/Application Support/Parley
-Native/tmux.sock`; never attach to or mutate the user's default tmux server.
-Agent processes are passed to tmux as separate argv entries. Human Ask/Return
-actions use tmux buffers with bracketed paste and may submit; an agent-initiated
-relay enters through a per-pane credential and an authenticated Unix-domain
-socket broker. Its paste and submit capabilities are separate: `parley relay`
-and `parley ask` may submit, while `parley paste` cannot. Ask additionally waits
-on one correlated answer. TCP loopback is not viable because Codex's read-only sandbox blocks it.
-Answers complete the existing waiting command rather than writing terminal input.
-Agent commands are launched through `/usr/bin/env`
-with tmux's control-discovery variables removed; do not re-expose the shared
-tmux socket in their environment. The app maintains a managed command at
-`~/.local/bin/parley` so persisted panes can gain relay fixes without restarting
-their agent sessions; it must never replace a foreign command there. Closing
-the Swift window detaches a client and
-intentionally leaves the tmux session alive.
-
-Native Ask/Return never inserts history implicitly. A real terminal selection
-prefills the editor; otherwise it starts empty. `Insert Visible Pane` captures
-only the current tmux screen. Reintroducing the 300-line history fallback turns
-composition back into transcript deletion and is not an acceptable shortcut.
-
-## Grid tracks: `minmax(0, 1fr)`, never `1fr`
-
-A bare `1fr` is `minmax(auto, 1fr)`, so the track refuses to shrink below its
-content's min-content width. One long unbroken line — a file path, a JSON block
-in a transcript — then pushes the grid wider than the window and clips whatever
-is furthest left. The observed symptom was a sidebar heading that read
-"ESSIONS".
-
-Every track list in `styles/` uses `minmax(0, 1fr)`. Text that can contain long
-tokens also needs `overflow-wrap: anywhere` — `break-word` does *not* reduce
-min-content width, so it does not fix the layout, only the visual overflow.
-
-## Show both stdout and stderr, always
-
-Never render or relay `stdout || stderr`. Compilers and test runners split their
-output across both — `go test` prints `FAIL … [setup failed]` to stdout while the
-compile error that explains it goes to stderr — so picking one hides the only
-useful line. This was a real bug in the milestone panel and in the loop exit
-check, and it made failures look like they had no cause.
-
-## Two macOS failure modes that look like something else
-
-Both produce symptoms that point at the wrong thing, so they are worth
-recognising on sight. `src/main/util/environment.ts` handles both.
-
-**"posix_spawnp failed" for every pane, including `/bin/zsh`.** On macOS,
-`pty.fork` execs through a separate `spawn-helper` binary that binding.gyp builds
-as its own target (`['OS=="mac"', …]`). If it is missing or not executable, every
-spawn fails identically, and the error names the command you asked for rather
-than the helper — so it reads as "the CLI isn't installed" even for an absolute
-path to a shell that plainly exists. npm's `allow-scripts` policy blocking
-node-pty's build script is the usual cause: `pty.node` may come from a prebuild
-so the module imports fine, while `spawn-helper` never gets built. `preflightPty()`
-checks for it at startup and says so directly.
-
-Under a signed hardened runtime the same symptom comes from library validation
-refusing to exec the helper. `resources/entitlements.mac.plist` carries
-`disable-library-validation` for that reason.
-
-**The CLIs work in Terminal but not in the app.** A GUI-launched app is started
-by `launchd`, which hands over a minimal `/usr/bin:/bin:/usr/sbin:/sbin` — not
-your shell's PATH. Anything from Homebrew, `npm -g`, bun, mise or an install
-script is invisible. `applyResolvedPath()` asks the login shell for its PATH at
-startup and applies it to `process.env.PATH`, so every later spawn inherits it.
-
-That shell query is the one place the app runs a shell, and it is a deliberate,
-narrow exception to the no-shell rule: a fixed literal command with nothing
-interpolated, sentinel-delimited output, and a hard timeout because it sits on
-the launch critical path.
+No trailer is needed for the human author.
+
+For Kubernetes work, inspect the current context before every operation and
+confirm before mutating production. For Terraform, run a plan before any apply,
+never use automatic approval, and explicitly warn before a destroy affecting
+stateful resources.

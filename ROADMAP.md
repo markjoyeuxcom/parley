@@ -4,9 +4,8 @@
 collaboration layer between the user's existing AI coding CLIs. It does not
 replace their models, tools, permissions, authentication, or conversations.
 
-This roadmap supersedes older feature lists for product prioritisation. Those
-documents describe useful history, but the current north star is the workflow
-already working in the native app:
+This roadmap is the product backlog. Its north star is the workflow already
+working in the native app:
 
 > Give one agent a task. It consults a different vendor, waits for the answer,
 > judges that answer, and hands approved work to the right agent. The person can
@@ -46,8 +45,7 @@ The native application already has the product's essential wedge:
   boundaries, consultations, and workspace lifecycle.
 
 This is a working development build, not yet a dependable distributable app.
-The milestones below are ordered by what turns the current prototype into a
-daily tool.
+The milestones below are ordered by what turns it into a daily tool.
 
 ## Milestone 1 — Trust the pipe
 

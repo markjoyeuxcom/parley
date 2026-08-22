@@ -1,6 +1,0 @@
-{"type":"thread.started","thread_id":"019fad5f-080f-7293-aa8c-01c409ad2ace"}
-{"type":"turn.started"}
-{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc 'cat package.json'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
-{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc 'cat package.json'","aggregated_output":"{\n  \"name\": \"fixture-probe\",\n  \"version\": \"0.0.0\",\n  \"private\": true\n}\n","exit_code":0,"status":"completed"}}
-{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"parley"}}
-{"type":"turn.completed","usage":{"input_tokens":37820,"cached_input_tokens":18176,"cache_write_input_tokens":0,"output_tokens":149,"reasoning_output_tokens":46}}

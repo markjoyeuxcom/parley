@@ -123,10 +123,10 @@ private final class LockedData: @unchecked Sendable {
 public enum EnvironmentResolver {
     /// Resolves the login PATH for a GUI-launched app.
     ///
-    /// This is the same narrow exception as Electron Parley: a fixed command,
-    /// no interpolated content, sentinel-delimited output and an absolute shell
-    /// path. Agent commands still reach tmux as argv arrays and never through a
-    /// shell.
+    /// This is a narrow exception to argv-only process execution: a fixed
+    /// command with no interpolated content, sentinel-delimited output and an
+    /// absolute shell path. Agent commands still reach tmux as argv arrays and
+    /// never through a shell.
     public static func resolved() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         let runner = ProcessCommandRunner(timeout: 5)
