@@ -22,13 +22,24 @@ copy-and-paste. Everything else is in service of that or is not yet load-bearing
 
 ## Settled this week
 
-**The Tauri port is stopped, and its premise was disproved.** It was begun on
-the theory that Chromium was the memory ceiling. It is not — xterm.js parses on
-the main thread in any webview, so WKWebView inherits the identical arithmetic.
-`src-tauri/` still builds and runs a real terminal grid with a working relay,
-and it should be treated as an archived experiment rather than a branch to
-finish. What it produced and kept: the relay ported to Rust, the PTY tests, the
-pane lifecycle work, and a pane-adoption bug it exposed in the Electron build.
+**The Tauri port is gone.** It was begun on the theory that Chromium was the
+memory ceiling. It is not — xterm.js parses on the main thread in any webview,
+so WKWebView inherits the identical arithmetic. It reached a working terminal
+grid with a working relay, and was deleted at commit `4de4cd2`, where it can be
+read if it is ever wanted.
+
+Deleted rather than parked because keeping it cost real work: every fix on 20
+August had to be mirrored into Rust — the bracketed-paste allowlist, per-pane
+relay credentials, flow control, pane limits, the lifecycle kill — five times,
+on a build nobody ran. One of those mirrors was worse than useless: the Rust
+paste-bypass test passed against the vulnerable code because its payload used
+the wrong marker. Dead code that must be kept in sync is a liability; dead code
+with tests that lie is a trap.
+
+What the port produced and Parley kept: the pane lifecycle work, and a
+pane-adoption bug it exposed in the Electron build. The three hard-won PTY
+traps it carried are written up below and in AGENTS.md as prose, which is where
+they were always the more useful for being.
 
 **The renderer OOM is mitigated, not solved.** From dying at 8-14 minutes to
 running past an hour under a harsher load. It still peaks near 12GB. The full
@@ -42,8 +53,7 @@ commits, so nobody re-derives them.
 
 ## Running state
 
-- **Electron is the app.** `npm run dev`. The Tauri build is not part of the
-  product path.
+- **Electron is the app.** `npm run dev`. There is no second runtime.
 - **Health probes cost nothing.** All three check authentication rather than
   running a turn. They no longer report a spent quota as a login problem.
 - **Codex room seats run under an isolated `CODEX_HOME`** with no MCP servers.
@@ -79,8 +89,8 @@ commits, so nobody re-derives them.
 ## Things that look like bugs and are not
 
 - **A shell pane's relay is attributed to the folder** (`Personal/parley said:`)
-  rather than a vendor, because shell panes carry no vendor in their title. Same
-  in the Electron and Tauri builds. Ugly, deliberate, item 3 above.
+  rather than a vendor, because shell panes carry no vendor in their title.
+  Ugly, deliberate, item 3 above.
 - **`sandbox: false`** in the Electron window is required for the preload to use
   `contextBridge` with ESM, and is documented at the line.
 - **Turns are written to the record before they complete.** That is what stops a
