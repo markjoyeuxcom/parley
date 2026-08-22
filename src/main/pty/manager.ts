@@ -188,7 +188,11 @@ export class PaneInputReadiness {
  * cross the PTY separately, just as a person pastes and then presses Enter.
  */
 export class PanePromptSubmitter {
-  private readonly timers = new Map<Id, ReturnType<typeof setTimeout>>()
+  private readonly timers = new Map<Id, {
+    timeout: ReturnType<typeof setTimeout>
+    complete?: () => void
+    fail?: (error: Error) => void
+  }>()
 
   constructor(
     private readonly write: (paneId: Id, data: string) => void,
@@ -210,7 +214,7 @@ export class PanePromptSubmitter {
    * than as typing, newlines survive, and nothing is submitted until Enter
    * follows.
    */
-  paste(paneId: Id, text: string): void {
+  paste(paneId: Id, text: string): Promise<void> {
     // Submit whatever is already waiting before starting another paste.
     // Clearing the pending timer instead meant the first body never got its
     // Enter, and both arrived at the CLI as one run-on message.
@@ -223,10 +227,14 @@ export class PanePromptSubmitter {
     // read as typing, in a CLI that runs commands. Relayed content does not
     // get to decide where the paste ends.
     this.write(paneId, bracketed(text))
-    this.timers.set(paneId, setTimeout(() => {
-      this.timers.delete(paneId)
-      this.write(paneId, '\r')
-    }, this.settleMs))
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.timers.delete(paneId)
+        this.write(paneId, '\r')
+        resolve()
+      }, this.settleMs)
+      this.timers.set(paneId, { timeout, complete: resolve, fail: reject })
+    })
   }
 
   /**
@@ -246,9 +254,10 @@ export class PanePromptSubmitter {
   private flush(paneId: Id): void {
     const pending = this.timers.get(paneId)
     if (!pending) return
-    clearTimeout(pending)
+    clearTimeout(pending.timeout)
     this.timers.delete(paneId)
     this.write(paneId, '\r')
+    pending.complete?.()
   }
 
   submit(paneId: Id, text: string): void {
@@ -256,16 +265,20 @@ export class PanePromptSubmitter {
     // was already mid-submit, used to merge into one run-on message.
     this.flush(paneId)
     this.write(paneId, text.replace(/\r?\n/g, ' '))
-    this.timers.set(paneId, setTimeout(() => {
+    const timeout = setTimeout(() => {
       this.timers.delete(paneId)
       this.write(paneId, '\r')
-    }, this.settleMs))
+    }, this.settleMs)
+    this.timers.set(paneId, { timeout })
   }
 
   forget(paneId: Id): void {
     const pending = this.timers.get(paneId)
-    if (pending) clearTimeout(pending)
+    if (pending) clearTimeout(pending.timeout)
     this.timers.delete(paneId)
+    // A caller may be awaiting the Enter when the pane closes. Refuse rather
+    // than returning success for a question that never actually ran.
+    pending?.fail?.(new Error('the pane closed before the prompt was submitted'))
   }
 }
 
@@ -495,13 +508,13 @@ export class PtyManager {
     }
   }
 
-  paste(paneId: Id, text: string): void {
+  paste(paneId: Id, text: string): Promise<void> {
     const handle = this.panes.get(paneId)
     // Loudly, like submit. Returning quietly meant the IPC replied ok, the UI
     // said "Relayed to codex", and the payload went nowhere — a green notice
     // over a dropped message is worse than an error.
     if (!handle || handle.pane.status === 'exited') throw new Error('the pane is no longer live')
-    this.submitter.paste(paneId, text)
+    return this.submitter.paste(paneId, text)
   }
 
   /** Relayed by an agent: lands in the prompt, waits for a person to send it. */

@@ -358,7 +358,7 @@ describe('mounted-surface smoke', () => {
 
     const menus = await screen.findAllByTitle('Pane actions')
     fireEvent.click(menus[0] as HTMLElement)
-    fireEvent.click(await screen.findByRole('menuitem', { name: /Send selection to codex/i }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Ask codex about selection/i }))
 
     await waitFor(() => expect(invoked).toHaveLength(1))
     const { paneId, text } = invoked[0]!.payload as { paneId: string; text: string }
@@ -367,7 +367,7 @@ describe('mounted-surface smoke', () => {
     // Named by its title when the registry has one, by its vendor otherwise —
     // either way the receiving CLI is told where this came from, because an
     // unattributed wall of someone else's reasoning reads as the user's own.
-    expect(text.toLowerCase()).toContain('claude said:')
+    expect(text.toLowerCase()).toContain('claude asked:')
     expect(text).toContain('function add(a, b) {\n  return a + b\n}')
   })
 
@@ -449,14 +449,14 @@ describe('mounted-surface smoke', () => {
     const menu = await screen.findByRole('menu')
     // Never blind: the menu shows what it is about to send.
     expect(menu.textContent).toContain('function add(a, b) {')
-    fireEvent.click(await screen.findByRole('menuitem', { name: /Send selection to codex/i }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Ask codex about selection/i }))
 
     await waitFor(() => expect(invoked).toHaveLength(1))
     const { text } = invoked[0]!.payload as { text: string }
     expect(text).toContain('function add(a, b) {\n  return a + b\n}')
   })
 
-  it('relays the last answer when nothing is selected', async () => {
+  it('asks a counterpart with the last answer when nothing is selected', async () => {
     // The actual loop: read what Claude said, hand it to Codex. Making
     // somebody drag a rectangle over a redrawing TUI to express that is asking
     // them to do the terminal's job — and in a CLI that has claimed the mouse
@@ -492,15 +492,100 @@ describe('mounted-surface smoke', () => {
     fireEvent.click(screen.getAllByTitle('Pane actions')[0] as HTMLElement)
     const menu = await screen.findByRole('menu')
     // Named as the answer, not as a selection, so it is clear what is going.
-    expect(menu.textContent).toContain('Send last answer to codex')
+    expect(menu.textContent).toContain('Ask codex with last answer')
     expect(menu.textContent).toContain('The parser drops the closing brace')
 
-    fireEvent.click(await screen.findByRole('menuitem', { name: /Send last answer to codex/i }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Ask codex with last answer/i }))
     await waitFor(() => expect(invoked).toHaveLength(1))
     const { paneId, text } = invoked[0]!.payload as { paneId: string; text: string }
     expect(paneId).toBe('pane-2')
     expect(text).toContain('The parser drops the closing brace on line 42.')
-    expect(text.toLowerCase()).toContain('said:')
+    expect(text.toLowerCase()).toContain('asked:')
+  })
+
+  it('returns a counterpart answer to the pane that asked', async () => {
+    const invoked: Array<{ name: CommandName; payload: unknown }> = []
+    let opened = 0
+    installBridge({
+      'pane.open': (payload) => {
+        opened += 1
+        const kind = (payload as { kind: string }).kind as Pane['kind']
+        return {
+          id: `pane-${opened}`, kind, title: kind, cwd: '/tmp/smoke-repo',
+          status: 'live', exitCode: null, createdAt: opened,
+        }
+      },
+      'pane.paste': (payload) => { invoked.push({ name: 'pane.paste', payload }); return { ok: true } },
+    })
+
+    render(<StoreProvider><GridSurface /></StoreProvider>)
+    fireEvent.click(await screen.findByTitle('New Claude pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(1))
+    fireEvent.click(await screen.findByTitle('New Codex pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(2))
+
+    let codexOutput = ''
+    const claudeSubmitted = vi.fn()
+    const codexSubmitted = vi.fn()
+    registerTerm('pane-1', {
+      getSelection: () => '',
+      lastOutput: () => 'Should this cache be keyed by repository?',
+      markSubmitted: claudeSubmitted,
+      serialize: () => '',
+      findNext: () => false, findPrevious: () => false, clearSearch: () => {},
+    })
+    registerTerm('pane-2', {
+      getSelection: () => '',
+      lastOutput: () => codexOutput,
+      markSubmitted: codexSubmitted,
+      serialize: () => '',
+      findNext: () => false, findPrevious: () => false, clearSearch: () => {},
+    })
+
+    fireEvent.click(screen.getAllByTitle('Pane actions')[0] as HTMLElement)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Ask codex with last answer/i }))
+    await waitFor(() => expect(invoked).toHaveLength(1))
+    expect(codexSubmitted).toHaveBeenCalledOnce()
+
+    codexOutput = 'No. Two worktrees of the same repository can have different state.'
+    fireEvent.click(screen.getAllByTitle('Pane actions')[1] as HTMLElement)
+    expect(await screen.findByRole('menuitem', { name: /Return answer to claude/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('menuitem', { name: /Return answer to claude/i }))
+
+    await waitFor(() => expect(invoked).toHaveLength(2))
+    const returned = invoked[1]!.payload as { paneId: string; text: string }
+    expect(returned.paneId).toBe('pane-1')
+    expect(returned.text.toLowerCase()).toContain('codex answered:')
+    expect(returned.text).toContain('Two worktrees of the same repository')
+    expect(claudeSubmitted).toHaveBeenCalledOnce()
+  })
+
+  it('offers Ask only across vendor boundaries', async () => {
+    let opened = 0
+    installBridge({
+      'pane.open': () => {
+        opened += 1
+        return {
+          id: `pane-${opened}`, kind: 'claude', title: `claude ${opened}`,
+          cwd: '/tmp/smoke-repo', status: 'live', exitCode: null, createdAt: opened,
+        }
+      },
+    })
+
+    render(<StoreProvider><GridSurface /></StoreProvider>)
+    fireEvent.click(await screen.findByTitle('New Claude pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(1))
+    fireEvent.click(await screen.findByTitle('New Claude pane'))
+    await waitFor(() => expect(screen.getAllByTitle('Pane actions')).toHaveLength(2))
+    registerTerm('pane-1', {
+      getSelection: () => '', lastOutput: () => 'Can another Claude check this?', serialize: () => '',
+      findNext: () => false, findPrevious: () => false, clearSearch: () => {},
+    })
+
+    fireEvent.click(screen.getAllByTitle('Pane actions')[0] as HTMLElement)
+    const menu = await screen.findByRole('menu')
+    expect(menu.textContent).toContain('Open a different vendor’s agent pane to ask.')
+    expect(within(menu).queryByRole('menuitem', { name: /Ask claude/i })).toBeNull()
   })
 
   it('a room opens as a pane, sends a turn, and renders the streamed reply', async () => {

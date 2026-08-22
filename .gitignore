@@ -27,3 +27,7 @@ coverage/
 
 # Rust build output for the Tauri migration
 src-tauri/target/
+
+# SwiftPM build and per-machine workspace state
+native/.build/
+native/.swiftpm/

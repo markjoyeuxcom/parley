@@ -17,6 +17,15 @@ export interface TermAccess {
    * exactly where their question ended and the answer began.
    */
   lastOutput: () => string
+  /**
+   * Moves the answer boundary to the terminal's current cursor.
+   *
+   * A prompt submitted through Parley's pane API bypasses xterm's `onData`
+   * callback, so the terminal cannot otherwise know that a new question just
+   * began. Without this, returning a counterpart's answer can reach back into
+   * output from before the ask.
+   */
+  markSubmitted?: () => void
   /** The full buffer as text — the transcript a save writes. */
   serialize: () => string
   findNext: (query: string) => boolean

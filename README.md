@@ -28,9 +28,23 @@ held while you drag; a plain drag goes to the application, which highlights its
 own text and looks selected while the terminal has nothing.
 
 An agent in a pane can relay too: `parley relay codex "have a look at this"` is
-on its PATH. That one **pastes without sending** — the text waits in the other
-CLI's prompt for you to press Enter — so an agent can hand work across without
-anything another model wrote being able to run on its own.
+on its PATH. It attributes and submits that exact text to the named cross-vendor
+pane. Use `parley paste codex "draft"` when the text should be placed in the
+prompt without pressing Enter.
+
+For a question whose answer should return to the same planning turn, use
+`parley ask agy "question"`. Parley attributes and submits that question once,
+then leaves the command blocked until Agy returns through the consultation. Its
+answer becomes the command output, so the planner continues without another
+copy, paste, approval, or Return click. Only one consultation may await an
+answer in a target pane at a time.
+
+Every agent Parley starts receives the same versioned cross-vendor protocol,
+independently of the folder it opens in. Claude receives it as an appended
+system prompt, Codex as developer instructions, and Agy through a Parley-owned
+rules workspace. The protocol defines `relay`, `paste`, `ask`, and `answer` once;
+the vendor adapters only decide how that identical text reaches each CLI.
+Existing panes show **RESTART FOR PROTOCOL** until deliberately restarted.
 
 No vendor will build this. Claude Code's subagents take Claude models and
 nothing else; Codex's threads are OpenAI's. Every agent system is a closed loop
@@ -115,6 +129,46 @@ a conversation, use **Reopen a room…** on an unstarted room pane.
 maximizes · `⌘F` finds in a pane · `⌘K` is the command palette, which searches
 everything ever said in a room.
 
+## Native tmux prototype
+
+The first replacement path for the unstable Electron/xterm terminal surface is
+now runnable in `native/`. It is a native SwiftUI window with SwiftTerm doing
+terminal input and Metal rendering, while an isolated tmux server owns the
+shells, agent processes, splits, scrollback and session lifetime. It never
+touches your normal tmux server.
+
+The prototype can open and manage shell, Claude, Codex and Agy panes; split
+right or below; rename, restart and close panes; zoom or balance the grid; and
+choose the folder for new panes. Its **Ask** action sends a selected answer (or
+text composed in an initially empty editor) to a different vendor after an
+editable preview, remembers the requesting pane, and exposes **Return** on the
+answering pane. **Insert Visible Pane** explicitly adds the current screen and
+never includes scrollback. Both clicks are human actions and submit only after
+that preview.
+
+New agent panes also receive four cross-vendor commands. `parley relay <pane>
+<text>` carries only its explicit arguments or stdin through an authenticated
+local broker and submits it. `parley paste <pane> <text>` is the explicit
+unsent form. `parley ask <pane> <question>` submits, waits for the target's
+correlated `parley answer`, and then returns that answer to the original agent
+as command output; `parley answer` completes that waiting command.
+
+Run it on the Mac without starting an agent automatically:
+
+```bash
+npm run native:test
+npm run native:dev
+```
+
+It starts or reattaches one shell. Claude, Codex and Agy begin only when you
+choose them from the menu. Closing the window detaches from tmux; the panes keep
+running and are there on the next launch.
+
+This is a working migration slice, not yet the packaged Parley replacement.
+Rooms, transcripts, saved layouts, the record and release packaging still live
+in the Electron application. See [native/README.md](native/README.md) for the
+boundary and commands.
+
 ## Where your data goes
 
 Nowhere. Rooms, their transcripts, verdicts, saved layouts, skills and the
@@ -137,6 +191,7 @@ nobody ever spoke in is swept at startup, one that was used is not — and
 - At least one of [Claude Code](https://claude.com/claude-code),
   [Codex CLI](https://github.com/openai/codex) or Agy, installed and signed in
 - Node 24+ to build
+- Swift and tmux to build and run the native prototype
 
 Parley shows each CLI's status in the toolbar, because "installed but not
 signed in" is the most likely reason a seat produces nothing.

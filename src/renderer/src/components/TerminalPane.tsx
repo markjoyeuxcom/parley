@@ -163,15 +163,16 @@ export function TerminalPane({
     // letter they typed. The marker tracks its line as the buffer scrolls and
     // reports -1 once it falls out of scrollback.
     let submitted: IMarker | undefined
+    const markSubmitted = (): void => {
+      submitted?.dispose()
+      submitted = term.registerMarker(0)
+      // A new question ends the old selection. Keeping it meant one stray
+      // word chosen an hour ago outranked every answer since.
+      forgetSelection(paneId)
+    }
     const dataSub = term.onData((data) => {
       void api.writePane(paneId, data)
-      if (data.includes('\r') || data.includes('\n')) {
-        submitted?.dispose()
-        submitted = term.registerMarker(0)
-        // A new question ends the old selection. Keeping it meant one stray
-        // word chosen an hour ago outranked every answer since.
-        forgetSelection(paneId)
-      }
+      if (data.includes('\r') || data.includes('\n')) markSubmitted()
     })
 
     // `done` is the whole point: xterm calls it once the chunk has actually
@@ -221,6 +222,10 @@ export function TerminalPane({
         }
         return cleanRelayText(lines)
       },
+      // `pane.paste` enters through main rather than through xterm's keyboard
+      // callback. The Ask/Return loop calls this after that prompt is accepted
+      // so the next `lastOutput` is the counterpart's new answer only.
+      markSubmitted,
       serialize: () => serialize.serialize(),
       findNext: (query) => search.findNext(query),
       findPrevious: (query) => search.findPrevious(query),

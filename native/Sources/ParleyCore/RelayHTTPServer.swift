@@ -1,0 +1,336 @@
+import Darwin
+import Dispatch
+import Foundation
+
+public enum RelayServerError: LocalizedError {
+    case socket(String)
+    case malformedRequest(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .socket(detail): "Parley relay broker: \(detail)"
+        case let .malformedRequest(detail): detail
+        }
+    }
+}
+
+/// A narrow local Unix-socket door for the agent-facing `parley` command.
+/// Codex's read-only sandbox denies TCP, including loopback, but explicitly
+/// permits Unix-domain sockets. Authentication and the broker still determine
+/// which pane the caller is and what it may do.
+public final class RelayHTTPServer: @unchecked Sendable {
+    private static let maximumHeaderBytes = 32_768
+    private static let maximumBodyBytes = 200_000
+
+    private let broker: RelayBroker
+    private let infoFile: URL
+    private let socketFile: URL
+    private let queue = DispatchQueue(label: "parley.native.relay", qos: .utility)
+    private let lock = NSLock()
+    private var source: DispatchSourceRead?
+    private var listener: Int32 = -1
+
+    public init(broker: RelayBroker, infoFile: URL, socketFile: URL? = nil) {
+        self.broker = broker
+        self.infoFile = infoFile
+        self.socketFile = socketFile ?? infoFile.deletingLastPathComponent().appendingPathComponent("relay.sock")
+    }
+
+    deinit {
+        stop()
+    }
+
+    @discardableResult
+    public func start() throws -> Int {
+        try lock.withLock {
+            if listener >= 0 { throw RelayServerError.socket("broker is already running") }
+
+            try prepareSocketPath()
+            let address = try unixAddress()
+            let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+            guard descriptor >= 0 else { throw socketError("could not create socket") }
+
+            do {
+                let descriptorFlags = fcntl(descriptor, F_GETFD, 0)
+                guard descriptorFlags >= 0,
+                      fcntl(descriptor, F_SETFD, descriptorFlags | FD_CLOEXEC) == 0 else {
+                    throw socketError("could not protect socket from child-process inheritance")
+                }
+                var mutableAddress = address
+                let bindStatus = withUnsafePointer(to: &mutableAddress) { pointer in
+                    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                    }
+                }
+                guard bindStatus == 0 else { throw socketError("could not bind local socket") }
+                guard Darwin.chmod(socketFile.path, 0o600) == 0 else {
+                    throw socketError("could not protect socket")
+                }
+                guard Darwin.listen(descriptor, 16) == 0 else { throw socketError("could not listen") }
+
+                let flags = fcntl(descriptor, F_GETFL, 0)
+                guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
+                    throw socketError("could not make listener nonblocking")
+                }
+
+                let endpoint = "unix:\(socketFile.path)"
+                try endpoint.write(to: infoFile, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: infoFile.path)
+
+                listener = descriptor
+                let readSource = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
+                readSource.setEventHandler { [weak self] in self?.acceptConnections() }
+                readSource.setCancelHandler { Darwin.close(descriptor) }
+                source = readSource
+                readSource.resume()
+                return 0
+            } catch {
+                Darwin.close(descriptor)
+                try? FileManager.default.removeItem(at: socketFile)
+                throw error
+            }
+        }
+    }
+
+    public func stop() {
+        broker.cancelAll()
+        lock.withLock {
+            guard listener >= 0 else { return }
+            listener = -1
+            source?.cancel()
+            source = nil
+            try? FileManager.default.removeItem(at: infoFile)
+            try? FileManager.default.removeItem(at: socketFile)
+        }
+    }
+
+    private func prepareSocketPath() throws {
+        guard FileManager.default.fileExists(atPath: socketFile.path) else { return }
+        let attributes = try FileManager.default.attributesOfItem(atPath: socketFile.path)
+        guard attributes[.type] as? FileAttributeType == .typeSocket else {
+            throw RelayServerError.socket("refusing to replace non-socket path at \(socketFile.path)")
+        }
+        if try socketIsLive() {
+            throw RelayServerError.socket("another Parley relay broker is already running")
+        }
+        try FileManager.default.removeItem(at: socketFile)
+    }
+
+    private func socketIsLive() throws -> Bool {
+        let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { throw socketError("could not inspect existing socket") }
+        defer { Darwin.close(descriptor) }
+        var address = try unixAddress()
+        let status = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        return status == 0
+    }
+
+    private func unixAddress() throws -> sockaddr_un {
+        var address = sockaddr_un()
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(socketFile.path.utf8)
+        let capacity = MemoryLayout.size(ofValue: address.sun_path)
+        guard bytes.count < capacity else {
+            throw RelayServerError.socket("socket path is too long: \(socketFile.path)")
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { destination in
+            destination.copyBytes(from: bytes)
+            destination[bytes.count] = 0
+        }
+        return address
+    }
+
+    private func acceptConnections() {
+        while true {
+            var storage = sockaddr_storage()
+            var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+            let client = withUnsafeMutablePointer(to: &storage) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.accept(listener, $0, &length)
+                }
+            }
+            if client < 0 {
+                if errno == EAGAIN || errno == EWOULDBLOCK { return }
+                return
+            }
+            let descriptorFlags = fcntl(client, F_GETFD, 0)
+            if descriptorFlags < 0 || fcntl(client, F_SETFD, descriptorFlags | FD_CLOEXEC) != 0 {
+                Darwin.close(client)
+                continue
+            }
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                self?.serve(client)
+            }
+        }
+    }
+
+    private func serve(_ client: Int32) {
+        defer { Darwin.close(client) }
+        var noSignal: Int32 = 1
+        _ = setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout.size(ofValue: noSignal)))
+        var timeout = timeval(tv_sec: 5, tv_usec: 0)
+        _ = setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout.size(ofValue: timeout)))
+
+        do {
+            let request = try readRequest(from: client)
+            guard request.method == "POST" else {
+                write(RelayResponse(
+                    status: 404,
+                    body: RelayResponseBody(ok: false, delivered: nil, submitted: nil, note: nil, error: "POST required")
+                ), to: client)
+                return
+            }
+            let authorization = request.headers["authorization"] ?? ""
+            let token = authorization.range(of: "Bearer ", options: [.anchored, .caseInsensitive])
+                .map { String(authorization[$0.upperBound...]).trimmingCharacters(in: .whitespaces) } ?? ""
+            let target = request.headers["x-parley-to"] ?? ""
+            let text = String(decoding: request.body, as: UTF8.self)
+            switch request.path {
+            case "/relay":
+                write(broker.handle(token: token, target: target, text: text), to: client)
+            case "/paste":
+                write(broker.handlePaste(token: token, target: target, text: text), to: client)
+            case "/ask":
+                write(broker.handleAsk(token: token, target: target, text: text), to: client)
+            case let path where path.hasPrefix("/answer/"):
+                let consultationID = String(path.dropFirst("/answer/".count))
+                write(broker.handleAnswer(token: token, consultationID: consultationID, text: text), to: client)
+            default:
+                write(RelayResponse(
+                    status: 404,
+                    body: RelayResponseBody(
+                        ok: false,
+                        delivered: nil,
+                        submitted: nil,
+                        note: nil,
+                        error: "POST /relay, /paste, /ask or /answer/<id>"
+                    )
+                ), to: client)
+            }
+        } catch {
+            write(RelayResponse(
+                status: 400,
+                body: RelayResponseBody(ok: false, delivered: nil, submitted: nil, note: nil, error: error.localizedDescription)
+            ), to: client)
+        }
+    }
+
+    private func readRequest(from client: Int32) throws -> Request {
+        let headerMarker = Data("\r\n\r\n".utf8)
+        var received = Data()
+        var expectedLength: Int?
+        var bodyStart: Int?
+        var parsedHead: (method: String, path: String, headers: [String: String])?
+
+        while true {
+            var buffer = [UInt8](repeating: 0, count: 8_192)
+            let count = Darwin.recv(client, &buffer, buffer.count, 0)
+            guard count > 0 else { throw RelayServerError.malformedRequest("incomplete relay request") }
+            received.append(contentsOf: buffer.prefix(count))
+
+            if parsedHead == nil, let marker = received.range(of: headerMarker) {
+                guard marker.lowerBound <= Self.maximumHeaderBytes else {
+                    throw RelayServerError.malformedRequest("relay headers too large")
+                }
+                let headData = received[..<marker.lowerBound]
+                let head = try parseHead(Data(headData))
+                guard let rawLength = head.headers["content-length"], let length = Int(rawLength), length >= 0 else {
+                    throw RelayServerError.malformedRequest("relay needs Content-Length")
+                }
+                guard length <= Self.maximumBodyBytes else {
+                    throw RelayServerError.malformedRequest("relay text too long")
+                }
+                parsedHead = head
+                expectedLength = length
+                bodyStart = marker.upperBound
+            }
+
+            if let parsedHead, let expectedLength, let bodyStart,
+               received.count >= bodyStart + expectedLength {
+                let body = received.subdata(in: bodyStart..<(bodyStart + expectedLength))
+                return Request(method: parsedHead.method, path: parsedHead.path, headers: parsedHead.headers, body: body)
+            }
+            if received.count > Self.maximumHeaderBytes + Self.maximumBodyBytes {
+                throw RelayServerError.malformedRequest("relay request too large")
+            }
+        }
+    }
+
+    private func parseHead(_ data: Data) throws -> (method: String, path: String, headers: [String: String]) {
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw RelayServerError.malformedRequest("relay headers are not UTF-8")
+        }
+        let lines = text.components(separatedBy: "\r\n")
+        let request = lines.first?.split(separator: " ") ?? []
+        guard request.count >= 2 else { throw RelayServerError.malformedRequest("malformed relay request") }
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            headers[name] = value
+        }
+        return (String(request[0]), String(request[1]), headers)
+    }
+
+    private func write(_ response: RelayResponse, to client: Int32) {
+        guard let body = try? JSONEncoder().encode(response.body) else { return }
+        let reason: String = switch response.status {
+        case 200: "OK"
+        case 400: "Bad Request"
+        case 401: "Unauthorized"
+        case 404: "Not Found"
+        case 409: "Conflict"
+        default: "Error"
+        }
+        let head = "HTTP/1.1 \(response.status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+        send(Data(head.utf8) + body, to: client)
+    }
+
+    private func write(_ response: RelayTextResponse, to client: Int32) {
+        let body = Data(response.text.utf8)
+        let head = "HTTP/1.1 \(response.status) \(reason(for: response.status))\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+        send(Data(head.utf8) + body, to: client)
+    }
+
+    private func reason(for status: Int) -> String {
+        switch status {
+        case 200: "OK"
+        case 400: "Bad Request"
+        case 401: "Unauthorized"
+        case 403: "Forbidden"
+        case 404: "Not Found"
+        case 408: "Request Timeout"
+        case 409: "Conflict"
+        default: "Error"
+        }
+    }
+
+    private func send(_ data: Data, to client: Int32) {
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var written = 0
+            while written < raw.count {
+                let count = Darwin.send(client, base.advanced(by: written), raw.count - written, 0)
+                if count <= 0 { return }
+                written += count
+            }
+        }
+    }
+
+    private func socketError(_ prefix: String) -> RelayServerError {
+        RelayServerError.socket("\(prefix): \(String(cString: strerror(errno)))")
+    }
+}
+
+private struct Request {
+    let method: String
+    let path: String
+    let headers: [String: String]
+    let body: Data
+}

@@ -215,9 +215,11 @@ const HANDLERS: Record<CommandName, Handler> = {
     ctx.pty.write(paneId, data)
     return { ok: true }
   },
-  'pane.paste': (p, ctx) => {
+  'pane.paste': async (p, ctx) => {
     const { paneId, text } = p as { paneId: string; text: string }
-    ctx.pty.paste(paneId, text)
+    // The renderer uses completion as the exact boundary between the pasted
+    // question and the answer that follows, so wait for the delayed Enter.
+    await ctx.pty.paste(paneId, text)
     return { ok: true }
   },
   'pane.flow': (p, ctx) => {

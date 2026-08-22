@@ -60,6 +60,9 @@ npm run typecheck    # both projects — must pass clean
 npm test             # deterministic tests, no tokens spent
 npm run build        # production bundles into out/
 npm run package:mac  # signed-runtime .dmg + .zip for Apple Silicon
+npm run native:dev   # native SwiftTerm client over Parley's isolated tmux server
+npm run native:build # compile the native prototype
+npm run native:test  # deterministic native checks; no CLIs or quota
 ```
 
 `npm run typecheck` deletes its own `.tsbuildinfo` first, and that is not
@@ -86,6 +89,7 @@ src/shared/      domain schemas, the IPC contract, room vocabulary, JSON extract
 src/main/        agents/ (CLI adapters) · rooms/ · store/ · pty/ · ipc/
 src/preload/     the renderer's entire view of the outside world
 src/renderer/    React 19 UI: one surface over a hand-written design system
+native/          SwiftUI + SwiftTerm client and isolated tmux control plane
 ```
 
 Types are inferred from the zod schemas in `shared/domain.ts`. There is no
@@ -281,17 +285,53 @@ the terminal's job. A selection wins when there is one, and the last real
 selection per pane is remembered, since letting go of ⌥ drops the highlight and
 a live TUI redraws over it constantly.
 
+**A human ask remembers the way back.** Asking from one vendor pane submits the
+selection or last answer to a different vendor and records that pair while both
+processes remain the ones that were asked. The receiving pane then offers
+`Return answer` to the requester. Programmatic paste bypasses xterm's keyboard
+callback, so the target's answer marker is advanced explicitly after the ask;
+without that, the return leg reaches into output from before the question.
+Replacing either process invalidates the route rather than handing a new CLI an
+old conversation. Same-vendor panes are not Ask targets — their own vendor
+already supplies that delegation.
+
 **The frame comes off before sending.** A terminal buffer is a picture, and
 `│ Welcome back Mark! │` is noise pretending to be a message. `cleanRelayText`
 strips box-drawing characters only — never ASCII `-` or `|`, which are diffs,
 fences and flags, and are the most valuable thing the relay carries.
 
-**An agent-initiated relay never submits.** The menu relay is a person
-deciding what crosses and it presses Enter. `parley relay`, which a CLI in a
-pane can call, deliberately does not: the text lands in the target's prompt and
-waits. That one property is what makes the capability safe to have at all —
-anything a model read on a web page can reach another model's input box, but
-nothing it wrote can run there on its own.
+**An agent-initiated relay submits.** `parley relay`, which a CLI in a pane can
+call, attributes the exact supplied text, pastes it into one named cross-vendor
+target, and presses Enter. This is deliberately a command-running capability:
+the user chose automatic vendor-to-vendor handoffs. `parley paste` is the
+explicit unsent alternative. Both require the calling pane's credential and
+refuse ambiguous, same-vendor, or non-agent targets.
+
+**An agent-initiated consultation submits once.** In the native workbench,
+`parley ask agy "question"` creates a correlated consultation, submits the
+attributed question, and blocks the calling command. The target returns with `parley answer
+<consultation-id>`, which becomes stdout from the already-running `parley ask`;
+the requesting agent can therefore continue the same turn without Parley
+pasting into its terminal or starting another command. Only one unanswered
+consultation may target a pane at once. The native Return menu is the fallback
+when the target printed an answer but forgot that command. A consultation is
+memory-only because its waiting process and socket connection cannot survive
+the app stopping.
+
+**One protocol, three injection adapters.** `AgentProtocol.text` is the only
+copy of the agent-facing meanings of `relay`, `paste`, `ask`, and `answer`.
+Every newly spawned or deliberately restarted agent receives those same bytes:
+Claude through `--append-system-prompt`, Codex through its per-process
+`developer_instructions` override, and Agy through the generated Parley-owned
+`agent-protocol/AGENTS.md` directory passed with `--add-dir`. Never hand-maintain
+vendor-specific wording. `AgentProtocol.version` travels in the process
+environment and a tmux pane option; an unstamped or mismatched live pane must
+say **RESTART FOR PROTOCOL**, because UI reattachment does not change the model
+context of a surviving process.
+
+Normal launch must never restart those stale processes. The development-only
+`--restart-stale-protocol` launch argument is an explicit destructive migration:
+it respawns only agent panes whose stamp differs, never shells or current panes.
 
 **Relayed content carries where it came from.** The receiving CLI has no idea,
 and an unattributed wall of another model's reasoning reads as the user's own
@@ -320,17 +360,23 @@ To reach another pane, use the `parley` command already on your PATH:
 ```bash
 parley relay codex "have a look at this"
 some-command 2>&1 | parley relay claude
+parley paste agy "leave this in the prompt"
+parley ask agy "Which data structure should this plan use?"
 ```
 
 Name a pane by vendor when only one is running, or by `PARLEY_PANE_ID`. It
 refuses rather than guesses between two of the same kind, and names what is
 open when it refuses.
 
-**It pastes into that pane's prompt and does not send.** A person there presses
-Enter. Say so when you report back — "I've put it in Codex's prompt" is true,
-"I've sent it to Codex" is not. This is deliberate and is not going to change:
-an agent that could submit into another agent's session would be a
-prompt-injection channel with a command runner on the far end.
+**`parley relay` sends.** Report it as sent only after the command succeeds.
+Use `parley paste` when the text must remain in the target prompt for a person
+to inspect or edit; report that as placed, not sent.
+
+`parley ask` is different: it submits the attributed question once, then waits.
+The target prompt contains the exact `parley answer <id>` route. When the target
+uses it, the answer is returned as the waiting command's output and the
+requesting turn proceeds. If a person asks you to consult another vendor while
+planning, use `parley ask`, not `relay`, and wait for its result.
 
 ## The Grid is multi-folder, and saved layouts do not change that
 
@@ -559,15 +605,44 @@ harness run twice, fixed colour against rotating, which moves one variable.
 
 Until then, treat four or more busy agent panes as unproven.
 
-**What was considered and rejected.** Replacing xterm.js with libghostty-vt via
+**What was considered.** Replacing xterm.js with libghostty-vt via
 Node bindings parses at 78MB/s off-thread and bounds cost to screen size rather
 than output volume, which is the right shape — but the binding exposes only
 feed, resize and snapshot. Input encoding, mouse tracking, selection, wide
 characters, rendering, search and scrollback would all have to be rebuilt, and
 the one published binding is a two-star beta unchanged since the day it was
-made. A Swift shell around SwiftTerm or GhosttyKit buys a complete terminal, but
-pays for it by rewriting the half of this app that is not broken and is where
-the actual work lives — the adapters, the capability ladder, the relay, rooms.
+made.
+
+The recurring blank screen changed the decision. `native/` is now the first
+vertical slice of a Swift shell around SwiftTerm, with tmux owning processes,
+splits, scrollback and persistence. It deliberately runs beside Electron while
+the product boundary is proved: shell, Claude, Codex and Agy panes; pane menus;
+and the cross-vendor Ask → answer → Return loop. Rooms, the durable record,
+saved layouts and packaging have not moved. Do not claim the native prototype
+has replaced Electron until those surfaces either migrate or are explicitly
+retired.
+
+The native tmux server is isolated at `~/Library/Application Support/Parley
+Native/tmux.sock`; never attach to or mutate the user's default tmux server.
+Agent processes are passed to tmux as separate argv entries. Human Ask/Return
+actions use tmux buffers with bracketed paste and may submit; an agent-initiated
+relay enters through a per-pane credential and an authenticated Unix-domain
+socket broker. Its paste and submit capabilities are separate: `parley relay`
+and `parley ask` may submit, while `parley paste` cannot. Ask additionally waits
+on one correlated answer. TCP loopback is not viable because Codex's read-only sandbox blocks it.
+Answers complete the existing waiting command rather than writing terminal input.
+Agent commands are launched through `/usr/bin/env`
+with tmux's control-discovery variables removed; do not re-expose the shared
+tmux socket in their environment. The app maintains a managed command at
+`~/.local/bin/parley` so persisted panes can gain relay fixes without restarting
+their agent sessions; it must never replace a foreign command there. Closing
+the Swift window detaches a client and
+intentionally leaves the tmux session alive.
+
+Native Ask/Return never inserts history implicitly. A real terminal selection
+prefills the editor; otherwise it starts empty. `Insert Visible Pane` captures
+only the current tmux screen. Reintroducing the 300-line history fallback turns
+composition back into transcript deletion and is not an acceptable shortcut.
 
 ## Grid tracks: `minmax(0, 1fr)`, never `1fr`
 

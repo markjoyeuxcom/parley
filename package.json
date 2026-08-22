@@ -26,7 +26,10 @@
     "rebuild": "electron-rebuild -v 43.2.0 -f -m . -o node-pty",
     "postinstall": "npm run rebuild",
     "package:mac": "npm run build && electron-builder --mac --arm64",
-    "package:mac:dir": "npm run build && electron-builder --mac --arm64 --dir"
+    "package:mac:dir": "npm run build && electron-builder --mac --arm64 --dir",
+    "native:build": "node scripts/run-native-swift.mjs build --package-path native",
+    "native:test": "node scripts/run-native-swift.mjs run --package-path native parley-native-checks",
+    "native:dev": "node scripts/run-native-swift.mjs run --package-path native parley-native --cwd ."
   },
   "dependencies": {
     "@xterm/addon-fit": "0.11.0",

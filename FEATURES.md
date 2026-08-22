@@ -19,12 +19,41 @@ their keep; the rest of the codebase is larger than the product.
 
 ---
 
-## Building
+## Built
 
-### 1. Cross-vendor diff review
+### Ask → answer → return
+
+From one agent pane, ask a different vendor about the current selection or the
+last answer. The human action submits an attributed question, remembers which
+live pane asked it, and gives the receiving pane a `Return answer` action once
+it has responded. The return is attributed and submitted back into the original
+conversation.
+
+The route belongs to the two live processes, not just their positions in the
+grid, so reopening either pane cannot inherit an old conversation. Same-vendor
+panes are deliberately absent from Ask: their own CLI already owns that form of
+delegation.
+
+An agent can also run `parley ask agy "question"` while planning. That command
+submits one attributed request and waits. Agy's correlated `parley answer`
+becomes stdout from the waiting command, allowing the original planning turn to
+continue automatically. `parley relay` submits an uncorrelated handoff,
+`parley paste` deliberately does not, and a target can have only one unanswered
+consultation.
+
+### One protocol across vendors
+
+Parley owns one versioned relay protocol and injects it automatically whenever
+it starts Claude, Codex, or Agy. Claude gets an appended system prompt, Codex
+gets developer instructions, and Agy gets the same bytes as a rule in a
+Parley-owned added workspace. The pane records the injected version; a surviving
+older process is visibly marked **RESTART FOR PROTOCOL** rather than assumed to
+have learned changed command semantics.
+
+### Cross-vendor diff review
 
 Take the uncommitted diff from a pane's folder and relay it to a counterpart
-seat for review, attributed and unsent.
+seat for review, attributed and submitted by the human menu action.
 
     @claude produced the following uncommitted changes on branch feat/auth:
     <unified diff>
@@ -37,9 +66,9 @@ Every part exists already: pane identity, folder paths, `capture()` for git, the
 relay for delivery. Single-vendor tools cannot do it without API keys, which
 this app does not have and will not add.
 
-## Next, if that lands well
+## Next, if those land well
 
-### 2. `parley room append` and `parley broadcast`
+### 1. `parley room append` and `parley broadcast`
 
 Extend the PATH shim so a script inside a pane can put text into a room, or into
 every agent pane at once.
@@ -47,7 +76,8 @@ every agent pane at once.
     npm test 2>&1 | parley room append
     parley broadcast "rebuild done, port 3000"
 
-Cheap, because the shim and the loopback relay are built and proven. A test
+Cheap, because the shim and the authenticated Unix-socket relay are built and
+proven. A test
 watcher piping failures into a room is a genuinely good workflow.
 
 **Caution:** broadcast is one pane reaching every other, which is a
@@ -56,7 +86,7 @@ it, and that rule was found bypassable on 20 August — a payload could splice a
 closing paste marker out of the sanitiser's own leftovers. Fixed, but the path
 deserves adversarial testing before it fans out to N panes instead of one.
 
-### 3. Template variables in skills — `{{selection}}`, `{{file}}`, `{{branch}}`
+### 2. Template variables in skills — `{{selection}}`, `{{file}}`, `{{branch}}`
 
 Skills are static strings. Interpolating the terminal selection, the active
 file, or the current branch is cheap and immediately useful.
@@ -115,4 +145,4 @@ changed.
 | API keys, direct cloud endpoints | Parley drives authenticated local CLIs only. No key ever enters this app. |
 | Autonomous background orchestration | Loops and foremen were deliberately retired in favour of human-directed steering. |
 | Cloud sync, telemetry | Everything stays in local SQLite. Nothing leaves the machine. |
-| Auto-submitting agent relays | An agent that could press Enter in another agent's session is a prompt-injection channel with a command runner on the far end. |
+| Unbounded relay fan-out | Relay submits to one explicit authenticated cross-vendor target; broadcast remains out because it would amplify prompt injection across every pane. |

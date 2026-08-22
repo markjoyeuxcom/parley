@@ -80,6 +80,13 @@ function basenameOf(path: string): string {
 let slotSeq = 0
 const mintSlotId = (): Id => `slot-${Date.now().toString(36)}-${(slotSeq += 1)}`
 
+interface Consultation {
+  requesterSlotId: Id
+  requesterPaneId: Id
+  consultantSlotId: Id
+  consultantPaneId: Id
+}
+
 /**
  * The Grid: up to sixteen live terminals in a splittable layout.
  *
@@ -112,6 +119,14 @@ export function GridSurface(): ReactNode {
   /** Keyed by folder — panes sharing a cwd share one identity line. */
   const [identities, setIdentities] = useState<Record<string, PaneIdentity | null>>({})
   const [unreadSlots, setUnreadSlots] = useState<Set<Id>>(new Set())
+  /**
+   * One outstanding human-started ask per receiving pane.
+   *
+   * Pane ids as well as slot ids are kept deliberately. A slot survives a
+   * process being replaced, and a fresh Codex in the same position must not
+   * inherit an old Claude's return route.
+   */
+  const [consultations, setConsultations] = useState<Record<Id, Consultation>>({})
   const draggingSkill = useRef<Skill | null>(null)
 
   const slotCount = countSlots(layout)
@@ -655,35 +670,41 @@ export function GridSurface(): ReactNode {
     liveSlots
       .filter((slotId) => slotId !== fromSlotId)
       .filter((slotId) => {
+        const from = slots[fromSlotId]
         const slot = slots[slotId]
         if (!slot?.paneId) return false
+        // Vendor-native delegation already exists. Ask is the bridge Parley
+        // uniquely supplies, so agent panes only offer other vendors. A shell
+        // may still relay selected output to any agent as it always could.
+        if (from?.kind !== 'shell' && slot.kind === from?.kind) return false
         return canReceiveRelay(slot.kind, paneById.get(slot.paneId)?.status)
       })
       .map((slotId) => ({ slotId, name: paneName(slotId) }))
 
-  /**
-   * Hand what one CLI said to another.
-   *
-   * The loop this app exists for, which people run by hand: read Claude's
-   * answer, copy it, paste it into Codex, paste the reply back. Both halves
-   * were already here — every terminal registers a selection accessor, and
-   * `pane.paste` types into a running session — and nothing joined them.
-   *
-   * Attribution travels with the text because the receiving CLI has no idea
-   * where it came from, and an unattributed wall of someone else's reasoning
-   * reads as the user's own words.
-   */
+  /** The still-live requester this pane owes an answer to, if there is one. */
+  const consultationFor = (consultantSlotId: Id): Consultation | null => {
+    const consultant = slots[consultantSlotId]
+    if (!consultant?.paneId) return null
+    const consultation = consultations[consultant.paneId]
+    if (!consultation || consultation.consultantSlotId !== consultantSlotId) return null
+    const requester = slots[consultation.requesterSlotId]
+    if (requester?.paneId !== consultation.requesterPaneId) return null
+    if (!canReceiveRelay(requester.kind, paneById.get(requester.paneId)?.status)) return null
+    return consultation
+  }
+
   /**
    * Hands a pane's uncommitted work to a counterpart for review.
    *
-   * The same loop as `relay`, one step earlier: rather than copying what a CLI
+   * The same loop as Ask, one step earlier: rather than copying what a CLI
    * *said*, this sends what it *did*. A pane already knows its folder, so the
    * diff is git's answer about that folder — no tracking of which agent touched
    * what, which would be wrong the moment somebody edits a file themselves.
    *
    * The wording lives in shared/review.ts so a diff cannot be sent without the
-   * ask that makes it a review rather than a dump. Pasted, never submitted —
-   * the person in the receiving pane presses Enter, as with every other relay.
+   * ask that makes it a review rather than a dump. The menu action is the
+   * person's decision, so the bracketed paste is submitted like every other
+   * human-initiated handoff.
    */
   const relayChanges = async (fromSlotId: Id, toSlotId: Id): Promise<void> => {
     const from = slots[fromSlotId]
@@ -704,6 +725,7 @@ export function GridSurface(): ReactNode {
       api.pastePane(to.paneId as Id, reviewRequest(paneName(fromSlotId), work)),
     )
     if (!sent) return
+    termAccess(to.paneId)?.markSubmitted?.()
     setFocusedSlot(toSlotId)
     notify(
       'info',
@@ -713,30 +735,85 @@ export function GridSurface(): ReactNode {
     )
   }
 
-  const relay = async (fromSlotId: Id, toSlotId: Id): Promise<void> => {
+  const relayBody = (fromSlotId: Id): string => {
     const from = slots[fromSlotId]
-    const to = slots[toSlotId]
     const selection = from?.paneId ? paneSelection(from.paneId) : ''
     // A selection wins when there is one: choosing text is somebody saying
     // "this part", and sending the whole answer instead would override them.
     // A selection is dragged across the same boxes the buffer is drawn in, so
     // it needs the same frame taken off — and the same bound, since the IPC
     // schema refuses an oversized payload and a whole scrollback can exceed it.
-    const body = selection.trim()
+    return selection.trim()
       ? cleanRelayText(selection.split('\n'))
       : (from?.paneId ? termAccess(from.paneId)?.lastOutput() ?? '' : '')
+  }
+
+  /**
+   * Starts the human's cross-vendor consultation and remembers the way back.
+   *
+   * The loop this app exists for, which people run by hand: read Claude's
+   * question, copy it into Codex, paste the reply back. This is both halves:
+   * `pane.paste` submits the ask, the receiving pane's marker starts a clean
+   * answer boundary, and the relationship gives that answer a named route
+   * home. Attribution travels on both legs because neither CLI knows the other
+   * one exists.
+   */
+  const ask = async (fromSlotId: Id, toSlotId: Id): Promise<void> => {
+    const from = slots[fromSlotId]
+    const to = slots[toSlotId]
+    const body = relayBody(fromSlotId)
     if (!body.trim() || !to?.paneId) {
       notify('warn', 'Nothing to relay from that pane yet.')
       return
     }
-    const relayed = `${paneName(fromSlotId)} said:\n\n${body.trim()}`
+    const relayed = `${paneName(fromSlotId)} asked:\n\n${body.trim()}`
     const sent = await attempt(() => api.pastePane(to.paneId as Id, relayed))
     if (!sent) return
+    termAccess(to.paneId)?.markSubmitted?.()
     // Consumed. The next relay from this pane should offer its next answer,
     // not the selection that has already been sent.
     if (from?.paneId) forgetSelection(from.paneId)
+    if (from?.paneId) {
+      const consultation: Consultation = {
+        requesterSlotId: fromSlotId,
+        requesterPaneId: from.paneId,
+        consultantSlotId: toSlotId,
+        consultantPaneId: to.paneId,
+      }
+      setConsultations((current) => ({ ...current, [to.paneId as Id]: consultation }))
+    }
     setFocusedSlot(toSlotId)
-    notify('info', `Relayed to ${paneName(toSlotId)}.`)
+    notify('info', `Asked ${paneName(toSlotId)}.`)
+  }
+
+  /** Completes one consultation by carrying the counterpart's answer home. */
+  const returnAnswer = async (consultation: Consultation): Promise<void> => {
+    const from = slots[consultation.consultantSlotId]
+    const to = slots[consultation.requesterSlotId]
+    if (from?.paneId !== consultation.consultantPaneId || to?.paneId !== consultation.requesterPaneId) {
+      notify('warn', 'One of those panes is no longer open.')
+      return
+    }
+    const body = relayBody(consultation.consultantSlotId)
+    if (!body.trim()) {
+      notify('warn', 'That counterpart has not answered yet.')
+      return
+    }
+    const relayed = `${paneName(consultation.consultantSlotId)} answered:\n\n${body.trim()}`
+    const sent = await attempt(() => api.pastePane(to.paneId as Id, relayed))
+    if (!sent) return
+    termAccess(to.paneId)?.markSubmitted?.()
+    forgetSelection(from.paneId)
+    setConsultations((current) => {
+      const next = { ...current }
+      delete next[consultation.consultantPaneId]
+      return next
+    })
+    setFocusedSlot(consultation.requesterSlotId)
+    notify(
+      'info',
+      `Returned ${paneName(consultation.consultantSlotId)}'s answer to ${paneName(consultation.requesterSlotId)}.`,
+    )
   }
 
   const runSkillOnSlot = async (slotId: Id, skill: Skill): Promise<void> => {
@@ -1098,13 +1175,20 @@ export function GridSurface(): ReactNode {
                             const term = termAccess(slot.paneId as Id)
                             const selection = paneSelection(slot.paneId as Id)
                             const output = term?.lastOutput() ?? ''
+                            const consultation = consultationFor(id)
                             const state = relayState({
                               targets: relayTargets(id).length,
                               selection,
                               lastOutput: output,
                             })
                             if (state === 'no-targets') {
-                              return <div className="menu__note">Open another agent pane to relay into.</div>
+                              return (
+                                <div className="menu__note">
+                                  {slot.kind === 'shell'
+                                    ? 'Open an agent pane to relay into.'
+                                    : 'Open a different vendor\u2019s agent pane to ask.'}
+                                </div>
+                              )
                             }
                             if (state === 'nothing') {
                               // ⌥ is named because a CLI that claims the mouse
@@ -1113,13 +1197,17 @@ export function GridSurface(): ReactNode {
                               // text and looks selected.
                               return (
                                 <div className="menu__note">
-                                  Nothing to relay yet. Ask this CLI something, or select text —
-                                  hold ⌥ while dragging if it captures the mouse.
+                                  {consultation
+                                    ? `Waiting for ${paneName(id)} to answer ${paneName(consultation.requesterSlotId)}.`
+                                    : 'Nothing to relay yet. Ask this CLI something, or select text — hold ⌥ while dragging if it captures the mouse.'}
                                 </div>
                               )
                             }
                             const sending = state === 'selection' ? selection : output
                             const label = state === 'selection' ? 'selection' : 'last answer'
+                            const targets = relayTargets(id).filter(
+                              (target) => target.slotId !== consultation?.requesterSlotId,
+                            )
                             return (
                               <>
                                 {/*
@@ -1133,15 +1221,29 @@ export function GridSurface(): ReactNode {
                                   “{sending.trim().replace(/\s+/g, ' ').slice(0, 60)}
                                   {sending.trim().length > 60 ? '…' : ''}”
                                 </div>
-                                {relayTargets(id).map((target) => (
+                                {consultation ? (
+                                  <MenuItem
+                                    onClick={() => {
+                                      close()
+                                      void returnAnswer(consultation)
+                                    }}
+                                  >
+                                    Return answer to {paneName(consultation.requesterSlotId)}
+                                  </MenuItem>
+                                ) : null}
+                                {targets.map((target) => (
                                   <MenuItem
                                     key={target.slotId}
                                     onClick={() => {
                                       close()
-                                      void relay(id, target.slotId)
+                                      void ask(id, target.slotId)
                                     }}
                                   >
-                                    Send {label} to {target.name}
+                                    {slot.kind === 'shell'
+                                      ? `Send ${label} to ${target.name}`
+                                      : state === 'selection'
+                                        ? `Ask ${target.name} about selection`
+                                        : `Ask ${target.name} with last answer`}
                                   </MenuItem>
                                 ))}
                               </>

@@ -122,6 +122,31 @@ describe('interactive prompt submission', () => {
     expect(writes[1]).toBe('\r')
   })
 
+  it('reports a pasted prompt submitted only after Enter is written', async () => {
+    // The renderer moves its "last answer" marker when pane.paste completes.
+    // Resolving while only the body has landed puts that marker before a
+    // multiline prompt and lets part of the question leak into the answer.
+    vi.useFakeTimers()
+    const writes: string[] = []
+    const submitter = new PanePromptSubmitter((_, data) => writes.push(data), 200)
+    let completed = false
+
+    const submission = Promise.resolve(submitter.paste('pane-1', 'question')).then(() => {
+      completed = true
+    })
+    await Promise.resolve()
+    expect(completed).toBe(false)
+
+    vi.advanceTimersByTime(199)
+    await Promise.resolve()
+    expect(completed).toBe(false)
+
+    vi.advanceTimersByTime(1)
+    await submission
+    expect(writes).toEqual(['\u001b[200~question\u001b[201~', '\r'])
+    expect(completed).toBe(true)
+  })
+
   it('normalises carriage returns so a paste cannot submit early', () => {
     // A CR inside pasted content is Enter as far as the TUI is concerned, and
     // content copied from a terminal is full of them.
@@ -273,6 +298,19 @@ describe('interactive prompt submission', () => {
     vi.advanceTimersByTime(200)
 
     expect(writes).toEqual(['assignment'])
+  })
+
+  it('does not report a pasted prompt submitted after the pane has exited', async () => {
+    vi.useFakeTimers()
+    const writes: string[] = []
+    const submitter = new PanePromptSubmitter((_, data) => writes.push(data), 200)
+
+    const submission = submitter.paste('pane-1', 'question')
+    submitter.forget('pane-1')
+
+    await expect(submission).rejects.toThrow(/closed before the prompt was submitted/)
+    vi.advanceTimersByTime(200)
+    expect(writes).toEqual(['\u001b[200~question\u001b[201~'])
   })
 })
 

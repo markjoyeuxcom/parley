@@ -1,0 +1,56 @@
+import AppKit
+import SwiftUI
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // A SwiftPM executable has no app bundle to declare a foreground
+        // activation policy. Promote it explicitly during development so its
+        // WindowGroup is visible and behaves like a normal macOS application.
+        NSApp.setActivationPolicy(.regular)
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            NSApp.windows.first?.makeKeyAndOrderFront(nil)
+        }
+    }
+}
+
+@main
+struct ParleyNativeApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var model = AppModel()
+
+    var body: some Scene {
+        WindowGroup("Parley") {
+            ContentView(model: model)
+        }
+        .defaultSize(width: 1_300, height: 820)
+        .windowStyle(.hiddenTitleBar)
+        .commands {
+            CommandMenu("Workspace") {
+                Button("Open Workspace…") { model.createWorkspace() }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("Choose Workspace Folder…") { model.chooseFolder() }
+                    .disabled(model.activeWorkspace == nil)
+            }
+            CommandMenu("Pane") {
+                Button("New Claude Pane") { model.create(.claude, direction: .horizontal) }
+                    .keyboardShortcut("1", modifiers: [.command, .shift])
+                Button("New Codex Pane") { model.create(.codex, direction: .horizontal) }
+                    .keyboardShortcut("2", modifiers: [.command, .shift])
+                Button("New Agy Pane") { model.create(.agy, direction: .horizontal) }
+                    .keyboardShortcut("3", modifiers: [.command, .shift])
+                Button("New Shell Pane") { model.create(.shell, direction: .horizontal) }
+                    .keyboardShortcut("4", modifiers: [.command, .shift])
+                Button("New Copilot Pane") { model.create(.copilot, direction: .horizontal) }
+                    .keyboardShortcut("5", modifiers: [.command, .shift])
+                Divider()
+                Button("Return Answer") { model.returnAnswer() }
+                    .keyboardShortcut(.return, modifiers: [.command, .shift])
+                    .disabled(!model.canReturn)
+                Button("Zoom Active Pane") { model.zoom() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                Button("Balance Panes") { model.balance() }
+            }
+        }
+    }
+}
