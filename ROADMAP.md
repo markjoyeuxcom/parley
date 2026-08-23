@@ -320,7 +320,11 @@ effortless without becoming task boards.
     state and folder accessibility metadata.
   - [ ] Audit the remaining toolbar, activity, Status Center and command
     palette controls with VoiceOver.
-- Improve narrow-window behaviour and long-name truncation.
+- [x] Improve narrow-window behaviour and long-name truncation. The main
+  workbench now reaches a 720-point native minimum, swaps its full toolbar for
+  a compact New/Ask/Actions surface without dropping capabilities, adapts the
+  activity strip, and middle-truncates workspace, pane and context names while
+  retaining their full help and accessibility text.
 - Provide clear empty, exited, disconnected, and protocol-stale states.
 - Remove redundant tmux chrome once the native controls cover it reliably.
 

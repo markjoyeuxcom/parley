@@ -79,6 +79,11 @@ user's default tmux server. The tmux session is named `parley`.
   Control-Shift-Tab move between workspace tabs; Control-Option-Right/Left
   Arrow move between panes in the current workspace. The primary pane and
   workspace controls expose state, folder and action hints to accessibility.
+- The main workbench adapts down to 720 points wide. At compact widths New and
+  Ask remain direct controls while Review, Return, waiting work, zoom and
+  balance move into Actions; the complete toolbar returns automatically when
+  room permits. Workspace, pane, activity and context names truncate in the
+  middle without changing the full names used by menus, help or routing.
 - Saved layouts live in the owner-only `workspace-layouts.json`, never in tmux.
   They contain no pane/window ids. Restored shells start; restored agent slots
   remain stopped until a person chooses Start.

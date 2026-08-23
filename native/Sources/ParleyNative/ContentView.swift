@@ -9,7 +9,7 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 290)
+                .navigationSplitViewColumnWidth(min: 170, ideal: 220, max: 290)
         } detail: {
             VStack(spacing: 0) {
                 workspaceTabs
@@ -23,7 +23,7 @@ struct ContentView: View {
                 terminal
             }
         }
-        .frame(minWidth: 1_040, minHeight: 680)
+        .frame(minWidth: 720, minHeight: 680)
         .onReceive(refresh) { _ in model.refreshQuietly() }
         .sheet(isPresented: $model.commandPalettePresented) {
             CommandPaletteView(model: model)
@@ -153,6 +153,7 @@ struct ContentView: View {
                     .font(.system(size: 10))
                 Text(name)
                     .lineLimit(1)
+                    .truncationMode(.middle)
                 Spacer(minLength: 4)
                 if isActive {
                     Image(systemName: "checkmark")
@@ -199,6 +200,8 @@ struct ContentView: View {
                                     .font(.system(size: 10))
                                 Text(workspace.name)
                                     .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .frame(maxWidth: 150)
                                 let waiting = model.waitingCount(for: workspace.id)
                                 if waiting > 0 {
                                     Label("\(waiting)", systemImage: "clock")
@@ -306,6 +309,17 @@ struct ContentView: View {
     }
 
     private var toolbar: some View {
+        ViewThatFits(in: .horizontal) {
+            wideToolbar
+            compactToolbar
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .frame(height: 42)
+    }
+
+    private var wideToolbar: some View {
         HStack(spacing: 8) {
             paneMenu(kind: .claude)
             paneMenu(kind: .codex)
@@ -313,103 +327,17 @@ struct ContentView: View {
             paneMenu(kind: .copilot)
             paneMenu(kind: .shell)
             Divider().frame(height: 18)
-            Menu {
-                if model.askTargets.isEmpty {
-                    Text("Focus an agent pane with another vendor open")
-                } else {
-                    if !model.localAskTargets.isEmpty {
-                        Section("This Workspace") {
-                            ForEach(model.localAskTargets) { target in
-                                Button("Ask \(target.displayName)") { model.ask(target) }
-                            }
-                        }
-                    }
-                    ForEach(model.otherWorkspaceAskGroups) { group in
-                        Menu(group.workspace.name) {
-                            ForEach(group.panes) { target in
-                                Button("Ask \(target.displayName)") { model.ask(target) }
-                            }
-                        }
-                    }
-                }
-            } label: {
-                Label("Ask", systemImage: "arrow.turn.up.right")
-            }
-            .disabled(model.askTargets.isEmpty)
+            askMenu
+            reviewMenu
+            returnMenu
 
-            Menu {
-                Menu("Current Changes") {
-                    reviewTargetItems { model.reviewChanges(with: $0) }
-                }
-                Menu("Plan or File…") {
-                    reviewTargetItems { model.reviewFile(with: $0) }
-                }
-            } label: {
-                Label("Review", systemImage: "doc.text.magnifyingglass")
-            }
-            .disabled(model.askTargets.isEmpty)
-            .help("Preview repository changes or a selected file, then ask another vendor to review it")
-
-            Menu {
-                ForEach(model.activePaneConsultations) { consultation in
-                    Button("Answer \(consultation.sourceName)") {
-                        model.returnConsultation(consultation)
-                    }
-                }
-                if let legacyTarget = model.legacyReturnTarget {
-                    if !model.activePaneConsultations.isEmpty { Divider() }
-                    Button("Return to \(legacyTarget.displayName)") { model.returnAnswer() }
-                }
-            } label: {
-                Label("Return", systemImage: "arrow.turn.down.left")
-            }
-            .disabled(!model.canReturn)
-
-            if !model.consultations.isEmpty || !model.activeDelegations.isEmpty {
+            if hasWaitingWork {
                 Divider().frame(height: 18)
-                Menu {
-                    if !model.consultations.isEmpty {
-                        Section("Questions") {
-                            ForEach(model.consultations) { consultation in
-                                Button(
-                                    "Cancel \(consultation.sourceName) → \(consultation.targetName)…",
-                                    role: .destructive
-                                ) {
-                                    model.cancel(consultation)
-                                }
-                            }
-                        }
-                    }
-                    if !model.activeDelegations.isEmpty {
-                        Section("Delegated Work") {
-                            ForEach(model.activeDelegations) { handoff in
-                                Menu("\(handoff.sourceName) → \(handoff.targetName)") {
-                                    Text(activitySubject(handoff.text))
-                                    Divider()
-                                    Button("Focus \(handoff.sourceName)") { model.focus(handoff, target: false) }
-                                        .disabled(!model.canFocus(handoff.sourcePaneID))
-                                    Button("Focus \(handoff.targetName)") { model.focus(handoff, target: true) }
-                                        .disabled(!model.canFocus(handoff.targetPaneID))
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    Label(
-                        "Waiting \(model.consultations.count + model.activeDelegations.count)",
-                        systemImage: "clock"
-                    )
-                }
-                .help("Inspect questions and delegated work awaiting a result")
+                waitingMenu
             }
 
             Spacer()
-            if let active = model.activePane {
-                Text("\(active.displayName) · \(URL(fileURLWithPath: active.cwd).lastPathComponent)")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            activePaneContext(maxWidth: 240)
             Button(action: model.zoom) { Image(systemName: "arrow.up.left.and.arrow.down.right") }
                 .help("Zoom active pane")
             Button(action: model.balance) { Image(systemName: "rectangle.grid.2x2") }
@@ -422,13 +350,178 @@ struct ContentView: View {
             }
             .help("Open Status Center")
         }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .padding(.horizontal, 12)
-        .frame(height: 42)
+    }
+
+    private var compactToolbar: some View {
+        HStack(spacing: 8) {
+            newPaneMenu
+            askMenu
+            compactActionsMenu
+            Spacer(minLength: 6)
+            activePaneContext(maxWidth: 130)
+            Button {
+                openWindow(id: "status-center")
+            } label: {
+                Image(systemName: "waveform.path.ecg")
+            }
+            .accessibilityLabel("Open Status Center")
+            .help("Open Status Center")
+        }
+    }
+
+    private var newPaneMenu: some View {
+        Menu {
+            ForEach(PaneKind.allCases, id: \.rawValue) { kind in
+                Menu(kind.label) {
+                    paneCreationItems(kind: kind)
+                }
+            }
+        } label: {
+            Label("New", systemImage: "plus")
+        }
+        .help("Open a new agent or shell pane")
+    }
+
+    private var askMenu: some View {
+        Menu {
+            if model.askTargets.isEmpty {
+                Text("Focus an agent pane with another vendor open")
+            } else {
+                if !model.localAskTargets.isEmpty {
+                    Section("This Workspace") {
+                        ForEach(model.localAskTargets) { target in
+                            Button("Ask \(target.displayName)") { model.ask(target) }
+                        }
+                    }
+                }
+                ForEach(model.otherWorkspaceAskGroups) { group in
+                    Menu(group.workspace.name) {
+                        ForEach(group.panes) { target in
+                            Button("Ask \(target.displayName)") { model.ask(target) }
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label("Ask", systemImage: "arrow.turn.up.right")
+        }
+        .disabled(model.askTargets.isEmpty)
+    }
+
+    private var reviewMenu: some View {
+        Menu {
+            Menu("Current Changes") {
+                reviewTargetItems { model.reviewChanges(with: $0) }
+            }
+            Menu("Plan or File…") {
+                reviewTargetItems { model.reviewFile(with: $0) }
+            }
+        } label: {
+            Label("Review", systemImage: "doc.text.magnifyingglass")
+        }
+        .disabled(model.askTargets.isEmpty)
+        .help("Preview repository changes or a selected file, then ask another vendor to review it")
+    }
+
+    private var returnMenu: some View {
+        Menu {
+            ForEach(model.activePaneConsultations) { consultation in
+                Button("Answer \(consultation.sourceName)") {
+                    model.returnConsultation(consultation)
+                }
+            }
+            if let legacyTarget = model.legacyReturnTarget {
+                if !model.activePaneConsultations.isEmpty { Divider() }
+                Button("Return to \(legacyTarget.displayName)") { model.returnAnswer() }
+            }
+        } label: {
+            Label("Return", systemImage: "arrow.turn.down.left")
+        }
+        .disabled(!model.canReturn)
+    }
+
+    private var compactActionsMenu: some View {
+        Menu {
+            reviewMenu
+            returnMenu
+            if hasWaitingWork {
+                waitingMenu
+            }
+            Divider()
+            Button("Zoom Active Pane", action: model.zoom)
+            Button("Balance Panes", action: model.balance)
+        } label: {
+            Label("Actions", systemImage: "ellipsis.circle")
+        }
+    }
+
+    private var hasWaitingWork: Bool {
+        !model.consultations.isEmpty || !model.activeDelegations.isEmpty
+    }
+
+    private var waitingMenu: some View {
+        Menu {
+            if !model.consultations.isEmpty {
+                Section("Questions") {
+                    ForEach(model.consultations) { consultation in
+                        Button(
+                            "Cancel \(consultation.sourceName) → \(consultation.targetName)…",
+                            role: .destructive
+                        ) {
+                            model.cancel(consultation)
+                        }
+                    }
+                }
+            }
+            if !model.activeDelegations.isEmpty {
+                Section("Delegated Work") {
+                    ForEach(model.activeDelegations) { handoff in
+                        Menu("\(handoff.sourceName) → \(handoff.targetName)") {
+                            Text(activitySubject(handoff.text))
+                            Divider()
+                            Button("Focus \(handoff.sourceName)") { model.focus(handoff, target: false) }
+                                .disabled(!model.canFocus(handoff.sourcePaneID))
+                            Button("Focus \(handoff.targetName)") { model.focus(handoff, target: true) }
+                                .disabled(!model.canFocus(handoff.targetPaneID))
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label(
+                "Waiting \(model.consultations.count + model.activeDelegations.count)",
+                systemImage: "clock"
+            )
+        }
+        .help("Inspect questions and delegated work awaiting a result")
+    }
+
+    @ViewBuilder
+    private func activePaneContext(maxWidth: CGFloat) -> some View {
+        if let active = model.activePane {
+            Text("\(active.displayName) · \(URL(fileURLWithPath: active.cwd).lastPathComponent)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: maxWidth)
+                .help("\(active.displayName) · \(active.cwd)")
+        }
     }
 
     private func activityStrip(_ handoff: RelayHandoff) -> some View {
+        ViewThatFits(in: .horizontal) {
+            wideActivityStrip(handoff)
+            compactActivityStrip(handoff)
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .frame(height: 31)
+        .background(Color.secondary.opacity(0.045))
+    }
+
+    private func wideActivityStrip(_ handoff: RelayHandoff) -> some View {
         HStack(spacing: 7) {
             Text("ACTIVITY")
                 .font(.system(size: 9, weight: .semibold))
@@ -463,62 +556,94 @@ struct ContentView: View {
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(activityColor(handoff))
 
+            activityHistoryMenu
+        }
+    }
+
+    private func compactActivityStrip(_ handoff: RelayHandoff) -> some View {
+        HStack(spacing: 7) {
+            Text("ACTIVITY")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+
             Menu {
-                ForEach(Array(model.workspaceHandoffs.prefix(12))) { item in
-                    Menu("\(item.sourceName) → \(item.targetName) · \(item.state.rawValue)") {
-                        Text(activitySubject(item.text))
-                        if (item.state == .failed || item.state == .interrupted),
-                           let failure = item.transitions.last?.detail,
-                           !failure.isEmpty {
-                            Text(failure)
-                        }
-                        if let result = item.resultText, !result.isEmpty,
-                           item.state == .completed || item.kind == .delegate {
-                            Divider()
-                            Text(result)
-                            if item.hasUnreadResult {
-                                Button("Mark Result Read") { model.markRead(item) }
-                            }
-                        }
+                Text(activitySubject(handoff.text))
+                Divider()
+                Button("Focus \(handoff.sourceName)") { model.focus(handoff, target: false) }
+                    .disabled(!model.canFocus(handoff.sourcePaneID))
+                Button("Focus \(handoff.targetName)") { model.focus(handoff, target: true) }
+                    .disabled(!model.canFocus(handoff.targetPaneID))
+            } label: {
+                Text("\(handoff.sourceName) → \(handoff.targetName)")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 150)
+            }
+            .help(activitySubject(handoff.text))
+
+            Spacer(minLength: 6)
+
+            Text(activityStateLabel(handoff))
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(activityColor(handoff))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+
+            activityHistoryMenu
+        }
+    }
+
+    private var activityHistoryMenu: some View {
+        Menu {
+            ForEach(Array(model.workspaceHandoffs.prefix(12))) { item in
+                Menu("\(item.sourceName) → \(item.targetName) · \(item.state.rawValue)") {
+                    Text(activitySubject(item.text))
+                    if (item.state == .failed || item.state == .interrupted),
+                       let failure = item.transitions.last?.detail,
+                       !failure.isEmpty {
+                        Text(failure)
+                    }
+                    if let result = item.resultText, !result.isEmpty,
+                       item.state == .completed || item.kind == .delegate {
                         Divider()
-                        Button("Focus \(item.sourceName)") { model.focus(item, target: false) }
-                            .disabled(!model.canFocus(item.sourcePaneID))
-                        Button("Focus \(item.targetName)") { model.focus(item, target: true) }
-                            .disabled(!model.canFocus(item.targetPaneID))
-                        if item.attention != nil {
-                            Divider()
-                            Button(attentionActionLabel(item)) { model.focus(item, target: true) }
-                                .disabled(!model.canFocus(item.targetPaneID))
-                        }
-                        if item.canRetrySafely {
-                            Divider()
-                            Button("Retry Original Delivery…") { model.retry(item) }
-                        } else if item.state == .failed && item.kind == .delegate {
-                            Divider()
-                            Button("Delegated work cannot be delivery-retried") {}
-                                .disabled(true)
-                        } else if item.state == .failed && item.kind != .ask {
-                            Divider()
-                            Button("Retry unavailable — delivery may have started") {}
-                                .disabled(true)
-                        }
-                        if let consultation = model.consultation(for: item) {
-                            Divider()
-                            Button("Cancel Ask…", role: .destructive) { model.cancel(consultation) }
+                        Text(result)
+                        if item.hasUnreadResult {
+                            Button("Mark Result Read") { model.markRead(item) }
                         }
                     }
+                    Divider()
+                    Button("Focus \(item.sourceName)") { model.focus(item, target: false) }
+                        .disabled(!model.canFocus(item.sourcePaneID))
+                    Button("Focus \(item.targetName)") { model.focus(item, target: true) }
+                        .disabled(!model.canFocus(item.targetPaneID))
+                    if item.attention != nil {
+                        Divider()
+                        Button(attentionActionLabel(item)) { model.focus(item, target: true) }
+                            .disabled(!model.canFocus(item.targetPaneID))
+                    }
+                    if item.canRetrySafely {
+                        Divider()
+                        Button("Retry Original Delivery…") { model.retry(item) }
+                    } else if item.state == .failed && item.kind == .delegate {
+                        Divider()
+                        Button("Delegated work cannot be delivery-retried") {}
+                            .disabled(true)
+                    } else if item.state == .failed && item.kind != .ask {
+                        Divider()
+                        Button("Retry unavailable — delivery may have started") {}
+                            .disabled(true)
+                    }
+                    if let consultation = model.consultation(for: item) {
+                        Divider()
+                        Button("Cancel Ask…", role: .destructive) { model.cancel(consultation) }
+                    }
                 }
-            } label: {
-                Image(systemName: "clock.arrow.circlepath")
             }
-            .menuIndicator(.hidden)
-            .help("Recent collaboration in this workspace")
+        } label: {
+            Image(systemName: "clock.arrow.circlepath")
         }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .padding(.horizontal, 12)
-        .frame(height: 31)
-        .background(Color.secondary.opacity(0.045))
+        .menuIndicator(.hidden)
+        .help("Recent collaboration in this workspace")
     }
 
     private func activitySubject(_ text: String) -> String {
@@ -588,21 +713,26 @@ struct ContentView: View {
 
     private func paneMenu(kind: PaneKind) -> some View {
         Menu {
-            Section("Workspace Folder") {
-                Button("Split Right") { model.create(kind, direction: .horizontal) }
-                Button("Split Below") { model.create(kind, direction: .vertical) }
-            }
-            Divider()
-            Section("Another Folder") {
-                Button("Split Right in Folder…") {
-                    model.createInChosenFolder(kind, direction: .horizontal)
-                }
-                Button("Split Below in Folder…") {
-                    model.createInChosenFolder(kind, direction: .vertical)
-                }
-            }
+            paneCreationItems(kind: kind)
         } label: {
             Label(kind.label, systemImage: kind == .shell ? "terminal" : "bubble.left.and.text.bubble.right")
+        }
+    }
+
+    @ViewBuilder
+    private func paneCreationItems(kind: PaneKind) -> some View {
+        Section("Workspace Folder") {
+            Button("Split Right") { model.create(kind, direction: .horizontal) }
+            Button("Split Below") { model.create(kind, direction: .vertical) }
+        }
+        Divider()
+        Section("Another Folder") {
+            Button("Split Right in Folder…") {
+                model.createInChosenFolder(kind, direction: .horizontal)
+            }
+            Button("Split Below in Folder…") {
+                model.createInChosenFolder(kind, direction: .vertical)
+            }
         }
     }
 
@@ -639,7 +769,11 @@ private struct PaneRow: View {
                 .frame(width: 5, height: 28)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(pane.displayName).font(.system(size: 12, weight: .medium))
+                    Text(pane.displayName)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .layoutPriority(1)
                     if pane.returnToPaneID != nil || awaitingAnswerCount > 0 {
                         Text(awaitingAnswerCount > 1 ? "RETURN \(awaitingAnswerCount)" : "RETURN")
                             .font(.system(size: 8, weight: .bold))
