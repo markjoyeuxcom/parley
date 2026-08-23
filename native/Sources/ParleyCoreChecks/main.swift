@@ -220,6 +220,47 @@ private func checkMenuTrackingRefreshPolicy() throws {
     )
 }
 
+private func checkInAppHelpGuideCoverage() throws {
+    let topics = ParleyHelpGuide.topics
+    try expect(topics.count >= 8, "the in-app guide is not detailed enough for Parley's primary workflows")
+    try expect(Set(topics.map(\.id)).count == topics.count, "the in-app guide contains duplicate topic ids")
+    try expect(
+        topics.allSatisfy { !$0.title.isEmpty && !$0.summary.isEmpty && !$0.sections.isEmpty },
+        "an in-app help topic is missing its title, summary, or detailed sections"
+    )
+    try expect(
+        topics.flatMap(\.sections).allSatisfy { !$0.title.isEmpty && (!$0.paragraphs.isEmpty || !$0.items.isEmpty || !$0.commands.isEmpty) },
+        "an in-app help section has no useful content"
+    )
+
+    let searchable = topics.map(\.searchableText).joined(separator: "\n").lowercased()
+    for command in [
+        "parley ask", "parley answer", "parley relay", "parley paste",
+        "parley ask-many", "parley delegate", "parley status", "parley wait",
+        "parley done", "parley fail", "parley cancel",
+    ] {
+        try expect(searchable.contains(command), "the in-app guide omitted \(command)")
+    }
+    for concept in [
+        "workspace lead", "automation policy", "permission", "status center",
+        "saved layout", "command palette", "subscription",
+    ] {
+        try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
+    }
+    try expect(
+        ParleyHelpGuide.matching("ask many independent").map(\.id) == ["coordination"],
+        "help search did not narrow multiple literal terms to the relevant topic"
+    )
+    try expect(ParleyHelpGuide.matching("no-such-help-term").isEmpty, "help search returned an unrelated topic")
+    let permissions = try require(
+        topics.first(where: { $0.id == "cli-permissions" }),
+        "the in-app guide omitted CLI permission best practices"
+    ).searchableText.lowercased()
+    for guidance in ["allow once", "cat", "inside the intended repository", "narrowest access", "secret"] {
+        try expect(permissions.contains(guidance), "CLI permission help omitted \(guidance)")
+    }
+}
+
 private func checkWorkbenchStateProjection() throws {
     let readyAgent = TmuxPane(
         id: "%1",
@@ -5011,6 +5052,7 @@ let checks: [(String, () throws -> Void)] = [
     ("workbench accessibility descriptions", checkAccessibilityDescriptions),
     ("adjacent navigation order", checkAdjacentNavigationOrder),
     ("menu-safe periodic refresh", checkMenuTrackingRefreshPolicy),
+    ("detailed in-app help coverage", checkInAppHelpGuideCoverage),
     ("workbench state projection", checkWorkbenchStateProjection),
     ("exited pane retention", checkExitedPaneRetention),
     ("embedded tmux presentation", checkEmbeddedTmuxPresentation),

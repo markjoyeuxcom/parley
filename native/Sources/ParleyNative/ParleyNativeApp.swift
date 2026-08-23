@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct ParleyNativeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
         WindowGroup("Parley") {
@@ -26,6 +27,10 @@ struct ParleyNativeApp: App {
         .defaultSize(width: 1_300, height: 820)
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(replacing: .help) {
+                Button("Parley Help") { openWindow(id: "help") }
+                    .keyboardShortcut("?", modifiers: [.command])
+            }
             CommandGroup(after: .appSettings) {
                 Button("Prepare to Uninstall…") { model.prepareToUninstall() }
                     .disabled(!model.canPrepareToUninstall)
@@ -99,6 +104,12 @@ struct ParleyNativeApp: App {
             StatusCenterView(model: model)
         }
         .defaultSize(width: 1_120, height: 780)
+        .windowResizability(.contentMinSize)
+
+        Window("Parley Help", id: "help") {
+            HelpView()
+        }
+        .defaultSize(width: 980, height: 720)
         .windowResizability(.contentMinSize)
     }
 }

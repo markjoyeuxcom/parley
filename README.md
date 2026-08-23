@@ -36,6 +36,8 @@ There is no API-key mode, hosted Parley service, telemetry or remote sync.
 - A separate native Status Center with workspace filters, live handoffs, agent
   readiness, delivery receipts, returned-result acknowledgement, recovery
   actions, core health and activity.
+- A searchable native Help window covering workflows, commands, safety,
+  shortcuts and troubleshooting without leaving the app.
 - A permanent in-app recovery playbook for coordination-socket failure, missing
   vendor CLIs, stale pane protocols, exited panes and interrupted consultations;
   active cases surface the safe Reconnect, Check Again, Restart or Inspect
