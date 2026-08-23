@@ -593,6 +593,41 @@ private func checkWorkspaceContinuityState() throws {
     try expect(decoded == state, "workspace continuity state did not round-trip losslessly")
 }
 
+private func checkLegacyPreferencesMigration() throws {
+    let currentDomain = "parley-check-current-\(UUID().uuidString)"
+    let legacyDomain = "parley-check-legacy-\(UUID().uuidString)"
+    guard let defaults = UserDefaults(suiteName: currentDomain) else {
+        throw CheckFailure(description: "could not create isolated preferences")
+    }
+    defer {
+        defaults.removePersistentDomain(forName: currentDomain)
+        defaults.removePersistentDomain(forName: legacyDomain)
+    }
+
+    defaults.setPersistentDomain([
+        "recent": ["/legacy/project"],
+        "continuity": Data("legacy".utf8),
+        "unrelated": "do not copy",
+    ], forName: legacyDomain)
+    defaults.set(["/current/project"], forKey: "recent")
+
+    UserDefaultsDomainMigration.copyMissing(
+        keys: ["recent", "continuity"],
+        from: legacyDomain,
+        to: defaults
+    )
+
+    try expect(
+        defaults.stringArray(forKey: "recent") == ["/current/project"],
+        "migration replaced a preference already written by the packaged app"
+    )
+    try expect(
+        defaults.data(forKey: "continuity") == Data("legacy".utf8),
+        "migration did not preserve missing development-build continuity"
+    )
+    try expect(defaults.object(forKey: "unrelated") == nil, "migration copied an unrelated preference")
+}
+
 private func checkGitProjectContextParsing() throws {
     let clean = try require(
         GitProjectContextResolver.parseStatus("""
@@ -3699,6 +3734,27 @@ private func checkCoreStartupTimeoutReportsLastPhase() throws {
     }
 }
 
+private func checkBundledCoreServiceResolution() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("parley-bundled-core-\(UUID().uuidString)", isDirectory: true)
+    let executableDirectory = root.appendingPathComponent("Parley.app/Contents/MacOS", isDirectory: true)
+    try FileManager.default.createDirectory(at: executableDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let app = executableDirectory.appendingPathComponent("parley-native")
+    let core = executableDirectory.appendingPathComponent("parley-core-service")
+    try Data().write(to: app)
+    try Data().write(to: core)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: core.path)
+
+    let resolved = RelayCoreLauncher.resolveExecutable(
+        environment: [:],
+        bundleExecutable: app,
+        argument0: "/missing/parley-native"
+    )
+    try expect(resolved == core, "packaged UI did not resolve its sibling core service")
+}
+
 private func checkCoreServiceStopsCleanly() throws {
     let directory = try temporaryDirectory()
     let stateFile = directory.appendingPathComponent("service-state")
@@ -3877,6 +3933,7 @@ let checks: [(String, () throws -> Void)] = [
     ("existing session workspace adoption", checkExistingSessionAdoptsWorkspaceWithoutRestart),
     ("workspace lifecycle", checkWorkspaceLifecycle),
     ("workspace continuity state", checkWorkspaceContinuityState),
+    ("legacy packaged-app preferences migration", checkLegacyPreferencesMigration),
     ("Git project context parsing", checkGitProjectContextParsing),
     ("command palette search", checkCommandPaletteSearch),
     ("workbench accessibility descriptions", checkAccessibilityDescriptions),
@@ -3937,6 +3994,7 @@ let checks: [(String, () throws -> Void)] = [
     ("ask-many shim round trip", checkAskManyShimRoundTrip),
     ("child-process timeout", checkCommandTimeout),
     ("core startup timeout diagnostics", checkCoreStartupTimeoutReportsLastPhase),
+    ("bundled core service resolution", checkBundledCoreServiceResolution),
     ("core service lifecycle", checkCoreServiceStopsCleanly),
     ("vendor conformance planning", checkVendorConformancePlanning),
     ("vendor conformance planning fails closed", checkVendorConformancePlanningFailsClosed),

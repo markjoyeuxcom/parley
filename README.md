@@ -204,6 +204,7 @@ No JavaScript dependency installation is required.
 npm test
 npm run build
 npm run dev
+npm run package:mac
 npm run test:conformance:plan
 ```
 
@@ -231,5 +232,11 @@ npm run dev:restart-protocol
 That operation ends those agent conversations. A normal launch never restarts
 surviving panes.
 
-Parley is currently a working development build rather than a packaged release.
-The ordered path to a dependable daily tool is in [ROADMAP.md](ROADMAP.md).
+`npm run package:mac` produces `dist/Parley.app` plus Apple Silicon ZIP and DMG
+artifacts. Local builds use an ad-hoc hardened-runtime signature and are meant
+for verification on the building Mac; they are not notarized releases. Set
+`PARLEY_CODESIGN_IDENTITY` to a Developer ID Application identity when preparing
+a release candidate, then complete notarization and stapling before distribution.
+
+The ordered path from this locally packaged beta foundation to a dependable
+distributed tool is in [ROADMAP.md](ROADMAP.md).

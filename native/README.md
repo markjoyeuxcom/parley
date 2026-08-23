@@ -27,8 +27,22 @@ From the repository root:
 npm test
 npm run build
 npm run dev
+npm run package:mac
 npm run test:conformance:plan
 ```
+
+Packaging builds release versions of `parley-native` and
+`parley-core-service`, places them side-by-side in a standard macOS app bundle,
+signs the nested service before the hardened-runtime outer app, verifies the
+seal, and emits ZIP and DMG artifacts under `dist/`. SwiftTerm is linked into
+the UI executable. The relay command is installed from the bundled core code
+on launch, while tmux is detected as an external local dependency and always
+uses Parley's private socket and configuration.
+
+The packaged bundle uses `com.markjoyeux.parley` for its preferences. On first
+launch it copies only missing workspace-continuity values from the historical
+SwiftPM executable domain (`parley-native`), so moving from `npm run dev` does
+not discard favourites, tab order or the last selected workspace.
 
 The Node helper selects an installed macOS SDK that the active Swift compiler
 can actually import. It also moves compiler caches into a writable temporary

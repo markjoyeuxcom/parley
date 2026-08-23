@@ -349,9 +349,19 @@ team or its folder routing.
 
 ## Milestone 5 — Ship a dependable macOS beta
 
-- Produce a proper app bundle containing the Swift executable, terminal
+- [x] Produce a proper app bundle containing the Swift executable, terminal
   dependency, local coordination core, relay shim, and tmux integration.
-- Sign, harden, notarize, package, install, upgrade, and uninstall cleanly.
+  `npm run package:mac` now builds an Apple Silicon release, places the UI and
+  persistent core together in `Contents/MacOS`, links SwiftTerm into the UI,
+  carries the runtime component contract and icon, and emits both a ZIP and a
+  drag-to-Applications DMG. The relay shim remains generated owner-only from
+  the bundled implementation at launch; tmux remains an explicitly detected
+  external dependency using Parley's private socket, not an embedded copy.
+- [ ] Sign, harden, notarize, package, install, upgrade, and uninstall cleanly.
+  Local packages already use hardened runtime, sign the nested core before the
+  outer app, and pass strict code-signature and disk-image verification. A
+  Developer ID identity, Apple notarization/stapling, release-channel upgrade
+  policy and installation/uninstallation checks are still required.
 - Offer optional launch-at-login for the local core, independently of opening
   the window.
 - Add first-run detection for tmux and supported CLIs, plus authentication and

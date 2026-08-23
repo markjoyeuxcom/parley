@@ -415,15 +415,19 @@ public enum RelayCoreLauncher {
         throw RelayCoreError.serviceFailed(detail)
     }
 
-    public static func resolveExecutable(environment: [String: String]) -> URL? {
+    public static func resolveExecutable(
+        environment: [String: String],
+        bundleExecutable: URL? = Bundle.main.executableURL,
+        argument0: String = CommandLine.arguments[0]
+    ) -> URL? {
         if let override = environment["PARLEY_CORE_SERVICE"], override.hasPrefix("/") {
             let url = URL(fileURLWithPath: override)
             if FileManager.default.isExecutableFile(atPath: url.path) { return url }
         }
 
         let candidates = [
-            Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("parley-core-service"),
-            URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+            bundleExecutable?.deletingLastPathComponent().appendingPathComponent("parley-core-service"),
+            URL(fileURLWithPath: argument0).standardizedFileURL
                 .deletingLastPathComponent().appendingPathComponent("parley-core-service"),
         ].compactMap { $0 }
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }

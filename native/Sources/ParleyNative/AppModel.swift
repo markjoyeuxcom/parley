@@ -94,6 +94,16 @@ final class AppModel: ObservableObject {
         layoutStore = SavedWorkspaceLayoutStore(
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
         )
+        UserDefaultsDomainMigration.copyMissing(
+            keys: [
+                Self.recentFoldersKey,
+                Self.workspaceContinuityKey,
+                Self.notificationWorkspacesKey,
+                Self.dismissedHandoffsKey,
+            ],
+            from: "parley-native",
+            to: .standard
+        )
         recentFolders = UserDefaults.standard.stringArray(forKey: Self.recentFoldersKey) ?? []
         if let data = UserDefaults.standard.data(forKey: Self.workspaceContinuityKey),
            let decoded = try? JSONDecoder().decode(WorkspaceContinuityState.self, from: data) {
