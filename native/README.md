@@ -83,6 +83,12 @@ the new bundled service. Active Ask and Delegate work defer that handover; the
 UI retries and reports the pending state instead of interrupting it. tmux and
 vendor pane processes are outside this lifecycle.
 
+**Parley → Prepare to Uninstall…** performs the inverse lifecycle without a
+reboot. It checks authoritative Ask/Delegate state, unregisters the Service
+Management login item, atomically stops an idle core, and quits while preserving
+tmux panes and local records. If the stop is refused or fails after registration
+changed, the app restores launch-at-login and remains open.
+
 The packaged bundle uses `com.markjoyeux.parley` for its preferences. On first
 launch it copies only missing workspace-continuity values from the historical
 SwiftPM executable domain (`parley-native`), so moving from `npm run dev` does

@@ -370,8 +370,11 @@ team or its folder routing.
   core now exposes a versioned identity and an atomic idle-drain endpoint: the
   UI replaces mismatched cores automatically, defers while Ask/Delegate work is
   active, preserves queued filesystem exchanges, and never restarts tmux or a
-  vendor pane. Developer ID, notarization/stapling and the physical clean-Mac
-  gate remain required before this item is complete.
+  vendor pane. An in-app Prepare to Uninstall transaction now refuses active
+  work, disables the login item with rollback, atomically stops the core and
+  quits without requiring a reboot or deleting tmux/local records. Developer ID,
+  notarization/stapling and the physical clean-Mac gate remain required before
+  this item is complete.
 - [x] Offer optional launch-at-login for the local core, independently of
   opening the window. The packaged app contains a relocatable user LaunchAgent
   registered through `SMAppService`; it is off by default and invokes only

@@ -68,6 +68,19 @@ private final class LockedCounter: @unchecked Sendable {
     }
 }
 
+private final class LockedShutdownReasons: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [RelayCoreShutdownReason] = []
+
+    var values: [RelayCoreShutdownReason] {
+        lock.withLock { storage }
+    }
+
+    func append(_ reason: RelayCoreShutdownReason) {
+        lock.withLock { storage.append(reason) }
+    }
+}
+
 private struct RecordedSubmission: Sendable {
     let paneID: String
     let text: String
@@ -3405,7 +3418,7 @@ private func runCoreServiceFixture() throws {
                 build: $0
             )
         } ?? .resolve(infoDictionary: nil),
-        shutdownRequested: {
+        shutdownRequested: { _ in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 _ = Darwin.kill(ProcessInfo.processInfo.processIdentifier, SIGTERM)
             }
@@ -4347,13 +4360,13 @@ private func checkCoreUpgradeControlRoundTrip() throws {
         "CFBundleShortVersionString": "2.0.0",
         "CFBundleVersion": "99",
     ])
-    let shutdowns = LockedCounter()
+    let shutdowns = LockedShutdownReasons()
     let server = RelayHTTPServer(
         broker: broker,
         infoFile: directory.appendingPathComponent("relay-url"),
         controlToken: controlToken,
         identity: identity,
-        shutdownRequested: { shutdowns.increment() }
+        shutdownRequested: { shutdowns.append($0) }
     )
     try server.start()
     defer { server.stop() }
@@ -4366,7 +4379,51 @@ private func checkCoreUpgradeControlRoundTrip() throws {
     try expect(observedIdentity == identity, "core identity round trip changed its fields")
     let response = try client.shutdownIfIdle()
     try expect(response.status == 202, "idle core did not acknowledge graceful handover")
-    try expect(eventually { shutdowns.value == 1 }, "shutdown callback did not run after acknowledgement")
+    try expect(eventually { shutdowns.values == [.upgrade] }, "upgrade shutdown callback lost its reason")
+}
+
+private func checkCoreUninstallStopControlRoundTrip() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let broker = RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in })
+    let controlToken = try RelayCoreControlToken.loadOrCreate(
+        at: directory.appendingPathComponent("core-control-token")
+    )
+    let shutdowns = LockedShutdownReasons()
+    let server = RelayHTTPServer(
+        broker: broker,
+        infoFile: directory.appendingPathComponent("relay-url"),
+        controlToken: controlToken,
+        shutdownRequested: { shutdowns.append($0) }
+    )
+    try server.start()
+    defer { server.stop() }
+    let client = RelayCoreClient(
+        infoFile: directory.appendingPathComponent("relay-url"),
+        controlToken: controlToken
+    )
+
+    let response = try client.stopIfIdle()
+    try expect(response.status == 202, "idle core did not acknowledge uninstall preparation")
+    try expect(eventually { shutdowns.values == [.uninstall] }, "uninstall shutdown callback lost its reason")
+}
+
+private func checkCoreUninstallTransactionRollback() throws {
+    try expect(RelayCoreShutdownReason.upgrade.preservesExchangeFiles, "upgrade would discard commands spanning handover")
+    try expect(!RelayCoreShutdownReason.uninstall.preservesExchangeFiles, "uninstall would replay stale commands after reinstall")
+
+    var registered = RelayCoreUninstallTransaction(loginItemWasRegistered: true)
+    try expect(!registered.requiresLoginItemRollback, "unmodified uninstall transaction requested rollback")
+    registered.recordLoginItemDisabled()
+    try expect(registered.requiresLoginItemRollback, "failed core stop would leave launch at login disabled")
+    registered.recordCoreStopAccepted()
+    try expect(registered.requiresLoginItemRollback, "accepted core stop hid a later uninstall failure")
+    registered.recordPreparationCompleted()
+    try expect(!registered.requiresLoginItemRollback, "completed uninstall transaction still requested rollback")
+
+    var unregistered = RelayCoreUninstallTransaction(loginItemWasRegistered: false)
+    unregistered.recordLoginItemDisabled()
+    try expect(!unregistered.requiresLoginItemRollback, "uninstall invented a login-item registration")
 }
 
 private func checkCoreUpgradeReplacesPersistentFixture() throws {
@@ -4642,6 +4699,8 @@ let checks: [(String, () throws -> Void)] = [
     ("core service upgrade identity", checkCoreServiceUpgradeIdentity),
     ("core upgrade drain is atomic", checkCoreUpgradeDrainIsAtomic),
     ("core upgrade control round trip", checkCoreUpgradeControlRoundTrip),
+    ("core uninstall stop control round trip", checkCoreUninstallStopControlRoundTrip),
+    ("core uninstall transaction rollback", checkCoreUninstallTransactionRollback),
     ("persistent core seamless replacement", checkCoreUpgradeReplacesPersistentFixture),
     ("vendor conformance planning", checkVendorConformancePlanning),
     ("vendor conformance planning fails closed", checkVendorConformancePlanningFailsClosed),

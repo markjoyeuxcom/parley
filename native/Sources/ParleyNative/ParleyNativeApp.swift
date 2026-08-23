@@ -26,6 +26,10 @@ struct ParleyNativeApp: App {
         .defaultSize(width: 1_300, height: 820)
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(after: .appSettings) {
+                Button("Prepare to Uninstall…") { model.prepareToUninstall() }
+                    .disabled(!model.canPrepareToUninstall)
+            }
             CommandMenu("Navigate") {
                 Button("Command Palette…") { model.showCommandPalette() }
                     .keyboardShortcut("k", modifiers: [.command])

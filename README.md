@@ -300,9 +300,12 @@ until it finishes. tmux, workspace tabs and vendor pane processes are never part
 of the core handover. Layouts and handoff history remain under
 `~/Library/Application Support/Parley Native`.
 
-Uninstallation still requires turning off core launch-at-login, finishing active
-work, quitting Parley and restarting the Mac before removing the app. That
-preserves the local record unless it is separately and deliberately removed.
+For uninstallation, choose **Parley → Prepare to Uninstall…**. It refuses while
+Ask or Delegate work is active, disables launch-at-login, stops the coordination
+core, and quits without touching tmux panes or local records. Then move
+Parley.app to Trash; no Mac restart is required. Remove
+`~/Library/Application Support/Parley Native` separately only when deliberately
+erasing layouts and collaboration history.
 
 The ordered path from this locally packaged beta foundation to a dependable
 distributed tool is in [ROADMAP.md](ROADMAP.md).

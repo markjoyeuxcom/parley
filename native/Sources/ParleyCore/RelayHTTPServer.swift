@@ -26,7 +26,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
     private let socketFile: URL
     private let controlToken: String?
     private let identity: CoreServiceIdentity
-    private let shutdownRequested: @Sendable () -> Void
+    private let shutdownRequested: @Sendable (RelayCoreShutdownReason) -> Void
     private let queue = DispatchQueue(label: "parley.native.relay", qos: .utility)
     private let connections = DispatchGroup()
     private let lock = NSLock()
@@ -40,7 +40,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
         socketFile: URL? = nil,
         controlToken: String? = nil,
         identity: CoreServiceIdentity = .current(),
-        shutdownRequested: @escaping @Sendable () -> Void = {}
+        shutdownRequested: @escaping @Sendable (RelayCoreShutdownReason) -> Void = { _ in }
     ) {
         self.broker = broker
         self.infoFile = infoFile
@@ -303,7 +303,20 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     fallback: "could not encode upgrade readiness",
                     to: client
                 )
-                if readiness.accepted { requestShutdownOnce() }
+                if readiness.accepted { requestShutdownOnce(.upgrade) }
+            case "/ui/stop-if-idle":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                let readiness = broker.prepareForUpgrade()
+                writeJSON(
+                    readiness,
+                    status: readiness.accepted ? 202 : 409,
+                    fallback: "could not encode uninstall readiness",
+                    to: client
+                )
+                if readiness.accepted { requestShutdownOnce(.uninstall) }
             case "/ui/activity":
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
@@ -564,14 +577,14 @@ public final class RelayHTTPServer: @unchecked Sendable {
         send(Data(head.utf8) + body, to: client)
     }
 
-    private func requestShutdownOnce() {
+    private func requestShutdownOnce(_ reason: RelayCoreShutdownReason) {
         let shouldRequest = lock.withLock { () -> Bool in
             guard !shutdownCallbackSent else { return false }
             shutdownCallbackSent = true
             return true
         }
         guard shouldRequest else { return }
-        shutdownRequested()
+        shutdownRequested(reason)
     }
 
     private func controlAuthorized(_ request: Request) -> Bool {

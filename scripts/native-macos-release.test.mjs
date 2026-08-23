@@ -113,6 +113,8 @@ test('unnotarized install guide is explicit without telling users to disable Gat
   assert.match(guide, /SHA256SUMS/)
   assert.match(guide, /replaces an idle older coordination core automatically/)
   assert.match(guide, /Core upgrade: pending/)
+  assert.match(guide, /Prepare to Uninstall/)
+  assert.match(guide, /No Mac restart is required/)
   assert.doesNotMatch(guide, /restart the Mac before reopening Parley/)
   assert.doesNotMatch(guide, /spctl --master-disable/)
   assert.doesNotMatch(guide, /xattr -d/)

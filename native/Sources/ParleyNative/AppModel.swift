@@ -72,6 +72,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var diagnosticsExporting = false
     @Published private(set) var coreLoginItemState: CoreLoginItemState = .unavailable
     @Published private(set) var coreLoginItemChanging = false
+    @Published private(set) var preparingToUninstall = false
     @Published var commandPalettePresented = false
     @Published var setupPresented = false
     @Published var startupError: String?
@@ -238,7 +239,11 @@ final class AppModel: ObservableObject {
     var coreLoginItemRequested: Bool { coreLoginItemState.isRegistered }
 
     var canChangeCoreLoginItem: Bool {
-        coreLoginItemState != .unavailable && !coreLoginItemChanging
+        coreLoginItemState != .unavailable && !coreLoginItemChanging && !preparingToUninstall
+    }
+
+    var canPrepareToUninstall: Bool {
+        coreAvailable && relayClient != nil && coreUpgradeTask == nil && !preparingToUninstall
     }
 
     func refreshCoreLoginItemState() {
@@ -247,7 +252,7 @@ final class AppModel: ObservableObject {
     }
 
     func setCoreLoginItemRequested(_ requested: Bool) {
-        guard !coreLoginItemChanging else { return }
+        guard !coreLoginItemChanging, !preparingToUninstall else { return }
         if requested == coreLoginItemRequested { return }
 
         do {
@@ -298,6 +303,104 @@ final class AppModel: ObservableObject {
 
     func openCoreLoginItemSettings() {
         coreLoginItemController.openSystemSettings()
+    }
+
+    func prepareToUninstall() {
+        guard canPrepareToUninstall, let relayClient else { return }
+
+        let confirmation = NSAlert()
+        confirmation.messageText = "Prepare Parley for Uninstallation?"
+        confirmation.informativeText = "Parley will refuse if Ask or delegated work is active, turn off launch at login, stop only the coordination core, and quit. Your tmux panes, workspace layouts, and local collaboration history will not be deleted."
+        confirmation.alertStyle = .warning
+        confirmation.addButton(withTitle: "Prepare and Quit")
+        confirmation.addButton(withTitle: "Cancel")
+        guard confirmation.runModal() == .alertFirstButtonReturn else { return }
+
+        preparingToUninstall = true
+        coreUpgradeSettled = true
+        var transaction = RelayCoreUninstallTransaction(
+            loginItemWasRegistered: coreLoginItemRequested
+        )
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let eligible = try await Task.detached(priority: .utility) {
+                    let consultations = try relayClient.consultations()
+                    let handoffs = try relayClient.handoffs(limit: 500)
+                    return CoreLoginItemChangePolicy.canDisable(
+                        activeConsultationCount: consultations.count,
+                        handoffs: handoffs
+                    )
+                }.value
+                guard eligible else {
+                    throw RelayUIError.message(
+                        "Parley cannot prepare for uninstallation while an Ask or tracked delegation is active. Finish or cancel that work first."
+                    )
+                }
+
+                let response = try await Task.detached(priority: .utility) {
+                    try relayClient.stopIfIdle()
+                }.value
+                guard response.status == 202 else {
+                    throw RelayUIError.message(Self.uninstallBlockedMessage(response.readiness))
+                }
+                transaction.recordCoreStopAccepted()
+
+                if transaction.loginItemWasRegistered {
+                    try await self.coreLoginItemController.unregister()
+                    transaction.recordLoginItemDisabled()
+                    self.refreshCoreLoginItemState()
+                }
+                transaction.recordPreparationCompleted()
+                self.relayClient = nil
+                self.coreAvailable = false
+                self.coreError = nil
+
+                let ready = NSAlert()
+                ready.messageText = "Parley Is Ready to Remove"
+                ready.informativeText = "The launch item and coordination core are stopped. After Parley quits, move Parley.app to Trash. Your running tmux panes and local data remain untouched."
+                ready.addButton(withTitle: "Quit Parley")
+                ready.runModal()
+                NSApp.terminate(nil)
+            } catch {
+                self.refreshCoreLoginItemState()
+                if transaction.loginItemWasRegistered && !self.coreLoginItemRequested {
+                    transaction.recordLoginItemDisabled()
+                }
+                var rollbackFailure: Error?
+                if transaction.requiresLoginItemRollback {
+                    do {
+                        try self.coreLoginItemController.register()
+                        self.refreshCoreLoginItemState()
+                    } catch {
+                        rollbackFailure = error
+                    }
+                }
+                self.preparingToUninstall = false
+                self.coreUpgradeSettled = false
+                self.scheduleCoreUpgradeCheck(force: true)
+
+                let alert = NSAlert()
+                alert.messageText = "Parley Was Not Prepared for Uninstallation"
+                if let rollbackFailure {
+                    alert.informativeText = "\(error.localizedDescription)\n\nLaunch at login could not be restored automatically: \(rollbackFailure.localizedDescription). Check System Settings → General → Login Items before removing Parley."
+                } else {
+                    alert.informativeText = error.localizedDescription
+                }
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+        }
+    }
+
+    private static func uninstallBlockedMessage(_ readiness: RelayUpgradeReadiness) -> String {
+        let active = readiness.activeConsultations + readiness.activeDelegations
+        if active > 0 {
+            return "Parley cannot stop its coordination core while \(active) Ask or delegated item\(active == 1 ? " is" : "s are") active. Finish or cancel that work first."
+        }
+        return "Parley could not stop its coordination core because a handoff began during the uninstall check. Launch at login has been restored; try again when the handoff finishes."
     }
 
     func refreshRuntimeReadiness() {
@@ -748,7 +851,7 @@ final class AppModel: ObservableObject {
         if let firstError { throw firstError }
     }
 
-    var canRetryConnections: Bool { controller != nil }
+    var canRetryConnections: Bool { controller != nil && !preparingToUninstall }
 
     func retryConnections() {
         perform {
@@ -782,7 +885,7 @@ final class AppModel: ObservableObject {
     }
 
     private func scheduleCoreUpgradeCheck(force: Bool = false) {
-        guard coreUpgradeTask == nil, !coreUpgradeSettled, let controller else { return }
+        guard coreUpgradeTask == nil, !coreUpgradeSettled, !preparingToUninstall, let controller else { return }
         let now = Date()
         guard force || now.timeIntervalSince(lastCoreUpgradeAttempt) >= 2 else { return }
         lastCoreUpgradeAttempt = now

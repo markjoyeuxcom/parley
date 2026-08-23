@@ -162,7 +162,7 @@ Upgrade
 3. If Ask or delegated work is active, Status Center reports Core upgrade: pending and Parley completes the handover when that work finishes. Workspace layouts and local handoff history remain under ~/Library/Application Support/Parley Native.
 
 Uninstall
-Turn off “Keep Coordination Core Available at Login” in Parley first, finish active work, quit the app and restart the Mac. Then move Parley.app from Applications to Trash. This preserves local workspace and handoff data. Remove ~/Library/Application Support/Parley Native separately only when you deliberately want to erase that record.
+Choose Parley → Prepare to Uninstall…. It refuses active Ask or delegated work, disables launch at login, stops the coordination core, and quits without deleting tmux panes or local records. Then move Parley.app from Applications to Trash. No Mac restart is required. Remove ~/Library/Application Support/Parley Native separately only when you deliberately want to erase that record.
 
 Never disable Gatekeeper globally to install Parley.
 `

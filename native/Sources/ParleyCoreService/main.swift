@@ -89,8 +89,10 @@ do {
         infoFile: controller.applicationDirectory.appendingPathComponent("relay-url"),
         controlToken: controlToken,
         identity: .current(),
-        shutdownRequested: {
-            try? agentTransport.preserveExchangeFilesForNextStart()
+        shutdownRequested: { reason in
+            if reason.preservesExchangeFiles {
+                try? agentTransport.preserveExchangeFilesForNextStart()
+            }
             // The acknowledgement has already been written. Give this main
             // thread time to install its signal sources before requesting the
             // ordinary cleanup path.

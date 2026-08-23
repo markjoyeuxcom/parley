@@ -108,9 +108,17 @@ public struct RelayCoreClient: Sendable {
     }
 
     public func shutdownIfIdle() throws -> RelayCoreUpgradeResponse {
+        try idleShutdownRequest(path: "/ui/shutdown-if-idle")
+    }
+
+    public func stopIfIdle() throws -> RelayCoreUpgradeResponse {
+        try idleShutdownRequest(path: "/ui/stop-if-idle")
+    }
+
+    private func idleShutdownRequest(path: String) throws -> RelayCoreUpgradeResponse {
         let response = try request(
             method: "POST",
-            path: "/ui/shutdown-if-idle",
+            path: path,
             headers: ["X-Parley-Control": controlToken],
             body: Data()
         )

@@ -1,6 +1,40 @@
 import Foundation
 import Darwin
 
+public enum RelayCoreShutdownReason: String, Equatable, Sendable {
+    case upgrade
+    case uninstall
+
+    public var preservesExchangeFiles: Bool { self == .upgrade }
+}
+
+public struct RelayCoreUninstallTransaction: Equatable, Sendable {
+    public let loginItemWasRegistered: Bool
+    public private(set) var loginItemWasDisabled = false
+    public private(set) var coreStopWasAccepted = false
+    public private(set) var preparationWasCompleted = false
+
+    public init(loginItemWasRegistered: Bool) {
+        self.loginItemWasRegistered = loginItemWasRegistered
+    }
+
+    public mutating func recordLoginItemDisabled() {
+        loginItemWasDisabled = true
+    }
+
+    public mutating func recordCoreStopAccepted() {
+        coreStopWasAccepted = true
+    }
+
+    public mutating func recordPreparationCompleted() {
+        preparationWasCompleted = true
+    }
+
+    public var requiresLoginItemRollback: Bool {
+        loginItemWasRegistered && loginItemWasDisabled && !preparationWasCompleted
+    }
+}
+
 public struct CoreServiceIdentity: Codable, Equatable, Sendable {
     public static let currentContractVersion = 1
 
