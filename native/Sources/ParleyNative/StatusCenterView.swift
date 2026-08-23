@@ -5,10 +5,14 @@ struct StatusCenterView: View {
     @ObservedObject var model: AppModel
     @State private var workspaceID = ""
     @State private var selectedHandoffID: String?
+    @State private var showDismissed = false
     private let refresh = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     private var snapshot: StatusCenterSnapshot {
-        model.statusSnapshot(workspaceID: workspaceID.isEmpty ? nil : workspaceID)
+        model.statusSnapshot(
+            workspaceID: workspaceID.isEmpty ? nil : workspaceID,
+            includeDismissed: showDismissed
+        )
     }
 
     private var selectedHandoff: RelayHandoff? {
@@ -64,6 +68,10 @@ struct StatusCenterView: View {
             selectedHandoffID = nil
             ensureSelection()
         }
+        .onChange(of: showDismissed) { _, _ in
+            selectedHandoffID = nil
+            ensureSelection()
+        }
     }
 
     private var header: some View {
@@ -106,6 +114,31 @@ struct StatusCenterView: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Workspace notifications are off until you enable them here")
+            Menu {
+                Toggle("Show Dismissed", isOn: $showDismissed)
+                Button("Restore All Dismissed") {
+                    model.restoreAllStatusCenterDismissals()
+                    showDismissed = false
+                    selectedHandoffID = nil
+                    ensureSelection()
+                }
+                .disabled(model.dismissedHandoffIDs.isEmpty)
+                if let workspace = model.workspaces.first(where: { $0.id == workspaceID }) {
+                    Divider()
+                    Button("Delete History for \(workspace.name)…", role: .destructive) {
+                        if model.deleteStatusHistory(for: workspace) {
+                            selectedHandoffID = nil
+                            ensureSelection()
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: model.dismissedHandoffIDs.isEmpty ? "archivebox" : "archivebox.fill")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Dismissed records and workspace history controls")
             Picker("Scope", selection: $workspaceID) {
                 Text("All Workspaces").tag("")
                 ForEach(model.workspaces) { workspace in
@@ -339,6 +372,9 @@ struct StatusCenterView: View {
                             if handoff.hasUnreadResult {
                                 statusChip("UNREAD RESULT", color: .accentColor)
                             }
+                            if model.isDismissed(handoff) {
+                                statusChip("DISMISSED", color: .secondary)
+                            }
                         }
                     }
 
@@ -360,6 +396,11 @@ struct StatusCenterView: View {
                                     .foregroundStyle(.secondary)
                                 Text(transition.state.rawValue.uppercased())
                                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                if transition.origin == .human {
+                                    Text("HUMAN")
+                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(Color.accentColor)
+                                }
                                 if let detail = transition.detail, !detail.isEmpty {
                                     Text(detail)
                                         .font(.system(size: 9))
@@ -406,6 +447,17 @@ struct StatusCenterView: View {
                 if handoff.canRetrySafely {
                     Button("Retry Delivery…") { model.retry(handoff) }
                 }
+                if model.isDismissed(handoff) {
+                    Button("Restore to Status Center") {
+                        model.restoreToStatusCenter(handoff)
+                    }
+                } else if StatusCenterVisibility.isDismissible(handoff) {
+                    Button("Dismiss Completed") {
+                        model.dismissFromStatusCenter(handoff)
+                        selectedHandoffID = nil
+                        ensureSelection()
+                    }
+                }
                 if let target = model.panes.first(where: { $0.id == handoff.targetPaneID }),
                    target.kind.isAgent,
                    target.isStarted,
@@ -438,40 +490,12 @@ struct StatusCenterView: View {
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
             if snapshot.timeline.isEmpty {
-                emptyRow("No recorded collaboration in this scope")
+                emptyRow("No recorded activity in this scope")
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(snapshot.timeline.prefix(150)) { event in
-                            Button {
-                                if let handoff = snapshot.handoffs.first(where: { $0.id == event.handoffID }) {
-                                    select(handoff)
-                                }
-                            } label: {
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text(event.occurredAt.formatted(date: .omitted, time: .standard))
-                                        .font(.system(size: 9, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 78, alignment: .leading)
-                                    Text("\(event.sourceName) → \(event.targetName)")
-                                        .font(.system(size: 10, weight: .medium))
-                                    Text(event.kind.rawValue.uppercased())
-                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                    Text(event.state.rawValue.uppercased())
-                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                                    if let detail = event.detail, !detail.isEmpty {
-                                        Text(detail)
-                                            .font(.system(size: 9))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                    Spacer()
-                                }
-                                .padding(.vertical, 5)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
+                            timelineRow(event)
                             Divider()
                         }
                     }
@@ -479,6 +503,52 @@ struct StatusCenterView: View {
             }
         }
         .padding(12)
+    }
+
+    @ViewBuilder
+    private func timelineRow(_ event: StatusTimelineEvent) -> some View {
+        if let handoffID = event.handoffID {
+            Button {
+                if let handoff = snapshot.handoffs.first(where: { $0.id == handoffID }) {
+                    select(handoff)
+                }
+            } label: {
+                timelineRowContent(event)
+            }
+            .buttonStyle(.plain)
+        } else {
+            timelineRowContent(event)
+        }
+    }
+
+    private func timelineRowContent(_ event: StatusTimelineEvent) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(event.occurredAt.formatted(date: .omitted, time: .standard))
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 78, alignment: .leading)
+            Text(event.title)
+                .font(.system(size: 10, weight: .medium))
+            Text(event.category)
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Text(event.action)
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+            if event.origin == .human {
+                Text("HUMAN")
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Color.accentColor)
+            }
+            if let detail = event.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
     }
 
     private func statusGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {

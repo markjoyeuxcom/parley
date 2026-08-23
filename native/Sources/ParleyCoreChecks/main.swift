@@ -1357,7 +1357,8 @@ private func statusHandoff(
     occurredAt: TimeInterval,
     resultText: String? = nil,
     readAt: TimeInterval? = nil,
-    attention: RelayAttention? = nil
+    attention: RelayAttention? = nil,
+    origin: RelayTransitionOrigin? = nil
 ) throws -> RelayHandoff {
     var object: [String: Any] = [
         "id": id,
@@ -1386,6 +1387,14 @@ private func statusHandoff(
     if let resultText { object["resultText"] = resultText }
     if let readAt { object["readAt"] = readAt }
     if let attention { object["attention"] = attention.rawValue }
+    if let origin {
+        object["transitions"] = [[
+            "state": state.rawValue,
+            "occurredAt": occurredAt,
+            "detail": "Detail \(id)",
+            "origin": origin.rawValue,
+        ]]
+    }
     let data = try JSONSerialization.data(withJSONObject: object)
     return try JSONDecoder().decode(RelayHandoff.self, from: data)
 }
@@ -1401,7 +1410,7 @@ private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
         try statusHandoff(id: "ask", kind: .ask, state: .waiting, sourceWorkspaceID: "@0", targetWorkspaceID: "@0", occurredAt: 30),
         try statusHandoff(id: "delegate", kind: .delegate, state: .delivered, sourceWorkspaceID: "@1", targetWorkspaceID: "@1", occurredAt: 40),
         try statusHandoff(id: "failure", kind: .relay, state: .failed, sourceWorkspaceID: "@1", targetWorkspaceID: "@1", occurredAt: 50, attention: .permissionRequired),
-        try statusHandoff(id: "complete", kind: .relay, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 20),
+        try statusHandoff(id: "complete", kind: .relay, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 20, origin: .human),
         try statusHandoff(id: "result", kind: .ask, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 25, resultText: "Returned answer"),
         try statusHandoff(id: "read-result", kind: .delegate, state: .completed, sourceWorkspaceID: "@1", targetWorkspaceID: "@0", occurredAt: 15, resultText: "Already viewed", readAt: 16),
     ]
@@ -1420,6 +1429,7 @@ private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
     try expect(all.activeHandoffs.map(\.id) == ["delegate", "ask"], "active handoffs were not newest-first")
     try expect(all.timeline.first?.handoffID == "failure", "timeline was not newest-first")
     try expect(all.timeline.first?.detail == "Detail failure", "timeline discarded the authoritative transition detail")
+    try expect(all.timeline.first(where: { $0.handoffID == "complete" })?.origin == .human, "timeline discarded a human intervention marker")
 
     let workspace = StatusCenterProjection.snapshot(
         panes: panes,
@@ -1450,6 +1460,41 @@ private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
     )
     try expect(returned.condition == .resultsAvailable, "an unread returned result was shown as all clear")
 
+    try expect(StatusCenterVisibility.isDismissible(handoffs[3]), "an ordinary completed handoff could not be dismissed locally")
+    try expect(!StatusCenterVisibility.isDismissible(handoffs[0]), "active work could be hidden by local dismissal")
+    try expect(!StatusCenterVisibility.isDismissible(handoffs[2]), "failed work could be hidden by local dismissal")
+    try expect(!StatusCenterVisibility.isDismissible(handoffs[4]), "an unread returned result could be hidden by local dismissal")
+    try expect(StatusCenterVisibility.isDismissible(handoffs[5]), "a viewed completed result could not be dismissed locally")
+
+    let dismissed = StatusCenterProjection.snapshot(
+        panes: panes,
+        handoffs: handoffs,
+        workspaceID: nil,
+        coreAvailable: true,
+        dismissedHandoffIDs: ["complete", "result", "ask", "failure"],
+        includeDismissed: false
+    )
+    try expect(!dismissed.handoffs.contains(where: { $0.id == "complete" }), "dismissed completed work remained visible")
+    try expect(dismissed.handoffs.contains(where: { $0.id == "result" }), "dismissal concealed an unread result")
+    try expect(dismissed.handoffs.contains(where: { $0.id == "ask" }), "dismissal concealed active work")
+    try expect(dismissed.handoffs.contains(where: { $0.id == "failure" }), "dismissal concealed failed work")
+    try expect(!dismissed.timeline.contains(where: { $0.handoffID == "complete" }), "dismissed work remained in the visible timeline")
+
+    let restored = StatusCenterProjection.snapshot(
+        panes: panes,
+        handoffs: handoffs,
+        workspaceID: nil,
+        coreAvailable: true,
+        dismissedHandoffIDs: ["complete"],
+        includeDismissed: true
+    )
+    try expect(restored.handoffs.contains(where: { $0.id == "complete" }), "show dismissed did not restore the local record projection")
+
+    try expect(
+        StatusCenterVisibility.retainedDismissalIDs(["complete", "missing"], handoffs: handoffs) == ["complete"],
+        "stale local dismissal preferences were not pruned against durable history"
+    )
+
     let notifications = StatusNotificationProjection.events(handoffs: handoffs)
     try expect(notifications.map(\.id) == ["failure:attention:permissionRequired", "result:result"], "notification projection emitted old, duplicate, or non-actionable events")
     try expect(notifications[0].workspaceName == "@1", "attention notification was not routed to the target workspace")
@@ -1466,6 +1511,94 @@ private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
         coreAvailable: false
     )
     try expect(unavailable.condition == .coreUnavailable, "core failure did not override secondary status")
+}
+
+private func checkOperationalActivityIsDurableAndAuthoritative() throws {
+    let directory = try temporaryDirectory()
+    let file = directory.appendingPathComponent("activity-events.jsonl")
+    let journal = try RelayActivityJournal(file: file, maximumEvents: 3)
+    let created = RelayActivityEvent(
+        id: "workspace-created",
+        kind: .workspaceCreated,
+        occurredAt: Date(timeIntervalSince1970: 20),
+        workspaceID: "@0",
+        workspaceName: "api",
+        detail: "Opened /tmp/api"
+    )
+    let restarted = RelayActivityEvent(
+        id: "pane-restarted",
+        kind: .paneRestarted,
+        occurredAt: Date(timeIntervalSince1970: 30),
+        workspaceID: "@0",
+        workspaceName: "api",
+        paneID: "%1",
+        paneName: "Codex",
+        paneKind: .codex,
+        detail: "Codex pane restarted."
+    )
+    let restored = RelayActivityEvent(
+        id: "workspace-restored",
+        kind: .workspaceRestored,
+        occurredAt: Date(timeIntervalSince1970: 40),
+        workspaceID: "@1",
+        workspaceName: "web",
+        detail: "Opened saved layout Web review."
+    )
+    try journal.record(created)
+    try journal.record(restarted)
+    try journal.record(restored)
+
+    let replayed = try RelayActivityJournal(file: file, maximumEvents: 3)
+    try expect(replayed.events().map(\.id) == ["workspace-restored", "pane-restarted", "workspace-created"], "activity journal did not replay newest-first")
+    let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+    let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
+    try expect(mode & 0o777 == 0o600, "activity journal was not owner-only")
+
+    let truncated = try FileHandle(forWritingTo: file)
+    try truncated.seekToEnd()
+    try truncated.write(contentsOf: Data("{\"incomplete\"".utf8))
+    try truncated.close()
+    let repaired = try RelayActivityJournal(file: file, maximumEvents: 3)
+    try expect(repaired.events().count == 3, "a truncated activity write destroyed valid events")
+    let repairedData = try Data(contentsOf: file)
+    try expect(repairedData.last == 10, "activity journal startup did not repair its truncated tail")
+
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { [] },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        activityJournal: repaired
+    )
+    let closed = try broker.recordActivity(RelayActivityEventRequest(
+        kind: .workspaceClosed,
+        workspaceID: "@2",
+        workspaceName: "worker",
+        detail: "Closed 2 panes."
+    ))
+    try expect(closed.origin == .human, "native operational activity was not marked as human")
+    try expect(broker.activityEvents(limit: 1).map(\.id) == [closed.id], "broker did not expose newest operational activity")
+    try expect(broker.activityEvents().count == 3, "broker activity exceeded its journal bound")
+
+    let status = StatusCenterProjection.snapshot(
+        panes: [],
+        handoffs: [],
+        activityEvents: broker.activityEvents(),
+        workspaceID: "@2",
+        coreAvailable: true
+    )
+    let operational = try require(status.timeline.first, "operational activity did not enter the Status Center timeline")
+    try expect(operational.handoffID == nil, "operational activity was disguised as a relay handoff")
+    try expect(operational.title == "worker", "workspace activity lost its authoritative display name")
+    try expect(operational.category == "WORKSPACE" && operational.action == "CLOSED", "workspace activity used the wrong timeline labels")
+    try expect(operational.origin == .human, "Status Center discarded the activity origin")
+
+    let deleted = broker.deleteWorkspaceHistory(workspaceID: "@0", workspaceName: "api")
+    try expect(deleted.status == 200, "workspace history deletion could not compact operational activity")
+    try expect(!broker.activityEvents().contains(where: { $0.workspaceID == "@0" }), "workspace history deletion retained matching operational activity")
+    let persistedEvents = try RelayActivityJournal(file: file, maximumEvents: 3).events()
+    try expect(persistedEvents == broker.activityEvents(), "operational history deletion was not durable")
 }
 
 private func checkAgentRelaySubmitsAndExplicitPasteDoesNot() throws {
@@ -1724,6 +1857,74 @@ private func checkDurableHandoffJournal() throws {
     let replayedBounded = try RelayHandoffJournal(file: boundedFile, maximumHandoffs: 2).handoffs()
     try expect(replayedBounded.count == 2, "replayed journal exceeded its handoff bound")
     try expect(!replayedBounded.contains(where: { $0.idempotencyKey == "bounded-durable-0" }), "bounded journal retained its oldest terminal handoff")
+}
+
+private func checkWorkspaceHandoffHistoryDeletion() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let repoAToken = try credentials.token(for: "%1")
+    let repoBToken = try credentials.token(for: "%2")
+    let repoCToken = try credentials.token(for: "%3")
+    let panes = [
+        TmuxPane(id: "%1", kind: .codex, customName: "Codex A", terminalTitle: "", cwd: "/tmp/repo-a", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "repo-a"),
+        TmuxPane(id: "%2", kind: .agy, customName: "Agy B", terminalTitle: "", cwd: "/tmp/repo-b", currentCommand: "agy", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "repo-b"),
+        TmuxPane(id: "%3", kind: .claude, customName: "Claude C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "claude", isActive: false, windowID: "@2", returnToPaneID: nil, workspaceName: "repo-c"),
+        TmuxPane(id: "%4", kind: .codex, customName: "Codex C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "codex", isActive: false, windowID: "@2", returnToPaneID: nil, workspaceName: "repo-c"),
+    ]
+    let historyFile = directory.appendingPathComponent("handoffs.jsonl")
+    let journal = try RelayHandoffJournal(file: historyFile)
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        consultationTimeout: 2,
+        livenessPollInterval: 0.01,
+        handoffJournal: journal
+    )
+
+    let crossWorkspace = broker.handle(
+        token: repoAToken,
+        target: "agy",
+        text: "Delete this completed cross-workspace relay.",
+        idempotencyKey: "delete-workspace-cross"
+    )
+    try expect(crossWorkspace.status == 200, "workspace deletion fixture could not create its cross-workspace history")
+    let unaffected = broker.handle(
+        token: repoCToken,
+        target: "Codex C",
+        text: "Keep this repo-c relay.",
+        idempotencyKey: "delete-workspace-keep"
+    )
+    try expect(unaffected.status == 200, "workspace deletion fixture could not create unrelated history")
+
+    let pendingResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        pendingResult.set(broker.handleAsk(
+            token: repoAToken,
+            target: "agy",
+            text: "Keep this active Ask even while history is deleted.",
+            idempotencyKey: "delete-workspace-active"
+        ))
+    }
+    try expect(eventually { broker.consultations().count == 1 }, "workspace deletion fixture never started its active Ask")
+
+    let invalid = broker.deleteWorkspaceHistory(workspaceID: "", workspaceName: "")
+    try expect(invalid.status == 400, "workspace deletion accepted an empty scope")
+    let deleted = broker.deleteWorkspaceHistory(workspaceID: "@0", workspaceName: "repo-a")
+    try expect(deleted.status == 200, "workspace history deletion failed: \(deleted.text)")
+
+    let remaining = broker.handoffs()
+    try expect(!remaining.contains(where: { $0.idempotencyKey == "delete-workspace-cross" }), "workspace deletion retained matching completed history")
+    try expect(remaining.contains(where: { $0.idempotencyKey == "delete-workspace-keep" }), "workspace deletion removed another workspace's history")
+    try expect(remaining.contains(where: { $0.idempotencyKey == "delete-workspace-active" }), "workspace deletion removed active work")
+    let persisted = try RelayHandoffJournal(file: historyFile).handoffs()
+    try expect(!persisted.contains(where: { $0.idempotencyKey == "delete-workspace-cross" }), "workspace deletion did not compact the durable journal")
+    try expect(persisted.contains(where: { $0.idempotencyKey == "delete-workspace-keep" }), "durable deletion removed unrelated history")
+    try expect(persisted.contains(where: { $0.idempotencyKey == "delete-workspace-active" }), "durable deletion removed an active handoff")
+
+    try expect(broker.handleAnswer(token: repoBToken, consultationID: "current", text: "Still alive.").status == 200, "the preserved Ask could not be answered")
+    try expect(eventually { pendingResult.value?.status == 200 }, "the preserved Ask requester remained blocked")
 }
 
 private func checkCrossWorkspaceRelayAddressing() throws {
@@ -2006,6 +2207,31 @@ private func checkCoreControlSurvivesClientReattachment() throws {
     let pending = try require(try reattachedClient.consultations().first, "a reattached UI lost the active consultation")
     let reattachedHandoff = try require(try reattachedClient.handoffs().first, "a reattached UI lost the active handoff")
     try expect(reattachedHandoff.id == pending.id, "consultation and handoff identities diverged after UI reattachment")
+    let activity = try reattachedClient.recordActivity(RelayActivityEventRequest(
+        kind: .paneRestarted,
+        workspaceID: "@0",
+        workspaceName: "fixture",
+        paneID: "%2",
+        paneName: "Agy",
+        paneKind: .agy,
+        detail: "Agy pane restarted."
+    ))
+    try expect(activity.origin == .human, "core activity route did not stamp human origin")
+    let recentActivityIDs = try reattachedClient.activityEvents(limit: 1).map(\.id)
+    try expect(recentActivityIDs == [activity.id], "reattached UI could not read operational activity")
+    var unauthorizedActivityWasRejected = false
+    do {
+        _ = try RelayCoreClient(infoFile: infoFile, controlToken: "not-the-control-token").recordActivity(
+            RelayActivityEventRequest(
+                kind: .workspaceCreated,
+                workspaceID: "@9",
+                workspaceName: "forged"
+            )
+        )
+    } catch RelayCoreError.response(401, _) {
+        unauthorizedActivityWasRejected = true
+    }
+    try expect(unauthorizedActivityWasRejected, "an unauthenticated client recorded native operational activity")
     let returned = try reattachedClient.answerFromUI(
         consultationID: pending.id,
         text: "Yes; the wait belongs to the core."
@@ -2018,6 +2244,7 @@ private func checkCoreControlSurvivesClientReattachment() throws {
         "the completed Ask disappeared before its result could be viewed"
     )
     try expect(unread.hasUnreadResult && unread.readAt == nil, "a newly returned Ask result was not unread")
+    try expect(unread.transitions.suffix(2).allSatisfy { $0.origin == .human }, "manual UI return was not recorded as human intervention")
     let unreadHandoffs = try reattachedClient.unreadHandoffs()
     try expect(unreadHandoffs.map(\.id) == [pending.id], "the unread endpoint omitted the returned Ask")
     let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "not-the-control-token")
@@ -2078,6 +2305,17 @@ private func checkCoreControlSurvivesClientReattachment() throws {
     )
     try expect(retriedHandoff.state == .completed, "UI retry did not complete the original handoff")
     try expect(retryAttempts.value == 2, "UI retry did not run exactly one additional delivery attempt")
+
+    let unauthorizedDeletion = try unauthorized.deleteWorkspaceHistory(workspaceID: "@0", workspaceName: nil)
+    try expect(unauthorizedDeletion.status == 401, "an unauthenticated UI deleted workspace history")
+    let historyAfterRejectedDeletion = try reattachedClient.handoffs()
+    try expect(!historyAfterRejectedDeletion.isEmpty, "rejected workspace deletion changed history")
+    let deletion = try reattachedClient.deleteWorkspaceHistory(workspaceID: "@0", workspaceName: nil)
+    try expect(deletion.status == 200, "the authenticated UI could not delete workspace history")
+    let historyAfterDeletion = try reattachedClient.handoffs()
+    try expect(historyAfterDeletion.isEmpty, "workspace deletion route retained terminal history")
+    let activityAfterDeletion = try reattachedClient.activityEvents()
+    try expect(activityAfterDeletion.isEmpty, "workspace deletion route retained operational activity")
 }
 
 private func checkPersistentCoreProcessSurvivesClientExit() throws {
@@ -2635,6 +2873,7 @@ private func checkHumanCancellationUnblocksAsk() throws {
     let handoff = try require(broker.handoffs().first(where: { $0.id == handoffID }), "cancelled handoff disappeared")
     try expect(handoff.state == .cancelled, "human cancellation recorded the wrong terminal state")
     try expect(handoff.transitions.last?.detail == "Cancelled by the person using Parley.", "cancelled handoff lost its reason")
+    try expect(handoff.transitions.last?.origin == .human, "human cancellation was indistinguishable from an automatic transition")
 
     let retry = broker.handleAsk(
         token: sourceToken,
@@ -2705,6 +2944,7 @@ private func checkSafeFailedDeliveryRetryIsStableAndDeduplicated() throws {
         after.transitions.map(\.state) == [.created, .failed, .created, .delivered, .completed],
         "retry did not preserve one observable transition trail"
     )
+    try expect(after.transitions.suffix(3).allSatisfy { $0.origin == .human }, "safe UI retry transitions were not marked as human intervention")
 
     let commandRetry = broker.handle(
         token: sourceToken,
@@ -3177,10 +3417,12 @@ let checks: [(String, () throws -> Void)] = [
     ("selection-or-empty relay draft", checkRelayDraftStartsWithSelectionOrNothing),
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
     ("authoritative Status Center projection", checkStatusCenterProjectionUsesOnlyAuthoritativeState),
+    ("durable authoritative operational activity", checkOperationalActivityIsDurableAndAuthoritative),
     ("agent relay submits; paste does not", checkAgentRelaySubmitsAndExplicitPasteDoesNot),
     ("stable handoff identity and idempotent relay", checkStableHandoffIdentityAndIdempotentRelay),
     ("completed handoff retention bound", checkCompletedHandoffRetentionIsBounded),
     ("durable handoff journal", checkDurableHandoffJournal),
+    ("workspace handoff history deletion", checkWorkspaceHandoffHistoryDeletion),
     ("cross-workspace relay addressing", checkCrossWorkspaceRelayAddressing),
     ("persistent relay identity", checkRelayCredentialPersistsAndIdentifiesSender),
     ("cross-process relay identity refresh", checkRelayCredentialReloadsExternalChanges),

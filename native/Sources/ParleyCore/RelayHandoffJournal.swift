@@ -83,6 +83,28 @@ public final class RelayHandoffJournal: @unchecked Sendable {
         }
     }
 
+    /// Permanently removes complete snapshots and rewrites the bounded journal
+    /// atomically. The caller decides which records are safe to remove; this
+    /// type deliberately knows nothing about live broker state.
+    @discardableResult
+    public func removeHandoffs(ids: Set<String>) throws -> Int {
+        guard !ids.isEmpty else { return 0 }
+        return try lock.withLock {
+            let removed = byID.filter { ids.contains($0.key) }
+            guard !removed.isEmpty else { return 0 }
+            byID = byID.filter { !ids.contains($0.key) }
+            do {
+                try compactLocked()
+                storedError = nil
+                return removed.count
+            } catch {
+                byID.merge(removed) { _, original in original }
+                storedError = error.localizedDescription
+                throw error
+            }
+        }
+    }
+
     private static func load(file: URL) throws -> (
         byID: [String: RelayHandoff],
         eventCount: Int,

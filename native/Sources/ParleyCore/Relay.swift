@@ -276,10 +276,115 @@ public enum RelayAttention: String, Codable, Equatable, Sendable {
     case targetUnavailable
 }
 
+public enum RelayTransitionOrigin: String, Codable, Equatable, Sendable {
+    case human
+}
+
+public enum RelayActivityEventKind: String, Codable, Equatable, Sendable {
+    case paneRestarted
+    case workspaceCreated
+    case workspaceClosed
+    case workspaceRestored
+}
+
+/// A successful operation initiated from Parley's native controls. These are
+/// deliberately separate from handoffs: restarting a pane or opening a saved
+/// layout is not a relay transition and must not be presented as one.
+public struct RelayActivityEvent: Identifiable, Codable, Equatable, Sendable {
+    public let id: String
+    public let kind: RelayActivityEventKind
+    public let occurredAt: Date
+    public let workspaceID: String
+    public let workspaceName: String
+    public let paneID: String?
+    public let paneName: String?
+    public let paneKind: PaneKind?
+    public let detail: String?
+    public let origin: RelayTransitionOrigin
+
+    public init(
+        id: String = UUID().uuidString.lowercased(),
+        kind: RelayActivityEventKind,
+        occurredAt: Date = Date(),
+        workspaceID: String,
+        workspaceName: String,
+        paneID: String? = nil,
+        paneName: String? = nil,
+        paneKind: PaneKind? = nil,
+        detail: String? = nil,
+        origin: RelayTransitionOrigin = .human
+    ) {
+        self.id = id
+        self.kind = kind
+        self.occurredAt = occurredAt
+        self.workspaceID = workspaceID
+        self.workspaceName = workspaceName
+        self.paneID = paneID
+        self.paneName = paneName
+        self.paneKind = paneKind
+        self.detail = detail
+        self.origin = origin
+    }
+}
+
+/// The UI supplies only facts it learned from a successful native operation.
+/// Identity, time and human origin are stamped by the persistent core.
+public struct RelayActivityEventRequest: Codable, Equatable, Sendable {
+    public let kind: RelayActivityEventKind
+    public let workspaceID: String
+    public let workspaceName: String
+    public let paneID: String?
+    public let paneName: String?
+    public let paneKind: PaneKind?
+    public let detail: String?
+
+    public init(
+        kind: RelayActivityEventKind,
+        workspaceID: String,
+        workspaceName: String,
+        paneID: String? = nil,
+        paneName: String? = nil,
+        paneKind: PaneKind? = nil,
+        detail: String? = nil
+    ) {
+        self.kind = kind
+        self.workspaceID = workspaceID
+        self.workspaceName = workspaceName
+        self.paneID = paneID
+        self.paneName = paneName
+        self.paneKind = paneKind
+        self.detail = detail
+    }
+}
+
+public enum RelayActivityError: LocalizedError {
+    case invalidEvent
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidEvent:
+            "Parley activity needs a workspace id and name."
+        }
+    }
+}
+
 public struct RelayHandoffTransition: Codable, Equatable, Sendable {
     public let state: RelayHandoffState
     public let occurredAt: Date
     public let detail: String?
+    public let origin: RelayTransitionOrigin?
+
+    public init(
+        state: RelayHandoffState,
+        occurredAt: Date,
+        detail: String?,
+        origin: RelayTransitionOrigin? = nil
+    ) {
+        self.state = state
+        self.occurredAt = occurredAt
+        self.detail = detail
+        self.origin = origin
+    }
 }
 
 public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
@@ -384,11 +489,13 @@ public final class RelayBroker: @unchecked Sendable {
     private let consultationTimeout: TimeInterval
     private let livenessPollInterval: TimeInterval
     private let handoffJournal: RelayHandoffJournal?
+    private let activityJournal: RelayActivityJournal?
     private let consultationCondition = NSCondition()
     private var consultationRecords: [String: ConsultationRecord] = [:]
     private var delegationRecords: [String: DelegationRecord] = [:]
     private var delegationResponses: [String: RelayTextResponse] = [:]
     private var handoffRecords: [String: RelayHandoff] = [:]
+    private var activityRecords: [String: RelayActivityEvent] = [:]
     private var idempotencyRecords: [IdempotencyScope: IdempotencyRecord] = [:]
 
     public init(
@@ -398,7 +505,8 @@ public final class RelayBroker: @unchecked Sendable {
         submit: @escaping Submit,
         consultationTimeout: TimeInterval = 30 * 60,
         livenessPollInterval: TimeInterval = 0.5,
-        handoffJournal: RelayHandoffJournal? = nil
+        handoffJournal: RelayHandoffJournal? = nil,
+        activityJournal: RelayActivityJournal? = nil
     ) {
         self.credentials = credentials
         self.panes = panes
@@ -407,6 +515,7 @@ public final class RelayBroker: @unchecked Sendable {
         self.consultationTimeout = consultationTimeout
         self.livenessPollInterval = max(0.01, livenessPollInterval)
         self.handoffJournal = handoffJournal
+        self.activityJournal = activityJournal
 
         let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
         var recovered = Dictionary(uniqueKeysWithValues: (handoffJournal?.handoffs() ?? []).map { ($0.id, $0) })
@@ -420,6 +529,7 @@ public final class RelayBroker: @unchecked Sendable {
             handoffJournal?.record(handoff)
         }
         handoffRecords = recovered
+        activityRecords = Dictionary(uniqueKeysWithValues: (activityJournal?.events() ?? []).map { ($0.id, $0) })
         pruneHandoffsLocked()
     }
 
@@ -1083,7 +1193,8 @@ public final class RelayBroker: @unchecked Sendable {
             from: targetID,
             presentedCredential: nil,
             consultationID: consultationID,
-            text: text
+            text: text,
+            origin: .human
         )
     }
 
@@ -1116,6 +1227,41 @@ public final class RelayBroker: @unchecked Sendable {
         return values
     }
 
+    public func activityEvents(limit: Int? = nil) -> [RelayActivityEvent] {
+        consultationCondition.lock()
+        let values = activityRecords.values.sorted {
+            if $0.occurredAt == $1.occurredAt { return $0.id < $1.id }
+            return $0.occurredAt > $1.occurredAt
+        }
+        consultationCondition.unlock()
+        guard let limit else { return values }
+        return Array(values.prefix(max(0, limit)))
+    }
+
+    @discardableResult
+    public func recordActivity(_ request: RelayActivityEventRequest) throws -> RelayActivityEvent {
+        let workspaceID = request.workspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let workspaceName = request.workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !workspaceID.isEmpty, !workspaceName.isEmpty else { throw RelayActivityError.invalidEvent }
+        let event = RelayActivityEvent(
+            kind: request.kind,
+            workspaceID: workspaceID,
+            workspaceName: workspaceName,
+            paneID: request.paneID,
+            paneName: request.paneName,
+            paneKind: request.paneKind,
+            detail: request.detail
+        )
+        try activityJournal?.record(event)
+        consultationCondition.lock()
+        activityRecords[event.id] = event
+        if let retainedIDs = activityJournal.map({ Set($0.events().map(\.id)) }) {
+            activityRecords = activityRecords.filter { retainedIDs.contains($0.key) }
+        }
+        consultationCondition.unlock()
+        return event
+    }
+
     /// Records that a person viewed a returned Ask or Delegate result. This is
     /// exposed only through the UI control-token route; pane credentials cannot
     /// clear another pane's badge. Repeated acknowledgement is intentionally
@@ -1139,6 +1285,59 @@ public final class RelayBroker: @unchecked Sendable {
         return RelayTextResponse(status: 200, text: "Result marked read.")
     }
 
+    /// Deletes only terminal collaboration history involving one workspace.
+    /// Active Ask and Delegate records remain authoritative and are never
+    /// removed by history maintenance.
+    public func deleteWorkspaceHistory(
+        workspaceID: String,
+        workspaceName: String? = nil
+    ) -> RelayTextResponse {
+        let requestedID = workspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestedName = workspaceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !requestedID.isEmpty || !requestedName.isEmpty else {
+            return RelayTextResponse(status: 400, text: "workspace id or name is required")
+        }
+
+        let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
+        consultationCondition.lock()
+        let removalIDs = Set(handoffRecords.values.lazy.filter { handoff in
+            guard terminalStates.contains(handoff.state) else { return false }
+            let idMatches = !requestedID.isEmpty
+                && (handoff.sourceWorkspaceID == requestedID || handoff.targetWorkspaceID == requestedID)
+            let nameMatches = !requestedName.isEmpty && [handoff.sourceWorkspaceName, handoff.targetWorkspaceName]
+                .compactMap { $0 }
+                .contains { $0.caseInsensitiveCompare(requestedName) == .orderedSame }
+            return idMatches || nameMatches
+        }.map(\.id))
+
+        let activityRemovalIDs = Set(activityRecords.values.lazy.filter { event in
+            let idMatches = !requestedID.isEmpty && event.workspaceID == requestedID
+            let nameMatches = !requestedName.isEmpty
+                && event.workspaceName.caseInsensitiveCompare(requestedName) == .orderedSame
+            return idMatches || nameMatches
+        }.map(\.id))
+
+        do {
+            try handoffJournal?.removeHandoffs(ids: removalIDs)
+            try activityJournal?.removeEvents(ids: activityRemovalIDs)
+        } catch {
+            consultationCondition.unlock()
+            return RelayTextResponse(
+                status: 500,
+                text: "Parley could not delete workspace history: \(error.localizedDescription)"
+            )
+        }
+        handoffRecords = handoffRecords.filter { !removalIDs.contains($0.key) }
+        idempotencyRecords = idempotencyRecords.filter { !removalIDs.contains($0.value.handoffID) }
+        delegationResponses = delegationResponses.filter { !removalIDs.contains($0.key) }
+        activityRecords = activityRecords.filter { !activityRemovalIDs.contains($0.key) }
+        consultationCondition.unlock()
+
+        let removedCount = removalIDs.count + activityRemovalIDs.count
+        let noun = removedCount == 1 ? "record" : "records"
+        return RelayTextResponse(status: 200, text: "Deleted \(removedCount) workspace history \(noun).")
+    }
+
     /// Cancels the wait owned by an Ask without sending input to either pane.
     /// The requesting command receives the same explicit terminal response as
     /// every idempotent retry, while the target CLI is left undisturbed.
@@ -1160,7 +1359,8 @@ public final class RelayBroker: @unchecked Sendable {
         finishAskLocked(
             handoffID: handoffID,
             state: .cancelled,
-            response: RelayTextResponse(status: 409, text: message)
+            response: RelayTextResponse(status: 409, text: message),
+            origin: .human
         )
         consultationCondition.unlock()
         return RelayTextResponse(status: 200, text: "Ask cancelled. Neither pane was interrupted.")
@@ -1204,7 +1404,8 @@ public final class RelayBroker: @unchecked Sendable {
                 handoffID,
                 to: .failed,
                 detail: "The original source or target pane is no longer available.",
-                failure: RelayFailureAssessment(retryDisposition: .unsupported, attention: .targetUnavailable)
+                failure: RelayFailureAssessment(retryDisposition: .unsupported, attention: .targetUnavailable),
+                origin: .human
             )
             consultationCondition.unlock()
             return RelayTextResponse(status: 409, text: "The original source or target pane is no longer available.")
@@ -1224,7 +1425,8 @@ public final class RelayBroker: @unchecked Sendable {
         transitionHandoffLocked(
             handoffID,
             to: .created,
-            detail: "Retry requested by the person using Parley."
+            detail: "Retry requested by the person using Parley.",
+            origin: .human
         )
         consultationCondition.broadcast()
         consultationCondition.unlock()
@@ -1233,8 +1435,13 @@ public final class RelayBroker: @unchecked Sendable {
         do {
             try writer(target.id, "\(handoff.sourceName) said:\n\n\(handoff.text)")
             consultationCondition.lock()
-            transitionHandoffLocked(handoffID, to: .delivered, detail: "Safe retry delivered the original text.")
-            transitionHandoffLocked(handoffID, to: .completed)
+            transitionHandoffLocked(
+                handoffID,
+                to: .delivered,
+                detail: "Safe retry delivered the original text.",
+                origin: .human
+            )
+            transitionHandoffLocked(handoffID, to: .completed, origin: .human)
             let response = RelayResponse(
                 status: 200,
                 body: RelayResponseBody(
@@ -1263,7 +1470,8 @@ public final class RelayBroker: @unchecked Sendable {
                 handoffID,
                 to: .failed,
                 detail: error.localizedDescription,
-                failure: assessment
+                failure: assessment,
+                origin: .human
             )
             let response = failure(
                 409,
@@ -1360,7 +1568,8 @@ public final class RelayBroker: @unchecked Sendable {
         from senderID: String,
         presentedCredential: String?,
         consultationID: String,
-        text: String
+        text: String,
+        origin: RelayTransitionOrigin? = nil
     ) -> RelayTextResponse {
         let cleaned = RelayText.clean(text)
         guard !cleaned.isEmpty else { return RelayTextResponse(status: 400, text: "nothing to return") }
@@ -1391,9 +1600,9 @@ public final class RelayBroker: @unchecked Sendable {
             handoff.resultText = cleaned
             handoffRecords[consultationID] = handoff
         }
-        transitionHandoffLocked(consultationID, to: .answered)
+        transitionHandoffLocked(consultationID, to: .answered, origin: origin)
         idempotencyRecords[record.idempotencyScope]?.response = .ask(answer)
-        transitionHandoffLocked(consultationID, to: .completed)
+        transitionHandoffLocked(consultationID, to: .completed, origin: origin)
         consultationRecords.removeValue(forKey: consultationID)
         pruneHandoffsLocked()
         consultationCondition.broadcast()
@@ -1505,10 +1714,11 @@ public final class RelayBroker: @unchecked Sendable {
     private func finishAskLocked(
         handoffID: String,
         state: RelayHandoffState,
-        response: RelayTextResponse
+        response: RelayTextResponse,
+        origin: RelayTransitionOrigin? = nil
     ) {
         guard let record = consultationRecords[handoffID], record.completion == nil else { return }
-        transitionHandoffLocked(handoffID, to: state, detail: response.text)
+        transitionHandoffLocked(handoffID, to: state, detail: response.text, origin: origin)
         idempotencyRecords[record.idempotencyScope]?.response = .ask(response)
         consultationRecords.removeValue(forKey: handoffID)
         pruneHandoffsLocked()
@@ -1712,7 +1922,8 @@ public final class RelayBroker: @unchecked Sendable {
         _ handoffID: String,
         to state: RelayHandoffState,
         detail: String? = nil,
-        failure: RelayFailureAssessment? = nil
+        failure: RelayFailureAssessment? = nil,
+        origin: RelayTransitionOrigin? = nil
     ) {
         guard var handoff = handoffRecords[handoffID] else { return }
         let now = Date()
@@ -1725,7 +1936,12 @@ public final class RelayBroker: @unchecked Sendable {
             handoff.retryDisposition = nil
             handoff.attention = nil
         }
-        handoff.transitions.append(RelayHandoffTransition(state: state, occurredAt: now, detail: detail))
+        handoff.transitions.append(RelayHandoffTransition(
+            state: state,
+            occurredAt: now,
+            detail: detail,
+            origin: origin
+        ))
         handoffRecords[handoffID] = handoff
         handoffJournal?.record(handoff)
     }

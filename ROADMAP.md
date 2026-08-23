@@ -174,11 +174,19 @@ Center provides the detailed operational view.
   returned answer or completion report, timestamps, and delivery receipts.
 - [x] Contextual controls for Focus Source, Focus Target, Cancel Wait, Retry
   Delivery, Return Manually, and Restart for Protocol.
-- [ ] Add a local Dismiss Completed control without deleting the durable record.
+- [x] Add a local Dismiss Completed control without deleting the durable record.
+  Dismissals persist as a UI preference, can be shown or restored, and cannot
+  conceal active work, failures, or unread results.
 - [x] A chronological **Activity** timeline for recorded Ask, answer, relay,
   delegation, failure and interruption transitions.
-- [ ] Extend the timeline with restart, workspace and human-intervention events
+- [x] Extend the timeline with restart, workspace and human-intervention events
   once those operations have authoritative journal records.
+  - [x] Manual Return, Cancel Wait and safe Retry transitions carry a durable
+    human origin and render a HUMAN marker in both Activity and receipts.
+  - [x] Pane restart, workspace creation/closure and saved-layout restoration
+    are written only after the native action succeeds, persisted separately
+    from handoffs in an owner-only bounded journal, and merged into Activity
+    with a HUMAN marker. None is inferred from tmux state after the fact.
 - [x] A small **Core health** section for the local broker, tmux server, socket,
   protocol version and scoped handoff count. Add CLI discovery during first-run
   work; low-level technical details remain behind a disclosure.
@@ -208,7 +216,10 @@ Persist a small append-only record of cross-vendor events:
 - [x] workspace names;
 - [x] question, answer, or delegated instruction;
 - [x] timestamps, outcome, and interruption reason;
-- [ ] deletion per workspace from the native Status Center.
+- [x] deletion per workspace from the native Status Center. It requires a
+  workspace-specific destructive confirmation, removes terminal records from
+  the in-memory projections and both owner-only journals, preserves every
+  active handoff, and never offers an all-workspaces shortcut.
 
 This is collaboration history, not automatic terminal transcription. It stays
 local, can be deleted per workspace, and never captures unrelated pane output.

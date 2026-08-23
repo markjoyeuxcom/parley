@@ -241,6 +241,27 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 write(broker.handoffs(limit: limit), to: client)
                 return
             }
+            if request.method == "GET",
+               request.path == "/activity-events" || request.path.hasPrefix("/activity-events?") {
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                let limit: Int?
+                if request.path == "/activity-events" {
+                    limit = nil
+                } else {
+                    let raw = String(request.path.dropFirst("/activity-events?limit=".count))
+                    guard request.path.hasPrefix("/activity-events?limit="),
+                          let parsed = Int(raw), (1...500).contains(parsed) else {
+                        write(RelayTextResponse(status: 400, text: "activity limit must be between 1 and 500"), to: client)
+                        return
+                    }
+                    limit = parsed
+                }
+                write(broker.activityEvents(limit: limit), to: client)
+                return
+            }
             guard request.method == "POST" else {
                 write(RelayResponse(
                     status: 404,
@@ -255,6 +276,41 @@ public final class RelayHTTPServer: @unchecked Sendable {
             let idempotencyKey = request.headers["x-parley-idempotency-key"]
             let text = String(decoding: request.body, as: UTF8.self)
             switch request.path {
+            case "/ui/activity":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let activity = try? JSONDecoder().decode(
+                    RelayActivityEventRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid activity event request"), to: client)
+                    return
+                }
+                do {
+                    write(try broker.recordActivity(activity), to: client)
+                } catch let error as RelayActivityError {
+                    write(RelayTextResponse(status: 400, text: error.localizedDescription), to: client)
+                } catch {
+                    write(RelayTextResponse(status: 500, text: error.localizedDescription), to: client)
+                }
+            case "/ui/history/delete-workspace":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let scope = try? JSONDecoder().decode(
+                    RelayWorkspaceHistoryDeletionRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid workspace history deletion request"), to: client)
+                    return
+                }
+                write(broker.deleteWorkspaceHistory(
+                    workspaceID: scope.workspaceID,
+                    workspaceName: scope.workspaceName
+                ), to: client)
             case let path where path.hasPrefix("/ui/read/"):
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
@@ -350,7 +406,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                         delivered: nil,
                         submitted: nil,
                         note: nil,
-                        error: "POST /relay, /paste, /ask, /ask-many, /answer/<id>, /delegate, /status, /wait/<id>, /done/<id>, /fail/<id>, /ui/answer/<id>, /ui/cancel/<id>, /ui/retry/<id> or /ui/read/<id>"
+                        error: "POST /relay, /paste, /ask, /ask-many, /answer/<id>, /delegate, /status, /wait/<id>, /done/<id>, /fail/<id>, /ui/activity, /ui/answer/<id>, /ui/cancel/<id>, /ui/retry/<id> or /ui/read/<id>"
                     )
                 ), to: client)
             }
@@ -452,6 +508,23 @@ public final class RelayHTTPServer: @unchecked Sendable {
     private func write(_ handoffs: [RelayHandoff], to client: Int32) {
         guard let body = try? JSONEncoder().encode(handoffs) else {
             write(RelayTextResponse(status: 500, text: "could not encode handoffs"), to: client)
+            return
+        }
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+        send(Data(head.utf8) + body, to: client)
+    }
+
+    private func write(_ events: [RelayActivityEvent], to client: Int32) {
+        writeJSON(events, fallback: "could not encode activity events", to: client)
+    }
+
+    private func write(_ event: RelayActivityEvent, to client: Int32) {
+        writeJSON(event, fallback: "could not encode activity event", to: client)
+    }
+
+    private func writeJSON<Value: Encodable>(_ value: Value, fallback: String, to client: Int32) {
+        guard let body = try? JSONEncoder().encode(value) else {
+            write(RelayTextResponse(status: 500, text: fallback), to: client)
             return
         }
         let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"

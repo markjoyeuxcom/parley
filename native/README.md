@@ -73,7 +73,18 @@ user's default tmux server. The tmux session is named `parley`.
   handoff projections: scoped counts, live work, agent readiness, inspection,
   durable unread results, delivery receipts, recovery actions, activity history
   and core health. Local notifications are opt-in per workspace and contain no
-  prompt or answer text.
+  prompt or answer text. Routine completed records can be dismissed locally and
+  restored later; the owner-only handoff journal is never changed by dismissal.
+  With one workspace explicitly selected, its terminal collaboration history
+  and operational activity can also be permanently deleted after confirmation.
+  Active handoffs and every other workspace are preserved, and there is no
+  delete-all shortcut.
+  Manual Return, Cancel Wait and safe Retry receipts are durably marked HUMAN,
+  so the timeline does not make a person's intervention look automatic.
+  Successful pane restarts, workspace creation/closure and saved-layout
+  restoration are likewise stamped HUMAN in a separate owner-only,
+  500-event `activity-events.jsonl` journal; they are recorded by the native
+  action itself and never reconstructed from tmux output.
 - Pane kind, display name, relay availability, protocol version and legacy
   Return route are tmux pane options.
 - Closing the SwiftUI window detaches the client; tmux and its processes
@@ -147,7 +158,9 @@ content. Each handoff keeps an authoritative transition trail, vendor and
 workspace identities, question and returned answer. The latest 500 are stored
 in an owner-only `handoffs.jsonl` journal for the activity UI. A truncated final
 write is repaired during replay, and periodic owner-only compaction bounds the
-record.
+record. Native lifecycle events use the same bounded and repairable persistence
+posture in the separate `activity-events.jsonl` journal so they remain distinct
+from cross-vendor handoffs.
 
 The native **Waiting** menu can cancel an active Ask through the UI-only control
 capability. This records `cancelled` and releases every waiter without sending

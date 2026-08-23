@@ -3,6 +3,11 @@ import Dispatch
 import Foundation
 import Security
 
+struct RelayWorkspaceHistoryDeletionRequest: Codable {
+    let workspaceID: String
+    let workspaceName: String?
+}
+
 public enum RelayCoreError: LocalizedError {
     case invalidControlToken
     case randomGenerationFailed
@@ -114,6 +119,38 @@ public struct RelayCoreClient: Sendable {
         return try JSONDecoder().decode([RelayHandoff].self, from: response.body)
     }
 
+    public func activityEvents(limit: Int? = nil) throws -> [RelayActivityEvent] {
+        let path = limit.map { "/activity-events?limit=\(min(500, max(1, $0)))" } ?? "/activity-events"
+        let response = try request(
+            method: "GET",
+            path: path,
+            headers: ["X-Parley-Control": controlToken],
+            body: Data()
+        )
+        guard response.status == 200 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return try JSONDecoder().decode([RelayActivityEvent].self, from: response.body)
+    }
+
+    @discardableResult
+    public func recordActivity(_ requestBody: RelayActivityEventRequest) throws -> RelayActivityEvent {
+        let body = try JSONEncoder().encode(requestBody)
+        let response = try request(
+            method: "POST",
+            path: "/ui/activity",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body
+        )
+        guard response.status == 200 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return try JSONDecoder().decode(RelayActivityEvent.self, from: response.body)
+    }
+
     public func unreadHandoffs() throws -> [RelayHandoff] {
         let response = try request(
             method: "GET",
@@ -172,6 +209,26 @@ public struct RelayCoreClient: Sendable {
             path: "/ui/read/\(handoffID)",
             headers: ["X-Parley-Control": controlToken],
             body: Data()
+        )
+        return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
+    public func deleteWorkspaceHistory(
+        workspaceID: String,
+        workspaceName: String?
+    ) throws -> RelayTextResponse {
+        let body = try JSONEncoder().encode(RelayWorkspaceHistoryDeletionRequest(
+            workspaceID: workspaceID,
+            workspaceName: workspaceName
+        ))
+        let response = try request(
+            method: "POST",
+            path: "/ui/history/delete-workspace",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body
         )
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }

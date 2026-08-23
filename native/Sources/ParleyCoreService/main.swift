@@ -55,12 +55,16 @@ do {
     let handoffJournal = try RelayHandoffJournal(
         file: controller.applicationDirectory.appendingPathComponent("handoffs.jsonl")
     )
+    let activityJournal = try RelayActivityJournal(
+        file: controller.applicationDirectory.appendingPathComponent("activity-events.jsonl")
+    )
     let broker = RelayBroker(
         credentials: credentials,
         panes: { try controller.listPanes() },
         paste: { paneID, text in try controller.paste(text, into: paneID, submit: false) },
         submit: { paneID, text in try controller.paste(text, into: paneID, submit: true) },
-        handoffJournal: handoffJournal
+        handoffJournal: handoffJournal,
+        activityJournal: activityJournal
     )
     let server = RelayHTTPServer(
         broker: broker,

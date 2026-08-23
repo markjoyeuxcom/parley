@@ -36,32 +36,32 @@ public struct StatusCenterCounts: Equatable, Sendable {
 
 public struct StatusTimelineEvent: Identifiable, Equatable, Sendable {
     public let id: String
-    public let handoffID: String
-    public let kind: RelayHandoffKind
-    public let sourceName: String
-    public let targetName: String
-    public let state: RelayHandoffState
+    public let handoffID: String?
+    public let title: String
+    public let category: String
+    public let action: String
     public let occurredAt: Date
     public let detail: String?
+    public let origin: RelayTransitionOrigin?
 
     public init(
         id: String,
-        handoffID: String,
-        kind: RelayHandoffKind,
-        sourceName: String,
-        targetName: String,
-        state: RelayHandoffState,
+        handoffID: String?,
+        title: String,
+        category: String,
+        action: String,
         occurredAt: Date,
-        detail: String?
+        detail: String?,
+        origin: RelayTransitionOrigin?
     ) {
         self.id = id
         self.handoffID = handoffID
-        self.kind = kind
-        self.sourceName = sourceName
-        self.targetName = targetName
-        self.state = state
+        self.title = title
+        self.category = category
+        self.action = action
         self.occurredAt = occurredAt
         self.detail = detail
+        self.origin = origin
     }
 }
 
@@ -148,6 +148,22 @@ public struct StatusCenterSnapshot: Equatable, Sendable {
     }
 }
 
+/// Local presentation preferences may hide routine completed records, but
+/// never live work, failures, or a result the person has not viewed. The
+/// durable handoff journal is untouched.
+public enum StatusCenterVisibility {
+    public static func isDismissible(_ handoff: RelayHandoff) -> Bool {
+        handoff.state == .completed && !handoff.hasUnreadResult
+    }
+
+    public static func retainedDismissalIDs(
+        _ dismissedIDs: Set<String>,
+        handoffs: [RelayHandoff]
+    ) -> Set<String> {
+        Set(handoffs.lazy.filter(isDismissible).map(\.id)).intersection(dismissedIDs)
+    }
+}
+
 /// A deterministic view of facts Parley owns. It deliberately does not infer
 /// thinking, idleness, token use, unread output, or vendor-internal state.
 public enum StatusCenterProjection {
@@ -159,8 +175,11 @@ public enum StatusCenterProjection {
     public static func snapshot(
         panes: [TmuxPane],
         handoffs: [RelayHandoff],
+        activityEvents: [RelayActivityEvent] = [],
         workspaceID: String?,
-        coreAvailable: Bool
+        coreAvailable: Bool,
+        dismissedHandoffIDs: Set<String> = [],
+        includeDismissed: Bool = false
     ) -> StatusCenterSnapshot {
         let scopedAgents = panes
             .filter { pane in
@@ -176,6 +195,11 @@ public enum StatusCenterProjection {
             .filter { handoff in
                 guard let workspaceID else { return true }
                 return handoff.sourceWorkspaceID == workspaceID || handoff.targetWorkspaceID == workspaceID
+            }
+            .filter { handoff in
+                includeDismissed
+                    || !dismissedHandoffIDs.contains(handoff.id)
+                    || !StatusCenterVisibility.isDismissible(handoff)
             }
             .sorted { left, right in
                 if left.updatedAt == right.updatedAt { return left.id < right.id }
@@ -203,20 +227,43 @@ public enum StatusCenterProjection {
             condition = .allClear
         }
 
-        let timeline = scopedHandoffs.flatMap { handoff in
+        let handoffTimeline = scopedHandoffs.flatMap { handoff in
             handoff.transitions.enumerated().map { index, transition in
                 StatusTimelineEvent(
                     id: "\(handoff.id):\(index)",
                     handoffID: handoff.id,
-                    kind: handoff.kind,
-                    sourceName: handoff.sourceName,
-                    targetName: handoff.targetName,
-                    state: transition.state,
+                    title: "\(handoff.sourceName) → \(handoff.targetName)",
+                    category: handoff.kind.rawValue.uppercased(),
+                    action: transition.state.rawValue.uppercased(),
                     occurredAt: transition.occurredAt,
-                    detail: transition.detail
+                    detail: transition.detail,
+                    origin: transition.origin
                 )
             }
-        }.sorted { left, right in
+        }
+        let activityTimeline = activityEvents
+            .filter { event in workspaceID == nil || event.workspaceID == workspaceID }
+            .map { event in
+                let isPane = event.kind == .paneRestarted
+                let action: String
+                switch event.kind {
+                case .paneRestarted: action = "RESTARTED"
+                case .workspaceCreated: action = "CREATED"
+                case .workspaceClosed: action = "CLOSED"
+                case .workspaceRestored: action = "RESTORED"
+                }
+                return StatusTimelineEvent(
+                    id: "activity:\(event.id)",
+                    handoffID: nil,
+                    title: isPane ? (event.paneName ?? event.workspaceName) : event.workspaceName,
+                    category: isPane ? "PANE" : "WORKSPACE",
+                    action: action,
+                    occurredAt: event.occurredAt,
+                    detail: event.detail,
+                    origin: event.origin
+                )
+            }
+        let timeline = (handoffTimeline + activityTimeline).sorted { left, right in
             if left.occurredAt == right.occurredAt { return left.id < right.id }
             return left.occurredAt > right.occurredAt
         }

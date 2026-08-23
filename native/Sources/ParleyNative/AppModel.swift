@@ -36,12 +36,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var handoffs: [RelayHandoff] = []
     @Published private(set) var unreadHandoffs: [RelayHandoff] = []
     @Published private(set) var statusHandoffs: [RelayHandoff] = []
+    @Published private(set) var statusActivityEvents: [RelayActivityEvent] = []
     @Published private(set) var controller: TmuxController?
     @Published private(set) var recentFolders: [String] = []
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
     @Published private(set) var coreAvailable = false
     @Published private(set) var tmuxAvailable = false
     @Published private(set) var notificationWorkspaceNames: Set<String> = []
+    @Published private(set) var dismissedHandoffIDs: Set<String> = []
     @Published var startupError: String?
 
     let terminalHandle = TerminalHandle()
@@ -53,6 +55,7 @@ final class AppModel: ObservableObject {
     private var observedNotificationEventIDs: Set<String> = []
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
     private static let notificationWorkspacesKey = "parley.notificationWorkspaces"
+    private static let dismissedHandoffsKey = "parley.dismissedStatusHandoffs"
 
     init() {
         let requestedFolder = Self.argument(named: "--cwd")
@@ -66,6 +69,9 @@ final class AppModel: ObservableObject {
         recentFolders = UserDefaults.standard.stringArray(forKey: Self.recentFoldersKey) ?? []
         notificationWorkspaceNames = Set(
             UserDefaults.standard.stringArray(forKey: Self.notificationWorkspacesKey) ?? []
+        )
+        dismissedHandoffIDs = Set(
+            UserDefaults.standard.stringArray(forKey: Self.dismissedHandoffsKey) ?? []
         )
 
         do {
@@ -325,6 +331,16 @@ final class AppModel: ObservableObject {
             guard let relayClient else { return }
             let history = try relayClient.handoffs(limit: 500)
             if history != statusHandoffs { statusHandoffs = history }
+            let activity = try relayClient.activityEvents(limit: 500)
+            if activity != statusActivityEvents { statusActivityEvents = activity }
+            let retainedDismissals = StatusCenterVisibility.retainedDismissalIDs(
+                dismissedHandoffIDs,
+                handoffs: history
+            )
+            if retainedDismissals != dismissedHandoffIDs {
+                dismissedHandoffIDs = retainedDismissals
+                saveDismissedHandoffs()
+            }
             processNotifications(from: history)
         } catch {
             // Availability flags are updated by refresh; the last authoritative
@@ -332,13 +348,63 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func statusSnapshot(workspaceID: String?) -> StatusCenterSnapshot {
+    func statusSnapshot(workspaceID: String?, includeDismissed: Bool = false) -> StatusCenterSnapshot {
         StatusCenterProjection.snapshot(
             panes: panes,
             handoffs: statusHandoffs.isEmpty ? handoffs : statusHandoffs,
+            activityEvents: statusActivityEvents,
             workspaceID: workspaceID,
-            coreAvailable: coreAvailable
+            coreAvailable: coreAvailable,
+            dismissedHandoffIDs: dismissedHandoffIDs,
+            includeDismissed: includeDismissed
         )
+    }
+
+    func isDismissed(_ handoff: RelayHandoff) -> Bool {
+        dismissedHandoffIDs.contains(handoff.id)
+            && StatusCenterVisibility.isDismissible(handoff)
+    }
+
+    func dismissFromStatusCenter(_ handoff: RelayHandoff) {
+        guard StatusCenterVisibility.isDismissible(handoff) else { return }
+        dismissedHandoffIDs.insert(handoff.id)
+        saveDismissedHandoffs()
+    }
+
+    func restoreToStatusCenter(_ handoff: RelayHandoff) {
+        dismissedHandoffIDs.remove(handoff.id)
+        saveDismissedHandoffs()
+    }
+
+    func restoreAllStatusCenterDismissals() {
+        dismissedHandoffIDs.removeAll()
+        saveDismissedHandoffs()
+    }
+
+    func deleteStatusHistory(for workspace: TmuxWorkspace) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Delete collaboration history for \(workspace.name)?"
+        alert.informativeText = "This permanently deletes completed, cancelled, failed, and interrupted Ask, Delegate, Relay, and Paste records involving this workspace, plus its recorded pane and workspace lifecycle events. Active work is preserved. Returned answers are included, and this cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete History")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+
+        do {
+            guard let relayClient else {
+                throw RelayUIError.message("The Parley coordination core is unavailable.")
+            }
+            let response = try relayClient.deleteWorkspaceHistory(
+                workspaceID: workspace.id,
+                workspaceName: workspace.name
+            )
+            guard response.status == 200 else { throw RelayUIError.message(response.text) }
+            refreshStatusCenterQuietly()
+            return true
+        } catch {
+            NSAlert(error: error).runModal()
+            return false
+        }
     }
 
     func markRead(_ handoff: RelayHandoff) {
@@ -544,7 +610,17 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         perform {
-            try controller?.restartPane(pane.id)
+            guard let controller else { return }
+            try controller.restartPane(pane.id)
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .paneRestarted,
+                workspaceID: pane.windowID,
+                workspaceName: pane.workspaceName ?? pane.windowID,
+                paneID: pane.id,
+                paneName: pane.displayName,
+                paneKind: pane.kind,
+                detail: "\(pane.kind.label) pane restarted."
+            ))
             try refresh()
         }
     }
@@ -625,7 +701,13 @@ final class AppModel: ObservableObject {
             if let existing = workspaces.first(where: { $0.defaultFolder == standardized }) {
                 try controller.selectWorkspace(existing.id)
             } else {
-                _ = try controller.createWorkspace(folder: standardized)
+                let created = try controller.createWorkspace(folder: standardized)
+                try recordSuccessfulActivity(RelayActivityEventRequest(
+                    kind: .workspaceCreated,
+                    workspaceID: created.id,
+                    workspaceName: created.name,
+                    detail: "Opened \(created.defaultFolder)"
+                ))
             }
             rememberFolder(standardized)
             try refresh()
@@ -664,7 +746,14 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         perform {
-            try controller?.closeWorkspace(workspace.id)
+            guard let controller else { return }
+            try controller.closeWorkspace(workspace.id)
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .workspaceClosed,
+                workspaceID: workspace.id,
+                workspaceName: workspace.name,
+                detail: "Closed \(paneCount) pane\(paneCount == 1 ? "" : "s")."
+            ))
             try refresh()
             terminalHandle.focus()
         }
@@ -731,7 +820,13 @@ final class AppModel: ObservableObject {
 
         perform {
             guard let controller else { return }
-            _ = try controller.restoreWorkspaceLayout(layout, replacing: workspace?.id)
+            let restored = try controller.restoreWorkspaceLayout(layout, replacing: workspace?.id)
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .workspaceRestored,
+                workspaceID: restored.id,
+                workspaceName: restored.name,
+                detail: "Opened saved layout \(layout.name); shells started and agent panes left stopped."
+            ))
             rememberFolder(layout.defaultFolder)
             try refresh()
             terminalHandle.focus()
@@ -765,6 +860,10 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(notificationWorkspaceNames.sorted(), forKey: Self.notificationWorkspacesKey)
     }
 
+    private func saveDismissedHandoffs() {
+        UserDefaults.standard.set(dismissedHandoffIDs.sorted(), forKey: Self.dismissedHandoffsKey)
+    }
+
     private func processNotifications(from handoffs: [RelayHandoff]) {
         let events = StatusNotificationProjection.events(handoffs: handoffs)
         for event in events where observedNotificationEventIDs.insert(event.id).inserted {
@@ -784,6 +883,28 @@ final class AppModel: ObservableObject {
             Task {
                 try? await UNUserNotificationCenter.current().add(request)
             }
+        }
+    }
+
+    private func recordSuccessfulActivity(_ request: RelayActivityEventRequest) throws {
+        do {
+            guard let relayClient else {
+                throw RelayUIError.message("The Parley coordination core is unavailable.")
+            }
+            let event = try relayClient.recordActivity(request)
+            statusActivityEvents.removeAll { $0.id == event.id }
+            statusActivityEvents.append(event)
+            statusActivityEvents.sort {
+                if $0.occurredAt == $1.occurredAt { return $0.id < $1.id }
+                return $0.occurredAt > $1.occurredAt
+            }
+            if statusActivityEvents.count > 500 {
+                statusActivityEvents.removeLast(statusActivityEvents.count - 500)
+            }
+        } catch {
+            throw RelayUIError.message(
+                "The operation succeeded, but Parley could not save its activity record: \(error.localizedDescription)"
+            )
         }
     }
 
