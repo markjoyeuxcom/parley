@@ -89,10 +89,18 @@ Safe relay hardening already applied without changing the normal workflow:
   scrub inherited pane credentials when Parley is launched from another pane.
 - [x] Keep lifecycle diagnostics owner-only and drain blocked Ask connections
   during a clean core shutdown.
-- [ ] Establish a real same-user process boundary around the tmux control
-  socket and UI control capability. Until then, relay authentication provides
-  correct routing but cannot contain hostile code already executing as the
-  user's account.
+- [x] Establish a real same-user process boundary around the tmux control
+  socket and UI control capability. Every vendor pane and all descendants now
+  run inside a mandatory macOS Seatbelt profile that denies Parley's private
+  Application Support tree and exact tmux socket while leaving repositories,
+  vendor authentication, normal tools and network access unchanged. The
+  filesystem relay is split into capability-named pane endpoints; a profile
+  reopens only its own endpoint and the core rejects a token presented through
+  any sibling path. Shell panes remain deliberately unsandboxed human shells,
+  and are therefore an explicit trusted boundary rather than an agent surface.
+  The native gate proves ordinary repository access and the pane's relay still
+  work while UI-token reads, sibling endpoint reads and direct tmux control all
+  fail with the operating system's `Operation not permitted` result.
 
 - [x] Give every handoff a stable core-local identifier and a sender-scoped
   idempotency key. The managed command generates the key automatically;

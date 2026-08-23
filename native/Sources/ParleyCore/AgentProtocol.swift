@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "2"
+    public static let version = "3"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)

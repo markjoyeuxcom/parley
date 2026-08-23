@@ -640,15 +640,26 @@ public final class TmuxController {
             // Agents get the narrow relay capability, not the tmux discovery
             // variables. The authenticated broker exposes attributed relay,
             // explicit unsent paste, and correlated Ask—not raw tmux control.
-            if let relayRuntime {
-                let token = try relayRuntime.credentials.token(for: paneID)
-                let path = "\(relayRuntime.shimDirectory.path):\(environment["PATH"] ?? "/usr/bin:/bin")"
-                arguments.append(contentsOf: [
-                    "-e", "PARLEY_RELAY_INFO=\(relayRuntime.infoFile.path)",
-                    "-e", "PARLEY_RELAY_TOKEN=\(token)",
-                    "-e", "PATH=\(path)",
-                ])
+            guard let relayRuntime else {
+                throw ParleyTmuxError.commandFailed(
+                    "Parley cannot start an agent without its protected relay boundary. Shell panes remain available."
+                )
             }
+            let token = try relayRuntime.credentials.token(for: paneID)
+            let path = "\(relayRuntime.shimDirectory.path):\(environment["PATH"] ?? "/usr/bin:/bin")"
+            arguments.append(contentsOf: [
+                "-e", "PARLEY_RELAY_TOKEN=\(token)",
+                "-e", "PATH=\(path)",
+            ])
+            let boundary = try AgentProcessBoundary(
+                applicationDirectory: applicationDirectory,
+                protocolDirectory: protocolDirectory,
+                shimDirectory: relayRuntime.shimDirectory,
+                tmuxSocket: socketPath,
+                transportDirectory: relayRuntime.transportDirectory,
+                paneToken: token,
+                fileManager: fileManager
+            )
             arguments.append(contentsOf: ["-e", "PARLEY_PROTOCOL_VERSION=\(AgentProtocol.version)"])
             for (key, value) in AgentProtocol.environment(
                 for: kind,
@@ -657,6 +668,7 @@ public final class TmuxController {
             ).sorted(by: { $0.key < $1.key }) {
                 arguments.append(contentsOf: ["-e", "\(key)=\(value)"])
             }
+            arguments.append(contentsOf: boundary.arguments)
             arguments.append(contentsOf: ["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE"])
         }
         arguments.append(contentsOf: AgentProtocol.command(for: kind, protocolDirectory: protocolDirectory))

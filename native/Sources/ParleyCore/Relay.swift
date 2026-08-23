@@ -116,6 +116,15 @@ public final class RelayCredentials: @unchecked Sendable {
         }
     }
 
+    public func allTokens() throws -> [String] {
+        try lock.withLock {
+            try withFileLock {
+                try reloadLocked()
+                return Array(byPane.values)
+            }
+        }
+    }
+
     private func reloadLocked() throws {
         guard FileManager.default.fileExists(atPath: file.path) else {
             byPane = [:]
@@ -177,11 +186,18 @@ public final class RelayCredentials: @unchecked Sendable {
 public struct RelayRuntime: Sendable {
     public let infoFile: URL
     public let shimDirectory: URL
+    public let transportDirectory: URL
     public let credentials: RelayCredentials
 
-    public init(infoFile: URL, shimDirectory: URL, credentials: RelayCredentials) {
+    public init(
+        infoFile: URL,
+        shimDirectory: URL,
+        transportDirectory: URL,
+        credentials: RelayCredentials
+    ) {
         self.infoFile = infoFile
         self.shimDirectory = shimDirectory
+        self.transportDirectory = transportDirectory
         self.credentials = credentials
     }
 }
@@ -2264,8 +2280,20 @@ public enum RelayShim {
     fi
 
     transport_root=__PARLEY_TRANSPORT_ROOT__
-    inbox="$transport_root/inbox"
-    outbox="$transport_root/outbox"
+    pane_token="${PARLEY_RELAY_TOKEN:-}"
+    case "$pane_token" in
+      *[!a-f0-9]*|"")
+        echo "the Parley pane capability is invalid" >&2
+        exit 2
+        ;;
+    esac
+    if [ "${#pane_token}" -ne 48 ]; then
+      echo "the Parley pane capability is invalid" >&2
+      exit 2
+    fi
+    endpoint="$transport_root/$pane_token"
+    inbox="$endpoint/inbox"
+    outbox="$endpoint/outbox"
     expected_owner="$(/usr/bin/id -u)"
 
     protected_directory() {
@@ -2276,7 +2304,7 @@ public enum RelayShim {
     }
 
     heartbeat_is_fresh() {
-      heartbeat="$transport_root/heartbeat"
+      heartbeat="$endpoint/heartbeat"
       [ -f "$heartbeat" ] && [ ! -L "$heartbeat" ] || return 1
       modified="$(/usr/bin/stat -f '%m' "$heartbeat" 2>/dev/null || printf '0')"
       now="$(/bin/date '+%s')"
@@ -2306,7 +2334,7 @@ public enum RelayShim {
     trap cleanup EXIT
 
     post() {
-      if ! protected_directory "$transport_root" || ! protected_directory "$inbox" || ! protected_directory "$outbox" || ! heartbeat_is_fresh; then
+      if ! protected_directory "$endpoint" || ! protected_directory "$inbox" || ! protected_directory "$outbox" || ! heartbeat_is_fresh; then
         echo "the Parley relay broker is not running" >&2
         return 2
       fi
@@ -2319,7 +2347,7 @@ public enum RelayShim {
       /usr/bin/printf '%s' "$target" > "$request_dir/target"
       /usr/bin/printf '%s' "$item" > "$request_dir/item"
       /usr/bin/printf '%s' "$idempotency_key" > "$request_dir/idempotency-key"
-      /usr/bin/printf '%s' "${PARLEY_RELAY_TOKEN:-}" > "$request_dir/token"
+      /usr/bin/printf '%s' "$pane_token" > "$request_dir/token"
       /bin/cat > "$request_dir/body"
       /usr/bin/printf '%s' ready > "$request_dir/ready"
 

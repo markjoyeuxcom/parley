@@ -180,6 +180,15 @@ Agent processes receive the broker credential and shim path, not raw tmux
 control. Remove `TMUX` and `TMUX_PANE` from their environments and do not
 expose the socket path as a shortcut.
 
+Every vendor process tree must also be launched through
+`AgentProcessBoundary`. Its macOS Seatbelt profile denies the complete Parley
+Application Support directory and exact tmux socket, then reopens only the
+generated protocol, managed shim and that pane's capability-named filesystem
+relay endpoint. `RelayFileTransport` must reject a token used through a
+different endpoint. Do not weaken this to Unix modes: processes in adjacent
+panes share a user id. A Shell pane remains a deliberately unsandboxed human
+shell and is the explicit trusted side of this boundary.
+
 ## Shared protocol and vendor launch behavior
 
 `AgentProtocol.version` is stamped into the process environment and a tmux

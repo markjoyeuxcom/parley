@@ -163,6 +163,7 @@ final class AppModel: ObservableObject {
             controller.configureRelay(RelayRuntime(
                 infoFile: infoFile,
                 shimDirectory: shimDirectory,
+                transportDirectory: agentTransportDirectory,
                 credentials: credentials
             ))
             let relayClient: RelayCoreClient?

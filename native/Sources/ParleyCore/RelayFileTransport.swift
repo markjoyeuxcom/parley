@@ -17,15 +17,17 @@ public enum RelayFileTransportError: LocalizedError {
 }
 
 /// A sandbox-compatible request/response door for commands issued from agent
-/// panes. Codex denies network syscalls, including Unix-domain sockets, but it
-/// permits owner-only file I/O under `/tmp`. The native UI continues to use the
-/// relay socket; this transport carries only pane-authenticated agent commands.
+/// panes. Each pane receives one capability-named endpoint and its mandatory
+/// outer process sandbox denies every sibling endpoint. The native UI continues
+/// to use the relay socket; this transport carries only pane-authenticated agent
+/// commands.
 public final class RelayFileTransport: @unchecked Sendable {
     public static let maximumBodyBytes = 200_000
 
     public let runtimeDirectory: URL
 
     private let broker: RelayBroker
+    private let credentials: RelayCredentials
     private let fileManager: FileManager
     private let queue = DispatchQueue(label: "parley.native.agent-file-transport", qos: .utility)
     private let workers = DispatchGroup()
@@ -33,25 +35,23 @@ public final class RelayFileTransport: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private var lastHeartbeat = Date.distantPast
 
-    private var inbox: URL { runtimeDirectory.appendingPathComponent("inbox", isDirectory: true) }
-    private var processing: URL { runtimeDirectory.appendingPathComponent("processing", isDirectory: true) }
-    private var outbox: URL { runtimeDirectory.appendingPathComponent("outbox", isDirectory: true) }
-    private var heartbeat: URL { runtimeDirectory.appendingPathComponent("heartbeat", isDirectory: false) }
     private var handoverMarker: URL { runtimeDirectory.appendingPathComponent("preserve-next-start", isDirectory: false) }
 
     public init(
         broker: RelayBroker,
+        credentials: RelayCredentials,
         runtimeDirectory: URL,
         fileManager: FileManager = .default
     ) {
         self.broker = broker
+        self.credentials = credentials
         self.runtimeDirectory = runtimeDirectory
         self.fileManager = fileManager
     }
 
     public static func runtimeDirectory(
         applicationDirectory: URL,
-        temporaryRoot: URL = URL(fileURLWithPath: "/tmp", isDirectory: true)
+        temporaryRoot: URL = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
     ) -> URL {
         var hash: UInt64 = 14_695_981_039_346_656_037
         for byte in applicationDirectory.standardizedFileURL.path.utf8 {
@@ -62,14 +62,47 @@ public final class RelayFileTransport: @unchecked Sendable {
         return temporaryRoot.appendingPathComponent("parley-native-\(getuid())-\(suffix)", isDirectory: true)
     }
 
+    public static func endpointDirectory(runtimeDirectory: URL, paneToken: String) -> URL {
+        runtimeDirectory.appendingPathComponent(paneToken, isDirectory: true)
+    }
+
+    @discardableResult
+    public static func prepareEndpoint(
+        runtimeDirectory: URL,
+        paneToken: String,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        guard isPaneCapability(paneToken) else {
+            throw RelayFileTransportError.invalidRuntimeDirectory("invalid pane capability")
+        }
+        try prepareDirectory(runtimeDirectory, createParents: true, fileManager: fileManager)
+        let endpoint = endpointDirectory(runtimeDirectory: runtimeDirectory, paneToken: paneToken)
+        try prepareDirectory(endpoint, createParents: false, fileManager: fileManager)
+        for name in ["inbox", "processing", "outbox"] {
+            try prepareDirectory(
+                endpoint.appendingPathComponent(name, isDirectory: true),
+                createParents: false,
+                fileManager: fileManager
+            )
+        }
+        return endpoint
+    }
+
     public func start() throws {
         try lock.withLock {
             guard timer == nil else { throw RelayFileTransportError.runtime("transport is already running") }
-            try prepareRuntimeDirectories()
+            try Self.prepareDirectory(runtimeDirectory, createParents: true, fileManager: fileManager)
+            for token in try credentials.allTokens() {
+                _ = try Self.prepareEndpoint(
+                    runtimeDirectory: runtimeDirectory,
+                    paneToken: token,
+                    fileManager: fileManager
+                )
+            }
             if try consumeHandoverMarker() == false {
                 try discardStaleExchangeFiles()
             }
-            try writeHeartbeat()
+            try writeHeartbeats()
 
             let source = DispatchSource.makeTimerSource(queue: queue)
             source.schedule(deadline: .now(), repeating: .milliseconds(50), leeway: .milliseconds(10))
@@ -84,7 +117,9 @@ public final class RelayFileTransport: @unchecked Sendable {
             timer?.cancel()
             timer = nil
         }
-        try? fileManager.removeItem(at: heartbeat)
+        for endpoint in endpointDirectories() {
+            try? fileManager.removeItem(at: heartbeat(in: endpoint))
+        }
         _ = workers.wait(timeout: .now() + 2)
     }
 
@@ -98,42 +133,47 @@ public final class RelayFileTransport: @unchecked Sendable {
 
     private func serviceTick() {
         if Date().timeIntervalSince(lastHeartbeat) >= 1 {
-            try? writeHeartbeat()
+            try? writeHeartbeats()
         }
-        guard let candidates = try? fileManager.contentsOfDirectory(
-            at: inbox,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else { return }
+        for endpoint in endpointDirectories() {
+            let inbox = endpoint.appendingPathComponent("inbox", isDirectory: true)
+            let processing = endpoint.appendingPathComponent("processing", isDirectory: true)
+            guard let candidates = try? fileManager.contentsOfDirectory(
+                at: inbox,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else { continue }
 
-        for candidate in candidates.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            let requestID = candidate.lastPathComponent
-            guard Self.isRequestID(requestID),
-                  fileManager.fileExists(atPath: candidate.appendingPathComponent("ready").path) else { continue }
-            let claimed = processing.appendingPathComponent(requestID, isDirectory: true)
-            do {
-                try fileManager.moveItem(at: candidate, to: claimed)
-            } catch {
-                continue
-            }
-            workers.enter()
-            let workers = workers
-            DispatchQueue.global(qos: .utility).async { [weak self] in
-                defer { workers.leave() }
-                self?.process(requestID: requestID, directory: claimed)
+            for candidate in candidates.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                let requestID = candidate.lastPathComponent
+                guard Self.isRequestID(requestID),
+                      fileManager.fileExists(atPath: candidate.appendingPathComponent("ready").path) else { continue }
+                let claimed = processing.appendingPathComponent(requestID, isDirectory: true)
+                do {
+                    try fileManager.moveItem(at: candidate, to: claimed)
+                } catch {
+                    continue
+                }
+                workers.enter()
+                let workers = workers
+                DispatchQueue.global(qos: .utility).async { [weak self] in
+                    defer { workers.leave() }
+                    self?.process(requestID: requestID, directory: claimed, endpoint: endpoint)
+                }
             }
         }
     }
 
-    private func process(requestID: String, directory: URL) {
+    private func process(requestID: String, directory: URL, endpoint: URL) {
         let request: FileRequest
         do {
-            request = try readRequest(from: directory)
+            request = try readRequest(from: directory, expectedToken: endpoint.lastPathComponent)
         } catch {
             try? fileManager.removeItem(at: directory)
             try? writeResponse(
                 FileResponse(status: 400, body: error.localizedDescription),
-                requestID: requestID
+                requestID: requestID,
+                endpoint: endpoint
             )
             return
         }
@@ -142,7 +182,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         // Ask or wait begins. The worker retains only its in-memory value.
         try? fileManager.removeItem(at: directory)
         let response = route(request)
-        try? writeResponse(response, requestID: requestID)
+        try? writeResponse(response, requestID: requestID, endpoint: endpoint)
     }
 
     private func route(_ request: FileRequest) -> FileResponse {
@@ -224,17 +264,21 @@ public final class RelayFileTransport: @unchecked Sendable {
         FileResponse(status: response.status, body: response.text)
     }
 
-    private func readRequest(from directory: URL) throws -> FileRequest {
+    private func readRequest(from directory: URL, expectedToken: String) throws -> FileRequest {
         try validateDirectory(directory)
         let command = try readField("command", from: directory, maximumBytes: 32)
         let allowed = ["relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "done", "fail"]
         guard allowed.contains(command) else { throw RelayFileTransportError.runtime("unknown command") }
+        let token = try readField("token", from: directory, maximumBytes: 256)
+        guard token == expectedToken else {
+            throw RelayFileTransportError.runtime("pane capability does not match its endpoint")
+        }
         let request = FileRequest(
             command: command,
             target: try readField("target", from: directory, maximumBytes: 1_024),
             item: try readField("item", from: directory, maximumBytes: 128),
             idempotencyKey: try readField("idempotency-key", from: directory, maximumBytes: 128),
-            token: try readField("token", from: directory, maximumBytes: 256),
+            token: token,
             body: try readField("body", from: directory, maximumBytes: Self.maximumBodyBytes)
         )
         return request
@@ -259,8 +303,9 @@ public final class RelayFileTransport: @unchecked Sendable {
         return text
     }
 
-    private func writeResponse(_ response: FileResponse, requestID: String) throws {
+    private func writeResponse(_ response: FileResponse, requestID: String, endpoint: URL) throws {
         guard Self.isRequestID(requestID) else { return }
+        let outbox = endpoint.appendingPathComponent("outbox", isDirectory: true)
         let directory = outbox.appendingPathComponent(requestID, isDirectory: true)
         guard !fileManager.fileExists(atPath: directory.path) else { return }
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -269,14 +314,11 @@ public final class RelayFileTransport: @unchecked Sendable {
         try writeProtected("ready", to: directory.appendingPathComponent("ready"))
     }
 
-    private func prepareRuntimeDirectories() throws {
-        try prepareDirectory(runtimeDirectory, createParents: true)
-        try prepareDirectory(inbox, createParents: false)
-        try prepareDirectory(processing, createParents: false)
-        try prepareDirectory(outbox, createParents: false)
-    }
-
-    private func prepareDirectory(_ directory: URL, createParents: Bool) throws {
+    private static func prepareDirectory(
+        _ directory: URL,
+        createParents: Bool,
+        fileManager: FileManager
+    ) throws {
         var metadata = stat()
         if lstat(directory.path, &metadata) != 0 {
             guard errno == ENOENT else {
@@ -311,14 +353,17 @@ public final class RelayFileTransport: @unchecked Sendable {
     }
 
     private func discardStaleExchangeFiles() throws {
-        for directory in [inbox, processing, outbox] {
-            let entries = try fileManager.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: nil,
-                options: []
-            )
-            for entry in entries {
-                try fileManager.removeItem(at: entry)
+        for endpoint in endpointDirectories() {
+            for name in ["inbox", "processing", "outbox"] {
+                let directory = endpoint.appendingPathComponent(name, isDirectory: true)
+                let entries = try fileManager.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: nil,
+                    options: []
+                )
+                for entry in entries {
+                    try fileManager.removeItem(at: entry)
+                }
             }
         }
     }
@@ -336,9 +381,31 @@ public final class RelayFileTransport: @unchecked Sendable {
         return true
     }
 
-    private func writeHeartbeat() throws {
-        try writeProtected(String(Int(Date().timeIntervalSince1970)), to: heartbeat)
+    private func writeHeartbeats() throws {
+        for endpoint in endpointDirectories() {
+            try writeProtected(
+                String(Int(Date().timeIntervalSince1970)),
+                to: heartbeat(in: endpoint)
+            )
+        }
         lastHeartbeat = Date()
+    }
+
+    private func endpointDirectories() -> [URL] {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: runtimeDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return entries
+            .filter { Self.isPaneCapability($0.lastPathComponent) }
+            .filter { (try? validateDirectory($0)) != nil }
+            .prefix(256)
+            .map { $0 }
+    }
+
+    private func heartbeat(in endpoint: URL) -> URL {
+        endpoint.appendingPathComponent("heartbeat", isDirectory: false)
     }
 
     private func writeProtected(_ value: String, to file: URL) throws {
@@ -349,6 +416,14 @@ public final class RelayFileTransport: @unchecked Sendable {
     private static func isRequestID(_ value: String) -> Bool {
         guard value == value.lowercased(), UUID(uuidString: value) != nil else { return false }
         return value.count == 36
+    }
+
+    private static func isPaneCapability(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        return bytes.count == 48 && bytes.allSatisfy {
+            (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0)
+                || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains($0)
+        }
     }
 }
 

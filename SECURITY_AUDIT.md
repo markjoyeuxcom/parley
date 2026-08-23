@@ -39,10 +39,20 @@ this report was written:
 - `core.log` is now mode `0600`, and graceful core shutdown drains blocked Ask
   responses so a caller receives an explicit interruption instead of an empty
   HTTP reply.
+- Vendor agent panes and every descendant now start through a mandatory macOS
+  Seatbelt profile. The profile denies Parley's complete Application Support
+  tree and exact tmux socket, while allowing the generated protocol, managed
+  shim and only that pane's capability-named filesystem relay endpoint. The
+  core also rejects a credential presented through a sibling endpoint. A live
+  native gate proves repository and own-endpoint access remain functional while
+  control-token reads, sibling endpoint reads and direct tmux commands fail at
+  the OS boundary. This contains findings 1 and 2 for Parley-launched vendor
+  process trees. Shell panes remain deliberately unsandboxed, user-controlled
+  shells and must be treated as trusted.
 
-Findings 1-3, 6, 8, and the stronger same-user portions of findings 2 and 7
-remain open and are tracked as security architecture work rather than being
-represented as solved by Unix file modes.
+The confused-deputy risk in finding 3, argument visibility in finding 6 and
+hardening outside Parley-launched vendor process trees remain distinct concerns;
+they are not represented as solved by this process boundary.
 
 ## Critical
 

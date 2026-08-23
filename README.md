@@ -195,9 +195,14 @@ Runtime files live under:
 That directory contains the isolated tmux socket and configuration, relay and
 UI-control credentials, core discovery state, logs and the generated shared
 agent protocol. Pane credentials identify the exact agent making a request.
-Agent processes receive the broker capability but not the UI capability or
-tmux's control variables. The relay locator accepts only Parley's local Unix
-socket; remote HTTP endpoints are never valid relay destinations.
+Agent processes receive only their own broker capability. Every vendor CLI and
+its descendants run inside a mandatory macOS process profile that denies the
+UI capability, Parley's private runtime files, the tmux control socket and
+every other pane's relay endpoint. Repository files, vendor authentication,
+ordinary tools and network access remain available. Shell panes are normal,
+unsandboxed user shells and are explicitly trusted. The relay locator accepts
+only Parley's local Unix socket; remote HTTP endpoints are never valid relay
+destinations.
 
 ## Requirements
 

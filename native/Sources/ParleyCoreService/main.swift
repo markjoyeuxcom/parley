@@ -82,6 +82,7 @@ do {
     )
     let agentTransport = RelayFileTransport(
         broker: broker,
+        credentials: credentials,
         runtimeDirectory: agentTransportDirectory
     )
     let server = RelayHTTPServer(

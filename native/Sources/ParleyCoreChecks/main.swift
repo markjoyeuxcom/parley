@@ -1052,6 +1052,7 @@ private func checkDirectAgentSpawn() throws {
     controller.configureRelay(RelayRuntime(
         infoFile: directory.appendingPathComponent("relay-url"),
         shimDirectory: directory.appendingPathComponent("bin"),
+        transportDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: directory),
         credentials: credentials
     ))
 
@@ -1067,12 +1068,88 @@ private func checkDirectAgentSpawn() throws {
     try expect(respawn.arguments.contains("TMUX"), "agent retained tmux control discovery")
     try expect(respawn.arguments.contains("PARLEY_PANE_ID=%2"), "agent did not receive its pane identity")
     try expect(respawn.arguments.contains(where: { $0.hasPrefix("PARLEY_RELAY_TOKEN=") }), "agent did not receive a relay credential")
-    try expect(respawn.arguments.contains("PARLEY_RELAY_INFO=\(directory.appendingPathComponent("relay-url").path)"), "agent did not receive the persistent relay locator")
+    try expect(!respawn.arguments.contains(where: { $0.hasPrefix("PARLEY_RELAY_INFO=") }), "agent retained the UI relay locator")
+    try expect(respawn.arguments.contains("/usr/bin/sandbox-exec"), "agent did not receive the mandatory process boundary")
     try expect(respawn.arguments.contains("PARLEY_PROTOCOL_VERSION=\(AgentProtocol.version)"), "agent did not receive the protocol version")
+    let sandboxIndex = try require(respawn.arguments.firstIndex(of: "/usr/bin/sandbox-exec"), "agent boundary position disappeared")
+    let protocolIndex = try require(
+        respawn.arguments.firstIndex(of: "PARLEY_PROTOCOL_VERSION=\(AgentProtocol.version)"),
+        "protocol environment position disappeared"
+    )
+    try expect(protocolIndex < sandboxIndex, "tmux environment options were placed inside the sandbox command argv")
     try expect(!respawn.arguments.contains("/bin/sh"), "agent spawn invoked /bin/sh")
     try expect(!respawn.arguments.contains(where: { $0.contains("sh -c") }), "agent spawn built a shell command string")
     try expect(pane.relayEnabled, "new agent pane was not stamped relay-ready")
     try expect(pane.protocolVersion == AgentProtocol.version, "new agent pane was not stamped with its injected protocol version")
+}
+
+private func checkAgentProcessBoundaryIsMandatoryAndPaneScoped() throws {
+    let root = URL(
+        fileURLWithPath: "/tmp/parley-boundary-\(UUID().uuidString.prefix(8))",
+        isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let applicationDirectory = root.appendingPathComponent("application", isDirectory: true)
+    let protocolDirectory = applicationDirectory.appendingPathComponent("agent-protocol", isDirectory: true)
+    let shimDirectory = applicationDirectory.appendingPathComponent("bin", isDirectory: true)
+    let transportDirectory = root.appendingPathComponent("agent-transport", isDirectory: true)
+    try FileManager.default.createDirectory(at: protocolDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: shimDirectory, withIntermediateDirectories: true)
+    let token = String(repeating: "a", count: 48)
+
+    let boundary = try AgentProcessBoundary(
+        applicationDirectory: applicationDirectory,
+        protocolDirectory: protocolDirectory,
+        shimDirectory: shimDirectory,
+        tmuxSocket: applicationDirectory.appendingPathComponent("tmux.sock"),
+        transportDirectory: transportDirectory,
+        paneToken: token
+    )
+
+    try expect(boundary.arguments.prefix(2) == ["/usr/bin/sandbox-exec", "-p"], "agent boundary did not invoke the macOS sandbox")
+    let profile = try require(boundary.arguments.dropFirst(2).first, "agent boundary omitted its sandbox profile")
+    try expect(profile.contains("deny file-read* file-write*"), "agent boundary did not protect Parley's private files")
+    try expect(
+        profile.contains(applicationDirectory.resolvingSymlinksInPath().path),
+        "agent boundary did not protect the application directory"
+    )
+    try expect(profile.contains("deny network-outbound"), "agent boundary did not protect the tmux control socket")
+    try expect(
+        profile.contains(applicationDirectory.appendingPathComponent("tmux.sock").resolvingSymlinksInPath().path),
+        "agent boundary omitted the exact tmux socket"
+    )
+    try expect(
+        profile.contains(transportDirectory.resolvingSymlinksInPath().path),
+        "agent boundary did not isolate the relay transport root"
+    )
+    try expect(
+        profile.contains(boundary.endpointDirectory.resolvingSymlinksInPath().path),
+        "agent boundary did not reopen only this pane's relay endpoint"
+    )
+    try expect(
+        boundary.endpointDirectory == RelayFileTransport.endpointDirectory(
+            runtimeDirectory: transportDirectory,
+            paneToken: token
+        ),
+        "agent boundary and relay transport disagreed about the pane endpoint"
+    )
+    let attributes = try FileManager.default.attributesOfItem(atPath: boundary.endpointDirectory.path)
+    try expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o700, "pane relay endpoint was not owner-only")
+
+    do {
+        _ = try AgentProcessBoundary(
+            applicationDirectory: applicationDirectory,
+            protocolDirectory: protocolDirectory,
+            shimDirectory: shimDirectory,
+            tmuxSocket: applicationDirectory.appendingPathComponent("tmux.sock"),
+            transportDirectory: transportDirectory,
+            paneToken: "not-a-capability"
+        )
+        throw CheckFailure(description: "agent boundary accepted a malformed pane capability")
+    } catch is AgentProcessBoundaryError {
+        // Expected: a path component must never be derived from untrusted text.
+    }
 }
 
 private func checkStoppedAgentStartsOnlyThroughExplicitAction() throws {
@@ -1098,6 +1175,7 @@ private func checkStoppedAgentStartsOnlyThroughExplicitAction() throws {
     controller.configureRelay(RelayRuntime(
         infoFile: directory.appendingPathComponent("relay-url"),
         shimDirectory: directory.appendingPathComponent("bin"),
+        transportDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: directory),
         credentials: credentials
     ))
 
@@ -1191,6 +1269,105 @@ private func checkRealTmuxShellLifecycle() throws {
     try expect(
         !remainingPanes.contains(where: { $0.id == shell.id }),
         "closed real shell pane remained in tmux"
+    )
+}
+
+private func checkRealAgentProcessBoundary() throws {
+    let environment = EnvironmentResolver.resolved()
+    let tmux = try require(
+        TmuxController.findTmux(environment: environment),
+        "agent process boundary check could not find tmux"
+    )
+    let root = URL(
+        fileURLWithPath: "/private/tmp/parley-live-boundary-\(UUID().uuidString.prefix(8))",
+        isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let applicationDirectory = root.appendingPathComponent("application", isDirectory: true)
+    let repositoryDirectory = root.appendingPathComponent("repository", isDirectory: true)
+    let shimDirectory = applicationDirectory.appendingPathComponent("bin", isDirectory: true)
+    let transportDirectory = root.appendingPathComponent("transport", isDirectory: true)
+    try FileManager.default.createDirectory(at: repositoryDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: shimDirectory, withIntermediateDirectories: true)
+    let controller = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: applicationDirectory,
+        sessionName: "parley-boundary-check",
+        environment: environment
+    )
+    defer {
+        _ = try? ProcessCommandRunner(timeout: 2).run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "kill-server"],
+            environment: controller.environment,
+            input: nil
+        )
+    }
+    try controller.bootstrap(cwd: repositoryDirectory.path)
+
+    let credentials = try RelayCredentials(
+        file: applicationDirectory.appendingPathComponent("relay-tokens.json")
+    )
+    let sourceToken = try credentials.token(for: "%1")
+    let siblingToken = try credentials.token(for: "%2")
+    let boundary = try AgentProcessBoundary(
+        applicationDirectory: applicationDirectory,
+        protocolDirectory: controller.protocolDirectory,
+        shimDirectory: shimDirectory,
+        tmuxSocket: controller.socketPath,
+        transportDirectory: transportDirectory,
+        paneToken: sourceToken
+    )
+    let siblingEndpoint = try RelayFileTransport.prepareEndpoint(
+        runtimeDirectory: transportDirectory,
+        paneToken: siblingToken
+    )
+    let privateControl = applicationDirectory.appendingPathComponent("core-control-token")
+    let repositoryProbe = repositoryDirectory.appendingPathComponent("probe")
+    let ownProbe = boundary.endpointDirectory.appendingPathComponent("probe")
+    let siblingProbe = siblingEndpoint.appendingPathComponent("probe")
+    try Data("private".utf8).write(to: privateControl, options: .atomic)
+    try Data("repository".utf8).write(to: repositoryProbe, options: .atomic)
+    try Data("own-endpoint".utf8).write(to: ownProbe, options: .atomic)
+    try Data("sibling-endpoint".utf8).write(to: siblingProbe, options: .atomic)
+
+    let runner = ProcessCommandRunner(timeout: 3)
+    func sandboxed(_ command: [String]) throws -> CommandOutput {
+        try runner.run(
+            executable: URL(fileURLWithPath: boundary.arguments[0]),
+            arguments: Array(boundary.arguments.dropFirst()) + command,
+            environment: environment,
+            input: nil
+        )
+    }
+
+    let repositoryRead = try sandboxed(["/bin/cat", repositoryProbe.path])
+    try expect(
+        repositoryRead.status == 0 && repositoryRead.stdoutText == "repository",
+        "agent boundary blocked ordinary repository access"
+    )
+    let ownRead = try sandboxed(["/bin/cat", ownProbe.path])
+    try expect(
+        ownRead.status == 0 && ownRead.stdoutText == "own-endpoint",
+        "agent boundary blocked its own relay endpoint"
+    )
+    let privateRead = try sandboxed(["/bin/cat", privateControl.path])
+    try expect(
+        privateRead.status != 0,
+        "agent boundary exposed the UI control capability: status=\(privateRead.status) stdout=\(privateRead.stdoutText) stderr=\(privateRead.stderrText) profile=\(boundary.arguments[2])"
+    )
+    let siblingRead = try sandboxed(["/bin/cat", siblingProbe.path])
+    try expect(siblingRead.status != 0, "agent boundary exposed another pane's relay endpoint")
+    let tmuxRead = try sandboxed([
+        tmux.path,
+        "-S", controller.socketPath.path,
+        "list-panes", "-s", "-F", "#{pane_id}",
+    ])
+    try expect(tmuxRead.status != 0, "agent boundary exposed direct tmux control")
+    try expect(
+        tmuxRead.stderrText.localizedCaseInsensitiveContains("operation not permitted"),
+        "tmux denial did not come from the macOS process boundary: \(tmuxRead.stderrText)"
     )
 }
 
@@ -1298,7 +1475,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "2", "tracked delegation did not advance the shared protocol version")
+    try expect(AgentProtocol.version == "3", "the agent process boundary did not advance the shared protocol version")
     for command in ["parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait"] {
         try expect(AgentProtocol.text.contains(command), "shared protocol omitted \(command)")
     }
@@ -1522,7 +1699,7 @@ private func checkDelegationShimRoundTrip() throws {
     )
     let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
     let shimDirectory = try RelayShim.install(in: directory, transportDirectory: transportDirectory)
-    let transport = RelayFileTransport(broker: broker, runtimeDirectory: transportDirectory)
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory)
     try transport.start()
     defer {
         broker.cancelAll()
@@ -1619,6 +1796,7 @@ private func checkCopilotAgentSpawn() throws {
     controller.configureRelay(RelayRuntime(
         infoFile: directory.appendingPathComponent("relay-url"),
         shimDirectory: directory.appendingPathComponent("bin"),
+        transportDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: directory),
         credentials: credentials
     ))
 
@@ -2871,6 +3049,7 @@ private func checkRestartRotatesRelayCredential() throws {
     controller.configureRelay(RelayRuntime(
         infoFile: directory.appendingPathComponent("relay-url"),
         shimDirectory: directory.appendingPathComponent("bin"),
+        transportDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: directory),
         credentials: credentials
     ))
 
@@ -2909,7 +3088,7 @@ private func checkRelayFilesystemRoundTrip() throws {
     )
     let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
     let shimDirectory = try RelayShim.install(in: directory, transportDirectory: transportDirectory)
-    let transport = RelayFileTransport(broker: broker, runtimeDirectory: transportDirectory)
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory)
     try transport.start()
     defer { transport.stop() }
     let relayEnvironment = ProcessInfo.processInfo.environment.merging([
@@ -2955,8 +3134,12 @@ private func checkRelayFilesystemRoundTrip() throws {
     try expect(pasted.value?.text == "Agy said:\n\ndraft body", "paste filesystem transport changed the explicit body")
     try expect(eventually {
         let names = ["inbox", "processing", "outbox"]
+        let endpoint = RelayFileTransport.endpointDirectory(
+            runtimeDirectory: transportDirectory,
+            paneToken: token
+        )
         return names.allSatisfy { name in
-            let path = transportDirectory.appendingPathComponent(name)
+            let path = endpoint.appendingPathComponent(name)
             return (try? FileManager.default.contentsOfDirectory(atPath: path.path).isEmpty) == true
         }
     }, "completed filesystem exchanges retained request, credential, or response files")
@@ -2975,25 +3158,26 @@ private func checkRelayShimUsesPinnedFilesystemTransport() throws {
 private func checkRelayFilesystemRuntimeIsProtectedAndStopsCleanly() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let token = try credentials.token(for: "%1")
     let broker = RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in })
     let runtime = directory.appendingPathComponent("runtime", isDirectory: true)
-    let transport = RelayFileTransport(broker: broker, runtimeDirectory: runtime)
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: runtime)
     try transport.start()
+    let endpoint = RelayFileTransport.endpointDirectory(runtimeDirectory: runtime, paneToken: token)
 
-    for name in ["", "inbox", "processing", "outbox"] {
-        let path = name.isEmpty ? runtime : runtime.appendingPathComponent(name)
+    for path in [runtime, endpoint] + ["inbox", "processing", "outbox"].map({ endpoint.appendingPathComponent($0) }) {
         let attributes = try FileManager.default.attributesOfItem(atPath: path.path)
         try expect(attributes[.type] as? FileAttributeType == .typeDirectory, "filesystem relay path is not a directory")
         try expect(attributes[.ownerAccountID] as? NSNumber == NSNumber(value: getuid()), "filesystem relay directory has the wrong owner")
         try expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o700, "filesystem relay directory is not owner-only")
     }
-    let heartbeat = runtime.appendingPathComponent("heartbeat")
+    let heartbeat = endpoint.appendingPathComponent("heartbeat")
     let heartbeatAttributes = try FileManager.default.attributesOfItem(atPath: heartbeat.path)
     try expect((heartbeatAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600, "filesystem relay heartbeat is not owner-only")
     transport.stop()
     try expect(!FileManager.default.fileExists(atPath: heartbeat.path), "stopped filesystem relay left a live heartbeat")
 
-    let queuedResponse = runtime
+    let queuedResponse = endpoint
         .appendingPathComponent("outbox", isDirectory: true)
         .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
     try FileManager.default.createDirectory(at: queuedResponse, withIntermediateDirectories: false)
@@ -3016,7 +3200,7 @@ private func checkRelayFilesystemRuntimeIsProtectedAndStopsCleanly() throws {
     let symlinkRuntime = symlinkParent.appendingPathComponent("runtime", isDirectory: true)
     let redirected = try temporaryDirectory()
     try FileManager.default.createSymbolicLink(at: symlinkRuntime, withDestinationURL: redirected)
-    let redirectedTransport = RelayFileTransport(broker: broker, runtimeDirectory: symlinkRuntime)
+    let redirectedTransport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: symlinkRuntime)
     do {
         try redirectedTransport.start()
         redirectedTransport.stop()
@@ -3427,6 +3611,7 @@ private func runCoreServiceFixture() throws {
     try server.start()
     let agentTransport = RelayFileTransport(
         broker: broker,
+        credentials: credentials,
         runtimeDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: directory)
     )
     try agentTransport.start()
@@ -4011,7 +4196,7 @@ private func checkConsultationShimRoundTrip() throws {
     )
     let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
     let shimDirectory = try RelayShim.install(in: directory, transportDirectory: transportDirectory)
-    let transport = RelayFileTransport(broker: broker, runtimeDirectory: transportDirectory)
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory)
     try transport.start()
     defer {
         broker.cancelAll()
@@ -4073,7 +4258,7 @@ private func checkAskManyShimRoundTrip() throws {
     )
     let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
     let shimDirectory = try RelayShim.install(in: directory, transportDirectory: transportDirectory)
-    let transport = RelayFileTransport(broker: broker, runtimeDirectory: transportDirectory)
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory)
     try transport.start()
     defer {
         broker.cancelAll()
@@ -4643,9 +4828,11 @@ let checks: [(String, () throws -> Void)] = [
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),
     ("direct agent argv", checkDirectAgentSpawn),
+    ("mandatory pane-scoped agent process boundary", checkAgentProcessBoundaryIsMandatoryAndPaneScoped),
     ("stopped agent explicit start", checkStoppedAgentStartsOnlyThroughExplicitAction),
     ("shell pane login shell", checkShellPaneStartsLoginShell),
     ("real tmux shell lifecycle", checkRealTmuxShellLifecycle),
+    ("real macOS agent process boundary", checkRealAgentProcessBoundary),
     ("real tmux saved-layout restoration policy", checkRealTmuxSavedLayoutRestorationPolicy),
     ("inherited Parley capability scrub", checkInheritedParleyCapabilitiesAreScrubbed),
     ("shared protocol launch adapters", checkSharedProtocolLaunchAdapters),
