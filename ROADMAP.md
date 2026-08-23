@@ -288,8 +288,10 @@ effortless without becoming task boards.
 - [x] Restore shells automatically; restore agent panes as stopped placeholders
   requiring an explicit Start, so reopening Parley never spends subscription
   quota unexpectedly.
-- Preserve recent and favourite folders, tab ordering, and the last selected
-  workspace.
+- [x] Preserve recent and favourite folders, expose favourites in the sidebar,
+  and retain user-controlled tab ordering and the last selected workspace. The
+  order and selection use name/folder stamps, never persisted tmux ids; native
+  rename and folder changes retain their tab position.
 - [x] Make duplicate workspace names impossible or visibly qualify them.
 
 ### Project context
@@ -304,7 +306,8 @@ effortless without becoming task boards.
 
 ### Native interaction polish
 
-- Reorder workspace tabs and panes.
+- [x] Reorder workspace tabs with bounded Move Left/Right controls. Pane
+  reordering remains future polish.
 - Complete keyboard navigation and VoiceOver labels.
 - Improve narrow-window behaviour and long-name truncation.
 - Provide clear empty, exited, disconnected, and protocol-stale states.

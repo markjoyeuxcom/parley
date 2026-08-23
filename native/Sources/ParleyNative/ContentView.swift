@@ -70,6 +70,24 @@ struct ContentView: View {
                     Button("Close Pane…", role: .destructive) { model.close(pane) }
                 }
             }
+            if !model.favouriteFolders.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("FAVOURITE FOLDERS")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    ScrollView(.vertical, showsIndicators: model.favouriteFolders.count > 5) {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(model.favouriteFolders, id: \.self) { folder in
+                                favouriteFolderRow(folder)
+                            }
+                        }
+                    }
+                    .frame(height: min(CGFloat(model.favouriteFolders.count) * 26, 130))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+            }
             Divider()
             VStack(alignment: .leading, spacing: 5) {
                 Text("WORKSPACE FOLDER")
@@ -77,11 +95,28 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                 Menu {
                     Button("Choose Folder…", action: model.chooseFolder)
-                    let alternatives = model.recentFolders.filter { $0 != model.defaultFolder }
-                    if !alternatives.isEmpty {
+                    Button(model.isFavouriteFolder(model.defaultFolder) ? "Remove from Favourites" : "Add to Favourites") {
+                        model.toggleFavouriteFolder(model.defaultFolder)
+                    }
+                    let favouriteAlternatives = model.favouriteFolders.filter { $0 != model.defaultFolder }
+                    if !favouriteAlternatives.isEmpty {
+                        Divider()
+                        Section("Favourites") {
+                            ForEach(favouriteAlternatives, id: \.self) { folder in
+                                Button(URL(fileURLWithPath: folder).lastPathComponent) {
+                                    model.setWorkspaceFolder(folder)
+                                }
+                                .help(folder)
+                            }
+                        }
+                    }
+                    let recentAlternatives = model.recentFolders.filter {
+                        $0 != model.defaultFolder && !model.favouriteFolders.contains($0)
+                    }
+                    if !recentAlternatives.isEmpty {
                         Divider()
                         Section("Recent") {
-                            ForEach(alternatives, id: \.self) { folder in
+                            ForEach(recentAlternatives, id: \.self) { folder in
                                 Button(URL(fileURLWithPath: folder).lastPathComponent) {
                                     model.setWorkspaceFolder(folder)
                                 }
@@ -97,6 +132,44 @@ struct ContentView: View {
                 .help("New panes in this workspace open in \(model.defaultFolder). Running panes keep their own folders.")
             }
             .padding(12)
+        }
+    }
+
+    private func favouriteFolderRow(_ folder: String) -> some View {
+        let name = URL(fileURLWithPath: folder).lastPathComponent
+        let isActive = model.workspaces.contains { $0.isActive && $0.defaultFolder == folder }
+        return Button {
+            model.createWorkspace(folder: folder)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                    .font(.system(size: 10))
+                Text(name)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if isActive {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .semibold))
+                }
+            }
+            .font(.system(size: 11, weight: isActive ? .semibold : .regular))
+            .foregroundStyle(isActive ? .primary : .secondary)
+            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(isActive ? Color.accentColor.opacity(0.12) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .help("Open workspace at \(folder)")
+        .accessibilityLabel("Open favourite folder \(name)")
+        .accessibilityHint(folder)
+        .contextMenu {
+            Button("Remove from Favourites") {
+                model.toggleFavouriteFolder(folder)
+            }
         }
     }
 
@@ -149,6 +222,14 @@ struct ContentView: View {
                         .contextMenu {
                             Button("Rename…") { model.rename(workspace) }
                             Button("Save Layout…") { model.saveLayout(of: workspace) }
+                            Button(model.isFavouriteFolder(workspace.defaultFolder) ? "Remove Folder from Favourites" : "Add Folder to Favourites") {
+                                model.toggleFavouriteFolder(workspace.defaultFolder)
+                            }
+                            Divider()
+                            Button("Move Tab Left") { model.move(workspace, by: -1) }
+                                .disabled(!model.canMove(workspace, by: -1))
+                            Button("Move Tab Right") { model.move(workspace, by: 1) }
+                                .disabled(!model.canMove(workspace, by: 1))
                             Divider()
                             Button("Close Workspace…", role: .destructive) { model.close(workspace) }
                                 .disabled(model.workspaces.count == 1)
@@ -160,10 +241,22 @@ struct ContentView: View {
             Menu {
                 Button("Choose Folder…", action: model.createWorkspace)
                 Button("Save Current Layout…", action: model.saveActiveWorkspaceLayout)
-                if !model.recentFolders.isEmpty {
+                if !model.favouriteFolders.isEmpty {
+                    Divider()
+                    Section("Favourite Folders") {
+                        ForEach(model.favouriteFolders, id: \.self) { folder in
+                            Button(URL(fileURLWithPath: folder).lastPathComponent) {
+                                model.createWorkspace(folder: folder)
+                            }
+                            .help(folder)
+                        }
+                    }
+                }
+                let nonFavouriteRecents = model.recentFolders.filter { !model.favouriteFolders.contains($0) }
+                if !nonFavouriteRecents.isEmpty {
                     Divider()
                     Section("Recent Folders") {
-                        ForEach(model.recentFolders, id: \.self) { folder in
+                        ForEach(nonFavouriteRecents, id: \.self) { folder in
                             Button(URL(fileURLWithPath: folder).lastPathComponent) {
                                 model.createWorkspace(folder: folder)
                             }

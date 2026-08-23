@@ -308,6 +308,49 @@ private func checkWorkspaceLifecycle() throws {
     try expect(runner.calls.contains { command($0.arguments) == "kill-window" && $0.arguments.contains("@1") }, "workspace close did not close its tmux window")
 }
 
+private func checkWorkspaceContinuityState() throws {
+    let api = TmuxWorkspace(id: "@0", name: "api", defaultFolder: "/tmp/api", isActive: false)
+    let renamedWeb = TmuxWorkspace(id: "@1", name: "website", defaultFolder: "/tmp/web", isActive: true)
+    let worker = TmuxWorkspace(id: "@2", name: "worker", defaultFolder: "/tmp/worker", isActive: false)
+    var state = WorkspaceContinuityState(
+        favouriteFolders: ["/tmp/api/", "/tmp/api", "/tmp/web"],
+        workspaceOrder: [
+            WorkspaceBookmark(name: "web", folder: "/tmp/web"),
+            WorkspaceBookmark(name: "closed", folder: "/tmp/closed"),
+            WorkspaceBookmark(workspace: api),
+        ],
+        lastSelected: WorkspaceBookmark(name: "web", folder: "/tmp/web")
+    )
+
+    let ordered = state.reconcile([api, worker, renamedWeb])
+    try expect(ordered.map(\.id) == ["@1", "@0", "@2"], "continuity did not restore tab order and append a new workspace")
+    try expect(state.workspaceOrder.map(\.name) == ["website", "api", "worker"], "continuity did not discard stale bookmarks or refresh a renamed workspace")
+    try expect(state.lastSelected == WorkspaceBookmark(workspace: renamedWeb), "continuity did not resolve the last workspace through its stable folder")
+    try expect(state.selectedWorkspace(in: ordered)?.id == "@1", "continuity restored the wrong selected workspace")
+    try expect(state.favouriteFolders == ["/tmp/api", "/tmp/web"], "favourite folders were not standardized and de-duplicated")
+
+    let moved = state.moveWorkspace(id: "@2", by: -1, in: ordered)
+    try expect(moved.map(\.id) == ["@1", "@2", "@0"], "workspace move did not update visual tab order")
+    let unchanged = state.moveWorkspace(id: "@1", by: -1, in: moved)
+    try expect(unchanged.map(\.id) == moved.map(\.id), "workspace move crossed the first-tab boundary")
+    try expect(state.workspaceOrder.map(\.name) == ["website", "worker", "api"], "moved tab order was not retained in continuity state")
+
+    let movedAPI = TmuxWorkspace(id: "@0", name: "backend", defaultFolder: "/tmp/backend", isActive: false)
+    state.updateWorkspace(from: api, to: movedAPI)
+    try expect(state.workspaceOrder.last == WorkspaceBookmark(workspace: movedAPI), "rename/folder update lost the workspace's tab position")
+    let movedWeb = TmuxWorkspace(id: "@1", name: "frontend", defaultFolder: "/tmp/frontend", isActive: true)
+    state.updateWorkspace(from: renamedWeb, to: movedWeb)
+    try expect(state.lastSelected == WorkspaceBookmark(workspace: movedWeb), "rename/folder update lost the last-selected workspace")
+
+    try expect(!state.toggleFavourite(folder: "/tmp/api/"), "removing an existing favourite reported the wrong state")
+    try expect(state.toggleFavourite(folder: "/tmp/consumer"), "adding a favourite reported the wrong state")
+    try expect(state.favouriteFolders == ["/tmp/web", "/tmp/consumer"], "favourite toggle did not preserve deterministic order")
+
+    let encoded = try JSONEncoder().encode(state)
+    let decoded = try JSONDecoder().decode(WorkspaceContinuityState.self, from: encoded)
+    try expect(decoded == state, "workspace continuity state did not round-trip losslessly")
+}
+
 private func checkSavedWorkspaceLayoutPersistenceAndFreshSlots() throws {
     let directory = try temporaryDirectory()
     let file = directory.appendingPathComponent("workspace-layouts.json")
@@ -3393,6 +3436,7 @@ let checks: [(String, () throws -> Void)] = [
     ("bootstrap", checkBootstrap),
     ("existing session workspace adoption", checkExistingSessionAdoptsWorkspaceWithoutRestart),
     ("workspace lifecycle", checkWorkspaceLifecycle),
+    ("workspace continuity state", checkWorkspaceContinuityState),
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),

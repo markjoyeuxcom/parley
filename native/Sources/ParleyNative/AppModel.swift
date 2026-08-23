@@ -39,6 +39,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var statusActivityEvents: [RelayActivityEvent] = []
     @Published private(set) var controller: TmuxController?
     @Published private(set) var recentFolders: [String] = []
+    @Published private(set) var favouriteFolders: [String] = []
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
     @Published private(set) var coreAvailable = false
     @Published private(set) var tmuxAvailable = false
@@ -49,11 +50,13 @@ final class AppModel: ObservableObject {
     let terminalHandle = TerminalHandle()
     private let fallbackFolder: String
     private let layoutStore: SavedWorkspaceLayoutStore
+    private var workspaceContinuity = WorkspaceContinuityState()
     private var relayClient: RelayCoreClient?
     private var reviewDraftBuilder: ReviewDraftBuilder?
     private let notificationEpoch = Date()
     private var observedNotificationEventIDs: Set<String> = []
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
+    private static let workspaceContinuityKey = "parley.workspaceContinuity"
     private static let notificationWorkspacesKey = "parley.notificationWorkspaces"
     private static let dismissedHandoffsKey = "parley.dismissedStatusHandoffs"
 
@@ -67,6 +70,11 @@ final class AppModel: ObservableObject {
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
         )
         recentFolders = UserDefaults.standard.stringArray(forKey: Self.recentFoldersKey) ?? []
+        if let data = UserDefaults.standard.data(forKey: Self.workspaceContinuityKey),
+           let decoded = try? JSONDecoder().decode(WorkspaceContinuityState.self, from: data) {
+            workspaceContinuity = decoded
+        }
+        favouriteFolders = workspaceContinuity.favouriteFolders
         notificationWorkspaceNames = Set(
             UserDefaults.standard.stringArray(forKey: Self.notificationWorkspacesKey) ?? []
         )
@@ -78,7 +86,7 @@ final class AppModel: ObservableObject {
             let controller = try TmuxController()
             try controller.bootstrap(cwd: defaultFolder)
             var livePanes = try controller.listPanes()
-            let liveWorkspaces = try controller.listWorkspaces()
+            var liveWorkspaces = try controller.listWorkspaces()
             let credentials = try RelayCredentials(
                 file: controller.applicationDirectory.appendingPathComponent("relay-tokens.json")
             )
@@ -117,6 +125,17 @@ final class AppModel: ObservableObject {
                 }
                 livePanes = try controller.listPanes()
             }
+            if let previous = workspaceContinuity.selectedWorkspace(in: liveWorkspaces),
+               !previous.isActive {
+                try controller.selectWorkspace(previous.id)
+                liveWorkspaces = try controller.listWorkspaces()
+            }
+            liveWorkspaces = workspaceContinuity.reconcile(liveWorkspaces)
+            if let selected = liveWorkspaces.first(where: \.isActive) {
+                workspaceContinuity.markSelected(selected)
+            }
+            favouriteFolders = workspaceContinuity.favouriteFolders
+            saveWorkspaceContinuity()
             self.controller = controller
             self.relayClient = relayClient
             coreAvailable = true
@@ -289,7 +308,16 @@ final class AppModel: ObservableObject {
         var firstError: Error?
         if let controller {
             do {
-                let refreshedWorkspaces = try controller.listWorkspaces()
+                var refreshedWorkspaces = try controller.listWorkspaces()
+                let previousContinuity = workspaceContinuity
+                refreshedWorkspaces = workspaceContinuity.reconcile(refreshedWorkspaces)
+                if let selected = refreshedWorkspaces.first(where: \.isActive) {
+                    workspaceContinuity.markSelected(selected)
+                }
+                if workspaceContinuity != previousContinuity {
+                    favouriteFolders = workspaceContinuity.favouriteFolders
+                    saveWorkspaceContinuity()
+                }
                 if refreshedWorkspaces != workspaces { workspaces = refreshedWorkspaces }
                 let refreshedPanes = try controller.listPanes()
                 if refreshedPanes != panes { panes = refreshedPanes }
@@ -675,11 +703,45 @@ final class AppModel: ObservableObject {
 
     func setWorkspaceFolder(_ folder: String) {
         perform {
-            guard let workspace = activeWorkspace else { return }
-            try controller?.setWorkspaceFolder(workspace.id, folder: folder)
+            guard let controller, let workspace = activeWorkspace else { return }
+            let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
+            try controller.setWorkspaceFolder(workspace.id, folder: standardized)
+            workspaceContinuity.updateWorkspace(
+                from: workspace,
+                to: TmuxWorkspace(
+                    id: workspace.id,
+                    name: workspace.name,
+                    defaultFolder: standardized,
+                    isActive: workspace.isActive
+                )
+            )
+            saveWorkspaceContinuity()
             rememberFolder(folder)
             try refresh()
         }
+    }
+
+    func isFavouriteFolder(_ folder: String) -> Bool {
+        let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
+        return favouriteFolders.contains(standardized)
+    }
+
+    func toggleFavouriteFolder(_ folder: String) {
+        _ = workspaceContinuity.toggleFavourite(folder: folder)
+        favouriteFolders = workspaceContinuity.favouriteFolders
+        saveWorkspaceContinuity()
+    }
+
+    func canMove(_ workspace: TmuxWorkspace, by offset: Int) -> Bool {
+        guard let index = workspaces.firstIndex(where: { $0.id == workspace.id }) else { return false }
+        return workspaces.indices.contains(index + offset)
+    }
+
+    func move(_ workspace: TmuxWorkspace, by offset: Int) {
+        let moved = workspaceContinuity.moveWorkspace(id: workspace.id, by: offset, in: workspaces)
+        guard moved != workspaces else { return }
+        workspaces = moved
+        saveWorkspaceContinuity()
     }
 
     func createWorkspace() {
@@ -727,7 +789,18 @@ final class AppModel: ObservableObject {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let renamed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         perform {
-            try controller?.renameWorkspace(workspace.id, name: renamed)
+            guard let controller else { return }
+            try controller.renameWorkspace(workspace.id, name: renamed)
+            workspaceContinuity.updateWorkspace(
+                from: workspace,
+                to: TmuxWorkspace(
+                    id: workspace.id,
+                    name: renamed,
+                    defaultFolder: workspace.defaultFolder,
+                    isActive: workspace.isActive
+                )
+            )
+            saveWorkspaceContinuity()
             if notificationWorkspaceNames.remove(workspace.name) != nil {
                 notificationWorkspaceNames.insert(renamed)
                 saveNotificationWorkspaces()
@@ -862,6 +935,11 @@ final class AppModel: ObservableObject {
 
     private func saveDismissedHandoffs() {
         UserDefaults.standard.set(dismissedHandoffIDs.sorted(), forKey: Self.dismissedHandoffsKey)
+    }
+
+    private func saveWorkspaceContinuity() {
+        guard let data = try? JSONEncoder().encode(workspaceContinuity) else { return }
+        UserDefaults.standard.set(data, forKey: Self.workspaceContinuityKey)
     }
 
     private func processNotifications(from handoffs: [RelayHandoff]) {

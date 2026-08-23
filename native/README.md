@@ -63,6 +63,10 @@ user's default tmux server. The tmux session is named `parley`.
 - A tmux window is a Parley workspace.
 - A tmux pane is a live shell or agent pane.
 - Workspace names and default folders are tmux window options.
+- Workspace presentation continuity lives in UserDefaults as ID-free
+  name/folder bookmarks: favourite folders are directly accessible in the
+  sidebar, Move Left/Right tab order, and the last selected workspace survive a
+  UI restart without changing tmux windows or starting an agent.
 - Saved layouts live in the owner-only `workspace-layouts.json`, never in tmux.
   They contain no pane/window ids. Restored shells start; restored agent slots
   remain stopped until a person chooses Start.
