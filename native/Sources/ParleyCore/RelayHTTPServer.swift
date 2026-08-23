@@ -14,10 +14,9 @@ public enum RelayServerError: LocalizedError {
     }
 }
 
-/// A narrow local Unix-socket door for the agent-facing `parley` command.
-/// Codex's read-only sandbox denies TCP, including loopback, but explicitly
-/// permits Unix-domain sockets. Authentication and the broker still determine
-/// which pane the caller is and what it may do.
+/// The native UI's narrow local Unix-socket door into the persistent core.
+/// Agent panes use `RelayFileTransport` because vendor sandboxes may deny every
+/// network syscall, including Unix-domain socket connections.
 public final class RelayHTTPServer: @unchecked Sendable {
     private static let maximumHeaderBytes = 32_768
     private static let maximumBodyBytes = 200_000
@@ -25,15 +24,23 @@ public final class RelayHTTPServer: @unchecked Sendable {
     private let broker: RelayBroker
     private let infoFile: URL
     private let socketFile: URL
+    private let controlToken: String?
     private let queue = DispatchQueue(label: "parley.native.relay", qos: .utility)
+    private let connections = DispatchGroup()
     private let lock = NSLock()
     private var source: DispatchSourceRead?
     private var listener: Int32 = -1
 
-    public init(broker: RelayBroker, infoFile: URL, socketFile: URL? = nil) {
+    public init(
+        broker: RelayBroker,
+        infoFile: URL,
+        socketFile: URL? = nil,
+        controlToken: String? = nil
+    ) {
         self.broker = broker
         self.infoFile = infoFile
         self.socketFile = socketFile ?? infoFile.deletingLastPathComponent().appendingPathComponent("relay.sock")
+        self.controlToken = controlToken
     }
 
     deinit {
@@ -102,6 +109,10 @@ public final class RelayHTTPServer: @unchecked Sendable {
             try? FileManager.default.removeItem(at: infoFile)
             try? FileManager.default.removeItem(at: socketFile)
         }
+        // `cancelAll` wakes blocking Ask requests. Give those workers time to
+        // return the interruption response before the service exits; otherwise
+        // their callers receive curl 52 (an empty reply).
+        _ = connections.wait(timeout: .now() + 2)
     }
 
     private func prepareSocketPath() throws {
@@ -163,7 +174,18 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 Darwin.close(client)
                 continue
             }
+            // The listening descriptor is nonblocking. Make the accepted
+            // connection explicitly blocking so a large activity response is
+            // not truncated at the first temporary EAGAIN.
+            let statusFlags = fcntl(client, F_GETFL, 0)
+            if statusFlags < 0 || fcntl(client, F_SETFL, statusFlags & ~O_NONBLOCK) != 0 {
+                Darwin.close(client)
+                continue
+            }
+            connections.enter()
+            let connections = connections
             DispatchQueue.global(qos: .utility).async { [weak self] in
+                defer { connections.leave() }
                 self?.serve(client)
             }
         }
@@ -178,6 +200,39 @@ public final class RelayHTTPServer: @unchecked Sendable {
 
         do {
             let request = try readRequest(from: client)
+            if request.method == "GET", request.path == "/health" {
+                write(RelayTextResponse(status: 200, text: "ok"), to: client)
+                return
+            }
+            if request.method == "GET", request.path == "/consultations" {
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                write(broker.consultations(), to: client)
+                return
+            }
+            if request.method == "GET",
+               request.path == "/handoffs" || request.path.hasPrefix("/handoffs?") {
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                let limit: Int?
+                if request.path == "/handoffs" {
+                    limit = nil
+                } else {
+                    let raw = String(request.path.dropFirst("/handoffs?limit=".count))
+                    guard request.path.hasPrefix("/handoffs?limit="),
+                          let parsed = Int(raw), (1...500).contains(parsed) else {
+                        write(RelayTextResponse(status: 400, text: "handoff limit must be between 1 and 500"), to: client)
+                        return
+                    }
+                    limit = parsed
+                }
+                write(broker.handoffs(limit: limit), to: client)
+                return
+            }
             guard request.method == "POST" else {
                 write(RelayResponse(
                     status: 404,
@@ -189,14 +244,86 @@ public final class RelayHTTPServer: @unchecked Sendable {
             let token = authorization.range(of: "Bearer ", options: [.anchored, .caseInsensitive])
                 .map { String(authorization[$0.upperBound...]).trimmingCharacters(in: .whitespaces) } ?? ""
             let target = request.headers["x-parley-to"] ?? ""
+            let idempotencyKey = request.headers["x-parley-idempotency-key"]
             let text = String(decoding: request.body, as: UTF8.self)
             switch request.path {
+            case let path where path.hasPrefix("/ui/retry/"):
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                let handoffID = String(path.dropFirst("/ui/retry/".count))
+                write(broker.retryHandoff(handoffID), to: client)
+            case let path where path.hasPrefix("/ui/cancel/"):
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                let handoffID = String(path.dropFirst("/ui/cancel/".count))
+                write(broker.cancelHandoff(handoffID), to: client)
+            case let path where path.hasPrefix("/ui/answer/"):
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                let consultationID = String(path.dropFirst("/ui/answer/".count))
+                write(broker.answerFromUI(consultationID: consultationID, text: text), to: client)
             case "/relay":
-                write(broker.handle(token: token, target: target, text: text), to: client)
+                write(broker.handle(
+                    token: token,
+                    target: target,
+                    text: text,
+                    idempotencyKey: idempotencyKey
+                ), to: client)
             case "/paste":
-                write(broker.handlePaste(token: token, target: target, text: text), to: client)
+                write(broker.handlePaste(
+                    token: token,
+                    target: target,
+                    text: text,
+                    idempotencyKey: idempotencyKey
+                ), to: client)
             case "/ask":
-                write(broker.handleAsk(token: token, target: target, text: text), to: client)
+                write(broker.handleAsk(
+                    token: token,
+                    target: target,
+                    text: text,
+                    idempotencyKey: idempotencyKey
+                ), to: client)
+            case "/ask-many":
+                write(broker.handleAskMany(
+                    token: token,
+                    targets: target,
+                    text: text,
+                    idempotencyKey: idempotencyKey
+                ), to: client)
+            case "/delegate":
+                write(broker.handleDelegate(
+                    token: token,
+                    target: target,
+                    text: text,
+                    idempotencyKey: idempotencyKey
+                ), to: client)
+            case "/status":
+                write(broker.delegationStatus(token: token), to: client)
+            case let path where path.hasPrefix("/wait/"):
+                let handoffID = String(path.dropFirst("/wait/".count))
+                write(broker.waitForDelegation(token: token, handoffID: handoffID), to: client)
+            case let path where path.hasPrefix("/done/"):
+                let handoffID = String(path.dropFirst("/done/".count))
+                write(broker.handleDelegationResult(
+                    token: token,
+                    handoffID: handoffID,
+                    text: text,
+                    succeeded: true
+                ), to: client)
+            case let path where path.hasPrefix("/fail/"):
+                let handoffID = String(path.dropFirst("/fail/".count))
+                write(broker.handleDelegationResult(
+                    token: token,
+                    handoffID: handoffID,
+                    text: text,
+                    succeeded: false
+                ), to: client)
             case let path where path.hasPrefix("/answer/"):
                 let consultationID = String(path.dropFirst("/answer/".count))
                 write(broker.handleAnswer(token: token, consultationID: consultationID, text: text), to: client)
@@ -208,7 +335,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                         delivered: nil,
                         submitted: nil,
                         note: nil,
-                        error: "POST /relay, /paste, /ask or /answer/<id>"
+                        error: "POST /relay, /paste, /ask, /ask-many, /answer/<id>, /delegate, /status, /wait/<id>, /done/<id>, /fail/<id>, /ui/answer/<id>, /ui/cancel/<id> or /ui/retry/<id>"
                     )
                 ), to: client)
             }
@@ -298,6 +425,36 @@ public final class RelayHTTPServer: @unchecked Sendable {
         send(Data(head.utf8) + body, to: client)
     }
 
+    private func write(_ consultations: [RelayConsultation], to client: Int32) {
+        guard let body = try? JSONEncoder().encode(consultations) else {
+            write(RelayTextResponse(status: 500, text: "could not encode consultations"), to: client)
+            return
+        }
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+        send(Data(head.utf8) + body, to: client)
+    }
+
+    private func write(_ handoffs: [RelayHandoff], to client: Int32) {
+        guard let body = try? JSONEncoder().encode(handoffs) else {
+            write(RelayTextResponse(status: 500, text: "could not encode handoffs"), to: client)
+            return
+        }
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+        send(Data(head.utf8) + body, to: client)
+    }
+
+    private func controlAuthorized(_ request: Request) -> Bool {
+        guard let controlToken else { return false }
+        let presented = request.headers["x-parley-control"] ?? ""
+        let left = Array(controlToken.utf8)
+        let right = Array(presented.utf8)
+        var difference = left.count ^ right.count
+        for index in 0..<max(left.count, right.count) {
+            difference |= Int((index < left.count ? left[index] : 0) ^ (index < right.count ? right[index] : 0))
+        }
+        return difference == 0
+    }
+
     private func reason(for status: Int) -> String {
         switch status {
         case 200: "OK"
@@ -307,6 +464,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
         case 404: "Not Found"
         case 408: "Request Timeout"
         case 409: "Conflict"
+        case 500: "Internal Server Error"
         default: "Error"
         }
     }
@@ -317,6 +475,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
             var written = 0
             while written < raw.count {
                 let count = Darwin.send(client, base.advanced(by: written), raw.count - written, 0)
+                if count < 0, errno == EINTR { continue }
                 if count <= 0 { return }
                 written += count
             }

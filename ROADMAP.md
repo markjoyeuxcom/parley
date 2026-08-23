@@ -34,9 +34,15 @@ The native application already has the product's essential wedge:
 - A SwiftUI and SwiftTerm macOS surface over an isolated persistent tmux server.
 - Real Claude Code, Codex, Agy, GitHub Copilot CLI, and shell panes.
 - Panes that survive closing and reopening the window.
+- A persistent per-user coordination core that survives the SwiftUI process,
+  with authenticated UI reattachment and process-safe pane credentials.
+- An owner-only, crash-repairing local journal retaining the latest 500
+  handoffs, including transitions, vendor/workspace identities and Ask answers.
 - A versioned cross-vendor protocol injected into every newly started agent.
 - `relay` for an attributed asynchronous handoff, `paste` for an unsent draft,
   and correlated `ask` / `answer` for a blocking consultation.
+- Protocol v2 tracked delegation through `delegate`, `done`, `fail`, `status`
+  and `wait`, with exact source/target credential ownership.
 - Human Ask and Return editors with explicit control over the exact text sent.
 - Automatic submission that works across the supported agent TUIs.
 - Folder-backed workspace tabs, each represented by a tmux window.
@@ -54,41 +60,72 @@ lifecycle events and fail clearly when it cannot continue.
 
 ### Persistent local coordination core
 
-Move relay ownership out of the window process into a small local background
-service. The tmux server already survives the UI closing; Ask, Answer, Relay,
-credentials, and collaboration state must survive with it.
+Relay ownership now lives outside the window process in the
+`parley-core-service` background executable. The tmux server, active Ask wait,
+relay socket and broker state survive UI close and reopen together.
 
-- One per-user Parley core, reachable only through a Unix-domain socket.
-- The SwiftUI app becomes a client that may attach and detach freely.
-- Agent credentials remain scoped to their exact tmux pane.
-- Closing the window must not interrupt an agent waiting on `parley ask`.
-- A core restart must terminate affected waits with an explicit interruption
-  error; it must never leave a caller hanging or pretend an answer arrived.
-- Connection discovery must be atomic and self-healing, with no stale port or
-  stale socket ambiguity.
+- [x] One per-user Parley core, reachable only through a Unix-domain socket.
+- [x] The SwiftUI app is an authenticated client that may attach and detach.
+- [x] Agent credentials remain scoped to their exact tmux pane and refresh
+  safely across processes.
+- [x] Closing the window does not interrupt an agent waiting on `parley ask`;
+  the deterministic harness exits the launching UI process and completes the
+  wait through a new client.
+- [x] A core restart terminates affected waits with an explicit interruption
+  error; it neither leaves the caller hanging nor pretends an answer arrived.
+- [x] Connection discovery is atomic and self-healing. The lifecycle harness
+  stops the service, verifies the old endpoint is unhealthy, starts it through
+  a fresh UI process and rejects the impossible stale consultation.
 
 ### Delivery correctness
 
-- Give every handoff a stable local identifier and an idempotency key.
-- Record distinct states: `created`, `delivered`, `waiting`, `answered`,
-  `completed`, `cancelled`, `failed`, and `interrupted`.
-- A successful command must mean the target received the text and the intended
+Safe relay hardening already applied without changing the normal workflow:
+
+- [x] Refuse relay, paste, Ask and Return unless the target pane is relay-
+  enabled, protocol-current and actively requesting bracketed paste.
+- [x] Accept only Parley's fixed local Unix relay socket; reject remote
+  locators, symlinked discovery files and other Unix socket paths.
+- [x] Rotate a pane's relay credential on every deliberate agent restart and
+  scrub inherited pane credentials when Parley is launched from another pane.
+- [x] Keep lifecycle diagnostics owner-only and drain blocked Ask connections
+  during a clean core shutdown.
+- [ ] Establish a real same-user process boundary around the tmux control
+  socket and UI control capability. Until then, relay authentication provides
+  correct routing but cannot contain hostile code already executing as the
+  user's account.
+
+- [x] Give every handoff a stable core-local identifier and a sender-scoped
+  idempotency key. The managed command generates the key automatically;
+  concurrent and later retries reuse the original result without submitting
+  twice.
+- [x] Record an observable transition trail through `created`, `delivered`,
+  `waiting`, `answered`, `completed`, `cancelled`, `failed`, and `interrupted`. Completed
+  history is durably bounded to the latest 500 handoffs in an owner-only local
+  journal.
+- [x] Add explicit human cancellation and record its terminal state as
+  `cancelled`.
+- [x] A successful command means the target received the text and the intended
   submit action occurred; intermediate success must not be reported as final.
-- Add timeout, cancellation, dead-pane, app-restart, target-restart, and broker-
-  restart tests.
-- Keep one active blocking consultation per target until reliable busy/ready
+- [x] Complete the in-memory recovery matrix. Timeout, clean shutdown, broker
+  restart, human cancellation, source/target closure and source/target restart
+  all release the waiting caller with an explicit terminal reason. Durable
+  recovery across a machine restart arrives with Milestone 2 history.
+- [x] Keep one active blocking consultation per target until reliable busy/ready
   state exists. Refuse extra work rather than silently queueing it.
 
 ### Vendor conformance harness
 
-Create an opt-in live test for each supported CLI that proves:
+The deterministic suite covers planning, fail-closed readiness and honest
+reporting. `npm run test:conformance:plan` discovers safe routes without model
+calls; `PARLEY_LIVE=1 npm run test:conformance` is the explicit quota-spending
+run against existing panes. It proves:
 
-- protocol injection is present;
-- multiline bracketed paste is intact;
-- submit starts a turn without a person pressing Enter;
-- `parley answer current` returns to the correct waiting pane;
-- inactive panes and cross-workspace targets behave correctly;
-- trust and permission prompts fail closed.
+- [x] protocol injection is present;
+- [x] multiline bracketed paste is intact;
+- [x] submit starts a turn without a person pressing Enter;
+- [x] `parley answer current` returns to the correct waiting pane;
+- [x] inactive panes and cross-workspace targets behave correctly;
+- [x] trust and permission prompts fail closed.
 
 **Exit gate:** close the UI during an active consultation, reopen it, and watch
 the same two pane processes complete the exchange without manual recovery.
@@ -100,13 +137,18 @@ flight. Add an activity surface, not a project-management system.
 
 ### Collaboration activity
 
-- A compact workspace activity strip showing `Agy → Codex: waiting`, elapsed
+- [x] A compact workspace activity strip showing `Agy → Codex: waiting`, elapsed
   time, and the latest state.
-- Pane and workspace badges for waiting questions, returned answers, failures,
-  unread output, and permission-required attention.
-- Click any activity to focus its source or target pane.
-- Human actions to cancel a wait, retry a failed delivery, or complete a return
-  manually when an agent printed instead of returning its answer.
+- [x] Pane and workspace badges for waiting questions, failures, and explicit
+  permission-required attention.
+- [ ] Add returned-answer and unread-output badges once an authoritative event
+  exists; do not infer either from terminal redraws.
+- [x] Click an activity's source or target to focus that pane, including across
+  workspace tabs.
+- [x] Human actions to cancel a wait or complete a return manually when an
+  agent printed instead of returning its answer.
+- [x] Retry a provably pre-input failed delivery from activity without creating
+  a duplicate. Uncertain and failed-Ask retries remain unavailable by design.
 - Native notifications when an answer returns or a pane needs human input,
   with per-workspace controls.
 
@@ -156,10 +198,11 @@ that a process is alive, the UI must say exactly that.
 
 Persist a small append-only record of cross-vendor events:
 
-- source and target pane identities and vendors;
-- workspace names;
-- question, answer, or delegated instruction;
-- timestamps, outcome, and interruption reason.
+- [x] source and target pane identities and vendors;
+- [x] workspace names;
+- [x] question, answer, or delegated instruction;
+- [x] timestamps, outcome, and interruption reason;
+- [ ] deletion per workspace from the native Status Center.
 
 This is collaboration history, not automatic terminal transcription. It stays
 local, can be deleted per workspace, and never captures unrelated pane output.
@@ -176,13 +219,15 @@ decisions; Parley transports work and reports state.
 ### Protocol v2
 
 - `parley ask <target>` — retain the current blocking one-to-one consultation.
-- `parley ask-many <targets...>` — ask several explicit vendors independently
+- [x] `parley ask-many <target-a,target-b>` — ask several explicit vendors independently
   and return a labelled bundle only after all finish or time out. Respondents
-  must not see one another's answers.
-- `parley delegate <target>` — tracked asynchronous work with a required
+  do not see one another's answers. Routing for the whole comma-separated list
+  is validated before dispatch; stdout is ordered JSON, and a partial failure
+  remains visible beside successful answers while making the command non-zero.
+- [x] `parley delegate <target>` — tracked asynchronous work with a required
   `parley done` or `parley fail` result.
-- `parley status` — machine-readable state for work initiated by the caller.
-- `parley wait` — wait for one delegated item without scraping terminal output.
+- [x] `parley status` — machine-readable state for work initiated by the caller.
+- [x] `parley wait` — wait for one delegated item without scraping terminal output.
 - `parley cancel` — cancel the tracking relationship and, only with explicit
   human authority, offer to interrupt the target CLI.
 
@@ -221,21 +266,21 @@ effortless without becoming task boards.
 
 ### Durable workspace restoration
 
-- Persist workspace names, folders, pane kinds, pane names, layout, and ratios
+- [x] Persist workspace names, folders, pane kinds, pane names, layout, and ratios
   outside tmux so they survive a Mac restart.
-- Restore shells automatically; restore agent panes as stopped placeholders
+- [x] Restore shells automatically; restore agent panes as stopped placeholders
   requiring an explicit Start, so reopening Parley never spends subscription
   quota unexpectedly.
 - Preserve recent and favourite folders, tab ordering, and the last selected
   workspace.
-- Make duplicate workspace names impossible or visibly qualify them.
+- [x] Make duplicate workspace names impossible or visibly qualify them.
 
 ### Project context
 
 - Show branch, dirty state, and pane folder without running unbounded git work.
-- Add “Ask another vendor to review these changes” using an explicit diff
+- [x] Add “Ask another vendor to review these changes” using an explicit diff
   preview and the normal attributed Ask path.
-- Add “Review this plan/file with…” without copying its contents manually.
+- [x] Add “Review this plan/file with…” without copying its contents manually.
 - Allow an occasional pane folder override while retaining the workspace's
   default folder for new panes.
 - Add a command palette for workspace, pane, Ask target, and activity lookup.
@@ -309,16 +354,19 @@ the product small and lets each CLI improve without Parley competing with it.
 
 The next implementation sequence is deliberately narrow:
 
-1. Extract the relay broker from `AppModel` into a persistent local core.
-2. Define and persist the handoff state machine and event record.
-3. Make the existing UI attach to that core and render a minimal activity strip.
-4. Prove Ask/Answer across UI close and reopen with unchanged pane process IDs.
-5. Add cancel, retry, dead-pane handling, and notifications.
-6. Introduce tracked `delegate` / `done` only after one-to-one recovery is solid.
-7. Add `ask-many` with independent answers and explicit target lists.
-8. Persist workspace layouts outside tmux.
-9. Add diff and plan review shortcuts through the same transport.
-10. Package and test the complete native application on a clean Mac.
+1. [x] Persist the now-defined handoff state machine and transition record locally.
+2. [x] Prove graceful core restart, stale discovery recovery, dead-pane handling,
+   cancellation and retry without leaving a caller blocked.
+3. [x] Run the UI-close lifecycle gate with live vendor panes and unchanged
+   process ids.
+4. [x] Add the opt-in vendor conformance harness.
+5. [x] Render a minimal activity strip from the core's authoritative state.
+6. [x] Add safe retry and permission-required actions to the existing cancel/manual-return activity controls.
+7. [x] Introduce tracked `delegate` / `done` only after one-to-one recovery is solid.
+8. [x] Add `ask-many` with independent answers and explicit target lists.
+9. [x] Persist workspace layouts outside tmux.
+10. [x] Add diff and plan review shortcuts through the same transport.
+11. Package and test the complete native application on a clean Mac.
 
 Anything not required by those ten steps waits.
 

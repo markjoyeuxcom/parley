@@ -45,7 +45,8 @@ Breaking any of these changes the product.
 7. **Isolated tmux ownership.** Use only Parley's socket and configuration.
    Never inspect, attach to or mutate the user's default tmux server.
 8. **One shared protocol.** `AgentProtocol.text` is the sole definition of
-   `relay`, `paste`, `ask` and `answer`. Vendor launch adapters may
+   `relay`, `paste`, `ask`, `answer`, `delegate`, `done`, `fail`, `status` and
+   `wait`. Vendor launch adapters may
    change delivery mechanics, never wording.
 9. **Honest state.** Do not infer thinking, token use, context limits, cost or
    completion from terminal text. Display only facts Parley owns or structured
@@ -82,6 +83,7 @@ native/
     ParleyCore/
       AgentProtocol.swift  canonical agent-facing contract
       CommandRunner.swift  bounded argv-based process execution and PATH repair
+      CoreService.swift    UI control client, credential and service launcher
       Models.swift         pane and workspace vocabulary
       Relay.swift          credentials, consultations and command shim
       RelayHTTPServer.swift authenticated Unix-socket broker
@@ -92,6 +94,8 @@ native/
       ContentView.swift    native workspace, pane and relay UI
       ParleyNativeApp.swift
       TerminalHost.swift   SwiftTerm host
+    ParleyCoreService/
+      main.swift           persistent per-user coordination process
     ParleyCoreChecks/
       main.swift           deterministic verification executable
 scripts/
@@ -123,10 +127,16 @@ The workspace folder is a default for new toolbar-created panes. It never
 changes a running pane's working directory. Multiple repositories across
 workspaces and panes are normal.
 
-The relay broker still lives in the application process. A pane survives the UI
-exiting, but an in-flight `parley ask` currently does not. Moving the broker
-to a persistent local core is roadmap milestone one. Until then, never imply
-that a waiting consultation survives an app exit.
+The relay broker lives in `parley-core-service`, not the SwiftUI process. The
+app starts or reattaches to that service through `RelayCoreLauncher`. Closing
+the UI leaves the core and tmux running, so an in-flight `parley ask` keeps its
+waiting socket and consultation state.
+
+The UI uses a separate random control credential to list active consultations
+and complete the explicit Return fallback. Agent panes never receive that
+capability. Pane credentials are stored behind a cross-process file lock and
+must be refreshed before authentication so a long-running core observes pane
+creation and revocation by a later UI process.
 
 ## Relay and consultation contract
 
@@ -140,6 +150,12 @@ caller cannot choose a different source identity.
   and writes the returned answer to stdout.
 - `parley answer <id> <answer>` completes the exact waiting consultation.
   Piped multiline input is supported.
+- `parley delegate <target> <task>` submits tracked asynchronous work and
+  returns a stable handoff id immediately.
+- `parley done|fail <id|current> <report>` records the target pane's exact
+  terminal result.
+- `parley status` returns JSON for work initiated by the calling pane, while
+  `parley wait <id|current>` waits for one exact result.
 
 `relay` sending automatically is an intentional capability selected by the
 user. Do not silently change it back to paste-only behavior. `paste` is the
@@ -147,8 +163,8 @@ explicit review-before-send path.
 
 Targets resolve by exact pane id or by vendor only when unique. Ambiguous,
 missing, same-vendor, same-pane, shell and busy targets are refused. There is at
-most one unanswered consultation per target until the roadmap introduces
-explicit scheduling.
+most one unanswered consultation or active delegation per target until the
+roadmap introduces explicit scheduling.
 
 The human Ask and Return actions submit after an editable preview. A real
 SwiftTerm selection may prefill the editor; otherwise it starts empty.

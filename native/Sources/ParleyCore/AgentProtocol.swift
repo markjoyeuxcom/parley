@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "1"
+    public static let version = "2"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -14,12 +14,23 @@ public enum AgentProtocol {
     - To ask another vendor a question and continue this same turn with its
       answer, run `parley ask <target> "<question>"` and wait. It submits the
       question; its stdout is the correlated answer. Use this for consultation.
+    - To compare independent answers, run
+      `parley ask-many <target-a,target-b> "<question>"`. Targets are explicit,
+      receive the same question concurrently, and never see one another's
+      answers. Its stdout is one ordered JSON answer bundle.
     - `parley relay <target> "<text>"` submits one attributed message immediately.
       If it succeeds, the message was sent; never claim it was only pasted.
     - `parley paste <target> "<text>"` places an attributed draft without Enter.
       Use it only when the user explicitly wants to inspect or edit before sending.
     - When a received consultation includes `parley answer <id>`, return the
       answer through that exact command. Do not merely print the answer locally.
+    - To assign asynchronous work to one different vendor, run
+      `parley delegate <target> "<task>"`. It returns a tracked id immediately.
+      Inspect work you initiated with `parley status`, or block for one result
+      with `parley wait <id>` (use `current` only when exactly one is active).
+    - When delegated work reaches a terminal outcome, run
+      `parley done current "<report>"` or `parley fail current "<reason>"`.
+      Do not only print the result locally; the initiating pane owns the status.
     - Name one cross-vendor pane by vendor or pane id. Let Parley refuse ambiguity.
       Never start another Parley instance and never control its tmux server directly.
 
@@ -77,7 +88,7 @@ public enum AgentProtocol {
     }
 
     public static func stalePaneIDs(in panes: [TmuxPane]) -> [String] {
-        panes.filter { $0.kind.isAgent && !$0.hasCurrentProtocol }.map(\.id)
+        panes.filter { $0.kind.isAgent && $0.isStarted && !$0.hasCurrentProtocol }.map(\.id)
     }
 
     private static func tomlString(_ value: String) -> String {

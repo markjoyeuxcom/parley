@@ -14,6 +14,10 @@ struct ContentView: View {
                 workspaceTabs
                 Divider()
                 toolbar
+                if let activity = model.primaryActivity {
+                    Divider()
+                    activityStrip(activity)
+                }
                 Divider()
                 terminal
             }
@@ -34,19 +38,32 @@ struct ContentView: View {
     private var sidebar: some View {
         VStack(spacing: 0) {
             List(model.visiblePanes) { pane in
-                Button {
-                    model.select(pane)
-                } label: {
-                    PaneRow(
-                        pane: pane,
-                        awaitingAnswerCount: model.awaitingAnswerCount(for: pane.id)
-                    )
+                HStack(spacing: 6) {
+                    Button {
+                        model.select(pane)
+                    } label: {
+                        PaneRow(
+                            pane: pane,
+                            awaitingAnswerCount: model.awaitingAnswerCount(for: pane.id),
+                            latestFailure: model.latestFailure(for: pane.id)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    if pane.kind.isAgent && !pane.isStarted {
+                        Button("Start") { model.start(pane) }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            .help("Start a new \(pane.kind.label) CLI session in \(pane.cwd)")
+                    }
                 }
-                .buttonStyle(.plain)
                 .listRowBackground(pane.isActive ? Color.accentColor.opacity(0.12) : Color.clear)
                 .contextMenu {
                     Button("Rename…") { model.rename(pane) }
-                    Button("Restart…") { model.restart(pane) }
+                    if pane.kind.isAgent && !pane.isStarted {
+                        Button("Start") { model.start(pane) }
+                    } else {
+                        Button("Restart…") { model.restart(pane) }
+                    }
                     Divider()
                     Button("Close Pane…", role: .destructive) { model.close(pane) }
                 }
@@ -94,6 +111,20 @@ struct ContentView: View {
                                     .font(.system(size: 10))
                                 Text(workspace.name)
                                     .lineLimit(1)
+                                let waiting = model.waitingCount(for: workspace.id)
+                                if waiting > 0 {
+                                    Label("\(waiting)", systemImage: "clock")
+                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(Color.accentColor)
+                                        .labelStyle(.titleAndIcon)
+                                }
+                                let failures = model.failureCount(for: workspace.id)
+                                if failures > 0 {
+                                    Label("\(failures)", systemImage: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(model.requiresHumanAttention(workspace.id) ? Color.orange : Color.red)
+                                        .labelStyle(.titleAndIcon)
+                                }
                             }
                             .font(.system(size: 11, weight: workspace.isActive ? .semibold : .regular))
                             .foregroundStyle(workspace.isActive ? .primary : .secondary)
@@ -108,6 +139,7 @@ struct ContentView: View {
                         .help(workspace.defaultFolder)
                         .contextMenu {
                             Button("Rename…") { model.rename(workspace) }
+                            Button("Save Layout…") { model.saveLayout(of: workspace) }
                             Divider()
                             Button("Close Workspace…", role: .destructive) { model.close(workspace) }
                                 .disabled(model.workspaces.count == 1)
@@ -118,6 +150,7 @@ struct ContentView: View {
 
             Menu {
                 Button("Choose Folder…", action: model.createWorkspace)
+                Button("Save Current Layout…", action: model.saveActiveWorkspaceLayout)
                 if !model.recentFolders.isEmpty {
                     Divider()
                     Section("Recent Folders") {
@@ -126,6 +159,18 @@ struct ContentView: View {
                                 model.createWorkspace(folder: folder)
                             }
                             .help(folder)
+                        }
+                    }
+                }
+                if !model.savedLayouts.isEmpty {
+                    Divider()
+                    Section("Saved Layouts") {
+                        ForEach(model.savedLayouts) { layout in
+                            Menu(layout.name) {
+                                Button("Open Over Current Workspace…") { model.open(layout) }
+                                Divider()
+                                Button("Delete Saved Layout…", role: .destructive) { model.delete(layout) }
+                            }
                         }
                     }
                 }
@@ -175,6 +220,19 @@ struct ContentView: View {
             .disabled(model.askTargets.isEmpty)
 
             Menu {
+                Menu("Current Changes") {
+                    reviewTargetItems { model.reviewChanges(with: $0) }
+                }
+                Menu("Plan or File…") {
+                    reviewTargetItems { model.reviewFile(with: $0) }
+                }
+            } label: {
+                Label("Review", systemImage: "doc.text.magnifyingglass")
+            }
+            .disabled(model.askTargets.isEmpty)
+            .help("Preview repository changes or a selected file, then ask another vendor to review it")
+
+            Menu {
                 ForEach(model.activePaneConsultations) { consultation in
                     Button("Answer \(consultation.sourceName)") {
                         model.returnConsultation(consultation)
@@ -188,6 +246,44 @@ struct ContentView: View {
                 Label("Return", systemImage: "arrow.turn.down.left")
             }
             .disabled(!model.canReturn)
+
+            if !model.consultations.isEmpty || !model.activeDelegations.isEmpty {
+                Divider().frame(height: 18)
+                Menu {
+                    if !model.consultations.isEmpty {
+                        Section("Questions") {
+                            ForEach(model.consultations) { consultation in
+                                Button(
+                                    "Cancel \(consultation.sourceName) → \(consultation.targetName)…",
+                                    role: .destructive
+                                ) {
+                                    model.cancel(consultation)
+                                }
+                            }
+                        }
+                    }
+                    if !model.activeDelegations.isEmpty {
+                        Section("Delegated Work") {
+                            ForEach(model.activeDelegations) { handoff in
+                                Menu("\(handoff.sourceName) → \(handoff.targetName)") {
+                                    Text(activitySubject(handoff.text))
+                                    Divider()
+                                    Button("Focus \(handoff.sourceName)") { model.focus(handoff, target: false) }
+                                        .disabled(!model.canFocus(handoff.sourcePaneID))
+                                    Button("Focus \(handoff.targetName)") { model.focus(handoff, target: true) }
+                                        .disabled(!model.canFocus(handoff.targetPaneID))
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label(
+                        "Waiting \(model.consultations.count + model.activeDelegations.count)",
+                        systemImage: "clock"
+                    )
+                }
+                .help("Inspect questions and delegated work awaiting a result")
+            }
 
             Spacer()
             if let active = model.activePane {
@@ -205,6 +301,147 @@ struct ContentView: View {
         .controlSize(.small)
         .padding(.horizontal, 12)
         .frame(height: 42)
+    }
+
+    private func activityStrip(_ handoff: RelayHandoff) -> some View {
+        HStack(spacing: 7) {
+            Text("ACTIVITY")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            Button(handoff.sourceName) { model.focus(handoff, target: false) }
+                .disabled(!model.canFocus(handoff.sourcePaneID))
+            Image(systemName: "arrow.right")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+            Button(handoff.targetName) { model.focus(handoff, target: true) }
+                .disabled(!model.canFocus(handoff.targetPaneID))
+
+            HStack(spacing: 5) {
+                Text(handoff.kind.rawValue.uppercased())
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Text(activitySubject(handoff.text))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(activityTiming(handoff, at: context.date))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            Text(activityStateLabel(handoff))
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(activityColor(handoff))
+
+            Menu {
+                ForEach(Array(model.workspaceHandoffs.prefix(12))) { item in
+                    Menu("\(item.sourceName) → \(item.targetName) · \(item.state.rawValue)") {
+                        Text(activitySubject(item.text))
+                        if (item.state == .failed || item.state == .interrupted),
+                           let failure = item.transitions.last?.detail,
+                           !failure.isEmpty {
+                            Text(failure)
+                        }
+                        if let result = item.resultText, !result.isEmpty,
+                           item.state == .completed || item.kind == .delegate {
+                            Divider()
+                            Text(result)
+                        }
+                        Divider()
+                        Button("Focus \(item.sourceName)") { model.focus(item, target: false) }
+                            .disabled(!model.canFocus(item.sourcePaneID))
+                        Button("Focus \(item.targetName)") { model.focus(item, target: true) }
+                            .disabled(!model.canFocus(item.targetPaneID))
+                        if item.attention != nil {
+                            Divider()
+                            Button(attentionActionLabel(item)) { model.focus(item, target: true) }
+                                .disabled(!model.canFocus(item.targetPaneID))
+                        }
+                        if item.canRetrySafely {
+                            Divider()
+                            Button("Retry Original Delivery…") { model.retry(item) }
+                        } else if item.state == .failed && item.kind == .delegate {
+                            Divider()
+                            Button("Delegated work cannot be delivery-retried") {}
+                                .disabled(true)
+                        } else if item.state == .failed && item.kind != .ask {
+                            Divider()
+                            Button("Retry unavailable — delivery may have started") {}
+                                .disabled(true)
+                        }
+                        if let consultation = model.consultation(for: item) {
+                            Divider()
+                            Button("Cancel Ask…", role: .destructive) { model.cancel(consultation) }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+            }
+            .menuIndicator(.hidden)
+            .help("Recent collaboration in this workspace")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .frame(height: 31)
+        .background(Color.secondary.opacity(0.045))
+    }
+
+    private func activitySubject(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+    }
+
+    private func activityTiming(_ handoff: RelayHandoff, at now: Date) -> String {
+        let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
+        let origin = terminalStates.contains(handoff.state)
+            ? handoff.updatedAt
+            : handoff.transitions.first?.occurredAt ?? handoff.updatedAt
+        let seconds = max(0, Int(now.timeIntervalSince(origin)))
+        let amount: String
+        if seconds < 60 {
+            amount = "\(seconds)s"
+        } else if seconds < 3_600 {
+            amount = "\(seconds / 60)m"
+        } else {
+            amount = "\(seconds / 3_600)h"
+        }
+        return terminalStates.contains(handoff.state) ? "\(amount) ago" : "for \(amount)"
+    }
+
+    private func activityStateLabel(_ handoff: RelayHandoff) -> String {
+        switch handoff.attention {
+        case .permissionRequired: "PERMISSION REQUIRED"
+        case .targetNotReady: "TARGET NOT READY"
+        case .targetUnavailable: "TARGET UNAVAILABLE"
+        case nil: handoff.state.rawValue.uppercased()
+        }
+    }
+
+    private func attentionActionLabel(_ handoff: RelayHandoff) -> String {
+        switch handoff.attention {
+        case .permissionRequired: "Resolve Permission in \(handoff.targetName)"
+        case .targetNotReady: "Make \(handoff.targetName) Ready"
+        case .targetUnavailable: "Inspect Missing Target"
+        case nil: "Focus \(handoff.targetName)"
+        }
+    }
+
+    private func activityColor(_ handoff: RelayHandoff) -> Color {
+        if handoff.attention != nil { return .orange }
+        return switch handoff.state {
+        case .created, .delivered, .waiting, .answered:
+            .accentColor
+        case .failed, .interrupted:
+            .red
+        case .completed, .cancelled:
+            .secondary
+        }
     }
 
     @ViewBuilder
@@ -229,11 +466,30 @@ struct ContentView: View {
             Label(kind.label, systemImage: kind == .shell ? "terminal" : "bubble.left.and.text.bubble.right")
         }
     }
+
+    @ViewBuilder
+    private func reviewTargetItems(action: @escaping (TmuxPane) -> Void) -> some View {
+        if !model.localAskTargets.isEmpty {
+            Section("This Workspace") {
+                ForEach(model.localAskTargets) { target in
+                    Button(target.displayName) { action(target) }
+                }
+            }
+        }
+        ForEach(model.otherWorkspaceAskGroups) { group in
+            Menu(group.workspace.name) {
+                ForEach(group.panes) { target in
+                    Button(target.displayName) { action(target) }
+                }
+            }
+        }
+    }
 }
 
 private struct PaneRow: View {
     let pane: TmuxPane
     let awaitingAnswerCount: Int
+    let latestFailure: RelayHandoff?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -248,18 +504,28 @@ private struct PaneRow: View {
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(Color.accentColor)
                     }
-                    if pane.kind.isAgent && !pane.relayEnabled {
+                    if pane.kind.isAgent && !pane.isStarted {
+                        Text("STOPPED")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.secondary)
+                    }
+                    if pane.kind.isAgent && pane.isStarted && !pane.relayEnabled {
                         Text("RESTART FOR RELAY")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(Color.orange)
                     }
-                    if pane.kind.isAgent && !pane.hasCurrentProtocol {
+                    if pane.kind.isAgent && pane.isStarted && !pane.hasCurrentProtocol {
                         Text("RESTART FOR PROTOCOL")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(Color.orange)
                     }
+                    if let latestFailure {
+                        Text(failureLabel(latestFailure))
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(latestFailure.attention != nil ? Color.orange : Color.red)
+                    }
                 }
-                Text("\(URL(fileURLWithPath: pane.cwd).lastPathComponent) · \(pane.currentCommand)")
+                Text("\(URL(fileURLWithPath: pane.cwd).lastPathComponent) · \(pane.isStarted ? pane.currentCommand : "not started")")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -277,6 +543,15 @@ private struct PaneRow: View {
         case .agy: .purple
         case .copilot: .green
         case .shell: .secondary
+        }
+    }
+
+    private func failureLabel(_ handoff: RelayHandoff) -> String {
+        switch handoff.attention {
+        case .permissionRequired: "NEEDS PERMISSION"
+        case .targetNotReady: "NOT READY"
+        case .targetUnavailable: "UNAVAILABLE"
+        case nil: "DELIVERY FAILED"
         }
     }
 }

@@ -101,7 +101,41 @@ function selectSDK() {
 }
 
 environment.SDKROOT = selectSDK()
-const result = spawnSync('swift', process.argv.slice(2), { stdio: 'inherit', env: environment })
+const requested = process.argv.slice(2)
+let result
+if (requested[0] === 'dev') {
+  let packagePath = '.'
+  const appArguments = []
+  for (let index = 1; index < requested.length; index += 1) {
+    if (requested[index] === '--package-path') {
+      packagePath = requested[index + 1] ?? packagePath
+      index += 1
+    } else {
+      appArguments.push(requested[index])
+    }
+  }
+
+  const build = spawnSync('swift', ['build', '--package-path', packagePath], {
+    stdio: 'inherit',
+    env: environment,
+  })
+  if (build.error) {
+    process.stderr.write(`Could not start Swift: ${build.error.message}\n`)
+    process.exit(1)
+  }
+  if (build.status !== 0) process.exit(build.status ?? 1)
+
+  const binPath = output('swift', ['build', '--show-bin-path', '--package-path', packagePath])
+  if (!binPath) {
+    process.stderr.write('Swift did not report the native build directory.\n')
+    process.exit(1)
+  }
+  const executable = join(binPath, 'parley-native')
+  environment.PARLEY_CORE_SERVICE = join(binPath, 'parley-core-service')
+  result = spawnSync(executable, appArguments, { stdio: 'inherit', env: environment })
+} else {
+  result = spawnSync('swift', requested, { stdio: 'inherit', env: environment })
+}
 if (result.error) {
   process.stderr.write(`Could not start Swift: ${result.error.message}\n`)
   process.exit(1)

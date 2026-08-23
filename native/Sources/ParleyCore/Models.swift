@@ -21,7 +21,7 @@ public enum PaneKind: String, CaseIterable, Codable, Sendable {
 
 }
 
-public enum SplitDirection: Sendable {
+public enum SplitDirection: String, Codable, Equatable, Sendable {
     case horizontal
     case vertical
 }
@@ -56,6 +56,8 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
     public let relayEnabled: Bool
     public let protocolVersion: String?
     public let workspaceName: String?
+    public let bracketedPasteActive: Bool
+    public let isStarted: Bool
 
     public init(
         id: String,
@@ -69,7 +71,9 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
         returnToPaneID: String?,
         relayEnabled: Bool = false,
         protocolVersion: String? = nil,
-        workspaceName: String? = nil
+        workspaceName: String? = nil,
+        bracketedPasteActive: Bool = false,
+        isStarted: Bool = true
     ) {
         self.id = id
         self.kind = kind
@@ -83,6 +87,8 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
         self.relayEnabled = relayEnabled
         self.protocolVersion = protocolVersion
         self.workspaceName = workspaceName
+        self.bracketedPasteActive = bracketedPasteActive
+        self.isStarted = isStarted
     }
 
     public var displayName: String {
@@ -108,6 +114,7 @@ public enum ParleyTmuxError: LocalizedError, Equatable {
     case workspaceNotFound(String)
     case cannotCloseLastWorkspace
     case copilotTrustRequired
+    case unsafeRelayTarget(String)
 
     public var errorDescription: String? {
         switch self {
@@ -135,6 +142,8 @@ public enum ParleyTmuxError: LocalizedError, Equatable {
             "Keep one workspace open so the Parley tmux session remains attached."
         case .copilotTrustRequired:
             "Copilot needs folder trust before it can receive an Ask. Focus its pane, approve the folder if you trust it, then retry."
+        case let .unsafeRelayTarget(name):
+            "\(name) is not ready for safe relay input. Focus it and wait for its prompt, or restart the pane if its Relay badge is stale."
         }
     }
 }
