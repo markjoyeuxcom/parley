@@ -3,12 +3,6 @@ import Dispatch
 import Foundation
 import ParleyCore
 
-private func argument(named name: String) -> String? {
-    let arguments = CommandLine.arguments
-    guard let index = arguments.firstIndex(of: name), arguments.indices.contains(index + 1) else { return nil }
-    return arguments[index + 1]
-}
-
 private func fail(_ error: Error) -> Never {
     FileHandle.standardError.write(Data("Parley core failed: \(error.localizedDescription)\n".utf8))
     exit(1)
@@ -21,26 +15,46 @@ private func log(_ message: String) {
 do {
     signal(SIGHUP, SIG_IGN)
     let fileManager = FileManager.default
-    let applicationDirectory = argument(named: "--application-directory").map {
-        URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL
+    let launch = CoreServiceLaunchConfiguration.resolve(
+        arguments: CommandLine.arguments,
+        homeDirectory: fileManager.homeDirectoryForCurrentUser,
+        currentDirectory: fileManager.currentDirectoryPath
+    )
+    if launch.mode == .loginAgent {
+        let controlToken = try RelayCoreControlToken.loadOrCreate(
+            at: launch.applicationDirectory.appendingPathComponent("core-control-token")
+        )
+        let existing = RelayCoreClient(
+            infoFile: launch.applicationDirectory.appendingPathComponent("relay-url"),
+            controlToken: controlToken
+        )
+        if existing.isHealthy() {
+            log("an existing core is healthy; login launch has nothing to do")
+            exit(0)
+        }
     }
-    let cwd = argument(named: "--cwd") ?? fileManager.currentDirectoryPath
     log("starting")
-    // The UI has already resolved the login-shell environment and passes it
-    // to this process. Resolving it again can consume the launcher's entire
-    // startup deadline when a shell profile is slow or interactive.
+    // Foreground launches inherit the UI's resolved login-shell environment.
+    // Login launches inherit launchd's minimal environment and rely on
+    // TmuxController's fixed Homebrew/system lookup. Neither path evaluates a
+    // shell profile inside this long-lived background service.
     let controller = try TmuxController(
-        applicationDirectory: applicationDirectory,
+        applicationDirectory: launch.applicationDirectory,
         environment: ProcessInfo.processInfo.environment
     )
-    log("connecting to tmux")
-    try controller.bootstrap(cwd: cwd)
+    if launch.bootstrapsTmux {
+        log("connecting to tmux")
+        try controller.bootstrap(cwd: launch.cwd)
+    } else {
+        log("waiting for the foreground app to create or reattach tmux")
+    }
 
     log("loading relay state")
     let credentials = try RelayCredentials(
         file: controller.applicationDirectory.appendingPathComponent("relay-tokens.json")
     )
-    try credentials.retain(paneIDs: Set(try controller.listPanes().map(\.id)))
+    let existingPanes = (try? controller.listPanes()) ?? []
+    try credentials.retain(paneIDs: Set(existingPanes.map(\.id)))
     let agentTransportDirectory = RelayFileTransport.runtimeDirectory(
         applicationDirectory: controller.applicationDirectory
     )

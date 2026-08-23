@@ -53,6 +53,20 @@ struct ParleyNativeApp: App {
             CommandMenu("Tools") {
                 Button("Environment Check…") { model.showEnvironmentCheck() }
                 Divider()
+                Toggle(
+                    "Keep Coordination Core Available at Login",
+                    isOn: Binding(
+                        get: { model.coreLoginItemRequested },
+                        set: { requested in model.setCoreLoginItemRequested(requested) }
+                    )
+                )
+                .disabled(!model.canChangeCoreLoginItem)
+                if model.coreLoginItemState == .requiresApproval {
+                    Button("Open Login Items Settings…") {
+                        model.openCoreLoginItemSettings()
+                    }
+                }
+                Divider()
                 Button("Export Diagnostics…") { model.exportDiagnostics() }
                     .disabled(model.diagnosticsExporting)
             }

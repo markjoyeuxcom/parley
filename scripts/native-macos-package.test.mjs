@@ -6,8 +6,11 @@ import test from 'node:test'
 
 import {
   BUNDLE_IDENTIFIER,
+  CORE_LAUNCH_AGENT_LABEL,
+  CORE_LAUNCH_AGENT_PLIST,
   MINIMUM_SYSTEM_VERSION,
   requiredBundlePaths,
+  renderCoreLaunchAgentPlist,
   renderInfoPlist,
   validateBundleStructure,
 } from './native-macos-package.mjs'
@@ -26,14 +29,30 @@ test('Info.plist describes the native foreground application', () => {
   assert.match(plist, /<key>NSHighResolutionCapable<\/key>\s*<true\/>/)
 })
 
-test('bundle contract requires the UI, persistent core, icon and runtime manifest', () => {
+test('bundle contract requires the UI, persistent core, launch agent, icon and runtime manifest', () => {
   assert.deepEqual(requiredBundlePaths, [
     'Contents/Info.plist',
     'Contents/MacOS/parley-native',
     'Contents/MacOS/parley-core-service',
+    'Contents/Library/LaunchAgents/com.markjoyeux.parley.core.plist',
     'Contents/Resources/Parley.icns',
     'Contents/Resources/runtime-components.json',
   ])
+})
+
+test('launch agent starts only the relocatable bundled core in login mode', () => {
+  const plist = renderCoreLaunchAgentPlist()
+
+  assert.equal(CORE_LAUNCH_AGENT_LABEL, 'com.markjoyeux.parley.core')
+  assert.equal(CORE_LAUNCH_AGENT_PLIST, 'com.markjoyeux.parley.core.plist')
+  assert.match(plist, /<key>Label<\/key>\s*<string>com\.markjoyeux\.parley\.core<\/string>/)
+  assert.match(plist, /<key>BundleProgram<\/key>\s*<string>Contents\/MacOS\/parley-core-service<\/string>/)
+  assert.match(plist, /<key>ProgramArguments<\/key>\s*<array>\s*<string>parley-core-service<\/string>\s*<string>--login-agent<\/string>/)
+  assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/)
+  assert.match(plist, /<key>ProcessType<\/key>\s*<string>Background<\/string>/)
+  assert.match(plist, /<key>AssociatedBundleIdentifiers<\/key>\s*<array>\s*<string>com\.markjoyeux\.parley<\/string>/)
+  assert.doesNotMatch(plist, /<key>Program<\/key>/)
+  assert.doesNotMatch(plist, /parley-native/)
 })
 
 test('bundle structure rejects a missing core and non-executable binaries', (context) => {
@@ -50,9 +69,15 @@ test('bundle structure rejects a missing core and non-executable binaries', (con
   assert.deepEqual(validateBundleStructure(bundle), [
     'Contents/MacOS/parley-native is not executable',
     'Contents/MacOS/parley-core-service is missing',
+    'Contents/Library/LaunchAgents/com.markjoyeux.parley.core.plist is missing',
   ])
 
   chmodSync(join(bundle, 'Contents/MacOS/parley-native'), 0o755)
   writeFileSync(join(bundle, 'Contents/MacOS/parley-core-service'), 'core', { mode: 0o755 })
+  mkdirSync(join(bundle, 'Contents/Library/LaunchAgents'), { recursive: true })
+  writeFileSync(
+    join(bundle, 'Contents/Library/LaunchAgents/com.markjoyeux.parley.core.plist'),
+    renderCoreLaunchAgentPlist(),
+  )
   assert.deepEqual(validateBundleStructure(bundle), [])
 })

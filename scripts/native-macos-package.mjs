@@ -20,11 +20,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 export const BUNDLE_IDENTIFIER = 'com.markjoyeux.parley'
+export const CORE_LAUNCH_AGENT_LABEL = `${BUNDLE_IDENTIFIER}.core`
+export const CORE_LAUNCH_AGENT_PLIST = `${CORE_LAUNCH_AGENT_LABEL}.plist`
 export const MINIMUM_SYSTEM_VERSION = '14.0'
 export const requiredBundlePaths = [
   'Contents/Info.plist',
   'Contents/MacOS/parley-native',
   'Contents/MacOS/parley-core-service',
+  `Contents/Library/LaunchAgents/${CORE_LAUNCH_AGENT_PLIST}`,
   'Contents/Resources/Parley.icns',
   'Contents/Resources/runtime-components.json',
 ]
@@ -75,6 +78,33 @@ export function renderInfoPlist({ version, build }) {
   <string>Copyright © 2026 Mark Joyeux</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key>
   <true/>
+</dict>
+</plist>
+`
+}
+
+export function renderCoreLaunchAgentPlist() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${CORE_LAUNCH_AGENT_LABEL}</string>
+  <key>BundleProgram</key>
+  <string>Contents/MacOS/parley-core-service</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>parley-core-service</string>
+    <string>--login-agent</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>${BUNDLE_IDENTIFIER}</string>
+  </array>
 </dict>
 </plist>
 `
@@ -180,6 +210,11 @@ function runtimeComponentsManifest() {
     core: {
       implementation: 'parley-core-service',
       location: 'Contents/MacOS/parley-core-service',
+      optionalLaunchAtLogin: {
+        mechanism: 'SMAppService LaunchAgent',
+        plist: `Contents/Library/LaunchAgents/${CORE_LAUNCH_AGENT_PLIST}`,
+        foregroundApplication: false,
+      },
     },
     relay: {
       implementation: 'ParleyCore.RelayShim',
@@ -219,8 +254,10 @@ export function packageNativeMacOS() {
   const bundle = join(stagingRoot, 'Parley.app')
   const contents = join(bundle, 'Contents')
   const macOS = join(contents, 'MacOS')
+  const launchAgents = join(contents, 'Library', 'LaunchAgents')
   const resources = join(contents, 'Resources')
   mkdirSync(macOS, { recursive: true })
+  mkdirSync(launchAgents, { recursive: true })
   mkdirSync(resources, { recursive: true })
 
   const appExecutable = join(macOS, 'parley-native')
@@ -231,6 +268,7 @@ export function packageNativeMacOS() {
   chmodSync(coreExecutable, 0o755)
   copyFileSync(join(repositoryRoot, 'resources/icon.icns'), join(resources, 'Parley.icns'))
   writeFileSync(join(resources, 'runtime-components.json'), runtimeComponentsManifest(), { mode: 0o644 })
+  writeFileSync(join(launchAgents, CORE_LAUNCH_AGENT_PLIST), renderCoreLaunchAgentPlist(), { mode: 0o644 })
   writeFileSync(join(contents, 'Info.plist'), renderInfoPlist({ version, build }), { mode: 0o644 })
   writeFileSync(join(contents, 'PkgInfo'), 'APPL????\n', { mode: 0o644 })
 

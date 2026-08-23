@@ -53,6 +53,14 @@ the UI executable. The relay command is installed from the bundled core code
 on launch, while tmux is detected as an external local dependency and always
 uses Parley's private socket and configuration.
 
+The bundle also carries
+`Contents/Library/LaunchAgents/com.markjoyeux.parley.core.plist`. The optional
+Service Management registration is off by default. Its relocatable
+`BundleProgram` starts only `parley-core-service --login-agent`; that mode opens
+the authenticated coordination transports but does not create tmux, a
+workspace, the foreground window or a vendor process. If a healthy core already
+exists, the login invocation exits successfully without creating a duplicate.
+
 The packaged bundle uses `com.markjoyeux.parley` for its preferences. On first
 launch it copies only missing workspace-continuity values from the historical
 SwiftPM executable domain (`parley-native`), so moving from `npm run dev` does
@@ -169,6 +177,11 @@ its socket wait and can be inspected or completed after the UI reattaches.
 Stopping the core releases blocked Ask commands with an explicit interruption;
 a later UI launch replaces stale socket discovery and starts with no impossible
 in-memory wait.
+
+Launch at login is managed from Tools and Status Center. Disabling it is
+refused while an Ask or tracked delegation is active because macOS unregisters
+by stopping the registered service. Once safe, Parley waits for unregister and
+immediately establishes a foreground-owned core so the open app remains usable.
 
 Pane credentials and the UI control credential are distinct capabilities. The
 core reloads pane identity through a process-safe locked store, allowing a

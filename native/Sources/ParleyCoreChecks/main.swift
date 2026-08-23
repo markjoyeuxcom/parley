@@ -4152,6 +4152,68 @@ private func checkCoreServiceStopsCleanly() throws {
     try expect(stopped == "stopped \(SIGTERM)", "core service did not finish its shutdown handler")
 }
 
+private func checkCoreServiceLoginLaunchConfiguration() throws {
+    let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+    let login = CoreServiceLaunchConfiguration.resolve(
+        arguments: ["parley-core-service", "--login-agent"],
+        homeDirectory: home,
+        currentDirectory: "/"
+    )
+    try expect(login.mode == .loginAgent, "login launch mode was not detected")
+    try expect(!login.bootstrapsTmux, "login launch would create a tmux workspace before the UI opens")
+    try expect(login.cwd == "/Users/tester", "login launch did not use the user home as its safe fallback folder")
+    try expect(
+        login.applicationDirectory.path == "/Users/tester/Library/Application Support/Parley Native",
+        "login launch did not resolve the standard owner-local application directory"
+    )
+
+    let foreground = CoreServiceLaunchConfiguration.resolve(
+        arguments: [
+            "parley-core-service",
+            "--application-directory", "/tmp/parley-app",
+            "--cwd", "/tmp/project",
+        ],
+        homeDirectory: home,
+        currentDirectory: "/tmp/fallback"
+    )
+    try expect(foreground.mode == .foregroundLauncher, "ordinary UI launch was mistaken for a login agent")
+    try expect(foreground.bootstrapsTmux, "ordinary UI launch stopped bootstrapping tmux")
+    try expect(foreground.applicationDirectory.path == "/tmp/parley-app", "explicit application directory was ignored")
+    try expect(foreground.cwd == "/tmp/project", "explicit working directory was ignored")
+
+    let active = try statusHandoff(
+        id: "active-delegation",
+        kind: .delegate,
+        state: .waiting,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@0",
+        occurredAt: 1
+    )
+    let finished = try statusHandoff(
+        id: "finished-relay",
+        kind: .relay,
+        state: .completed,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@0",
+        occurredAt: 2
+    )
+    try expect(
+        !CoreLoginItemChangePolicy.canDisable(activeConsultationCount: 0, handoffs: [active]),
+        "launch-at-login could be disabled while tracked work was active"
+    )
+    try expect(
+        !CoreLoginItemChangePolicy.canDisable(
+            activeConsultationCount: 1,
+            handoffs: [finished]
+        ),
+        "launch-at-login could be disabled while a consultation was waiting"
+    )
+    try expect(
+        CoreLoginItemChangePolicy.canDisable(activeConsultationCount: 0, handoffs: [finished]),
+        "completed work unnecessarily blocked disabling launch-at-login"
+    )
+}
+
 private func checkVendorConformancePlanning() throws {
     let panes = [
         TmuxPane(
@@ -4363,6 +4425,7 @@ let checks: [(String, () throws -> Void)] = [
     ("core startup timeout diagnostics", checkCoreStartupTimeoutReportsLastPhase),
     ("bundled core service resolution", checkBundledCoreServiceResolution),
     ("core service lifecycle", checkCoreServiceStopsCleanly),
+    ("core service login launch configuration", checkCoreServiceLoginLaunchConfiguration),
     ("vendor conformance planning", checkVendorConformancePlanning),
     ("vendor conformance planning fails closed", checkVendorConformancePlanningFailsClosed),
     ("vendor conformance rejects exited panes", checkVendorConformanceRejectsExitedPanes),

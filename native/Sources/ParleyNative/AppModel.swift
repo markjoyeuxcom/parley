@@ -68,6 +68,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var runtimeReadiness: RuntimeReadinessSnapshot?
     @Published private(set) var runtimeReadinessChecking = false
     @Published private(set) var diagnosticsExporting = false
+    @Published private(set) var coreLoginItemState: CoreLoginItemState = .unavailable
+    @Published private(set) var coreLoginItemChanging = false
     @Published var commandPalettePresented = false
     @Published var setupPresented = false
     @Published var startupError: String?
@@ -86,6 +88,7 @@ final class AppModel: ObservableObject {
     private let notificationEpoch = Date()
     private var observedNotificationEventIDs: Set<String> = []
     private var runtimeReadinessTask: Task<Void, Never>?
+    private let coreLoginItemController = CoreLoginItemController()
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
     private static let workspaceContinuityKey = "parley.workspaceContinuity"
     private static let notificationWorkspacesKey = "parley.notificationWorkspaces"
@@ -206,6 +209,7 @@ final class AppModel: ObservableObject {
             tmuxError = error.localizedDescription
             startupError = error.localizedDescription
         }
+        refreshCoreLoginItemState()
         refreshRuntimeReadiness()
     }
 
@@ -223,6 +227,71 @@ final class AppModel: ObservableObject {
     func showEnvironmentCheck() {
         setupPresented = true
         refreshRuntimeReadiness()
+    }
+
+    var coreLoginItemRequested: Bool { coreLoginItemState.isRegistered }
+
+    var canChangeCoreLoginItem: Bool {
+        coreLoginItemState != .unavailable && !coreLoginItemChanging
+    }
+
+    func refreshCoreLoginItemState() {
+        let refreshed = coreLoginItemController.state
+        if refreshed != coreLoginItemState { coreLoginItemState = refreshed }
+    }
+
+    func setCoreLoginItemRequested(_ requested: Bool) {
+        guard !coreLoginItemChanging else { return }
+        if requested == coreLoginItemRequested { return }
+
+        do {
+            if !requested {
+                guard coreAvailable, let relayClient else {
+                    throw RelayUIError.message(
+                        "Reconnect Parley's coordination core before turning off launch at login, so active work can be checked safely."
+                    )
+                }
+                let activeConsultationCount = try relayClient.consultations().count
+                let history = try relayClient.handoffs(limit: 500)
+                guard CoreLoginItemChangePolicy.canDisable(
+                    activeConsultationCount: activeConsultationCount,
+                    handoffs: history
+                ) else {
+                    throw RelayUIError.message(
+                        "Launch at login cannot be turned off while an Ask or tracked delegation is active. Finish or cancel that work first."
+                    )
+                }
+            }
+        } catch {
+            NSAlert(error: error).runModal()
+            refreshCoreLoginItemState()
+            return
+        }
+
+        coreLoginItemChanging = true
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                if requested {
+                    try self.coreLoginItemController.register()
+                } else {
+                    try await self.coreLoginItemController.unregister()
+                    self.relayClient = nil
+                    self.coreAvailable = false
+                    try self.reconnectConnections()
+                }
+                self.refreshCoreLoginItemState()
+                self.coreLoginItemChanging = false
+            } catch {
+                self.refreshCoreLoginItemState()
+                self.coreLoginItemChanging = false
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    func openCoreLoginItemSettings() {
+        coreLoginItemController.openSystemSettings()
     }
 
     func refreshRuntimeReadiness() {
@@ -677,22 +746,26 @@ final class AppModel: ObservableObject {
 
     func retryConnections() {
         perform {
-            guard let controller else {
-                throw RelayUIError.message("Parley could not initialise tmux. Quit and reopen the app after resolving the startup error.")
-            }
-            if !tmuxAvailable {
-                try controller.bootstrap(cwd: defaultFolder)
-            }
-            if !coreAvailable {
-                relayClient = try RelayCoreLauncher.ensureRunning(
-                    applicationDirectory: controller.applicationDirectory,
-                    cwd: defaultFolder,
-                    environment: controller.environment
-                )
-            }
-            try refresh()
-            startupError = nil
+            try reconnectConnections()
         }
+    }
+
+    private func reconnectConnections() throws {
+        guard let controller else {
+            throw RelayUIError.message("Parley could not initialise tmux. Quit and reopen the app after resolving the startup error.")
+        }
+        if !tmuxAvailable {
+            try controller.bootstrap(cwd: defaultFolder)
+        }
+        if !coreAvailable {
+            relayClient = try RelayCoreLauncher.ensureRunning(
+                applicationDirectory: controller.applicationDirectory,
+                cwd: defaultFolder,
+                environment: controller.environment
+            )
+        }
+        try refresh()
+        startupError = nil
     }
 
     func refreshQuietly() {
@@ -700,6 +773,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshStatusCenterQuietly() {
+        refreshCoreLoginItemState()
         do {
             try refresh()
             guard let relayClient else { return }

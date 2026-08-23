@@ -362,8 +362,16 @@ team or its folder routing.
   outer app, and pass strict code-signature and disk-image verification. A
   Developer ID identity, Apple notarization/stapling, release-channel upgrade
   policy and installation/uninstallation checks are still required.
-- Offer optional launch-at-login for the local core, independently of opening
-  the window.
+- [x] Offer optional launch-at-login for the local core, independently of
+  opening the window. The packaged app contains a relocatable user LaunchAgent
+  registered through `SMAppService`; it is off by default and invokes only
+  `parley-core-service --login-agent`. Login mode opens the authenticated core
+  transports without creating tmux, a workspace, the window or any vendor
+  process, and exits cleanly instead of duplicating an already healthy core.
+  Tools and Status Center expose registration and macOS approval state.
+  Disabling fails closed while an Ask or tracked delegation is active, waits
+  for Service Management to stop a login-owned core, then reconnects a
+  foreground-owned core so the open app remains usable.
 - [x] Add first-run detection for tmux and supported CLIs, plus authentication
   and protocol health checks that do not spend model quota. The native
   readiness sheet checks tmux, the persistent core, managed relay and shared

@@ -548,6 +548,8 @@ struct StatusCenterView: View {
                 healthRow("tmux workspace server", model.tmuxAvailable ? "CONNECTED" : "UNAVAILABLE", healthy: model.tmuxAvailable)
                 healthRow("Shared pane protocol", "V\(AgentProtocol.version)", healthy: true)
                 healthRow("Handoffs in scope", snapshot.handoffs.count.formatted(), healthy: true)
+                Divider()
+                coreLoginItemControl
                 DisclosureGroup("Technical details") {
                     VStack(alignment: .leading, spacing: 4) {
                         if let controller = model.controller {
@@ -563,6 +565,75 @@ struct StatusCenterView: View {
                 .font(.system(size: 10))
             }
             .padding(9)
+        }
+    }
+
+    private var coreLoginItemControl: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Toggle(
+                    "Keep coordination core available at login",
+                    isOn: Binding(
+                        get: { model.coreLoginItemRequested },
+                        set: { requested in model.setCoreLoginItemRequested(requested) }
+                    )
+                )
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .disabled(!model.canChangeCoreLoginItem)
+                Spacer()
+                if model.coreLoginItemChanging {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Changing launch at login")
+                }
+                Text(coreLoginItemLabel)
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(coreLoginItemColor)
+            }
+            Text(coreLoginItemDetail)
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if model.coreLoginItemState == .requiresApproval {
+                Button("Open Login Items Settings…") {
+                    model.openCoreLoginItemSettings()
+                }
+                .controlSize(.small)
+                .accessibilityHint("Open macOS System Settings to approve or disable Parley's background core")
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var coreLoginItemLabel: String {
+        if model.coreLoginItemChanging { return "CHANGING" }
+        return switch model.coreLoginItemState {
+        case .disabled: "OFF"
+        case .enabled: "ENABLED"
+        case .requiresApproval: "APPROVAL REQUIRED"
+        case .unavailable: "PACKAGED APP ONLY"
+        }
+    }
+
+    private var coreLoginItemDetail: String {
+        switch model.coreLoginItemState {
+        case .disabled:
+            "Off by default. Enabling starts only Parley's local coordination core at login; the window, tmux workspace and vendor CLIs remain closed."
+        case .enabled:
+            "macOS may start the bundled coordination core at login. It waits without creating a workspace until you open Parley."
+        case .requiresApproval:
+            "The service is registered, but macOS requires approval in Login Items before it may run."
+        case .unavailable:
+            "Install and open the packaged Parley.app to manage its bundled core LaunchAgent."
+        }
+    }
+
+    private var coreLoginItemColor: Color {
+        switch model.coreLoginItemState {
+        case .enabled: .green
+        case .requiresApproval: .orange
+        case .disabled, .unavailable: .secondary
         }
     }
 

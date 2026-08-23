@@ -38,6 +38,8 @@ There is no API-key mode, hosted Parley service, telemetry or remote sync.
   vendor CLIs, stale pane protocols, exited panes and interrupted consultations;
   active cases surface the safe Reconnect, Check Again, Restart or Inspect
   action without requiring repository commands.
+- Optional macOS launch-at-login for the local coordination core. It is off by
+  default and starts neither the Parley window, tmux workspace nor a vendor CLI.
 - Durable RESULT badges for requesting panes/workspaces and opt-in local
   notifications per workspace; notification text never includes the prompt or
   returned answer.
@@ -159,6 +161,12 @@ A separate per-user core process owns the authenticated relay socket and active
 consultations. Closing and reopening the SwiftUI app does not interrupt a
 blocking `parley ask`; the new UI attaches to the same core state.
 
+**Tools → Keep Coordination Core Available at Login** registers the bundled
+user LaunchAgent through macOS Service Management. Its status and approval door
+also appear under **Status Center → Core Health**. Turning it off is refused
+while tracked work is active; after macOS unregisters a login-owned core, the
+open app reconnects its own core before returning.
+
 ## Local architecture
 
 ```text
@@ -257,6 +265,8 @@ artifacts. Local builds use an ad-hoc hardened-runtime signature and are meant
 for verification on the building Mac; they are not notarized releases. Set
 `PARLEY_CODESIGN_IDENTITY` to a Developer ID Application identity when preparing
 a release candidate, then complete notarization and stapling before distribution.
+The bundle includes an `SMAppService` LaunchAgent plist whose relocatable
+`BundleProgram` points only to `parley-core-service --login-agent`.
 
 The ordered path from this locally packaged beta foundation to a dependable
 distributed tool is in [ROADMAP.md](ROADMAP.md).
