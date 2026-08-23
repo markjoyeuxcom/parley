@@ -12,6 +12,7 @@ let package = Package(
         .executable(name: "parley-core-service", targets: ["ParleyCoreService"]),
         .executable(name: "parley-native-checks", targets: ["ParleyCoreChecks"]),
         .executable(name: "parley-conformance", targets: ["ParleyConformance"]),
+        .executable(name: "parley-native-soak", targets: ["ParleySoak"]),
         .library(name: "ParleyCore", targets: ["ParleyCore"]),
     ],
     dependencies: [
@@ -19,15 +20,30 @@ let package = Package(
     ],
     targets: [
         .target(name: "ParleyCore"),
+        .target(
+            name: "ParleyTerminal",
+            dependencies: [
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ]
+        ),
         .executableTarget(
             name: "ParleyNative",
             dependencies: [
                 "ParleyCore",
+                "ParleyTerminal",
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ]
         ),
         .executableTarget(name: "ParleyCoreService", dependencies: ["ParleyCore"]),
         .executableTarget(name: "ParleyCoreChecks", dependencies: ["ParleyCore"]),
         .executableTarget(name: "ParleyConformance", dependencies: ["ParleyCore"]),
+        .executableTarget(
+            name: "ParleySoak",
+            dependencies: [
+                "ParleyCore",
+                "ParleyTerminal",
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ]
+        ),
     ]
 )

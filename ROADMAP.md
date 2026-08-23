@@ -381,9 +381,23 @@ team or its folder routing.
   names, folders, commands, transition details, credentials, raw journals and
   raw logs. A deterministic leak test plants unique secrets in every excluded
   source and checks both the report and extracted archive.
-- Run long terminal-output, repeated workspace switching, UI reattachment, and
-  multi-agent soak tests. Memory must plateau rather than grow with output
-  history or redraw count.
+- [x] Run long terminal-output, repeated workspace switching, UI reattachment,
+  and multi-agent soak tests. `npm run test:soak` is a quota-free isolated gate
+  using the exact production SwiftTerm/Metal configuration: seven controlled
+  output panes across four temporary workspaces, repeated switching, terminal
+  teardown/reattachment with unchanged child process ids, and continuous
+  authenticated four-vendor fixture relays through the real bounded broker and
+  journal. The robust verdict ignores warm-up and compares early/late
+  steady-state medians, failing growth above the larger of 16 MB or 10%.
+  A corrected two-minute dual-process gate completed 510 switches and 10,790
+  handoffs, retained exactly 500 broker and journal records, and held the app,
+  renderer and broker process to +0.16 MB (130.25 MB to 130.42 MB median;
+  130.45 MB peak). Every output fixture wrote beyond tmux's 10,000-line history
+  cap; the independently sampled tmux server held to +0.05 MB (53.33 MB to
+  53.38 MB median and peak). No model CLI is started. The harness drains an
+  autorelease pool per event, matching a real `NSApplication` loop; without
+  that, Foundation process/pipe objects made the test harness—not Parley—appear
+  to grow.
 - Document recovery from a damaged socket, missing CLI, stale protocol, dead
   pane, and interrupted consultation in the UI itself.
 

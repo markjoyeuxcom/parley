@@ -2117,6 +2117,48 @@ private func checkDiagnosticsExportIsUsefulAndPrivacyBounded() throws {
     }
 }
 
+private func checkMemoryPlateauAssessment() throws {
+    let plateau = MemoryPlateauAssessment.evaluate(
+        samples: [20, 80, 140, 158, 162, 159, 164, 161, 160, 163, 162, 161],
+        warmupSamples: 3,
+        absoluteAllowanceBytes: 8,
+        relativeAllowance: 0
+    )
+    try expect(plateau.verdict == .passed, "a noisy steady-state memory plateau failed")
+    try expect(plateau.earlyMedianBytes == 159, "the plateau baseline did not use the early steady-state median")
+    try expect(plateau.lateMedianBytes == 162, "the plateau finish did not use the late steady-state median")
+    try expect(plateau.growthBytes == 3, "the plateau growth was calculated incorrectly")
+
+    let growth = MemoryPlateauAssessment.evaluate(
+        samples: [10, 20, 100, 120, 140, 160, 180, 200, 220, 240],
+        warmupSamples: 2,
+        absoluteAllowanceBytes: 20,
+        relativeAllowance: 0
+    )
+    try expect(growth.verdict == .failed, "steadily growing memory was misreported as a plateau")
+    try expect(
+        (growth.growthBytes ?? Int64.min) > Int64(growth.allowanceBytes),
+        "failed growth did not exceed its allowance"
+    )
+
+    let relative = MemoryPlateauAssessment.evaluate(
+        samples: [1, 2, 1_000, 1_010, 1_040, 1_060, 1_080, 1_090, 1_100, 1_110],
+        warmupSamples: 2,
+        absoluteAllowanceBytes: 10,
+        relativeAllowance: 0.15
+    )
+    try expect(relative.verdict == .passed, "the relative plateau allowance was ignored")
+    try expect(relative.allowanceBytes == 151, "the relative plateau allowance was not based on its baseline")
+
+    let insufficient = MemoryPlateauAssessment.evaluate(
+        samples: [1, 2, 3],
+        warmupSamples: 2,
+        absoluteAllowanceBytes: 1,
+        relativeAllowance: 0
+    )
+    try expect(insufficient.verdict == .insufficientSamples, "an under-sampled run produced a confident verdict")
+}
+
 private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
     let panes = [
         TmuxPane(id: "%1", kind: .codex, customName: "Lead", terminalTitle: "", cwd: "/tmp/a", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "a", isStarted: true),
@@ -4159,6 +4201,7 @@ let checks: [(String, () throws -> Void)] = [
     ("legacy packaged-app preferences migration", checkLegacyPreferencesMigration),
     ("quota-free runtime readiness probes", checkRuntimeReadinessProbesAreQuotaFree),
     ("privacy-bounded local diagnostics export", checkDiagnosticsExportIsUsefulAndPrivacyBounded),
+    ("robust memory plateau assessment", checkMemoryPlateauAssessment),
     ("Git project context parsing", checkGitProjectContextParsing),
     ("command palette search", checkCommandPaletteSearch),
     ("workbench accessibility descriptions", checkAccessibilityDescriptions),

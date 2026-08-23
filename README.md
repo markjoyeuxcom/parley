@@ -164,7 +164,9 @@ native/
     ParleyCore/          tmux control, relay client, protocol and domain models
     ParleyCoreService/   persistent local broker process
     ParleyNative/        SwiftUI application and SwiftTerm host
+    ParleyTerminal/      production terminal configuration shared with soak
     ParleyCoreChecks/    deterministic native verification executable
+    ParleySoak/          quota-free output, reattachment and relay stress gate
 scripts/
   run-native-swift.mjs  macOS Swift/SDK compatibility runner
 resources/
@@ -206,7 +208,21 @@ npm run build
 npm run dev
 npm run package:mac
 npm run test:conformance:plan
+npm run test:soak
 ```
+
+`npm run test:soak` opens a temporary accessory window for about 36 seconds and
+uses a completely separate tmux socket and runtime directory. Seven fixture
+panes generate sustained scrolling and full-screen redraw output across four
+workspaces while the harness switches workspaces, tears down and reattaches the
+terminal client, and drives thousands of authenticated four-vendor fixture
+handoffs through the bounded broker journal. It invokes no AI CLI and spends no
+subscription quota. Each pane first writes beyond tmux's 10,000-line history
+cap, then switches to full-screen redraws. The command fails unless Metal is
+active, fixture process ids survive reattachment, both handoff stores remain
+capped at 500, and robust app/broker and tmux RSS medians each stay within the
+larger of 16 MB or 10%. Set
+`PARLEY_SOAK_SECONDS` to a larger value for an extended run.
 
 The conformance plan inspects existing panes and spends no subscription quota.
 When its routes look right, the explicitly opt-in live harness tests the loaded

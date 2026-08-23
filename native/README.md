@@ -13,8 +13,12 @@ control plane.
   owns the relay socket and active consultations independently of the UI.
 - **ParleyNative** — the macOS application, workspace and pane UI, terminal
   attachment, editors and user confirmations.
+- **ParleyTerminal** — the one production SwiftTerm appearance and Metal
+  buffering configuration used by both the app and its soak gate.
 - **ParleyCoreChecks** — deterministic executable checks that exercise the
   core without starting an AI CLI or spending subscription quota.
+- **ParleySoak** — an isolated AppKit, tmux, terminal-output, workspace,
+  reattachment and four-vendor fixture relay stress executable.
 
 SwiftTerm is the only package dependency and is locked by
 `Package.resolved`.
@@ -29,7 +33,17 @@ npm run build
 npm run dev
 npm run package:mac
 npm run test:conformance:plan
+npm run test:soak
 ```
+
+The soak command is also quota-free. It creates a short-lived owner-only runtime
+under the system temporary directory because macOS caps Unix socket paths at
+104 bytes, starts seven controlled output fixtures across four workspaces,
+fills each pane beyond tmux's configured history cap, reattaches the production-
+configured Metal terminal under load, and continuously cycles both workspace
+presentation and bounded cross-vendor relay history. It prints a versioned JSON
+result and exits non-zero unless both the app/broker process and separate tmux
+server reach robust steady-state plateaus and every lifecycle/bound is preserved.
 
 Packaging builds release versions of `parley-native` and
 `parley-core-service`, places them side-by-side in a standard macOS app bundle,
