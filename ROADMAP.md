@@ -372,8 +372,15 @@ team or its folder routing.
   CLI exposes no read-only authentication status command; Parley never invents
   a result or opens an interactive login flow. The check returns from the Tools
   menu without restarting panes.
-- Provide a local diagnostics export with secrets and prompt bodies excluded by
-  default.
+- [x] Provide a local diagnostics export with secrets and prompt bodies excluded
+  by default. Tools and Status Center now save an owner-only ZIP containing a
+  versioned JSON report and privacy README. It includes typed local readiness,
+  pane/process health, bounded RSS figures, up to 50 recent failures and the
+  last 20 state transitions per failure while structurally excluding prompts,
+  answers, terminal content,
+  names, folders, commands, transition details, credentials, raw journals and
+  raw logs. A deterministic leak test plants unique secrets in every excluded
+  source and checks both the report and extracted archive.
 - Run long terminal-output, repeated workspace switching, UI reattachment, and
   multi-agent soak tests. Memory must plateau rather than grow with output
   history or redraw count.

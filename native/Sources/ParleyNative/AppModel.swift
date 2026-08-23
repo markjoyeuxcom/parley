@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import ParleyCore
 import SwiftTerm
+import UniformTypeIdentifiers
 import UserNotifications
 
 @MainActor
@@ -66,6 +67,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var dismissedHandoffIDs: Set<String> = []
     @Published private(set) var runtimeReadiness: RuntimeReadinessSnapshot?
     @Published private(set) var runtimeReadinessChecking = false
+    @Published private(set) var diagnosticsExporting = false
     @Published var commandPalettePresented = false
     @Published var setupPresented = false
     @Published var startupError: String?
@@ -250,6 +252,93 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(true, forKey: Self.firstRunCompletedKey)
         setupPresented = false
         terminalHandle.focus()
+    }
+
+    func exportDiagnostics() {
+        guard !diagnosticsExporting else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Parley Diagnostics"
+        panel.message = "Saves local health and process-state facts. Prompts, answers, terminal contents, names, folders, credentials, journals, and logs are excluded."
+        panel.prompt = "Export"
+        panel.allowedContentTypes = [.zip]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = Self.diagnosticsFilename()
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        var history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        if let relayClient, let refreshed = try? relayClient.handoffs(limit: 500) {
+            history = refreshed
+            if refreshed != statusHandoffs { statusHandoffs = refreshed }
+        }
+        let report = makeDiagnosticsReport(handoffs: history)
+        diagnosticsExporting = true
+        Task { [weak self] in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try DiagnosticsArchiveWriter().write(report: report, to: destination)
+                }.value
+                guard let self else { return }
+                self.diagnosticsExporting = false
+                let alert = NSAlert()
+                alert.messageText = "Diagnostics Exported"
+                alert.informativeText = "Parley saved a privacy-bounded diagnostics ZIP to \(destination.lastPathComponent). Nothing was uploaded."
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            } catch {
+                guard let self else { return }
+                self.diagnosticsExporting = false
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    private func makeDiagnosticsReport(handoffs: [RelayHandoff]) -> DiagnosticsReport {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let application = DiagnosticsApplication(
+            bundleIdentifier: Bundle.main.bundleIdentifier ?? "unbundled-development-build",
+            version: info["CFBundleShortVersionString"] as? String ?? "development",
+            build: info["CFBundleVersion"] as? String ?? "development"
+        )
+        let corePID = (try? String(
+            contentsOf: applicationDirectory.appendingPathComponent("core.pid"),
+            encoding: .utf8
+        ))
+            .flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+
+        return DiagnosticsReportBuilder.build(
+            application: application,
+            operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
+            architecture: Self.processArchitecture,
+            uiResidentBytes: DiagnosticsProcessMemory.residentBytes(
+                pid: ProcessInfo.processInfo.processIdentifier
+            ),
+            coreResidentBytes: corePID.flatMap(DiagnosticsProcessMemory.residentBytes),
+            tmuxAvailable: tmuxAvailable,
+            coreAvailable: coreAvailable,
+            workspaceCount: workspaces.count,
+            panes: panes,
+            handoffs: handoffs,
+            readiness: runtimeReadiness
+        )
+    }
+
+    private static func diagnosticsFilename(at date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss'Z'"
+        return "Parley-Diagnostics-\(formatter.string(from: date)).zip"
+    }
+
+    private static var processArchitecture: String {
+        #if arch(arm64)
+        "arm64"
+        #elseif arch(x86_64)
+        "x86_64"
+        #else
+        "unknown"
+        #endif
     }
 
     var connectionState: WorkbenchConnectionState {

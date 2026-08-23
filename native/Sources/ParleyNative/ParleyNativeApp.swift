@@ -52,6 +52,9 @@ struct ParleyNativeApp: App {
             }
             CommandMenu("Tools") {
                 Button("Environment Check…") { model.showEnvironmentCheck() }
+                Divider()
+                Button("Export Diagnostics…") { model.exportDiagnostics() }
+                    .disabled(model.diagnosticsExporting)
             }
             CommandMenu("Pane") {
                 Button("New Claude Pane") { model.create(.claude, direction: .horizontal) }

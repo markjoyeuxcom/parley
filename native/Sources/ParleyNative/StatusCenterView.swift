@@ -96,6 +96,23 @@ struct StatusCenterView: View {
                 Text("Status Center condition. \(conditionTitle). \(conditionDetail)")
             }
             Spacer()
+            Button {
+                model.exportDiagnostics()
+            } label: {
+                if model.diagnosticsExporting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 14, height: 14)
+                } else {
+                    Image(systemName: "square.and.arrow.up")
+                }
+            }
+            .buttonStyle(.borderless)
+            .fixedSize()
+            .disabled(model.diagnosticsExporting)
+            .accessibilityLabel(model.diagnosticsExporting ? "Exporting diagnostics" : "Export diagnostics")
+            .accessibilityHint("Save a local ZIP containing health and process state without prompts, answers, terminal contents, names, folders, credentials, journals, or logs")
+            .help("Export privacy-bounded local diagnostics")
             Menu {
                 if model.workspaces.isEmpty {
                     Text("No workspaces")

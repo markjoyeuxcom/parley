@@ -1952,19 +1952,32 @@ private func statusHandoff(
     resultText: String? = nil,
     readAt: TimeInterval? = nil,
     attention: RelayAttention? = nil,
-    origin: RelayTransitionOrigin? = nil
+    origin: RelayTransitionOrigin? = nil,
+    sourceName: String? = nil,
+    targetName: String? = nil,
+    transitionDetail: String? = nil,
+    transitionCount: Int = 1
 ) throws -> RelayHandoff {
+    let transitions: [[String: Any]] = (0..<max(1, transitionCount)).map { offset in
+        var transition: [String: Any] = [
+            "state": state.rawValue,
+            "occurredAt": occurredAt + Double(offset),
+            "detail": transitionDetail ?? "Detail \(id)",
+        ]
+        if let origin { transition["origin"] = origin.rawValue }
+        return transition
+    }
     var object: [String: Any] = [
         "id": id,
         "idempotencyKey": "key-\(id)",
         "kind": kind.rawValue,
         "sourcePaneID": "%source-\(id)",
-        "sourceName": "Source \(id)",
+        "sourceName": sourceName ?? "Source \(id)",
         "sourceKind": "codex",
         "sourceWorkspaceID": sourceWorkspaceID,
         "sourceWorkspaceName": sourceWorkspaceID,
         "targetPaneID": "%target-\(id)",
-        "targetName": "Target \(id)",
+        "targetName": targetName ?? "Target \(id)",
         "targetKind": "claude",
         "targetWorkspaceID": targetWorkspaceID,
         "targetWorkspaceName": targetWorkspaceID,
@@ -1972,25 +1985,136 @@ private func statusHandoff(
         "submitted": true,
         "state": state.rawValue,
         "updatedAt": occurredAt,
-        "transitions": [[
-            "state": state.rawValue,
-            "occurredAt": occurredAt,
-            "detail": "Detail \(id)",
-        ]],
+        "transitions": transitions,
     ]
     if let resultText { object["resultText"] = resultText }
     if let readAt { object["readAt"] = readAt }
     if let attention { object["attention"] = attention.rawValue }
-    if let origin {
-        object["transitions"] = [[
-            "state": state.rawValue,
-            "occurredAt": occurredAt,
-            "detail": "Detail \(id)",
-            "origin": origin.rawValue,
-        ]]
-    }
     let data = try JSONSerialization.data(withJSONObject: object)
     return try JSONDecoder().decode(RelayHandoff.self, from: data)
+}
+
+private func checkDiagnosticsExportIsUsefulAndPrivacyBounded() throws {
+    let secrets = [
+        "PROMPT_SECRET_71A4",
+        "ANSWER_SECRET_9BC2",
+        "NAME_SECRET_C1D8",
+        "TARGET_SECRET_E5F0",
+        "FAILURE_SECRET_47AA",
+        "FOLDER_SECRET_951B",
+        "COMMAND_SECRET_28CC",
+        "TITLE_SECRET_137D",
+        "READINESS_SECRET_6EF4",
+        "RECOVERY_SECRET_F6A0",
+    ]
+    let handoff = try statusHandoff(
+        id: "diagnostic-failure",
+        kind: .ask,
+        state: .failed,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@1",
+        occurredAt: 100,
+        text: secrets[0],
+        resultText: secrets[1],
+        attention: .targetUnavailable,
+        sourceName: secrets[2],
+        targetName: secrets[3],
+        transitionDetail: secrets[4],
+        transitionCount: 25
+    )
+    let pane = TmuxPane(
+        id: "%77",
+        kind: .codex,
+        customName: secrets[2],
+        terminalTitle: secrets[7],
+        cwd: "/tmp/\(secrets[5])",
+        currentCommand: secrets[6],
+        isActive: true,
+        windowID: "@0",
+        returnToPaneID: "%private-return-route",
+        relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        workspaceName: secrets[5],
+        bracketedPasteActive: true,
+        isDead: false,
+        exitStatus: nil,
+        isStarted: true
+    )
+    let readiness = RuntimeReadinessSnapshot(
+        checkedAt: Date(timeIntervalSince1970: 90),
+        items: [RuntimeReadinessItem(
+            id: .core,
+            category: .localSystem,
+            title: secrets[7],
+            state: .attention,
+            detail: secrets[8],
+            recovery: secrets[9],
+            required: true
+        )]
+    )
+    let report = DiagnosticsReportBuilder.build(
+        generatedAt: Date(timeIntervalSince1970: 120),
+        application: DiagnosticsApplication(
+            bundleIdentifier: "com.example.parley",
+            version: "0.1.0",
+            build: "42"
+        ),
+        operatingSystem: "macOS test",
+        architecture: "arm64",
+        uiResidentBytes: 12_345,
+        coreResidentBytes: 54_321,
+        tmuxAvailable: true,
+        coreAvailable: false,
+        workspaceCount: 2,
+        panes: [pane],
+        handoffs: [handoff],
+        readiness: readiness
+    )
+    let encoded = try DiagnosticsReportEncoder.encode(report)
+    let text = String(decoding: encoded, as: UTF8.self)
+
+    for secret in secrets {
+        try expect(!text.contains(secret), "diagnostics leaked private value \(secret)")
+    }
+    try expect(text.contains("diagnostic-failure"), "diagnostics omitted the failure correlation id")
+    try expect(text.contains("targetUnavailable"), "diagnostics omitted the structured attention reason")
+    try expect(text.contains("12345") && text.contains("54321"), "diagnostics omitted bounded process memory")
+    try expect(report.failures.count == 1, "diagnostics omitted the recent operational failure")
+    try expect(
+        report.failures[0].transitions.count == DiagnosticsReportBuilder.maximumTransitionsPerFailure,
+        "diagnostics did not bound a pathological failure transition trail"
+    )
+    try expect(report.panes.count == 1, "diagnostics omitted the pane process state")
+
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("parley-diagnostics-check-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let archive = root.appendingPathComponent("Parley-Diagnostics.zip")
+    try DiagnosticsArchiveWriter().write(report: report, to: archive)
+    try expect(FileManager.default.fileExists(atPath: archive.path), "diagnostics ZIP was not created")
+
+    let extracted = root.appendingPathComponent("extracted", isDirectory: true)
+    try FileManager.default.createDirectory(at: extracted, withIntermediateDirectories: true)
+    let unzip = try ProcessCommandRunner(timeout: 10).run(
+        executable: URL(fileURLWithPath: "/usr/bin/ditto"),
+        arguments: ["-x", "-k", archive.path, extracted.path],
+        environment: ProcessInfo.processInfo.environment,
+        input: nil
+    )
+    try expect(unzip.status == 0, "diagnostics ZIP could not be extracted: \(unzip.stderrText)")
+    let files = try FileManager.default.subpathsOfDirectory(atPath: extracted.path)
+    try expect(files.contains(where: { $0.hasSuffix("diagnostics.json") }), "diagnostics ZIP omitted diagnostics.json")
+    try expect(files.contains(where: { $0.hasSuffix("README.txt") }), "diagnostics ZIP omitted its privacy README")
+    for relativePath in files where !relativePath.hasSuffix(".DS_Store") {
+        let url = extracted.appendingPathComponent(relativePath)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else { continue }
+        let content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        for secret in secrets {
+            try expect(!content.contains(secret), "diagnostics archive leaked private value \(secret)")
+        }
+    }
 }
 
 private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
@@ -4034,6 +4158,7 @@ let checks: [(String, () throws -> Void)] = [
     ("workspace continuity state", checkWorkspaceContinuityState),
     ("legacy packaged-app preferences migration", checkLegacyPreferencesMigration),
     ("quota-free runtime readiness probes", checkRuntimeReadinessProbesAreQuotaFree),
+    ("privacy-bounded local diagnostics export", checkDiagnosticsExportIsUsefulAndPrivacyBounded),
     ("Git project context parsing", checkGitProjectContextParsing),
     ("command palette search", checkCommandPaletteSearch),
     ("workbench accessibility descriptions", checkAccessibilityDescriptions),
