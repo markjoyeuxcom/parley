@@ -292,13 +292,17 @@ install guide. Nothing is published merely by pushing a tag. Until Developer ID
 and notarization are added, the draft title and instructions remain explicitly
 unnotarized.
 
-For this local-beta phase, upgrades deliberately favour correctness over
-convenience: finish active handoffs, turn off core launch-at-login, quit Parley,
-replace the app, and restart the Mac before reopening it so an older persistent
-core cannot survive the bundle replacement. Layouts and handoff history remain
-under `~/Library/Application Support/Parley Native`. Uninstallation follows the
-same stop/restart sequence and preserves that record unless it is separately and
-deliberately removed.
+Upgrades preserve the live workbench: quit Parley, replace the app, and reopen
+it. The new UI compares its versioned coordination contract with the persistent
+core. An idle old core is drained and replaced automatically; an active Ask or
+delegation stays alive and the Status Center shows **Core upgrade: pending**
+until it finishes. tmux, workspace tabs and vendor pane processes are never part
+of the core handover. Layouts and handoff history remain under
+`~/Library/Application Support/Parley Native`.
+
+Uninstallation still requires turning off core launch-at-login, finishing active
+work, quitting Parley and restarting the Mac before removing the app. That
+preserves the local record unless it is separately and deliberately removed.
 
 The ordered path from this locally packaged beta foundation to a dependable
 distributed tool is in [ROADMAP.md](ROADMAP.md).

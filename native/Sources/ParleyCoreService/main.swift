@@ -80,17 +80,27 @@ do {
         handoffJournal: handoffJournal,
         activityJournal: activityJournal
     )
-    let server = RelayHTTPServer(
-        broker: broker,
-        infoFile: controller.applicationDirectory.appendingPathComponent("relay-url"),
-        controlToken: controlToken
-    )
-    log("opening relay socket")
-    try server.start()
     let agentTransport = RelayFileTransport(
         broker: broker,
         runtimeDirectory: agentTransportDirectory
     )
+    let server = RelayHTTPServer(
+        broker: broker,
+        infoFile: controller.applicationDirectory.appendingPathComponent("relay-url"),
+        controlToken: controlToken,
+        identity: .current(),
+        shutdownRequested: {
+            try? agentTransport.preserveExchangeFilesForNextStart()
+            // The acknowledgement has already been written. Give this main
+            // thread time to install its signal sources before requesting the
+            // ordinary cleanup path.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                _ = Darwin.kill(ProcessInfo.processInfo.processIdentifier, SIGTERM)
+            }
+        }
+    )
+    log("opening relay socket")
+    try server.start()
     do {
         log("opening agent filesystem transport")
         try agentTransport.start()

@@ -92,6 +92,37 @@ public struct RelayCoreClient: Sendable {
         return response.status == 200 && response.body == Data("ok".utf8)
     }
 
+    /// Returns nil only for a legacy core that predates the identity route.
+    public func coreIdentity() throws -> CoreServiceIdentity? {
+        let response = try request(
+            method: "GET",
+            path: "/identity",
+            headers: ["X-Parley-Control": controlToken],
+            body: Data()
+        )
+        if response.status == 404 { return nil }
+        guard response.status == 200 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return try JSONDecoder().decode(CoreServiceIdentity.self, from: response.body)
+    }
+
+    public func shutdownIfIdle() throws -> RelayCoreUpgradeResponse {
+        let response = try request(
+            method: "POST",
+            path: "/ui/shutdown-if-idle",
+            headers: ["X-Parley-Control": controlToken],
+            body: Data()
+        )
+        guard response.status == 202 || response.status == 409 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return RelayCoreUpgradeResponse(
+            status: response.status,
+            readiness: try JSONDecoder().decode(RelayUpgradeReadiness.self, from: response.body)
+        )
+    }
+
     public func consultations() throws -> [RelayConsultation] {
         let response = try request(
             method: "GET",
@@ -326,6 +357,16 @@ public struct RelayCoreClient: Sendable {
 
     private func socketError(_ prefix: String) -> RelayCoreError {
         RelayCoreError.socket("\(prefix): \(String(cString: strerror(errno)))")
+    }
+}
+
+public struct RelayCoreUpgradeResponse: Equatable, Sendable {
+    public let status: Int
+    public let readiness: RelayUpgradeReadiness
+
+    public init(status: Int, readiness: RelayUpgradeReadiness) {
+        self.status = status
+        self.readiness = readiness
     }
 }
 

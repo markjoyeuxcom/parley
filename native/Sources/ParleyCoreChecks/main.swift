@@ -2980,6 +2980,25 @@ private func checkRelayFilesystemRuntimeIsProtectedAndStopsCleanly() throws {
     transport.stop()
     try expect(!FileManager.default.fileExists(atPath: heartbeat.path), "stopped filesystem relay left a live heartbeat")
 
+    let queuedResponse = runtime
+        .appendingPathComponent("outbox", isDirectory: true)
+        .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+    try FileManager.default.createDirectory(at: queuedResponse, withIntermediateDirectories: false)
+    try transport.preserveExchangeFilesForNextStart()
+    try transport.start()
+    try expect(
+        FileManager.default.fileExists(atPath: queuedResponse.path),
+        "graceful core handover discarded a command response"
+    )
+    transport.stop()
+
+    try transport.start()
+    try expect(
+        !FileManager.default.fileExists(atPath: queuedResponse.path),
+        "ordinary core startup preserved an uncertain stale response"
+    )
+    transport.stop()
+
     let symlinkParent = try temporaryDirectory()
     let symlinkRuntime = symlinkParent.appendingPathComponent("runtime", isDirectory: true)
     let redirected = try temporaryDirectory()
@@ -3378,7 +3397,19 @@ private func runCoreServiceFixture() throws {
     let server = RelayHTTPServer(
         broker: broker,
         infoFile: directory.appendingPathComponent("relay-url"),
-        controlToken: controlToken
+        controlToken: controlToken,
+        identity: ProcessInfo.processInfo.environment["PARLEY_CORE_FIXTURE_BUILD"].map {
+            CoreServiceIdentity(
+                contractVersion: CoreServiceIdentity.currentContractVersion,
+                applicationVersion: "fixture",
+                build: $0
+            )
+        } ?? .resolve(infoDictionary: nil),
+        shutdownRequested: {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                _ = Darwin.kill(ProcessInfo.processInfo.processIdentifier, SIGTERM)
+            }
+        }
     )
     try server.start()
     let agentTransport = RelayFileTransport(
@@ -4214,6 +4245,188 @@ private func checkCoreServiceLoginLaunchConfiguration() throws {
     )
 }
 
+private func checkCoreServiceUpgradeIdentity() throws {
+    let packaged = CoreServiceIdentity.resolve(infoDictionary: [
+        "CFBundleShortVersionString": "1.2.3",
+        "CFBundleVersion": "456",
+    ])
+    let development = CoreServiceIdentity.resolve(infoDictionary: nil)
+
+    try expect(packaged.contractVersion == 1, "packaged core identity has the wrong coordination contract")
+    try expect(packaged.applicationVersion == "1.2.3", "packaged core identity lost the app version")
+    try expect(packaged.build == "456", "packaged core identity lost the app build")
+    try expect(development.applicationVersion == "development", "development core identity invented an app version")
+    try expect(development.build == "development", "development core identity invented a build")
+    try expect(packaged.requiresHandover(from: development), "a different core build was treated as current")
+    try expect(!packaged.requiresHandover(from: packaged), "an identical core build requested a handover")
+    try expect(packaged.requiresHandover(from: nil), "a legacy core with no identity was treated as current")
+
+    try expect(
+        RelayCoreHandover.validatedLegacyPID(
+            pidFileContents: "42\n",
+            executablePath: "/Applications/Parley.app/Contents/MacOS/parley-core-service",
+            currentPID: 99
+        ) == 42,
+        "the exact legacy core executable was refused"
+    )
+    try expect(
+        RelayCoreHandover.validatedLegacyPID(
+            pidFileContents: "42",
+            executablePath: "/tmp/unrelated-service",
+            currentPID: 99
+        ) == nil,
+        "an unrelated process passed legacy-core validation"
+    )
+    try expect(
+        RelayCoreHandover.validatedLegacyPID(
+            pidFileContents: "99",
+            executablePath: "/tmp/parley-core-service",
+            currentPID: 99
+        ) == nil,
+        "the UI could mistake itself for a legacy core"
+    )
+}
+
+private func checkCoreUpgradeDrainIsAtomic() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    _ = try credentials.token(for: "%2")
+    let panes = [
+        TmuxPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let writerEntered = DispatchSemaphore(value: 0)
+    let releaseWriter = DispatchSemaphore(value: 0)
+    let result = LockedAskResult()
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in
+            writerEntered.signal()
+            _ = releaseWriter.wait(timeout: .now() + 3)
+        }
+    )
+
+    DispatchQueue.global(qos: .utility).async {
+        let response = broker.handle(
+            token: sourceToken,
+            target: "agy",
+            text: "in flight",
+            idempotencyKey: "upgrade-drain-in-flight"
+        )
+        result.set(RelayTextResponse(status: response.status, text: response.body.error ?? response.body.note ?? ""))
+    }
+    try expect(writerEntered.wait(timeout: .now() + 2) == .success, "upgrade drain fixture never entered delivery")
+    let inFlight = broker.prepareForUpgrade()
+    try expect(!inFlight.accepted && inFlight.activeDispatches == 1, "upgrade drain ignored an in-flight delivery")
+    releaseWriter.signal()
+    try expect(eventually { result.value?.status == 200 }, "in-flight delivery did not finish")
+
+    let ready = broker.prepareForUpgrade()
+    try expect(ready.accepted, "idle broker refused upgrade drain")
+    let refused = broker.handle(
+        token: sourceToken,
+        target: "agy",
+        text: "too late",
+        idempotencyKey: "upgrade-drain-refused"
+    )
+    try expect(refused.status == 409, "draining core accepted a new handoff")
+    try expect(refused.body.error?.localizedCaseInsensitiveContains("upgrade") == true, "drain refusal did not explain the upgrade")
+}
+
+private func checkCoreUpgradeControlRoundTrip() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let broker = RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in })
+    let controlToken = try RelayCoreControlToken.loadOrCreate(
+        at: directory.appendingPathComponent("core-control-token")
+    )
+    let identity = CoreServiceIdentity.resolve(infoDictionary: [
+        "CFBundleShortVersionString": "2.0.0",
+        "CFBundleVersion": "99",
+    ])
+    let shutdowns = LockedCounter()
+    let server = RelayHTTPServer(
+        broker: broker,
+        infoFile: directory.appendingPathComponent("relay-url"),
+        controlToken: controlToken,
+        identity: identity,
+        shutdownRequested: { shutdowns.increment() }
+    )
+    try server.start()
+    defer { server.stop() }
+    let client = RelayCoreClient(
+        infoFile: directory.appendingPathComponent("relay-url"),
+        controlToken: controlToken
+    )
+
+    let observedIdentity = try client.coreIdentity()
+    try expect(observedIdentity == identity, "core identity round trip changed its fields")
+    let response = try client.shutdownIfIdle()
+    try expect(response.status == 202, "idle core did not acknowledge graceful handover")
+    try expect(eventually { shutdowns.value == 1 }, "shutdown callback did not run after acknowledgement")
+}
+
+private func checkCoreUpgradeReplacesPersistentFixture() throws {
+    let directory = try temporaryDirectory()
+    let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+    let process = Process()
+    var oldEnvironment = ProcessInfo.processInfo.environment
+    oldEnvironment["PARLEY_CORE_FIXTURE"] = "1"
+    oldEnvironment["PARLEY_CORE_FIXTURE_BUILD"] = "old"
+    process.executableURL = executable
+    process.arguments = [
+        "--application-directory", directory.path,
+        "--cwd", "/tmp",
+    ]
+    process.environment = oldEnvironment
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+
+    let controlToken = try RelayCoreControlToken.loadOrCreate(
+        at: directory.appendingPathComponent("core-control-token")
+    )
+    let client = RelayCoreClient(
+        infoFile: directory.appendingPathComponent("relay-url"),
+        controlToken: controlToken
+    )
+    guard eventually(timeout: 3, { client.isHealthy() }) else {
+        process.terminate()
+        throw CheckFailure(description: "old fixture core never became healthy")
+    }
+    let oldPID = process.processIdentifier
+
+    var replacementEnvironment = ProcessInfo.processInfo.environment
+    replacementEnvironment["PARLEY_CORE_FIXTURE"] = "1"
+    replacementEnvironment.removeValue(forKey: "PARLEY_CORE_FIXTURE_BUILD")
+    let expectedIdentity = CoreServiceIdentity.resolve(infoDictionary: nil)
+    let result = try RelayCoreHandover.reconcile(
+        client: client,
+        expectedIdentity: expectedIdentity,
+        applicationDirectory: directory,
+        cwd: "/tmp",
+        environment: replacementEnvironment,
+        executable: executable,
+        timeout: 3
+    )
+    try expect(result.outcome == .replaced, "mismatched fixture core was not replaced")
+    try expect(result.client.isHealthy(), "replacement fixture core was not healthy")
+    let newPIDText = try String(contentsOf: directory.appendingPathComponent("core.pid"), encoding: .utf8)
+    let newPID = try require(
+        Int32(newPIDText.trimmingCharacters(in: .whitespacesAndNewlines)),
+        "replacement fixture core wrote an invalid PID"
+    )
+    try expect(newPID != oldPID, "upgrade reused the old core process")
+    let replacementIdentity = try result.client.coreIdentity()
+    try expect(replacementIdentity == expectedIdentity, "replacement fixture has the wrong identity")
+    _ = Darwin.kill(newPID, SIGTERM)
+    try expect(eventually(timeout: 3) { !result.client.isHealthy() }, "replacement fixture did not stop cleanly")
+}
+
 private func checkVendorConformancePlanning() throws {
     let panes = [
         TmuxPane(
@@ -4426,6 +4639,10 @@ let checks: [(String, () throws -> Void)] = [
     ("bundled core service resolution", checkBundledCoreServiceResolution),
     ("core service lifecycle", checkCoreServiceStopsCleanly),
     ("core service login launch configuration", checkCoreServiceLoginLaunchConfiguration),
+    ("core service upgrade identity", checkCoreServiceUpgradeIdentity),
+    ("core upgrade drain is atomic", checkCoreUpgradeDrainIsAtomic),
+    ("core upgrade control round trip", checkCoreUpgradeControlRoundTrip),
+    ("persistent core seamless replacement", checkCoreUpgradeReplacesPersistentFixture),
     ("vendor conformance planning", checkVendorConformancePlanning),
     ("vendor conformance planning fails closed", checkVendorConformancePlanningFailsClosed),
     ("vendor conformance rejects exited panes", checkVendorConformanceRejectsExitedPanes),

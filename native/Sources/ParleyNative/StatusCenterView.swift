@@ -545,6 +545,19 @@ struct StatusCenterView: View {
         statusGroup("CORE HEALTH") {
             VStack(spacing: 7) {
                 healthRow("Coordination core", model.coreAvailable ? "CONNECTED" : "UNAVAILABLE", healthy: model.coreAvailable)
+                if model.coreUpgradePending {
+                    HStack {
+                        Text("Core upgrade").font(.system(size: 10))
+                        Spacer()
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 6, height: 6)
+                        Text("PENDING")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityRepresentation { Text("Core upgrade, pending") }
+                }
                 healthRow("tmux workspace server", model.tmuxAvailable ? "CONNECTED" : "UNAVAILABLE", healthy: model.tmuxAvailable)
                 healthRow("Shared pane protocol", "V\(AgentProtocol.version)", healthy: true)
                 healthRow("Handoffs in scope", snapshot.handoffs.count.formatted(), healthy: true)
@@ -554,6 +567,9 @@ struct StatusCenterView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         if let controller = model.controller {
                             Text("tmux socket: \(controller.socketPath.path)")
+                        }
+                        if let message = model.coreUpgradeMessage {
+                            Text("core upgrade: \(message)")
                         }
                         Text("Only local, owner-authenticated state is shown. Prompt bodies and credentials are never exported from this window.")
                     }

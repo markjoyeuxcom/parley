@@ -76,6 +76,13 @@ the authenticated coordination transports but does not create tmux, a
 workspace, the foreground window or a vendor process. If a healthy core already
 exists, the login invocation exits successfully without creating a duplicate.
 
+The UI and core expose an owner-authenticated version/build/contract handshake.
+After the app bundle is replaced, an idle old core closes its admission gate,
+preserves filesystem relay exchanges, acknowledges shutdown and is replaced by
+the new bundled service. Active Ask and Delegate work defer that handover; the
+UI retries and reports the pending state instead of interrupting it. tmux and
+vendor pane processes are outside this lifecycle.
+
 The packaged bundle uses `com.markjoyeux.parley` for its preferences. On first
 launch it copies only missing workspace-continuity values from the historical
 SwiftPM executable domain (`parley-native`), so moving from `npm run dev` does

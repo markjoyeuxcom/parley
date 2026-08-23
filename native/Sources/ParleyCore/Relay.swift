@@ -497,6 +497,8 @@ public final class RelayBroker: @unchecked Sendable {
     private var handoffRecords: [String: RelayHandoff] = [:]
     private var activityRecords: [String: RelayActivityEvent] = [:]
     private var idempotencyRecords: [IdempotencyScope: IdempotencyRecord] = [:]
+    private var acceptingHandoffs = true
+    private var activeDispatches = 0
 
     public init(
         credentials: RelayCredentials,
@@ -533,13 +535,57 @@ public final class RelayBroker: @unchecked Sendable {
         pruneHandoffsLocked()
     }
 
+    /// Atomically closes the admission gate only when no work can still be
+    /// creating durable coordination state. A caller that receives `accepted`
+    /// may stop this core without interrupting Ask or Delegate.
+    public func prepareForUpgrade() -> RelayUpgradeReadiness {
+        reconcileDelegations()
+        consultationCondition.lock()
+        let activeConsultations = consultationRecords.values.filter { $0.completion == nil }.count
+        let activeDelegations = delegationRecords.count
+        let activeDispatches = activeDispatches
+        let accepted = activeConsultations == 0 && activeDelegations == 0 && activeDispatches == 0
+        if accepted { acceptingHandoffs = false }
+        consultationCondition.unlock()
+        return RelayUpgradeReadiness(
+            accepted: accepted,
+            activeConsultations: activeConsultations,
+            activeDelegations: activeDelegations,
+            activeDispatches: activeDispatches
+        )
+    }
+
+    private func beginDispatch() -> Bool {
+        consultationCondition.lock()
+        guard acceptingHandoffs else {
+            consultationCondition.unlock()
+            return false
+        }
+        activeDispatches += 1
+        consultationCondition.unlock()
+        return true
+    }
+
+    private func endDispatch() {
+        consultationCondition.lock()
+        activeDispatches = max(0, activeDispatches - 1)
+        consultationCondition.broadcast()
+        consultationCondition.unlock()
+    }
+
+    private func upgradeDrainFailure() -> RelayResponse {
+        failure(409, "Parley is completing a coordination-core upgrade; retry after it reconnects.")
+    }
+
     public func handle(
         token: String,
         target requestedTarget: String,
         text: String,
         idempotencyKey: String? = nil
     ) -> RelayResponse {
-        deliver(
+        guard beginDispatch() else { return upgradeDrainFailure() }
+        defer { endDispatch() }
+        return deliver(
             token: token,
             target: requestedTarget,
             text: text,
@@ -556,7 +602,9 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey: String? = nil
     ) -> RelayResponse {
-        deliver(
+        guard beginDispatch() else { return upgradeDrainFailure() }
+        defer { endDispatch() }
+        return deliver(
             token: token,
             target: requestedTarget,
             text: text,
@@ -682,6 +730,8 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey suppliedIdempotencyKey: String? = nil
     ) -> RelayResponse {
+        guard beginDispatch() else { return upgradeDrainFailure() }
+        defer { endDispatch() }
         let sender: TmuxPane
         let target: TmuxPane
         let idempotencyKey: String
@@ -943,6 +993,10 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey suppliedIdempotencyKey: String? = nil
     ) -> RelayTextResponse {
+        guard beginDispatch() else {
+            return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
+        }
+        defer { endDispatch() }
         let sender: TmuxPane
         let target: TmuxPane
         let idempotencyKey: String
@@ -1069,6 +1123,10 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey suppliedIdempotencyKey: String? = nil
     ) -> RelayTextResponse {
+        guard beginDispatch() else {
+            return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
+        }
+        defer { endDispatch() }
         let cleaned = RelayText.clean(text)
         guard !cleaned.isEmpty else { return RelayTextResponse(status: 400, text: "nothing to ask") }
         guard cleaned.count <= RelayText.maximumCharacters else {
@@ -1370,6 +1428,10 @@ public final class RelayBroker: @unchecked Sendable {
     /// only when the recorded writer error proves no terminal input began.
     /// Unknown and post-paste failures are deliberately not retryable.
     public func retryHandoff(_ handoffID: String) -> RelayTextResponse {
+        guard beginDispatch() else {
+            return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
+        }
+        defer { endDispatch() }
         let livePanes: [TmuxPane]
         do {
             livePanes = try panes()

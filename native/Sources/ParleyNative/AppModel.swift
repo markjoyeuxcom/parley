@@ -63,6 +63,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var tmuxAvailable = false
     @Published private(set) var coreError: String?
     @Published private(set) var tmuxError: String?
+    @Published private(set) var coreUpgradePending = false
+    @Published private(set) var coreUpgradeMessage: String?
     @Published private(set) var notificationWorkspaceNames: Set<String> = []
     @Published private(set) var dismissedHandoffIDs: Set<String> = []
     @Published private(set) var runtimeReadiness: RuntimeReadinessSnapshot?
@@ -88,6 +90,9 @@ final class AppModel: ObservableObject {
     private let notificationEpoch = Date()
     private var observedNotificationEventIDs: Set<String> = []
     private var runtimeReadinessTask: Task<Void, Never>?
+    private var coreUpgradeTask: Task<Void, Never>?
+    private var coreUpgradeSettled = false
+    private var lastCoreUpgradeAttempt = Date.distantPast
     private let coreLoginItemController = CoreLoginItemController()
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
     private static let workspaceContinuityKey = "parley.workspaceContinuity"
@@ -211,6 +216,7 @@ final class AppModel: ObservableObject {
         }
         refreshCoreLoginItemState()
         refreshRuntimeReadiness()
+        scheduleCoreUpgradeCheck(force: true)
     }
 
     var activeWorkspace: TmuxWorkspace? { workspaces.first(where: \.isActive) }
@@ -764,12 +770,91 @@ final class AppModel: ObservableObject {
                 environment: controller.environment
             )
         }
+        coreUpgradeSettled = false
+        scheduleCoreUpgradeCheck(force: true)
         try refresh()
         startupError = nil
     }
 
     func refreshQuietly() {
         do { try refresh() } catch { /* the attached client may be between tmux redraws */ }
+        scheduleCoreUpgradeCheck()
+    }
+
+    private func scheduleCoreUpgradeCheck(force: Bool = false) {
+        guard coreUpgradeTask == nil, !coreUpgradeSettled, let controller else { return }
+        let now = Date()
+        guard force || now.timeIntervalSince(lastCoreUpgradeAttempt) >= 2 else { return }
+        lastCoreUpgradeAttempt = now
+
+        let client = relayClient
+        let expectedIdentity = CoreServiceIdentity.resolve(infoDictionary: Bundle.main.infoDictionary)
+        let applicationDirectory = applicationDirectory
+        let cwd = defaultFolder
+        let environment = controller.environment
+        coreUpgradeTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await Task.detached(priority: .utility) {
+                    let attached: RelayCoreClient
+                    if let client, client.isHealthy() {
+                        attached = client
+                    } else {
+                        attached = try RelayCoreLauncher.ensureRunning(
+                            applicationDirectory: applicationDirectory,
+                            cwd: cwd,
+                            environment: environment
+                        )
+                    }
+                    return try RelayCoreHandover.reconcile(
+                        client: attached,
+                        expectedIdentity: expectedIdentity,
+                        applicationDirectory: applicationDirectory,
+                        cwd: cwd,
+                        environment: environment
+                    )
+                }.value
+                self.relayClient = result.client
+                self.coreAvailable = true
+                self.coreError = nil
+                switch result.outcome {
+                case .current:
+                    self.coreUpgradePending = false
+                    self.coreUpgradeMessage = "The coordination core matches this Parley build."
+                    self.coreUpgradeSettled = true
+                case .replaced:
+                    self.coreUpgradePending = false
+                    self.coreUpgradeMessage = "The coordination core was upgraded without restarting any panes."
+                    self.coreUpgradeSettled = true
+                    if self.startupError?.hasPrefix("The Parley relay is unavailable") == true {
+                        self.startupError = nil
+                    }
+                case let .deferred(readiness):
+                    self.coreUpgradePending = true
+                    self.coreUpgradeMessage = Self.coreUpgradePendingMessage(readiness)
+                }
+            } catch {
+                self.coreUpgradePending = true
+                self.coreUpgradeMessage = "Automatic core upgrade will retry: \(error.localizedDescription)"
+                self.coreError = error.localizedDescription
+            }
+            self.coreUpgradeTask = nil
+        }
+    }
+
+    private static func coreUpgradePendingMessage(_ readiness: RelayUpgradeReadiness) -> String {
+        var work: [String] = []
+        if readiness.activeConsultations > 0 {
+            work.append("\(readiness.activeConsultations) active Ask")
+        }
+        if readiness.activeDelegations > 0 {
+            work.append("\(readiness.activeDelegations) active delegation")
+        }
+        if readiness.activeDispatches > 0 {
+            work.append("a handoff currently being delivered")
+        }
+        let detail = work.isEmpty ? "coordination work" : work.joined(separator: ", ")
+        return "Upgrade pending until \(detail) finishes. Agent panes and tmux sessions remain running."
     }
 
     func refreshStatusCenterQuietly() {

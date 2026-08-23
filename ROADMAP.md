@@ -366,9 +366,12 @@ team or its folder routing.
   the bundle atomically, starts the packaged core on a private tmux socket,
   preserves local records during uninstall and requires an exact confirmation
   before purging them. A manual GitHub workflow can create only an unpublished,
-  explicitly unnotarized draft from an existing matching tag. Developer ID,
-  notarization/stapling, seamless persistent-core handover during an upgrade and
-  the physical clean-Mac gate remain required before this item is complete.
+  explicitly unnotarized draft from an existing matching tag. The persistent
+  core now exposes a versioned identity and an atomic idle-drain endpoint: the
+  UI replaces mismatched cores automatically, defers while Ask/Delegate work is
+  active, preserves queued filesystem exchanges, and never restarts tmux or a
+  vendor pane. Developer ID, notarization/stapling and the physical clean-Mac
+  gate remain required before this item is complete.
 - [x] Offer optional launch-at-login for the local core, independently of
   opening the window. The packaged app contains a relocatable user LaunchAgent
   registered through `SMAppService`; it is off by default and invokes only
