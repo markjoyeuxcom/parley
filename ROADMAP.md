@@ -318,8 +318,11 @@ effortless without becoming task boards.
     pane focus, with native Navigate menu equivalents.
   - [x] Give the primary workspace tabs and pane selectors explicit action,
     state and folder accessibility metadata.
-  - [ ] Audit the remaining toolbar, activity, Status Center and command
-    palette controls with VoiceOver.
+  - [x] Audit the remaining toolbar, activity, Status Center and command
+    palette controls with VoiceOver. Icon menus now expose their action and
+    state, dense rows speak one authoritative summary, headings remain
+    navigable, command results announce selection, and prompt-derived subjects
+    are bounded so VoiceOver never reads an entire handoff body as a label.
 - [x] Improve narrow-window behaviour and long-name truncation. The main
   workbench now reaches a 720-point native minimum, swaps its full toolbar for
   a compact New/Ask/Actions surface without dropping capabilities, adapts the

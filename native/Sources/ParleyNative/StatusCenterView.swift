@@ -79,16 +79,21 @@ struct StatusCenterView: View {
             Rectangle()
                 .fill(conditionColor)
                 .frame(width: 4, height: 36)
+                .accessibilityHidden(true)
             Image(systemName: conditionIcon)
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(conditionColor)
                 .frame(width: 24)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(conditionTitle)
                     .font(.system(size: 15, weight: .semibold))
                 Text(conditionDetail)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+            }
+            .accessibilityRepresentation {
+                Text("Status Center condition. \(conditionTitle). \(conditionDetail)")
             }
             Spacer()
             Menu {
@@ -113,7 +118,14 @@ struct StatusCenterView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .accessibilityLabel("Workspace notifications")
+            .accessibilityValue(
+                model.notificationWorkspaceNames.isEmpty
+                    ? "Off for all workspaces"
+                    : "On for \(model.notificationWorkspaceNames.joined(separator: ", "))"
+            )
             .help("Workspace notifications are off until you enable them here")
+            .accessibilityHint("Choose which workspaces may send local result and attention notifications")
             Menu {
                 Toggle("Show Dismissed", isOn: $showDismissed)
                 Button("Restore All Dismissed") {
@@ -138,7 +150,14 @@ struct StatusCenterView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .accessibilityLabel("Dismissed records and history")
+            .accessibilityValue(
+                model.dismissedHandoffIDs.isEmpty
+                    ? "No dismissed records"
+                    : "\(model.dismissedHandoffIDs.count) dismissed record\(model.dismissedHandoffIDs.count == 1 ? "" : "s")"
+            )
             .help("Dismissed records and workspace history controls")
+            .accessibilityHint("Show or restore dismissed records, or delete history for the selected workspace")
             Picker("Scope", selection: $workspaceID) {
                 Text("All Workspaces").tag("")
                 ForEach(model.workspaces) { workspace in
@@ -147,6 +166,8 @@ struct StatusCenterView: View {
             }
             .labelsHidden()
             .frame(width: 210)
+            .accessibilityLabel("Status Center workspace scope")
+            .accessibilityHint("Filter agents, collaboration, results, counts, and activity by workspace")
         }
         .padding(.horizontal, 16)
         .frame(height: 62)
@@ -164,6 +185,9 @@ struct StatusCenterView: View {
         }
         .background(Color.secondary.opacity(0.11))
         .frame(height: 58)
+        .accessibilityRepresentation {
+            Text("Status Center totals. \(WorkbenchAccessibility.counts(snapshot.counts))")
+        }
     }
 
     private func countCell(_ label: String, _ value: Int, warning: Bool = false) -> some View {
@@ -236,6 +260,13 @@ struct StatusCenterView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityRepresentation {
+            Button(WorkbenchAccessibility.handoff(handoff)) {
+                select(handoff)
+            }
+            .accessibilityValue(selectedHandoffID == handoff.id ? "Selected" : "Not selected")
+            .accessibilityHint("Inspect this collaboration record")
+        }
     }
 
     private var returnedResults: some View {
@@ -276,42 +307,59 @@ struct StatusCenterView: View {
         let work = snapshot.activeHandoffs.first(where: { $0.targetPaneID == pane.id })
         let attention = snapshot.handoffs.first(where: { $0.targetPaneID == pane.id && $0.attention != nil })
         return HStack(alignment: .top, spacing: 10) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(processColor(pane))
-                .frame(width: 4, height: 32)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(pane.displayName)
-                        .font(.system(size: 11, weight: .medium))
-                    Text(pane.kind.label.uppercased())
-                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                    if attention != nil {
-                        Text("ATTENTION")
-                            .font(.system(size: 8, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color.orange)
+            HStack(alignment: .top, spacing: 10) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(processColor(pane))
+                    .frame(width: 4, height: 32)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(pane.displayName)
+                            .font(.system(size: 11, weight: .medium))
+                        Text(pane.kind.label.uppercased())
+                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        if attention != nil {
+                            Text("ATTENTION")
+                                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                .foregroundStyle(Color.orange)
+                        }
                     }
+                    Text(work.map { subject($0.text) } ?? "No tracked work")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                Text(work.map { subject($0.text) } ?? "No tracked work")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(processState(pane))
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    Text(pane.workspaceName ?? pane.windowID)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text(readiness(pane))
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(readinessColor(pane))
+                }
             }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 3) {
-                Text(processState(pane))
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                Text(pane.workspaceName ?? pane.windowID)
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                Text(readiness(pane))
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(readinessColor(pane))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityRepresentation {
+                Text(
+                    "\(WorkbenchAccessibility.agent(pane)). \(agentAccessibilityValue(work: work, needsAttention: attention != nil))"
+                )
             }
             Button("Focus") { model.select(pane) }
                 .controlSize(.small)
+                .accessibilityLabel("Focus \(pane.displayName)")
+                .accessibilityHint("Open this pane in the main Parley window")
         }
         .padding(9)
+    }
+
+    private func agentAccessibilityValue(work: RelayHandoff?, needsAttention: Bool) -> String {
+        var parts = [work.map { "Tracked work: \(subject($0.text))" } ?? "No tracked work"]
+        if needsAttention { parts.append("Attention required") }
+        return parts.joined(separator: ". ")
     }
 
     private var coreHealth: some View {
@@ -350,6 +398,9 @@ struct StatusCenterView: View {
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
+        .accessibilityRepresentation {
+            Text("\(name), \(value)")
+        }
     }
 
     @ViewBuilder
@@ -377,6 +428,11 @@ struct StatusCenterView: View {
                             }
                         }
                     }
+                    .accessibilityRepresentation {
+                        Text(
+                            "\(WorkbenchAccessibility.handoff(handoff)). \(model.isDismissed(handoff) ? "Dismissed" : "In Status Center")"
+                        )
+                    }
 
                     actionControls(handoff)
 
@@ -389,6 +445,7 @@ struct StatusCenterView: View {
                         Text("DELIVERY RECEIPTS")
                             .font(.system(size: 9, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.secondary)
+                            .accessibilityAddTraits(.isHeader)
                         ForEach(Array(handoff.transitions.enumerated()), id: \.offset) { _, transition in
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Text(transition.occurredAt.formatted(date: .omitted, time: .standard))
@@ -407,6 +464,9 @@ struct StatusCenterView: View {
                                         .foregroundStyle(.secondary)
                                 }
                             }
+                            .accessibilityRepresentation {
+                                Text(receiptAccessibility(transition))
+                            }
                         }
                         if let readAt = handoff.readAt {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -415,6 +475,9 @@ struct StatusCenterView: View {
                                     .foregroundStyle(.secondary)
                                 Text("VIEWED")
                                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            }
+                            .accessibilityRepresentation {
+                                Text("Result viewed at \(readAt.formatted(date: .omitted, time: .standard))")
                             }
                         }
                     }
@@ -474,6 +537,7 @@ struct StatusCenterView: View {
             Text(title)
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
             Text(text)
                 .font(.system(size: 10, design: .monospaced))
                 .textSelection(.enabled)
@@ -489,6 +553,7 @@ struct StatusCenterView: View {
             Text("ACTIVITY")
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
             if snapshot.timeline.isEmpty {
                 emptyRow("No recorded activity in this scope")
             } else {
@@ -516,8 +581,13 @@ struct StatusCenterView: View {
                 timelineRowContent(event)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(timelineAccessibility(event))
+            .accessibilityHint("Inspect this collaboration record")
         } else {
             timelineRowContent(event)
+                .accessibilityRepresentation {
+                    Text(timelineAccessibility(event))
+                }
         }
     }
 
@@ -556,6 +626,7 @@ struct StatusCenterView: View {
             Text(title)
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.secondary.opacity(0.035))
@@ -664,6 +735,20 @@ struct StatusCenterView: View {
 
     private func subject(_ text: String) -> String {
         text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+    }
+
+    private func receiptAccessibility(_ transition: RelayHandoffTransition) -> String {
+        var parts = [
+            transition.state.rawValue.capitalized,
+            "at \(transition.occurredAt.formatted(date: .omitted, time: .standard))",
+        ]
+        if transition.origin == .human { parts.append("human initiated") }
+        if let detail = transition.detail, !detail.isEmpty { parts.append(detail) }
+        return parts.joined(separator: ". ")
+    }
+
+    private func timelineAccessibility(_ event: StatusTimelineEvent) -> String {
+        "\(WorkbenchAccessibility.timeline(event)). At \(event.occurredAt.formatted(date: .omitted, time: .standard))"
     }
 
     private func activityTiming(_ handoff: RelayHandoff, at now: Date) -> String {

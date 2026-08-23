@@ -139,6 +139,9 @@ struct ContentView: View {
                         .lineLimit(1)
                 }
                 .menuStyle(.borderlessButton)
+                .accessibilityLabel("Workspace folder")
+                .accessibilityValue(model.defaultFolder)
+                .accessibilityHint("Choose where newly opened toolbar panes start")
                 .help("New panes in this workspace open in \(model.defaultFolder). Running panes keep their own folders.")
             }
             .padding(12)
@@ -204,11 +207,15 @@ struct ContentView: View {
             Button("Start") { model.start(pane) }
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
+                .accessibilityLabel("Start \(pane.displayName)")
+                .accessibilityHint("Start a new \(pane.kind.label) CLI session in \(pane.cwd)")
                 .help("Start a new \(pane.kind.label) CLI session in \(pane.cwd)")
         case .exited, .protocolStale, .relayUnavailable:
             Button("Restart") { model.restart(pane) }
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
+                .accessibilityLabel("Restart \(pane.displayName)")
+                .accessibilityHint("Restart this \(pane.kind.label) pane in \(pane.cwd)")
                 .help("Restart \(pane.displayName) in \(pane.cwd)")
         case .empty, .running:
             EmptyView()
@@ -330,7 +337,9 @@ struct ContentView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .accessibilityLabel("Open workspace")
             .help("Open workspace")
+            .accessibilityHint("Choose a folder, favourite, recent folder, or saved layout")
         }
         .padding(.horizontal, 10)
         .frame(height: 36)
@@ -367,16 +376,22 @@ struct ContentView: View {
             Spacer()
             activePaneContext(maxWidth: 240)
             Button(action: model.zoom) { Image(systemName: "arrow.up.left.and.arrow.down.right") }
+                .accessibilityLabel("Zoom active pane")
                 .help("Zoom active pane")
+                .accessibilityHint("Toggle between the active pane and the full pane grid")
             Button(action: model.balance) { Image(systemName: "rectangle.grid.2x2") }
+                .accessibilityLabel("Balance panes")
                 .help("Balance panes")
+                .accessibilityHint("Make panes in the active workspace equal size")
             Divider().frame(height: 18)
             Button {
                 openWindow(id: "status-center")
             } label: {
                 Label("Status", systemImage: "waveform.path.ecg")
             }
+            .accessibilityLabel("Open Status Center")
             .help("Open Status Center")
+            .accessibilityHint("Inspect collaboration state, returned results, agents, and activity")
         }
     }
 
@@ -394,6 +409,7 @@ struct ContentView: View {
             }
             .accessibilityLabel("Open Status Center")
             .help("Open Status Center")
+            .accessibilityHint("Inspect collaboration state, returned results, agents, and activity")
         }
     }
 
@@ -407,7 +423,9 @@ struct ContentView: View {
         } label: {
             Label("New", systemImage: "plus")
         }
+        .accessibilityLabel("New pane")
         .help("Open a new agent or shell pane")
+        .accessibilityHint("Choose an agent or shell and where to split the active workspace")
     }
 
     private var askMenu: some View {
@@ -433,6 +451,9 @@ struct ContentView: View {
         } label: {
             Label("Ask", systemImage: "arrow.turn.up.right")
         }
+        .accessibilityLabel("Ask another vendor")
+        .accessibilityValue("\(model.askTargets.count) available target\(model.askTargets.count == 1 ? "" : "s")")
+        .accessibilityHint("Choose a different vendor pane for a correlated question")
         .disabled(model.askTargets.isEmpty)
     }
 
@@ -447,8 +468,10 @@ struct ContentView: View {
         } label: {
             Label("Review", systemImage: "doc.text.magnifyingglass")
         }
+        .accessibilityLabel("Review with another vendor")
         .disabled(model.askTargets.isEmpty)
         .help("Preview repository changes or a selected file, then ask another vendor to review it")
+        .accessibilityHint("Preview current changes, a plan, or a file before asking another vendor")
     }
 
     private var returnMenu: some View {
@@ -465,6 +488,9 @@ struct ContentView: View {
         } label: {
             Label("Return", systemImage: "arrow.turn.down.left")
         }
+        .accessibilityLabel("Return answer")
+        .accessibilityValue(model.canReturn ? "Answer destination available" : "No answer destination")
+        .accessibilityHint("Return the active pane's answer to its waiting requester")
         .disabled(!model.canReturn)
     }
 
@@ -481,6 +507,8 @@ struct ContentView: View {
         } label: {
             Label("Actions", systemImage: "ellipsis.circle")
         }
+        .accessibilityLabel("Pane actions")
+        .accessibilityHint("Review, return, inspect waiting work, zoom, or balance panes")
     }
 
     private var hasWaitingWork: Bool {
@@ -521,7 +549,10 @@ struct ContentView: View {
                 systemImage: "clock"
             )
         }
+        .accessibilityLabel("Waiting collaboration")
+        .accessibilityValue("\(model.consultations.count) questions, \(model.activeDelegations.count) delegations")
         .help("Inspect questions and delegated work awaiting a result")
+        .accessibilityHint("Inspect work awaiting an answer or completion")
     }
 
     @ViewBuilder
@@ -533,6 +564,8 @@ struct ContentView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: maxWidth)
+                .accessibilityLabel("Active pane")
+                .accessibilityValue("\(active.displayName), \(active.cwd)")
                 .help("\(active.displayName) · \(active.cwd)")
         }
     }
@@ -554,13 +587,19 @@ struct ContentView: View {
             Text("ACTIVITY")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
 
             Button(handoff.sourceName) { model.focus(handoff, target: false) }
+                .accessibilityLabel("Focus source pane \(handoff.sourceName)")
+                .accessibilityHint("Move to the pane that initiated this \(handoff.kind.rawValue)")
                 .disabled(!model.canFocus(handoff.sourcePaneID))
             Image(systemName: "arrow.right")
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
             Button(handoff.targetName) { model.focus(handoff, target: true) }
+                .accessibilityLabel("Focus target pane \(handoff.targetName)")
+                .accessibilityHint("Move to the pane receiving this \(handoff.kind.rawValue)")
                 .disabled(!model.canFocus(handoff.targetPaneID))
 
             HStack(spacing: 5) {
@@ -572,6 +611,9 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            .accessibilityRepresentation {
+                Text("\(handoff.kind.rawValue.capitalized): \(WorkbenchAccessibility.subject(handoff.text))")
+            }
 
             Spacer(minLength: 8)
 
@@ -579,10 +621,12 @@ struct ContentView: View {
                 Text(activityTiming(handoff, at: context.date))
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel("Timing \(activityTiming(handoff, at: context.date))")
             }
             Text(activityStateLabel(handoff))
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(activityColor(handoff))
+                .accessibilityLabel("State \(activityStateLabel(handoff))")
 
             activityHistoryMenu
         }
@@ -593,6 +637,7 @@ struct ContentView: View {
             Text("ACTIVITY")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
 
             Menu {
                 Text(activitySubject(handoff.text))
@@ -607,7 +652,9 @@ struct ContentView: View {
                     .truncationMode(.middle)
                     .frame(maxWidth: 150)
             }
+            .accessibilityLabel(WorkbenchAccessibility.handoff(handoff))
             .help(activitySubject(handoff.text))
+            .accessibilityHint("Open actions for this collaboration")
 
             Spacer(minLength: 6)
 
@@ -616,6 +663,7 @@ struct ContentView: View {
                 .foregroundStyle(activityColor(handoff))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+                .accessibilityLabel("State \(activityStateLabel(handoff))")
 
             activityHistoryMenu
         }
@@ -671,7 +719,10 @@ struct ContentView: View {
             Image(systemName: "clock.arrow.circlepath")
         }
         .menuIndicator(.hidden)
+        .accessibilityLabel("Recent collaboration history")
+        .accessibilityValue("\(min(model.workspaceHandoffs.count, 12)) recent item\(min(model.workspaceHandoffs.count, 12) == 1 ? "" : "s")")
         .help("Recent collaboration in this workspace")
+        .accessibilityHint("Inspect recent handoffs in this workspace")
     }
 
     private func activitySubject(_ text: String) -> String {
@@ -855,6 +906,8 @@ struct ContentView: View {
         } label: {
             Label(kind.label, systemImage: kind == .shell ? "terminal" : "bubble.left.and.text.bubble.right")
         }
+        .accessibilityLabel("New \(kind.label) pane")
+        .accessibilityHint("Choose a split direction and folder")
     }
 
     @ViewBuilder

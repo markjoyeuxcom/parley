@@ -638,6 +638,92 @@ private func checkCommandPaletteSearch() throws {
     )
 }
 
+private func checkAccessibilityDescriptions() throws {
+    let command = CommandPaletteItem(
+        id: "activity:review",
+        category: .activity,
+        title: "Review returned",
+        detail: "Codex answered Agy"
+    )
+    try expect(
+        WorkbenchAccessibility.command(command)
+            == "Activity: Review returned. Codex answered Agy",
+        "command palette accessibility description lost its category or detail"
+    )
+
+    let handoff = try statusHandoff(
+        id: "audit",
+        kind: .ask,
+        state: .failed,
+        sourceWorkspaceID: "app",
+        targetWorkspaceID: "library",
+        occurredAt: 50,
+        attention: .permissionRequired,
+        origin: .human
+    )
+    try expect(
+        WorkbenchAccessibility.handoff(handoff)
+            == "Source audit to Target audit. Ask, failed, permission required. Task audit. Human initiated",
+        "handoff accessibility description lost authoritative state"
+    )
+    let longHandoff = try statusHandoff(
+        id: "long",
+        kind: .delegate,
+        state: .completed,
+        sourceWorkspaceID: "app",
+        targetWorkspaceID: "library",
+        occurredAt: 51,
+        text: String(repeating: "long instruction ", count: 40)
+    )
+    let longDescription = WorkbenchAccessibility.handoff(longHandoff)
+    try expect(
+        longDescription.count < 300 && longDescription.hasSuffix("…"),
+        "handoff accessibility description read an unbounded prompt body"
+    )
+
+    let counts = StatusCenterCounts(
+        runningAgents: 2,
+        stoppedAgents: 1,
+        outstandingQuestions: 3,
+        trackedDelegations: 4,
+        failures: 1,
+        unreadResults: 2
+    )
+    try expect(
+        WorkbenchAccessibility.counts(counts)
+            == "2 running agents, 1 stopped agent, 3 questions, 4 delegations, 2 unread results, 1 failure",
+        "Status Center count description was incomplete or grammatically ambiguous"
+    )
+
+    let exited = TmuxPane(
+        id: "%7", kind: .codex, customName: "Audit", terminalTitle: "", cwd: "/tmp/library",
+        currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
+        relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "library",
+        bracketedPasteActive: true, isDead: true, exitStatus: 7
+    )
+    try expect(
+        WorkbenchAccessibility.agent(exited)
+            == "Audit, Codex agent. Exited with status 7. Workspace library",
+        "agent accessibility description hid its exited state or workspace"
+    )
+
+    let event = StatusTimelineEvent(
+        id: "event",
+        handoffID: "audit",
+        title: "Source audit to Target audit",
+        category: "ASK",
+        action: "FAILED",
+        occurredAt: Date(timeIntervalSince1970: 50),
+        detail: "Permission required",
+        origin: .human
+    )
+    try expect(
+        WorkbenchAccessibility.timeline(event)
+            == "Source audit to Target audit. Ask, failed. Human initiated. Permission required",
+        "timeline accessibility description lost origin or failure detail"
+    )
+}
+
 private func checkSavedWorkspaceLayoutPersistenceAndFreshSlots() throws {
     let directory = try temporaryDirectory()
     let file = directory.appendingPathComponent("workspace-layouts.json")
@@ -1685,6 +1771,7 @@ private func statusHandoff(
     sourceWorkspaceID: String,
     targetWorkspaceID: String,
     occurredAt: TimeInterval,
+    text: String? = nil,
     resultText: String? = nil,
     readAt: TimeInterval? = nil,
     attention: RelayAttention? = nil,
@@ -1704,7 +1791,7 @@ private func statusHandoff(
         "targetKind": "claude",
         "targetWorkspaceID": targetWorkspaceID,
         "targetWorkspaceName": targetWorkspaceID,
-        "text": "Task \(id)",
+        "text": text ?? "Task \(id)",
         "submitted": true,
         "state": state.rawValue,
         "updatedAt": occurredAt,
@@ -3749,6 +3836,7 @@ let checks: [(String, () throws -> Void)] = [
     ("workspace continuity state", checkWorkspaceContinuityState),
     ("Git project context parsing", checkGitProjectContextParsing),
     ("command palette search", checkCommandPaletteSearch),
+    ("workbench accessibility descriptions", checkAccessibilityDescriptions),
     ("adjacent navigation order", checkAdjacentNavigationOrder),
     ("workbench state projection", checkWorkbenchStateProjection),
     ("exited pane retention", checkExitedPaneRetention),

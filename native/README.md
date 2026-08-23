@@ -79,6 +79,9 @@ user's default tmux server. The tmux session is named `parley`.
   Control-Shift-Tab move between workspace tabs; Control-Option-Right/Left
   Arrow move between panes in the current workspace. The primary pane and
   workspace controls expose state, folder and action hints to accessibility.
+  Toolbar and activity controls, the command palette, and Status Center expose
+  explicit VoiceOver labels, values, hints, headings and native text summaries;
+  prompt-derived subjects are bounded rather than reading an entire handoff.
 - The main workbench adapts down to 720 points wide. At compact widths New and
   Ask remain direct controls while Review, Return, waiting work, zoom and
   balance move into Actions; the complete toolbar returns automatically when

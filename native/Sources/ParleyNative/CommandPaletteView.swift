@@ -20,15 +20,18 @@ struct CommandPaletteView: View {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
                 TextField("Search workspaces, panes, Ask targets and activity", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .focused($searchFocused)
                     .onSubmit(runSelected)
                     .accessibilityLabel("Command search")
+                    .accessibilityHint("Type to filter workspaces, panes, Ask targets, activity, and actions")
                 Text("⌘K")
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
             }
             .padding(.horizontal, 16)
             .frame(height: 50)
@@ -72,6 +75,11 @@ struct CommandPaletteView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 16)
             .frame(height: 32)
+            .accessibilityRepresentation {
+                Text(
+                    "\(commands.count) result\(commands.count == 1 ? "" : "s"). Use Up and Down Arrow to navigate, Return to open, and Escape to close"
+                )
+            }
         }
         .frame(width: 680, height: 500)
         .onAppear {
@@ -126,10 +134,11 @@ struct CommandPaletteView: View {
         }
         .buttonStyle(.plain)
         .accessibilityRepresentation {
-            Button("\(command.item.category.label): \(command.item.title)") {
+            Button(WorkbenchAccessibility.command(command.item)) {
                 run(command)
             }
-            .accessibilityHint(command.item.detail)
+            .accessibilityValue(selectedID == command.id ? "Selected" : "Not selected")
+            .accessibilityHint("Run this command")
         }
         .onHover { hovering in
             if hovering { selectedID = command.id }
