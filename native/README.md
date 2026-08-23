@@ -108,6 +108,13 @@ user's default tmux server. The tmux session is named `parley`.
   action itself and never reconstructed from tmux output.
 - Pane kind, display name, relay availability, protocol version and legacy
   Return route are tmux pane options.
+- Process and connection states are authoritative rather than inferred from
+  terminal text. tmux retains exited panes, final output and numeric exit
+  status; stopped restored seats, exited processes, stale protocols and missing
+  relay credentials render separately with Start or Restart actions. If the
+  local coordination core is unavailable, terminals stay attached and a
+  Reconnect notice explains that only cross-vendor actions are paused. Actual
+  tmux loss renders a separate terminal-server recovery state.
 - Closing the SwiftUI window detaches the client; tmux and its processes
   continue running.
 - Closing a pane or workspace is explicit and ends those processes.

@@ -196,6 +196,168 @@ private func checkAdjacentNavigationOrder() throws {
     )
 }
 
+private func checkWorkbenchStateProjection() throws {
+    let readyAgent = TmuxPane(
+        id: "%1",
+        kind: .codex,
+        customName: "Builder",
+        terminalTitle: "",
+        cwd: "/tmp",
+        currentCommand: "codex",
+        isActive: true,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        isStarted: true
+    )
+
+    try expect(
+        WorkbenchStateProjection.connection(tmuxAvailable: false, coreAvailable: false) == .tmuxDisconnected,
+        "tmux loss did not take precedence over core loss"
+    )
+    try expect(
+        WorkbenchStateProjection.connection(tmuxAvailable: true, coreAvailable: false) == .coreDisconnected,
+        "core loss was not distinguished from terminal loss"
+    )
+    try expect(
+        WorkbenchStateProjection.connection(tmuxAvailable: true, coreAvailable: true) == .connected,
+        "healthy services did not project as connected"
+    )
+    try expect(
+        WorkbenchStateProjection.pane(nil) == .empty,
+        "an empty workspace projected a running pane"
+    )
+
+    let stopped = TmuxPane(
+        id: "%2",
+        kind: .claude,
+        customName: nil,
+        terminalTitle: "",
+        cwd: "/tmp",
+        currentCommand: "sleep",
+        isActive: true,
+        windowID: "@0",
+        returnToPaneID: nil,
+        isDead: true,
+        exitStatus: 7,
+        isStarted: false
+    )
+    try expect(
+        WorkbenchStateProjection.pane(stopped) == .stopped,
+        "an intentionally stopped agent placeholder was misreported as exited"
+    )
+
+    let exited = TmuxPane(
+        id: "%3",
+        kind: .codex,
+        customName: nil,
+        terminalTitle: "",
+        cwd: "/tmp",
+        currentCommand: "codex",
+        isActive: true,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        isDead: true,
+        exitStatus: 7,
+        isStarted: true
+    )
+    try expect(
+        WorkbenchStateProjection.pane(exited) == .exited(status: 7),
+        "a retained dead pane lost its exit status"
+    )
+    let exitedSnapshot = StatusCenterProjection.snapshot(
+        panes: [exited],
+        handoffs: [],
+        workspaceID: nil,
+        coreAvailable: true
+    )
+    try expect(
+        exitedSnapshot.counts.runningAgents == 0 && exitedSnapshot.counts.stoppedAgents == 1,
+        "Status Center counted an exited agent as running"
+    )
+
+    let stale = TmuxPane(
+        id: "%4",
+        kind: .agy,
+        customName: nil,
+        terminalTitle: "",
+        cwd: "/tmp",
+        currentCommand: "agy",
+        isActive: true,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: false,
+        protocolVersion: "1",
+        isStarted: true
+    )
+    try expect(
+        WorkbenchStateProjection.pane(stale) == .protocolStale(reportedVersion: "1"),
+        "a stale protocol was hidden by the secondary relay state"
+    )
+
+    let relayUnavailable = TmuxPane(
+        id: "%5",
+        kind: .copilot,
+        customName: nil,
+        terminalTitle: "",
+        cwd: "/tmp",
+        currentCommand: "copilot",
+        isActive: true,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: false,
+        protocolVersion: AgentProtocol.version,
+        isStarted: true
+    )
+    try expect(
+        WorkbenchStateProjection.pane(relayUnavailable) == .relayUnavailable,
+        "a current agent without relay capability projected as ready"
+    )
+    try expect(
+        WorkbenchStateProjection.pane(readyAgent) == .running,
+        "a ready agent did not project as running"
+    )
+}
+
+private func checkExitedPaneRetention() throws {
+    let retainedRow = paneRow(id: "%9", kind: .shell, active: true)
+        + "\u{1f}1\u{1f}7"
+    let runner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "has-session": output()
+        case "list-windows": output(workspaceRow(id: "@0", windowName: "tmp", active: true) + "\n")
+        case "list-panes": output(retainedRow + "\n")
+        default: output()
+        }
+    }
+    let directory = try temporaryDirectory()
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: directory,
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner
+    )
+
+    try controller.bootstrap(cwd: "/tmp")
+
+    let configuration = try String(contentsOf: directory.appendingPathComponent("tmux.conf"), encoding: .utf8)
+    try expect(configuration.contains("remain-on-exit on"), "tmux configuration did not retain exited panes")
+    try expect(
+        runner.calls.contains {
+            $0.arguments.contains("set-window-option")
+                && $0.arguments.contains("remain-on-exit")
+                && $0.arguments.contains("on")
+        },
+        "reattaching to an existing tmux server did not enable exited-pane retention"
+    )
+    let pane = try require(controller.listPanes().first, "retained dead pane was not parsed")
+    try expect(pane.isDead, "retained pane was not marked dead")
+    try expect(pane.exitStatus == 7, "retained pane lost its exit status")
+}
+
 private func paneRow(
     id: String,
     kind: PaneKind,
@@ -3519,6 +3681,29 @@ private func checkVendorConformancePlanningFailsClosed() throws {
     try expect(copilotReason.contains("No open"), "missing vendor skip did not explain what to open")
 }
 
+private func checkVendorConformanceRejectsExitedPanes() throws {
+    let panes = [
+        TmuxPane(
+            id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp",
+            currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
+            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+            bracketedPasteActive: true
+        ),
+        TmuxPane(
+            id: "%2", kind: .codex, customName: "Exited Codex", terminalTitle: "", cwd: "/tmp",
+            currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
+            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "library",
+            bracketedPasteActive: true, isDead: true, exitStatus: 7
+        ),
+    ]
+
+    let plan = VendorConformancePlanner.plan(panes: panes, vendors: [.codex])
+    guard case let .skipped(_, reason) = plan[0] else {
+        throw CheckFailure(description: "exited Codex pane was accepted for a live probe")
+    }
+    try expect(reason.contains("exited"), "exited pane skip did not explain its process state")
+}
+
 private func checkVendorConformanceReport() throws {
     let results = [
         VendorConformanceResult(vendor: .claude, check: "round trip", outcome: .passed, detail: "exact response"),
@@ -3565,6 +3750,8 @@ let checks: [(String, () throws -> Void)] = [
     ("Git project context parsing", checkGitProjectContextParsing),
     ("command palette search", checkCommandPaletteSearch),
     ("adjacent navigation order", checkAdjacentNavigationOrder),
+    ("workbench state projection", checkWorkbenchStateProjection),
+    ("exited pane retention", checkExitedPaneRetention),
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),
@@ -3621,6 +3808,7 @@ let checks: [(String, () throws -> Void)] = [
     ("core service lifecycle", checkCoreServiceStopsCleanly),
     ("vendor conformance planning", checkVendorConformancePlanning),
     ("vendor conformance planning fails closed", checkVendorConformancePlanningFailsClosed),
+    ("vendor conformance rejects exited panes", checkVendorConformanceRejectsExitedPanes),
     ("vendor conformance reporting", checkVendorConformanceReport),
     ("vendor conformance attention gate", checkVendorConformanceAttentionGate),
 ]

@@ -57,6 +57,8 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
     public let protocolVersion: String?
     public let workspaceName: String?
     public let bracketedPasteActive: Bool
+    public let isDead: Bool
+    public let exitStatus: Int?
     public let isStarted: Bool
 
     public init(
@@ -73,6 +75,8 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
         protocolVersion: String? = nil,
         workspaceName: String? = nil,
         bracketedPasteActive: Bool = false,
+        isDead: Bool = false,
+        exitStatus: Int? = nil,
         isStarted: Bool = true
     ) {
         self.id = id
@@ -88,6 +92,8 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
         self.protocolVersion = protocolVersion
         self.workspaceName = workspaceName
         self.bracketedPasteActive = bracketedPasteActive
+        self.isDead = isDead
+        self.exitStatus = exitStatus
         self.isStarted = isStarted
     }
 

@@ -15,6 +15,14 @@ struct ContentView: View {
                 workspaceTabs
                 Divider()
                 toolbar
+                if model.connectionState == .coreDisconnected {
+                    Divider()
+                    connectionNotice
+                }
+                if model.tmuxAvailable, model.activePaneState != .running, model.activePaneState != .empty {
+                    Divider()
+                    paneNotice
+                }
                 if let activity = model.primaryActivity {
                     Divider()
                     activityStrip(activity)
@@ -29,7 +37,7 @@ struct ContentView: View {
             CommandPaletteView(model: model)
         }
         .alert(
-            "Parley could not start",
+            "Parley needs attention",
             isPresented: Binding(
                 get: { model.startupError != nil },
                 set: { if !$0 { model.startupError = nil } }
@@ -58,12 +66,7 @@ struct ContentView: View {
                     .accessibilityLabel("\(pane.displayName), \(pane.kind.label) pane")
                     .accessibilityValue(paneAccessibilityValue(pane))
                     .accessibilityHint("Focus this pane")
-                    if pane.kind.isAgent && !pane.isStarted {
-                        Button("Start") { model.start(pane) }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                            .help("Start a new \(pane.kind.label) CLI session in \(pane.cwd)")
-                    }
+                    paneRecoveryButton(pane)
                 }
                 .listRowBackground(pane.isActive ? Color.accentColor.opacity(0.12) : Color.clear)
                 .contextMenu {
@@ -183,8 +186,33 @@ struct ContentView: View {
 
     private func paneAccessibilityValue(_ pane: TmuxPane) -> String {
         let folder = URL(fileURLWithPath: pane.cwd).lastPathComponent
-        let state = pane.isStarted ? (pane.isActive ? "selected" : "running") : "stopped"
+        let state: String = switch WorkbenchStateProjection.pane(pane) {
+        case .empty: "empty"
+        case .running: pane.isActive ? "selected" : "running"
+        case .stopped: "stopped"
+        case let .exited(status): status.map { "exited with status \($0)" } ?? "exited"
+        case .protocolStale: "protocol restart required"
+        case .relayUnavailable: "relay restart required"
+        }
         return "\(state), \(folder.isEmpty ? pane.cwd : folder)"
+    }
+
+    @ViewBuilder
+    private func paneRecoveryButton(_ pane: TmuxPane) -> some View {
+        switch WorkbenchStateProjection.pane(pane) {
+        case .stopped:
+            Button("Start") { model.start(pane) }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .help("Start a new \(pane.kind.label) CLI session in \(pane.cwd)")
+        case .exited, .protocolStale, .relayUnavailable:
+            Button("Restart") { model.restart(pane) }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .help("Restart \(pane.displayName) in \(pane.cwd)")
+        case .empty, .running:
+            EmptyView()
+        }
     }
 
     private var workspaceTabs: some View {
@@ -697,9 +725,119 @@ struct ContentView: View {
         }
     }
 
+    private var connectionNotice: some View {
+        workbenchNotice(
+            icon: "bolt.horizontal.circle",
+            title: "Relay disconnected",
+            detail: "Terminal panes remain available. Ask, Return and agent-initiated handoffs are paused until the local core reconnects.",
+            color: .orange,
+            actionLabel: "Reconnect",
+            action: model.retryConnections
+        )
+        .help(model.coreError ?? "The local Parley core is unavailable.")
+    }
+
+    @ViewBuilder
+    private var paneNotice: some View {
+        if let pane = model.activePane {
+            switch model.activePaneState {
+            case .empty, .running:
+                EmptyView()
+            case .stopped:
+                workbenchNotice(
+                    icon: "pause.circle",
+                    title: "\(pane.displayName) is stopped",
+                    detail: "This restored seat has not started a subscription CLI session.",
+                    color: .secondary,
+                    actionLabel: "Start \(pane.kind.label)",
+                    action: { model.start(pane) }
+                )
+            case let .exited(status):
+                workbenchNotice(
+                    icon: "xmark.circle",
+                    title: exitedTitle(pane: pane, status: status),
+                    detail: "Final terminal output is preserved below. Restarting begins a new CLI process in the same pane and folder.",
+                    color: status == 0 ? .secondary : .red,
+                    actionLabel: "Restart…",
+                    action: { model.restart(pane) }
+                )
+            case let .protocolStale(reportedVersion):
+                workbenchNotice(
+                    icon: "arrow.triangle.2.circlepath.circle",
+                    title: "\(pane.displayName) has an older relay protocol",
+                    detail: "This pane reports \(reportedVersion.map { "protocol v\($0)" } ?? "no protocol version"); Parley expects v\(AgentProtocol.version). Its terminal remains usable, but cross-vendor actions are disabled until restart.",
+                    color: .orange,
+                    actionLabel: "Restart…",
+                    action: { model.restart(pane) }
+                )
+            case .relayUnavailable:
+                workbenchNotice(
+                    icon: "link.badge.plus",
+                    title: "\(pane.displayName) is not connected to the relay",
+                    detail: "Its terminal remains usable, but cross-vendor Ask and Return are disabled until the pane is restarted with relay credentials.",
+                    color: .orange,
+                    actionLabel: "Restart…",
+                    action: { model.restart(pane) }
+                )
+            }
+        }
+    }
+
+    private func workbenchNotice(
+        icon: String,
+        title: String,
+        detail: String,
+        color: Color,
+        actionLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Button(actionLabel, action: action)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(color.opacity(0.07))
+    }
+
+    private func exitedTitle(pane: TmuxPane, status: Int?) -> String {
+        guard let status else { return "\(pane.displayName) exited" }
+        return "\(pane.displayName) exited with status \(status)"
+    }
+
     @ViewBuilder
     private var terminal: some View {
-        if let configuration = model.attachConfiguration {
+        if model.connectionState == .tmuxDisconnected {
+            ContentUnavailableView {
+                Label("Terminal server disconnected", systemImage: "terminal.fill")
+            } description: {
+                Text(model.tmuxError ?? "Parley cannot reach its isolated tmux server.")
+            } actions: {
+                Button("Reconnect", action: model.retryConnections)
+                    .disabled(!model.canRetryConnections)
+            }
+        } else if model.activePaneState == .empty {
+            ContentUnavailableView {
+                Label("No pane in this workspace", systemImage: "rectangle.split.2x1")
+            } description: {
+                Text("Open another workspace or restore a saved layout to continue.")
+            } actions: {
+                Button("Open Workspace…", action: model.createWorkspace)
+            }
+        } else if let configuration = model.attachConfiguration {
             TerminalHost(configuration: configuration, handle: model.terminalHandle)
                 .background(Color(nsColor: NSColor(white: 0.085, alpha: 1)))
         } else {
@@ -784,20 +922,17 @@ private struct PaneRow: View {
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(Color.accentColor)
                     }
-                    if pane.kind.isAgent && !pane.isStarted {
-                        Text("STOPPED")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(.secondary)
-                    }
-                    if pane.kind.isAgent && pane.isStarted && !pane.relayEnabled {
-                        Text("RESTART FOR RELAY")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(Color.orange)
-                    }
-                    if pane.kind.isAgent && pane.isStarted && !pane.hasCurrentProtocol {
-                        Text("RESTART FOR PROTOCOL")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(Color.orange)
+                    switch WorkbenchStateProjection.pane(pane) {
+                    case .empty, .running:
+                        EmptyView()
+                    case .stopped:
+                        stateLabel("STOPPED", color: .secondary)
+                    case let .exited(status):
+                        stateLabel(status.map { "EXITED \($0)" } ?? "EXITED", color: .red)
+                    case .protocolStale:
+                        stateLabel("PROTOCOL STALE", color: .orange)
+                    case .relayUnavailable:
+                        stateLabel("RELAY OFF", color: .orange)
                     }
                     if let latestFailure {
                         Text(failureLabel(latestFailure))
@@ -817,7 +952,7 @@ private struct PaneRow: View {
                         }
                     }
                     Text("·")
-                    Text(pane.isStarted ? pane.currentCommand : "not started")
+                    Text(processLabel)
                 }
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -833,6 +968,20 @@ private struct PaneRow: View {
     private var folderName: String {
         let name = URL(fileURLWithPath: pane.cwd).lastPathComponent
         return name.isEmpty ? pane.cwd : name
+    }
+
+    private var processLabel: String {
+        switch WorkbenchStateProjection.pane(pane) {
+        case .stopped: "not started"
+        case let .exited(status): status.map { "exited \($0)" } ?? "exited"
+        case .empty, .running, .protocolStale, .relayUnavailable: pane.currentCommand
+        }
+    }
+
+    private func stateLabel(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(color)
     }
 
     private var paneHelp: String {

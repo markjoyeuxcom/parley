@@ -271,8 +271,8 @@ public enum StatusCenterProjection {
         return StatusCenterSnapshot(
             condition: condition,
             counts: StatusCenterCounts(
-                runningAgents: scopedAgents.count(where: { $0.isStarted }),
-                stoppedAgents: scopedAgents.count(where: { !$0.isStarted }),
+                runningAgents: scopedAgents.count(where: { $0.isStarted && !$0.isDead }),
+                stoppedAgents: scopedAgents.count(where: { !$0.isStarted || $0.isDead }),
                 outstandingQuestions: active.count(where: { $0.kind == .ask }),
                 trackedDelegations: active.count(where: { $0.kind == .delegate }),
                 failures: failures.count,

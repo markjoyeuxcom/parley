@@ -325,7 +325,12 @@ effortless without becoming task boards.
   a compact New/Ask/Actions surface without dropping capabilities, adapts the
   activity strip, and middle-truncates workspace, pane and context names while
   retaining their full help and accessibility text.
-- Provide clear empty, exited, disconnected, and protocol-stale states.
+- [x] Provide clear empty, exited, disconnected, and protocol-stale states.
+  tmux retains dead panes and their numeric status so final output survives;
+  stopped placeholders, exited processes, stale protocol and missing relay have
+  distinct precedence and recovery actions. A relay-core failure is now
+  non-blocking when tmux is healthy, while actual tmux loss replaces the
+  terminal with an explicit reconnect state.
 - Remove redundant tmux chrome once the native controls cover it reliably.
 
 Optional git worktrees belong here only if real use shows multiple write agents

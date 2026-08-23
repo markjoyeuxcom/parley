@@ -45,6 +45,8 @@ public enum VendorConformancePlanner {
         let sources = panes.filter {
             $0.kind.isAgent
                 && $0.kind != vendor
+                && $0.isStarted
+                && !$0.isDead
                 && $0.relayEnabled
                 && $0.hasCurrentProtocol
         }
@@ -72,11 +74,21 @@ public enum VendorConformancePlanner {
     }
 
     private static func isReadyTarget(_ pane: TmuxPane) -> Bool {
-        pane.relayEnabled && pane.hasCurrentProtocol && pane.bracketedPasteActive
+        pane.isStarted
+            && !pane.isDead
+            && pane.relayEnabled
+            && pane.hasCurrentProtocol
+            && pane.bracketedPasteActive
     }
 
     private static func readinessReasons(for panes: [TmuxPane]) -> [String] {
         var reasons: [String] = []
+        if panes.contains(where: \.isDead) {
+            reasons.append("pane has exited")
+        }
+        if panes.contains(where: { !$0.isStarted }) {
+            reasons.append("pane is not started")
+        }
         if panes.contains(where: { !$0.hasCurrentProtocol }) {
             reasons.append("protocol is stale")
         }

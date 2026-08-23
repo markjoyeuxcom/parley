@@ -277,7 +277,7 @@ struct StatusCenterView: View {
         let attention = snapshot.handoffs.first(where: { $0.targetPaneID == pane.id && $0.attention != nil })
         return HStack(alignment: .top, spacing: 10) {
             RoundedRectangle(cornerRadius: 2)
-                .fill(pane.isStarted ? Color.green : Color.secondary)
+                .fill(processColor(pane))
                 .frame(width: 4, height: 32)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
@@ -299,7 +299,7 @@ struct StatusCenterView: View {
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 3) {
-                Text(pane.isStarted ? "RUNNING" : "STOPPED")
+                Text(processState(pane))
                     .font(.system(size: 8, weight: .semibold, design: .monospaced))
                 Text(pane.workspaceName ?? pane.windowID)
                     .font(.system(size: 9, design: .monospaced))
@@ -635,17 +635,31 @@ struct StatusCenterView: View {
     }
 
     private func readiness(_ pane: TmuxPane) -> String {
-        if !pane.isStarted { return "NOT STARTED" }
-        if !pane.relayEnabled { return "RELAY OFF" }
-        if !pane.hasCurrentProtocol { return "PROTOCOL STALE" }
-        if !pane.bracketedPasteActive { return "NOT AT PROMPT" }
-        return "RELAY READY"
+        switch WorkbenchStateProjection.pane(pane) {
+        case .empty: return "NO PANE"
+        case .stopped: return "NOT STARTED"
+        case let .exited(status): return status.map { "EXITED \($0)" } ?? "EXITED"
+        case .protocolStale: return "PROTOCOL STALE"
+        case .relayUnavailable: return "RELAY OFF"
+        case .running:
+            return pane.bracketedPasteActive ? "RELAY READY" : "NOT AT PROMPT"
+        }
     }
 
     private func readinessColor(_ pane: TmuxPane) -> Color {
-        pane.isStarted && pane.relayEnabled && pane.hasCurrentProtocol && pane.bracketedPasteActive
-            ? .green
-            : .orange
+        if pane.isDead { return .red }
+        return WorkbenchStateProjection.pane(pane) == .running && pane.bracketedPasteActive
+            ? .green : .orange
+    }
+
+    private func processState(_ pane: TmuxPane) -> String {
+        if pane.isDead { return "EXITED" }
+        return pane.isStarted ? "RUNNING" : "STOPPED"
+    }
+
+    private func processColor(_ pane: TmuxPane) -> Color {
+        if pane.isDead { return .red }
+        return pane.isStarted ? .green : .secondary
     }
 
     private func subject(_ text: String) -> String {

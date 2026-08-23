@@ -74,6 +74,7 @@ public final class TmuxController {
         try requireDirectory(cwd)
         let hasSession = try runTmux(["has-session", "-t", exactSession], allowFailure: true).status == 0
         if hasSession {
+            try retainExitedPanes()
             // Migration is metadata-only. Existing panes and the processes
             // inside them are deliberately left untouched.
             for workspace in try listWorkspaces(fallbackFolder: cwd) {
@@ -104,6 +105,7 @@ public final class TmuxController {
                 name: workspaceName(folder: cwd),
                 folder: cwd
             )
+            try retainExitedPanes()
         }
     }
 
@@ -129,12 +131,14 @@ public final class TmuxController {
             "#{@parley-workspace-name}",
             "#{bracket_paste_flag}",
             "#{@parley-started}",
+            "#{pane_dead}",
+            "#{pane_dead_status}",
         ].joined(separator: separator)
         let output = try runTmux(["list-panes", "-s", "-t", exactSession, "-F", format]).stdoutText
 
         return output.split(separator: "\n").compactMap { row in
             let fields = row.split(separator: Character(separator), omittingEmptySubsequences: false).map(String.init)
-            guard fields.count == 15, let kind = PaneKind(rawValue: fields[1]) else { return nil }
+            guard fields.count >= 15, let kind = PaneKind(rawValue: fields[1]) else { return nil }
             return TmuxPane(
                 id: fields[0],
                 kind: kind,
@@ -149,6 +153,8 @@ public final class TmuxController {
                 protocolVersion: fields[10].isEmpty ? nil : fields[10],
                 workspaceName: fields[12].isEmpty ? nil : fields[12],
                 bracketedPasteActive: fields[13] == "1",
+                isDead: fields.count > 15 && fields[15] == "1",
+                exitStatus: fields.count > 16 ? Int(fields[16]) : nil,
                 isStarted: fields[14].isEmpty || fields[14] == "1"
             )
         }
@@ -503,6 +509,7 @@ public final class TmuxController {
             throw ParleyTmuxError.paneNotFound(paneID)
         }
         guard pane.kind.isAgent,
+              !pane.isDead,
               pane.relayEnabled,
               pane.hasCurrentProtocol,
               pane.bracketedPasteActive else {
@@ -691,6 +698,10 @@ public final class TmuxController {
         ])
     }
 
+    private func retainExitedPanes() throws {
+        _ = try runTmux(["set-window-option", "-g", "remain-on-exit", "on"])
+    }
+
     private func requireDirectory(_ path: String) throws {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -746,6 +757,7 @@ public final class TmuxController {
         set-option -g status-left '#[bold] Parley #[default] '
         set-option -g status-right '#{pane_current_path} '
         set-window-option -g mode-keys vi
+        set-window-option -g remain-on-exit on
         set-window-option -g automatic-rename off
         set-window-option -g allow-rename off
         """

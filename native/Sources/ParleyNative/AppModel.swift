@@ -60,6 +60,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
     @Published private(set) var coreAvailable = false
     @Published private(set) var tmuxAvailable = false
+    @Published private(set) var coreError: String?
+    @Published private(set) var tmuxError: String?
     @Published private(set) var notificationWorkspaceNames: Set<String> = []
     @Published private(set) var dismissedHandoffIDs: Set<String> = []
     @Published var commandPalettePresented = false
@@ -130,16 +132,26 @@ final class AppModel: ObservableObject {
                 transportDirectory: agentTransportDirectory
             )
             let infoFile = controller.applicationDirectory.appendingPathComponent("relay-url")
-            let relayClient = try RelayCoreLauncher.ensureRunning(
-                applicationDirectory: controller.applicationDirectory,
-                cwd: defaultFolder,
-                environment: controller.environment
-            )
             controller.configureRelay(RelayRuntime(
                 infoFile: infoFile,
                 shimDirectory: shimDirectory,
                 credentials: credentials
             ))
+            let relayClient: RelayCoreClient?
+            do {
+                relayClient = try RelayCoreLauncher.ensureRunning(
+                    applicationDirectory: controller.applicationDirectory,
+                    cwd: defaultFolder,
+                    environment: controller.environment
+                )
+                coreAvailable = true
+                coreError = nil
+            } catch {
+                relayClient = nil
+                coreAvailable = false
+                coreError = error.localizedDescription
+                startupError = "The Parley relay is unavailable. Your terminal panes are still available.\n\n\(error.localizedDescription)"
+            }
             // This migration is destructive and therefore opt-in at process
             // launch. Normal UI reattachment always preserves conversations.
             if Self.hasArgument("--restart-stale-protocol") {
@@ -161,8 +173,8 @@ final class AppModel: ObservableObject {
             saveWorkspaceContinuity()
             self.controller = controller
             self.relayClient = relayClient
-            coreAvailable = true
             tmuxAvailable = true
+            tmuxError = nil
             reviewDraftBuilder = ReviewDraftBuilder(environment: controller.environment)
             panes = livePanes
             workspaces = liveWorkspaces
@@ -172,6 +184,7 @@ final class AppModel: ObservableObject {
         } catch {
             coreAvailable = false
             tmuxAvailable = false
+            tmuxError = error.localizedDescription
             startupError = error.localizedDescription
         }
     }
@@ -186,6 +199,17 @@ final class AppModel: ObservableObject {
     }
 
     var activePane: TmuxPane? { visiblePanes.first(where: \.isActive) }
+
+    var connectionState: WorkbenchConnectionState {
+        WorkbenchStateProjection.connection(
+            tmuxAvailable: tmuxAvailable,
+            coreAvailable: coreAvailable
+        )
+    }
+
+    var activePaneState: WorkbenchPaneState {
+        WorkbenchStateProjection.pane(activePane)
+    }
 
     var canNavigateWorkspaces: Bool { workspaces.count > 1 }
 
@@ -319,12 +343,14 @@ final class AppModel: ObservableObject {
         guard let source = activePane,
               source.kind.isAgent,
               source.isStarted,
+              !source.isDead,
               source.relayEnabled,
               source.hasCurrentProtocol else { return [] }
         return panes.filter {
             $0.kind.isAgent
                 && $0.kind != source.kind
                 && $0.isStarted
+                && !$0.isDead
                 && $0.relayEnabled
                 && $0.hasCurrentProtocol
         }
@@ -474,8 +500,10 @@ final class AppModel: ObservableObject {
                 let refreshedPanes = try controller.listPanes()
                 if refreshedPanes != panes { panes = refreshedPanes }
                 tmuxAvailable = true
+                tmuxError = nil
             } catch {
                 tmuxAvailable = false
+                tmuxError = error.localizedDescription
                 firstError = error
             }
         } else {
@@ -491,8 +519,10 @@ final class AppModel: ObservableObject {
                 if refreshedUnread != unreadHandoffs { unreadHandoffs = refreshedUnread }
                 processNotifications(from: refreshedHandoffs + refreshedUnread)
                 coreAvailable = true
+                coreError = nil
             } catch {
                 coreAvailable = false
+                coreError = error.localizedDescription
                 if firstError == nil { firstError = error }
             }
         } else {
@@ -500,6 +530,28 @@ final class AppModel: ObservableObject {
         }
         if tmuxAvailable { scheduleProjectContextRefresh() }
         if let firstError { throw firstError }
+    }
+
+    var canRetryConnections: Bool { controller != nil }
+
+    func retryConnections() {
+        perform {
+            guard let controller else {
+                throw RelayUIError.message("Parley could not initialise tmux. Quit and reopen the app after resolving the startup error.")
+            }
+            if !tmuxAvailable {
+                try controller.bootstrap(cwd: defaultFolder)
+            }
+            if !coreAvailable {
+                relayClient = try RelayCoreLauncher.ensureRunning(
+                    applicationDirectory: controller.applicationDirectory,
+                    cwd: defaultFolder,
+                    environment: controller.environment
+                )
+            }
+            try refresh()
+            startupError = nil
+        }
     }
 
     func refreshQuietly() {
