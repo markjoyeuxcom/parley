@@ -573,8 +573,19 @@ struct ContentView: View {
 
     private func paneMenu(kind: PaneKind) -> some View {
         Menu {
-            Button("Split Right") { model.create(kind, direction: .horizontal) }
-            Button("Split Below") { model.create(kind, direction: .vertical) }
+            Section("Workspace Folder") {
+                Button("Split Right") { model.create(kind, direction: .horizontal) }
+                Button("Split Below") { model.create(kind, direction: .vertical) }
+            }
+            Divider()
+            Section("Another Folder") {
+                Button("Split Right in Folder…") {
+                    model.createInChosenFolder(kind, direction: .horizontal)
+                }
+                Button("Split Below in Folder…") {
+                    model.createInChosenFolder(kind, direction: .vertical)
+                }
+            }
         } label: {
             Label(kind.label, systemImage: kind == .shell ? "terminal" : "bubble.left.and.text.bubble.right")
         }

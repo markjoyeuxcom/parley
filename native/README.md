@@ -70,6 +70,8 @@ user's default tmux server. The tmux session is named `parley`.
 - Pane rows show their folder plus bounded Git branch and dirty state. A single
   argv-based Git status runs per distinct visible folder off the main thread,
   with optional locks disabled and a hard process timeout.
+- Every pane-creation menu can explicitly split into another chosen folder;
+  this affects only that new pane and never changes the workspace default.
 - Saved layouts live in the owner-only `workspace-layouts.json`, never in tmux.
   They contain no pane/window ids. Restored shells start; restored agent slots
   remain stopped until a person chooses Start.

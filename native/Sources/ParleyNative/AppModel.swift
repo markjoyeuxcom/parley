@@ -499,9 +499,27 @@ final class AppModel: ObservableObject {
     }
 
     func create(_ kind: PaneKind, direction: SplitDirection) {
+        create(kind, direction: direction, folder: defaultFolder)
+    }
+
+    func createInChosenFolder(_ kind: PaneKind, direction: SplitDirection) {
+        let panel = NSOpenPanel()
+        panel.title = "Choose a folder for the new \(kind.label) pane"
+        panel.prompt = direction == .horizontal ? "Split Right" : "Split Below"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: activePane?.cwd ?? defaultFolder)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        create(kind, direction: direction, folder: url.standardizedFileURL.path)
+    }
+
+    private func create(_ kind: PaneKind, direction: SplitDirection, folder: String) {
         perform {
             guard let controller else { return }
-            _ = try controller.createPane(kind: kind, cwd: defaultFolder, direction: direction)
+            let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
+            _ = try controller.createPane(kind: kind, cwd: standardized, direction: direction)
+            rememberFolder(standardized)
             try refresh()
             terminalHandle.focus()
         }

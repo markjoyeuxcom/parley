@@ -302,8 +302,8 @@ effortless without becoming task boards.
 - [x] Add “Ask another vendor to review these changes” using an explicit diff
   preview and the normal attributed Ask path.
 - [x] Add “Review this plan/file with…” without copying its contents manually.
-- Allow an occasional pane folder override while retaining the workspace's
-  default folder for new panes.
+- [x] Allow an occasional pane folder override from each pane-creation menu
+  while retaining the workspace default for ordinary new panes.
 - Add a command palette for workspace, pane, Ask target, and activity lookup.
 
 ### Native interaction polish
