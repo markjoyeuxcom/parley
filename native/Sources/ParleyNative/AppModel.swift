@@ -40,6 +40,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var controller: TmuxController?
     @Published private(set) var recentFolders: [String] = []
     @Published private(set) var favouriteFolders: [String] = []
+    @Published private(set) var projectContexts: [String: GitProjectContext] = [:]
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
     @Published private(set) var coreAvailable = false
     @Published private(set) var tmuxAvailable = false
@@ -51,6 +52,10 @@ final class AppModel: ObservableObject {
     private let fallbackFolder: String
     private let layoutStore: SavedWorkspaceLayoutStore
     private var workspaceContinuity = WorkspaceContinuityState()
+    private let projectContextResolver = GitProjectContextResolver()
+    private var projectContextRefreshTask: Task<Void, Never>?
+    private var projectContextFolders: Set<String> = []
+    private var lastProjectContextRefresh = Date.distantPast
     private var relayClient: RelayCoreClient?
     private var reviewDraftBuilder: ReviewDraftBuilder?
     private let notificationEpoch = Date()
@@ -59,6 +64,7 @@ final class AppModel: ObservableObject {
     private static let workspaceContinuityKey = "parley.workspaceContinuity"
     private static let notificationWorkspacesKey = "parley.notificationWorkspaces"
     private static let dismissedHandoffsKey = "parley.dismissedStatusHandoffs"
+    private static let projectContextRefreshInterval: TimeInterval = 5
 
     init() {
         let requestedFolder = Self.argument(named: "--cwd")
@@ -145,6 +151,7 @@ final class AppModel: ObservableObject {
             workspaces = liveWorkspaces
             savedLayouts = try layoutStore.layouts()
             rememberFolder(defaultFolder)
+            scheduleProjectContextRefresh(force: true)
         } catch {
             coreAvailable = false
             tmuxAvailable = false
@@ -162,6 +169,11 @@ final class AppModel: ObservableObject {
     }
 
     var activePane: TmuxPane? { visiblePanes.first(where: \.isActive) }
+
+    func projectContext(for pane: TmuxPane) -> GitProjectContext? {
+        let folder = URL(fileURLWithPath: pane.cwd).standardizedFileURL.path
+        return projectContexts[folder]
+    }
 
     var askTargets: [TmuxPane] {
         guard let source = activePane,
@@ -346,6 +358,7 @@ final class AppModel: ObservableObject {
         } else {
             coreAvailable = false
         }
+        if tmuxAvailable { scheduleProjectContextRefresh() }
         if let firstError { throw firstError }
     }
 
@@ -373,6 +386,42 @@ final class AppModel: ObservableObject {
         } catch {
             // Availability flags are updated by refresh; the last authoritative
             // snapshot stays visible instead of being replaced with guessed state.
+        }
+    }
+
+    private func scheduleProjectContextRefresh(force: Bool = false) {
+        let folders = Set(visiblePanes.map {
+            URL(fileURLWithPath: $0.cwd).standardizedFileURL.path
+        })
+        let foldersChanged = folders != projectContextFolders
+        let isDue = Date().timeIntervalSince(lastProjectContextRefresh) >= Self.projectContextRefreshInterval
+        guard projectContextRefreshTask == nil, force || foldersChanged || isDue else { return }
+
+        projectContextFolders = folders
+        lastProjectContextRefresh = Date()
+        guard !folders.isEmpty else {
+            projectContexts = [:]
+            return
+        }
+
+        let resolver = projectContextResolver
+        projectContextRefreshTask = Task.detached(priority: .utility) { [folders, resolver] in
+            let contexts = resolver.contexts(for: folders)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.projectContextRefreshTask = nil
+                let currentFolders = Set(self.visiblePanes.map {
+                    URL(fileURLWithPath: $0.cwd).standardizedFileURL.path
+                })
+                guard currentFolders == folders else {
+                    self.scheduleProjectContextRefresh(force: true)
+                    return
+                }
+                if contexts != self.projectContexts {
+                    self.projectContexts = contexts
+                }
+            }
         }
     }
 

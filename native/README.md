@@ -67,6 +67,9 @@ user's default tmux server. The tmux session is named `parley`.
   name/folder bookmarks: favourite folders are directly accessible in the
   sidebar, Move Left/Right tab order, and the last selected workspace survive a
   UI restart without changing tmux windows or starting an agent.
+- Pane rows show their folder plus bounded Git branch and dirty state. A single
+  argv-based Git status runs per distinct visible folder off the main thread,
+  with optional locks disabled and a hard process timeout.
 - Saved layouts live in the owner-only `workspace-layouts.json`, never in tmux.
   They contain no pane/window ids. Restored shells start; restored agent slots
   remain stopped until a person chooses Start.

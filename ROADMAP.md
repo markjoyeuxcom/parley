@@ -296,7 +296,9 @@ effortless without becoming task boards.
 
 ### Project context
 
-- Show branch, dirty state, and pane folder without running unbounded git work.
+- [x] Show branch, dirty state, and pane folder using one shell-free, lock-free
+  Git status command per distinct visible folder. Resolution runs off the main
+  thread on a five-second cadence with a two-second process ceiling.
 - [x] Add “Ask another vendor to review these changes” using an explicit diff
   preview and the normal attributed Ask path.
 - [x] Add “Review this plan/file with…” without copying its contents manually.

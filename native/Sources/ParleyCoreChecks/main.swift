@@ -351,6 +351,42 @@ private func checkWorkspaceContinuityState() throws {
     try expect(decoded == state, "workspace continuity state did not round-trip losslessly")
 }
 
+private func checkGitProjectContextParsing() throws {
+    let clean = try require(
+        GitProjectContextResolver.parseStatus("""
+        # branch.oid 0123456789abcdef0123456789abcdef01234567
+        # branch.head feat/project-context
+        # branch.upstream origin/feat/project-context
+        # branch.ab +0 -0
+        """),
+        "clean Git status did not produce project context"
+    )
+    try expect(clean.branch == "feat/project-context", "Git context lost the current branch")
+    try expect(!clean.isDirty, "Git context marked a clean worktree dirty")
+
+    let dirty = try require(
+        GitProjectContextResolver.parseStatus("""
+        # branch.oid 0123456789abcdef0123456789abcdef01234567
+        # branch.head main
+        1 .M N... 100644 100644 100644 abcdef0 abcdef0 native/App.swift
+        ? native/NewFile.swift
+        """),
+        "dirty Git status did not produce project context"
+    )
+    try expect(dirty.branch == "main", "dirty Git context lost the current branch")
+    try expect(dirty.isDirty, "tracked or untracked changes did not mark the worktree dirty")
+
+    let detached = try require(
+        GitProjectContextResolver.parseStatus("""
+        # branch.oid 0123456789abcdef0123456789abcdef01234567
+        # branch.head (detached)
+        """),
+        "detached Git status did not produce project context"
+    )
+    try expect(detached.branch == "@01234567", "detached Git context did not show a bounded commit identity")
+    try expect(GitProjectContextResolver.parseStatus("") == nil, "empty Git output invented repository state")
+}
+
 private func checkSavedWorkspaceLayoutPersistenceAndFreshSlots() throws {
     let directory = try temporaryDirectory()
     let file = directory.appendingPathComponent("workspace-layouts.json")
@@ -3437,6 +3473,7 @@ let checks: [(String, () throws -> Void)] = [
     ("existing session workspace adoption", checkExistingSessionAdoptsWorkspaceWithoutRestart),
     ("workspace lifecycle", checkWorkspaceLifecycle),
     ("workspace continuity state", checkWorkspaceContinuityState),
+    ("Git project context parsing", checkGitProjectContextParsing),
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),

@@ -45,6 +45,7 @@ struct ContentView: View {
                     } label: {
                         PaneRow(
                             pane: pane,
+                            projectContext: model.projectContext(for: pane),
                             awaitingAnswerCount: model.awaitingAnswerCount(for: pane.id),
                             unreadResultCount: model.unreadResultCount(forPane: pane.id),
                             latestFailure: model.latestFailure(for: pane.id)
@@ -600,6 +601,7 @@ struct ContentView: View {
 
 private struct PaneRow: View {
     let pane: TmuxPane
+    let projectContext: GitProjectContext?
     let awaitingAnswerCount: Int
     let unreadResultCount: Int
     let latestFailure: RelayHandoff?
@@ -643,7 +645,20 @@ private struct PaneRow: View {
                             .foregroundStyle(latestFailure.attention != nil ? Color.orange : Color.red)
                     }
                 }
-                Text("\(URL(fileURLWithPath: pane.cwd).lastPathComponent) · \(pane.isStarted ? pane.currentCommand : "not started")")
+                HStack(spacing: 4) {
+                    Text(folderName)
+                    if let projectContext {
+                        Text("·")
+                        Text(projectContext.branch)
+                        if projectContext.isDirty {
+                            Text("DIRTY")
+                                .fontWeight(.semibold)
+                                .foregroundStyle(Color.orange)
+                        }
+                    }
+                    Text("·")
+                    Text(pane.isStarted ? pane.currentCommand : "not started")
+                }
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -652,6 +667,18 @@ private struct PaneRow: View {
         }
         .contentShape(Rectangle())
         .padding(.vertical, 3)
+        .help(paneHelp)
+    }
+
+    private var folderName: String {
+        let name = URL(fileURLWithPath: pane.cwd).lastPathComponent
+        return name.isEmpty ? pane.cwd : name
+    }
+
+    private var paneHelp: String {
+        guard let projectContext else { return pane.cwd }
+        let state = projectContext.isDirty ? "dirty" : "clean"
+        return "\(pane.cwd)\nGit: \(projectContext.branch) · \(state)"
     }
 
     private var kindColor: Color {
