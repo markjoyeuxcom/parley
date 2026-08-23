@@ -36,6 +36,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.commandPalettePresented) {
             CommandPaletteView(model: model)
         }
+        .sheet(isPresented: $model.setupPresented) {
+            SetupView(model: model)
+        }
         .alert(
             "Parley needs attention",
             isPresented: Binding(

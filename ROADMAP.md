@@ -364,8 +364,14 @@ team or its folder routing.
   policy and installation/uninstallation checks are still required.
 - Offer optional launch-at-login for the local core, independently of opening
   the window.
-- Add first-run detection for tmux and supported CLIs, plus authentication and
-  protocol health checks that do not spend model quota.
+- [x] Add first-run detection for tmux and supported CLIs, plus authentication
+  and protocol health checks that do not spend model quota. The native
+  readiness sheet checks tmux, the persistent core, managed relay and shared
+  protocol, then uses only vendor-owned status commands for Claude, Codex and
+  Agy. Copilot is reported as installed but explicitly unchecked because its
+  CLI exposes no read-only authentication status command; Parley never invents
+  a result or opens an interactive login flow. The check returns from the Tools
+  menu without restarting panes.
 - Provide a local diagnostics export with secrets and prompt bodies excluded by
   default.
 - Run long terminal-output, repeated workspace switching, UI reattachment, and

@@ -50,6 +50,9 @@ struct ParleyNativeApp: App {
                 Button("Choose Workspace Folder…") { model.chooseFolder() }
                     .disabled(model.activeWorkspace == nil)
             }
+            CommandMenu("Tools") {
+                Button("Environment Check…") { model.showEnvironmentCheck() }
+            }
             CommandMenu("Pane") {
                 Button("New Claude Pane") { model.create(.claude, direction: .horizontal) }
                     .keyboardShortcut("1", modifiers: [.command, .shift])

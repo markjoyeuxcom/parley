@@ -44,6 +44,14 @@ launch it copies only missing workspace-continuity values from the historical
 SwiftPM executable domain (`parley-native`), so moving from `npm run dev` does
 not discard favourites, tab order or the last selected workspace.
 
+The same first launch presents a non-blocking readiness sheet. Local checks
+cover tmux, the persistent core, relay installation and the exact shared
+protocol stamp. Vendor checks call only `claude auth status --json`,
+`codex login status` and `agy models`; they never submit a model prompt.
+Copilot remains visibly unchecked until a pane starts because its CLI has no
+status-only authentication command. **Tools → Environment Check…** reruns the
+checks without creating, restarting or closing a pane.
+
 The Node helper selects an installed macOS SDK that the active Swift compiler
 can actually import. It also moves compiler caches into a writable temporary
 directory. It has no third-party JavaScript dependencies.

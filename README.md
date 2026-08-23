@@ -240,3 +240,11 @@ a release candidate, then complete notarization and stapling before distribution
 
 The ordered path from this locally packaged beta foundation to a dependable
 distributed tool is in [ROADMAP.md](ROADMAP.md).
+
+On first launch, Parley opens a readiness sheet for its private tmux server,
+local coordination core, relay command, shared agent protocol and supported
+vendor CLIs. Claude, Codex and Agy authentication use their own status-only
+commands; no prompt is submitted and no model quota is spent. Copilot is
+labelled "check on start" because it exposes an interactive login command but
+no read-only authentication status command. Repeat the checks at any time from
+**Tools → Environment Check…** without restarting a pane.

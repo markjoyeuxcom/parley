@@ -64,11 +64,15 @@ final class AppModel: ObservableObject {
     @Published private(set) var tmuxError: String?
     @Published private(set) var notificationWorkspaceNames: Set<String> = []
     @Published private(set) var dismissedHandoffIDs: Set<String> = []
+    @Published private(set) var runtimeReadiness: RuntimeReadinessSnapshot?
+    @Published private(set) var runtimeReadinessChecking = false
     @Published var commandPalettePresented = false
+    @Published var setupPresented = false
     @Published var startupError: String?
 
     let terminalHandle = TerminalHandle()
     private let fallbackFolder: String
+    private let applicationDirectory: URL
     private let layoutStore: SavedWorkspaceLayoutStore
     private var workspaceContinuity = WorkspaceContinuityState()
     private let projectContextResolver = GitProjectContextResolver()
@@ -79,17 +83,19 @@ final class AppModel: ObservableObject {
     private var reviewDraftBuilder: ReviewDraftBuilder?
     private let notificationEpoch = Date()
     private var observedNotificationEventIDs: Set<String> = []
+    private var runtimeReadinessTask: Task<Void, Never>?
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
     private static let workspaceContinuityKey = "parley.workspaceContinuity"
     private static let notificationWorkspacesKey = "parley.notificationWorkspaces"
     private static let dismissedHandoffsKey = "parley.dismissedStatusHandoffs"
+    private static let firstRunCompletedKey = "parley.firstRunReadinessCompleted"
     private static let projectContextRefreshInterval: TimeInterval = 5
 
     init() {
         let requestedFolder = Self.argument(named: "--cwd")
         let initialFolder = requestedFolder ?? FileManager.default.currentDirectoryPath
         fallbackFolder = URL(fileURLWithPath: initialFolder).standardizedFileURL.path
-        let applicationDirectory = FileManager.default.homeDirectoryForCurrentUser
+        applicationDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Parley Native", isDirectory: true)
         layoutStore = SavedWorkspaceLayoutStore(
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
@@ -116,6 +122,7 @@ final class AppModel: ObservableObject {
         dismissedHandoffIDs = Set(
             UserDefaults.standard.stringArray(forKey: Self.dismissedHandoffsKey) ?? []
         )
+        setupPresented = !UserDefaults.standard.bool(forKey: Self.firstRunCompletedKey)
 
         do {
             let controller = try TmuxController()
@@ -197,6 +204,7 @@ final class AppModel: ObservableObject {
             tmuxError = error.localizedDescription
             startupError = error.localizedDescription
         }
+        refreshRuntimeReadiness()
     }
 
     var activeWorkspace: TmuxWorkspace? { workspaces.first(where: \.isActive) }
@@ -209,6 +217,40 @@ final class AppModel: ObservableObject {
     }
 
     var activePane: TmuxPane? { visiblePanes.first(where: \.isActive) }
+
+    func showEnvironmentCheck() {
+        setupPresented = true
+        refreshRuntimeReadiness()
+    }
+
+    func refreshRuntimeReadiness() {
+        runtimeReadinessTask?.cancel()
+        runtimeReadinessChecking = true
+        let environment = controller?.environment ?? EnvironmentResolver.resolved()
+        let applicationDirectory = applicationDirectory
+        let coreHealthy = coreAvailable
+        let paneSnapshot = panes
+        let checker = RuntimeReadinessChecker()
+        runtimeReadinessTask = Task { [weak self] in
+            let snapshot = await Task.detached(priority: .utility) {
+                checker.check(
+                    environment: environment,
+                    applicationDirectory: applicationDirectory,
+                    coreHealthy: coreHealthy,
+                    panes: paneSnapshot
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            self?.runtimeReadiness = snapshot
+            self?.runtimeReadinessChecking = false
+        }
+    }
+
+    func completeEnvironmentCheck() {
+        UserDefaults.standard.set(true, forKey: Self.firstRunCompletedKey)
+        setupPresented = false
+        terminalHandle.focus()
+    }
 
     var connectionState: WorkbenchConnectionState {
         WorkbenchStateProjection.connection(

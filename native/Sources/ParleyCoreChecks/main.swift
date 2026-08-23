@@ -628,6 +628,105 @@ private func checkLegacyPreferencesMigration() throws {
     try expect(defaults.object(forKey: "unrelated") == nil, "migration copied an unrelated preference")
 }
 
+private func checkRuntimeReadinessProbesAreQuotaFree() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("parley-readiness-\(UUID().uuidString)", isDirectory: true)
+    let bin = root.appendingPathComponent("bin", isDirectory: true)
+    let applicationDirectory = root.appendingPathComponent("application", isDirectory: true)
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    for command in ["tmux", "claude", "codex", "agy", "copilot"] {
+        let executable = bin.appendingPathComponent(command)
+        try Data().write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+    }
+    _ = try AgentProtocol.install(in: applicationDirectory)
+    _ = try RelayShim.install(
+        in: applicationDirectory,
+        transportDirectory: root.appendingPathComponent("transport")
+    )
+
+    let runner = RecordingRunner { arguments, _ in
+        switch arguments {
+        case ["-V"]:
+            CommandOutput(stdout: Data("tmux ready\n".utf8))
+        case ["auth", "status", "--json"]:
+            CommandOutput(stdout: Data(#"{"loggedIn":true}"#.utf8))
+        case ["login", "status"]:
+            CommandOutput(stderr: Data("Not logged in\n".utf8), status: 1)
+        case ["models"]:
+            CommandOutput(stdout: Data("available models\n".utf8))
+        default:
+            CommandOutput(stderr: Data("unexpected probe\n".utf8), status: 2)
+        }
+    }
+    let snapshot = RuntimeReadinessChecker(runner: runner).check(
+        environment: ["PATH": bin.path],
+        applicationDirectory: applicationDirectory,
+        coreHealthy: true,
+        panes: []
+    )
+
+    try expect(snapshot.item(.tmux)?.state == .ready, "tmux readiness was not confirmed")
+    try expect(snapshot.item(.core)?.state == .ready, "healthy core was not projected")
+    try expect(snapshot.item(.relay)?.state == .ready, "managed relay shim was not recognized")
+    try expect(snapshot.item(.protocolRules)?.state == .ready, "current protocol rules were not recognized")
+    try expect(snapshot.item(.claude)?.state == .ready, "Claude authentication JSON was not parsed")
+    try expect(snapshot.item(.codex)?.state == .attention, "failed Codex login status was not surfaced")
+    try expect(snapshot.item(.agy)?.state == .ready, "Agy's quota-free model listing did not confirm access")
+    try expect(snapshot.item(.copilot)?.state == .unchecked, "Copilot invented an authentication result")
+    try expect(snapshot.readyVendorCount == 2, "ready vendor count did not use confirmed authentication")
+    try expect(snapshot.isOperational, "two authenticated vendors and healthy local services should be operational")
+
+    let calls = runner.calls.map(\.arguments)
+    try expect(calls.contains(["-V"]), "tmux executable was not probed")
+    try expect(calls.contains(["auth", "status", "--json"]), "Claude auth status was not probed")
+    try expect(calls.contains(["login", "status"]), "Codex login status was not probed")
+    try expect(calls.contains(["models"]), "Agy models status was not probed")
+    try expect(
+        calls.allSatisfy { arguments in
+            if arguments == ["login", "status"] { return true }
+            return !arguments.contains("--print")
+                && !arguments.contains("-p")
+                && !arguments.contains("login")
+        },
+        "readiness used a model prompt or interactive login command"
+    )
+    try expect(runner.calls.count == 4, "Copilot was invoked despite lacking a status-only auth command")
+
+    let tmuxOverride = root.appendingPathComponent("custom-tmux")
+    try Data().write(to: tmuxOverride)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmuxOverride.path)
+    let stalePane = TmuxPane(
+        id: "%9",
+        kind: .claude,
+        customName: nil,
+        terminalTitle: "",
+        cwd: "/tmp",
+        currentCommand: "claude",
+        isActive: true,
+        windowID: "@0",
+        returnToPaneID: nil,
+        protocolVersion: "older",
+        isStarted: true
+    )
+    let overrideSnapshot = RuntimeReadinessChecker(runner: runner).check(
+        environment: ["PATH": bin.path, "PARLEY_TMUX": tmuxOverride.path],
+        applicationDirectory: applicationDirectory,
+        coreHealthy: true,
+        panes: [stalePane]
+    )
+    try expect(
+        runner.calls[4].executable == tmuxOverride,
+        "readiness ignored the same explicit tmux override used by the workbench"
+    )
+    try expect(
+        overrideSnapshot.item(.protocolRules)?.detail.hasPrefix("1 running agent pane") == true,
+        "stale protocol count was not rendered with its numeric value"
+    )
+}
+
 private func checkGitProjectContextParsing() throws {
     let clean = try require(
         GitProjectContextResolver.parseStatus("""
@@ -3934,6 +4033,7 @@ let checks: [(String, () throws -> Void)] = [
     ("workspace lifecycle", checkWorkspaceLifecycle),
     ("workspace continuity state", checkWorkspaceContinuityState),
     ("legacy packaged-app preferences migration", checkLegacyPreferencesMigration),
+    ("quota-free runtime readiness probes", checkRuntimeReadinessProbesAreQuotaFree),
     ("Git project context parsing", checkGitProjectContextParsing),
     ("command palette search", checkCommandPaletteSearch),
     ("workbench accessibility descriptions", checkAccessibilityDescriptions),
