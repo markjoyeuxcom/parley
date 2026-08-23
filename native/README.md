@@ -87,6 +87,10 @@ user's default tmux server. The tmux session is named `parley`.
   balance move into Actions; the complete toolbar returns automatically when
   room permits. Workspace, pane, activity and context names truncate in the
   middle without changing the full names used by menus, help or routing.
+- tmux contributes terminal layout rather than duplicate application chrome:
+  its status row and pane-title bars are disabled whenever Parley attaches,
+  while single-line inactive and active pane borders remain visible for spatial
+  focus. Workspace, path and collaboration context stay in the native controls.
 - Saved layouts live in the owner-only `workspace-layouts.json`, never in tmux.
   They contain no pane/window ids. Restored shells start; restored agent slots
   remain stopped until a person chooses Start.

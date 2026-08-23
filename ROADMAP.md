@@ -334,7 +334,11 @@ effortless without becoming task boards.
   distinct precedence and recovery actions. A relay-core failure is now
   non-blocking when tmux is healthy, while actual tmux loss replaces the
   terminal with an explicit reconnect state.
-- Remove redundant tmux chrome once the native controls cover it reliably.
+- [x] Remove redundant tmux chrome once the native controls cover it reliably.
+  The embedded tmux status row and pane-title bars are explicitly disabled on
+  both new and existing sessions; native tabs, context and activity own that
+  information, while restrained inactive/active pane borders remain for spatial
+  focus.
 
 Optional git worktrees belong here only if real use shows multiple write agents
 colliding. They are not required for cross-vendor consultation.

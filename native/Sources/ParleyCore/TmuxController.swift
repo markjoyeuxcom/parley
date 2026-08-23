@@ -74,6 +74,7 @@ public final class TmuxController {
         try requireDirectory(cwd)
         let hasSession = try runTmux(["has-session", "-t", exactSession], allowFailure: true).status == 0
         if hasSession {
+            try configureEmbeddedPresentation()
             try retainExitedPanes()
             // Migration is metadata-only. Existing panes and the processes
             // inside them are deliberately left untouched.
@@ -105,8 +106,9 @@ public final class TmuxController {
                 name: workspaceName(folder: cwd),
                 folder: cwd
             )
-            try retainExitedPanes()
         }
+        try configureEmbeddedPresentation()
+        try retainExitedPanes()
     }
 
     public func attachArguments() -> [String] {
@@ -702,6 +704,11 @@ public final class TmuxController {
         _ = try runTmux(["set-window-option", "-g", "remain-on-exit", "on"])
     }
 
+    private func configureEmbeddedPresentation() throws {
+        _ = try runTmux(["set-option", "-g", "status", "off"])
+        _ = try runTmux(["set-window-option", "-g", "pane-border-status", "off"])
+    }
+
     private func requireDirectory(_ path: String) throws {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -750,12 +757,10 @@ public final class TmuxController {
         set-option -g history-limit 10000
         set-option -g renumber-windows on
         set-option -g set-clipboard external
-        set-option -g status-position top
-        set-option -g status-style 'bg=#202124,fg=#aeb1b7'
+        set-option -g status off
         set-option -g pane-border-style 'fg=#3b3d42'
         set-option -g pane-active-border-style 'fg=#5e8cff'
-        set-option -g status-left '#[bold] Parley #[default] '
-        set-option -g status-right '#{pane_current_path} '
+        set-window-option -g pane-border-status off
         set-window-option -g mode-keys vi
         set-window-option -g remain-on-exit on
         set-window-option -g automatic-rename off

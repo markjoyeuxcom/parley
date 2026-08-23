@@ -358,6 +358,49 @@ private func checkExitedPaneRetention() throws {
     try expect(pane.exitStatus == 7, "retained pane lost its exit status")
 }
 
+private func checkEmbeddedTmuxPresentation() throws {
+    let runner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "has-session": output()
+        case "list-windows": output(workspaceRow(id: "@0", windowName: "parley", active: true) + "\n")
+        default: output()
+        }
+    }
+    let directory = try temporaryDirectory()
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: directory,
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner
+    )
+
+    try controller.bootstrap(cwd: "/tmp")
+
+    let configuration = try String(contentsOf: directory.appendingPathComponent("tmux.conf"), encoding: .utf8)
+    try expect(configuration.contains("set-option -g status off"), "embedded tmux configuration retained its duplicate status bar")
+    try expect(configuration.contains("set-window-option -g pane-border-status off"), "embedded tmux configuration did not suppress duplicate pane titles")
+    try expect(configuration.contains("pane-border-style") && configuration.contains("pane-active-border-style"), "embedded tmux configuration removed spatial pane boundaries")
+    for redundantOption in ["status-position", "status-style", "status-left", "status-right"] {
+        try expect(!configuration.contains(redundantOption), "embedded tmux configuration retained redundant \(redundantOption) chrome")
+    }
+    try expect(
+        runner.calls.contains {
+            command($0.arguments) == "set-option"
+                && $0.arguments.contains("status")
+                && $0.arguments.contains("off")
+        },
+        "reattaching the native UI did not remove the live tmux status bar"
+    )
+    try expect(
+        runner.calls.contains {
+            $0.arguments.contains("set-window-option")
+                && $0.arguments.contains("pane-border-status")
+                && $0.arguments.contains("off")
+        },
+        "reattaching the native UI did not suppress live tmux pane titles"
+    )
+}
+
 private func paneRow(
     id: String,
     kind: PaneKind,
@@ -3840,6 +3883,7 @@ let checks: [(String, () throws -> Void)] = [
     ("adjacent navigation order", checkAdjacentNavigationOrder),
     ("workbench state projection", checkWorkbenchStateProjection),
     ("exited pane retention", checkExitedPaneRetention),
+    ("embedded tmux presentation", checkEmbeddedTmuxPresentation),
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),
