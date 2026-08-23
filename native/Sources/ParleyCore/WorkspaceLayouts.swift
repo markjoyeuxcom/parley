@@ -5,11 +5,30 @@ public struct SavedLayoutLeaf: Codable, Equatable, Sendable {
     public let kind: PaneKind
     public let name: String
     public let folder: String
+    public let isWorkspaceLead: Bool
 
-    public init(kind: PaneKind, name: String, folder: String) {
+    public init(kind: PaneKind, name: String, folder: String, isWorkspaceLead: Bool = false) {
         self.kind = kind
         self.name = name
         self.folder = folder
+        self.isWorkspaceLead = isWorkspaceLead
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case name
+        case folder
+        case isWorkspaceLead
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            kind: try values.decode(PaneKind.self, forKey: .kind),
+            name: try values.decode(String.self, forKey: .name),
+            folder: try values.decode(String.self, forKey: .folder),
+            isWorkspaceLead: try values.decodeIfPresent(Bool.self, forKey: .isWorkspaceLead) ?? false
+        )
     }
 }
 
@@ -34,6 +53,7 @@ public indirect enum SavedLayoutNode: Codable, Equatable, Sendable {
         case kind
         case name
         case folder
+        case isWorkspaceLead
         case direction
         case ratio
         case first
@@ -47,7 +67,8 @@ public indirect enum SavedLayoutNode: Codable, Equatable, Sendable {
             self = .leaf(SavedLayoutLeaf(
                 kind: try values.decode(PaneKind.self, forKey: .kind),
                 name: try values.decode(String.self, forKey: .name),
-                folder: try values.decode(String.self, forKey: .folder)
+                folder: try values.decode(String.self, forKey: .folder),
+                isWorkspaceLead: try values.decodeIfPresent(Bool.self, forKey: .isWorkspaceLead) ?? false
             ))
         case .split:
             self = .split(
@@ -67,6 +88,7 @@ public indirect enum SavedLayoutNode: Codable, Equatable, Sendable {
             try values.encode(leaf.kind, forKey: .kind)
             try values.encode(leaf.name, forKey: .name)
             try values.encode(leaf.folder, forKey: .folder)
+            try values.encode(leaf.isWorkspaceLead, forKey: .isWorkspaceLead)
         case let .split(direction, ratio, first, second):
             try values.encode(NodeKind.split, forKey: .type)
             try values.encode(direction, forKey: .direction)
@@ -90,15 +112,39 @@ public struct SavedWorkspaceLayout: Identifiable, Codable, Equatable, Sendable {
     public let name: String
     public let defaultFolder: String
     public let root: SavedLayoutNode
+    public let automationPolicy: WorkspaceAutomationPolicy
 
     /// Names are unique without case in the store and are the durable identity.
     /// No opaque id is persisted into the layout document.
     public var id: String { name.lowercased() }
 
-    public init(name: String, defaultFolder: String, root: SavedLayoutNode) {
+    public init(
+        name: String,
+        defaultFolder: String,
+        root: SavedLayoutNode,
+        automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate
+    ) {
         self.name = name
         self.defaultFolder = defaultFolder
         self.root = root
+        self.automationPolicy = automationPolicy
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case defaultFolder
+        case root
+        case automationPolicy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            name: try values.decode(String.self, forKey: .name),
+            defaultFolder: try values.decode(String.self, forKey: .defaultFolder),
+            root: try values.decode(SavedLayoutNode.self, forKey: .root),
+            automationPolicy: try values.decodeIfPresent(WorkspaceAutomationPolicy.self, forKey: .automationPolicy) ?? .askAndDelegate
+        )
     }
 
     /// Mints a new live tree without starting anything. The caller alone owns
@@ -113,7 +159,8 @@ public struct SavedWorkspaceLayout: Identifiable, Codable, Equatable, Sendable {
                     kind: leaf.kind,
                     name: leaf.name,
                     folder: leaf.folder,
-                    isStarted: false
+                    isStarted: false,
+                    isWorkspaceLead: leaf.isWorkspaceLead
                 ))
             case let .split(direction, ratio, first, second):
                 .split(
@@ -135,6 +182,7 @@ public struct RestoredLayoutSlot: Identifiable, Equatable, Sendable {
     public let name: String
     public let folder: String
     public var isStarted: Bool
+    public let isWorkspaceLead: Bool
 }
 
 public indirect enum RestoredLayoutNode: Equatable, Sendable {
@@ -239,7 +287,8 @@ public enum TmuxLayoutParser {
                 node: .leaf(SavedLayoutLeaf(
                     kind: pane.kind,
                     name: pane.displayName,
-                    folder: pane.cwd
+                    folder: pane.cwd,
+                    isWorkspaceLead: pane.isWorkspaceLead
                 )),
                 width: width,
                 height: height
@@ -412,6 +461,7 @@ public final class SavedWorkspaceLayoutStore: @unchecked Sendable {
             throw SavedWorkspaceLayoutStoreError.invalid("the default folder must be absolute")
         }
         var leaves = 0
+        var leads = 0
         func validateNode(_ node: SavedLayoutNode, depth: Int) throws {
             guard depth <= 12 else {
                 throw SavedWorkspaceLayoutStoreError.invalid("the split tree is too deep")
@@ -419,6 +469,12 @@ public final class SavedWorkspaceLayoutStore: @unchecked Sendable {
             switch node {
             case let .leaf(leaf):
                 leaves += 1
+                if leaf.isWorkspaceLead {
+                    leads += 1
+                    guard leaf.kind.isAgent else {
+                        throw SavedWorkspaceLayoutStoreError.invalid("the workspace lead must be an agent pane")
+                    }
+                }
                 let leafName = leaf.name.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard (1...80).contains(leafName.count), leafName == leaf.name else {
                     throw SavedWorkspaceLayoutStoreError.invalid("pane names must be 1–80 trimmed characters")
@@ -437,6 +493,9 @@ public final class SavedWorkspaceLayoutStore: @unchecked Sendable {
         try validateNode(layout.root, depth: 0)
         guard (1...Self.maximumLeaves).contains(leaves) else {
             throw SavedWorkspaceLayoutStoreError.invalid("layouts must contain 1–\(Self.maximumLeaves) panes")
+        }
+        guard leads <= 1 else {
+            throw SavedWorkspaceLayoutStoreError.invalid("a layout may contain only one workspace lead")
         }
     }
 }

@@ -209,6 +209,17 @@ private func checkAdjacentNavigationOrder() throws {
     )
 }
 
+private func checkMenuTrackingRefreshPolicy() throws {
+    try expect(
+        MenuTrackingRefreshPolicy.runLoopMode == .default,
+        "periodic UI refresh does not pause while AppKit tracks an open menu"
+    )
+    try expect(
+        MenuTrackingRefreshPolicy.runLoopMode != .common,
+        "common-mode refresh can rebuild menu items beneath the pointer"
+    )
+}
+
 private func checkWorkbenchStateProjection() throws {
     let readyAgent = TmuxPane(
         id: "%1",
@@ -336,8 +347,7 @@ private func checkWorkbenchStateProjection() throws {
 }
 
 private func checkExitedPaneRetention() throws {
-    let retainedRow = paneRow(id: "%9", kind: .shell, active: true)
-        + "\u{1f}1\u{1f}7"
+    let retainedRow = paneRow(id: "%9", kind: .shell, active: true, isDead: true, exitStatus: 7)
     let runner = RecordingRunner { arguments, _ in
         switch command(arguments) {
         case "has-session": output()
@@ -425,9 +435,13 @@ private func paneRow(
     workspaceActive: Bool = true,
     workspaceName: String = "parley",
     bracketedPasteActive: Bool = true,
-    started: Bool = true
+    started: Bool = true,
+    isDead: Bool = false,
+    exitStatus: Int? = nil,
+    isLead: Bool = false,
+    automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate
 ) -> String {
-    [id, kind.rawValue, kind.label, kind.label, "/tmp", kind.rawValue, active ? "1" : "0", windowID, returnTo, relayEnabled ? "1" : "", protocolVersion, workspaceActive ? "1" : "0", workspaceName, bracketedPasteActive ? "1" : "0", started ? "1" : "0"]
+    [id, kind.rawValue, kind.label, kind.label, "/tmp", kind.rawValue, active ? "1" : "0", windowID, returnTo, relayEnabled ? "1" : "", protocolVersion, workspaceActive ? "1" : "0", workspaceName, bracketedPasteActive ? "1" : "0", started ? "1" : "0", isDead ? "1" : "", exitStatus.map(String.init) ?? "", isLead ? "1" : "", automationPolicy.rawValue]
         .joined(separator: "\u{1f}")
 }
 
@@ -437,9 +451,10 @@ private func workspaceRow(
     active: Bool,
     name: String = "",
     folder: String = "",
-    paneFolder: String = "/tmp"
+    paneFolder: String = "/tmp",
+    automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate
 ) -> String {
-    [id, windowName, active ? "1" : "0", name, folder, paneFolder]
+    [id, windowName, active ? "1" : "0", name, folder, paneFolder, automationPolicy.rawValue]
         .joined(separator: "\u{1f}")
 }
 
@@ -1409,15 +1424,17 @@ private func checkRealTmuxSavedLayoutRestorationPolicy() throws {
             second: .split(
                 direction: .vertical,
                 ratio: 0.5,
-                first: .leaf(SavedLayoutLeaf(kind: .codex, name: "Reviewer", folder: projectPath)),
+                first: .leaf(SavedLayoutLeaf(kind: .codex, name: "Reviewer", folder: projectPath, isWorkspaceLead: true)),
                 second: .leaf(SavedLayoutLeaf(kind: .agy, name: "Second", folder: consumerPath))
             )
-        )
+        ),
+        automationPolicy: .askAnswer
     )
 
     let restored = try controller.restoreWorkspaceLayout(layout, replacing: originalWorkspace.id)
     let workspaces = try controller.listWorkspaces()
     try expect(workspaces.count == 1 && workspaces[0].id == restored.id, "layout restoration did not transactionally replace the old workspace")
+    try expect(workspaces[0].automationPolicy == .askAnswer, "layout restoration lost its automation policy")
     let panes = try controller.listPanes().filter { $0.windowID == restored.id }
     try expect(panes.count == 3, "restored layout created the wrong pane count")
     try expect(Set(panes.map(\.id)).isDisjoint(with: originalPaneIDs), "restored layout reused dead tmux pane ids")
@@ -1425,6 +1442,8 @@ private func checkRealTmuxSavedLayoutRestorationPolicy() throws {
     try expect(shell.isStarted && shell.currentCommand != "sleep", "restored shell was not started automatically")
     let agents = panes.filter { $0.kind.isAgent }
     try expect(agents.count == 2, "restored layout lost an agent placeholder")
+    try expect(agents.first(where: { $0.kind == .codex })?.isWorkspaceLead == true, "restored layout lost its workspace lead")
+    try expect(agents.allSatisfy { $0.automationPolicy == .askAnswer }, "pane routing metadata did not inherit the workspace automation policy")
     try expect(agents.allSatisfy { !$0.isStarted && $0.currentCommand == "sleep" }, "restored layout spent an agent session")
     try expect(agents.allSatisfy { !$0.relayEnabled && $0.protocolVersion == nil }, "stopped agent placeholder received live relay capability")
     let restoredAgyFolder = agents.first(where: { $0.kind == .agy })?.cwd
@@ -1475,10 +1494,11 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "3", "the agent process boundary did not advance the shared protocol version")
-    for command in ["parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait"] {
+    try expect(AgentProtocol.version == "4", "the supervised-workflow protocol did not advance the shared protocol version")
+    for command in ["parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait", "parley cancel"] {
         try expect(AgentProtocol.text.contains(command), "shared protocol omitted \(command)")
     }
+    try expect(AgentProtocol.text.contains("workspace lead"), "shared protocol omitted lead routing")
 
     let claude = AgentProtocol.command(for: .claude, protocolDirectory: protocolDirectory)
     try expect(claude == ["claude", "--append-system-prompt", AgentProtocol.text], "Claude launch adapter changed the shared protocol")
@@ -1537,6 +1557,158 @@ private func checkSharedProtocolLaunchAdapters() throws {
         AgentProtocol.stalePaneIDs(in: panes + [stoppedPlaceholder]) == ["%1", "%2", "%5"],
         "protocol migration would auto-start a restored agent placeholder"
     )
+}
+
+private func checkSupervisionMetadataAndRecipesPersistWithoutLiveIDs() throws {
+    let lead = SavedLayoutLeaf(
+        kind: .claude,
+        name: "Planner",
+        folder: "/tmp/project",
+        isWorkspaceLead: true
+    )
+    let layout = SavedWorkspaceLayout(
+        name: "Supervised",
+        defaultFolder: "/tmp/project",
+        root: .split(
+            direction: .horizontal,
+            ratio: 0.5,
+            first: .leaf(lead),
+            second: .leaf(SavedLayoutLeaf(kind: .codex, name: "Reviewer", folder: "/tmp/project"))
+        ),
+        automationPolicy: .askAnswer
+    )
+    let encoded = try JSONEncoder().encode(layout)
+    let json = try require(String(data: encoded, encoding: .utf8), "supervised layout JSON was not UTF-8")
+    try expect(json.contains("askAnswer") && json.contains("isWorkspaceLead"), "saved layout omitted supervision metadata")
+    try expect(!json.contains("paneID") && !json.contains("%"), "supervised layout persisted a live pane id")
+    let decoded = try JSONDecoder().decode(SavedWorkspaceLayout.self, from: encoded)
+    try expect(decoded == layout, "supervised layout did not round-trip")
+    try expect(decoded.root.leaves.first?.isWorkspaceLead == true, "saved layout lost its lead stamp")
+
+    let legacy = #"{"name":"Legacy","defaultFolder":"/tmp","root":{"type":"leaf","kind":"shell","name":"Shell","folder":"/tmp"}}"#
+    let migrated = try JSONDecoder().decode(SavedWorkspaceLayout.self, from: Data(legacy.utf8))
+    try expect(migrated.automationPolicy == .askAndDelegate, "legacy layout did not preserve the existing automation workflow")
+    try expect(migrated.root.leaves.first?.isWorkspaceLead == false, "legacy layout invented a workspace lead")
+
+    let directory = try temporaryDirectory()
+    let layoutStore = SavedWorkspaceLayoutStore(file: directory.appendingPathComponent("layouts.json"))
+    let invalidLeads = SavedWorkspaceLayout(
+        name: "Two leads",
+        defaultFolder: "/tmp",
+        root: .split(
+            direction: .horizontal,
+            ratio: 0.5,
+            first: .leaf(SavedLayoutLeaf(kind: .claude, name: "One", folder: "/tmp", isWorkspaceLead: true)),
+            second: .leaf(SavedLayoutLeaf(kind: .codex, name: "Two", folder: "/tmp", isWorkspaceLead: true))
+        )
+    )
+    do {
+        try layoutStore.save(invalidLeads)
+        throw CheckFailure(description: "layout store accepted two workspace leads")
+    } catch let error as SavedWorkspaceLayoutStoreError {
+        try expect(error.localizedDescription.contains("only one"), "duplicate-lead refusal was unclear")
+    }
+
+    let file = directory.appendingPathComponent("handoff-recipes.json")
+    let store = HandoffRecipeStore(file: file)
+    let defaults = try store.recipes()
+    try expect(Set(defaults.map(\.name)) == Set(["Plan review", "Implementation review", "Adversarial bug hunt", "Compare recommendations"]), "recipe store did not provide the four product recipes")
+    let plan = try require(defaults.first(where: { $0.id == "plan-review" }), "plan-review recipe was missing")
+    let rendered = try plan.render(targets: ["api/Codex"])
+    try expect(rendered.contains("api/Codex") && !rendered.contains("{{targets}}"), "recipe did not render its explicit target")
+    let edited = HandoffRecipe(id: plan.id, name: plan.name, kind: plan.kind, instructions: "Ask {{targets}} to challenge the plan, evaluate the answer, then continue.")
+    try store.save(edited)
+    let persisted = try store.recipes()
+    try expect(persisted.first(where: { $0.id == plan.id }) == edited, "edited recipe was not persisted")
+    var metadata = stat()
+    try expect(lstat(file.path, &metadata) == 0 && metadata.st_mode & 0o077 == 0, "recipe file was not owner-only")
+
+    let paneRows = [
+        paneRow(id: "%1", kind: .claude, active: true, isLead: true, automationPolicy: .askAnswer),
+        paneRow(id: "%2", kind: .codex, active: false, automationPolicy: .askAnswer),
+    ].joined(separator: "\n") + "\n"
+    let runner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "list-panes": output(paneRows)
+        case "list-windows": output(workspaceRow(id: "@0", windowName: "app", active: true, name: "app", folder: "/tmp", automationPolicy: .askAnswer) + "\n")
+        default: output()
+        }
+    }
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: temporaryDirectory(),
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner
+    )
+    let listedPanes = try controller.listPanes()
+    let listedWorkspaces = try controller.listWorkspaces()
+    try expect(listedPanes.first?.isWorkspaceLead == true, "tmux pane metadata lost the workspace lead")
+    try expect(listedWorkspaces.first?.automationPolicy == .askAnswer, "tmux workspace metadata lost its automation policy")
+    try controller.setWorkspaceAutomationPolicy("@0", policy: .off)
+    try controller.setWorkspaceLead("%2", workspaceID: "@0")
+    try controller.interruptPane("%2")
+    try expect(runner.calls.contains { $0.arguments.contains("@parley-automation-policy") && $0.arguments.contains("off") }, "policy control did not write tmux workspace metadata")
+    try expect(runner.calls.contains { $0.arguments.contains("@parley-lead") && $0.arguments.contains("%2") && $0.arguments.contains("1") }, "lead control did not stamp the selected pane")
+    try expect(runner.calls.contains { command($0.arguments) == "send-keys" && $0.arguments.contains("%2") && $0.arguments.contains("C-c") }, "explicit Stop did not target the exact lead pane")
+}
+
+private func checkSupervisedLeadWorkflowPolicyAndCancellation() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let leadToken = try credentials.token(for: "%1")
+    let reviewerToken = try credentials.token(for: "%2")
+    let implementerToken = try credentials.token(for: "%3")
+    let observerToken = try credentials.token(for: "%4")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Planner", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "app", isWorkspaceLead: true, automationPolicy: .askAndDelegate),
+        TmuxPane(id: "%2", kind: .codex, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil, workspaceName: "app", automationPolicy: .askAndDelegate),
+        TmuxPane(id: "%3", kind: .agy, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil, workspaceName: "app", automationPolicy: .askAndDelegate),
+        TmuxPane(id: "%4", kind: .copilot, customName: "Observer", terminalTitle: "", cwd: "/tmp", currentCommand: "copilot", isActive: false, windowID: "@0", returnToPaneID: nil, workspaceName: "app", automationPolicy: .askAndDelegate),
+    ]
+    let submissions = LockedSubmissions()
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { paneID, text in submissions.append(paneID: paneID, text: text) },
+        consultationTimeout: 2,
+        livenessPollInterval: 0.01
+    )
+
+    let leadRoute = broker.handle(token: observerToken, target: "lead", text: "Give me the current decision.", idempotencyKey: "lead-route-1")
+    try expect(leadRoute.status == 200 && submissions.values.last?.paneID == "%1", "lead alias did not resolve to the marked local pane")
+
+    let review = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        review.set(broker.handleAsk(token: leadToken, target: "reviewer", text: "Challenge the plan.", idempotencyKey: "supervised-review-1"))
+    }
+    try expect(eventually { broker.consultations().count == 1 }, "lead review did not establish a consultation")
+    try expect(broker.handleAnswer(token: reviewerToken, consultationID: "current", text: "Add a failure-path test.").status == 200, "reviewer could not return its recommendation")
+    try expect(eventually { review.value?.text == "Add a failure-path test." }, "lead did not receive the review answer")
+
+    let delegated = broker.handleDelegate(token: leadToken, target: "builder", text: "Implement the adopted test.", idempotencyKey: "supervised-delegate-1")
+    let delegatedID = try require(delegated.body.handoffID, "supervised delegation returned no id")
+    try expect(broker.handleDelegationResult(token: implementerToken, handoffID: "current", text: "Implemented; checks pass.", succeeded: true).status == 200, "implementer could not complete the adopted work")
+    try expect(broker.waitForDelegation(token: leadToken, handoffID: delegatedID).text == "Implemented; checks pass.", "lead did not receive the completion report")
+
+    let cancellable = broker.handleDelegate(token: leadToken, target: "builder", text: "Investigate another option.", idempotencyKey: "supervised-cancel-1")
+    let cancellableID = try require(cancellable.body.handoffID, "cancellable delegation returned no id")
+    try expect(broker.cancelHandoff(token: reviewerToken, handoffID: cancellableID).status == 403, "a foreign pane cancelled the lead's work")
+    try expect(broker.cancelHandoff(token: leadToken, handoffID: "current").status == 200, "lead could not cancel its current tracked work")
+    try expect(broker.handoffs().first(where: { $0.id == cancellableID })?.state == .cancelled, "agent cancellation did not reach a terminal state")
+
+    let offPanes = panes.map { pane in
+        TmuxPane(id: pane.id, kind: pane.kind, customName: pane.customName, terminalTitle: pane.terminalTitle, cwd: pane.cwd, currentCommand: pane.currentCommand, isActive: pane.isActive, windowID: pane.windowID, returnToPaneID: pane.returnToPaneID, workspaceName: pane.workspaceName, isWorkspaceLead: pane.isWorkspaceLead, automationPolicy: .off)
+    }
+    let offBroker = RelayBroker(credentials: credentials, panes: { offPanes }, paste: { _, _ in }, submit: { _, _ in })
+    try expect(offBroker.handle(token: leadToken, target: "reviewer", text: "Must not send.").status == 403, "Off policy allowed automatic relay")
+    try expect(offBroker.handleAsk(token: leadToken, target: "reviewer", text: "Must not ask.").status == 403, "Off policy allowed Ask")
+
+    let askOnlyPanes = panes.map { pane in
+        TmuxPane(id: pane.id, kind: pane.kind, customName: pane.customName, terminalTitle: pane.terminalTitle, cwd: pane.cwd, currentCommand: pane.currentCommand, isActive: pane.isActive, windowID: pane.windowID, returnToPaneID: pane.returnToPaneID, workspaceName: pane.workspaceName, isWorkspaceLead: pane.isWorkspaceLead, automationPolicy: .askAnswer)
+    }
+    let askOnlyBroker = RelayBroker(credentials: credentials, panes: { askOnlyPanes }, paste: { _, _ in }, submit: { _, _ in })
+    try expect(askOnlyBroker.handleDelegate(token: leadToken, target: "builder", text: "Must not delegate.").status == 403, "Ask/Answer policy allowed tracked delegation")
 }
 
 private func checkTrackedDelegationCompletesAndWaits() throws {
@@ -1761,6 +1933,23 @@ private func checkDelegationShimRoundTrip() throws {
     try expect(done.status == 0 && done.stdoutText.contains("Completion returned"), "parley done did not reach the local broker")
     try expect(eventually { waited.value != nil }, "parley done did not release parley wait")
     try expect(waited.value == RelayTextResponse(status: 0, text: "Implemented and verified."), "shim wait returned the wrong report")
+
+    let cancellable = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [executable, "delegate", "claude", "Investigate a second option."],
+        environment: sourceEnvironment.merging(["PARLEY_IDEMPOTENCY_KEY": "shim-delegate-cancel-1"]) { _, supplied in supplied },
+        input: nil
+    )
+    let cancellableReceipt = try JSONDecoder().decode(RelayResponseBody.self, from: cancellable.stdout)
+    let cancellableID = try require(cancellableReceipt.handoffID, "cancellable shim delegation returned no id")
+    let cancelled = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [executable, "cancel", "current"],
+        environment: sourceEnvironment,
+        input: nil
+    )
+    try expect(cancelled.status == 0 && cancelled.stdoutText.contains("not interrupted"), "parley cancel did not return through the pane-scoped transport")
+    try expect(broker.handoffs().first(where: { $0.id == cancellableID })?.state == .cancelled, "shim cancellation did not end tracked work")
 }
 
 private func checkCopilotAgentSpawn() throws {
@@ -4821,6 +5010,7 @@ let checks: [(String, () throws -> Void)] = [
     ("command palette search", checkCommandPaletteSearch),
     ("workbench accessibility descriptions", checkAccessibilityDescriptions),
     ("adjacent navigation order", checkAdjacentNavigationOrder),
+    ("menu-safe periodic refresh", checkMenuTrackingRefreshPolicy),
     ("workbench state projection", checkWorkbenchStateProjection),
     ("exited pane retention", checkExitedPaneRetention),
     ("embedded tmux presentation", checkEmbeddedTmuxPresentation),
@@ -4836,6 +5026,8 @@ let checks: [(String, () throws -> Void)] = [
     ("real tmux saved-layout restoration policy", checkRealTmuxSavedLayoutRestorationPolicy),
     ("inherited Parley capability scrub", checkInheritedParleyCapabilitiesAreScrubbed),
     ("shared protocol launch adapters", checkSharedProtocolLaunchAdapters),
+    ("supervision metadata and editable recipes", checkSupervisionMetadataAndRecipesPersistWithoutLiveIDs),
+    ("supervised lead workflow policy and cancellation", checkSupervisedLeadWorkflowPolicyAndCancellation),
     ("tracked delegation completion and wait", checkTrackedDelegationCompletesAndWaits),
     ("tracked delegation failure and liveness", checkTrackedDelegationFailureAndLiveness),
     ("tracked delegation shim round trip", checkDelegationShimRoundTrip),

@@ -26,6 +26,42 @@ public enum SplitDirection: String, Codable, Equatable, Sendable {
     case vertical
 }
 
+/// The maximum agent-initiated coordination a workspace permits. Human native
+/// controls remain available at every level; this gate applies to commands a
+/// model invokes through its pane-scoped `parley` capability.
+public enum WorkspaceAutomationPolicy: String, CaseIterable, Codable, Equatable, Sendable {
+    case off
+    case askAnswer
+    case askAndDelegate
+
+    public var label: String {
+        switch self {
+        case .off: "Off"
+        case .askAnswer: "Ask/Answer"
+        case .askAndDelegate: "Ask + Delegation"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .off: "Agents cannot submit cross-vendor messages or start new tracked work."
+        case .askAnswer: "Agents may relay messages and run correlated Ask/Answer consultations."
+        case .askAndDelegate: "Agents may also assign and track asynchronous work."
+        }
+    }
+
+    public func allows(_ kind: RelayHandoffKind) -> Bool {
+        switch kind {
+        case .paste:
+            true
+        case .relay, .ask:
+            self != .off
+        case .delegate:
+            self == .askAndDelegate
+        }
+    }
+}
+
 /// A Parley workspace is a durable tmux window. The id belongs only to the
 /// live tmux server; the human-facing name and default folder are stored as
 /// window options so closing and reopening the UI does not lose them.
@@ -34,12 +70,20 @@ public struct TmuxWorkspace: Identifiable, Equatable, Sendable {
     public let name: String
     public let defaultFolder: String
     public let isActive: Bool
+    public let automationPolicy: WorkspaceAutomationPolicy
 
-    public init(id: String, name: String, defaultFolder: String, isActive: Bool) {
+    public init(
+        id: String,
+        name: String,
+        defaultFolder: String,
+        isActive: Bool,
+        automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate
+    ) {
         self.id = id
         self.name = name
         self.defaultFolder = defaultFolder
         self.isActive = isActive
+        self.automationPolicy = automationPolicy
     }
 }
 
@@ -60,6 +104,8 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
     public let isDead: Bool
     public let exitStatus: Int?
     public let isStarted: Bool
+    public let isWorkspaceLead: Bool
+    public let automationPolicy: WorkspaceAutomationPolicy
 
     public init(
         id: String,
@@ -77,7 +123,9 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
         bracketedPasteActive: Bool = false,
         isDead: Bool = false,
         exitStatus: Int? = nil,
-        isStarted: Bool = true
+        isStarted: Bool = true,
+        isWorkspaceLead: Bool = false,
+        automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate
     ) {
         self.id = id
         self.kind = kind
@@ -95,6 +143,8 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
         self.isDead = isDead
         self.exitStatus = exitStatus
         self.isStarted = isStarted
+        self.isWorkspaceLead = isWorkspaceLead
+        self.automationPolicy = automationPolicy
     }
 
     public var displayName: String {

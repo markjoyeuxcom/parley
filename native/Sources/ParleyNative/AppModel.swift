@@ -29,6 +29,15 @@ struct WorkspaceAskGroup: Identifiable {
     var id: String { workspace.id }
 }
 
+struct ActiveRecipeRun: Identifiable, Equatable {
+    let id: String
+    let recipeName: String
+    let leadPaneID: String
+    let leadName: String
+    let submittedAt: Date
+    let instructions: String
+}
+
 struct PaletteCommand: Identifiable, Sendable {
     enum Action: Sendable {
         case openWorkspace
@@ -59,6 +68,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var favouriteFolders: [String] = []
     @Published private(set) var projectContexts: [String: GitProjectContext] = [:]
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
+    @Published private(set) var recipes: [HandoffRecipe] = []
+    @Published private(set) var activeRecipeRun: ActiveRecipeRun?
     @Published private(set) var coreAvailable = false
     @Published private(set) var tmuxAvailable = false
     @Published private(set) var coreError: String?
@@ -81,6 +92,7 @@ final class AppModel: ObservableObject {
     private let fallbackFolder: String
     private let applicationDirectory: URL
     private let layoutStore: SavedWorkspaceLayoutStore
+    private let recipeStore: HandoffRecipeStore
     private var workspaceContinuity = WorkspaceContinuityState()
     private let projectContextResolver = GitProjectContextResolver()
     private var projectContextRefreshTask: Task<Void, Never>?
@@ -111,6 +123,10 @@ final class AppModel: ObservableObject {
         layoutStore = SavedWorkspaceLayoutStore(
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
         )
+        recipeStore = HandoffRecipeStore(
+            file: applicationDirectory.appendingPathComponent("handoff-recipes.json")
+        )
+        recipes = (try? recipeStore.recipes()) ?? HandoffRecipe.defaults
         UserDefaultsDomainMigration.copyMissing(
             keys: [
                 Self.recentFoldersKey,
@@ -681,6 +697,36 @@ final class AppModel: ObservableObject {
         return askTargets.filter { $0.windowID == workspaceID }
     }
 
+    var workspaceLead: TmuxPane? {
+        guard let workspaceID = activeWorkspace?.id else { return nil }
+        return panes.first { $0.windowID == workspaceID && $0.isWorkspaceLead }
+    }
+
+    var recipeTargets: [TmuxPane] {
+        guard let lead = workspaceLead else { return [] }
+        return panes.filter {
+            $0.windowID == lead.windowID
+                && $0.id != lead.id
+                && $0.kind.isAgent
+                && $0.kind != lead.kind
+                && $0.isStarted
+                && !$0.isDead
+                && $0.relayEnabled
+                && $0.hasCurrentProtocol
+        }
+    }
+
+    func canRun(_ recipe: HandoffRecipe) -> Bool {
+        guard let workspace = activeWorkspace,
+              let lead = workspaceLead,
+              lead.isStarted,
+              !lead.isDead,
+              lead.relayEnabled,
+              lead.hasCurrentProtocol,
+              recipe.kind.isAllowed(by: workspace.automationPolicy) else { return false }
+        return recipeTargets.count >= (recipe.kind == .askMany ? 2 : 1)
+    }
+
     var otherWorkspaceAskGroups: [WorkspaceAskGroup] {
         workspaces.compactMap { workspace in
             guard !workspace.isActive else { return nil }
@@ -1198,6 +1244,181 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func run(_ recipe: HandoffRecipe) {
+        perform {
+            guard let controller,
+                  let workspace = activeWorkspace,
+                  let lead = workspaceLead else {
+                throw RelayUIError.message("Mark a running agent pane as this workspace's lead first.")
+            }
+            guard recipe.kind.isAllowed(by: workspace.automationPolicy) else {
+                throw RelayUIError.message(
+                    "\(workspace.automationPolicy.label) does not allow this recipe. Change the workspace automation policy first."
+                )
+            }
+            let targets = try chooseRecipeTargets(for: recipe, candidates: recipeTargets)
+            guard !targets.isEmpty else { return }
+            let rendered = try recipe.render(targets: targets.map(\.id))
+            guard let edited = editRelay(
+                title: recipe.name,
+                message: "This exact instruction will be submitted to workspace lead \(lead.displayName). Every cross-vendor prompt it sends remains attributed and visible in Activity.",
+                text: rendered,
+                action: "Run with Lead",
+                insertVisible: { try controller.capturePane(lead.id) }
+            ) else { return }
+            try controller.paste("The person using Parley requested this supervised workflow:\n\n\(edited)", into: lead.id, submit: true)
+            let run = ActiveRecipeRun(
+                id: UUID().uuidString.lowercased(),
+                recipeName: recipe.name,
+                leadPaneID: lead.id,
+                leadName: lead.displayName,
+                submittedAt: Date(),
+                instructions: edited
+            )
+            activeRecipeRun = run
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .recipeSubmitted,
+                workspaceID: workspace.id,
+                workspaceName: workspace.name,
+                paneID: lead.id,
+                paneName: lead.displayName,
+                paneKind: lead.kind,
+                detail: edited
+            ))
+            try controller.selectPane(lead.id)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    func edit(_ recipe: HandoffRecipe) {
+        guard let edited = editRelay(
+            title: "Edit \(recipe.name)",
+            message: "Keep {{targets}} where the explicit pane names should be inserted. The text remains local and can still be changed before each run.",
+            text: recipe.instructions,
+            action: "Save Recipe",
+            insertVisible: { "" }
+        ) else { return }
+        perform {
+            let updated = HandoffRecipe(
+                id: recipe.id,
+                name: recipe.name,
+                kind: recipe.kind,
+                instructions: edited
+            )
+            try recipeStore.save(updated)
+            recipes = try recipeStore.recipes()
+            terminalHandle.focus()
+        }
+    }
+
+    func restoreDefaultRecipes() {
+        let alert = NSAlert()
+        alert.messageText = "Restore default recipes?"
+        alert.informativeText = "This replaces edits to all four local handoff recipes. Running panes and collaboration history are unchanged."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Restore Defaults")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        perform {
+            try recipeStore.restoreDefaults()
+            recipes = try recipeStore.recipes()
+            terminalHandle.focus()
+        }
+    }
+
+    func dismissActiveRecipeRun() {
+        activeRecipeRun = nil
+        terminalHandle.focus()
+    }
+
+    func interruptActiveRecipeRun() {
+        guard let run = activeRecipeRun,
+              let workspace = workspaces.first(where: { $0.id == panes.first(where: { $0.id == run.leadPaneID })?.windowID }) else {
+            activeRecipeRun = nil
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Interrupt \(run.leadName)?"
+        alert.informativeText = "This sends Control-C to the lead's current terminal turn. It does not cancel cross-vendor work the lead already dispatched; cancel those tracked items separately."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Interrupt Lead")
+        alert.addButton(withTitle: "Keep Running")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        perform {
+            guard let controller else { return }
+            try controller.interruptPane(run.leadPaneID)
+            activeRecipeRun = nil
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .recipeInterrupted,
+                workspaceID: workspace.id,
+                workspaceName: workspace.name,
+                paneID: run.leadPaneID,
+                paneName: run.leadName,
+                paneKind: panes.first(where: { $0.id == run.leadPaneID })?.kind,
+                detail: "Interrupted \(run.recipeName) after explicit human confirmation."
+            ))
+            terminalHandle.focus()
+        }
+    }
+
+    private func chooseRecipeTargets(
+        for recipe: HandoffRecipe,
+        candidates: [TmuxPane]
+    ) throws -> [TmuxPane] {
+        let required = recipe.kind == .askMany ? 2 : 1
+        guard candidates.count >= required else {
+            throw RelayUIError.message(
+                required == 2
+                    ? "Open at least two ready agent panes from vendors different to the lead."
+                    : "Open a ready agent pane from a vendor different to the lead."
+            )
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Targets for \(recipe.name)"
+        alert.informativeText = recipe.kind == .askMany
+            ? "Choose at least two explicit panes. They will answer independently."
+            : "Choose the exact cross-vendor pane the lead should use."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+
+        if recipe.kind == .askMany {
+            let stack = NSStackView()
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = 6
+            let buttons = candidates.map { pane in
+                let button = NSButton(
+                    checkboxWithTitle: "\(pane.displayName) · \(pane.kind.label) (\(pane.id))",
+                    target: nil,
+                    action: nil
+                )
+                button.state = .on
+                stack.addArrangedSubview(button)
+                return button
+            }
+            stack.frame = NSRect(x: 0, y: 0, width: 420, height: CGFloat(max(1, buttons.count)) * 26)
+            alert.accessoryView = stack
+            guard alert.runModal() == .alertFirstButtonReturn else { return [] }
+            let selected = zip(candidates, buttons).compactMap { pane, button in
+                button.state == .on ? pane : nil
+            }
+            guard selected.count >= 2 else {
+                throw RelayUIError.message("Compare needs at least two selected panes.")
+            }
+            return selected
+        }
+
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 420, height: 28))
+        picker.addItems(withTitles: candidates.map {
+            "\($0.displayName) · \($0.kind.label) (\($0.id))"
+        })
+        alert.accessoryView = picker
+        guard alert.runModal() == .alertFirstButtonReturn else { return [] }
+        return [candidates[max(0, picker.indexOfSelectedItem)]]
+    }
+
     func returnAnswer() {
         perform {
             guard let controller, let source = activePane, let requesterID = source.returnToPaneID else { return }
@@ -1236,17 +1457,49 @@ final class AppModel: ObservableObject {
     }
 
     func cancel(_ consultation: RelayConsultation) {
+        cancelTracked(
+            id: consultation.id,
+            kind: "Ask",
+            sourceName: consultation.sourceName,
+            targetPaneID: consultation.targetPaneID,
+            targetName: consultation.targetName
+        )
+    }
+
+    func cancel(_ handoff: RelayHandoff) {
+        cancelTracked(
+            id: handoff.id,
+            kind: handoff.kind == .delegate ? "delegation" : "Ask",
+            sourceName: handoff.sourceName,
+            targetPaneID: handoff.targetPaneID,
+            targetName: handoff.targetName
+        )
+    }
+
+    private func cancelTracked(
+        id: String,
+        kind: String,
+        sourceName: String,
+        targetPaneID: String,
+        targetName: String
+    ) {
         let alert = NSAlert()
-        alert.messageText = "Cancel this Ask?"
-        alert.informativeText = "This releases the waiting \(consultation.sourceName) command and records the Ask as cancelled. It does not interrupt \(consultation.targetName) or send anything to either pane."
+        alert.messageText = "Cancel this \(kind)?"
+        alert.informativeText = "Cancel Tracking releases \(sourceName)'s wait and leaves \(targetName)'s CLI undisturbed. Cancel and Interrupt also sends Control-C to the target's current terminal turn."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Cancel Ask")
+        alert.addButton(withTitle: "Cancel Tracking")
+        alert.addButton(withTitle: "Cancel and Interrupt Target")
         alert.addButton(withTitle: "Keep Waiting")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let choice = alert.runModal()
+        guard choice == .alertFirstButtonReturn || choice == .alertSecondButtonReturn else { return }
         perform {
             guard let relayClient else { return }
-            let response = try relayClient.cancelHandoff(consultation.id)
+            let response = try relayClient.cancelHandoff(id)
             guard response.status == 200 else { throw RelayUIError.message(response.text) }
+            if choice == .alertSecondButtonReturn {
+                guard let controller else { return }
+                try controller.interruptPane(targetPaneID)
+            }
             try refresh()
             terminalHandle.focus()
         }
@@ -1478,7 +1731,8 @@ final class AppModel: ObservableObject {
                     id: workspace.id,
                     name: renamed,
                     defaultFolder: workspace.defaultFolder,
-                    isActive: workspace.isActive
+                    isActive: workspace.isActive,
+                    automationPolicy: workspace.automationPolicy
                 )
             )
             saveWorkspaceContinuity()
@@ -1487,6 +1741,34 @@ final class AppModel: ObservableObject {
                 saveNotificationWorkspaces()
             }
             try refresh()
+        }
+    }
+
+    func setAutomationPolicy(_ policy: WorkspaceAutomationPolicy, for workspace: TmuxWorkspace) {
+        guard policy != workspace.automationPolicy else { return }
+        perform {
+            guard let controller else { return }
+            try controller.setWorkspaceAutomationPolicy(workspace.id, policy: policy)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    func setWorkspaceLead(_ pane: TmuxPane) {
+        perform {
+            guard let controller else { return }
+            try controller.setWorkspaceLead(pane.id, workspaceID: pane.windowID)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    func clearWorkspaceLead(_ workspace: TmuxWorkspace) {
+        perform {
+            guard let controller else { return }
+            try controller.setWorkspaceLead(nil, workspaceID: workspace.id)
+            try refresh()
+            terminalHandle.focus()
         }
     }
 
@@ -1547,7 +1829,8 @@ final class AppModel: ObservableObject {
             try layoutStore.save(SavedWorkspaceLayout(
                 name: name,
                 defaultFolder: captured.defaultFolder,
-                root: captured.root
+                root: captured.root,
+                automationPolicy: captured.automationPolicy
             ))
             savedLayouts = try layoutStore.layouts()
             terminalHandle.focus()

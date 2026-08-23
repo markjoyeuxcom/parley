@@ -6,7 +6,12 @@ struct StatusCenterView: View {
     @State private var workspaceID = ""
     @State private var selectedHandoffID: String?
     @State private var showDismissed = false
-    private let refresh = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+    // Do not rebuild an open AppKit menu while it is tracking the pointer.
+    private let refresh = Timer.publish(
+        every: 2,
+        on: .main,
+        in: MenuTrackingRefreshPolicy.runLoopMode
+    ).autoconnect()
 
     private var snapshot: StatusCenterSnapshot {
         model.statusSnapshot(
@@ -772,6 +777,9 @@ struct StatusCenterView: View {
                 if let consultation = model.consultation(for: handoff) {
                     Button("Return Manually…") { model.returnConsultation(consultation) }
                     Button("Cancel Wait…", role: .destructive) { model.cancel(consultation) }
+                } else if handoff.kind == .delegate,
+                          [.created, .delivered, .waiting].contains(handoff.state) {
+                    Button("Cancel Tracking…", role: .destructive) { model.cancel(handoff) }
                 }
                 if handoff.canRetrySafely {
                     Button("Retry Delivery…") { model.retry(handoff) }

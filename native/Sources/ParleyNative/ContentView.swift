@@ -4,7 +4,14 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
-    private let refresh = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    // Default-mode timers pause while AppKit is tracking a menu. Publishing in
+    // `.common` rebuilds SwiftUI menu content under the pointer once per second,
+    // which repeatedly drops and restores the highlighted item.
+    private let refresh = Timer.publish(
+        every: 1,
+        on: .main,
+        in: MenuTrackingRefreshPolicy.runLoopMode
+    ).autoconnect()
 
     var body: some View {
         NavigationSplitView {
@@ -22,6 +29,10 @@ struct ContentView: View {
                 if model.tmuxAvailable, model.activePaneState != .running, model.activePaneState != .empty {
                     Divider()
                     paneNotice
+                }
+                if let recipe = model.activeRecipeRun {
+                    Divider()
+                    recipeRunStrip(recipe)
                 }
                 if let activity = model.primaryActivity {
                     Divider()
@@ -74,6 +85,17 @@ struct ContentView: View {
                 .listRowBackground(pane.isActive ? Color.accentColor.opacity(0.12) : Color.clear)
                 .contextMenu {
                     Button("Rename…") { model.rename(pane) }
+                    if pane.kind.isAgent {
+                        if pane.isWorkspaceLead {
+                            Button("Remove as Workspace Lead") {
+                                if let workspace = model.workspaces.first(where: { $0.id == pane.windowID }) {
+                                    model.clearWorkspaceLead(workspace)
+                                }
+                            }
+                        } else {
+                            Button("Make Workspace Lead") { model.setWorkspaceLead(pane) }
+                        }
+                    }
                     if pane.kind.isAgent && !pane.isStarted {
                         Button("Start") { model.start(pane) }
                     } else {
@@ -200,7 +222,8 @@ struct ContentView: View {
         case .protocolStale: "protocol restart required"
         case .relayUnavailable: "relay restart required"
         }
-        return "\(state), \(folder.isEmpty ? pane.cwd : folder)"
+        let lead = pane.isWorkspaceLead ? ", workspace lead" : ""
+        return "\(state)\(lead), \(folder.isEmpty ? pane.cwd : folder)"
     }
 
     @ViewBuilder
@@ -240,6 +263,9 @@ struct ContentView: View {
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                     .frame(maxWidth: 150)
+                                Text(workspace.automationPolicy == .off ? "OFF" : (workspace.automationPolicy == .askAnswer ? "ASK" : "DELEGATE"))
+                                    .font(.system(size: 7, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(workspace.automationPolicy == .off ? Color.secondary : Color.accentColor)
                                 let waiting = model.waitingCount(for: workspace.id)
                                 if waiting > 0 {
                                     Label("\(waiting)", systemImage: "clock")
@@ -274,11 +300,23 @@ struct ContentView: View {
                         .buttonStyle(.plain)
                         .help("\(workspace.defaultFolder)\nControl-Tab switches workspaces")
                         .accessibilityLabel("Workspace \(workspace.name)")
-                        .accessibilityValue(workspace.isActive ? "Selected" : "Not selected")
+                        .accessibilityValue("\(workspace.isActive ? "Selected" : "Not selected"), automation \(workspace.automationPolicy.label)")
                         .accessibilityHint("Open workspace at \(workspace.defaultFolder)")
                         .contextMenu {
                             Button("Rename…") { model.rename(workspace) }
                             Button("Save Layout…") { model.saveLayout(of: workspace) }
+                            Menu("Automation: \(workspace.automationPolicy.label)") {
+                                ForEach(WorkspaceAutomationPolicy.allCases, id: \.rawValue) { policy in
+                                    Button {
+                                        model.setAutomationPolicy(policy, for: workspace)
+                                    } label: {
+                                        Label(policy.label, systemImage: policy == workspace.automationPolicy ? "checkmark" : "")
+                                    }
+                                }
+                            }
+                            if model.panes.contains(where: { $0.windowID == workspace.id && $0.isWorkspaceLead }) {
+                                Button("Clear Workspace Lead") { model.clearWorkspaceLead(workspace) }
+                            }
                             Button(model.isFavouriteFolder(workspace.defaultFolder) ? "Remove Folder from Favourites" : "Add Folder to Favourites") {
                                 model.toggleFavouriteFolder(workspace.defaultFolder)
                             }
@@ -369,6 +407,7 @@ struct ContentView: View {
             Divider().frame(height: 18)
             askMenu
             reviewMenu
+            recipeMenu
             returnMenu
 
             if hasWaitingWork {
@@ -477,6 +516,34 @@ struct ContentView: View {
         .accessibilityHint("Preview current changes, a plan, or a file before asking another vendor")
     }
 
+    private var recipeMenu: some View {
+        Menu {
+            if model.workspaceLead == nil {
+                Text("Mark an agent pane as workspace lead")
+            }
+            Section("Run with Workspace Lead") {
+                ForEach(model.recipes) { recipe in
+                    Button(recipe.name) { model.run(recipe) }
+                        .disabled(!model.canRun(recipe))
+                }
+            }
+            Divider()
+            Menu("Edit Recipes") {
+                ForEach(model.recipes) { recipe in
+                    Button(recipe.name) { model.edit(recipe) }
+                }
+                Divider()
+                Button("Restore Defaults…") { model.restoreDefaultRecipes() }
+            }
+        } label: {
+            Label("Recipes", systemImage: "list.bullet.rectangle")
+        }
+        .accessibilityLabel("Supervised workflow recipes")
+        .accessibilityValue(model.workspaceLead.map { "Lead: \($0.displayName)" } ?? "No workspace lead")
+        .help("Run or edit a visible cross-vendor workflow instruction for the workspace lead")
+        .accessibilityHint("Choose a plan review, implementation review, bug hunt, or comparison recipe")
+    }
+
     private var returnMenu: some View {
         Menu {
             ForEach(model.activePaneConsultations) { consultation in
@@ -500,6 +567,7 @@ struct ContentView: View {
     private var compactActionsMenu: some View {
         Menu {
             reviewMenu
+            recipeMenu
             returnMenu
             if hasWaitingWork {
                 waitingMenu
@@ -542,6 +610,8 @@ struct ContentView: View {
                                 .disabled(!model.canFocus(handoff.sourcePaneID))
                             Button("Focus \(handoff.targetName)") { model.focus(handoff, target: true) }
                                 .disabled(!model.canFocus(handoff.targetPaneID))
+                            Divider()
+                            Button("Cancel Tracking…", role: .destructive) { model.cancel(handoff) }
                         }
                     }
                 }
@@ -571,6 +641,38 @@ struct ContentView: View {
                 .accessibilityValue("\(active.displayName), \(active.cwd)")
                 .help("\(active.displayName) · \(active.cwd)")
         }
+    }
+
+    private func recipeRunStrip(_ run: ActiveRecipeRun) -> some View {
+        HStack(spacing: 8) {
+            Text("LEAD")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+            Text("\(run.recipeName) → \(run.leadName)")
+                .font(.system(size: 10, weight: .medium))
+                .lineLimit(1)
+            Text("SUBMITTED")
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Color.accentColor)
+            Spacer(minLength: 8)
+            Button("Stop…") { model.interruptActiveRecipeRun() }
+                .accessibilityLabel("Interrupt workspace lead")
+                .accessibilityHint("Send Control-C after explicit confirmation")
+            Button {
+                model.dismissActiveRecipeRun()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .accessibilityLabel("Dismiss submitted recipe notice")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .frame(height: 31)
+        .background(Color.accentColor.opacity(0.055))
+        .help(run.instructions)
+        .accessibilityElement(children: .contain)
     }
 
     private func activityStrip(_ handoff: RelayHandoff) -> some View {
@@ -968,6 +1070,11 @@ private struct PaneRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .layoutPriority(1)
+                    if pane.isWorkspaceLead {
+                        Text("LEAD")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(Color.accentColor)
+                    }
                     if pane.returnToPaneID != nil || awaitingAnswerCount > 0 {
                         Text(awaitingAnswerCount > 1 ? "RETURN \(awaitingAnswerCount)" : "RETURN")
                             .font(.system(size: 8, weight: .bold))

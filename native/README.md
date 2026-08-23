@@ -225,10 +225,10 @@ credential scoped to that exact pane.
 
 tmux's `TMUX` and `TMUX_PANE` variables are removed from agent environments.
 Agents receive the authenticated relay command rather than a supported raw tmux
-control path. This is discovery reduction, not same-user process isolation: a
-hostile process running as the user's account can still find the fixed tmux
-socket. Denying that path at the OS boundary remains a release-blocking security
-milestone.
+control path. Every agent and its descendants also run inside a mandatory macOS
+Seatbelt profile that denies Parley's private Application Support tree, sibling
+pane relay endpoints and the exact tmux socket. Shell panes remain deliberately
+unsandboxed human shells.
 
 `AgentProtocol.swift` owns the only copy of the cross-vendor instructions:
 
@@ -262,6 +262,8 @@ socket. Neither path uses TCP loopback.
   terminal report.
 - `parley status` emits JSON scoped to work initiated by the calling pane, and
   `parley wait` blocks for one exact tracked result.
+- `parley cancel` ends only Ask or Delegate tracking initiated by the calling
+  pane and never interrupts the target CLI.
 
 Relay, paste, Ask and delegate requests carry a generated sender-scoped idempotency key.
 The core assigns one stable handoff id, returns cached results for matching
@@ -274,9 +276,10 @@ record. Native lifecycle events use the same bounded and repairable persistence
 posture in the separate `activity-events.jsonl` journal so they remain distinct
 from cross-vendor handoffs.
 
-The native **Waiting** menu can cancel an active Ask through the UI-only control
-capability. This records `cancelled` and releases every waiter without sending
-input to either terminal. The core polls live pane identity while an Ask waits;
+The native **Waiting** menu can cancel an active Ask or delegation through the
+UI-only control capability. This records `cancelled` and releases every waiter.
+A separate, explicitly confirmed action may send Control-C to the exact target;
+pane-scoped commands can never do so. The core polls live pane identity while an Ask waits;
 pane closure and credential rotation on restart produce explicit terminal
 failures rather than abandoned requests.
 

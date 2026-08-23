@@ -301,6 +301,8 @@ public enum RelayActivityEventKind: String, Codable, Equatable, Sendable {
     case workspaceCreated
     case workspaceClosed
     case workspaceRestored
+    case recipeSubmitted
+    case recipeInterrupted
 }
 
 /// A successful operation initiated from Parley's native controls. These are
@@ -647,6 +649,7 @@ public final class RelayBroker: @unchecked Sendable {
                 return failure(400, "text too long")
             }
             let (sender, target) = try route(token: token, requestedTarget: requestedTarget)
+            try authorize(kind, for: sender)
             let idempotencyKey = try normalizeIdempotencyKey(suppliedIdempotencyKey)
             let scope = IdempotencyScope(senderPaneID: sender.id, key: idempotencyKey)
             let signature = [kind.rawValue, target.id, cleaned].joined(separator: "\u{1f}")
@@ -754,6 +757,7 @@ public final class RelayBroker: @unchecked Sendable {
         let targetCredential: String
         do {
             (sender, target) = try route(token: token, requestedTarget: requestedTarget)
+            try authorize(.delegate, for: sender)
             idempotencyKey = try normalizeIdempotencyKey(suppliedIdempotencyKey)
             targetCredential = try credentials.token(for: target.id)
         } catch let error as BrokerFailure {
@@ -1019,6 +1023,7 @@ public final class RelayBroker: @unchecked Sendable {
         let targetCredential: String
         do {
             (sender, target) = try route(token: token, requestedTarget: requestedTarget)
+            try authorize(.ask, for: sender)
             idempotencyKey = try normalizeIdempotencyKey(suppliedIdempotencyKey)
             targetCredential = try credentials.token(for: target.id)
         } catch let error as BrokerFailure {
@@ -1167,7 +1172,8 @@ public final class RelayBroker: @unchecked Sendable {
         do {
             rootKey = try normalizeIdempotencyKey(suppliedIdempotencyKey)
             for requested in targets {
-                let (_, target) = try route(token: token, requestedTarget: requested)
+                let (sender, target) = try route(token: token, requestedTarget: requested)
+                try authorize(.ask, for: sender)
                 _ = try credentials.token(for: target.id)
                 if routes.contains(where: { $0.pane.id == target.id }) {
                     throw BrokerFailure(status: 400, message: "ask-many names \(target.displayName) more than once")
@@ -1412,32 +1418,98 @@ public final class RelayBroker: @unchecked Sendable {
         return RelayTextResponse(status: 200, text: "Deleted \(removedCount) workspace history \(noun).")
     }
 
-    /// Cancels the wait owned by an Ask without sending input to either pane.
-    /// The requesting command receives the same explicit terminal response as
-    /// every idempotent retry, while the target CLI is left undisturbed.
+    /// Human control-token cancellation. This ends Parley's tracking only; the
+    /// UI separately owns any explicit choice to interrupt the target process.
     public func cancelHandoff(
         _ handoffID: String,
         reason: String = "Cancelled by the person using Parley."
     ) -> RelayTextResponse {
-        let detail = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-        let message = detail.isEmpty ? "Cancelled by the person using Parley." : detail
+        cancelHandoff(handoffID, reason: reason, origin: .human)
+    }
+
+    /// Pane-scoped cancellation for work initiated by that exact pane. It can
+    /// never interrupt the target CLI and cannot cancel another pane's work.
+    public func cancelHandoff(token: String, handoffID requestedHandoffID: String) -> RelayTextResponse {
+        guard let sourceID = credentials.paneID(for: token) else {
+            return RelayTextResponse(status: 401, text: "bad token")
+        }
         consultationCondition.lock()
-        guard handoffRecords[handoffID] != nil else {
+        let active = handoffRecords.values.filter {
+            $0.sourcePaneID == sourceID
+                && ($0.kind == .ask || $0.kind == .delegate)
+                && [.created, .delivered, .waiting, .answered].contains($0.state)
+        }
+        let handoffID: String
+        if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
+            guard active.count == 1, let match = active.first else {
+                consultationCondition.unlock()
+                return RelayTextResponse(
+                    status: active.isEmpty ? 404 : 409,
+                    text: active.isEmpty
+                        ? "this pane has no active tracked work"
+                        : "this pane has more than one active item; name its id"
+                )
+            }
+            handoffID = match.id
+        } else {
+            handoffID = requestedHandoffID
+        }
+        guard let handoff = handoffRecords[handoffID] else {
             consultationCondition.unlock()
             return RelayTextResponse(status: 404, text: "unknown handoff")
         }
-        guard consultationRecords[handoffID] != nil else {
+        guard handoff.sourcePaneID == sourceID else {
             consultationCondition.unlock()
-            return RelayTextResponse(status: 409, text: "this Ask is no longer waiting")
+            return RelayTextResponse(status: 403, text: "only the initiating pane can cancel this work")
         }
-        finishAskLocked(
-            handoffID: handoffID,
-            state: .cancelled,
-            response: RelayTextResponse(status: 409, text: message),
-            origin: .human
-        )
         consultationCondition.unlock()
-        return RelayTextResponse(status: 200, text: "Ask cancelled. Neither pane was interrupted.")
+        return cancelHandoff(
+            handoffID,
+            reason: "Cancelled by \(handoff.sourceName) through Parley's pane-scoped protocol.",
+            origin: nil
+        )
+    }
+
+    private func cancelHandoff(
+        _ handoffID: String,
+        reason: String,
+        origin: RelayTransitionOrigin?
+    ) -> RelayTextResponse {
+        let detail = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = detail.isEmpty ? "Cancelled by the person using Parley." : detail
+        consultationCondition.lock()
+        guard let handoff = handoffRecords[handoffID] else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 404, text: "unknown handoff")
+        }
+        switch handoff.kind {
+        case .ask:
+            guard consultationRecords[handoffID] != nil else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: "this Ask is no longer waiting")
+            }
+            finishAskLocked(
+                handoffID: handoffID,
+                state: .cancelled,
+                response: RelayTextResponse(status: 409, text: message),
+                origin: origin
+            )
+        case .delegate:
+            guard delegationRecords[handoffID] != nil else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: "this delegation is no longer active")
+            }
+            transitionHandoffLocked(handoffID, to: .cancelled, detail: message, origin: origin)
+            delegationRecords.removeValue(forKey: handoffID)
+            delegationResponses[handoffID] = RelayTextResponse(status: 409, text: message)
+            pruneHandoffsLocked()
+            consultationCondition.broadcast()
+        case .relay, .paste:
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: "completed message delivery cannot be cancelled")
+        }
+        consultationCondition.unlock()
+        return RelayTextResponse(status: 200, text: "Tracking cancelled. The target pane was not interrupted.")
     }
 
     /// Reuses the original handoff id and idempotency scope. This is available
@@ -1609,6 +1681,22 @@ public final class RelayBroker: @unchecked Sendable {
             requested.caseInsensitiveCompare(pane.displayName) == .orderedSame
                 || requested.caseInsensitiveCompare(pane.kind.rawValue) == .orderedSame
                 || requested.caseInsensitiveCompare(pane.kind.label) == .orderedSame
+                || (requested.caseInsensitiveCompare("lead") == .orderedSame && pane.isWorkspaceLead)
+    }
+
+    private func authorize(_ kind: RelayHandoffKind, for sender: TmuxPane) throws {
+        guard sender.automationPolicy.allows(kind) else {
+            let operation = switch kind {
+            case .relay: "automatic relay"
+            case .paste: "paste"
+            case .ask: "Ask/Answer"
+            case .delegate: "tracked delegation"
+            }
+            throw BrokerFailure(
+                status: 403,
+                message: "The \(sender.workspaceName ?? "workspace") automation policy does not allow \(operation). Change it from Parley's workspace menu."
+            )
+        }
     }
 
     private func route(token: String, requestedTarget: String) throws -> (TmuxPane, TmuxPane) {
@@ -2230,7 +2318,7 @@ public enum RelayShim {
         fi
         shift 2
         ;;
-      answer|done|fail|wait)
+      answer|done|fail|wait|cancel)
         item="${2:-}"
         case "$item" in
           "")
@@ -2260,13 +2348,14 @@ public enum RelayShim {
         echo "  parley wait <id|current>         wait for one delegated result" >&2
         echo "  parley done current [report...]  complete this pane's delegated work" >&2
         echo "  parley fail current [reason...]  fail this pane's delegated work" >&2
+        echo "  parley cancel <id|current>       cancel tracking for work this pane initiated" >&2
         echo "text may also come on stdin" >&2
         exit 2
         ;;
     esac
 
     case "$command" in
-      status|wait) ;;
+      status|wait|cancel) ;;
       *)
         if [ "$#" -eq 0 ] && [ -t 0 ]; then
           echo "nothing to $command: give the text as arguments or pipe it in" >&2
@@ -2400,6 +2489,9 @@ public enum RelayShim {
         printf '' | post
         ;;
       wait)
+        printf '' | post
+        ;;
+      cancel)
         printf '' | post
         ;;
     esac

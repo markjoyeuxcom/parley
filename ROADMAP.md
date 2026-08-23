@@ -241,9 +241,9 @@ Extend the proven one-to-one consultation into a small set of composable
 coordination primitives. The lead agent remains responsible for reasoning and
 decisions; Parley transports work and reports state.
 
-### Protocol v2
+### Protocol v4
 
-- `parley ask <target>` — retain the current blocking one-to-one consultation.
+- [x] `parley ask <target>` — retain the current blocking one-to-one consultation.
 - [x] `parley ask-many <target-a,target-b>` — ask several explicit vendors independently
   and return a labelled bundle only after all finish or time out. Respondents
   do not see one another's answers. Routing for the whole comma-separated list
@@ -253,36 +253,40 @@ decisions; Parley transports work and reports state.
   `parley done` or `parley fail` result.
 - [x] `parley status` — machine-readable state for work initiated by the caller.
 - [x] `parley wait` — wait for one delegated item without scraping terminal output.
-- `parley cancel` — cancel the tracking relationship and, only with explicit
+- [x] `parley cancel` — cancel the tracking relationship and, only with explicit
   human authority, offer to interrupt the target CLI.
 
 ### Lead-agent experience
 
-- Allow a pane to be marked as the workspace lead for display and routing
+- [x] Allow a pane to be marked as the workspace lead for display and routing
   convenience, never as a source of extra filesystem authority.
-- Natural-language instructions such as “review the plan with Codex, adopt good
+- [x] Natural-language instructions such as “review the plan with Codex, adopt good
   additions, then delegate implementation” should work using the shared
   protocol without a vendor-specific skill maintained by the user.
-- Provide a few editable handoff recipes: plan review, implementation review,
+- [x] Provide a few editable handoff recipes: plan review, implementation review,
   adversarial bug hunt, and compare recommendations.
-- Show every automatically submitted prompt in activity history with sender
+- [x] Show every automatically submitted prompt in activity history with sender
   attribution and an immediate Stop control.
 
 ### Safety boundary
 
-- Automatic delivery targets agent panes only, never shells.
-- Each workspace exposes a visible automation policy: off, Ask/Answer only, or
+- [x] Automatic delivery targets agent panes only, never shells.
+- [x] Each workspace exposes a visible automation policy: off, Ask/Answer only, or
   Ask plus tracked delegation.
-- No agent receives raw tmux control, pane credentials belonging to another
+- [x] No agent receives raw tmux control, pane credentials belonging to another
   agent, or permission to create and destroy workspaces.
-- Message size limits, sender attribution, exact target resolution, and
+- [x] Message size limits, sender attribution, exact target resolution, and
   cross-vendor enforcement remain mandatory.
-- Fan-out always names its recipients; there is no implicit broadcast to every
+- [x] Fan-out always names its recipients; there is no implicit broadcast to every
   pane.
 
 **Exit gate:** one instruction to a lead agent can produce the demonstrated
 review → evaluate → implement sequence across vendors, while the UI shows the
 whole chain and the person performs no copy, paste, or Enter presses.
+
+The deterministic native gate now exercises that complete chain, including a
+correlated review answer, an adopted tracked delegation, its returned completion
+report, policy refusal, exact `lead` routing and source-owned cancellation.
 
 ## Milestone 4 — Workspace as the daily driver
 

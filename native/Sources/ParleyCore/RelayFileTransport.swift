@@ -246,6 +246,8 @@ public final class RelayFileTransport: @unchecked Sendable {
                 text: request.body,
                 succeeded: false
             ))
+        case "cancel":
+            return encode(broker.cancelHandoff(token: request.token, handoffID: request.item))
         default:
             return FileResponse(status: 400, body: "unknown Parley agent command")
         }
@@ -267,7 +269,7 @@ public final class RelayFileTransport: @unchecked Sendable {
     private func readRequest(from directory: URL, expectedToken: String) throws -> FileRequest {
         try validateDirectory(directory)
         let command = try readField("command", from: directory, maximumBytes: 32)
-        let allowed = ["relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "done", "fail"]
+        let allowed = ["relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "done", "fail", "cancel"]
         guard allowed.contains(command) else { throw RelayFileTransportError.runtime("unknown command") }
         let token = try readField("token", from: directory, maximumBytes: 256)
         guard token == expectedToken else {

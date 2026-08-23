@@ -436,6 +436,9 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     text: text,
                     succeeded: false
                 ), to: client)
+            case let path where path.hasPrefix("/cancel/"):
+                let handoffID = String(path.dropFirst("/cancel/".count))
+                write(broker.cancelHandoff(token: token, handoffID: handoffID), to: client)
             case let path where path.hasPrefix("/answer/"):
                 let consultationID = String(path.dropFirst("/answer/".count))
                 write(broker.handleAnswer(token: token, consultationID: consultationID, text: text), to: client)
@@ -447,7 +450,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                         delivered: nil,
                         submitted: nil,
                         note: nil,
-                        error: "POST /relay, /paste, /ask, /ask-many, /answer/<id>, /delegate, /status, /wait/<id>, /done/<id>, /fail/<id>, /ui/activity, /ui/answer/<id>, /ui/cancel/<id>, /ui/retry/<id> or /ui/read/<id>"
+                        error: "POST /relay, /paste, /ask, /ask-many, /answer/<id>, /delegate, /status, /wait/<id>, /done/<id>, /fail/<id>, /cancel/<id>, /ui/activity, /ui/answer/<id>, /ui/cancel/<id>, /ui/retry/<id> or /ui/read/<id>"
                     )
                 ), to: client)
             }

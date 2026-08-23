@@ -29,6 +29,8 @@ There is no API-key mode, hosted Parley service, telemetry or remote sync.
 - A shared, versioned protocol supplied automatically to every new agent pane.
 - Authenticated agent-to-agent `relay`, `paste`, `ask` and `answer`
   commands.
+- A marked workspace lead, visible per-workspace automation policy, and four
+  editable supervised-workflow recipes.
 - Cross-workspace Ask targets and recent-folder shortcuts.
 - Owner-only durable handoff history and a compact workspace activity strip.
 - A separate native Status Center with workspace filters, live handoffs, agent
@@ -60,6 +62,7 @@ parley ask-many codex,agy "Independently name the largest risk in this plan."
 parley delegate claude "Implement the reviewed change and report verification."
 parley status
 parley wait current
+parley cancel current
 ```
 
 - `relay` attributes the text, sends it to one named cross-vendor pane and
@@ -80,10 +83,20 @@ parley wait current
 - `status` returns machine-readable JSON for work initiated by that pane.
   `wait <id|current>` blocks for one exact completion or failure report without
   scraping terminal output.
+- `cancel <id|current>` ends tracking only for work initiated by that exact
+  pane. It never interrupts the target; only a person can choose that stronger
+  action from the native UI.
 
-Targets may be a unique vendor name or a pane id. Parley refuses ambiguous,
+Targets may be a unique vendor name, pane id, or the marked local `lead`.
+Parley refuses ambiguous,
 same-vendor, shell and missing targets instead of guessing. Only one unanswered
 consultation or active delegation may target a pane at a time.
+
+The workspace tab always shows its automation level: Off, Ask/Answer, or Ask +
+Delegation. The broker enforces that policy before model-initiated dispatch.
+Plan review, implementation review, adversarial bug hunt and comparison recipes
+send one editable instruction to the marked lead; the Activity record retains
+the submitted instruction and the workbench offers an immediate confirmed Stop.
 
 Every relay, paste and Ask receives a stable local handoff id and a generated
 sender-scoped idempotency key. Retrying the same command request returns the
