@@ -398,8 +398,15 @@ team or its folder routing.
   autorelease pool per event, matching a real `NSApplication` loop; without
   that, Foundation process/pipe objects made the test harness—not Parley—appear
   to grow.
-- Document recovery from a damaged socket, missing CLI, stale protocol, dead
-  pane, and interrupted consultation in the UI itself.
+- [x] Document recovery from a damaged socket, missing CLI, stale protocol,
+  dead pane, and interrupted consultation in the UI itself. Status Center now
+  projects active recovery cases from authoritative core, readiness, pane and
+  handoff state, scoped to the selected workspace. Each case offers only its
+  safe action: reconnect the existing UI, rerun the quota-free environment
+  check, confirm a single-pane restart, or inspect the durable handoff receipt.
+  A permanent five-case playbook explains symptoms and recovery without asking
+  somebody to delete sockets, start a second app instance or use repository
+  commands.
 
 **Exit gate:** install Parley on a clean Apple Silicon Mac, connect existing CLI
 subscriptions, complete a supervised cross-vendor workflow, restart the app and

@@ -19,6 +19,16 @@ struct StatusCenterView: View {
         snapshot.handoffs.first(where: { $0.id == selectedHandoffID })
     }
 
+    private var recoveryIssues: [RecoveryGuidanceIssue] {
+        RecoveryGuidanceProjection.issues(
+            coreAvailable: model.coreAvailable,
+            readiness: model.runtimeReadiness,
+            panes: model.panes,
+            handoffs: snapshot.handoffs,
+            workspaceID: workspaceID.isEmpty ? nil : workspaceID
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -33,6 +43,7 @@ struct StatusCenterView: View {
                             liveCollaboration
                             returnedResults
                             agents
+                            recovery
                             coreHealth
                         }
                         .padding(16)
@@ -58,6 +69,7 @@ struct StatusCenterView: View {
         .frame(minWidth: 980, minHeight: 700)
         .onAppear {
             model.refreshStatusCenterQuietly()
+            model.refreshRuntimeReadiness()
             ensureSelection()
         }
         .onReceive(refresh) { _ in
@@ -377,6 +389,156 @@ struct StatusCenterView: View {
         var parts = [work.map { "Tracked work: \(subject($0.text))" } ?? "No tracked work"]
         if needsAttention { parts.append("Attention required") }
         return parts.joined(separator: ". ")
+    }
+
+    private var recovery: some View {
+        statusGroup("RECOVERY") {
+            VStack(spacing: 0) {
+                if recoveryIssues.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle")
+                            .foregroundStyle(Color.green)
+                            .accessibilityHidden(true)
+                        Text("No active recovery is required in this scope")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(10)
+                    .accessibilityElement(children: .combine)
+                } else {
+                    ForEach(Array(recoveryIssues.enumerated()), id: \.element.id) { index, issue in
+                        recoveryRow(issue)
+                        if index < recoveryIssues.count - 1 { Divider() }
+                    }
+                }
+                Divider()
+                recoveryPlaybook
+            }
+        }
+    }
+
+    private func recoveryRow(_ issue: RecoveryGuidanceIssue) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: recoveryIcon(issue.topic))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(recoveryColor(issue.topic))
+                .frame(width: 20, height: 20)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(issue.title)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(issue.detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 10)
+            Button(issue.actionLabel) {
+                performRecovery(issue.action)
+            }
+            .controlSize(.small)
+            .disabled(!canPerformRecovery(issue.action))
+            .accessibilityHint(recoveryActionHint(issue.action))
+        }
+        .padding(9)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var recoveryPlaybook: some View {
+        DisclosureGroup("Recovery playbook · 5 known cases") {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(RecoveryGuidanceProjection.playbook.enumerated()), id: \.element.id) { index, entry in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 7) {
+                            Image(systemName: recoveryIcon(entry.topic))
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 16)
+                                .accessibilityHidden(true)
+                            Text(entry.title)
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        Text(entry.symptom)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        ForEach(Array(entry.steps.enumerated()), id: \.offset) { step, text in
+                            Text("\(step + 1). \(text)")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.vertical, 8)
+                    .accessibilityElement(children: .combine)
+                    if index < RecoveryGuidanceProjection.playbook.count - 1 { Divider() }
+                }
+            }
+            .padding(.leading, 4)
+            .padding(.top, 5)
+        }
+        .font(.system(size: 10, weight: .medium))
+        .padding(10)
+        .accessibilityHint("Expand to read safe recovery steps that do not require repository or development commands")
+    }
+
+    private func performRecovery(_ action: RecoveryGuidanceAction) {
+        switch action {
+        case .reconnect:
+            model.retryConnections()
+        case .refreshEnvironment:
+            model.showEnvironmentCheck()
+        case let .restartPane(paneID):
+            guard let pane = model.panes.first(where: { $0.id == paneID }) else { return }
+            model.restart(pane)
+        case let .inspectHandoff(handoffID):
+            guard let handoff = snapshot.handoffs.first(where: { $0.id == handoffID }) else { return }
+            select(handoff)
+        }
+    }
+
+    private func canPerformRecovery(_ action: RecoveryGuidanceAction) -> Bool {
+        switch action {
+        case .reconnect:
+            model.canRetryConnections
+        case .refreshEnvironment:
+            !model.runtimeReadinessChecking
+        case let .restartPane(paneID):
+            model.panes.contains(where: { $0.id == paneID })
+        case let .inspectHandoff(handoffID):
+            snapshot.handoffs.contains(where: { $0.id == handoffID })
+        }
+    }
+
+    private func recoveryActionHint(_ action: RecoveryGuidanceAction) -> String {
+        switch action {
+        case .reconnect:
+            "Reconnect the existing UI to Parley's local core without restarting terminal panes"
+        case .refreshEnvironment:
+            "Open the quota-free environment check for local tools and vendor sign-in"
+        case .restartPane:
+            "Confirm before ending and relaunching only this pane's process"
+        case .inspectHandoff:
+            "Show the durable handoff and its final delivery receipt in the inspector"
+        }
+    }
+
+    private func recoveryIcon(_ topic: RecoveryGuidanceTopic) -> String {
+        switch topic {
+        case .damagedSocket: "link.badge.plus"
+        case .missingCLI: "terminal"
+        case .staleProtocol: "arrow.triangle.2.circlepath.circle"
+        case .deadPane: "xmark.circle"
+        case .interruptedConsultation: "bolt.horizontal.circle"
+        }
+    }
+
+    private func recoveryColor(_ topic: RecoveryGuidanceTopic) -> Color {
+        switch topic {
+        case .missingCLI: .secondary
+        case .damagedSocket, .staleProtocol, .deadPane, .interruptedConsultation: .orange
+        }
     }
 
     private var coreHealth: some View {

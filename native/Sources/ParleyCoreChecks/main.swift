@@ -2273,6 +2273,104 @@ private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
     try expect(unavailable.condition == .coreUnavailable, "core failure did not override secondary status")
 }
 
+private func checkRecoveryGuidanceProjectsKnownFailures() throws {
+    let dead = TmuxPane(
+        id: "%dead",
+        kind: .codex,
+        customName: "Exited Codex",
+        terminalTitle: "",
+        cwd: "/tmp/a",
+        currentCommand: "codex",
+        isActive: false,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        workspaceName: "a",
+        isDead: true,
+        exitStatus: 9,
+        isStarted: true
+    )
+    let stale = TmuxPane(
+        id: "%stale",
+        kind: .agy,
+        customName: "Older Agy",
+        terminalTitle: "",
+        cwd: "/tmp/a",
+        currentCommand: "agy",
+        isActive: true,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: false,
+        protocolVersion: "1",
+        workspaceName: "a",
+        isStarted: true
+    )
+    let missingCodex = RuntimeReadinessItem(
+        id: .codex,
+        category: .vendor,
+        title: "Codex",
+        state: .unavailable,
+        detail: "Not installed.",
+        recovery: "Install Codex and sign in.",
+        required: false
+    )
+    let readiness = RuntimeReadinessSnapshot(items: [missingCodex])
+    let interrupted = try statusHandoff(
+        id: "interrupted-ask",
+        kind: .ask,
+        state: .interrupted,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@1",
+        occurredAt: 50
+    )
+    let unrelated = try statusHandoff(
+        id: "failed-relay",
+        kind: .relay,
+        state: .failed,
+        sourceWorkspaceID: "@1",
+        targetWorkspaceID: "@1",
+        occurredAt: 60
+    )
+
+    let issues = RecoveryGuidanceProjection.issues(
+        coreAvailable: false,
+        readiness: readiness,
+        panes: [dead, stale],
+        handoffs: [unrelated, interrupted],
+        workspaceID: "@0"
+    )
+    try expect(
+        issues.map(\.topic) == [.damagedSocket, .missingCLI, .staleProtocol, .deadPane, .interruptedConsultation],
+        "recovery guidance did not cover the five known failure modes in a stable order"
+    )
+    try expect(issues[0].action == .reconnect, "damaged socket guidance did not offer the safe reconnect path")
+    try expect(issues[1].action == .refreshEnvironment, "missing CLI guidance did not offer a quota-free environment check")
+    try expect(issues[2].action == .restartPane("%stale"), "stale protocol guidance targeted the wrong pane")
+    try expect(issues[3].action == .restartPane("%dead"), "dead-pane guidance targeted the wrong pane")
+    try expect(issues[4].action == .inspectHandoff("interrupted-ask"), "interrupted Ask guidance lost its durable record")
+    try expect(!issues.contains(where: { $0.id.contains("failed-relay") }), "a failed one-way relay was misreported as an interrupted consultation")
+
+    try expect(
+        RecoveryGuidanceProjection.playbook.map(\.topic) == RecoveryGuidanceTopic.allCases,
+        "the in-app recovery playbook does not document every known failure mode"
+    )
+    try expect(
+        RecoveryGuidanceProjection.playbook.allSatisfy { !$0.steps.isEmpty },
+        "a recovery playbook entry has no actionable steps"
+    )
+    try expect(
+        RecoveryGuidanceProjection.issues(
+            coreAvailable: true,
+            readiness: RuntimeReadinessSnapshot(items: []),
+            panes: [],
+            handoffs: [],
+            workspaceID: nil
+        ).isEmpty,
+        "healthy state produced a recovery warning"
+    )
+}
+
 private func checkOperationalActivityIsDurableAndAuthoritative() throws {
     let directory = try temporaryDirectory()
     let file = directory.appendingPathComponent("activity-events.jsonl")
@@ -4233,6 +4331,7 @@ let checks: [(String, () throws -> Void)] = [
     ("selection-or-empty relay draft", checkRelayDraftStartsWithSelectionOrNothing),
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
     ("authoritative Status Center projection", checkStatusCenterProjectionUsesOnlyAuthoritativeState),
+    ("in-app recovery guidance", checkRecoveryGuidanceProjectsKnownFailures),
     ("durable authoritative operational activity", checkOperationalActivityIsDurableAndAuthoritative),
     ("agent relay submits; paste does not", checkAgentRelaySubmitsAndExplicitPasteDoesNot),
     ("stable handoff identity and idempotent relay", checkStableHandoffIdentityAndIdempotentRelay),
