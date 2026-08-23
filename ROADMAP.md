@@ -314,6 +314,12 @@ effortless without becoming task boards.
 - [x] Reorder workspace tabs with bounded Move Left/Right controls. Pane
   reordering remains future polish.
 - Complete keyboard navigation and VoiceOver labels.
+  - [x] Add deterministic wrapping shortcuts for previous/next workspace and
+    pane focus, with native Navigate menu equivalents.
+  - [x] Give the primary workspace tabs and pane selectors explicit action,
+    state and folder accessibility metadata.
+  - [ ] Audit the remaining toolbar, activity, Status Center and command
+    palette controls with VoiceOver.
 - Improve narrow-window behaviour and long-name truncation.
 - Provide clear empty, exited, disconnected, and protocol-stale states.
 - Remove redundant tmux chrome once the native controls cover it reliably.

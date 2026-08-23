@@ -55,6 +55,9 @@ struct ContentView: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("\(pane.displayName), \(pane.kind.label) pane")
+                    .accessibilityValue(paneAccessibilityValue(pane))
+                    .accessibilityHint("Focus this pane")
                     if pane.kind.isAgent && !pane.isStarted {
                         Button("Start") { model.start(pane) }
                             .buttonStyle(.bordered)
@@ -177,6 +180,12 @@ struct ContentView: View {
         }
     }
 
+    private func paneAccessibilityValue(_ pane: TmuxPane) -> String {
+        let folder = URL(fileURLWithPath: pane.cwd).lastPathComponent
+        let state = pane.isStarted ? (pane.isActive ? "selected" : "running") : "stopped"
+        return "\(state), \(folder.isEmpty ? pane.cwd : folder)"
+    }
+
     private var workspaceTabs: some View {
         HStack(spacing: 6) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -222,7 +231,10 @@ struct ContentView: View {
                             )
                         }
                         .buttonStyle(.plain)
-                        .help(workspace.defaultFolder)
+                        .help("\(workspace.defaultFolder)\nControl-Tab switches workspaces")
+                        .accessibilityLabel("Workspace \(workspace.name)")
+                        .accessibilityValue(workspace.isActive ? "Selected" : "Not selected")
+                        .accessibilityHint("Open workspace at \(workspace.defaultFolder)")
                         .contextMenu {
                             Button("Rename…") { model.rename(workspace) }
                             Button("Save Layout…") { model.saveLayout(of: workspace) }

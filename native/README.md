@@ -75,6 +75,10 @@ user's default tmux server. The tmux session is named `parley`.
 - The native ⌘K palette searches workspaces, panes, valid cross-vendor Ask
   targets and recent handoff activity, then routes through the existing visible
   selection, editable Ask and Status Center actions.
+- The Navigate menu provides wrapping keyboard focus: Control-Tab and
+  Control-Shift-Tab move between workspace tabs; Control-Option-Right/Left
+  Arrow move between panes in the current workspace. The primary pane and
+  workspace controls expose state, folder and action hints to accessibility.
 - Saved layouts live in the owner-only `workspace-layouts.json`, never in tmux.
   They contain no pane/window ids. Restored shells start; restored agent slots
   remain stopped until a person chooses Start.

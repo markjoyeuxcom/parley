@@ -29,6 +29,20 @@ struct ParleyNativeApp: App {
             CommandMenu("Navigate") {
                 Button("Command Palette…") { model.showCommandPalette() }
                     .keyboardShortcut("k", modifiers: [.command])
+                Divider()
+                Button("Next Workspace") { model.selectAdjacentWorkspace(by: 1) }
+                    .keyboardShortcut(.tab, modifiers: [.control])
+                    .disabled(!model.canNavigateWorkspaces)
+                Button("Previous Workspace") { model.selectAdjacentWorkspace(by: -1) }
+                    .keyboardShortcut(.tab, modifiers: [.control, .shift])
+                    .disabled(!model.canNavigateWorkspaces)
+                Divider()
+                Button("Next Pane") { model.selectAdjacentPane(by: 1) }
+                    .keyboardShortcut(.rightArrow, modifiers: [.control, .option])
+                    .disabled(!model.canNavigatePanes)
+                Button("Previous Pane") { model.selectAdjacentPane(by: -1) }
+                    .keyboardShortcut(.leftArrow, modifiers: [.control, .option])
+                    .disabled(!model.canNavigatePanes)
             }
             CommandMenu("Workspace") {
                 Button("Open Workspace…") { model.createWorkspace() }

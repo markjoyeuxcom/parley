@@ -159,6 +159,43 @@ private func command(_ arguments: [String]) -> String {
     return arguments.first(where: known.contains) ?? ""
 }
 
+private func checkAdjacentNavigationOrder() throws {
+    let ids = ["workspace-a", "workspace-b", "workspace-c"]
+
+    try expect(
+        NavigationOrder.adjacentID(currentID: "workspace-a", offset: 1, orderedIDs: ids) == "workspace-b",
+        "next navigation did not select the following item"
+    )
+    try expect(
+        NavigationOrder.adjacentID(currentID: "workspace-b", offset: -1, orderedIDs: ids) == "workspace-a",
+        "previous navigation did not select the preceding item"
+    )
+    try expect(
+        NavigationOrder.adjacentID(currentID: "workspace-c", offset: 1, orderedIDs: ids) == "workspace-a",
+        "next navigation did not wrap to the first item"
+    )
+    try expect(
+        NavigationOrder.adjacentID(currentID: "workspace-a", offset: -1, orderedIDs: ids) == "workspace-c",
+        "previous navigation did not wrap to the last item"
+    )
+    try expect(
+        NavigationOrder.adjacentID(currentID: "missing", offset: 1, orderedIDs: ids) == "workspace-a",
+        "next navigation did not recover a missing selection at the first item"
+    )
+    try expect(
+        NavigationOrder.adjacentID(currentID: nil, offset: -1, orderedIDs: ids) == "workspace-c",
+        "previous navigation did not recover a missing selection at the last item"
+    )
+    try expect(
+        NavigationOrder.adjacentID(currentID: "only", offset: 1, orderedIDs: ["only"]) == "only",
+        "single-item navigation should remain on that item"
+    )
+    try expect(
+        NavigationOrder.adjacentID(currentID: nil, offset: 1, orderedIDs: []) == nil,
+        "empty navigation should have no target"
+    )
+}
+
 private func paneRow(
     id: String,
     kind: PaneKind,
@@ -3527,6 +3564,7 @@ let checks: [(String, () throws -> Void)] = [
     ("workspace continuity state", checkWorkspaceContinuityState),
     ("Git project context parsing", checkGitProjectContextParsing),
     ("command palette search", checkCommandPaletteSearch),
+    ("adjacent navigation order", checkAdjacentNavigationOrder),
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),

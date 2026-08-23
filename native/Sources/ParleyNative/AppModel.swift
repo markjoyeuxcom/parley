@@ -187,6 +187,10 @@ final class AppModel: ObservableObject {
 
     var activePane: TmuxPane? { visiblePanes.first(where: \.isActive) }
 
+    var canNavigateWorkspaces: Bool { workspaces.count > 1 }
+
+    var canNavigatePanes: Bool { visiblePanes.count > 1 }
+
     func projectContext(for pane: TmuxPane) -> GitProjectContext? {
         let folder = URL(fileURLWithPath: pane.cwd).standardizedFileURL.path
         return projectContexts[folder]
@@ -675,6 +679,24 @@ final class AppModel: ObservableObject {
             try refresh()
             terminalHandle.focus()
         }
+    }
+
+    func selectAdjacentWorkspace(by offset: Int) {
+        guard let targetID = NavigationOrder.adjacentID(
+            currentID: activeWorkspace?.id,
+            offset: offset,
+            orderedIDs: workspaces.map(\.id)
+        ), let target = workspaces.first(where: { $0.id == targetID }) else { return }
+        select(target)
+    }
+
+    func selectAdjacentPane(by offset: Int) {
+        guard let targetID = NavigationOrder.adjacentID(
+            currentID: activePane?.id,
+            offset: offset,
+            orderedIDs: visiblePanes.map(\.id)
+        ), let target = visiblePanes.first(where: { $0.id == targetID }) else { return }
+        select(target)
     }
 
     func ask(_ target: TmuxPane) {
