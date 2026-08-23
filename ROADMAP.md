@@ -358,10 +358,17 @@ team or its folder routing.
   the bundled implementation at launch; tmux remains an explicitly detected
   external dependency using Parley's private socket, not an embedded copy.
 - [ ] Sign, harden, notarize, package, install, upgrade, and uninstall cleanly.
-  Local packages already use hardened runtime, sign the nested core before the
-  outer app, and pass strict code-signature and disk-image verification. A
-  Developer ID identity, Apple notarization/stapling, release-channel upgrade
-  policy and installation/uninstallation checks are still required.
+  The no-paid-account portion is complete: local packages use hardened runtime,
+  sign the nested core before the outer app, and pass strict code-signature,
+  ZIP and disk-image verification. A clean-tree release gate emits the full Git
+  commit, deterministic artifact metadata, SHA-256 checksums and an install
+  guide. Its isolated short-path lifecycle mounts the DMG, installs and replaces
+  the bundle atomically, starts the packaged core on a private tmux socket,
+  preserves local records during uninstall and requires an exact confirmation
+  before purging them. A manual GitHub workflow can create only an unpublished,
+  explicitly unnotarized draft from an existing matching tag. Developer ID,
+  notarization/stapling, seamless persistent-core handover during an upgrade and
+  the physical clean-Mac gate remain required before this item is complete.
 - [x] Offer optional launch-at-login for the local core, independently of
   opening the window. The packaged app contains a relocatable user LaunchAgent
   registered through `SMAppService`; it is off by default and invokes only
@@ -465,7 +472,9 @@ The next implementation sequence is deliberately narrow:
 8. [x] Add `ask-many` with independent answers and explicit target lists.
 9. [x] Persist workspace layouts outside tmux.
 10. [x] Add diff and plan review shortcuts through the same transport.
-11. Package and test the complete native application on a clean Mac.
+11. [ ] Package and test the complete native application on a clean Mac. The
+    repeatable isolated install/upgrade/core-launch/uninstall gate is complete;
+    the physical second-Mac test remains.
 
 Anything not required by those ten steps waits.
 

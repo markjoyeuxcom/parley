@@ -8,11 +8,13 @@
   "scripts": {
     "dev": "node scripts/run-native-swift.mjs dev --package-path native --cwd .",
     "dev:restart-protocol": "node scripts/run-native-swift.mjs dev --package-path native --cwd . --restart-stale-protocol",
-    "test": "node scripts/run-native-swift.mjs run --package-path native parley-native-checks && node --test scripts/native-macos-package.test.mjs",
+    "test": "node scripts/run-native-swift.mjs run --package-path native parley-native-checks && node --test scripts/native-macos-package.test.mjs scripts/native-macos-release.test.mjs",
     "test:soak": "node scripts/run-native-swift.mjs run --package-path native parley-native-soak",
     "test:conformance": "node scripts/run-native-swift.mjs run --package-path native parley-conformance",
     "test:conformance:plan": "node scripts/run-native-swift.mjs run --package-path native parley-conformance --dry-run",
     "build": "node scripts/run-native-swift.mjs build --package-path native",
-    "package:mac": "node scripts/native-macos-package.mjs"
+    "package:mac": "node scripts/native-macos-package.mjs",
+    "verify:package:mac": "node scripts/native-macos-release.mjs --lifecycle-only",
+    "release:mac": "node scripts/native-macos-release.mjs"
   }
 }

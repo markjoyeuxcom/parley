@@ -235,7 +235,7 @@ function replacePath(stagedPath, finalPath) {
   renameSync(stagedPath, finalPath)
 }
 
-export function packageNativeMacOS() {
+export function packageNativeMacOS({ distributionReadme } = {}) {
   if (process.platform !== 'darwin') {
     throw new Error('Native macOS packaging must run on macOS')
   }
@@ -292,6 +292,9 @@ export function packageNativeMacOS() {
   mkdirSync(dmgRoot)
   run('ditto', [finalBundle, join(dmgRoot, 'Parley.app')])
   symlinkSync('/Applications', join(dmgRoot, 'Applications'))
+  if (distributionReadme) {
+    writeFileSync(join(dmgRoot, 'READ ME FIRST.txt'), distributionReadme, { mode: 0o644 })
+  }
   rmSync(finalDMG, { force: true })
   run('hdiutil', [
     'create',
@@ -312,6 +315,14 @@ export function packageNativeMacOS() {
     process.stdout.write('Signing: local ad hoc hardened runtime (not notarized)\n')
   } else {
     process.stdout.write(`Signing: ${identity} (notarization is a separate release step)\n`)
+  }
+  return {
+    version,
+    build,
+    bundle: finalBundle,
+    zip: finalZip,
+    dmg: finalDMG,
+    signing: identity === '-' ? { kind: 'ad-hoc', identity: null } : { kind: 'developer-id', identity },
   }
 }
 

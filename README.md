@@ -219,6 +219,8 @@ npm test
 npm run build
 npm run dev
 npm run package:mac
+npm run verify:package:mac
+npm run release:mac
 npm run test:conformance:plan
 npm run test:soak
 ```
@@ -267,6 +269,36 @@ for verification on the building Mac; they are not notarized releases. Set
 a release candidate, then complete notarization and stapling before distribution.
 The bundle includes an `SMAppService` LaunchAgent plist whose relocatable
 `BundleProgram` points only to `parley-core-service --login-agent`.
+
+`npm run verify:package:mac` runs the complete no-account package gate in an
+isolated temporary Applications and Application Support tree. It validates the
+ZIP and DMG, mounts the disk image, installs and atomically replaces the app,
+starts the packaged core against a private tmux socket, uninstalls the app while
+preserving its local record, and finally verifies the deliberately confirmed
+data-purge path. It never installs over `/Applications/Parley.app`, touches the
+normal Parley core or starts a vendor CLI.
+
+`npm run release:mac` is stricter: it refuses a dirty Git tree, records the full
+source commit, writes a deterministic release manifest, SHA-256 checksums and an
+install guide, verifies those checksums, then runs the same archive and lifecycle
+gate. Ad-hoc releases say **UNNOTARIZED LOCAL BETA** both in the DMG and release
+metadata. They never claim Gatekeeper readiness and never tell a user to disable
+Gatekeeper. An optional `--tag v0.1.0` must match `package.json` and point at HEAD.
+
+The GitHub **Prepare macOS draft release** workflow is manual-only. It checks out
+one existing version tag, runs the native and release gates on a macOS runner and
+creates an unpublished draft containing the DMG, ZIP, manifest, checksums and
+install guide. Nothing is published merely by pushing a tag. Until Developer ID
+and notarization are added, the draft title and instructions remain explicitly
+unnotarized.
+
+For this local-beta phase, upgrades deliberately favour correctness over
+convenience: finish active handoffs, turn off core launch-at-login, quit Parley,
+replace the app, and restart the Mac before reopening it so an older persistent
+core cannot survive the bundle replacement. Layouts and handoff history remain
+under `~/Library/Application Support/Parley Native`. Uninstallation follows the
+same stop/restart sequence and preserves that record unless it is separately and
+deliberately removed.
 
 The ordered path from this locally packaged beta foundation to a dependable
 distributed tool is in [ROADMAP.md](ROADMAP.md).

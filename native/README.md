@@ -32,6 +32,8 @@ npm test
 npm run build
 npm run dev
 npm run package:mac
+npm run verify:package:mac
+npm run release:mac
 npm run test:conformance:plan
 npm run test:soak
 ```
@@ -52,6 +54,19 @@ seal, and emits ZIP and DMG artifacts under `dist/`. SwiftTerm is linked into
 the UI executable. The relay command is installed from the bundled core code
 on launch, while tmux is detected as an external local dependency and always
 uses Parley's private socket and configuration.
+
+`npm run verify:package:mac` performs an isolated distribution lifecycle below
+`/tmp`: ZIP expansion, read-only DMG mount, atomic install and replacement,
+packaged-core health over its own short Unix socket, application-only uninstall
+with local data preserved, and an explicitly confirmed purge. The short root is
+load-bearing because macOS limits Unix-domain socket paths to 104 bytes. The gate
+does not open a vendor CLI or touch the normal per-user Parley runtime.
+
+`npm run release:mac` adds a clean-tree gate, full Git commit provenance,
+deterministic JSON metadata, SHA-256 verification and an install guide. The
+manual GitHub workflow creates only a draft from an existing matching tag. An
+ad-hoc package remains visibly unnotarized; Developer ID signing and Apple
+notarization are separate future credentials-backed steps.
 
 The bundle also carries
 `Contents/Library/LaunchAgents/com.markjoyeux.parley.core.plist`. The optional

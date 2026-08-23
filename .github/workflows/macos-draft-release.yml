@@ -1,0 +1,52 @@
+name: Prepare macOS draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    name: Verify and create draft
+    runs-on: macos-latest
+    steps:
+      - name: Check out the exact tag
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Install the declared runtime dependency
+        run: brew install tmux
+
+      - name: Run deterministic checks
+        run: npm test
+
+      - name: Prepare and verify unnotarized release assets
+        env:
+          PARLEY_RELEASE_TAG: ${{ inputs.tag }}
+        run: npm run release:mac
+
+      - name: Create an unpublished GitHub draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PARLEY_RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          base="dist/Parley-${version}-mac-arm64"
+          gh release create "$PARLEY_RELEASE_TAG" \
+            "$base.dmg" \
+            "$base.zip" \
+            "$base.release.json" \
+            "$base.SHA256SUMS" \
+            "${base}-INSTALL.txt" \
+            --verify-tag \
+            --draft \
+            --title "Parley v${version} — unnotarized beta" \
+            --notes-file "${base}-INSTALL.txt"
