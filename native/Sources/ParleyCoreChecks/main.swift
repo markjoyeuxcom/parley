@@ -387,6 +387,58 @@ private func checkGitProjectContextParsing() throws {
     try expect(GitProjectContextResolver.parseStatus("") == nil, "empty Git output invented repository state")
 }
 
+private func checkCommandPaletteSearch() throws {
+    let items = [
+        CommandPaletteItem(
+            id: "workspace:parley",
+            category: .workspace,
+            title: "Parley",
+            detail: "/tmp/parley"
+        ),
+        CommandPaletteItem(
+            id: "pane:codex",
+            category: .pane,
+            title: "Codex",
+            detail: "connect4-3d · /tmp/connect4-3d",
+            keywords: ["OpenAI"]
+        ),
+        CommandPaletteItem(
+            id: "ask:codex",
+            category: .ask,
+            title: "Ask Codex",
+            detail: "connect4-3d"
+        ),
+        CommandPaletteItem(
+            id: "activity:review",
+            category: .activity,
+            title: "Agy → Codex",
+            detail: "Review authentication retry plan",
+            keywords: ["waiting", "auth"]
+        ),
+    ]
+
+    try expect(
+        CommandPaletteSearch.results(query: "", items: items).map(\.id) == items.map(\.id),
+        "empty palette query did not preserve intentional command order"
+    )
+    try expect(
+        CommandPaletteSearch.results(query: "CoDeX", items: items).first?.id == "pane:codex",
+        "exact case-insensitive title match did not outrank partial titles"
+    )
+    try expect(
+        CommandPaletteSearch.results(query: "codex auth", items: items).map(\.id) == ["activity:review"],
+        "palette search did not require every query token across item metadata"
+    )
+    try expect(
+        Set(CommandPaletteSearch.results(query: "connect4", items: items).map(\.id)) == ["pane:codex", "ask:codex"],
+        "palette search did not match item detail text"
+    )
+    try expect(
+        CommandPaletteSearch.results(query: "codex", items: items, limit: 2).count == 2,
+        "palette search ignored its result bound"
+    )
+}
+
 private func checkSavedWorkspaceLayoutPersistenceAndFreshSlots() throws {
     let directory = try temporaryDirectory()
     let file = directory.appendingPathComponent("workspace-layouts.json")
@@ -3474,6 +3526,7 @@ let checks: [(String, () throws -> Void)] = [
     ("workspace lifecycle", checkWorkspaceLifecycle),
     ("workspace continuity state", checkWorkspaceContinuityState),
     ("Git project context parsing", checkGitProjectContextParsing),
+    ("command palette search", checkCommandPaletteSearch),
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),

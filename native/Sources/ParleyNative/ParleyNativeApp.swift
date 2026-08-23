@@ -26,6 +26,10 @@ struct ParleyNativeApp: App {
         .defaultSize(width: 1_300, height: 820)
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandMenu("Navigate") {
+                Button("Command Palette…") { model.showCommandPalette() }
+                    .keyboardShortcut("k", modifiers: [.command])
+            }
             CommandMenu("Workspace") {
                 Button("Open Workspace…") { model.createWorkspace() }
                     .keyboardShortcut("n", modifiers: [.command, .shift])

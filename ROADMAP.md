@@ -304,7 +304,10 @@ effortless without becoming task boards.
 - [x] Add “Review this plan/file with…” without copying its contents manually.
 - [x] Allow an occasional pane folder override from each pane-creation menu
   while retaining the workspace default for ordinary new panes.
-- Add a command palette for workspace, pane, Ask target, and activity lookup.
+- [x] Add a native ⌘K command palette for workspace and cross-workspace pane
+  focus, editable Ask targets, recent activity lookup, workspace opening and
+  Status Center access. Search is tokenized, deterministically ranked and
+  bounded.
 
 ### Native interaction polish
 

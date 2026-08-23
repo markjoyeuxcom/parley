@@ -28,6 +28,22 @@ struct WorkspaceAskGroup: Identifiable {
     var id: String { workspace.id }
 }
 
+struct PaletteCommand: Identifiable, Sendable {
+    enum Action: Sendable {
+        case openWorkspace
+        case openStatusCenter
+        case selectWorkspace(TmuxWorkspace)
+        case selectPane(TmuxPane)
+        case ask(TmuxPane)
+        case activity(RelayHandoff)
+    }
+
+    let item: CommandPaletteItem
+    let action: Action
+
+    var id: String { item.id }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var panes: [TmuxPane] = []
@@ -46,6 +62,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var tmuxAvailable = false
     @Published private(set) var notificationWorkspaceNames: Set<String> = []
     @Published private(set) var dismissedHandoffIDs: Set<String> = []
+    @Published var commandPalettePresented = false
     @Published var startupError: String?
 
     let terminalHandle = TerminalHandle()
@@ -173,6 +190,125 @@ final class AppModel: ObservableObject {
     func projectContext(for pane: TmuxPane) -> GitProjectContext? {
         let folder = URL(fileURLWithPath: pane.cwd).standardizedFileURL.path
         return projectContexts[folder]
+    }
+
+    var paletteCommands: [PaletteCommand] {
+        var commands = [
+            PaletteCommand(
+                item: CommandPaletteItem(
+                    id: "action:open-workspace",
+                    category: .action,
+                    title: "Open Workspace…",
+                    detail: "Choose a folder and open or select its workspace",
+                    keywords: ["folder", "project", "new"]
+                ),
+                action: .openWorkspace
+            ),
+            PaletteCommand(
+                item: CommandPaletteItem(
+                    id: "action:status-center",
+                    category: .action,
+                    title: "Open Status Center",
+                    detail: "Inspect live collaboration, agents, results and activity",
+                    keywords: ["handoff", "history", "health"]
+                ),
+                action: .openStatusCenter
+            ),
+        ]
+
+        commands += workspaces.map { workspace in
+            PaletteCommand(
+                item: CommandPaletteItem(
+                    id: "workspace:\(workspace.id)",
+                    category: .workspace,
+                    title: workspace.name,
+                    detail: workspace.defaultFolder,
+                    keywords: [workspace.isActive ? "current selected" : "open"]
+                ),
+                action: .selectWorkspace(workspace)
+            )
+        }
+
+        commands += panes.map { pane in
+            let workspace = workspaces.first(where: { $0.id == pane.windowID })?.name
+                ?? pane.workspaceName
+                ?? pane.windowID
+            let context = projectContext(for: pane)
+            let git = context.map { "\($0.branch) \($0.isDirty ? "dirty" : "clean")" } ?? ""
+            return PaletteCommand(
+                item: CommandPaletteItem(
+                    id: "pane:\(pane.id)",
+                    category: .pane,
+                    title: pane.displayName,
+                    detail: "\(workspace) · \(pane.cwd)",
+                    keywords: [pane.kind.label, pane.currentCommand, git, pane.isStarted ? "running" : "stopped"]
+                ),
+                action: .selectPane(pane)
+            )
+        }
+
+        commands += askTargets.map { pane in
+            let workspace = workspaces.first(where: { $0.id == pane.windowID })?.name
+                ?? pane.workspaceName
+                ?? pane.windowID
+            return PaletteCommand(
+                item: CommandPaletteItem(
+                    id: "ask:\(pane.id)",
+                    category: .ask,
+                    title: "Ask \(pane.displayName)",
+                    detail: "\(workspace) · \(pane.kind.label)",
+                    keywords: [pane.cwd, "question", "consult"]
+                ),
+                action: .ask(pane)
+            )
+        }
+
+        let activity = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        commands += activity.prefix(30).map { handoff in
+            let subject = Self.paletteSubject(handoff.text)
+            return PaletteCommand(
+                item: CommandPaletteItem(
+                    id: "activity:\(handoff.id)",
+                    category: .activity,
+                    title: "\(handoff.sourceName) → \(handoff.targetName)",
+                    detail: "\(handoff.kind.rawValue.uppercased()) · \(handoff.state.rawValue.uppercased()) · \(subject)",
+                    keywords: [
+                        handoff.sourceWorkspaceName ?? "",
+                        handoff.targetWorkspaceName ?? "",
+                        handoff.resultText ?? "",
+                    ]
+                ),
+                action: .activity(handoff)
+            )
+        }
+        return commands
+    }
+
+    func showCommandPalette() {
+        commandPalettePresented = true
+    }
+
+    func performPaletteCommand(_ command: PaletteCommand) {
+        switch command.action {
+        case .openWorkspace:
+            createWorkspace()
+        case .openStatusCenter:
+            break
+        case let .selectWorkspace(workspace):
+            select(workspace)
+        case let .selectPane(pane):
+            select(pane)
+        case let .ask(target):
+            ask(target)
+        case let .activity(handoff):
+            let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+            let preferTarget = activeStates.contains(handoff.state) || !handoff.hasReturnedResult
+            if canFocus(preferTarget ? handoff.targetPaneID : handoff.sourcePaneID) {
+                focus(handoff, target: preferTarget)
+            } else {
+                focus(handoff, target: !preferTarget)
+            }
+        }
     }
 
     var askTargets: [TmuxPane] {
@@ -1096,6 +1232,15 @@ final class AppModel: ObservableObject {
         try refresh()
         terminalHandle.terminal?.selectNone()
         terminalHandle.focus()
+    }
+
+    private static func paletteSubject(_ text: String) -> String {
+        let line = text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
+            ?? "No message text"
+        if line.count <= 100 { return line }
+        return String(line.prefix(99)) + "…"
     }
 
     private func perform(_ operation: () throws -> Void) {

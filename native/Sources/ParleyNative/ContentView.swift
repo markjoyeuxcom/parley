@@ -25,6 +25,9 @@ struct ContentView: View {
         }
         .frame(minWidth: 1_040, minHeight: 680)
         .onReceive(refresh) { _ in model.refreshQuietly() }
+        .sheet(isPresented: $model.commandPalettePresented) {
+            CommandPaletteView(model: model)
+        }
         .alert(
             "Parley could not start",
             isPresented: Binding(
