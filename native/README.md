@@ -69,6 +69,11 @@ user's default tmux server. The tmux session is named `parley`.
 - The Review toolbar prepares an editable, size-bounded prompt from explicit
   Git status/diffs or one person-selected UTF-8 file, then uses the existing
   attributed cross-vendor Ask path.
+- Status Center is a separate native window over the authoritative pane and
+  handoff projections: scoped counts, live work, agent readiness, inspection,
+  durable unread results, delivery receipts, recovery actions, activity history
+  and core health. Local notifications are opt-in per workspace and contain no
+  prompt or answer text.
 - Pane kind, display name, relay availability, protocol version and legacy
   Return route are tmux pane options.
 - Closing the SwiftUI window detaches the client; tmux and its processes

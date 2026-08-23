@@ -141,16 +141,16 @@ flight. Add an activity surface, not a project-management system.
   time, and the latest state.
 - [x] Pane and workspace badges for waiting questions, failures, and explicit
   permission-required attention.
-- [ ] Add returned-answer and unread-output badges once an authoritative event
-  exists; do not infer either from terminal redraws.
+- [x] Add durable returned-answer badges from explicit Ask/Delegate results,
+  cleared only when the result is viewed. Terminal redraws remain irrelevant.
 - [x] Click an activity's source or target to focus that pane, including across
   workspace tabs.
 - [x] Human actions to cancel a wait or complete a return manually when an
   agent printed instead of returning its answer.
 - [x] Retry a provably pre-input failed delivery from activity without creating
   a duplicate. Uncertain and failed-Ask retries remain unavailable by design.
-- Native notifications when an answer returns or a pane needs human input,
-  with per-workspace controls.
+- [x] Native notifications when an answer returns or a pane needs human input,
+  with opt-in per-workspace controls and no prompt/result text in the alert.
 
 ### Status Center window
 
@@ -158,24 +158,30 @@ Add a separate native window that can remain open beside the terminal
 workbench or on another display. The main window keeps compact badges; Status
 Center provides the detailed operational view.
 
-- An overall banner for the most important current condition: all clear,
+- [x] An overall banner for the most important current condition: all clear,
   agents waiting, human input required, interrupted work, or core unavailable.
-- Workspace and all-workspaces filters, with counts for running agents,
-  outstanding questions, tracked delegations, failures, and unread results.
-- A **Live collaboration** section showing source → target, operation type,
+- [x] Workspace and all-workspaces filters, with counts for running and stopped
+  agents, outstanding questions, tracked delegations, unread results and
+  failures.
+- [x] Durable read receipts and unread-result counts, attributed to the
+  requesting pane and workspace rather than inferred from terminal output.
+- [x] A **Live collaboration** section showing source → target, operation type,
   concise subject, elapsed time, and exact state for every active handoff.
-- An **Agents** section showing pane name, vendor, workspace, process health,
+- [x] An **Agents** section showing pane name, vendor, workspace, process health,
   protocol compatibility, relay availability, known attention state, and the
   work item currently associated with that pane.
-- A selected-item inspector containing the complete question or instruction,
+- [x] A selected-item inspector containing the complete question or instruction,
   returned answer or completion report, timestamps, and delivery receipts.
-- Contextual controls such as Focus Source, Focus Target, Cancel Wait, Retry
-  Delivery, Return Manually, Restart for Protocol, and Dismiss Completed.
-- A chronological **Activity** timeline for asks, answers, relays, delegation,
-  failures, restarts, workspace changes, and human interventions.
-- A small **Core health** section for the local broker, tmux server, socket,
-  supported CLI discovery, and protocol versions. Low-level logs remain behind
-  a disclosure instead of dominating the normal status view.
+- [x] Contextual controls for Focus Source, Focus Target, Cancel Wait, Retry
+  Delivery, Return Manually, and Restart for Protocol.
+- [ ] Add a local Dismiss Completed control without deleting the durable record.
+- [x] A chronological **Activity** timeline for recorded Ask, answer, relay,
+  delegation, failure and interruption transitions.
+- [ ] Extend the timeline with restart, workspace and human-intervention events
+  once those operations have authoritative journal records.
+- [x] A small **Core health** section for the local broker, tmux server, socket,
+  protocol version and scoped handoff count. Add CLI discovery during first-run
+  work; low-level technical details remain behind a disclosure.
 
 Status Center must not imitate certainty it does not have. Context-window use,
 token cost, quota, compaction distance, or plan limits appear only when the

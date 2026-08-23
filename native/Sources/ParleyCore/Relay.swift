@@ -299,6 +299,7 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
     public let text: String
     public let submitted: Bool
     public var resultText: String?
+    public var readAt: Date? = nil
     public var state: RelayHandoffState
     public var updatedAt: Date
     public var transitions: [RelayHandoffTransition]
@@ -309,6 +310,15 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
         state == .failed
             && retryDisposition == .safe
             && (kind == .relay || kind == .paste)
+    }
+
+    public var hasReturnedResult: Bool {
+        (kind == .ask || kind == .delegate)
+            && !(resultText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+
+    public var hasUnreadResult: Bool {
+        hasReturnedResult && readAt == nil
     }
 }
 
@@ -1094,6 +1104,39 @@ public final class RelayBroker: @unchecked Sendable {
         consultationCondition.unlock()
         guard let limit else { return values }
         return Array(values.prefix(max(0, limit)))
+    }
+
+    public func unreadHandoffs() -> [RelayHandoff] {
+        reconcileDelegations()
+        consultationCondition.lock()
+        let values = handoffRecords.values
+            .filter(\.hasUnreadResult)
+            .sorted { $0.updatedAt > $1.updatedAt }
+        consultationCondition.unlock()
+        return values
+    }
+
+    /// Records that a person viewed a returned Ask or Delegate result. This is
+    /// exposed only through the UI control-token route; pane credentials cannot
+    /// clear another pane's badge. Repeated acknowledgement is intentionally
+    /// idempotent and does not reorder the handoff's operational timeline.
+    public func markHandoffRead(_ handoffID: String) -> RelayTextResponse {
+        consultationCondition.lock()
+        guard var handoff = handoffRecords[handoffID] else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 404, text: "unknown handoff")
+        }
+        guard handoff.hasReturnedResult else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: "this handoff has no returned result")
+        }
+        if handoff.readAt == nil {
+            handoff.readAt = Date()
+            handoffRecords[handoffID] = handoff
+            handoffJournal?.record(handoff)
+        }
+        consultationCondition.unlock()
+        return RelayTextResponse(status: 200, text: "Result marked read.")
     }
 
     /// Cancels the wait owned by an Ask without sending input to either pane.

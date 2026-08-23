@@ -1,0 +1,615 @@
+import ParleyCore
+import SwiftUI
+
+struct StatusCenterView: View {
+    @ObservedObject var model: AppModel
+    @State private var workspaceID = ""
+    @State private var selectedHandoffID: String?
+    private let refresh = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+
+    private var snapshot: StatusCenterSnapshot {
+        model.statusSnapshot(workspaceID: workspaceID.isEmpty ? nil : workspaceID)
+    }
+
+    private var selectedHandoff: RelayHandoff? {
+        snapshot.handoffs.first(where: { $0.id == selectedHandoffID })
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            countStrip
+            Divider()
+            HSplitView {
+                ScrollViewReader { reader in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Color.clear.frame(height: 0).id("status-overview-top")
+                            liveCollaboration
+                            returnedResults
+                            agents
+                            coreHealth
+                        }
+                        .padding(16)
+                    }
+                    .onAppear {
+                        DispatchQueue.main.async {
+                            reader.scrollTo("status-overview-top", anchor: .top)
+                        }
+                    }
+                    .onChange(of: workspaceID) { _, _ in
+                        reader.scrollTo("status-overview-top", anchor: .top)
+                    }
+                }
+                .frame(minWidth: 520, idealWidth: 650)
+
+                inspector
+                    .frame(minWidth: 330, idealWidth: 430)
+            }
+            Divider()
+            timeline
+                .frame(minHeight: 170, idealHeight: 220, maxHeight: 280)
+        }
+        .frame(minWidth: 980, minHeight: 700)
+        .onAppear {
+            model.refreshStatusCenterQuietly()
+            ensureSelection()
+        }
+        .onReceive(refresh) { _ in
+            model.refreshStatusCenterQuietly()
+            ensureSelection()
+        }
+        .onChange(of: workspaceID) { _, _ in
+            selectedHandoffID = nil
+            ensureSelection()
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            Rectangle()
+                .fill(conditionColor)
+                .frame(width: 4, height: 36)
+            Image(systemName: conditionIcon)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(conditionColor)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(conditionTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                Text(conditionDetail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Menu {
+                if model.workspaces.isEmpty {
+                    Text("No workspaces")
+                } else {
+                    Section("Notify when a result returns or attention is required") {
+                        ForEach(model.workspaces) { workspace in
+                            Toggle(
+                                workspace.name,
+                                isOn: Binding(
+                                    get: { model.notificationsEnabled(for: workspace) },
+                                    set: { model.setNotificationsEnabled($0, for: workspace) }
+                                )
+                            )
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: model.notificationWorkspaceNames.isEmpty ? "bell" : "bell.badge")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Workspace notifications are off until you enable them here")
+            Picker("Scope", selection: $workspaceID) {
+                Text("All Workspaces").tag("")
+                ForEach(model.workspaces) { workspace in
+                    Text(workspace.name).tag(workspace.id)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 210)
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 62)
+        .background(conditionColor.opacity(0.055))
+    }
+
+    private var countStrip: some View {
+        HStack(spacing: 1) {
+            countCell("RUNNING", snapshot.counts.runningAgents)
+            countCell("STOPPED", snapshot.counts.stoppedAgents)
+            countCell("QUESTIONS", snapshot.counts.outstandingQuestions)
+            countCell("DELEGATIONS", snapshot.counts.trackedDelegations)
+            countCell("RESULTS", snapshot.counts.unreadResults)
+            countCell("FAILURES", snapshot.counts.failures, warning: snapshot.counts.failures > 0)
+        }
+        .background(Color.secondary.opacity(0.11))
+        .frame(height: 58)
+    }
+
+    private func countCell(_ label: String, _ value: Int, warning: Bool = false) -> some View {
+        VStack(spacing: 2) {
+            Text(value.formatted())
+                .font(.system(size: 18, weight: .semibold, design: .monospaced))
+                .foregroundStyle(warning ? Color.red : Color.primary)
+            Text(label)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var liveCollaboration: some View {
+        statusGroup("LIVE COLLABORATION") {
+            if snapshot.activeHandoffs.isEmpty {
+                emptyRow("No active handoffs in this scope")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(snapshot.activeHandoffs) { handoff in
+                        handoffRow(handoff)
+                        if handoff.id != snapshot.activeHandoffs.last?.id { Divider() }
+                    }
+                }
+            }
+        }
+    }
+
+    private func handoffRow(_ handoff: RelayHandoff) -> some View {
+        Button {
+            select(handoff)
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 5) {
+                        Text(handoff.sourceName)
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.tertiary)
+                        Text(handoff.targetName)
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    Text(subject(handoff.text))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(handoff.kind.rawValue.uppercased())
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text(handoff.state.rawValue.uppercased())
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(stateColor(handoff))
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(activityTiming(handoff, at: context.date))
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(9)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(selectedHandoffID == handoff.id ? Color.accentColor.opacity(0.10) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var returnedResults: some View {
+        let unread = snapshot.handoffs.filter { handoff in
+            handoff.hasUnreadResult
+                && (workspaceID.isEmpty || handoff.sourceWorkspaceID == workspaceID)
+        }
+        return statusGroup("RETURNED RESULTS") {
+            if unread.isEmpty {
+                emptyRow("No unread returned results in this scope")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(unread) { handoff in
+                        handoffRow(handoff)
+                        if handoff.id != unread.last?.id { Divider() }
+                    }
+                }
+            }
+        }
+    }
+
+    private var agents: some View {
+        statusGroup("AGENTS") {
+            if snapshot.agents.isEmpty {
+                emptyRow("No agent panes in this scope")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(snapshot.agents) { pane in
+                        agentRow(pane)
+                        if pane.id != snapshot.agents.last?.id { Divider() }
+                    }
+                }
+            }
+        }
+    }
+
+    private func agentRow(_ pane: TmuxPane) -> some View {
+        let work = snapshot.activeHandoffs.first(where: { $0.targetPaneID == pane.id })
+        let attention = snapshot.handoffs.first(where: { $0.targetPaneID == pane.id && $0.attention != nil })
+        return HStack(alignment: .top, spacing: 10) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(pane.isStarted ? Color.green : Color.secondary)
+                .frame(width: 4, height: 32)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(pane.displayName)
+                        .font(.system(size: 11, weight: .medium))
+                    Text(pane.kind.label.uppercased())
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    if attention != nil {
+                        Text("ATTENTION")
+                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.orange)
+                    }
+                }
+                Text(work.map { subject($0.text) } ?? "No tracked work")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(pane.isStarted ? "RUNNING" : "STOPPED")
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                Text(pane.workspaceName ?? pane.windowID)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Text(readiness(pane))
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(readinessColor(pane))
+            }
+            Button("Focus") { model.select(pane) }
+                .controlSize(.small)
+        }
+        .padding(9)
+    }
+
+    private var coreHealth: some View {
+        statusGroup("CORE HEALTH") {
+            VStack(spacing: 7) {
+                healthRow("Coordination core", model.coreAvailable ? "CONNECTED" : "UNAVAILABLE", healthy: model.coreAvailable)
+                healthRow("tmux workspace server", model.tmuxAvailable ? "CONNECTED" : "UNAVAILABLE", healthy: model.tmuxAvailable)
+                healthRow("Shared pane protocol", "V\(AgentProtocol.version)", healthy: true)
+                healthRow("Handoffs in scope", snapshot.handoffs.count.formatted(), healthy: true)
+                DisclosureGroup("Technical details") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let controller = model.controller {
+                            Text("tmux socket: \(controller.socketPath.path)")
+                        }
+                        Text("Only local, owner-authenticated state is shown. Prompt bodies and credentials are never exported from this window.")
+                    }
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(.top, 4)
+                }
+                .font(.system(size: 10))
+            }
+            .padding(9)
+        }
+    }
+
+    private func healthRow(_ name: String, _ value: String, healthy: Bool) -> some View {
+        HStack {
+            Text(name).font(.system(size: 10))
+            Spacer()
+            Circle()
+                .fill(healthy ? Color.green : Color.red)
+                .frame(width: 6, height: 6)
+            Text(value)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var inspector: some View {
+        if let handoff = selectedHandoff {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("SELECTED ITEM")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Text("\(handoff.sourceName) → \(handoff.targetName)")
+                            .font(.system(size: 16, weight: .semibold))
+                        HStack(spacing: 7) {
+                            statusChip(handoff.kind.rawValue.uppercased(), color: .secondary)
+                            statusChip(handoff.state.rawValue.uppercased(), color: stateColor(handoff))
+                            if handoff.attention != nil {
+                                statusChip("ATTENTION", color: .orange)
+                            }
+                            if handoff.hasUnreadResult {
+                                statusChip("UNREAD RESULT", color: .accentColor)
+                            }
+                        }
+                    }
+
+                    actionControls(handoff)
+
+                    inspectorSection(handoff.kind == .delegate ? "INSTRUCTION" : "QUESTION OR MESSAGE", handoff.text)
+                    if let result = handoff.resultText, !result.isEmpty {
+                        inspectorSection("RETURNED RESULT", result)
+                    }
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("DELIVERY RECEIPTS")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        ForEach(Array(handoff.transitions.enumerated()), id: \.offset) { _, transition in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(transition.occurredAt.formatted(date: .omitted, time: .standard))
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                Text(transition.state.rawValue.uppercased())
+                                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                if let detail = transition.detail, !detail.isEmpty {
+                                    Text(detail)
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        if let readAt = handoff.readAt {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(readAt.formatted(date: .omitted, time: .standard))
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                Text("VIEWED")
+                                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            }
+                        }
+                    }
+                }
+                .padding(16)
+            }
+        } else {
+            ContentUnavailableView(
+                "No collaboration selected",
+                systemImage: "arrow.left.arrow.right",
+                description: Text("Choose a live handoff or timeline event to inspect its authoritative record.")
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func actionControls(_ handoff: RelayHandoff) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Button("Focus Source") { model.focus(handoff, target: false) }
+                    .disabled(!model.canFocus(handoff.sourcePaneID))
+                Button("Focus Target") { model.focus(handoff, target: true) }
+                    .disabled(!model.canFocus(handoff.targetPaneID))
+            }
+            HStack {
+                if let consultation = model.consultation(for: handoff) {
+                    Button("Return Manually…") { model.returnConsultation(consultation) }
+                    Button("Cancel Wait…", role: .destructive) { model.cancel(consultation) }
+                }
+                if handoff.canRetrySafely {
+                    Button("Retry Delivery…") { model.retry(handoff) }
+                }
+                if let target = model.panes.first(where: { $0.id == handoff.targetPaneID }),
+                   target.kind.isAgent,
+                   target.isStarted,
+                   !target.hasCurrentProtocol {
+                    Button("Restart for Protocol…") { model.restart(target) }
+                }
+            }
+        }
+        .controlSize(.small)
+    }
+
+    private func inspectorSection(_ title: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.system(size: 10, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(9)
+                .background(Color.secondary.opacity(0.055))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+        }
+    }
+
+    private var timeline: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("ACTIVITY")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+            if snapshot.timeline.isEmpty {
+                emptyRow("No recorded collaboration in this scope")
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(snapshot.timeline.prefix(150)) { event in
+                            Button {
+                                if let handoff = snapshot.handoffs.first(where: { $0.id == event.handoffID }) {
+                                    select(handoff)
+                                }
+                            } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(event.occurredAt.formatted(date: .omitted, time: .standard))
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 78, alignment: .leading)
+                                    Text("\(event.sourceName) → \(event.targetName)")
+                                        .font(.system(size: 10, weight: .medium))
+                                    Text(event.kind.rawValue.uppercased())
+                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                    Text(event.state.rawValue.uppercased())
+                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                    if let detail = event.detail, !detail.isEmpty {
+                                        Text(detail)
+                                            .font(.system(size: 9))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+    }
+
+    private func statusGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.035))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.12), lineWidth: 1))
+        }
+    }
+
+    private func emptyRow(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+    }
+
+    private func statusChip(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.09))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+
+    private var conditionTitle: String {
+        switch snapshot.condition {
+        case .allClear: "All clear"
+        case .resultsAvailable: "Returned results available"
+        case .agentsWaiting: "Agents waiting"
+        case .humanInputRequired: "Human input required"
+        case .interruptedWork: "Interrupted work"
+        case .coreUnavailable: "Coordination core unavailable"
+        }
+    }
+
+    private var conditionDetail: String {
+        switch snapshot.condition {
+        case .allClear: "No active or failed cross-vendor work in this scope."
+        case .resultsAvailable: "One or more Ask or Delegate results have not been viewed."
+        case .agentsWaiting: "One or more tracked handoffs are still active."
+        case .humanInputRequired: "A known permission, readiness, or target issue needs attention."
+        case .interruptedWork: "A handoff failed or was interrupted; inspect its recorded reason."
+        case .coreUnavailable: "The last authoritative collaboration state remains visible while Parley reconnects."
+        }
+    }
+
+    private var conditionIcon: String {
+        switch snapshot.condition {
+        case .allClear: "checkmark.circle"
+        case .resultsAvailable: "envelope.badge"
+        case .agentsWaiting: "clock"
+        case .humanInputRequired: "exclamationmark.triangle"
+        case .interruptedWork: "bolt.horizontal.circle"
+        case .coreUnavailable: "network.slash"
+        }
+    }
+
+    private var conditionColor: Color {
+        switch snapshot.condition {
+        case .allClear: .green
+        case .resultsAvailable: .accentColor
+        case .agentsWaiting: .accentColor
+        case .humanInputRequired: .orange
+        case .interruptedWork, .coreUnavailable: .red
+        }
+    }
+
+    private func stateColor(_ handoff: RelayHandoff) -> Color {
+        if handoff.attention != nil { return .orange }
+        return switch handoff.state {
+        case .created, .delivered, .waiting, .answered: .accentColor
+        case .failed, .interrupted: .red
+        case .completed, .cancelled: .secondary
+        }
+    }
+
+    private func readiness(_ pane: TmuxPane) -> String {
+        if !pane.isStarted { return "NOT STARTED" }
+        if !pane.relayEnabled { return "RELAY OFF" }
+        if !pane.hasCurrentProtocol { return "PROTOCOL STALE" }
+        if !pane.bracketedPasteActive { return "NOT AT PROMPT" }
+        return "RELAY READY"
+    }
+
+    private func readinessColor(_ pane: TmuxPane) -> Color {
+        pane.isStarted && pane.relayEnabled && pane.hasCurrentProtocol && pane.bracketedPasteActive
+            ? .green
+            : .orange
+    }
+
+    private func subject(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+    }
+
+    private func activityTiming(_ handoff: RelayHandoff, at now: Date) -> String {
+        let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
+        let origin = terminalStates.contains(handoff.state)
+            ? handoff.updatedAt
+            : handoff.transitions.first?.occurredAt ?? handoff.updatedAt
+        let seconds = max(0, Int(now.timeIntervalSince(origin)))
+        let amount: String
+        if seconds < 60 {
+            amount = "\(seconds)s"
+        } else if seconds < 3_600 {
+            amount = "\(seconds / 60)m"
+        } else {
+            amount = "\(seconds / 3_600)h"
+        }
+        return terminalStates.contains(handoff.state) ? "\(amount) ago" : "for \(amount)"
+    }
+
+    private func ensureSelection() {
+        if let selectedHandoffID,
+           let selected = snapshot.handoffs.first(where: { $0.id == selectedHandoffID }) {
+            if selected.hasUnreadResult { model.markRead(selected) }
+            return
+        }
+        if let first = snapshot.handoffs.first { select(first) }
+    }
+
+    private func select(_ handoff: RelayHandoff) {
+        selectedHandoffID = handoff.id
+        if handoff.hasUnreadResult { model.markRead(handoff) }
+    }
+}

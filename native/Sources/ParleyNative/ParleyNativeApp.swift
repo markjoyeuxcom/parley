@@ -52,5 +52,11 @@ struct ParleyNativeApp: App {
                 Button("Balance Panes") { model.balance() }
             }
         }
+
+        Window("Status Center", id: "status-center") {
+            StatusCenterView(model: model)
+        }
+        .defaultSize(width: 1_120, height: 780)
+        .windowResizability(.contentMinSize)
     }
 }

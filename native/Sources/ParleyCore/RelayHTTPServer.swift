@@ -212,6 +212,14 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 write(broker.consultations(), to: client)
                 return
             }
+            if request.method == "GET", request.path == "/handoffs/unread" {
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                write(broker.unreadHandoffs(), to: client)
+                return
+            }
             if request.method == "GET",
                request.path == "/handoffs" || request.path.hasPrefix("/handoffs?") {
                 guard controlAuthorized(request) else {
@@ -247,6 +255,13 @@ public final class RelayHTTPServer: @unchecked Sendable {
             let idempotencyKey = request.headers["x-parley-idempotency-key"]
             let text = String(decoding: request.body, as: UTF8.self)
             switch request.path {
+            case let path where path.hasPrefix("/ui/read/"):
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                let handoffID = String(path.dropFirst("/ui/read/".count))
+                write(broker.markHandoffRead(handoffID), to: client)
             case let path where path.hasPrefix("/ui/retry/"):
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
@@ -335,7 +350,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                         delivered: nil,
                         submitted: nil,
                         note: nil,
-                        error: "POST /relay, /paste, /ask, /ask-many, /answer/<id>, /delegate, /status, /wait/<id>, /done/<id>, /fail/<id>, /ui/answer/<id>, /ui/cancel/<id> or /ui/retry/<id>"
+                        error: "POST /relay, /paste, /ask, /ask-many, /answer/<id>, /delegate, /status, /wait/<id>, /done/<id>, /fail/<id>, /ui/answer/<id>, /ui/cancel/<id>, /ui/retry/<id> or /ui/read/<id>"
                     )
                 ), to: client)
             }

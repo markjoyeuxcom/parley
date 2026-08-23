@@ -1348,6 +1348,126 @@ private func checkReviewDraftsAreBoundedShellFreeAndExplicit() throws {
     }
 }
 
+private func statusHandoff(
+    id: String,
+    kind: RelayHandoffKind,
+    state: RelayHandoffState,
+    sourceWorkspaceID: String,
+    targetWorkspaceID: String,
+    occurredAt: TimeInterval,
+    resultText: String? = nil,
+    readAt: TimeInterval? = nil,
+    attention: RelayAttention? = nil
+) throws -> RelayHandoff {
+    var object: [String: Any] = [
+        "id": id,
+        "idempotencyKey": "key-\(id)",
+        "kind": kind.rawValue,
+        "sourcePaneID": "%source-\(id)",
+        "sourceName": "Source \(id)",
+        "sourceKind": "codex",
+        "sourceWorkspaceID": sourceWorkspaceID,
+        "sourceWorkspaceName": sourceWorkspaceID,
+        "targetPaneID": "%target-\(id)",
+        "targetName": "Target \(id)",
+        "targetKind": "claude",
+        "targetWorkspaceID": targetWorkspaceID,
+        "targetWorkspaceName": targetWorkspaceID,
+        "text": "Task \(id)",
+        "submitted": true,
+        "state": state.rawValue,
+        "updatedAt": occurredAt,
+        "transitions": [[
+            "state": state.rawValue,
+            "occurredAt": occurredAt,
+            "detail": "Detail \(id)",
+        ]],
+    ]
+    if let resultText { object["resultText"] = resultText }
+    if let readAt { object["readAt"] = readAt }
+    if let attention { object["attention"] = attention.rawValue }
+    let data = try JSONSerialization.data(withJSONObject: object)
+    return try JSONDecoder().decode(RelayHandoff.self, from: data)
+}
+
+private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
+    let panes = [
+        TmuxPane(id: "%1", kind: .codex, customName: "Lead", terminalTitle: "", cwd: "/tmp/a", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "a", isStarted: true),
+        TmuxPane(id: "%2", kind: .agy, customName: "Reviewer", terminalTitle: "", cwd: "/tmp/a", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "a", isStarted: true),
+        TmuxPane(id: "%3", kind: .claude, customName: "Builder", terminalTitle: "", cwd: "/tmp/b", currentCommand: "claude", isActive: false, windowID: "@1", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "b", isStarted: true),
+        TmuxPane(id: "%4", kind: .copilot, customName: "Stopped", terminalTitle: "", cwd: "/tmp/b", currentCommand: "sleep", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "b", isStarted: false),
+    ]
+    let handoffs = [
+        try statusHandoff(id: "ask", kind: .ask, state: .waiting, sourceWorkspaceID: "@0", targetWorkspaceID: "@0", occurredAt: 30),
+        try statusHandoff(id: "delegate", kind: .delegate, state: .delivered, sourceWorkspaceID: "@1", targetWorkspaceID: "@1", occurredAt: 40),
+        try statusHandoff(id: "failure", kind: .relay, state: .failed, sourceWorkspaceID: "@1", targetWorkspaceID: "@1", occurredAt: 50, attention: .permissionRequired),
+        try statusHandoff(id: "complete", kind: .relay, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 20),
+        try statusHandoff(id: "result", kind: .ask, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 25, resultText: "Returned answer"),
+        try statusHandoff(id: "read-result", kind: .delegate, state: .completed, sourceWorkspaceID: "@1", targetWorkspaceID: "@0", occurredAt: 15, resultText: "Already viewed", readAt: 16),
+    ]
+
+    let all = StatusCenterProjection.snapshot(
+        panes: panes,
+        handoffs: handoffs,
+        workspaceID: nil,
+        coreAvailable: true
+    )
+    try expect(all.condition == .humanInputRequired, "human attention did not outrank ordinary waiting state")
+    try expect(all.counts.runningAgents == 3 && all.counts.stoppedAgents == 1, "agent readiness counts were inferred incorrectly")
+    try expect(all.counts.outstandingQuestions == 1 && all.counts.trackedDelegations == 1, "active operation counts were wrong")
+    try expect(all.counts.failures == 1, "failed handoff count was wrong")
+    try expect(all.counts.unreadResults == 1, "unread returned-result count was wrong")
+    try expect(all.activeHandoffs.map(\.id) == ["delegate", "ask"], "active handoffs were not newest-first")
+    try expect(all.timeline.first?.handoffID == "failure", "timeline was not newest-first")
+    try expect(all.timeline.first?.detail == "Detail failure", "timeline discarded the authoritative transition detail")
+
+    let workspace = StatusCenterProjection.snapshot(
+        panes: panes,
+        handoffs: handoffs,
+        workspaceID: "@0",
+        coreAvailable: true
+    )
+    try expect(workspace.condition == .agentsWaiting, "another workspace's failure contaminated the selected workspace")
+    try expect(workspace.counts.runningAgents == 2 && workspace.counts.stoppedAgents == 0, "workspace filter returned foreign agents")
+    try expect(workspace.counts.outstandingQuestions == 1 && workspace.counts.trackedDelegations == 0 && workspace.counts.failures == 0, "workspace filter returned foreign activity")
+    try expect(workspace.activeHandoffs.map(\.id) == ["ask"], "workspace live collaboration included terminal work")
+    try expect(workspace.counts.unreadResults == 1, "cross-workspace result was not attributed to its requesting workspace")
+    try expect(Set(workspace.timeline.map(\.handoffID)) == Set(["ask", "complete", "result", "read-result"]), "workspace timeline lost or added handoffs")
+
+    let targetWorkspace = StatusCenterProjection.snapshot(
+        panes: panes,
+        handoffs: handoffs,
+        workspaceID: "@1",
+        coreAvailable: true
+    )
+    try expect(targetWorkspace.counts.unreadResults == 0, "a returned result was counted in the target workspace instead of its requester workspace")
+
+    let returned = StatusCenterProjection.snapshot(
+        panes: [],
+        handoffs: [handoffs[4]],
+        workspaceID: nil,
+        coreAvailable: true
+    )
+    try expect(returned.condition == .resultsAvailable, "an unread returned result was shown as all clear")
+
+    let notifications = StatusNotificationProjection.events(handoffs: handoffs)
+    try expect(notifications.map(\.id) == ["failure:attention:permissionRequired", "result:result"], "notification projection emitted old, duplicate, or non-actionable events")
+    try expect(notifications[0].workspaceName == "@1", "attention notification was not routed to the target workspace")
+    try expect(notifications[1].workspaceName == "@0", "returned-result notification was not routed to the requesting workspace")
+    try expect(
+        notifications.allSatisfy { !$0.title.contains("Task") && !$0.body.contains("Returned answer") },
+        "notification text exposed prompt or result content"
+    )
+
+    let unavailable = StatusCenterProjection.snapshot(
+        panes: panes,
+        handoffs: handoffs,
+        workspaceID: nil,
+        coreAvailable: false
+    )
+    try expect(unavailable.condition == .coreUnavailable, "core failure did not override secondary status")
+}
+
 private func checkAgentRelaySubmitsAndExplicitPasteDoesNot() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
@@ -1546,8 +1666,10 @@ private func checkDurableHandoffJournal() throws {
         "completed Ask did not survive core recovery"
     )
     try expect(recoveredAsk.state == .completed && recoveredAsk.resultText == "Persistent answer.", "durable Ask lost its returned answer")
+    try expect(recoveredAsk.hasUnreadResult && recoveredAsk.readAt == nil, "core recovery lost the unread returned-result state")
     try expect(recoveredAsk.sourceKind == .codex && recoveredAsk.targetKind == .agy, "durable Ask lost its vendor identities")
     try expect(recoveredAsk.sourceWorkspaceName == "repo-a" && recoveredAsk.targetWorkspaceName == "repo-b", "durable Ask lost its workspace identities")
+    try expect(recoveredBroker.markHandoffRead(recoveredAsk.id).status == 200, "recovered core could not acknowledge a returned result")
     let recoveredPending = try require(
         recovered.first(where: { $0.idempotencyKey == "durable-pending-1" }),
         "pending Ask did not survive core recovery"
@@ -1563,6 +1685,11 @@ private func checkDurableHandoffJournal() throws {
     try expect(eventually { pendingResult.value != nil }, "durable fixture left its original requester blocked")
     let finalJournal = try RelayHandoffJournal(file: historyFile)
     try expect(finalJournal.handoffs().count == 3, "journal replay created duplicate handoffs")
+    let finalAsk = try require(
+        finalJournal.handoffs().first(where: { $0.id == recoveredAsk.id }),
+        "acknowledged Ask disappeared from the durable journal"
+    )
+    try expect(!finalAsk.hasUnreadResult && finalAsk.readAt != nil, "read acknowledgement did not survive journal replay")
 
     let truncated = try FileHandle(forWritingTo: historyFile)
     try truncated.seekToEnd()
@@ -1886,6 +2013,32 @@ private func checkCoreControlSurvivesClientReattachment() throws {
     try expect(returned.status == 200, "the reattached UI could not complete the consultation")
     try expect(eventually { askResult.value != nil }, "the waiting Ask stayed blocked after UI reattachment")
     try expect(askResult.value?.text == "Yes; the wait belongs to the core.", "the core returned the wrong answer")
+    let unread = try require(
+        try reattachedClient.handoffs().first(where: { $0.id == pending.id }),
+        "the completed Ask disappeared before its result could be viewed"
+    )
+    try expect(unread.hasUnreadResult && unread.readAt == nil, "a newly returned Ask result was not unread")
+    let unreadHandoffs = try reattachedClient.unreadHandoffs()
+    try expect(unreadHandoffs.map(\.id) == [pending.id], "the unread endpoint omitted the returned Ask")
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "not-the-control-token")
+    let unauthorizedRead = try unauthorized.markHandoffRead(pending.id)
+    try expect(unauthorizedRead.status == 401, "an unauthenticated UI marked a result read")
+    let stillUnread = try reattachedClient.handoffs().first(where: { $0.id == pending.id })?.hasUnreadResult
+    try expect(
+        stillUnread == true,
+        "the rejected acknowledgement changed the read receipt"
+    )
+    let firstRead = try reattachedClient.markHandoffRead(pending.id)
+    try expect(firstRead.status == 200, "the authenticated UI could not acknowledge a result")
+    let repeatedRead = try reattachedClient.markHandoffRead(pending.id)
+    try expect(repeatedRead.status == 200, "read acknowledgement was not idempotent")
+    let acknowledged = try require(
+        try reattachedClient.handoffs().first(where: { $0.id == pending.id }),
+        "the acknowledged Ask disappeared"
+    )
+    try expect(!acknowledged.hasUnreadResult && acknowledged.readAt != nil, "the durable handoff did not record that its result was viewed")
+    let remainingUnread = try reattachedClient.unreadHandoffs()
+    try expect(remainingUnread.isEmpty, "the unread endpoint retained an acknowledged result")
 
     let cancelledAskResult = LockedAskResult()
     DispatchQueue.global(qos: .utility).async {
@@ -3023,6 +3176,7 @@ let checks: [(String, () throws -> Void)] = [
     ("relay cleaning", checkRelayCleaning),
     ("selection-or-empty relay draft", checkRelayDraftStartsWithSelectionOrNothing),
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
+    ("authoritative Status Center projection", checkStatusCenterProjectionUsesOnlyAuthoritativeState),
     ("agent relay submits; paste does not", checkAgentRelaySubmitsAndExplicitPasteDoesNot),
     ("stable handoff identity and idempotent relay", checkStableHandoffIdentityAndIdempotentRelay),
     ("completed handoff retention bound", checkCompletedHandoffRetentionIsBounded),

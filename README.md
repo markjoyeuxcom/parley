@@ -31,6 +31,12 @@ There is no API-key mode, hosted Parley service, telemetry or remote sync.
   commands.
 - Cross-workspace Ask targets and recent-folder shortcuts.
 - Owner-only durable handoff history and a compact workspace activity strip.
+- A separate native Status Center with workspace filters, live handoffs, agent
+  readiness, delivery receipts, returned-result acknowledgement, recovery
+  actions, core health and activity.
+- Durable RESULT badges for requesting panes/workspaces and opt-in local
+  notifications per workspace; notification text never includes the prompt or
+  returned answer.
 
 No agent starts automatically on a new session. Parley creates a shell first;
 opening an agent pane is an explicit action against a CLI the user has already
@@ -90,6 +96,12 @@ from activity because their requesting command has already returned.
 Waiting and failed activity appears on pane and workspace badges. A known trust
 or permission refusal is labelled as human attention and offers a direct focus
 action for the target pane; Parley does not infer attention from a quiet screen.
+
+**Status** opens a separate operational window that can remain beside the
+terminal grid or on another display. Its banner, counts, live collaboration,
+agent readiness, selected-item inspector and transition timeline come only from
+tmux and the durable coordination record. It does not guess whether an agent is
+thinking or estimate vendor context, quota, token cost, or compaction distance.
 
 The toolbar's Ask and Return actions provide the same workflow for a person.
 A real terminal selection prefills the editor; otherwise it starts empty.

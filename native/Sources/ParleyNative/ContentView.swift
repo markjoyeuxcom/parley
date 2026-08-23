@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
     private let refresh = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -45,6 +46,7 @@ struct ContentView: View {
                         PaneRow(
                             pane: pane,
                             awaitingAnswerCount: model.awaitingAnswerCount(for: pane.id),
+                            unreadResultCount: model.unreadResultCount(forPane: pane.id),
                             latestFailure: model.latestFailure(for: pane.id)
                         )
                     }
@@ -123,6 +125,13 @@ struct ContentView: View {
                                     Label("\(failures)", systemImage: "exclamationmark.triangle.fill")
                                         .font(.system(size: 8, weight: .semibold, design: .monospaced))
                                         .foregroundStyle(model.requiresHumanAttention(workspace.id) ? Color.orange : Color.red)
+                                        .labelStyle(.titleAndIcon)
+                                }
+                                let unread = model.unreadResultCount(forWorkspace: workspace.id)
+                                if unread > 0 {
+                                    Label("\(unread)", systemImage: "envelope.badge")
+                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(Color.accentColor)
                                         .labelStyle(.titleAndIcon)
                                 }
                             }
@@ -296,6 +305,13 @@ struct ContentView: View {
                 .help("Zoom active pane")
             Button(action: model.balance) { Image(systemName: "rectangle.grid.2x2") }
                 .help("Balance panes")
+            Divider().frame(height: 18)
+            Button {
+                openWindow(id: "status-center")
+            } label: {
+                Label("Status", systemImage: "waveform.path.ecg")
+            }
+            .help("Open Status Center")
         }
         .buttonStyle(.borderless)
         .controlSize(.small)
@@ -351,6 +367,9 @@ struct ContentView: View {
                            item.state == .completed || item.kind == .delegate {
                             Divider()
                             Text(result)
+                            if item.hasUnreadResult {
+                                Button("Mark Result Read") { model.markRead(item) }
+                            }
                         }
                         Divider()
                         Button("Focus \(item.sourceName)") { model.focus(item, target: false) }
@@ -489,6 +508,7 @@ struct ContentView: View {
 private struct PaneRow: View {
     let pane: TmuxPane
     let awaitingAnswerCount: Int
+    let unreadResultCount: Int
     let latestFailure: RelayHandoff?
 
     var body: some View {
@@ -501,6 +521,11 @@ private struct PaneRow: View {
                     Text(pane.displayName).font(.system(size: 12, weight: .medium))
                     if pane.returnToPaneID != nil || awaitingAnswerCount > 0 {
                         Text(awaitingAnswerCount > 1 ? "RETURN \(awaitingAnswerCount)" : "RETURN")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    if unreadResultCount > 0 {
+                        Text(unreadResultCount > 1 ? "RESULT \(unreadResultCount)" : "RESULT")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(Color.accentColor)
                     }

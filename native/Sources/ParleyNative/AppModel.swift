@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import ParleyCore
 import SwiftTerm
+import UserNotifications
 
 @MainActor
 final class TerminalHandle: ObservableObject {
@@ -33,9 +34,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var workspaces: [TmuxWorkspace] = []
     @Published private(set) var consultations: [RelayConsultation] = []
     @Published private(set) var handoffs: [RelayHandoff] = []
+    @Published private(set) var unreadHandoffs: [RelayHandoff] = []
+    @Published private(set) var statusHandoffs: [RelayHandoff] = []
     @Published private(set) var controller: TmuxController?
     @Published private(set) var recentFolders: [String] = []
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
+    @Published private(set) var coreAvailable = false
+    @Published private(set) var tmuxAvailable = false
+    @Published private(set) var notificationWorkspaceNames: Set<String> = []
     @Published var startupError: String?
 
     let terminalHandle = TerminalHandle()
@@ -43,7 +49,10 @@ final class AppModel: ObservableObject {
     private let layoutStore: SavedWorkspaceLayoutStore
     private var relayClient: RelayCoreClient?
     private var reviewDraftBuilder: ReviewDraftBuilder?
+    private let notificationEpoch = Date()
+    private var observedNotificationEventIDs: Set<String> = []
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
+    private static let notificationWorkspacesKey = "parley.notificationWorkspaces"
 
     init() {
         let requestedFolder = Self.argument(named: "--cwd")
@@ -55,6 +64,9 @@ final class AppModel: ObservableObject {
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
         )
         recentFolders = UserDefaults.standard.stringArray(forKey: Self.recentFoldersKey) ?? []
+        notificationWorkspaceNames = Set(
+            UserDefaults.standard.stringArray(forKey: Self.notificationWorkspacesKey) ?? []
+        )
 
         do {
             let controller = try TmuxController()
@@ -101,12 +113,16 @@ final class AppModel: ObservableObject {
             }
             self.controller = controller
             self.relayClient = relayClient
+            coreAvailable = true
+            tmuxAvailable = true
             reviewDraftBuilder = ReviewDraftBuilder(environment: controller.environment)
             panes = livePanes
             workspaces = liveWorkspaces
             savedLayouts = try layoutStore.layouts()
             rememberFolder(defaultFolder)
         } catch {
+            coreAvailable = false
+            tmuxAvailable = false
             startupError = error.localizedDescription
         }
     }
@@ -193,6 +209,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func unreadResultCount(forPane paneID: String) -> Int {
+        unreadHandoffs.count { $0.sourcePaneID == paneID }
+    }
+
+    func unreadResultCount(forWorkspace workspaceID: String) -> Int {
+        unreadHandoffs.count { $0.sourceWorkspaceID == workspaceID }
+    }
+
     func waitingCount(for workspaceID: String) -> Int {
         let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
         return handoffs.count {
@@ -216,6 +240,32 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func notificationsEnabled(for workspace: TmuxWorkspace) -> Bool {
+        notificationWorkspaceNames.contains(workspace.name)
+    }
+
+    func setNotificationsEnabled(_ enabled: Bool, for workspace: TmuxWorkspace) {
+        if !enabled {
+            notificationWorkspaceNames.remove(workspace.name)
+            saveNotificationWorkspaces()
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+                guard granted else {
+                    showNotificationAlert("Notifications are disabled for Parley in System Settings.")
+                    return
+                }
+                notificationWorkspaceNames.insert(workspace.name)
+                saveNotificationWorkspaces()
+            } catch {
+                showNotificationAlert("Parley could not enable notifications: \(error.localizedDescription)")
+            }
+        }
+    }
+
     var attachConfiguration: AttachConfiguration? {
         guard let controller else { return nil }
         var environment = controller.environment
@@ -230,20 +280,79 @@ final class AppModel: ObservableObject {
     }
 
     func refresh() throws {
+        var firstError: Error?
         if let controller {
-            let refreshedWorkspaces = try controller.listWorkspaces()
-            if refreshedWorkspaces != workspaces { workspaces = refreshedWorkspaces }
-            let refreshedPanes = try controller.listPanes()
-            if refreshedPanes != panes { panes = refreshedPanes }
+            do {
+                let refreshedWorkspaces = try controller.listWorkspaces()
+                if refreshedWorkspaces != workspaces { workspaces = refreshedWorkspaces }
+                let refreshedPanes = try controller.listPanes()
+                if refreshedPanes != panes { panes = refreshedPanes }
+                tmuxAvailable = true
+            } catch {
+                tmuxAvailable = false
+                firstError = error
+            }
+        } else {
+            tmuxAvailable = false
         }
-        let refreshedConsultations = try relayClient?.consultations() ?? []
-        if refreshedConsultations != consultations { consultations = refreshedConsultations }
-        let refreshedHandoffs = try relayClient?.handoffs(limit: 24) ?? []
-        if refreshedHandoffs != handoffs { handoffs = refreshedHandoffs }
+        if let relayClient {
+            do {
+                let refreshedConsultations = try relayClient.consultations()
+                if refreshedConsultations != consultations { consultations = refreshedConsultations }
+                let refreshedHandoffs = try relayClient.handoffs(limit: 24)
+                if refreshedHandoffs != handoffs { handoffs = refreshedHandoffs }
+                let refreshedUnread = try relayClient.unreadHandoffs()
+                if refreshedUnread != unreadHandoffs { unreadHandoffs = refreshedUnread }
+                processNotifications(from: refreshedHandoffs + refreshedUnread)
+                coreAvailable = true
+            } catch {
+                coreAvailable = false
+                if firstError == nil { firstError = error }
+            }
+        } else {
+            coreAvailable = false
+        }
+        if let firstError { throw firstError }
     }
 
     func refreshQuietly() {
         do { try refresh() } catch { /* the attached client may be between tmux redraws */ }
+    }
+
+    func refreshStatusCenterQuietly() {
+        do {
+            try refresh()
+            guard let relayClient else { return }
+            let history = try relayClient.handoffs(limit: 500)
+            if history != statusHandoffs { statusHandoffs = history }
+            processNotifications(from: history)
+        } catch {
+            // Availability flags are updated by refresh; the last authoritative
+            // snapshot stays visible instead of being replaced with guessed state.
+        }
+    }
+
+    func statusSnapshot(workspaceID: String?) -> StatusCenterSnapshot {
+        StatusCenterProjection.snapshot(
+            panes: panes,
+            handoffs: statusHandoffs.isEmpty ? handoffs : statusHandoffs,
+            workspaceID: workspaceID,
+            coreAvailable: coreAvailable
+        )
+    }
+
+    func markRead(_ handoff: RelayHandoff) {
+        guard handoff.hasUnreadResult, let relayClient else { return }
+        do {
+            let response = try relayClient.markHandoffRead(handoff.id)
+            guard response.status == 200 else { return }
+            refreshStatusCenterQuietly()
+        } catch {
+            // The regular refresh owns connection health. A persistent core
+            // from the previous UI build may not know this control route yet;
+            // leave the result unread instead of misreporting the core as down.
+            refreshQuietly()
+        }
     }
 
     func create(_ kind: PaneKind, direction: SplitDirection) {
@@ -534,8 +643,13 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let renamed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         perform {
-            try controller?.renameWorkspace(workspace.id, name: field.stringValue)
+            try controller?.renameWorkspace(workspace.id, name: renamed)
+            if notificationWorkspaceNames.remove(workspace.name) != nil {
+                notificationWorkspaceNames.insert(renamed)
+                saveNotificationWorkspaces()
+            }
             try refresh()
         }
     }
@@ -645,6 +759,41 @@ final class AppModel: ObservableObject {
         recentFolders.insert(standardized, at: 0)
         if recentFolders.count > 8 { recentFolders.removeLast(recentFolders.count - 8) }
         UserDefaults.standard.set(recentFolders, forKey: Self.recentFoldersKey)
+    }
+
+    private func saveNotificationWorkspaces() {
+        UserDefaults.standard.set(notificationWorkspaceNames.sorted(), forKey: Self.notificationWorkspacesKey)
+    }
+
+    private func processNotifications(from handoffs: [RelayHandoff]) {
+        let events = StatusNotificationProjection.events(handoffs: handoffs)
+        for event in events where observedNotificationEventIDs.insert(event.id).inserted {
+            guard event.occurredAt >= notificationEpoch,
+                  notificationWorkspaceNames.contains(event.workspaceName),
+                  !NSApp.isActive else { continue }
+            let content = UNMutableNotificationContent()
+            content.title = event.title
+            content.body = event.body
+            content.sound = .default
+            content.userInfo = ["handoffID": event.handoffID]
+            let request = UNNotificationRequest(
+                identifier: "parley.status.\(event.id)",
+                content: content,
+                trigger: nil
+            )
+            Task {
+                try? await UNUserNotificationCenter.current().add(request)
+            }
+        }
+    }
+
+    private func showNotificationAlert(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Parley notifications"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func editRelay(

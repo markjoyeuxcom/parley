@@ -114,6 +114,25 @@ public struct RelayCoreClient: Sendable {
         return try JSONDecoder().decode([RelayHandoff].self, from: response.body)
     }
 
+    public func unreadHandoffs() throws -> [RelayHandoff] {
+        let response = try request(
+            method: "GET",
+            path: "/handoffs/unread",
+            headers: ["X-Parley-Control": controlToken],
+            body: Data()
+        )
+        if response.status == 404 {
+            // A newly attached UI can briefly outpace a persistent core from
+            // the previous build. Preserve workflow until that core is safely
+            // restarted; the bounded history remains authoritative.
+            return try handoffs(limit: 500).filter(\.hasUnreadResult)
+        }
+        guard response.status == 200 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return try JSONDecoder().decode([RelayHandoff].self, from: response.body)
+    }
+
     public func answerFromUI(consultationID: String, text: String) throws -> RelayTextResponse {
         let response = try request(
             method: "POST",
@@ -141,6 +160,16 @@ public struct RelayCoreClient: Sendable {
         let response = try request(
             method: "POST",
             path: "/ui/retry/\(handoffID)",
+            headers: ["X-Parley-Control": controlToken],
+            body: Data()
+        )
+        return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
+    public func markHandoffRead(_ handoffID: String) throws -> RelayTextResponse {
+        let response = try request(
+            method: "POST",
+            path: "/ui/read/\(handoffID)",
             headers: ["X-Parley-Control": controlToken],
             body: Data()
         )
