@@ -29,7 +29,10 @@ test('GitHub release automation is manual and can create only a draft', () => {
   const workflow = readFileSync(join(repositoryRoot, '.github/workflows/macos-draft-release.yml'), 'utf8')
   assert.match(workflow, /workflow_dispatch:/)
   assert.doesNotMatch(workflow, /^\s+push:/m)
-  assert.match(workflow, /actions\/checkout@v7\.0\.1/)
+  assert.match(
+    workflow,
+    /actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\.0\.1/,
+  )
   assert.match(workflow, /gh release create[\s\S]*--draft/)
   assert.match(workflow, /PARLEY_RELEASE_TAG/)
 })

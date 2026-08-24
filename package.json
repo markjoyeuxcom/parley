@@ -9,7 +9,7 @@
     "dev": "node scripts/run-native-swift.mjs dev --package-path native --runtime development --cwd .",
     "dev:restart-protocol": "node scripts/run-native-swift.mjs dev --package-path native --runtime development --cwd . --restart-stale-protocol",
     "dev:attach-production": "node scripts/run-native-swift.mjs dev --package-path native --runtime attached-production --cwd .",
-    "test": "node scripts/run-native-swift.mjs run --package-path native parley-native-checks && node --test scripts/native-macos-package.test.mjs scripts/native-macos-release.test.mjs",
+    "test": "node scripts/run-native-swift.mjs run --package-path native parley-native-checks && node --test scripts/github-security.test.mjs scripts/native-macos-package.test.mjs scripts/native-macos-release.test.mjs",
     "test:soak": "node scripts/run-native-swift.mjs run --package-path native parley-native-soak",
     "test:conformance": "node scripts/run-native-swift.mjs run --package-path native parley-conformance --runtime development",
     "test:conformance:production": "node scripts/run-native-swift.mjs run --package-path native parley-conformance --runtime production",
