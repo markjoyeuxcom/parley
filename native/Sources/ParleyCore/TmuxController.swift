@@ -21,7 +21,8 @@ public final class TmuxController {
         environment: [String: String]? = nil,
         runner: any CommandRunning = ProcessCommandRunner(),
         fileManager: FileManager = .default,
-        pause: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+        pause: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+        prepareRuntimeFiles: Bool = true
     ) throws {
         let resolvedEnvironment = Self.scrubInheritedCapabilities(
             environment ?? EnvironmentResolver.resolved()
@@ -43,10 +44,20 @@ public final class TmuxController {
         self.fileManager = fileManager
         self.pause = pause
 
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-        protocolDirectory = try AgentProtocol.install(in: directory, fileManager: fileManager)
-        try writeConfiguration()
+        if prepareRuntimeFiles {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            protocolDirectory = try AgentProtocol.install(in: directory, fileManager: fileManager)
+            try writeConfiguration()
+        } else {
+            protocolDirectory = directory.appendingPathComponent("agent-protocol", isDirectory: true)
+            let required = [configPath, protocolDirectory.appendingPathComponent("AGENTS.md")]
+            guard required.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) else {
+                throw ParleyTmuxError.commandFailed(
+                    "The Production runtime is not prepared. Start the installed Parley app once before attaching Development."
+                )
+            }
+        }
     }
 
     public func configureRelay(_ runtime: RelayRuntime) {
@@ -70,7 +81,7 @@ public final class TmuxController {
         return candidates.first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
-    public func bootstrap(cwd: String) throws {
+    public func bootstrap(cwd: String, createIfMissing: Bool = true) throws {
         try requireDirectory(cwd)
         let hasSession = try runTmux(["has-session", "-t", exactSession], allowFailure: true).status == 0
         if hasSession {
@@ -87,6 +98,11 @@ public final class TmuxController {
                 )
             }
             return
+        }
+        guard createIfMissing else {
+            throw ParleyTmuxError.commandFailed(
+                "The Production tmux session is not running. Start the installed Parley app before attaching Development."
+            )
         }
 
         let result = try runTmux([
@@ -739,6 +755,9 @@ public final class TmuxController {
                 "-e", "PARLEY_RELAY_TOKEN=\(token)",
                 "-e", "PATH=\(path)",
             ])
+            if let runtimeMarker = relayRuntime.runtimeMarker {
+                arguments.append(contentsOf: ["-e", "PARLEY_RUNTIME=\(runtimeMarker)"])
+            }
             let boundary = try AgentProcessBoundary(
                 applicationDirectory: applicationDirectory,
                 protocolDirectory: protocolDirectory,

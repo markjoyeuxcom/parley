@@ -188,17 +188,20 @@ public struct RelayRuntime: Sendable {
     public let shimDirectory: URL
     public let transportDirectory: URL
     public let credentials: RelayCredentials
+    public let runtimeMarker: String?
 
     public init(
         infoFile: URL,
         shimDirectory: URL,
         transportDirectory: URL,
-        credentials: RelayCredentials
+        credentials: RelayCredentials,
+        runtimeMarker: String? = nil
     ) {
         self.infoFile = infoFile
         self.shimDirectory = shimDirectory
         self.transportDirectory = transportDirectory
         self.credentials = credentials
+        self.runtimeMarker = runtimeMarker
     }
 }
 
@@ -2258,18 +2261,20 @@ public enum RelayShimError: LocalizedError, Equatable {
 public enum RelayShim {
     public static func install(
         in applicationDirectory: URL,
-        transportDirectory: URL? = nil
+        transportDirectory: URL? = nil,
+        runtimeMarker: String? = nil
     ) throws -> URL {
         let bin = applicationDirectory.appendingPathComponent("bin", isDirectory: true)
         let transport = transportDirectory ?? RelayFileTransport.runtimeDirectory(applicationDirectory: applicationDirectory)
-        _ = try installCommand(in: bin, transportDirectory: transport)
+        _ = try installCommand(in: bin, transportDirectory: transport, runtimeMarker: runtimeMarker)
         return bin
     }
 
     @discardableResult
     public static func installCommand(
         in bin: URL,
-        transportDirectory: URL? = nil
+        transportDirectory: URL? = nil,
+        runtimeMarker: String? = nil
     ) throws -> URL {
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         let executable = bin.appendingPathComponent("parley")
@@ -2283,15 +2288,19 @@ public enum RelayShim {
         }
         let transport = transportDirectory
             ?? RelayFileTransport.runtimeDirectory(applicationDirectory: bin.deletingLastPathComponent())
-        try script(transportDirectory: transport).write(to: executable, atomically: true, encoding: .utf8)
+        try script(transportDirectory: transport, runtimeMarker: runtimeMarker)
+            .write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return executable
     }
 
-    private static func script(transportDirectory: URL) -> String {
+    private static func script(transportDirectory: URL, runtimeMarker: String?) -> String {
         scriptTemplate.replacingOccurrences(
             of: "__PARLEY_TRANSPORT_ROOT__",
             with: shellLiteral(transportDirectory.standardizedFileURL.path)
+        ).replacingOccurrences(
+            of: "__PARLEY_RUNTIME_MARKER__",
+            with: shellLiteral(runtimeMarker ?? "")
         )
     }
 
@@ -2305,6 +2314,7 @@ public enum RelayShim {
     # Parley Native managed filesystem relay
     set -eu
     umask 077
+    runtime_marker=__PARLEY_RUNTIME_MARKER__
 
     command="${1:-}"
     target=""
@@ -2337,6 +2347,9 @@ public enum RelayShim {
         shift
         ;;
       *)
+        if [ -n "$runtime_marker" ]; then
+          echo "Parley relay [$runtime_marker]" >&2
+        fi
         echo "usage:" >&2
         echo "  parley relay <pane> [text...]   submit an attributed message" >&2
         echo "  parley paste <pane> [text...]   paste without sending" >&2

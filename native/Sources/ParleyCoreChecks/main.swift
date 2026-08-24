@@ -153,6 +153,357 @@ private func canonicalPath(_ path: String) -> String {
     return String(cString: resolved)
 }
 
+private func checkRuntimeNamespacesAreExplicitAndDisjoint() throws {
+    let home = URL(fileURLWithPath: "/Users/runtime-test", isDirectory: true)
+    let production = try ParleyRuntime.resolve(
+        arguments: [],
+        homeDirectory: home,
+        isBundledApplication: true
+    )
+    let development = try ParleyRuntime.resolve(
+        arguments: ["--runtime", "development"],
+        homeDirectory: home,
+        isBundledApplication: false
+    )
+    let attached = try ParleyRuntime.resolve(
+        arguments: ["--runtime", "attached-production"],
+        homeDirectory: home,
+        isBundledApplication: false
+    )
+    let failSafeDevelopment = try ParleyRuntime.resolve(
+        arguments: [],
+        homeDirectory: home,
+        isBundledApplication: false
+    )
+    let bundledIgnoresDevelopmentOverride = try ParleyRuntime.resolve(
+        arguments: ["--runtime", "development"],
+        homeDirectory: home,
+        isBundledApplication: true
+    )
+
+    try expect(production.mode == .production, "the installed app did not resolve to production")
+    try expect(development.mode == .development, "the development command did not resolve to development")
+    try expect(attached.mode == .attachedProduction, "the explicit attach command did not resolve to attached production")
+    try expect(failSafeDevelopment.mode == .development, "an unbundled executable silently fell into production")
+    try expect(bundledIgnoresDevelopmentOverride.mode == .production, "an argument moved the installed app out of production")
+    try expect(production.applicationDirectory != development.applicationDirectory, "production and development share Application Support")
+    try expect(production.tmuxSessionName != development.tmuxSessionName, "production and development share a tmux session")
+    try expect(production.preferenceSuiteName != development.preferenceSuiteName, "production and development share preferences")
+    try expect(attached.applicationDirectory == production.applicationDirectory, "production attach does not address production data")
+    try expect(attached.tmuxSessionName == production.tmuxSessionName, "production attach does not address the production tmux session")
+    try expect(production.visibleMarker == nil, "production displays a development marker")
+    try expect(development.visibleMarker == "DEV", "development is not permanently marked")
+    try expect(attached.visibleMarker == "DEV ATTACHED TO PRODUCTION", "production attach is not permanently marked")
+    try expect(production.preparesRuntimeFiles && production.launchesCore && production.upgradesCore, "production lost runtime ownership")
+    try expect(development.preparesRuntimeFiles && development.launchesCore && development.upgradesCore, "development cannot own its isolated runtime")
+    try expect(!attached.preparesRuntimeFiles && !attached.launchesCore && !attached.upgradesCore, "production attach can mutate the production runtime lifecycle")
+    try expect(production.installsStableCommand && !development.installsStableCommand && !attached.installsStableCommand, "a development runtime can replace the stable relay command")
+    try expect(production.managesLoginItem && !development.managesLoginItem && !attached.managesLoginItem, "a development runtime can mutate the production login item")
+}
+
+private func checkBuildInformationIsUsefulAndCopyable() throws {
+    let runtime = ParleyRuntime.make(
+        mode: .development,
+        homeDirectory: URL(fileURLWithPath: "/Users/build-test", isDirectory: true)
+    )
+    let packaged = ParleyBuildInformation.resolve(
+        infoDictionary: [
+            "CFBundleShortVersionString": "1.2.3",
+            "CFBundleVersion": "45",
+            "ParleySourceCommit": "0123456789abcdef",
+            "ParleySourceBranch": "main",
+            "ParleySourceDirty": false,
+        ],
+        environment: [
+            "PARLEY_BUILD_COMMIT": "ignored-development-commit",
+            "PARLEY_BUILD_DIRTY": "1",
+        ],
+        runtime: runtime,
+        operatingSystem: "macOS 26.0",
+        architecture: "arm64",
+        executablePath: "/Applications/Parley.app/Contents/MacOS/parley-native"
+    )
+
+    try expect(packaged.applicationVersion == "1.2.3", "About lost the packaged application version")
+    try expect(packaged.buildNumber == "45", "About lost the packaged build number")
+    try expect(packaged.sourceCommit == "0123456789abcdef", "About did not prefer packaged source metadata")
+    try expect(packaged.sourceBranch == "main", "About lost the packaged source branch")
+    try expect(packaged.sourceDirty == false, "About changed a clean packaged source state")
+    try expect(packaged.sourceSummary == "main @ 0123456789ab · clean", "About source summary is not concise")
+    try expect(packaged.copyableText.contains("Parley 1.2.3 (45)"), "copied build information omitted the version")
+    try expect(packaged.copyableText.contains("Runtime: Development"), "copied build information omitted the runtime")
+    try expect(packaged.copyableText.contains("Agent protocol: v\(AgentProtocol.version)"), "copied build information omitted the agent protocol")
+    try expect(packaged.copyableText.contains("Core contract: v\(CoreServiceIdentity.currentContractVersion)"), "copied build information omitted the core contract")
+    try expect(packaged.copyableText.contains(runtime.applicationDirectory.path), "copied build information omitted the isolated data path")
+
+    let development = ParleyBuildInformation.resolve(
+        infoDictionary: nil,
+        environment: [
+            "PARLEY_BUILD_VERSION": "0.1.0",
+            "PARLEY_BUILD_NUMBER": "99",
+            "PARLEY_BUILD_COMMIT": "fedcba9876543210",
+            "PARLEY_BUILD_BRANCH": "feat/about",
+            "PARLEY_BUILD_DIRTY": "true",
+        ],
+        runtime: runtime,
+        operatingSystem: "macOS 26.0",
+        architecture: "arm64",
+        executablePath: "/tmp/parley-native"
+    )
+    try expect(development.applicationVersion == "0.1.0", "development About did not use the injected version")
+    try expect(development.buildNumber == "99", "development About did not use the injected build")
+    try expect(development.sourceSummary == "feat/about @ fedcba987654 · modified", "development source state is unclear")
+}
+
+private func checkRuntimeUILeaseRefusesDuplicateOwners() throws {
+    let home = URL(
+        fileURLWithPath: "/private/tmp/pri-\(UUID().uuidString.lowercased().prefix(6))",
+        isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: home) }
+    let production = try ParleyRuntime.resolve(arguments: [], homeDirectory: home, isBundledApplication: true)
+    let development = try ParleyRuntime.resolve(
+        arguments: ["--runtime", "development"],
+        homeDirectory: home,
+        isBundledApplication: false
+    )
+    let attached = try ParleyRuntime.resolve(
+        arguments: ["--runtime", "attached-production"],
+        homeDirectory: home,
+        isBundledApplication: false
+    )
+
+    var developmentLease: RuntimeUILease? = try RuntimeUILease.acquire(runtime: development)
+    let productionLease = try RuntimeUILease.acquire(runtime: production)
+    try expect(FileManager.default.fileExists(atPath: development.uiLeaseFile.path), "development did not publish its UI lease")
+    try expect(FileManager.default.fileExists(atPath: production.uiLeaseFile.path), "production did not publish its UI lease")
+
+    do {
+        _ = try RuntimeUILease.acquire(runtime: development)
+        throw CheckFailure(description: "a second development UI acquired the same runtime")
+    } catch let error as RuntimeUILeaseError {
+        try expect(error == .alreadyRunning(.development), "duplicate development refusal was not specific")
+    }
+    do {
+        _ = try RuntimeUILease.acquire(runtime: attached)
+        throw CheckFailure(description: "production attach bypassed the production UI lease")
+    } catch let error as RuntimeUILeaseError {
+        try expect(error == .alreadyRunning(.attachedProduction), "production attach refusal was not specific")
+    }
+
+    developmentLease = nil
+    developmentLease = try RuntimeUILease.acquire(runtime: development)
+    try expect(developmentLease != nil, "a released development UI lease stayed stale")
+    withExtendedLifetime(productionLease) {}
+}
+
+private func checkReadOnlyRuntimeAttachmentRequiresPreparedFiles() throws {
+    let directory = try temporaryDirectory()
+    let runner = RecordingRunner()
+    do {
+        _ = try TmuxController(
+            tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+            applicationDirectory: directory.appendingPathComponent("missing", isDirectory: true),
+            sessionName: "parley",
+            environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+            runner: runner,
+            prepareRuntimeFiles: false
+        )
+        throw CheckFailure(description: "read-only production attach created an unprepared runtime")
+    } catch let error as ParleyTmuxError {
+        try expect(error.errorDescription?.contains("not prepared") == true, "unprepared attach failed without a useful explanation")
+    }
+
+    let owner = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: directory,
+        sessionName: "parley",
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner
+    )
+    let configurationBefore = try Data(contentsOf: owner.configPath)
+    let protocolBefore = try Data(contentsOf: owner.protocolDirectory.appendingPathComponent("AGENTS.md"))
+    _ = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: directory,
+        sessionName: "parley",
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner,
+        prepareRuntimeFiles: false
+    )
+    let configurationAfter = try Data(contentsOf: owner.configPath)
+    let protocolAfter = try Data(contentsOf: owner.protocolDirectory.appendingPathComponent("AGENTS.md"))
+    try expect(configurationAfter == configurationBefore, "read-only attach rewrote tmux configuration")
+    try expect(protocolAfter == protocolBefore, "read-only attach rewrote the agent protocol")
+
+    let absentSessionRunner = RecordingRunner { arguments, _ in
+        command(arguments) == "has-session" ? output(status: 1) : output()
+    }
+    let attachment = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: directory,
+        sessionName: "parley",
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: absentSessionRunner,
+        prepareRuntimeFiles: false
+    )
+    do {
+        try attachment.bootstrap(cwd: "/tmp", createIfMissing: false)
+        throw CheckFailure(description: "production attach started a missing tmux session")
+    } catch let error as ParleyTmuxError {
+        try expect(error.errorDescription?.contains("not running") == true, "missing production tmux failed without a useful explanation")
+    }
+    try expect(
+        !absentSessionRunner.calls.contains(where: { command($0.arguments) == "new-session" }),
+        "production attach issued tmux new-session"
+    )
+
+    let absentCore = directory.appendingPathComponent("absent-core", isDirectory: true)
+    try FileManager.default.createDirectory(at: absentCore, withIntermediateDirectories: false)
+    do {
+        _ = try RelayCoreLauncher.attachExisting(applicationDirectory: absentCore)
+        throw CheckFailure(description: "production attach started a missing coordination core")
+    } catch {
+        try expect(!FileManager.default.fileExists(atPath: absentCore.appendingPathComponent("core-control-token").path), "production attach created a control credential")
+        try expect(!FileManager.default.fileExists(atPath: absentCore.appendingPathComponent("core.log").path), "production attach created a core log")
+    }
+}
+
+private func checkRealProductionAndDevelopmentTmuxIsolation() throws {
+    let environment = EnvironmentResolver.resolved()
+    let tmux = try require(
+        TmuxController.findTmux(environment: environment),
+        "runtime isolation check could not find tmux"
+    )
+    let home = URL(
+        fileURLWithPath: "/private/tmp/pri-\(UUID().uuidString.lowercased().prefix(6))",
+        isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: home) }
+    let production = ParleyRuntime.make(mode: .production, homeDirectory: home)
+    let development = ParleyRuntime.make(mode: .development, homeDirectory: home)
+    let productionController = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: production.applicationDirectory,
+        sessionName: production.tmuxSessionName,
+        environment: environment
+    )
+    let developmentController = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: development.applicationDirectory,
+        sessionName: development.tmuxSessionName,
+        environment: environment
+    )
+    let runner = ProcessCommandRunner(timeout: 3)
+    defer {
+        for controller in [productionController, developmentController] {
+            _ = try? runner.run(
+                executable: tmux,
+                arguments: ["-S", controller.socketPath.path, "kill-server"],
+                environment: controller.environment,
+                input: nil
+            )
+        }
+    }
+
+    try productionController.bootstrap(cwd: home.path)
+    try developmentController.bootstrap(cwd: home.path)
+    try expect(productionController.socketPath != developmentController.socketPath, "live runtimes share a tmux socket")
+    try expect(productionController.sessionName != developmentController.sessionName, "live runtimes share a tmux session name")
+    try expect(FileManager.default.fileExists(atPath: productionController.socketPath.path), "production tmux socket was not created")
+    try expect(FileManager.default.fileExists(atPath: developmentController.socketPath.path), "development tmux socket was not created")
+    func paneProcessID(_ controller: TmuxController) throws -> Int32? {
+        let result = try runner.run(
+            executable: tmux,
+            arguments: [
+                "-S", controller.socketPath.path,
+                "-f", controller.configPath.path,
+                "list-panes", "-t", controller.sessionName,
+                "-F", "#{pane_pid}",
+            ],
+            environment: controller.environment,
+            input: nil
+        )
+        return Int32(result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+    let productionPanePID = try require(paneProcessID(productionController), "production tmux exposed no pane process")
+    let developmentPanePID = try require(paneProcessID(developmentController), "development tmux exposed no pane process")
+    try expect(productionPanePID != developmentPanePID, "live runtimes share a pane process")
+
+    let productionShim = try RelayShim.install(in: production.applicationDirectory)
+    let developmentShim = try RelayShim.install(
+        in: development.applicationDirectory,
+        runtimeMarker: development.visibleMarker
+    )
+    try expect(productionShim != developmentShim, "live runtimes share a relay shim directory")
+    let developmentCommand = try String(
+        contentsOf: developmentShim.appendingPathComponent("parley"),
+        encoding: .utf8
+    )
+    try expect(developmentCommand.contains("runtime_marker='DEV'"), "development relay command is not marked DEV")
+    let productionRecord = production.applicationDirectory.appendingPathComponent("workspace-layouts.json")
+    let developmentRecord = development.applicationDirectory.appendingPathComponent("workspace-layouts.json")
+    try Data("production-record".utf8).write(to: productionRecord, options: .atomic)
+    try Data("development-record".utf8).write(to: developmentRecord, options: .atomic)
+    let productionRecordData = try Data(contentsOf: productionRecord)
+    let developmentRecordData = try Data(contentsOf: developmentRecord)
+    try expect(productionRecordData != developmentRecordData, "live runtimes share durable records")
+
+    var coreEnvironment = environment
+    coreEnvironment["PARLEY_CORE_FIXTURE"] = "1"
+    let fixtureExecutable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+    let productionClient = try RelayCoreLauncher.ensureRunning(
+        applicationDirectory: production.applicationDirectory,
+        cwd: home.path,
+        environment: coreEnvironment,
+        tmuxSessionName: production.tmuxSessionName,
+        executable: fixtureExecutable,
+        timeout: 3
+    )
+    let developmentClient = try RelayCoreLauncher.ensureRunning(
+        applicationDirectory: development.applicationDirectory,
+        cwd: home.path,
+        environment: coreEnvironment,
+        tmuxSessionName: development.tmuxSessionName,
+        runtimeMarker: development.visibleMarker,
+        executable: fixtureExecutable,
+        timeout: 3
+    )
+    let productionPID = try require(
+        Int32(try String(contentsOf: production.applicationDirectory.appendingPathComponent("core.pid"), encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)),
+        "production fixture core wrote no PID"
+    )
+    let developmentPID = try require(
+        Int32(try String(contentsOf: development.applicationDirectory.appendingPathComponent("core.pid"), encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)),
+        "development fixture core wrote no PID"
+    )
+    defer {
+        _ = Darwin.kill(productionPID, SIGTERM)
+        _ = Darwin.kill(developmentPID, SIGTERM)
+    }
+    try expect(productionPID != developmentPID, "live runtimes share a coordination core process")
+    try expect(productionClient.infoFile != developmentClient.infoFile, "live runtimes share core discovery")
+    try expect(productionClient.isHealthy() && developmentClient.isHealthy(), "an isolated fixture core was unhealthy")
+
+    try expect(Darwin.kill(developmentPID, SIGTERM) == 0, "development fixture core could not be stopped independently")
+    try expect(eventually(timeout: 3) { !developmentClient.isHealthy() }, "development fixture core did not stop")
+    try expect(productionClient.isHealthy(), "stopping the development core also stopped production")
+
+    let stoppedDevelopment = try runner.run(
+        executable: tmux,
+        arguments: ["-S", developmentController.socketPath.path, "kill-server"],
+        environment: developmentController.environment,
+        input: nil
+    )
+    try expect(stoppedDevelopment.status == 0, "development tmux could not be stopped independently")
+    let survivingProductionPanes = try productionController.listPanes()
+    try expect(survivingProductionPanes.count == 1, "stopping development also stopped production panes")
+}
+
 private func argument(named name: String) -> String? {
     let arguments = CommandLine.arguments
     guard let index = arguments.firstIndex(of: name), arguments.indices.contains(index + 1) else { return nil }
@@ -1109,7 +1460,8 @@ private func checkDirectAgentSpawn() throws {
         infoFile: directory.appendingPathComponent("relay-url"),
         shimDirectory: directory.appendingPathComponent("bin"),
         transportDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: directory),
-        credentials: credentials
+        credentials: credentials,
+        runtimeMarker: "DEV"
     ))
 
     let pane = try controller.createPane(kind: .claude, cwd: "/tmp", direction: .horizontal)
@@ -1127,6 +1479,7 @@ private func checkDirectAgentSpawn() throws {
     try expect(!respawn.arguments.contains(where: { $0.hasPrefix("PARLEY_RELAY_INFO=") }), "agent retained the UI relay locator")
     try expect(respawn.arguments.contains("/usr/bin/sandbox-exec"), "agent did not receive the mandatory process boundary")
     try expect(respawn.arguments.contains("PARLEY_PROTOCOL_VERSION=\(AgentProtocol.version)"), "agent did not receive the protocol version")
+    try expect(respawn.arguments.contains("PARLEY_RUNTIME=DEV"), "development agent did not receive its runtime marker")
     let sandboxIndex = try require(respawn.arguments.firstIndex(of: "/usr/bin/sandbox-exec"), "agent boundary position disappeared")
     let protocolIndex = try require(
         respawn.arguments.firstIndex(of: "PARLEY_PROTOCOL_VERSION=\(AgentProtocol.version)"),
@@ -2478,7 +2831,8 @@ private func checkDiagnosticsExportIsUsefulAndPrivacyBounded() throws {
         application: DiagnosticsApplication(
             bundleIdentifier: "com.example.parley",
             version: "0.1.0",
-            build: "42"
+            build: "42",
+            runtime: "development"
         ),
         operatingSystem: "macOS test",
         architecture: "arm64",
@@ -2500,6 +2854,7 @@ private func checkDiagnosticsExportIsUsefulAndPrivacyBounded() throws {
     try expect(text.contains("diagnostic-failure"), "diagnostics omitted the failure correlation id")
     try expect(text.contains("targetUnavailable"), "diagnostics omitted the structured attention reason")
     try expect(text.contains("12345") && text.contains("54321"), "diagnostics omitted bounded process memory")
+    try expect(text.contains("development"), "diagnostics omitted the runtime namespace")
     try expect(report.failures.count == 1, "diagnostics omitted the recent operational failure")
     try expect(
         report.failures[0].transitions.count == DiagnosticsReportBuilder.maximumTransitionsPerFailure,
@@ -4621,6 +4976,8 @@ private func checkCoreServiceLoginLaunchConfiguration() throws {
     try expect(login.mode == .loginAgent, "login launch mode was not detected")
     try expect(!login.bootstrapsTmux, "login launch would create a tmux workspace before the UI opens")
     try expect(login.cwd == "/Users/tester", "login launch did not use the user home as its safe fallback folder")
+    try expect(login.tmuxSessionName == "parley", "login launch lost the Production tmux session")
+    try expect(login.runtimeMarker == nil, "login launch invented a Development marker")
     try expect(
         login.applicationDirectory.path == "/Users/tester/Library/Application Support/Parley Native",
         "login launch did not resolve the standard owner-local application directory"
@@ -4631,6 +4988,8 @@ private func checkCoreServiceLoginLaunchConfiguration() throws {
             "parley-core-service",
             "--application-directory", "/tmp/parley-app",
             "--cwd", "/tmp/project",
+            "--tmux-session", "parley-development",
+            "--runtime-marker", "DEV",
         ],
         homeDirectory: home,
         currentDirectory: "/tmp/fallback"
@@ -4639,6 +4998,8 @@ private func checkCoreServiceLoginLaunchConfiguration() throws {
     try expect(foreground.bootstrapsTmux, "ordinary UI launch stopped bootstrapping tmux")
     try expect(foreground.applicationDirectory.path == "/tmp/parley-app", "explicit application directory was ignored")
     try expect(foreground.cwd == "/tmp/project", "explicit working directory was ignored")
+    try expect(foreground.tmuxSessionName == "parley-development", "foreground core lost the isolated tmux session")
+    try expect(foreground.runtimeMarker == "DEV", "foreground core lost the Development marker")
 
     let active = try statusHandoff(
         id: "active-delegation",
@@ -5039,6 +5400,11 @@ private func checkVendorConformanceAttentionGate() throws {
 }
 
 let checks: [(String, () throws -> Void)] = [
+    ("runtime namespaces are explicit and disjoint", checkRuntimeNamespacesAreExplicitAndDisjoint),
+    ("useful copyable build information", checkBuildInformationIsUsefulAndCopyable),
+    ("runtime UI lease refuses duplicate owners", checkRuntimeUILeaseRefusesDuplicateOwners),
+    ("read-only runtime attachment requires prepared files", checkReadOnlyRuntimeAttachmentRequiresPreparedFiles),
+    ("real production and development tmux isolation", checkRealProductionAndDevelopmentTmuxIsolation),
     ("bootstrap", checkBootstrap),
     ("existing session workspace adoption", checkExistingSessionAdoptsWorkspaceWithoutRestart),
     ("workspace lifecycle", checkWorkspaceLifecycle),

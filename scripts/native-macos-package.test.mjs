@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -15,8 +15,24 @@ import {
   validateBundleStructure,
 } from './native-macos-package.mjs'
 
+const packageJSON = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+
+test('development entry points always name an isolated runtime', () => {
+  assert.match(packageJSON.scripts.dev, /--runtime development(?:\s|$)/)
+  assert.match(packageJSON.scripts['dev:restart-protocol'], /--runtime development(?:\s|$)/)
+  assert.match(packageJSON.scripts['dev:attach-production'], /--runtime attached-production(?:\s|$)/)
+  assert.match(packageJSON.scripts['test:conformance'], /--runtime development(?:\s|$)/)
+  assert.match(packageJSON.scripts['test:conformance:production'], /--runtime production(?:\s|$)/)
+})
+
 test('Info.plist describes the native foreground application', () => {
-  const plist = renderInfoPlist({ version: '1.2.3', build: '45' })
+  const plist = renderInfoPlist({
+    version: '1.2.3',
+    build: '45',
+    sourceCommit: '0123456789abcdef',
+    sourceBranch: 'main',
+    sourceDirty: false,
+  })
 
   assert.equal(BUNDLE_IDENTIFIER, 'com.markjoyeux.parley')
   assert.equal(MINIMUM_SYSTEM_VERSION, '14.0')
@@ -24,6 +40,9 @@ test('Info.plist describes the native foreground application', () => {
   assert.match(plist, /<key>CFBundleIdentifier<\/key>\s*<string>com\.markjoyeux\.parley<\/string>/)
   assert.match(plist, /<key>CFBundleShortVersionString<\/key>\s*<string>1\.2\.3<\/string>/)
   assert.match(plist, /<key>CFBundleVersion<\/key>\s*<string>45<\/string>/)
+  assert.match(plist, /<key>ParleySourceCommit<\/key>\s*<string>0123456789abcdef<\/string>/)
+  assert.match(plist, /<key>ParleySourceBranch<\/key>\s*<string>main<\/string>/)
+  assert.match(plist, /<key>ParleySourceDirty<\/key>\s*<false\/>/)
   assert.match(plist, /<key>LSMinimumSystemVersion<\/key>\s*<string>14\.0<\/string>/)
   assert.match(plist, /<key>LSApplicationCategoryType<\/key>\s*<string>public\.app-category\.developer-tools<\/string>/)
   assert.match(plist, /<key>NSHighResolutionCapable<\/key>\s*<true\/>/)

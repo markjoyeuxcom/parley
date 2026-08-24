@@ -233,6 +233,33 @@ Relay credentials, the socket and generated protocol files are private
 per-user runtime material. Maintain restrictive filesystem permissions. Never
 log credentials or include them in UI diagnostics.
 
+## Production and Development runtime isolation
+
+`ParleyRuntime` is the only authority for a UI's Application Support directory,
+tmux session, preference suite and lifecycle permissions. The packaged app is
+always Production. An unbundled SwiftPM executable is Development unless the
+explicit `attached-production` mode is requested; it must never fall into the
+Production namespace because an argument was missing or malformed.
+
+Production uses `Parley Native` and tmux session `parley`. Development uses
+`Parley Native Development` and `parley-development`, with its own socket,
+core, relay transport, credentials, protocol, shim, record and preferences.
+Pass the session name and runtime marker into every core launch: a core that
+defaults those independently can create a second session inside the otherwise
+isolated socket and overwrite the marked shim.
+
+Every UI owns an `O_EXLOCK` lease for its runtime. The explicit
+`dev:attach-production` mode shares Production's lease, requires its existing
+tmux/config/protocol/core, and may neither create nor upgrade them. Development
+never installs the stable `~/.local/bin/parley` command and never changes the
+Production login item. Keep **DEV** or **DEV ATTACHED TO PRODUCTION** visible in
+every development window, diagnostics and managed agent environment.
+
+Live conformance must name `production` or `development`; deterministic checks
+and soak use short, fresh temporary namespaces. The lifecycle check must keep
+proving that Production and Development have distinct pane PIDs, sockets, core
+PIDs, shims and durable records, and that stopping one leaves the other alive.
+
 ## Verification
 
 Never report work as done because it was written. Run it.

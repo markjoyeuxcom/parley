@@ -134,6 +134,8 @@ public enum RelayCoreHandover {
         applicationDirectory: URL,
         cwd: String,
         environment: [String: String],
+        tmuxSessionName: String = "parley",
+        runtimeMarker: String? = nil,
         executable: URL? = nil,
         timeout: TimeInterval = 10
     ) throws -> RelayCoreHandoverResult {
@@ -183,6 +185,8 @@ public enum RelayCoreHandover {
             applicationDirectory: applicationDirectory,
             cwd: cwd,
             environment: environment,
+            tmuxSessionName: tmuxSessionName,
+            runtimeMarker: runtimeMarker,
             executable: executable,
             timeout: timeout
         )

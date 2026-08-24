@@ -7,6 +7,7 @@ private struct Options {
     var timeout: TimeInterval = 90
     var vendors: [PaneKind] = []
     var applicationDirectory: URL?
+    var runtimeMode: ParleyRuntimeMode?
 
     static func parse(_ arguments: [String]) throws -> Options {
         var options = Options()
@@ -41,6 +42,14 @@ private struct Options {
                     throw ConformanceCLIError.usage("--application-directory needs an absolute path")
                 }
                 options.applicationDirectory = url
+            case "--runtime":
+                index += 1
+                guard arguments.indices.contains(index),
+                      let mode = ParleyRuntimeMode(rawValue: arguments[index]),
+                      mode == .production || mode == .development else {
+                    throw ConformanceCLIError.usage("--runtime needs production or development")
+                }
+                options.runtimeMode = mode
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -51,6 +60,9 @@ private struct Options {
         }
         if options.vendors.isEmpty {
             options.vendors = PaneKind.allCases.filter(\.isAgent)
+        }
+        guard options.runtimeMode != nil || options.applicationDirectory != nil else {
+            throw ConformanceCLIError.usage("name the runtime explicitly with --runtime production or --runtime development")
         }
         return options
     }
@@ -69,8 +81,9 @@ private enum ConformanceCLIError: LocalizedError {
 
 private func printUsage() {
     print("""
-    usage: parley-conformance [--dry-run] [--vendor <name>] [--timeout <seconds>]
+    usage: parley-conformance --runtime <production|development> [--dry-run] [--vendor <name>] [--timeout <seconds>]
 
+      --runtime <name>     target exactly one isolated Parley runtime
       --dry-run            inspect open panes and print the plan; spend no quota
       --vendor <name>      probe only claude, codex, agy, or copilot; repeatable
       --timeout <seconds>  bound each live Ask (default 90; range 5...600)
@@ -81,8 +94,11 @@ private func printUsage() {
 }
 
 private func applicationDirectory(for options: Options) -> URL {
-    options.applicationDirectory ?? FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/Parley Native", isDirectory: true)
+    if let applicationDirectory = options.applicationDirectory { return applicationDirectory }
+    return ParleyRuntime.make(
+        mode: options.runtimeMode ?? .development,
+        homeDirectory: FileManager.default.homeDirectoryForCurrentUser
+    ).applicationDirectory
 }
 
 private func renderPlan(_ plan: [VendorConformancePlanItem]) -> String {

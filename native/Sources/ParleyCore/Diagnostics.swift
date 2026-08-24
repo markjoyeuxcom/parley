@@ -5,11 +5,13 @@ public struct DiagnosticsApplication: Codable, Equatable, Sendable {
     public let bundleIdentifier: String
     public let version: String
     public let build: String
+    public let runtime: String
 
-    public init(bundleIdentifier: String, version: String, build: String) {
+    public init(bundleIdentifier: String, version: String, build: String, runtime: String = "unknown") {
         self.bundleIdentifier = bundleIdentifier
         self.version = version
         self.build = build
+        self.runtime = runtime
     }
 }
 
@@ -105,7 +107,7 @@ public struct DiagnosticsReport: Codable, Equatable, Sendable {
 }
 
 public enum DiagnosticsReportBuilder {
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2
     public static let maximumTransitionsPerFailure = 20
 
     public static func build(

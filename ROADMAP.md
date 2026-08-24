@@ -407,41 +407,40 @@ team or its folder routing.
 
 ### Installed and development runtime isolation
 
-The installed application and a source-tree build currently use separate
-executables but intentionally converge on one Application Support directory,
-tmux socket, coordination core, relay command and durable record. Sequential UI
-handover is safe; two different UIs controlling that runtime concurrently is
-not an isolated development environment.
+The installed application and a source-tree build previously used separate
+executables while converging on one Application Support directory, tmux socket,
+coordination core, relay command and durable record. This section now records
+the isolation contract which replaced that unsafe development arrangement.
 
-- [ ] Introduce an explicit runtime namespace resolved before any local file,
+- [x] Introduce an explicit runtime namespace resolved before any local file,
   tmux or core access. The installed application always uses **Production**;
   ordinary `npm run dev` always uses **Development** and cannot silently fall
   back to Production.
-- [ ] Give Development its own Application Support directory, tmux socket and
+- [x] Give Development its own Application Support directory, tmux socket and
   session, core discovery/control files, relay credentials and transport,
   protocol files, shim, layouts, recipes, activity/history and preferences.
   Building or launching Development must never rewrite Production's managed
   `parley` command or launch-at-login registration.
-- [ ] Keep the environments unmistakable: every Development window, pane,
+- [x] Keep the environments unmistakable: every Development window, pane,
   Status Center, diagnostic export and managed command displays a permanent
   **DEV** marker; Production never reads a Development record accidentally.
-- [ ] Add a per-runtime UI lease. A second UI for the same runtime focuses the
+- [x] Add a per-runtime UI lease. A second UI for the same runtime focuses the
   existing window or refuses with a useful explanation instead of attaching as
   another controller. Core uniqueness remains separate and continues to defer
   version handover while Ask/Delegate work is active.
-- [ ] Provide an explicit developer-only `npm run dev:attach-production` path
+- [x] Provide an explicit developer-only `npm run dev:attach-production` path
   for integration work against real panes. It previews the exact production
   runtime, refuses while the installed UI holds its lease, never starts a
   second tmux/core, and leaves a visible **DEV ATTACHED TO PRODUCTION** warning
   for the entire session.
-- [ ] Make conformance, soak and other live tools require an explicit runtime
-  target. Deterministic tests continue to use fresh temporary namespaces; no
+- [x] Make conformance and every tool that targets a live runtime require an
+  explicit runtime target. Deterministic tests continue to use fresh temporary namespaces; no
   normal test or build command may touch either live runtime.
-- [ ] Add lifecycle tests that run installed and Development builds together
-  and prove distinct pane process ids, sockets, cores, shims and durable files;
+- [x] Add lifecycle tests that run Production and Development namespaces
+  together and prove distinct pane process ids, sockets, cores, shims and durable files;
   then exercise the explicit attach path and prove only one UI can mutate the
   production runtime at a time.
-- [ ] Document the supported daily workflow: use installed Parley while editing,
+- [x] Document the supported daily workflow: use installed Parley while editing,
   testing and building; use isolated Development for ordinary UI work; use the
   explicit attach path only when a production-pane integration test is truly
   required.
@@ -580,7 +579,7 @@ The next implementation sequence is deliberately narrow:
 8. [x] Add `ask-many` with independent answers and explicit target lists.
 9. [x] Persist workspace layouts outside tmux.
 10. [x] Add diff and plan review shortcuts through the same transport.
-11. [ ] Isolate installed and Development runtimes, including a single-UI lease
+11. [x] Isolate installed and Development runtimes, including a single-UI lease
     and an explicit developer-only production attachment mode.
 12. [ ] Add cross-vendor CLI permission profiles with visible effective
     enforcement and immutable safe boundaries.

@@ -31,6 +31,7 @@ From the repository root:
 npm test
 npm run build
 npm run dev
+npm run dev:attach-production
 npm run package:mac
 npm run verify:package:mac
 npm run release:mac
@@ -91,8 +92,9 @@ changed, the app restores launch-at-login and remains open.
 
 The packaged bundle uses `com.markjoyeux.parley` for its preferences. On first
 launch it copies only missing workspace-continuity values from the historical
-SwiftPM executable domain (`parley-native`), so moving from `npm run dev` does
-not discard favourites, tab order or the last selected workspace.
+SwiftPM executable domain (`parley-native`). Source builds now use the isolated
+`com.markjoyeux.parley.development` suite; Production migration never reads that
+Development record.
 
 The same first launch presents a non-blocking readiness sheet. Local checks
 cover tmux, the persistent core, relay installation and the exact shared
@@ -123,7 +125,7 @@ of pushing input through it.
 
 ## Runtime ownership
 
-Parley stores its runtime under:
+The installed app stores its Production runtime under:
 
 ```text
 ~/Library/Application Support/Parley Native/
@@ -131,6 +133,19 @@ Parley stores its runtime under:
 
 It uses a dedicated tmux socket and configuration and never connects to the
 user's default tmux server. The tmux session is named `parley`.
+
+`npm run dev` stores Development under
+`~/Library/Application Support/Parley Native Development`, uses the
+`parley-development` tmux session, and owns a separate socket, core, relay
+transport, credentials, protocol, layouts, recipes, history and preferences.
+Every Development window and newly started agent is marked **DEV**. The two
+runtimes are designed to run concurrently.
+
+`npm run dev:attach-production` is the explicit exception for integration
+testing. It addresses the existing Production directory and tmux session,
+refuses while the installed UI owns the Production lease, never creates or
+upgrades a Production tmux/core, and remains visibly marked
+**DEV ATTACHED TO PRODUCTION**.
 
 - A tmux window is a Parley workspace.
 - A tmux pane is a live shell or agent pane.

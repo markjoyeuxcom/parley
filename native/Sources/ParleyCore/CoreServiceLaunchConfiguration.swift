@@ -9,17 +9,23 @@ public struct CoreServiceLaunchConfiguration: Equatable, Sendable {
     public let applicationDirectory: URL
     public let cwd: String
     public let mode: CoreServiceLaunchMode
+    public let tmuxSessionName: String
+    public let runtimeMarker: String?
 
     public var bootstrapsTmux: Bool { mode == .foregroundLauncher }
 
     public init(
         applicationDirectory: URL,
         cwd: String,
-        mode: CoreServiceLaunchMode
+        mode: CoreServiceLaunchMode,
+        tmuxSessionName: String = "parley",
+        runtimeMarker: String? = nil
     ) {
         self.applicationDirectory = applicationDirectory
         self.cwd = cwd
         self.mode = mode
+        self.tmuxSessionName = tmuxSessionName
+        self.runtimeMarker = runtimeMarker
     }
 
     public static func resolve(
@@ -37,10 +43,17 @@ public struct CoreServiceLaunchConfiguration: Equatable, Sendable {
                 .standardizedFileURL
         let cwd = value(after: "--cwd", in: arguments)
             ?? (mode == .loginAgent ? homeDirectory.standardizedFileURL.path : currentDirectory)
+        let tmuxSessionName = value(after: "--tmux-session", in: arguments)
+            .flatMap { $0.isEmpty ? nil : $0 }
+            ?? "parley"
+        let runtimeMarker = value(after: "--runtime-marker", in: arguments)
+            .flatMap { $0.isEmpty ? nil : $0 }
         return CoreServiceLaunchConfiguration(
             applicationDirectory: applicationDirectory,
             cwd: cwd,
-            mode: mode
+            mode: mode,
+            tmuxSessionName: tmuxSessionName,
+            runtimeMarker: runtimeMarker
         )
     }
 

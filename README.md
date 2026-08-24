@@ -201,11 +201,23 @@ resources/
   icon.png
 ```
 
-Runtime files live under:
+Production runtime files live under:
 
 ```text
 ~/Library/Application Support/Parley Native/
 ```
+
+Source-tree development is deliberately separate:
+
+```text
+~/Library/Application Support/Parley Native Development/
+```
+
+`npm run dev` uses the Development directory, the `parley-development` tmux
+session, its own tmux socket, core, relay transport, credentials, generated
+protocol, layouts, recipes, history and preference suite. Development windows
+and agent environments are permanently marked **DEV**, and Development never
+replaces Production's stable `~/.local/bin/parley` command or login item.
 
 That directory contains the isolated tmux socket and configuration, relay and
 UI-control credentials, core discovery state, logs and the generated shared
@@ -238,6 +250,7 @@ No JavaScript dependency installation is required.
 npm test
 npm run build
 npm run dev
+npm run dev:attach-production
 npm run package:mac
 npm run verify:package:mac
 npm run release:mac
@@ -257,6 +270,17 @@ active, fixture process ids survive reattachment, both handoff stores remain
 capped at 500, and robust app/broker and tmux RSS medians each stay within the
 larger of 16 MB or 10%. Set
 `PARLEY_SOAK_SECONDS` to a larger value for an extended run.
+
+The default conformance commands explicitly target Development. Add
+`:production` only when you deliberately intend to inspect or exercise the
+installed runtime:
+
+```bash
+npm run test:conformance:plan
+npm run test:conformance:plan:production
+PARLEY_LIVE=1 npm run test:conformance
+PARLEY_LIVE=1 npm run test:conformance:production
+```
 
 The conformance plan inspects existing panes and spends no subscription quota.
 When its routes look right, the explicitly opt-in live harness tests the loaded
@@ -281,6 +305,20 @@ npm run dev:restart-protocol
 
 That operation ends those agent conversations. A normal launch never restarts
 surviving panes.
+
+### Running installed and Development Parley together
+
+Keep the installed `Parley.app` open as the daily driver and use `npm run dev`
+for ordinary development. They can run at the same time because their data,
+tmux servers, coordination cores and preferences are disjoint. Closing either
+UI leaves only that runtime's tmux panes and core intact.
+
+Use `npm run dev:attach-production` only for a deliberate integration check
+against the installed app's real panes. It never starts or upgrades Production's
+tmux server or core, refuses if the installed UI owns the Production lease, and
+shows **DEV ATTACHED TO PRODUCTION** throughout the session. Quit the installed
+UI first, run the check, then close the attached development UI before reopening
+the installed app.
 
 `npm run package:mac` produces `dist/Parley.app` plus Apple Silicon ZIP and DMG
 artifacts. Local builds use an ad-hoc hardened-runtime signature and are meant

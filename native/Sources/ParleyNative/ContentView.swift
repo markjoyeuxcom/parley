@@ -20,6 +20,10 @@ struct ContentView: View {
         } detail: {
             VStack(spacing: 0) {
                 workspaceTabs
+                if model.runtime.visibleMarker != nil {
+                    Divider()
+                    RuntimeBanner(runtime: model.runtime)
+                }
                 Divider()
                 toolbar
                 if model.connectionState == .coreDisconnected {
@@ -54,9 +58,13 @@ struct ContentView: View {
             "Parley needs attention",
             isPresented: Binding(
                 get: { model.startupError != nil },
-                set: { if !$0 { model.startupError = nil } }
+                set: { if !$0 { model.dismissStartupError() } }
             ),
-            actions: { Button("OK") { model.startupError = nil } },
+            actions: {
+                Button(model.startupRequiresQuit ? "Quit" : "OK") {
+                    model.dismissStartupError()
+                }
+            },
             message: { Text(model.startupError ?? "Unknown error") }
         )
     }

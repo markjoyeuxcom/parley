@@ -87,10 +87,14 @@ final class AppModel: ObservableObject {
     @Published var commandPalettePresented = false
     @Published var setupPresented = false
     @Published var startupError: String?
+    @Published private(set) var startupRequiresQuit = false
 
+    let runtime: ParleyRuntime
     let terminalHandle = TerminalHandle()
     private let fallbackFolder: String
     private let applicationDirectory: URL
+    private let preferences: UserDefaults
+    private let runtimeLease: RuntimeUILease?
     private let layoutStore: SavedWorkspaceLayoutStore
     private let recipeStore: HandoffRecipeStore
     private var workspaceContinuity = WorkspaceContinuityState()
@@ -118,77 +122,151 @@ final class AppModel: ObservableObject {
         let requestedFolder = Self.argument(named: "--cwd")
         let initialFolder = requestedFolder ?? FileManager.default.currentDirectoryPath
         fallbackFolder = URL(fileURLWithPath: initialFolder).standardizedFileURL.path
-        applicationDirectory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Parley Native", isDirectory: true)
+        let resolvedRuntime: ParleyRuntime
+        var runtimeResolutionError: String?
+        do {
+            resolvedRuntime = try ParleyRuntime.resolve(
+                arguments: ProcessInfo.processInfo.arguments,
+                homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+                isBundledApplication: Self.isBundledApplication
+            )
+        } catch {
+            // Invalid development arguments must never fall through to the
+            // Production namespace. The startup error below keeps the fallback
+            // runtime inert.
+            resolvedRuntime = ParleyRuntime.make(
+                mode: .development,
+                homeDirectory: FileManager.default.homeDirectoryForCurrentUser
+            )
+            runtimeResolutionError = error.localizedDescription
+        }
+        runtime = resolvedRuntime
+        applicationDirectory = runtime.applicationDirectory
+        preferences = UserDefaults(suiteName: runtime.preferenceSuiteName) ?? .standard
         layoutStore = SavedWorkspaceLayoutStore(
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
         )
         recipeStore = HandoffRecipeStore(
             file: applicationDirectory.appendingPathComponent("handoff-recipes.json")
         )
+        do {
+            runtimeLease = runtimeResolutionError == nil
+                ? try RuntimeUILease.acquire(runtime: runtime)
+                : nil
+        } catch {
+            runtimeLease = nil
+            startupError = error.localizedDescription
+            startupRequiresQuit = true
+        }
+        if let runtimeResolutionError {
+            startupError = runtimeResolutionError
+            startupRequiresQuit = true
+        }
         recipes = (try? recipeStore.recipes()) ?? HandoffRecipe.defaults
-        UserDefaultsDomainMigration.copyMissing(
-            keys: [
-                Self.recentFoldersKey,
-                Self.workspaceContinuityKey,
-                Self.notificationWorkspacesKey,
-                Self.dismissedHandoffsKey,
-            ],
-            from: "parley-native",
-            to: .standard
-        )
-        recentFolders = UserDefaults.standard.stringArray(forKey: Self.recentFoldersKey) ?? []
-        if let data = UserDefaults.standard.data(forKey: Self.workspaceContinuityKey),
+        if runtime.mode == .production {
+            UserDefaultsDomainMigration.copyMissing(
+                keys: [
+                    Self.recentFoldersKey,
+                    Self.workspaceContinuityKey,
+                    Self.notificationWorkspacesKey,
+                    Self.dismissedHandoffsKey,
+                ],
+                from: "parley-native",
+                to: preferences
+            )
+        }
+        recentFolders = preferences.stringArray(forKey: Self.recentFoldersKey) ?? []
+        if let data = preferences.data(forKey: Self.workspaceContinuityKey),
            let decoded = try? JSONDecoder().decode(WorkspaceContinuityState.self, from: data) {
             workspaceContinuity = decoded
         }
         favouriteFolders = workspaceContinuity.favouriteFolders
         notificationWorkspaceNames = Set(
-            UserDefaults.standard.stringArray(forKey: Self.notificationWorkspacesKey) ?? []
+            preferences.stringArray(forKey: Self.notificationWorkspacesKey) ?? []
         )
         dismissedHandoffIDs = Set(
-            UserDefaults.standard.stringArray(forKey: Self.dismissedHandoffsKey) ?? []
+            preferences.stringArray(forKey: Self.dismissedHandoffsKey) ?? []
         )
-        setupPresented = !UserDefaults.standard.bool(forKey: Self.firstRunCompletedKey)
+        setupPresented = !preferences.bool(forKey: Self.firstRunCompletedKey)
+
+        guard runtimeLease != nil, startupError == nil else {
+            coreAvailable = false
+            tmuxAvailable = false
+            tmuxError = startupError
+            return
+        }
 
         do {
-            let controller = try TmuxController()
-            try controller.bootstrap(cwd: defaultFolder)
+            let controller = try TmuxController(
+                applicationDirectory: runtime.applicationDirectory,
+                sessionName: runtime.tmuxSessionName,
+                prepareRuntimeFiles: runtime.preparesRuntimeFiles
+            )
+            try controller.bootstrap(
+                cwd: defaultFolder,
+                createIfMissing: !runtime.requiresExistingTmuxSession
+            )
             var livePanes = try controller.listPanes()
             var liveWorkspaces = try controller.listWorkspaces()
             let credentials = try RelayCredentials(
                 file: controller.applicationDirectory.appendingPathComponent("relay-tokens.json")
             )
-            try credentials.retain(paneIDs: Set(livePanes.map(\.id)))
+            if runtime.preparesRuntimeFiles {
+                try credentials.retain(paneIDs: Set(livePanes.map(\.id)))
+            }
             let agentTransportDirectory = RelayFileTransport.runtimeDirectory(
                 applicationDirectory: controller.applicationDirectory
             )
-            let shimDirectory = try RelayShim.install(
-                in: controller.applicationDirectory,
-                transportDirectory: agentTransportDirectory
-            )
+            let shimDirectory: URL
+            if runtime.preparesRuntimeFiles {
+                shimDirectory = try RelayShim.install(
+                    in: controller.applicationDirectory,
+                    transportDirectory: agentTransportDirectory,
+                    runtimeMarker: runtime.visibleMarker
+                )
+            } else {
+                shimDirectory = controller.applicationDirectory.appendingPathComponent("bin", isDirectory: true)
+                guard FileManager.default.isExecutableFile(
+                    atPath: shimDirectory.appendingPathComponent("parley").path
+                ) else {
+                    throw RelayUIError.message(
+                        "The Production relay command is not prepared. Start the installed Parley app before attaching Development."
+                    )
+                }
+            }
             // Persistent tmux panes retain the PATH they were born with. Put a
             // managed copy in the user's existing stable command directory so
             // reattaching the UI upgrades relay access without killing those
             // agent conversations. A foreign `parley` command is never replaced.
-            _ = try RelayShim.installCommand(
-                in: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin"),
-                transportDirectory: agentTransportDirectory
-            )
+            if runtime.installsStableCommand {
+                _ = try RelayShim.installCommand(
+                    in: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin"),
+                    transportDirectory: agentTransportDirectory
+                )
+            }
             let infoFile = controller.applicationDirectory.appendingPathComponent("relay-url")
             controller.configureRelay(RelayRuntime(
                 infoFile: infoFile,
                 shimDirectory: shimDirectory,
                 transportDirectory: agentTransportDirectory,
-                credentials: credentials
+                credentials: credentials,
+                runtimeMarker: runtime.visibleMarker
             ))
             let relayClient: RelayCoreClient?
             do {
-                relayClient = try RelayCoreLauncher.ensureRunning(
-                    applicationDirectory: controller.applicationDirectory,
-                    cwd: defaultFolder,
-                    environment: controller.environment
-                )
+                if runtime.launchesCore {
+                    relayClient = try RelayCoreLauncher.ensureRunning(
+                        applicationDirectory: controller.applicationDirectory,
+                        cwd: defaultFolder,
+                        environment: controller.environment,
+                        tmuxSessionName: runtime.tmuxSessionName,
+                        runtimeMarker: runtime.visibleMarker
+                    )
+                } else {
+                    relayClient = try RelayCoreLauncher.attachExisting(
+                        applicationDirectory: controller.applicationDirectory
+                    )
+                }
                 coreAvailable = true
                 coreError = nil
             } catch {
@@ -199,7 +277,7 @@ final class AppModel: ObservableObject {
             }
             // This migration is destructive and therefore opt-in at process
             // launch. Normal UI reattachment always preserves conversations.
-            if Self.hasArgument("--restart-stale-protocol") {
+            if runtime.preparesRuntimeFiles, Self.hasArgument("--restart-stale-protocol") {
                 for paneID in AgentProtocol.stalePaneIDs(in: livePanes) {
                     try controller.restartPane(paneID)
                 }
@@ -234,10 +312,15 @@ final class AppModel: ObservableObject {
         }
         refreshCoreLoginItemState()
         refreshRuntimeReadiness()
-        scheduleCoreUpgradeCheck(force: true)
+        if runtime.upgradesCore { scheduleCoreUpgradeCheck(force: true) }
     }
 
     var activeWorkspace: TmuxWorkspace? { workspaces.first(where: \.isActive) }
+
+    func dismissStartupError() {
+        startupError = nil
+        if startupRequiresQuit { NSApp.terminate(nil) }
+    }
 
     var defaultFolder: String { activeWorkspace?.defaultFolder ?? fallbackFolder }
 
@@ -256,20 +339,31 @@ final class AppModel: ObservableObject {
     var coreLoginItemRequested: Bool { coreLoginItemState.isRegistered }
 
     var canChangeCoreLoginItem: Bool {
-        coreLoginItemState != .unavailable && !coreLoginItemChanging && !preparingToUninstall
+        runtime.managesLoginItem
+            && coreLoginItemState != .unavailable
+            && !coreLoginItemChanging
+            && !preparingToUninstall
     }
 
     var canPrepareToUninstall: Bool {
-        coreAvailable && relayClient != nil && coreUpgradeTask == nil && !preparingToUninstall
+        runtime.managesLoginItem
+            && coreAvailable
+            && relayClient != nil
+            && coreUpgradeTask == nil
+            && !preparingToUninstall
     }
 
     func refreshCoreLoginItemState() {
+        guard runtime.managesLoginItem else {
+            coreLoginItemState = .unavailable
+            return
+        }
         let refreshed = coreLoginItemController.state
         if refreshed != coreLoginItemState { coreLoginItemState = refreshed }
     }
 
     func setCoreLoginItemRequested(_ requested: Bool) {
-        guard !coreLoginItemChanging, !preparingToUninstall else { return }
+        guard runtime.managesLoginItem, !coreLoginItemChanging, !preparingToUninstall else { return }
         if requested == coreLoginItemRequested { return }
 
         do {
@@ -323,7 +417,7 @@ final class AppModel: ObservableObject {
     }
 
     func prepareToUninstall() {
-        guard canPrepareToUninstall, let relayClient else { return }
+        guard runtime.managesLoginItem, canPrepareToUninstall, let relayClient else { return }
 
         let confirmation = NSAlert()
         confirmation.messageText = "Prepare Parley for Uninstallation?"
@@ -444,7 +538,7 @@ final class AppModel: ObservableObject {
     }
 
     func completeEnvironmentCheck() {
-        UserDefaults.standard.set(true, forKey: Self.firstRunCompletedKey)
+        preferences.set(true, forKey: Self.firstRunCompletedKey)
         setupPresented = false
         terminalHandle.focus()
     }
@@ -493,7 +587,8 @@ final class AppModel: ObservableObject {
         let application = DiagnosticsApplication(
             bundleIdentifier: Bundle.main.bundleIdentifier ?? "unbundled-development-build",
             version: info["CFBundleShortVersionString"] as? String ?? "development",
-            build: info["CFBundleVersion"] as? String ?? "development"
+            build: info["CFBundleVersion"] as? String ?? "development",
+            runtime: runtime.mode.rawValue
         )
         let corePID = (try? String(
             contentsOf: applicationDirectory.appendingPathComponent("core.pid"),
@@ -911,17 +1006,28 @@ final class AppModel: ObservableObject {
             throw RelayUIError.message("Parley could not initialise tmux. Quit and reopen the app after resolving the startup error.")
         }
         if !tmuxAvailable {
-            try controller.bootstrap(cwd: defaultFolder)
-        }
-        if !coreAvailable {
-            relayClient = try RelayCoreLauncher.ensureRunning(
-                applicationDirectory: controller.applicationDirectory,
+            try controller.bootstrap(
                 cwd: defaultFolder,
-                environment: controller.environment
+                createIfMissing: !runtime.requiresExistingTmuxSession
             )
         }
+        if !coreAvailable {
+            if runtime.launchesCore {
+                relayClient = try RelayCoreLauncher.ensureRunning(
+                    applicationDirectory: controller.applicationDirectory,
+                    cwd: defaultFolder,
+                    environment: controller.environment,
+                    tmuxSessionName: runtime.tmuxSessionName,
+                    runtimeMarker: runtime.visibleMarker
+                )
+            } else {
+                relayClient = try RelayCoreLauncher.attachExisting(
+                    applicationDirectory: controller.applicationDirectory
+                )
+            }
+        }
         coreUpgradeSettled = false
-        scheduleCoreUpgradeCheck(force: true)
+        if runtime.upgradesCore { scheduleCoreUpgradeCheck(force: true) }
         try refresh()
         startupError = nil
     }
@@ -932,7 +1038,11 @@ final class AppModel: ObservableObject {
     }
 
     private func scheduleCoreUpgradeCheck(force: Bool = false) {
-        guard coreUpgradeTask == nil, !coreUpgradeSettled, !preparingToUninstall, let controller else { return }
+        guard runtime.upgradesCore,
+              coreUpgradeTask == nil,
+              !coreUpgradeSettled,
+              !preparingToUninstall,
+              let controller else { return }
         let now = Date()
         guard force || now.timeIntervalSince(lastCoreUpgradeAttempt) >= 2 else { return }
         lastCoreUpgradeAttempt = now
@@ -942,6 +1052,8 @@ final class AppModel: ObservableObject {
         let applicationDirectory = applicationDirectory
         let cwd = defaultFolder
         let environment = controller.environment
+        let tmuxSessionName = runtime.tmuxSessionName
+        let runtimeMarker = runtime.visibleMarker
         coreUpgradeTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -953,7 +1065,9 @@ final class AppModel: ObservableObject {
                         attached = try RelayCoreLauncher.ensureRunning(
                             applicationDirectory: applicationDirectory,
                             cwd: cwd,
-                            environment: environment
+                            environment: environment,
+                            tmuxSessionName: tmuxSessionName,
+                            runtimeMarker: runtimeMarker
                         )
                     }
                     return try RelayCoreHandover.reconcile(
@@ -961,7 +1075,9 @@ final class AppModel: ObservableObject {
                         expectedIdentity: expectedIdentity,
                         applicationDirectory: applicationDirectory,
                         cwd: cwd,
-                        environment: environment
+                        environment: environment,
+                        tmuxSessionName: tmuxSessionName,
+                        runtimeMarker: runtimeMarker
                     )
                 }.value
                 self.relayClient = result.client
@@ -1890,20 +2006,20 @@ final class AppModel: ObservableObject {
         recentFolders.removeAll { $0 == standardized }
         recentFolders.insert(standardized, at: 0)
         if recentFolders.count > 8 { recentFolders.removeLast(recentFolders.count - 8) }
-        UserDefaults.standard.set(recentFolders, forKey: Self.recentFoldersKey)
+        preferences.set(recentFolders, forKey: Self.recentFoldersKey)
     }
 
     private func saveNotificationWorkspaces() {
-        UserDefaults.standard.set(notificationWorkspaceNames.sorted(), forKey: Self.notificationWorkspacesKey)
+        preferences.set(notificationWorkspaceNames.sorted(), forKey: Self.notificationWorkspacesKey)
     }
 
     private func saveDismissedHandoffs() {
-        UserDefaults.standard.set(dismissedHandoffIDs.sorted(), forKey: Self.dismissedHandoffsKey)
+        preferences.set(dismissedHandoffIDs.sorted(), forKey: Self.dismissedHandoffsKey)
     }
 
     private func saveWorkspaceContinuity() {
         guard let data = try? JSONEncoder().encode(workspaceContinuity) else { return }
-        UserDefaults.standard.set(data, forKey: Self.workspaceContinuityKey)
+        preferences.set(data, forKey: Self.workspaceContinuityKey)
     }
 
     private func processNotifications(from handoffs: [RelayHandoff]) {
@@ -2021,6 +2137,11 @@ final class AppModel: ObservableObject {
 
     private static func hasArgument(_ name: String) -> Bool {
         ProcessInfo.processInfo.arguments.contains(name)
+    }
+
+    private static var isBundledApplication: Bool {
+        Bundle.main.bundleURL.pathExtension.caseInsensitiveCompare("app") == .orderedSame
+            && Bundle.main.bundleIdentifier == ParleyRuntime.productionBundleIdentifier
     }
 }
 

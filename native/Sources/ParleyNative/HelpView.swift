@@ -2,6 +2,7 @@ import ParleyCore
 import SwiftUI
 
 struct HelpView: View {
+    let runtime: ParleyRuntime
     @State private var query = ""
     @State private var selectedTopicID: String? = ParleyHelpGuide.topics.first?.id
 
@@ -18,8 +19,11 @@ struct HelpView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            List(topics, selection: $selectedTopicID) { topic in
+        VStack(spacing: 0) {
+            RuntimeBanner(runtime: runtime)
+            if runtime.visibleMarker != nil { Divider() }
+            NavigationSplitView {
+                List(topics, selection: $selectedTopicID) { topic in
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(topic.title)
@@ -39,21 +43,22 @@ struct HelpView: View {
             .navigationTitle("Parley Help")
             .navigationSplitViewColumnWidth(min: 230, ideal: 275, max: 340)
             .searchable(text: $query, placement: .sidebar, prompt: "Search help")
-            .overlay {
-                if topics.isEmpty {
-                    ContentUnavailableView.search(text: query)
+                .overlay {
+                    if topics.isEmpty {
+                        ContentUnavailableView.search(text: query)
+                    }
                 }
-            }
-        } detail: {
-            if let topic = selectedTopic {
-                HelpTopicView(topic: topic)
-                    .id(topic.id)
-            } else {
-                ContentUnavailableView(
-                    "No matching help",
-                    systemImage: "questionmark.circle",
-                    description: Text("Try a command name such as Ask, recipe, permission or workspace.")
-                )
+            } detail: {
+                if let topic = selectedTopic {
+                    HelpTopicView(topic: topic)
+                        .id(topic.id)
+                } else {
+                    ContentUnavailableView(
+                        "No matching help",
+                        systemImage: "questionmark.circle",
+                        description: Text("Try a command name such as Ask, recipe, permission or workspace.")
+                    )
+                }
             }
         }
         .frame(minWidth: 820, minHeight: 590)

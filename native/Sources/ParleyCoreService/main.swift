@@ -40,6 +40,7 @@ do {
     // shell profile inside this long-lived background service.
     let controller = try TmuxController(
         applicationDirectory: launch.applicationDirectory,
+        sessionName: launch.tmuxSessionName,
         environment: ProcessInfo.processInfo.environment
     )
     if launch.bootstrapsTmux {
@@ -60,7 +61,8 @@ do {
     )
     _ = try RelayShim.install(
         in: controller.applicationDirectory,
-        transportDirectory: agentTransportDirectory
+        transportDirectory: agentTransportDirectory,
+        runtimeMarker: launch.runtimeMarker
     )
 
     let controlToken = try RelayCoreControlToken.loadOrCreate(

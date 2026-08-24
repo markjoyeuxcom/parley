@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSyn
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 const cacheRoot = join(tmpdir(), 'parley-native-swift-cache')
@@ -15,9 +16,28 @@ const environment = {
   SWIFTPM_MODULECACHE_OVERRIDE: join(cacheRoot, 'swiftpm'),
 }
 
-function output(command, args) {
-  const result = spawnSync(command, args, { encoding: 'utf8', env: environment })
+function output(command, args, cwd) {
+  const result = spawnSync(command, args, { encoding: 'utf8', env: environment, cwd })
   return result.status === 0 ? result.stdout.trim() : ''
+}
+
+const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
+
+function applyDevelopmentBuildMetadata() {
+  const packageJSON = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  if (typeof packageJSON.version === 'string') environment.PARLEY_BUILD_VERSION = packageJSON.version
+
+  const commit = output('git', ['rev-parse', '--verify', 'HEAD'], repositoryRoot)
+  if (!commit) return
+  environment.PARLEY_BUILD_COMMIT = commit
+  environment.PARLEY_BUILD_BRANCH = output('git', ['branch', '--show-current'], repositoryRoot) || 'detached'
+  environment.PARLEY_BUILD_NUMBER = output('git', ['rev-list', '--count', 'HEAD'], repositoryRoot) || 'development'
+  const status = spawnSync('git', ['status', '--porcelain', '--untracked-files=normal'], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+    env: environment,
+  })
+  if (status.status === 0) environment.PARLEY_BUILD_DIRTY = status.stdout.trim() ? '1' : '0'
 }
 
 function compilerAccepts(sdk) {
@@ -132,6 +152,7 @@ if (requested[0] === 'dev') {
   }
   const executable = join(binPath, 'parley-native')
   environment.PARLEY_CORE_SERVICE = join(binPath, 'parley-core-service')
+  applyDevelopmentBuildMetadata()
   result = spawnSync(executable, appArguments, { stdio: 'inherit', env: environment })
 } else {
   result = spawnSync('swift', requested, { stdio: 'inherit', env: environment })

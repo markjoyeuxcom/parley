@@ -1,6 +1,8 @@
 import AppKit
+import ParleyCore
 import SwiftUI
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A SwiftPM executable has no app bundle to declare a foreground
@@ -8,8 +10,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // WindowGroup is visible and behaves like a normal macOS application.
         NSApp.setActivationPolicy(.regular)
         DispatchQueue.main.async {
+            self.applyDevelopmentIcon()
             NSApp.activate(ignoringOtherApps: true)
             NSApp.windows.first?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func applyDevelopmentIcon() {
+        guard Bundle.main.bundleIdentifier != ParleyRuntime.productionBundleIdentifier else { return }
+        let icon = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+            .appendingPathComponent("resources/icon.icns")
+        if let image = NSImage(contentsOf: icon) {
+            NSApp.applicationIconImage = image
         }
     }
 }
@@ -27,6 +39,9 @@ struct ParleyNativeApp: App {
         .defaultSize(width: 1_300, height: 820)
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About Parley") { openWindow(id: "about") }
+            }
             CommandGroup(replacing: .help) {
                 Button("Parley Help") { openWindow(id: "help") }
                     .keyboardShortcut("?", modifiers: [.command])
@@ -107,9 +122,14 @@ struct ParleyNativeApp: App {
         .windowResizability(.contentMinSize)
 
         Window("Parley Help", id: "help") {
-            HelpView()
+            HelpView(runtime: model.runtime)
         }
         .defaultSize(width: 980, height: 720)
         .windowResizability(.contentMinSize)
+
+        Window("About Parley", id: "about") {
+            AboutView(runtime: model.runtime)
+        }
+        .windowResizability(.contentSize)
     }
 }

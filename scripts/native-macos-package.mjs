@@ -43,7 +43,13 @@ function xml(value) {
     .replaceAll("'", '&apos;')
 }
 
-export function renderInfoPlist({ version, build }) {
+export function renderInfoPlist({
+  version,
+  build,
+  sourceCommit = 'unknown',
+  sourceBranch = 'unknown',
+  sourceDirty = false,
+}) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -68,6 +74,12 @@ export function renderInfoPlist({ version, build }) {
   <string>${xml(version)}</string>
   <key>CFBundleVersion</key>
   <string>${xml(build)}</string>
+  <key>ParleySourceCommit</key>
+  <string>${xml(sourceCommit)}</string>
+  <key>ParleySourceBranch</key>
+  <string>${xml(sourceBranch)}</string>
+  <key>ParleySourceDirty</key>
+  ${sourceDirty ? '<true/>' : '<false/>'}
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>
@@ -162,6 +174,14 @@ function buildNumber() {
   return run('git', ['rev-list', '--count', 'HEAD'], { capture: true }) || '1'
 }
 
+function sourceMetadata() {
+  return {
+    commit: run('git', ['rev-parse', '--verify', 'HEAD'], { capture: true }),
+    branch: run('git', ['branch', '--show-current'], { capture: true }) || 'detached',
+    dirty: Boolean(run('git', ['status', '--porcelain', '--untracked-files=normal'], { capture: true })),
+  }
+}
+
 function swiftReleaseBinPath() {
   for (const product of ['parley-native', 'parley-core-service']) {
     run('node', [
@@ -242,6 +262,7 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
 
   const version = packageVersion()
   const build = buildNumber()
+  const source = sourceMetadata()
   const bin = swiftReleaseBinPath()
   const outputDirectory = join(repositoryRoot, 'dist')
   const finalBundle = join(outputDirectory, 'Parley.app')
@@ -269,7 +290,17 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
   copyFileSync(join(repositoryRoot, 'resources/icon.icns'), join(resources, 'Parley.icns'))
   writeFileSync(join(resources, 'runtime-components.json'), runtimeComponentsManifest(), { mode: 0o644 })
   writeFileSync(join(launchAgents, CORE_LAUNCH_AGENT_PLIST), renderCoreLaunchAgentPlist(), { mode: 0o644 })
-  writeFileSync(join(contents, 'Info.plist'), renderInfoPlist({ version, build }), { mode: 0o644 })
+  writeFileSync(
+    join(contents, 'Info.plist'),
+    renderInfoPlist({
+      version,
+      build,
+      sourceCommit: source.commit,
+      sourceBranch: source.branch,
+      sourceDirty: source.dirty,
+    }),
+    { mode: 0o644 },
+  )
   writeFileSync(join(contents, 'PkgInfo'), 'APPL????\n', { mode: 0o644 })
 
   const structureErrors = validateBundleStructure(bundle)

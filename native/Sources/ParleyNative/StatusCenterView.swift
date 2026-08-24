@@ -36,6 +36,8 @@ struct StatusCenterView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            RuntimeBanner(runtime: model.runtime)
+            if model.runtime.visibleMarker != nil { Divider() }
             header
             Divider()
             countStrip

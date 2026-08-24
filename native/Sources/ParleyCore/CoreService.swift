@@ -43,6 +43,18 @@ public enum RelayCoreError: LocalizedError {
 /// A capability used only by the native UI to inspect and complete broker
 /// state. Agent panes receive their own pane credential, never this token.
 public enum RelayCoreControlToken {
+    public static func load(at file: URL) throws -> String {
+        guard FileManager.default.fileExists(atPath: file.path) else {
+            throw RelayCoreError.invalidControlToken
+        }
+        let token = try String(contentsOf: file, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard token.count == 64, token.allSatisfy(\.isHexDigit) else {
+            throw RelayCoreError.invalidControlToken
+        }
+        return token
+    }
+
     public static func loadOrCreate(at file: URL, fileManager: FileManager = .default) throws -> String {
         let directory = file.deletingLastPathComponent()
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -57,12 +69,7 @@ public enum RelayCoreControlToken {
         _ = Darwin.fchmod(descriptor, S_IRUSR | S_IWUSR)
 
         if fileManager.fileExists(atPath: file.path) {
-            let token = try String(contentsOf: file, encoding: .utf8)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard token.count == 64, token.allSatisfy(\.isHexDigit) else {
-                throw RelayCoreError.invalidControlToken
-            }
-            return token
+            return try load(at: file)
         }
 
         var bytes = [UInt8](repeating: 0, count: 32)
@@ -408,10 +415,28 @@ public enum RelayServiceProcess {
 }
 
 public enum RelayCoreLauncher {
+    public static func attachExisting(applicationDirectory: URL) throws -> RelayCoreClient {
+        let controlToken = try RelayCoreControlToken.load(
+            at: applicationDirectory.appendingPathComponent("core-control-token")
+        )
+        let client = RelayCoreClient(
+            infoFile: applicationDirectory.appendingPathComponent("relay-url"),
+            controlToken: controlToken
+        )
+        guard client.isHealthy() else {
+            throw RelayCoreError.serviceFailed(
+                "the Production core is not running. Start the installed Parley app before attaching Development"
+            )
+        }
+        return client
+    }
+
     public static func ensureRunning(
         applicationDirectory: URL,
         cwd: String,
         environment: [String: String],
+        tmuxSessionName: String = "parley",
+        runtimeMarker: String? = nil,
         executable suppliedExecutable: URL? = nil,
         timeout: TimeInterval = 10
     ) throws -> RelayCoreClient {
@@ -438,7 +463,11 @@ public enum RelayCoreLauncher {
         process.arguments = [
             "--application-directory", applicationDirectory.path,
             "--cwd", cwd,
+            "--tmux-session", tmuxSessionName,
         ]
+        if let runtimeMarker {
+            process.arguments?.append(contentsOf: ["--runtime-marker", runtimeMarker])
+        }
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = log
