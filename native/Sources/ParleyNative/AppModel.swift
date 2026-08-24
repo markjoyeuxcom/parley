@@ -68,6 +68,9 @@ struct ActiveContextPack: Identifiable, Equatable {
     let sourcePaneName: String
     let sourceFolder: String
     var pack: ContextPack
+    let reviewID: String?
+    var reviewState: AgentContextReviewState?
+    var requestedTargetPaneID: String?
 }
 
 enum PanePermissionAction: Equatable {
@@ -127,6 +130,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeRecipeRun: ActiveRecipeRun?
     @Published private(set) var askManyComparisonRun: AskManyComparisonRun?
     @Published private(set) var contextPackDraft: ActiveContextPack?
+    @Published private(set) var contextReviews: [AgentContextReview] = []
     @Published private(set) var contextCommandCapturing = false
     @Published private(set) var coreAvailable = false
     @Published private(set) var tmuxAvailable = false
@@ -899,6 +903,14 @@ final class AppModel: ObservableObject {
             && contextPackBuilder != nil
     }
 
+    var pendingContextReviews: [AgentContextReview] {
+        contextReviews.filter(\.state.needsHumanReview)
+    }
+
+    var contextPackIsAgentProposed: Bool {
+        contextPackDraft?.reviewID != nil
+    }
+
     var contextPackSourcePane: TmuxPane? {
         guard let draft = contextPackDraft else { return nil }
         return panes.first {
@@ -927,6 +939,7 @@ final class AppModel: ObservableObject {
         Set(contextPackAskTargets.map(\.kind)).count >= 2
             && askManyComparisonRun?.isRunning != true
             && relayClient != nil
+            && contextPackDraft?.reviewID == nil
             && contextPackIsSendable
     }
 
@@ -1143,6 +1156,21 @@ final class AppModel: ObservableObject {
                 if refreshedHandoffs != handoffs { handoffs = refreshedHandoffs }
                 let refreshedUnread = try relayClient.unreadHandoffs()
                 if refreshedUnread != unreadHandoffs { unreadHandoffs = refreshedUnread }
+                let refreshedContextReviews = try relayClient.contextReviews()
+                if refreshedContextReviews != contextReviews {
+                    contextReviews = refreshedContextReviews
+                    if var draft = contextPackDraft,
+                       let reviewID = draft.reviewID,
+                       let review = refreshedContextReviews.first(where: { $0.id == reviewID }) {
+                        draft.reviewState = review.state
+                        draft.requestedTargetPaneID = review.requestedTargetPaneID
+                        if draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                           !review.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            draft.pack.note = review.pack.note
+                        }
+                        contextPackDraft = draft
+                    }
+                }
                 processNotifications(from: refreshedHandoffs + refreshedUnread)
                 coreAvailable = true
                 coreError = nil
@@ -1666,7 +1694,10 @@ final class AppModel: ObservableObject {
             sourcePaneKind: source.kind,
             sourcePaneName: source.displayName,
             sourceFolder: source.cwd,
-            pack: ContextPack(name: "\(source.displayName) context")
+            pack: ContextPack(name: "\(source.displayName) context"),
+            reviewID: nil,
+            reviewState: nil,
+            requestedTargetPaneID: nil
         )
         contextPackPresented = true
     }
@@ -1674,6 +1705,54 @@ final class AppModel: ObservableObject {
     func presentContextPack() {
         guard contextPackDraft != nil else { return }
         contextPackPresented = true
+    }
+
+    func presentContextReview(_ review: AgentContextReview) {
+        guard review.state.needsHumanReview else { return }
+        if let existing = contextPackDraft,
+           existing.reviewID != review.id,
+           !existing.pack.parts.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Replace the current context pack?"
+            alert.informativeText = "The current editable pack will be replaced by \(review.sourcePaneName)'s staged context. The staged review remains available in the Context menu until you approve or decline it."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Open Agent Draft")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        contextPackDraft = ActiveContextPack(
+            id: review.id,
+            sourcePaneID: review.sourcePaneID,
+            sourcePaneKind: review.sourcePaneKind,
+            sourcePaneName: review.sourcePaneName,
+            sourceFolder: review.sourceFolder,
+            pack: review.pack,
+            reviewID: review.id,
+            reviewState: review.state,
+            requestedTargetPaneID: review.requestedTargetPaneID
+        )
+        contextPackPresented = true
+    }
+
+    func rejectCurrentContextReview() {
+        perform {
+            guard let reviewID = contextPackDraft?.reviewID, let relayClient else { return }
+            let alert = NSAlert()
+            alert.messageText = "Decline this agent context draft?"
+            alert.informativeText = "Nothing will be submitted. If the source pane is blocked in `parley ask --context`, it will receive an explicit refusal."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Decline Draft")
+            alert.addButton(withTitle: "Keep Reviewing")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let response = try relayClient.rejectContextReview(reviewID)
+            guard (200..<300).contains(response.status) else {
+                throw RelayUIError.message(response.text)
+            }
+            contextPackPresented = false
+            contextPackDraft = nil
+            try refresh()
+            terminalHandle.focus()
+        }
     }
 
     func dismissContextPack() {
@@ -1782,14 +1861,42 @@ final class AppModel: ObservableObject {
                 throw RelayUIError.message("The context pack's source pane is no longer ready.")
             }
             let rendered = try contextPackBuilder.render(draft.pack)
-            guard let target = chooseContextTarget(candidates: contextPackAskTargets) else { return }
-            guard confirmContextSend(
-                title: "Ask \(target.displayName) with this context pack?",
-                detail: "\(draft.pack.parts.count) source\(draft.pack.parts.count == 1 ? "" : "s") · \(rendered.utf8.count) UTF-8 bytes · from \(source.displayName)",
-                action: "Ask with Context"
+            guard let target = chooseContextTarget(
+                candidates: contextPackAskTargets,
+                preferredPaneID: draft.requestedTargetPaneID
             ) else { return }
-            try controller.askWithExplicitContext(from: source.id, to: target.id, text: rendered)
+            let isAwaitingAgent = draft.reviewID != nil && draft.reviewState == .awaitingReview
+            guard confirmContextSend(
+                title: isAwaitingAgent
+                    ? "Approve \(source.displayName)'s context Ask to \(target.displayName)?"
+                    : "Ask \(target.displayName) with this context pack?",
+                detail: "\(draft.pack.parts.count) source\(draft.pack.parts.count == 1 ? "" : "s") · \(rendered.utf8.count) UTF-8 bytes · from \(source.displayName)\(isAwaitingAgent ? " · approval unblocks the waiting source pane" : "")",
+                action: isAwaitingAgent ? "Approve and Ask" : "Ask with Context"
+            ) else { return }
+            if let reviewID = draft.reviewID, draft.reviewState == .awaitingReview {
+                guard let relayClient else {
+                    throw RelayUIError.message("The persistent core is unavailable, so this agent request cannot be approved.")
+                }
+                let response = try relayClient.approveContextReview(
+                    reviewID: reviewID,
+                    pack: draft.pack,
+                    targetPaneID: target.id
+                )
+                guard (200..<300).contains(response.status) else {
+                    throw RelayUIError.message(response.text)
+                }
+            } else {
+                try controller.askWithExplicitContext(from: source.id, to: target.id, text: rendered)
+                if let reviewID = draft.reviewID, let relayClient {
+                    _ = try? relayClient.completeContextDraft(
+                        reviewID: reviewID,
+                        pack: draft.pack,
+                        targetPaneID: target.id
+                    )
+                }
+            }
             contextPackPresented = false
+            contextPackDraft = nil
             try refresh()
             terminalHandle.focus()
         }
@@ -2235,7 +2342,7 @@ final class AppModel: ObservableObject {
         return candidates[max(0, picker.indexOfSelectedItem)]
     }
 
-    private func chooseContextTarget(candidates: [TmuxPane]) -> TmuxPane? {
+    private func chooseContextTarget(candidates: [TmuxPane], preferredPaneID: String? = nil) -> TmuxPane? {
         guard !candidates.isEmpty else {
             NSAlert(error: RelayUIError.message("Open a ready pane from another vendor before sending this context pack.")).runModal()
             return nil
@@ -2250,6 +2357,10 @@ final class AppModel: ObservableObject {
             let workspace = $0.workspaceName.map { " · \($0)" } ?? ""
             return "\($0.displayName) · \($0.kind.label)\(workspace) (\($0.id))"
         })
+        if let preferredPaneID,
+           let preferredIndex = candidates.firstIndex(where: { $0.id == preferredPaneID }) {
+            picker.selectItem(at: preferredIndex)
+        }
         alert.accessoryView = picker
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         return candidates[max(0, picker.indexOfSelectedItem)]

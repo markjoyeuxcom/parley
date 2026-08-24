@@ -41,7 +41,7 @@ The native application already has the product's essential wedge:
 - A versioned cross-vendor protocol injected into every newly started agent.
 - `relay` for an attributed asynchronous handoff, `paste` for an unsent draft,
   and correlated `ask` / `answer` for a blocking consultation.
-- Protocol v2 tracked delegation through `delegate`, `done`, `fail`, `status`
+- Protocol v5 tracked delegation through `delegate`, `done`, `fail`, `status`
   and `wait`, with exact source/target credential ownership.
 - Human Ask and Return editors with explicit control over the exact text sent.
 - Automatic submission that works across the supported agent TUIs.
@@ -608,6 +608,18 @@ between real vendor CLIs rather than a new autonomous orchestration engine.
   The reviewed pack can go through attributed one-vendor Ask or the independent
   multi-vendor comparison view. Packs deliberately remain ephemeral here;
   reusable workspace briefs and pinned snippets are the later durable layers.
+- [x] Let pane agents stage explicit context without silently collecting or
+  dispatching it. `parley context draft/add/list/show` is pane-authenticated,
+  owner-scoped and confines agent-staged files to that pane's working folder;
+  every part says the content was agent-provided and not independently read by
+  Parley. `parley ask <vendor> --context <draft>` enters a durable native review
+  checkpoint and blocks: the Context menu exposes the complete editable pack,
+  provenance, requested target and waiting source. Only a person's explicit
+  Approve and Ask action starts the correlated consultation; Decline and timeout
+  submit nothing and release the pane with an explicit failure. Person-created
+  context drafts remain ephemeral, while pending agent review records survive UI
+  reattachment and are marked interrupted rather than revived after a core
+  restart.
 - [ ] Add bounded, predefined **workflow sequences** such as plan → independent
   review → human checkpoint → implementation → verification. Every transition
   remains visible and interruptible, consequential steps retain their explicit

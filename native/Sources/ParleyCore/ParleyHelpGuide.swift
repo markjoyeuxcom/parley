@@ -237,6 +237,7 @@ public enum ParleyHelpGuide {
                         "Visible terminal capture means the current visible screen only. Hidden scrollback, another pane and the complete transcript are not scraped.",
                         "Command capture requires an absolute executable and treats each non-empty line as one literal argument. It never invokes a shell, expands variables, pipes or redirects.",
                         "Both command stdout and stderr plus the exit status are retained. Time and output bounds prevent a noisy process from creating an unbounded preview.",
+                        "A pane agent can stage repository files with `parley context draft --name \"Review\" --file path` and append with `parley context add <draft> --file path`. These files must remain under that pane's working folder and are visibly labelled agent-provided because Parley did not independently capture them.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -248,7 +249,8 @@ public enum ParleyHelpGuide {
                     items: [
                         "The live rendered byte total includes provenance, your request and wrapper text—not just source bodies.",
                         "An oversized source or pack stays visibly invalid and cannot be sent; Parley never silently clips the editable preview.",
-                        "Context packs are local in-memory drafts in this release. Workspace briefs and reusable pinned snippets are separate later features.",
+                        "Person-created context packs remain local in-memory drafts. Agent-staged review records are owner-only and durable so closing the UI cannot silently approve or lose a waiting checkpoint; workspace briefs and reusable pinned snippets remain separate later features.",
+                        "`parley ask <vendor> --context <draft> \"question\"` blocks at a visible human-review checkpoint. The Context menu shows the waiting draft; approval sends the edited pack and returns the correlated answer, while Decline submits nothing and releases the waiting pane with an explicit refusal.",
                     ]
                 ),
             ]

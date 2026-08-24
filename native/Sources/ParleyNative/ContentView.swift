@@ -547,6 +547,22 @@ struct ContentView: View {
 
     private var contextPackMenu: some View {
         Menu {
+            if !model.pendingContextReviews.isEmpty {
+                Section("Agent Drafts Requiring Review") {
+                    ForEach(model.pendingContextReviews) { review in
+                        Button {
+                            model.presentContextReview(review)
+                        } label: {
+                            let target = review.requestedTargetName.map { " → \($0)" } ?? ""
+                            Label(
+                                "\(review.sourcePaneName)\(target) · \(review.state == .awaitingReview ? "waiting" : "draft")",
+                                systemImage: review.state == .awaitingReview ? "person.crop.circle.badge.clock" : "doc.badge.ellipsis"
+                            )
+                        }
+                    }
+                }
+                Divider()
+            }
             if let draft = model.contextPackDraft {
                 Button("Open \(draft.pack.name)") { model.presentContextPack() }
                 Divider()
@@ -554,13 +570,20 @@ struct ContentView: View {
             Button("New Context Pack…") { model.newContextPack() }
                 .disabled(!model.canCreateContextPack)
         } label: {
-            Label("Context", systemImage: "shippingbox")
+            Label(
+                model.pendingContextReviews.isEmpty ? "Context" : "Context \(model.pendingContextReviews.count)",
+                systemImage: model.pendingContextReviews.isEmpty ? "shippingbox" : "shippingbox.fill"
+            )
         }
         .accessibilityLabel("Explicit context pack")
-        .accessibilityValue(model.contextPackDraft.map { "\($0.pack.parts.count) sources" } ?? "No draft")
+        .accessibilityValue(
+            model.pendingContextReviews.isEmpty
+                ? (model.contextPackDraft.map { "\($0.pack.parts.count) sources" } ?? "No draft")
+                : "\(model.pendingContextReviews.count) agent draft\(model.pendingContextReviews.count == 1 ? "" : "s") awaiting review"
+        )
         .help("Assemble selected files, Git changes, visible terminal output and command results before a cross-vendor handoff")
         .accessibilityHint("Open or create an editable attributed context pack")
-        .disabled(model.contextPackDraft == nil && !model.canCreateContextPack)
+        .disabled(model.contextPackDraft == nil && !model.canCreateContextPack && model.pendingContextReviews.isEmpty)
     }
 
     private var recipeMenu: some View {

@@ -2263,8 +2263,8 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "4", "the supervised-workflow protocol did not advance the shared protocol version")
-    for command in ["parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait", "parley cancel"] {
+    try expect(AgentProtocol.version == "5", "the guarded-context protocol did not advance the shared protocol version")
+    for command in ["parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait", "parley cancel", "parley context draft", "--context <draft-id>"] {
         try expect(AgentProtocol.text.contains(command), "shared protocol omitted \(command)")
     }
     try expect(AgentProtocol.text.contains("workspace lead"), "shared protocol omitted lead routing")
@@ -5813,7 +5813,7 @@ private func checkCoreServiceUpgradeIdentity() throws {
     ])
     let development = CoreServiceIdentity.resolve(infoDictionary: nil)
 
-    try expect(packaged.contractVersion == 1, "packaged core identity has the wrong coordination contract")
+    try expect(packaged.contractVersion == 2, "packaged core identity has the wrong coordination contract")
     try expect(packaged.applicationVersion == "1.2.3", "packaged core identity lost the app version")
     try expect(packaged.build == "456", "packaged core identity lost the app build")
     try expect(development.applicationVersion == "development", "development core identity invented an app version")
@@ -6171,6 +6171,187 @@ private func checkVendorConformanceAttentionGate() throws {
     try expect(ready == nil, "normal agent prompt was incorrectly blocked")
 }
 
+private func checkAgentContextDraftsRequireHumanApprovalBeforeAsk() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let claudeToken = try credentials.token(for: "%1")
+    let codexToken = try credentials.token(for: "%2")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp/project", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp/project", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let submissions = LockedDelivery()
+    let reviewStore = try AgentContextReviewStore(
+        file: directory.appendingPathComponent("context-reviews.json")
+    )
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { paneID, text in submissions.set(paneID: paneID, text: text, submit: true) },
+        contextSubmit: { paneID, text in submissions.set(paneID: paneID, text: text, submit: true) },
+        consultationTimeout: 3,
+        contextReviewStore: reviewStore
+    )
+    let infoFile = directory.appendingPathComponent("relay-url")
+    let controlToken = "context-review-control"
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
+    try server.start()
+    defer { server.stop() }
+    let control = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+
+    let staged = broker.handleContextDraft(
+        token: claudeToken,
+        name: "Parser review",
+        path: "Sources/Parser.swift",
+        text: "func parse() { fatalError() }"
+    )
+    try expect(staged.status == 201, "an authenticated pane could not stage explicit context")
+    let stagedSummary = try JSONDecoder().decode(
+        AgentContextReviewSummary.self,
+        from: Data(staged.text.utf8)
+    )
+    let stagedReview = try require(
+        broker.contextReviews().first(where: { $0.id == stagedSummary.id }),
+        "the staged context review was not retained"
+    )
+    try expect(stagedReview.state == .draft, "a staged context file skipped draft review")
+    try expect(stagedReview.sourcePaneID == "%1", "a context draft trusted a claimed source pane")
+    try expect(stagedReview.pack.parts.first?.source.kind == .agentFileDraft, "agent-provided context was labelled as person-selected")
+    try expect(
+        stagedReview.pack.parts.first?.source.detail.contains("not independently read by Parley") == true,
+        "agent-provided context omitted its trust boundary"
+    )
+    let escaped = broker.handleContextDraft(
+        token: claudeToken,
+        name: "Escaped context",
+        path: "/etc/hosts",
+        text: "claimed external contents"
+    )
+    try expect(escaped.status == 403, "an agent could stage a file outside its pane folder")
+
+    let listed = broker.contextDrafts(token: claudeToken)
+    try expect(listed.status == 200 && listed.text.contains(stagedReview.id), "the source pane could not list its context drafts")
+    let hidden = broker.contextDraft(token: codexToken, draftID: stagedReview.id)
+    try expect(hidden.status == 404, "another pane could inspect a source pane's unsent context")
+
+    let askResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        askResult.set(broker.handleContextAsk(
+            token: claudeToken,
+            draftID: stagedReview.id,
+            target: "codex",
+            text: "Find the concrete failure modes in this parser.",
+            idempotencyKey: "context-review-ask-1"
+        ))
+    }
+    try expect(eventually { (try? control.contextReviews().first?.state) == .awaitingReview }, "context Ask did not surface through native control")
+    try expect(askResult.value == nil, "context Ask returned before the person reviewed it")
+    try expect(submissions.value == nil, "context Ask submitted before human approval")
+
+    let pending = try require(try control.contextReviews().first, "the pending context review disappeared")
+    var approvedPack = pending.pack
+    approvedPack.note = "Review only correctness and cite exact lines."
+    let approved = try control.approveContextReview(
+        reviewID: pending.id,
+        pack: approvedPack,
+        targetPaneID: "%2"
+    )
+    try expect(approved.status == 200, "the native control could not approve a context Ask")
+    try expect(eventually { submissions.value != nil }, "approval did not dispatch the context Ask")
+    try expect(submissions.value?.paneID == "%2", "approved context went to the wrong pane")
+    try expect(submissions.value?.text.contains("Review only correctness") == true, "approval dispatched the unreviewed request")
+    try expect(submissions.value?.text.contains("not independently read by Parley") == true, "approval stripped context provenance")
+    try expect(askResult.value == nil, "approved context Ask stopped waiting before its correlated answer")
+
+    let returned = broker.handleAnswer(token: codexToken, consultationID: "current", text: "The fatal error is unconditional.")
+    try expect(returned.status == 200, "the context target could not return its correlated answer")
+    try expect(eventually { askResult.value != nil }, "context Ask did not return the correlated answer")
+    try expect(askResult.value?.status == 200 && askResult.value?.text.contains("fatal error") == true, "context Ask lost the answer")
+    try expect(broker.contextReviews().first?.state == .completed, "the reviewed context did not record completion")
+
+    let persisted = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
+    try expect(persisted.reviews().first?.state == .completed, "context review state did not survive store reattachment")
+}
+
+private func checkContextReviewShimRoundTrip() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let claudeToken = try credentials.token(for: "%1")
+    let codexToken = try credentials.token(for: "%2")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let submissions = LockedDelivery()
+    let reviewStore = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { paneID, text in submissions.set(paneID: paneID, text: text, submit: true) },
+        contextSubmit: { paneID, text in submissions.set(paneID: paneID, text: text, submit: true) },
+        consultationTimeout: 3,
+        contextReviewStore: reviewStore
+    )
+    let transportDirectory = RelayFileTransport.runtimeDirectory(applicationDirectory: directory)
+    let shimDirectory = try RelayShim.install(in: directory, transportDirectory: transportDirectory)
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory)
+    try transport.start()
+    defer { transport.stop() }
+    let file = directory.appendingPathComponent("Parser.swift")
+    try "let parser = Parser()\n".write(to: file, atomically: true, encoding: .utf8)
+    let runner = ProcessCommandRunner(timeout: 4)
+    let environment = ProcessInfo.processInfo.environment.merging([
+        "PARLEY_RELAY_TOKEN": claudeToken,
+    ]) { _, supplied in supplied }
+    let staged = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [shimDirectory.appendingPathComponent("parley").path, "context", "draft", "--name", "Parser review", "--file", file.path],
+        environment: environment,
+        input: nil
+    )
+    try expect(staged.status == 0, "parley context draft failed: \(staged.stderrText)")
+    let review = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(staged.stdoutText.utf8))
+    let listed = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [shimDirectory.appendingPathComponent("parley").path, "context", "list"],
+        environment: environment,
+        input: nil
+    )
+    try expect(listed.status == 0 && listed.stdoutText.contains(review.id), "parley context list omitted the staged draft")
+    let shown = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [shimDirectory.appendingPathComponent("parley").path, "context", "show", review.id],
+        environment: environment,
+        input: nil
+    )
+    try expect(shown.status == 0 && shown.stdoutText.contains("let parser"), "parley context show omitted the staged content")
+
+    let askResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        do {
+            let output = try ProcessCommandRunner(timeout: 5).run(
+                executable: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [shimDirectory.appendingPathComponent("parley").path, "ask", "codex", "--context", review.id, "Review this parser."],
+                environment: environment,
+                input: nil
+            )
+            askResult.set(RelayTextResponse(status: Int(output.status), text: output.stdoutText + output.stderrText))
+        } catch {
+            askResult.set(RelayTextResponse(status: -1, text: error.localizedDescription))
+        }
+    }
+    try expect(eventually { broker.contextReviews().first?.state == .awaitingReview }, "shim context Ask did not reach the review queue")
+    var approvedPack = try require(broker.contextReviews().first, "shim context review disappeared").pack
+    approvedPack.note = "Review this parser for correctness."
+    try expect(broker.approveContextReview(reviewID: review.id, pack: approvedPack, targetPaneID: "%2").status == 200, "shim context Ask could not be approved")
+    try expect(eventually { submissions.value != nil }, "approved shim context Ask was not submitted")
+    try expect(broker.handleAnswer(token: codexToken, consultationID: "current", text: "Parser reviewed.").status == 200, "shim context Ask could not be answered")
+    try expect(eventually { askResult.value != nil }, "shim context Ask did not return")
+    try expect(askResult.value?.status == 0 && askResult.value?.text.contains("Parser reviewed") == true, "shim context Ask returned the wrong result")
+}
+
 let checks: [(String, () throws -> Void)] = [
     ("runtime namespaces are explicit and disjoint", checkRuntimeNamespacesAreExplicitAndDisjoint),
     ("useful copyable build information", checkBuildInformationIsUsefulAndCopyable),
@@ -6225,6 +6406,8 @@ let checks: [(String, () throws -> Void)] = [
     ("selection-or-empty relay draft", checkRelayDraftStartsWithSelectionOrNothing),
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
     ("explicit bounded attributed context packs", checkContextPacksAreExplicitBoundedAndAttributed),
+    ("agent context drafts require human approval", checkAgentContextDraftsRequireHumanApprovalBeforeAsk),
+    ("context review shim round trip", checkContextReviewShimRoundTrip),
     ("authoritative Status Center projection", checkStatusCenterProjectionUsesOnlyAuthoritativeState),
     ("in-app recovery guidance", checkRecoveryGuidanceProjectsKnownFailures),
     ("durable authoritative operational activity", checkOperationalActivityIsDurableAndAuthoritative),

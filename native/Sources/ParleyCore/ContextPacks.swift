@@ -18,11 +18,12 @@ public enum ContextPackText {
     }
 }
 
-public enum ContextPackSourceKind: String, CaseIterable, Equatable, Sendable {
+public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sendable {
     case file
     case gitDiff
     case visibleTerminal
     case commandResult
+    case agentFileDraft
 
     public var label: String {
         switch self {
@@ -30,11 +31,12 @@ public enum ContextPackSourceKind: String, CaseIterable, Equatable, Sendable {
         case .gitDiff: "Git diff"
         case .visibleTerminal: "Visible terminal"
         case .commandResult: "Command result"
+        case .agentFileDraft: "Agent-provided file draft"
         }
     }
 }
 
-public struct ContextPackSource: Equatable, Sendable {
+public struct ContextPackSource: Codable, Equatable, Sendable {
     public let kind: ContextPackSourceKind
     public let label: String
     public let detail: String
@@ -46,7 +48,7 @@ public struct ContextPackSource: Equatable, Sendable {
     }
 }
 
-public struct ContextPackPart: Identifiable, Equatable, Sendable {
+public struct ContextPackPart: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let source: ContextPackSource
     public let capturedText: String
@@ -78,7 +80,7 @@ public struct ContextPackPart: Identifiable, Equatable, Sendable {
     }
 }
 
-public struct ContextPack: Identifiable, Equatable, Sendable {
+public struct ContextPack: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public var name: String
     public var note: String
@@ -252,8 +254,10 @@ private final class BoundedContextData: @unchecked Sendable {
 }
 
 /// Captures explicit local sources and renders the exact attributed payload a
-/// person can inspect before sending. Packs are intentionally ephemeral; saved
-/// workspace briefs and reusable snippets are separate roadmap features.
+/// person can inspect before sending. Person-created drafts remain ephemeral;
+/// an agent-proposed pack may be serialized only as part of its durable,
+/// human-reviewed checkpoint. Workspace briefs and reusable snippets are
+/// separate roadmap features.
 public final class ContextPackBuilder: @unchecked Sendable {
     public static let defaultMaximumPartBytes = 60_000
     public static let defaultMaximumRenderedBytes = 90_000
@@ -446,7 +450,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
             "Context pack: \(name.isEmpty ? "Untitled context" : name)",
             "This material was explicitly selected by the person using Parley. No hidden terminal history or implicit transcript was included.",
         ]
-        if !note.isEmpty { sections.append("Person's note:\n\(note)") }
+        if !note.isEmpty { sections.append("Request for the receiving vendor:\n\(note)") }
         for (index, part) in pack.parts.enumerated() {
             sections.append("""
             Context part \(index + 1) of \(pack.parts.count)

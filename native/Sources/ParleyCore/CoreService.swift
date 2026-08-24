@@ -151,6 +151,74 @@ public struct RelayCoreClient: Sendable {
         return try JSONDecoder().decode([RelayConsultation].self, from: response.body)
     }
 
+    public func contextReviews() throws -> [AgentContextReview] {
+        let response = try request(
+            method: "GET",
+            path: "/context-reviews",
+            headers: ["X-Parley-Control": controlToken],
+            body: Data()
+        )
+        if response.status == 404 { return [] }
+        guard response.status == 200 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return try JSONDecoder().decode([AgentContextReview].self, from: response.body)
+    }
+
+    public func approveContextReview(
+        reviewID: String,
+        pack: ContextPack,
+        targetPaneID: String
+    ) throws -> RelayTextResponse {
+        let body = try JSONEncoder().encode(AgentContextReviewApproval(
+            reviewID: reviewID,
+            targetPaneID: targetPaneID,
+            pack: pack
+        ))
+        let response = try request(
+            method: "POST",
+            path: "/ui/context-reviews/approve",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body
+        )
+        return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
+    public func rejectContextReview(_ reviewID: String) throws -> RelayTextResponse {
+        let response = try request(
+            method: "POST",
+            path: "/ui/context-reviews/reject/\(reviewID)",
+            headers: ["X-Parley-Control": controlToken],
+            body: Data()
+        )
+        return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
+    public func completeContextDraft(
+        reviewID: String,
+        pack: ContextPack,
+        targetPaneID: String
+    ) throws -> RelayTextResponse {
+        let body = try JSONEncoder().encode(AgentContextReviewApproval(
+            reviewID: reviewID,
+            targetPaneID: targetPaneID,
+            pack: pack
+        ))
+        let response = try request(
+            method: "POST",
+            path: "/ui/context-reviews/complete",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body
+        )
+        return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
     public func handoffs(limit: Int? = nil) throws -> [RelayHandoff] {
         let path = limit.map { "/handoffs?limit=\(min(500, max(1, $0)))" } ?? "/handoffs"
         let response = try request(

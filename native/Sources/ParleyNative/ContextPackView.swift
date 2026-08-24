@@ -9,6 +9,10 @@ struct ContextPackView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            if model.contextPackIsAgentProposed {
+                Divider()
+                agentDraftBanner
+            }
             Divider()
             sourceToolbar
             Divider()
@@ -24,6 +28,30 @@ struct ContextPackView: View {
         .sheet(isPresented: $commandCapturePresented) {
             ContextCommandCaptureView(model: model)
         }
+    }
+
+    private var agentDraftBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "person.crop.circle.badge.questionmark")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("AGENT-PROPOSED CONTEXT · NOT SENT")
+                    .font(.caption.monospaced().weight(.semibold))
+                if let draft = model.contextPackDraft {
+                    Text(
+                        draft.reviewState == .awaitingReview
+                            ? "\(draft.sourcePaneName) is blocked waiting for you to inspect the sources and request. Approve and Ask submits the edited pack; Decline submits nothing and releases the waiting command with a refusal."
+                            : "\(draft.sourcePaneName) staged this material. Paths and contents are claims made by that pane and were not independently read by Parley. Inspect or edit every part before sending."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.07))
     }
 
     private var header: some View {
@@ -46,15 +74,19 @@ struct ContextPackView: View {
     private var sourceToolbar: some View {
         HStack(spacing: 10) {
             Button("Add Files…", systemImage: "doc.badge.plus") { model.addContextFiles() }
+                .disabled(model.contextPackIsAgentProposed)
             Button("Add Git Diff", systemImage: "arrow.triangle.branch") { model.addContextGitDiff() }
+                .disabled(model.contextPackIsAgentProposed)
             Button("Add Visible Screen…", systemImage: "rectangle.inset.filled") {
                 model.addVisibleTerminalContext()
             }
+            .disabled(model.contextPackIsAgentProposed)
             Button("Capture Command…", systemImage: "terminal") {
                 commandCapturePresented = true
             }
+            .disabled(model.contextPackIsAgentProposed)
             Spacer()
-            Text("Only explicit sources are included")
+            Text(model.contextPackIsAgentProposed ? "Edit or remove staged sources before approval" : "Only explicit sources are included")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -212,9 +244,14 @@ struct ContextPackView: View {
                 }
             }
             Spacer()
+            if model.contextPackIsAgentProposed {
+                Button("Decline", role: .destructive) { model.rejectCurrentContextReview() }
+            }
             Button("Close") { model.dismissContextPack() }
                 .keyboardShortcut(.cancelAction)
-            Button("Ask One Vendor…") { model.askWithContextPack() }
+            Button(
+                model.contextPackDraft?.reviewState == .awaitingReview ? "Approve and Ask…" : "Ask One Vendor…"
+            ) { model.askWithContextPack() }
                 .disabled(!model.contextPackIsSendable || model.contextPackAskTargets.isEmpty)
             Button("Compare Vendors…") { model.compareWithContextPack() }
                 .keyboardShortcut(.defaultAction)
@@ -266,6 +303,7 @@ struct ContextPackView: View {
         case .gitDiff: "arrow.triangle.branch"
         case .visibleTerminal: "rectangle.inset.filled"
         case .commandResult: "terminal"
+        case .agentFileDraft: "person.crop.circle.badge.questionmark"
         }
     }
 }
