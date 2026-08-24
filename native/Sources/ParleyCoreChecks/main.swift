@@ -29,6 +29,37 @@ private final class RecordingRunner: CommandRunning {
     }
 }
 
+private struct ContextCommandInvocation {
+    let executable: URL
+    let arguments: [String]
+    let workingDirectory: URL
+    let environment: [String: String]
+}
+
+private final class RecordingContextCommandRunner: ContextCommandRunning {
+    var calls: [ContextCommandInvocation] = []
+    var output: CommandOutput
+
+    init(output: CommandOutput) {
+        self.output = output
+    }
+
+    func run(
+        executable: URL,
+        arguments: [String],
+        workingDirectory: URL,
+        environment: [String: String]
+    ) throws -> CommandOutput {
+        calls.append(ContextCommandInvocation(
+            executable: executable,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environment: environment
+        ))
+        return output
+    }
+}
+
 private final class LockedDelivery: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: (paneID: String, text: String, submit: Bool)?
@@ -900,7 +931,7 @@ private func checkInAppHelpGuideCoverage() throws {
     for concept in [
         "workspace lead", "automation policy", "permission", "status center",
         "saved layout", "command palette", "subscription", "compare independently",
-        "edited synthesis",
+        "edited synthesis", "context pack", "utf-8 bytes", "absolute executable",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -2892,6 +2923,16 @@ private func checkAsk() throws {
     try expect(runner.calls.contains { call in
         command(call.arguments) == "set-option" && call.arguments.contains("@parley-return-to") && call.arguments.contains("%1")
     }, "Ask did not record its return route")
+
+    let explicitContext = "Review this exact layout:\n\n    indented code\n\n\n┌diagram┐"
+    try controller.askWithExplicitContext(from: "%1", to: "%2", text: explicitContext)
+    let contextLoad = try require(
+        runner.calls.last(where: { command($0.arguments) == "load-buffer" }),
+        "context Ask did not load a tmux buffer"
+    )
+    let contextBody = String(decoding: try require(contextLoad.input, "context Ask buffer had no stdin"), as: UTF8.self)
+    try expect(contextBody.contains("    indented code"), "context Ask stripped meaningful indentation")
+    try expect(contextBody.contains("code\n\n\n┌diagram┐"), "context Ask collapsed blank lines or stripped Unicode source content")
 }
 
 private func checkReturn() throws {
@@ -3056,6 +3097,180 @@ private func checkReviewDraftsAreBoundedShellFreeAndExplicit() throws {
         throw CheckFailure(description: "failed git command produced a review draft")
     } catch let ReviewDraftError.commandFailed(detail) {
         try expect(detail.contains("stdout cause") && detail.contains("stderr cause"), "git failure hid stdout or stderr")
+    }
+}
+
+private func checkContextPacksAreExplicitBoundedAndAttributed() throws {
+    let repository = try temporaryDirectory()
+    let gitRunner = RecordingRunner { arguments, _ in
+        if arguments.contains("rev-parse") {
+            return CommandOutput(stdout: Data("\(repository.path)\n".utf8))
+        }
+        if arguments.contains("status") {
+            return CommandOutput(stdout: Data(" M Sources/App.swift\n?? PRIVATE-NOTE.txt\n".utf8))
+        }
+        if arguments.contains("--cached") {
+            return CommandOutput(stdout: Data("diff --git a/staged b/staged\n+staged context\n".utf8))
+        }
+        return CommandOutput(stdout: Data("diff --git a/worktree b/worktree\n+working context\n".utf8))
+    }
+    let commandRunner = RecordingContextCommandRunner(output: CommandOutput(
+        stdout: Data("command stdout\n".utf8),
+        stderr: Data("command stderr\n".utf8),
+        status: 7
+    ))
+    let builder = ContextPackBuilder(
+        environment: ["PATH": "/usr/bin:/bin"],
+        gitRunner: gitRunner,
+        commandRunner: commandRunner,
+        maximumPartBytes: 4_096,
+        maximumRenderedBytes: 20_000
+    )
+
+    let fileURL = repository.appendingPathComponent("PLAN.md")
+    try "# Plan\n\nKeep every source explicit.\n".write(to: fileURL, atomically: true, encoding: .utf8)
+    let file = try builder.file(at: fileURL)
+    try expect(file.source.kind == .file, "a selected file lost its source kind")
+    try expect(file.source.detail == fileURL.path, "a selected file lost its exact path")
+    try expect(file.byteCount == file.text.utf8.count && !file.isEdited, "a selected file reported an inexact byte count")
+
+    let changes = try builder.gitDiff(in: repository.path)
+    try expect(changes.source.kind == .gitDiff, "Git changes lost their source kind")
+    try expect(changes.source.detail == repository.path, "Git changes lost their repository path")
+    try expect(changes.text.contains("+staged context") && changes.text.contains("+working context"), "Git context omitted a diff surface")
+    try expect(changes.text.contains("?? PRIVATE-NOTE.txt"), "Git context omitted the explicit untracked filename")
+    try expect(!changes.text.contains("secret contents"), "Git context silently read untracked file contents")
+    try expect(gitRunner.calls.count == 4, "Git context ran an unexpected command")
+    try expect(gitRunner.calls.allSatisfy { $0.executable.path == "/usr/bin/git" }, "Git context invoked a shell or foreign executable")
+    try expect(gitRunner.calls.allSatisfy { $0.environment["GIT_OPTIONAL_LOCKS"] == "0" }, "Git context allowed optional index locks")
+
+    let terminal = try builder.visibleTerminal(
+        paneID: "%7",
+        paneName: "Review shell",
+        text: "Only the visible screen\nnot hidden scrollback"
+    )
+    try expect(terminal.source.kind == .visibleTerminal, "visible terminal context lost its source kind")
+    try expect(terminal.source.detail.contains("%7") && terminal.text == "Only the visible screen\nnot hidden scrollback", "visible terminal context changed its explicit capture")
+
+    let command = try builder.commandResult(
+        executablePath: "/usr/bin/printf",
+        arguments: ["%s", "literal | argument"],
+        workingDirectory: repository
+    )
+    try expect(command.source.kind == .commandResult, "command context lost its source kind")
+    try expect(command.text.contains("Exit status: 7"), "command context omitted its exit status")
+    try expect(command.text.contains("command stdout") && command.text.contains("command stderr"), "command context hid stdout or stderr")
+    let invocation = try require(commandRunner.calls.first, "command context did not execute")
+    try expect(invocation.executable.path == "/usr/bin/printf", "command context changed the executable")
+    try expect(invocation.arguments == ["%s", "literal | argument"], "command context interpreted an argument as shell syntax")
+    try expect(invocation.workingDirectory.path == repository.path, "command context ran in the wrong folder")
+    do {
+        _ = try builder.commandResult(
+            executablePath: "printf",
+            arguments: ["must not run"],
+            workingDirectory: repository
+        )
+        throw CheckFailure(description: "a context command resolved a non-absolute executable implicitly")
+    } catch ContextPackError.invalidExecutable {
+        // Expected: the person must see and approve the exact executable path.
+    }
+    try expect(commandRunner.calls.count == 1, "a refused relative command still executed")
+
+    let directRunner = ContextProcessCommandRunner(timeout: 2, maximumOutputBytes: 1_024)
+    let literal = try directRunner.run(
+        executable: URL(fileURLWithPath: "/usr/bin/printf"),
+        arguments: ["%s", "literal | argument"],
+        workingDirectory: repository,
+        environment: ["PATH": "/usr/bin:/bin"]
+    )
+    try expect(literal.status == 0 && literal.stdoutText == "literal | argument", "the real context runner interpreted a literal shell metacharacter")
+    let pwd = try directRunner.run(
+        executable: URL(fileURLWithPath: "/bin/pwd"),
+        arguments: [],
+        workingDirectory: repository,
+        environment: ["PATH": "/usr/bin:/bin"]
+    )
+    try expect(
+        canonicalPath(pwd.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)) == canonicalPath(repository.path),
+        "the real context runner ignored its exact working directory"
+    )
+    let boundedRunner = ContextProcessCommandRunner(timeout: 0.1, maximumOutputBytes: 32)
+    let noisy = try boundedRunner.run(
+        executable: URL(fileURLWithPath: "/usr/bin/yes"),
+        arguments: [],
+        workingDirectory: repository,
+        environment: ["PATH": "/usr/bin:/bin"]
+    )
+    try expect(noisy.status == 124, "a long-running context command did not reach its bounded timeout")
+    try expect(noisy.stdout.count <= 32, "a noisy context command exceeded its capture bound")
+
+    let editedTerminal = terminal.replacingText("Edited visible evidence")
+    try expect(editedTerminal.isEdited, "editing a captured part was not disclosed")
+    try expect(editedTerminal.capturedByteCount == terminal.byteCount, "editing a part changed its captured byte count")
+    try expect(editedTerminal.byteCount == "Edited visible evidence".utf8.count, "editing a part left a stale live byte count")
+
+    let oversizedEditText = String(repeating: "x", count: RelayText.maximumCharacters + 37)
+    let oversizedEdit = terminal.replacingText(oversizedEditText)
+    try expect(
+        oversizedEdit.byteCount == oversizedEditText.utf8.count,
+        "an oversized context edit was silently clipped instead of remaining visibly invalid"
+    )
+    do {
+        _ = try builder.render(ContextPack(name: "Oversized edit", parts: [oversizedEdit]))
+        throw CheckFailure(description: "an oversized edited part was rendered")
+    } catch ContextPackError.partTooLarge {
+        // Expected: the preview retains the edit and reports the explicit bound.
+    }
+
+    let pack = ContextPack(
+        name: "Release review",
+        note: "Challenge the upgrade assumptions.",
+        parts: [file, changes, editedTerminal, command]
+    )
+    let rendered = try builder.render(pack)
+    try expect(rendered.contains("Context pack: Release review"), "rendered context lost its name")
+    try expect(rendered.contains("Challenge the upgrade assumptions."), "rendered context lost the person's note")
+    for part in pack.parts {
+        try expect(rendered.contains(part.source.detail), "rendered context lost source provenance")
+        try expect(rendered.contains("Current UTF-8 bytes: \(part.byteCount)"), "rendered context omitted an exact part byte count")
+    }
+    try expect(rendered.contains("Edited after capture: yes"), "rendered context hid an edited capture")
+    try expect(rendered.utf8.count == builder.renderedByteCount(pack), "context pack total byte count disagreed with its rendered payload")
+
+    let binary = repository.appendingPathComponent("binary.dat")
+    try Data([0x41, 0, 0x42]).write(to: binary)
+    do {
+        _ = try builder.file(at: binary)
+        throw CheckFailure(description: "a binary file entered a context pack")
+    } catch ContextPackError.notText {
+        // Expected: context packs carry reviewable text, never opaque bytes.
+    }
+
+    let tinyBuilder = ContextPackBuilder(
+        environment: [:],
+        gitRunner: gitRunner,
+        commandRunner: commandRunner,
+        maximumPartBytes: 12,
+        maximumRenderedBytes: 64
+    )
+    do {
+        _ = try tinyBuilder.file(at: fileURL)
+        throw CheckFailure(description: "an oversized file entered a context pack")
+    } catch ContextPackError.partTooLarge {
+        // Expected: each source is bounded before it reaches the preview.
+    }
+    let tinyPackBuilder = ContextPackBuilder(
+        environment: [:],
+        gitRunner: gitRunner,
+        commandRunner: commandRunner,
+        maximumPartBytes: 4_096,
+        maximumRenderedBytes: 64
+    )
+    do {
+        _ = try tinyPackBuilder.render(ContextPack(name: "Too large", parts: [file]))
+        throw CheckFailure(description: "an oversized rendered context pack was accepted")
+    } catch ContextPackError.packTooLarge {
+        // Expected: wrappers and notes count toward the final handoff ceiling.
     }
 }
 
@@ -4985,14 +5200,18 @@ private func checkHumanAskManyCoreControlRoute() throws {
             result.set(try client.askManyFromUI(
                 sourcePaneID: "%1",
                 targetPaneIDs: ["%2", "%3"],
-                text: "Which result is more important?",
-                idempotencyKey: "ui-compare-authorized"
+                text: "Compare exactly:\n\n    indented evidence\n\n\n┌diagram┐",
+                idempotencyKey: "ui-compare-authorized",
+                preserveFormatting: true
             ))
         } catch {
             result.set(error: error)
         }
     }
     try expect(eventually { broker.consultations().count == 2 }, "the authenticated UI route did not reach both targets")
+    try expect(submissions.values.allSatisfy {
+        $0.text.contains("    indented evidence") && $0.text.contains("evidence\n\n\n┌diagram┐")
+    }, "the formatted native comparison damaged explicit context before submission")
     try expect(broker.handleAnswer(token: codexToken, consultationID: "current", text: "Codex result").status == 200, "Codex could not answer the UI route")
     try expect(broker.handleAnswer(token: agyToken, consultationID: "current", text: "Agy result").status == 200, "Agy could not answer the UI route")
     try expect(eventually { result.value != nil || result.error != nil }, "the UI route did not complete")
@@ -6005,6 +6224,7 @@ let checks: [(String, () throws -> Void)] = [
     ("relay cleaning", checkRelayCleaning),
     ("selection-or-empty relay draft", checkRelayDraftStartsWithSelectionOrNothing),
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
+    ("explicit bounded attributed context packs", checkContextPacksAreExplicitBoundedAndAttributed),
     ("authoritative Status Center projection", checkStatusCenterProjectionUsesOnlyAuthoritativeState),
     ("in-app recovery guidance", checkRecoveryGuidanceProjectsKnownFailures),
     ("durable authoritative operational activity", checkOperationalActivityIsDurableAndAuthoritative),

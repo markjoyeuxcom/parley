@@ -79,6 +79,7 @@ do {
         panes: { try controller.listPanes() },
         paste: { paneID, text in try controller.paste(text, into: paneID, submit: false) },
         submit: { paneID, text in try controller.paste(text, into: paneID, submit: true) },
+        contextSubmit: { paneID, text in try controller.pasteExplicitContext(text, into: paneID, submit: true) },
         visibleText: { paneID in try controller.capturePane(paneID) },
         handoffJournal: handoffJournal,
         activityJournal: activityJournal

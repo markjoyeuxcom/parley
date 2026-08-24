@@ -60,6 +60,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.askManyComparisonPresented) {
             AskManyComparisonView(model: model)
         }
+        .sheet(isPresented: $model.contextPackPresented) {
+            ContextPackView(model: model)
+        }
         .alert(
             "Parley needs attention",
             isPresented: Binding(
@@ -422,6 +425,7 @@ struct ContentView: View {
             Divider().frame(height: 18)
             askMenu
             reviewMenu
+            contextPackMenu
             recipeMenu
             returnMenu
 
@@ -541,6 +545,24 @@ struct ContentView: View {
         .accessibilityHint("Preview current changes, a plan, or a file before asking another vendor")
     }
 
+    private var contextPackMenu: some View {
+        Menu {
+            if let draft = model.contextPackDraft {
+                Button("Open \(draft.pack.name)") { model.presentContextPack() }
+                Divider()
+            }
+            Button("New Context Pack…") { model.newContextPack() }
+                .disabled(!model.canCreateContextPack)
+        } label: {
+            Label("Context", systemImage: "shippingbox")
+        }
+        .accessibilityLabel("Explicit context pack")
+        .accessibilityValue(model.contextPackDraft.map { "\($0.pack.parts.count) sources" } ?? "No draft")
+        .help("Assemble selected files, Git changes, visible terminal output and command results before a cross-vendor handoff")
+        .accessibilityHint("Open or create an editable attributed context pack")
+        .disabled(model.contextPackDraft == nil && !model.canCreateContextPack)
+    }
+
     private var recipeMenu: some View {
         Menu {
             if model.workspaceLead == nil {
@@ -592,6 +614,7 @@ struct ContentView: View {
     private var compactActionsMenu: some View {
         Menu {
             reviewMenu
+            contextPackMenu
             recipeMenu
             returnMenu
             if hasWaitingWork {

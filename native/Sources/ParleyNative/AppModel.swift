@@ -61,6 +61,15 @@ struct AskManyComparisonRun: Identifiable, Equatable {
     var isRunning: Bool { response == nil && error == nil }
 }
 
+struct ActiveContextPack: Identifiable, Equatable {
+    let id: String
+    let sourcePaneID: String
+    let sourcePaneKind: PaneKind
+    let sourcePaneName: String
+    let sourceFolder: String
+    var pack: ContextPack
+}
+
 enum PanePermissionAction: Equatable {
     case create(SplitDirection)
     case restart(String)
@@ -117,6 +126,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var permissionProfiles: [PermissionProfileDefinition] = []
     @Published private(set) var activeRecipeRun: ActiveRecipeRun?
     @Published private(set) var askManyComparisonRun: AskManyComparisonRun?
+    @Published private(set) var contextPackDraft: ActiveContextPack?
+    @Published private(set) var contextCommandCapturing = false
     @Published private(set) var coreAvailable = false
     @Published private(set) var tmuxAvailable = false
     @Published private(set) var coreError: String?
@@ -135,6 +146,7 @@ final class AppModel: ObservableObject {
     @Published var setupPresented = false
     @Published var panePermissionRequest: PanePermissionRequest?
     @Published var askManyComparisonPresented = false
+    @Published var contextPackPresented = false
     @Published private(set) var requestedHelpTopicID: String?
     @Published var startupError: String?
     @Published private(set) var startupRequiresQuit = false
@@ -155,6 +167,7 @@ final class AppModel: ObservableObject {
     private var lastProjectContextRefresh = Date.distantPast
     private var relayClient: RelayCoreClient?
     private var reviewDraftBuilder: ReviewDraftBuilder?
+    private var contextPackBuilder: ContextPackBuilder?
     private let notificationEpoch = Date()
     private var observedNotificationEventIDs: Set<String> = []
     private var runtimeReadinessTask: Task<Void, Never>?
@@ -356,6 +369,7 @@ final class AppModel: ObservableObject {
             tmuxAvailable = true
             tmuxError = nil
             reviewDraftBuilder = ReviewDraftBuilder(environment: controller.environment)
+            contextPackBuilder = ContextPackBuilder(environment: controller.environment)
             panes = livePanes
             workspaces = liveWorkspaces
             savedLayouts = try layoutStore.layouts()
@@ -873,6 +887,69 @@ final class AppModel: ObservableObject {
                 && $0.createdAt >= run.startedAt
                 && $0.state == .awaitingAnswer
         }
+    }
+
+    var canCreateContextPack: Bool {
+        guard let pane = activePane else { return false }
+        return pane.kind.isAgent
+            && pane.isStarted
+            && !pane.isDead
+            && pane.relayEnabled
+            && pane.hasCurrentProtocol
+            && contextPackBuilder != nil
+    }
+
+    var contextPackSourcePane: TmuxPane? {
+        guard let draft = contextPackDraft else { return nil }
+        return panes.first {
+            $0.id == draft.sourcePaneID
+                && $0.kind == draft.sourcePaneKind
+                && $0.isStarted
+                && !$0.isDead
+                && $0.relayEnabled
+                && $0.hasCurrentProtocol
+        }
+    }
+
+    var contextPackAskTargets: [TmuxPane] {
+        guard let source = contextPackSourcePane else { return [] }
+        return panes.filter {
+            $0.kind.isAgent
+                && $0.kind != source.kind
+                && $0.isStarted
+                && !$0.isDead
+                && $0.relayEnabled
+                && $0.hasCurrentProtocol
+        }
+    }
+
+    var canCompareContextPack: Bool {
+        Set(contextPackAskTargets.map(\.kind)).count >= 2
+            && askManyComparisonRun?.isRunning != true
+            && relayClient != nil
+            && contextPackIsSendable
+    }
+
+    var contextPackRenderedByteCount: Int {
+        guard let pack = contextPackDraft?.pack, let contextPackBuilder else { return 0 }
+        return contextPackBuilder.renderedByteCount(pack)
+    }
+
+    var contextPackMaximumBytes: Int {
+        contextPackBuilder?.maximumRenderedBytes ?? ContextPackBuilder.defaultMaximumRenderedBytes
+    }
+
+    var contextPackMaximumPartBytes: Int {
+        contextPackBuilder?.maximumPartBytes ?? ContextPackBuilder.defaultMaximumPartBytes
+    }
+
+    var contextPackIsSendable: Bool {
+        guard let draft = contextPackDraft,
+              !draft.pack.parts.isEmpty,
+              !draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              contextPackSourcePane != nil,
+              let contextPackBuilder else { return false }
+        return (try? contextPackBuilder.render(draft.pack)) != nil
     }
 
     var localAskTargets: [TmuxPane] {
@@ -1572,10 +1649,182 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func newContextPack() {
+        guard canCreateContextPack, let source = activePane else { return }
+        if let existing = contextPackDraft, !existing.pack.parts.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Replace the current context pack?"
+            alert.informativeText = "The current pack has \(existing.pack.parts.count) explicit source\(existing.pack.parts.count == 1 ? "" : "s"). Context packs are local drafts; replacing it cannot be undone."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Replace Draft")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        contextPackDraft = ActiveContextPack(
+            id: UUID().uuidString.lowercased(),
+            sourcePaneID: source.id,
+            sourcePaneKind: source.kind,
+            sourcePaneName: source.displayName,
+            sourceFolder: source.cwd,
+            pack: ContextPack(name: "\(source.displayName) context")
+        )
+        contextPackPresented = true
+    }
+
+    func presentContextPack() {
+        guard contextPackDraft != nil else { return }
+        contextPackPresented = true
+    }
+
+    func dismissContextPack() {
+        contextPackPresented = false
+        terminalHandle.focus()
+    }
+
+    func updateContextPackName(_ name: String) {
+        guard var draft = contextPackDraft else { return }
+        draft.pack.name = name
+        contextPackDraft = draft
+    }
+
+    func updateContextPackNote(_ note: String) {
+        guard var draft = contextPackDraft else { return }
+        draft.pack.note = note
+        contextPackDraft = draft
+    }
+
+    func updateContextPackPart(_ partID: String, text: String) {
+        guard var draft = contextPackDraft,
+              let index = draft.pack.parts.firstIndex(where: { $0.id == partID }) else { return }
+        draft.pack.parts[index] = draft.pack.parts[index].replacingText(text)
+        contextPackDraft = draft
+    }
+
+    func removeContextPackPart(_ partID: String) {
+        guard var draft = contextPackDraft else { return }
+        draft.pack.parts.removeAll { $0.id == partID }
+        contextPackDraft = draft
+    }
+
+    func addContextFiles() {
+        guard let draft = contextPackDraft else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Add explicit text files to \(draft.pack.name)"
+        panel.prompt = "Add Files"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.directoryURL = URL(fileURLWithPath: draft.sourceFolder)
+        guard panel.runModal() == .OK else { return }
+
+        perform {
+            guard let contextPackBuilder else { return }
+            let parts = try panel.urls.map { try contextPackBuilder.file(at: $0) }
+            try appendContextPackParts(parts, draftID: draft.id)
+        }
+    }
+
+    func addContextGitDiff() {
+        perform {
+            guard let draft = contextPackDraft, let contextPackBuilder else { return }
+            let part = try contextPackBuilder.gitDiff(in: draft.sourceFolder)
+            try appendContextPackParts([part], draftID: draft.id)
+        }
+    }
+
+    func addVisibleTerminalContext() {
+        guard let draft = contextPackDraft else { return }
+        let candidates = panes.filter { $0.isStarted && !$0.isDead }
+        guard let pane = chooseContextPane(candidates: candidates) else { return }
+        perform {
+            guard let controller, let contextPackBuilder else { return }
+            let visible = try controller.capturePane(pane.id)
+            let part = try contextPackBuilder.visibleTerminal(
+                paneID: pane.id,
+                paneName: pane.displayName,
+                text: visible
+            )
+            try appendContextPackParts([part], draftID: draft.id)
+            terminalHandle.terminal?.selectNone()
+        }
+    }
+
+    func captureContextCommand(executablePath: String, argumentLines: String) async throws {
+        guard let draft = contextPackDraft, let contextPackBuilder else {
+            throw RelayUIError.message("Open a context pack before capturing a command result.")
+        }
+        let path = executablePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let arguments = argumentLines
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        contextCommandCapturing = true
+        defer { contextCommandCapturing = false }
+        let workingDirectory = URL(fileURLWithPath: draft.sourceFolder, isDirectory: true)
+        let part = try await Task.detached(priority: .userInitiated) {
+            try contextPackBuilder.commandResult(
+                executablePath: path,
+                arguments: arguments,
+                workingDirectory: workingDirectory
+            )
+        }.value
+        try appendContextPackParts([part], draftID: draft.id)
+    }
+
+    func askWithContextPack() {
+        perform {
+            guard let draft = contextPackDraft,
+                  let source = contextPackSourcePane,
+                  let contextPackBuilder,
+                  let controller else {
+                throw RelayUIError.message("The context pack's source pane is no longer ready.")
+            }
+            let rendered = try contextPackBuilder.render(draft.pack)
+            guard let target = chooseContextTarget(candidates: contextPackAskTargets) else { return }
+            guard confirmContextSend(
+                title: "Ask \(target.displayName) with this context pack?",
+                detail: "\(draft.pack.parts.count) source\(draft.pack.parts.count == 1 ? "" : "s") · \(rendered.utf8.count) UTF-8 bytes · from \(source.displayName)",
+                action: "Ask with Context"
+            ) else { return }
+            try controller.askWithExplicitContext(from: source.id, to: target.id, text: rendered)
+            contextPackPresented = false
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    func compareWithContextPack() {
+        perform {
+            guard canCompareContextPack,
+                  let draft = contextPackDraft,
+                  let source = contextPackSourcePane,
+                  let contextPackBuilder else {
+                throw RelayUIError.message("This context pack needs a ready source pane and at least two other target vendors.")
+            }
+            let rendered = try contextPackBuilder.render(draft.pack)
+            guard let targets = chooseAskManyTargets(candidates: contextPackAskTargets) else { return }
+            guard confirmContextSend(
+                title: "Compare this context across \(targets.count) vendors?",
+                detail: "Every selected pane receives the same \(rendered.utf8.count)-byte attributed pack and none sees a peer answer.",
+                action: "Compare Independently"
+            ) else { return }
+            contextPackPresented = false
+            DispatchQueue.main.async { [weak self] in
+                self?.launchAskMany(
+                    source: source,
+                    targets: targets,
+                    question: rendered,
+                    preserveFormatting: true
+                )
+            }
+        }
+    }
+
     func compareAskMany() {
         guard canCompareAskMany,
-              let source = activePane,
-              let relayClient else { return }
+              let source = activePane else { return }
         guard let targets = chooseAskManyTargets(candidates: askTargets) else { return }
         guard let question = editRelay(
             title: "Compare Independent Answers",
@@ -1588,6 +1837,16 @@ final class AppModel: ObservableObject {
             }
         ) else { return }
 
+        launchAskMany(source: source, targets: targets, question: question)
+    }
+
+    private func launchAskMany(
+        source: TmuxPane,
+        targets: [TmuxPane],
+        question: String,
+        preserveFormatting: Bool = false
+    ) {
+        guard let relayClient else { return }
         let run = AskManyComparisonRun(
             id: UUID().uuidString.lowercased(),
             sourcePaneID: source.id,
@@ -1619,7 +1878,8 @@ final class AppModel: ObservableObject {
                         sourcePaneID: source.id,
                         targetPaneIDs: targetPaneIDs,
                         text: question,
-                        idempotencyKey: run.id
+                        idempotencyKey: run.id,
+                        preserveFormatting: preserveFormatting
                     )
                 }.value
                 guard var current = self.askManyComparisonRun, current.id == run.id else { return }
@@ -1943,6 +2203,65 @@ final class AppModel: ObservableObject {
             return nil
         }
         return selected
+    }
+
+    private func appendContextPackParts(_ parts: [ContextPackPart], draftID: String) throws {
+        guard !parts.isEmpty else { throw ContextPackError.emptyPart }
+        guard var draft = contextPackDraft, draft.id == draftID, let contextPackBuilder else {
+            throw RelayUIError.message("That context pack was replaced while its source was being captured.")
+        }
+        draft.pack.parts.append(contentsOf: parts)
+        _ = try contextPackBuilder.render(draft.pack)
+        contextPackDraft = draft
+    }
+
+    private func chooseContextPane(candidates: [TmuxPane]) -> TmuxPane? {
+        guard !candidates.isEmpty else {
+            NSAlert(error: RelayUIError.message("There is no running pane whose visible screen can be captured.")).runModal()
+            return nil
+        }
+        let alert = NSAlert()
+        alert.messageText = "Capture which visible pane?"
+        alert.informativeText = "Parley captures only the pane's current visible screen. Hidden scrollback and other panes are not included."
+        alert.addButton(withTitle: "Capture Visible Screen")
+        alert.addButton(withTitle: "Cancel")
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 460, height: 28))
+        picker.addItems(withTitles: candidates.map {
+            let workspace = $0.workspaceName.map { " · \($0)" } ?? ""
+            return "\($0.displayName) · \($0.kind.label)\(workspace) (\($0.id))"
+        })
+        alert.accessoryView = picker
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return candidates[max(0, picker.indexOfSelectedItem)]
+    }
+
+    private func chooseContextTarget(candidates: [TmuxPane]) -> TmuxPane? {
+        guard !candidates.isEmpty else {
+            NSAlert(error: RelayUIError.message("Open a ready pane from another vendor before sending this context pack.")).runModal()
+            return nil
+        }
+        let alert = NSAlert()
+        alert.messageText = "Ask which vendor with this context?"
+        alert.informativeText = "The exact pack visible behind this dialog will be submitted through Parley's attributed Ask path."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 460, height: 28))
+        picker.addItems(withTitles: candidates.map {
+            let workspace = $0.workspaceName.map { " · \($0)" } ?? ""
+            return "\($0.displayName) · \($0.kind.label)\(workspace) (\($0.id))"
+        })
+        alert.accessoryView = picker
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return candidates[max(0, picker.indexOfSelectedItem)]
+    }
+
+    private func confirmContextSend(title: String, detail: String, action: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: action)
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func acknowledgeVisibleComparisonResults() {

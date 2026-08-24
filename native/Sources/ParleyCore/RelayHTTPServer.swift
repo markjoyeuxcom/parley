@@ -396,7 +396,8 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     sourcePaneID: comparison.sourcePaneID,
                     targetPaneIDs: comparison.targetPaneIDs,
                     text: comparison.text,
-                    idempotencyKey: comparison.idempotencyKey
+                    idempotencyKey: comparison.idempotencyKey,
+                    preserveFormatting: comparison.preserveFormatting ?? false
                 ), to: client)
             case "/relay":
                 write(broker.handle(

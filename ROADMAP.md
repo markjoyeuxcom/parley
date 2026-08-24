@@ -591,10 +591,23 @@ between real vendor CLIs rather than a new autonomous orchestration engine.
   human preview before submission to the source workspace's ready lead. The
   synthesis starts blank, no conclusion is generated, and cancelling
   outstanding waits does not interrupt a vendor CLI process.
-- [ ] Add explicit, editable **context packs** assembled from selected files,
+- [x] Add explicit, editable **context packs** assembled from selected files,
   a Git diff, visible terminal output and captured command results. Show the
   source and exact byte size of every part before sending; never scrape hidden
   scrollback or include a whole transcript implicitly.
+  Context is now a native toolbar workflow anchored to one ready source agent.
+  Every selected UTF-8 file, read-only Git snapshot, explicitly chosen visible
+  pane screen and direct argv command result remains a separate editable part
+  with immutable provenance, captured/current byte counts and an edit marker.
+  Git names but never reads untracked files; terminal capture never requests
+  history; commands require an absolute executable, accept one literal argument
+  per line, run without a shell in the source folder, retain status plus both
+  output streams, and have hard time/output bounds. The live rendered total
+  includes the person's required receiving instruction and all attribution.
+  Oversized edits remain visible and unsendable rather than being clipped.
+  The reviewed pack can go through attributed one-vendor Ask or the independent
+  multi-vendor comparison view. Packs deliberately remain ephemeral here;
+  reusable workspace briefs and pinned snippets are the later durable layers.
 - [ ] Add bounded, predefined **workflow sequences** such as plan → independent
   review → human checkpoint → implementation → verification. Every transition
   remains visible and interruptible, consequential steps retain their explicit

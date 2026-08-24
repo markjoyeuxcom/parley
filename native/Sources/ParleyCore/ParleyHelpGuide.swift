@@ -220,6 +220,40 @@ public enum ParleyHelpGuide {
             ]
         ),
         ParleyHelpTopic(
+            id: "context-packs",
+            title: "Context packs",
+            summary: "Assemble only the local evidence you choose, inspect its provenance and byte size, then send it through Ask or independent Compare.",
+            symbol: "shippingbox",
+            sections: [
+                ParleyHelpSection(
+                    id: "context-packs-build",
+                    title: "Build an explicit pack",
+                    paragraphs: [
+                        "From a ready agent pane, open Context and choose New Context Pack. Add selected UTF-8 files, the source pane's current Git diff, one chosen pane's visible screen, or a captured command result.",
+                        "Every source remains a separate editable part with its exact path or pane/command provenance, captured UTF-8 bytes, current UTF-8 bytes and an EDITED marker when the preview differs from the capture.",
+                    ],
+                    items: [
+                        "Git capture uses read-only argv calls. Untracked files are named by status but their contents are never read implicitly.",
+                        "Visible terminal capture means the current visible screen only. Hidden scrollback, another pane and the complete transcript are not scraped.",
+                        "Command capture requires an absolute executable and treats each non-empty line as one literal argument. It never invokes a shell, expands variables, pipes or redirects.",
+                        "Both command stdout and stderr plus the exit status are retained. Time and output bounds prevent a noisy process from creating an unbounded preview.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "context-packs-send",
+                    title: "Preview and send",
+                    paragraphs: [
+                        "Write the request for the receiving vendor in the pack itself. Ask One Vendor submits it through the usual attributed Ask path. Compare Vendors gives the same rendered pack to at least two target vendors independently and opens the comparison view for their separate answers.",
+                    ],
+                    items: [
+                        "The live rendered byte total includes provenance, your request and wrapper text—not just source bodies.",
+                        "An oversized source or pack stays visibly invalid and cannot be sent; Parley never silently clips the editable preview.",
+                        "Context packs are local in-memory drafts in this release. Workspace briefs and reusable pinned snippets are separate later features.",
+                    ]
+                ),
+            ]
+        ),
+        ParleyHelpTopic(
             id: "lead",
             title: "Workspace Lead and recipes",
             summary: "Let one agent supervise explicit cross-vendor work while you retain the visible controls.",

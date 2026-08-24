@@ -533,6 +533,7 @@ public final class RelayBroker: @unchecked Sendable {
     private let panes: Panes
     private let paste: Paste
     private let submit: Submit
+    private let contextSubmit: Submit
     private let visibleText: VisibleText?
     private let consultationTimeout: TimeInterval
     private let livenessPollInterval: TimeInterval
@@ -553,6 +554,7 @@ public final class RelayBroker: @unchecked Sendable {
         panes: @escaping Panes,
         paste: @escaping Paste,
         submit: @escaping Submit,
+        contextSubmit: Submit? = nil,
         visibleText: VisibleText? = nil,
         consultationTimeout: TimeInterval = 30 * 60,
         livenessPollInterval: TimeInterval = 0.5,
@@ -563,6 +565,7 @@ public final class RelayBroker: @unchecked Sendable {
         self.panes = panes
         self.paste = paste
         self.submit = submit
+        self.contextSubmit = contextSubmit ?? submit
         self.visibleText = visibleText
         self.consultationTimeout = consultationTimeout
         self.livenessPollInterval = max(0.01, livenessPollInterval)
@@ -1050,7 +1053,8 @@ public final class RelayBroker: @unchecked Sendable {
             target: requestedTarget,
             text: text,
             idempotencyKey: suppliedIdempotencyKey,
-            humanInitiated: false
+            humanInitiated: false,
+            preserveFormatting: false
         )
     }
 
@@ -1059,7 +1063,8 @@ public final class RelayBroker: @unchecked Sendable {
         target requestedTarget: String,
         text: String,
         idempotencyKey suppliedIdempotencyKey: String?,
-        humanInitiated: Bool
+        humanInitiated: Bool,
+        preserveFormatting: Bool
     ) -> RelayTextResponse {
         guard beginDispatch() else {
             return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
@@ -1082,7 +1087,9 @@ public final class RelayBroker: @unchecked Sendable {
             return RelayTextResponse(status: 409, text: error.localizedDescription)
         }
 
-        let cleaned = RelayText.clean(text)
+        let cleaned = preserveFormatting
+            ? ContextPackText.normalize(text)
+            : RelayText.clean(text)
         guard !cleaned.isEmpty else { return RelayTextResponse(status: 400, text: "nothing to ask") }
         guard cleaned.count <= RelayText.maximumCharacters else {
             return RelayTextResponse(status: 400, text: "question too long")
@@ -1155,7 +1162,8 @@ public final class RelayBroker: @unchecked Sendable {
         consultationCondition.unlock()
 
         do {
-            try submit(target.id, consultationPrompt(for: consultation))
+            let writer = preserveFormatting ? contextSubmit : submit
+            try writer(target.id, consultationPrompt(for: consultation))
             consultationCondition.lock()
             transitionHandoffLocked(handoff.id, to: .delivered, origin: humanInitiated ? .human : nil)
             transitionHandoffLocked(handoff.id, to: .waiting, origin: humanInitiated ? .human : nil)
@@ -1201,7 +1209,8 @@ public final class RelayBroker: @unchecked Sendable {
             targets: requestedTargets,
             text: text,
             idempotencyKey: suppliedIdempotencyKey,
-            humanInitiated: false
+            humanInitiated: false,
+            preserveFormatting: false
         )
     }
 
@@ -1210,13 +1219,16 @@ public final class RelayBroker: @unchecked Sendable {
         targets requestedTargets: String,
         text: String,
         idempotencyKey suppliedIdempotencyKey: String?,
-        humanInitiated: Bool
+        humanInitiated: Bool,
+        preserveFormatting: Bool
     ) -> RelayTextResponse {
         guard beginDispatch() else {
             return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
         }
         defer { endDispatch() }
-        let cleaned = RelayText.clean(text)
+        let cleaned = preserveFormatting
+            ? ContextPackText.normalize(text)
+            : RelayText.clean(text)
         guard !cleaned.isEmpty else { return RelayTextResponse(status: 400, text: "nothing to ask") }
         guard cleaned.count <= RelayText.maximumCharacters else {
             return RelayTextResponse(status: 400, text: "question too long")
@@ -1280,7 +1292,8 @@ public final class RelayBroker: @unchecked Sendable {
                     target: route.pane.id,
                     text: cleaned,
                     idempotencyKey: childKey,
-                    humanInitiated: humanInitiated
+                    humanInitiated: humanInitiated,
+                    preserveFormatting: preserveFormatting
                 )
                 consultationCondition.lock()
                 let handoffID = idempotencyRecords[
@@ -1328,7 +1341,8 @@ public final class RelayBroker: @unchecked Sendable {
         sourcePaneID: String,
         targetPaneIDs: [String],
         text: String,
-        idempotencyKey: String? = nil
+        idempotencyKey: String? = nil,
+        preserveFormatting: Bool = false
     ) -> RelayTextResponse {
         let livePanes: [TmuxPane]
         do {
@@ -1353,7 +1367,8 @@ public final class RelayBroker: @unchecked Sendable {
             targets: targetPaneIDs.joined(separator: ","),
             text: text,
             idempotencyKey: idempotencyKey,
-            humanInitiated: true
+            humanInitiated: true,
+            preserveFormatting: preserveFormatting
         )
     }
 
