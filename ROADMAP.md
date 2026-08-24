@@ -618,6 +618,36 @@ between real vendor CLIs rather than a new autonomous orchestration engine.
 - [ ] Add external entry points such as `parley open <folder>`, a Finder action
   and a local `parley://` URL for opening or focusing a matching workspace.
   They may focus or prepare UI state but never start a vendor turn implicitly.
+- [ ] Build a thin local **Visual Studio Code companion extension** on those
+  entry points and context packs. From a local macOS workspace it can open or
+  focus the folder in Parley, place a selection, current file, diagnostics or
+  Git diff into Parley's editable context-pack preview, show attention counts,
+  and focus the authoritative pane or Status Center record. The extension is a
+  remote control for the native app: it never embeds a terminal, owns tmux or
+  pane credentials, starts an agent implicitly, bypasses the handoff preview,
+  or submits work on its own. Its first release runs in VS Code's local UI
+  extension host and refuses unsupported web or remote-only execution rather
+  than pretending a remote path is local.
+
+### Vendor-owned tools, including browser use
+
+Agent panes remain the vendors' real interactive CLIs, so a pane may use a
+browser through capabilities that its CLI already supplies or through MCP/tool
+configuration the person has explicitly enabled for that vendor. Parley does
+not replace that tool runtime or take custody of browser profiles, cookies or
+website credentials.
+
+- [ ] Show a small, truthful per-pane capability summary for explicitly
+  configured browser/tool access when the vendor exposes a trustworthy way to
+  inspect it. Unknown stays **Unknown**; terminal output and successful-looking
+  browser prose are not capability evidence.
+- [ ] Let browser-derived URLs, selected text, screenshots and saved artifacts
+  be added deliberately to an editable context pack with source attribution
+  and byte size before a cross-vendor handoff. Never scrape a vendor's browser
+  session, share cookies, or forward browsing results invisibly.
+- [ ] Add browser/tool checks to a vendor adapter only when the check can be
+  performed without opening a website, spending model quota, changing vendor
+  configuration or exposing credentials.
 
 ### Optional Git worktree awareness
 
