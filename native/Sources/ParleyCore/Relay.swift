@@ -252,14 +252,38 @@ public struct RelayAskManyAnswer: Codable, Equatable, Sendable {
     public let requestedTarget: String
     public let targetPaneID: String
     public let targetName: String
+    public let handoffID: String?
     public let status: Int
     public let answer: String?
     public let error: String?
+
+    public init(
+        requestedTarget: String,
+        targetPaneID: String,
+        targetName: String,
+        handoffID: String? = nil,
+        status: Int,
+        answer: String?,
+        error: String?
+    ) {
+        self.requestedTarget = requestedTarget
+        self.targetPaneID = targetPaneID
+        self.targetName = targetName
+        self.handoffID = handoffID
+        self.status = status
+        self.answer = answer
+        self.error = error
+    }
 }
 
 public struct RelayAskManyBundle: Codable, Equatable, Sendable {
     public let ok: Bool
     public let answers: [RelayAskManyAnswer]
+
+    public init(ok: Bool, answers: [RelayAskManyAnswer]) {
+        self.ok = ok
+        self.answers = answers
+    }
 }
 
 public enum RelayHandoffKind: String, Codable, Equatable, Sendable {
@@ -306,6 +330,7 @@ public enum RelayActivityEventKind: String, Codable, Equatable, Sendable {
     case workspaceRestored
     case recipeSubmitted
     case recipeInterrupted
+    case comparisonForwarded
 }
 
 /// A successful operation initiated from Parley's native controls. These are
@@ -508,17 +533,21 @@ public final class RelayBroker: @unchecked Sendable {
     private let panes: Panes
     private let paste: Paste
     private let submit: Submit
+    private let contextSubmit: Submit
     private let visibleText: VisibleText?
     private let consultationTimeout: TimeInterval
     private let livenessPollInterval: TimeInterval
     private let handoffJournal: RelayHandoffJournal?
     private let activityJournal: RelayActivityJournal?
+    private let contextReviewStore: AgentContextReviewStore?
+    private let contextPackBuilder = ContextPackBuilder()
     private let consultationCondition = NSCondition()
     private var consultationRecords: [String: ConsultationRecord] = [:]
     private var delegationRecords: [String: DelegationRecord] = [:]
     private var delegationResponses: [String: RelayTextResponse] = [:]
     private var handoffRecords: [String: RelayHandoff] = [:]
     private var activityRecords: [String: RelayActivityEvent] = [:]
+    private var contextReviewRecords: [String: AgentContextReview] = [:]
     private var idempotencyRecords: [IdempotencyScope: IdempotencyRecord] = [:]
     private var acceptingHandoffs = true
     private var activeDispatches = 0
@@ -528,21 +557,25 @@ public final class RelayBroker: @unchecked Sendable {
         panes: @escaping Panes,
         paste: @escaping Paste,
         submit: @escaping Submit,
+        contextSubmit: Submit? = nil,
         visibleText: VisibleText? = nil,
         consultationTimeout: TimeInterval = 30 * 60,
         livenessPollInterval: TimeInterval = 0.5,
         handoffJournal: RelayHandoffJournal? = nil,
-        activityJournal: RelayActivityJournal? = nil
+        activityJournal: RelayActivityJournal? = nil,
+        contextReviewStore: AgentContextReviewStore? = nil
     ) {
         self.credentials = credentials
         self.panes = panes
         self.paste = paste
         self.submit = submit
+        self.contextSubmit = contextSubmit ?? submit
         self.visibleText = visibleText
         self.consultationTimeout = consultationTimeout
         self.livenessPollInterval = max(0.01, livenessPollInterval)
         self.handoffJournal = handoffJournal
         self.activityJournal = activityJournal
+        self.contextReviewStore = contextReviewStore
 
         let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
         var recovered = Dictionary(uniqueKeysWithValues: (handoffJournal?.handoffs() ?? []).map { ($0.id, $0) })
@@ -557,7 +590,489 @@ public final class RelayBroker: @unchecked Sendable {
         }
         handoffRecords = recovered
         activityRecords = Dictionary(uniqueKeysWithValues: (activityJournal?.events() ?? []).map { ($0.id, $0) })
+        var recoveredContext = Dictionary(
+            uniqueKeysWithValues: (contextReviewStore?.reviews() ?? []).map { ($0.id, $0) }
+        )
+        for (id, var review) in recoveredContext where review.state == .awaitingReview || review.state == .approved {
+            review.state = .interrupted
+            review.updatedAt = Date()
+            review.detail = "Parley core restarted before the reviewed context Ask completed."
+            recoveredContext[id] = review
+            try? contextReviewStore?.record(review)
+        }
+        contextReviewRecords = recoveredContext
         pruneHandoffsLocked()
+    }
+
+    public func handleContextDraft(
+        token: String,
+        name suppliedName: String,
+        path suppliedPath: String,
+        text: String
+    ) -> RelayTextResponse {
+        guard beginDispatch() else {
+            return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
+        }
+        defer { endDispatch() }
+        do {
+            guard contextReviewStore != nil else {
+                throw BrokerFailure(status: 503, message: "context review storage is unavailable")
+            }
+            let sender = try authenticatedSender(token: token)
+            let name = suppliedName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard name.count <= 80 else { throw BrokerFailure(status: 400, message: "context name is too long") }
+            let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.cwd)
+            let normalized = ContextPackText.normalize(text)
+            guard !normalized.isEmpty else { throw BrokerFailure(status: 400, message: "the context file is empty") }
+            guard normalized.utf8.count <= ContextPackBuilder.defaultMaximumPartBytes else {
+                throw BrokerFailure(status: 413, message: "the context file is too large")
+            }
+            let part = ContextPackPart(
+                source: ContextPackSource(
+                    kind: .agentFileDraft,
+                    label: URL(fileURLWithPath: path).lastPathComponent,
+                    detail: "\(path) · provided by \(sender.displayName); not independently read by Parley"
+                ),
+                capturedText: normalized
+            )
+            let pack = ContextPack(
+                name: name.isEmpty ? "\(sender.displayName) context" : name,
+                parts: [part]
+            )
+            _ = try contextPackBuilder.render(pack)
+            let review = AgentContextReview(
+                sourcePaneID: sender.id,
+                sourcePaneName: sender.displayName,
+                sourcePaneKind: sender.kind,
+                sourceFolder: sender.cwd,
+                pack: pack
+            )
+            try recordContextReview(review)
+            return encodeContext(review, status: 201)
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func handleContextAdd(
+        token: String,
+        draftID: String,
+        path suppliedPath: String,
+        text: String
+    ) -> RelayTextResponse {
+        guard beginDispatch() else {
+            return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
+        }
+        defer { endDispatch() }
+        do {
+            let sender = try authenticatedSender(token: token)
+            let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.cwd)
+            let normalized = ContextPackText.normalize(text)
+            guard !normalized.isEmpty else { throw BrokerFailure(status: 400, message: "the context file is empty") }
+            guard normalized.utf8.count <= ContextPackBuilder.defaultMaximumPartBytes else {
+                throw BrokerFailure(status: 413, message: "the context file is too large")
+            }
+            consultationCondition.lock()
+            guard var review = contextReviewRecords[draftID],
+                  review.sourcePaneID == sender.id,
+                  review.state == .draft else {
+                consultationCondition.unlock()
+                throw BrokerFailure(status: 404, message: "no editable context draft named \(draftID)")
+            }
+            consultationCondition.unlock()
+            review.pack.parts.append(ContextPackPart(
+                source: ContextPackSource(
+                    kind: .agentFileDraft,
+                    label: URL(fileURLWithPath: path).lastPathComponent,
+                    detail: "\(path) · provided by \(sender.displayName); not independently read by Parley"
+                ),
+                capturedText: normalized
+            ))
+            _ = try contextPackBuilder.render(review.pack)
+            review.updatedAt = Date()
+            try recordContextReview(review)
+            return encodeContext(review)
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func contextDrafts(token: String) -> RelayTextResponse {
+        do {
+            let sender = try authenticatedSender(token: token)
+            consultationCondition.lock()
+            let records = contextReviewRecords.values
+                .filter { $0.sourcePaneID == sender.id }
+                .sorted {
+                    if $0.updatedAt == $1.updatedAt { return $0.id < $1.id }
+                    return $0.updatedAt > $1.updatedAt
+                }
+                .map(AgentContextReviewSummary.init)
+            consultationCondition.unlock()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return RelayTextResponse(status: 200, text: String(decoding: try encoder.encode(records), as: UTF8.self))
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func contextDraft(token: String, draftID: String) -> RelayTextResponse {
+        do {
+            let sender = try authenticatedSender(token: token)
+            consultationCondition.lock()
+            guard let review = contextReviewRecords[draftID], review.sourcePaneID == sender.id else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 404, text: "unknown context draft")
+            }
+            consultationCondition.unlock()
+            let rendered = try contextPackBuilder.render(review.pack)
+            return RelayTextResponse(
+                status: 200,
+                text: "Context review state: \(review.state.rawValue)\nReview id: \(review.id)\n\n\(rendered)"
+            )
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func handleContextAsk(
+        token: String,
+        draftID: String,
+        target requestedTarget: String,
+        text: String,
+        idempotencyKey suppliedIdempotencyKey: String? = nil
+    ) -> RelayTextResponse {
+        guard beginDispatch() else {
+            return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
+        }
+        defer { endDispatch() }
+
+        let sender: TmuxPane
+        let target: TmuxPane
+        let idempotencyKey: String
+        do {
+            (sender, target) = try route(token: token, requestedTarget: requestedTarget)
+            try authorize(.ask, for: sender)
+            idempotencyKey = try normalizeIdempotencyKey(suppliedIdempotencyKey)
+            let request = ContextPackText.normalize(text).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !request.isEmpty else { throw BrokerFailure(status: 400, message: "nothing to ask with this context") }
+
+            consultationCondition.lock()
+            guard var review = contextReviewRecords[draftID], review.sourcePaneID == sender.id else {
+                consultationCondition.unlock()
+                throw BrokerFailure(status: 404, message: "unknown context draft")
+            }
+            if review.state == .awaitingReview {
+                guard review.idempotencyKey == idempotencyKey,
+                      review.requestedTargetPaneID == target.id else {
+                    consultationCondition.unlock()
+                    throw BrokerFailure(status: 409, message: "that context draft already has a different Ask awaiting review")
+                }
+            } else {
+                guard review.state == .draft else {
+                    consultationCondition.unlock()
+                    throw BrokerFailure(status: 409, message: "that context draft is no longer available for a new Ask")
+                }
+                review.pack.note = request
+                do {
+                    _ = try contextPackBuilder.render(review.pack)
+                } catch {
+                    consultationCondition.unlock()
+                    throw error
+                }
+                review.state = .awaitingReview
+                review.requestedTargetPaneID = target.id
+                review.requestedTargetName = target.displayName
+                review.idempotencyKey = idempotencyKey
+                review.updatedAt = Date()
+                review.detail = "Waiting for a person to review and approve this context Ask."
+                do {
+                    try contextReviewStore?.record(review)
+                    contextReviewRecords[review.id] = review
+                } catch {
+                    consultationCondition.unlock()
+                    throw error
+                }
+                consultationCondition.broadcast()
+            }
+
+            let deadline = Date().addingTimeInterval(consultationTimeout)
+            while contextReviewRecords[draftID]?.state == .awaitingReview {
+                if !consultationCondition.wait(until: deadline) {
+                    if var expired = contextReviewRecords[draftID], expired.state == .awaitingReview {
+                        expired.state = .failed
+                        expired.updatedAt = Date()
+                        expired.detail = "Context review timed out before approval."
+                        contextReviewRecords[draftID] = expired
+                        try? contextReviewStore?.record(expired)
+                    }
+                    consultationCondition.unlock()
+                    return RelayTextResponse(status: 408, text: "context review timed out before approval")
+                }
+            }
+            guard let reviewed = contextReviewRecords[draftID] else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: "context review disappeared before approval")
+            }
+            guard reviewed.state == .approved else {
+                let detail = reviewed.detail ?? "The person declined this context Ask."
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: detail)
+            }
+            let rendered: String
+            do {
+                rendered = try contextPackBuilder.render(reviewed.pack)
+            } catch {
+                consultationCondition.unlock()
+                throw error
+            }
+            let approvedTarget = reviewed.requestedTargetPaneID ?? target.id
+            consultationCondition.unlock()
+
+            let response = handleAsk(
+                token: token,
+                target: approvedTarget,
+                text: rendered,
+                idempotencyKey: idempotencyKey,
+                humanInitiated: true,
+                preserveFormatting: true
+            )
+            finishContextReview(draftID, response: response)
+            return response
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func contextReviews() -> [AgentContextReview] {
+        consultationCondition.lock()
+        defer { consultationCondition.unlock() }
+        return contextReviewRecords.values.sorted {
+            if $0.updatedAt == $1.updatedAt { return $0.id < $1.id }
+            return $0.updatedAt > $1.updatedAt
+        }
+    }
+
+    public func approveContextReview(
+        reviewID: String,
+        pack: ContextPack,
+        targetPaneID: String
+    ) -> RelayTextResponse {
+        do {
+            let request = pack.note.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !request.isEmpty else { throw BrokerFailure(status: 400, message: "the reviewed pack needs a request") }
+            _ = try contextPackBuilder.render(pack)
+            let livePanes = try panes()
+            consultationCondition.lock()
+            guard var review = contextReviewRecords[reviewID], review.state == .awaitingReview else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: "that context Ask is not awaiting review")
+            }
+            guard let source = livePanes.first(where: { $0.id == review.sourcePaneID }),
+                  let target = livePanes.first(where: { $0.id == targetPaneID }),
+                  source.kind.isAgent,
+                  target.kind.isAgent,
+                  source.kind != target.kind else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: "the reviewed source or cross-vendor target is no longer available")
+            }
+            review.pack = pack
+            review.state = .approved
+            review.requestedTargetPaneID = target.id
+            review.requestedTargetName = target.displayName
+            review.updatedAt = Date()
+            review.detail = "Approved by the person using Parley."
+            do {
+                try contextReviewStore?.record(review)
+                contextReviewRecords[review.id] = review
+            } catch {
+                consultationCondition.unlock()
+                throw error
+            }
+            consultationCondition.broadcast()
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 200, text: "Context Ask approved; the waiting pane will submit it now.")
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func approveContextReview(_ approval: AgentContextReviewApproval) -> RelayTextResponse {
+        do {
+            return approveContextReview(
+                reviewID: approval.reviewID,
+                pack: try reviewedContextPack(approval),
+                targetPaneID: approval.targetPaneID
+            )
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func completeContextDraft(_ approval: AgentContextReviewApproval) -> RelayTextResponse {
+        do {
+            let pack = try reviewedContextPack(approval)
+            _ = try contextPackBuilder.render(pack)
+            let livePanes = try panes()
+            consultationCondition.lock()
+            guard var review = contextReviewRecords[approval.reviewID], review.state == .draft else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: "that context draft is not awaiting a person's direct send")
+            }
+            guard let source = livePanes.first(where: { $0.id == review.sourcePaneID }),
+                  let target = livePanes.first(where: { $0.id == approval.targetPaneID }),
+                  source.kind.isAgent,
+                  target.kind.isAgent,
+                  source.kind != target.kind else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: "the reviewed source or cross-vendor target is no longer available")
+            }
+            review.pack = pack
+            review.state = .completed
+            review.requestedTargetPaneID = target.id
+            review.requestedTargetName = target.displayName
+            review.updatedAt = Date()
+            review.detail = "Reviewed and sent directly by the person using Parley."
+            do {
+                try contextReviewStore?.record(review)
+                contextReviewRecords[review.id] = review
+            } catch {
+                consultationCondition.unlock()
+                throw error
+            }
+            consultationCondition.broadcast()
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 200, text: review.detail ?? "Context draft sent.")
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func rejectContextReview(reviewID: String) -> RelayTextResponse {
+        consultationCondition.lock()
+        guard var review = contextReviewRecords[reviewID], review.state.needsHumanReview else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: "that context draft is not awaiting review")
+        }
+        review.state = .rejected
+        review.updatedAt = Date()
+        review.detail = "The person declined this context draft."
+        do {
+            try contextReviewStore?.record(review)
+            contextReviewRecords[review.id] = review
+        } catch {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+        consultationCondition.broadcast()
+        consultationCondition.unlock()
+        return RelayTextResponse(status: 200, text: review.detail ?? "Context draft declined.")
+    }
+
+    private func finishContextReview(_ reviewID: String, response: RelayTextResponse) {
+        consultationCondition.lock()
+        guard var review = contextReviewRecords[reviewID] else {
+            consultationCondition.unlock()
+            return
+        }
+        review.state = (200..<300).contains(response.status) ? .completed : .failed
+        review.updatedAt = Date()
+        review.detail = response.text
+        contextReviewRecords[review.id] = review
+        try? contextReviewStore?.record(review)
+        consultationCondition.broadcast()
+        consultationCondition.unlock()
+    }
+
+    private func reviewedContextPack(_ approval: AgentContextReviewApproval) throws -> ContextPack {
+        consultationCondition.lock()
+        defer { consultationCondition.unlock() }
+        guard let review = contextReviewRecords[approval.reviewID] else {
+            throw BrokerFailure(status: 404, message: "unknown context review")
+        }
+        let byID = Dictionary(uniqueKeysWithValues: review.pack.parts.map { ($0.id, $0) })
+        let suppliedIDs = approval.parts.map(\.id)
+        guard Set(suppliedIDs).count == suppliedIDs.count,
+              !suppliedIDs.isEmpty,
+              suppliedIDs.allSatisfy({ byID[$0] != nil }) else {
+            throw BrokerFailure(status: 400, message: "the reviewed context parts do not match the staged draft")
+        }
+        let parts = approval.parts.compactMap { decision in
+            byID[decision.id]?.replacingText(decision.text)
+        }
+        return ContextPack(
+            id: review.pack.id,
+            name: approval.name,
+            note: approval.note,
+            parts: parts
+        )
+    }
+
+    private func recordContextReview(_ review: AgentContextReview) throws {
+        try contextReviewStore?.record(review)
+        consultationCondition.lock()
+        contextReviewRecords[review.id] = review
+        consultationCondition.broadcast()
+        consultationCondition.unlock()
+    }
+
+    private func encodeContext(_ review: AgentContextReview, status: Int = 200) -> RelayTextResponse {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(AgentContextReviewSummary(review)) else {
+            return RelayTextResponse(status: 500, text: "could not encode context review")
+        }
+        return RelayTextResponse(status: status, text: String(decoding: data, as: UTF8.self))
+    }
+
+    private func authenticatedSender(token: String) throws -> TmuxPane {
+        guard let senderID = credentials.paneID(for: token) else {
+            throw BrokerFailure(status: 401, message: "bad token")
+        }
+        guard let sender = try panes().first(where: { $0.id == senderID }), sender.kind.isAgent else {
+            throw BrokerFailure(status: 400, message: "unknown sender pane")
+        }
+        return sender
+    }
+
+    private func normalizedAgentContextPath(_ supplied: String, cwd: String) throws -> String {
+        let path = supplied.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, path.utf8.count <= 1_024, !path.contains("\0") else {
+            throw BrokerFailure(status: 400, message: "context draft needs a valid file path")
+        }
+        let root = URL(fileURLWithPath: cwd, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let candidate = (path.hasPrefix("/")
+            ? URL(fileURLWithPath: path)
+            : URL(fileURLWithPath: path, relativeTo: root))
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard candidate.path.hasPrefix(prefix) else {
+            throw BrokerFailure(
+                status: 403,
+                message: "agent context files must stay inside the pane folder \(root.path)"
+            )
+        }
+        return candidate.path
     }
 
     /// Atomically closes the admission gate only when no work can still be
@@ -1020,6 +1535,24 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey suppliedIdempotencyKey: String? = nil
     ) -> RelayTextResponse {
+        handleAsk(
+            token: token,
+            target: requestedTarget,
+            text: text,
+            idempotencyKey: suppliedIdempotencyKey,
+            humanInitiated: false,
+            preserveFormatting: false
+        )
+    }
+
+    private func handleAsk(
+        token: String,
+        target requestedTarget: String,
+        text: String,
+        idempotencyKey suppliedIdempotencyKey: String?,
+        humanInitiated: Bool,
+        preserveFormatting: Bool
+    ) -> RelayTextResponse {
         guard beginDispatch() else {
             return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
         }
@@ -1030,7 +1563,9 @@ public final class RelayBroker: @unchecked Sendable {
         let targetCredential: String
         do {
             (sender, target) = try route(token: token, requestedTarget: requestedTarget)
-            try authorize(.ask, for: sender)
+            if !humanInitiated {
+                try authorize(.ask, for: sender)
+            }
             idempotencyKey = try normalizeIdempotencyKey(suppliedIdempotencyKey)
             targetCredential = try credentials.token(for: target.id)
         } catch let error as BrokerFailure {
@@ -1039,7 +1574,9 @@ public final class RelayBroker: @unchecked Sendable {
             return RelayTextResponse(status: 409, text: error.localizedDescription)
         }
 
-        let cleaned = RelayText.clean(text)
+        let cleaned = preserveFormatting
+            ? ContextPackText.normalize(text)
+            : RelayText.clean(text)
         guard !cleaned.isEmpty else { return RelayTextResponse(status: 400, text: "nothing to ask") }
         guard cleaned.count <= RelayText.maximumCharacters else {
             return RelayTextResponse(status: 400, text: "question too long")
@@ -1081,7 +1618,8 @@ public final class RelayBroker: @unchecked Sendable {
             sender: sender,
             target: target,
             text: cleaned,
-            submitted: true
+            submitted: true,
+            origin: humanInitiated ? .human : nil
         )
         let consultation = RelayConsultation(
             id: handoff.id,
@@ -1111,10 +1649,11 @@ public final class RelayBroker: @unchecked Sendable {
         consultationCondition.unlock()
 
         do {
-            try submit(target.id, consultationPrompt(for: consultation))
+            let writer = preserveFormatting ? contextSubmit : submit
+            try writer(target.id, consultationPrompt(for: consultation))
             consultationCondition.lock()
-            transitionHandoffLocked(handoff.id, to: .delivered)
-            transitionHandoffLocked(handoff.id, to: .waiting)
+            transitionHandoffLocked(handoff.id, to: .delivered, origin: humanInitiated ? .human : nil)
+            transitionHandoffLocked(handoff.id, to: .waiting, origin: humanInitiated ? .human : nil)
             consultationCondition.broadcast()
             consultationCondition.unlock()
         } catch {
@@ -1127,7 +1666,8 @@ public final class RelayBroker: @unchecked Sendable {
                 handoff.id,
                 to: .failed,
                 detail: response.text,
-                failure: failureAssessment(kind: .ask, error: error)
+                failure: failureAssessment(kind: .ask, error: error),
+                origin: humanInitiated ? .human : nil
             )
             idempotencyRecords[scope]?.response = .ask(response)
             consultationRecords.removeValue(forKey: consultation.id)
@@ -1151,11 +1691,31 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey suppliedIdempotencyKey: String? = nil
     ) -> RelayTextResponse {
+        handleAskMany(
+            token: token,
+            targets: requestedTargets,
+            text: text,
+            idempotencyKey: suppliedIdempotencyKey,
+            humanInitiated: false,
+            preserveFormatting: false
+        )
+    }
+
+    private func handleAskMany(
+        token: String,
+        targets requestedTargets: String,
+        text: String,
+        idempotencyKey suppliedIdempotencyKey: String?,
+        humanInitiated: Bool,
+        preserveFormatting: Bool
+    ) -> RelayTextResponse {
         guard beginDispatch() else {
             return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
         }
         defer { endDispatch() }
-        let cleaned = RelayText.clean(text)
+        let cleaned = preserveFormatting
+            ? ContextPackText.normalize(text)
+            : RelayText.clean(text)
         guard !cleaned.isEmpty else { return RelayTextResponse(status: 400, text: "nothing to ask") }
         guard cleaned.count <= RelayText.maximumCharacters else {
             return RelayTextResponse(status: 400, text: "question too long")
@@ -1176,11 +1736,15 @@ public final class RelayBroker: @unchecked Sendable {
 
         let rootKey: String
         var routes: [(requested: String, pane: TmuxPane)] = []
+        var sourcePaneID: String?
         do {
             rootKey = try normalizeIdempotencyKey(suppliedIdempotencyKey)
             for requested in targets {
                 let (sender, target) = try route(token: token, requestedTarget: requested)
-                try authorize(.ask, for: sender)
+                sourcePaneID = sourcePaneID ?? sender.id
+                if !humanInitiated {
+                    try authorize(.ask, for: sender)
+                }
                 _ = try credentials.token(for: target.id)
                 if routes.contains(where: { $0.pane.id == target.id }) {
                     throw BrokerFailure(status: 400, message: "ask-many names \(target.displayName) more than once")
@@ -1193,24 +1757,43 @@ public final class RelayBroker: @unchecked Sendable {
             return RelayTextResponse(status: 409, text: error.localizedDescription)
         }
 
+        guard let sourcePaneID else {
+            return RelayTextResponse(status: 400, text: "ask-many could not resolve its source pane")
+        }
+        guard Set(routes.map(\.pane.kind)).count >= 2 else {
+            return RelayTextResponse(
+                status: 400,
+                text: "ask-many needs selected panes from at least two different vendors"
+            )
+        }
+
         let accumulator = AskManyAccumulator(count: routes.count)
         let group = DispatchGroup()
         for (index, route) in routes.enumerated() {
             group.enter()
             DispatchQueue.global(qos: .utility).async { [self] in
                 defer { group.leave() }
+                let childKey = askManyChildKey(root: rootKey, targetPaneID: route.pane.id)
                 let response = handleAsk(
                     token: token,
                     target: route.pane.id,
                     text: cleaned,
-                    idempotencyKey: askManyChildKey(root: rootKey, targetPaneID: route.pane.id)
+                    idempotencyKey: childKey,
+                    humanInitiated: humanInitiated,
+                    preserveFormatting: preserveFormatting
                 )
+                consultationCondition.lock()
+                let handoffID = idempotencyRecords[
+                    IdempotencyScope(senderPaneID: sourcePaneID, key: childKey)
+                ]?.handoffID
+                consultationCondition.unlock()
                 let succeeded = (200..<300).contains(response.status)
                 accumulator.set(
                     RelayAskManyAnswer(
                         requestedTarget: route.requested,
                         targetPaneID: route.pane.id,
                         targetName: route.pane.displayName,
+                        handoffID: handoffID,
                         status: response.status,
                         answer: succeeded ? response.text : nil,
                         error: succeeded ? nil : response.text
@@ -1234,6 +1817,45 @@ public final class RelayBroker: @unchecked Sendable {
         return RelayTextResponse(
             status: bundle.ok ? 200 : 409,
             text: String(decoding: data, as: UTF8.self)
+        )
+    }
+
+    /// The native UI owns the core-control capability, not a pane credential.
+    /// Resolve the chosen live source to its existing credential internally so
+    /// the ordinary Ask-many authorization, liveness and journal path remains
+    /// the only implementation. The credential never leaves the core.
+    public func handleAskManyFromUI(
+        sourcePaneID: String,
+        targetPaneIDs: [String],
+        text: String,
+        idempotencyKey: String? = nil,
+        preserveFormatting: Bool = false
+    ) -> RelayTextResponse {
+        let livePanes: [TmuxPane]
+        do {
+            livePanes = try panes()
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+        guard let source = livePanes.first(where: { $0.id == sourcePaneID }), source.kind.isAgent else {
+            return RelayTextResponse(status: 400, text: "unknown source agent pane")
+        }
+        guard targetPaneIDs.count >= 2 else {
+            return RelayTextResponse(status: 400, text: "native comparison needs at least two selected panes")
+        }
+        let sourceToken: String
+        do {
+            sourceToken = try credentials.token(for: source.id)
+        } catch {
+            return RelayTextResponse(status: 409, text: "could not resolve the source pane credential: \(error.localizedDescription)")
+        }
+        return handleAskMany(
+            token: sourceToken,
+            targets: targetPaneIDs.joined(separator: ","),
+            text: text,
+            idempotencyKey: idempotencyKey,
+            humanInitiated: true,
+            preserveFormatting: preserveFormatting
         )
     }
 
@@ -2114,7 +2736,8 @@ public final class RelayBroker: @unchecked Sendable {
         sender: TmuxPane,
         target: TmuxPane,
         text: String,
-        submitted: Bool
+        submitted: Bool,
+        origin: RelayTransitionOrigin? = nil
     ) -> RelayHandoff {
         let now = Date()
         return RelayHandoff(
@@ -2136,7 +2759,7 @@ public final class RelayBroker: @unchecked Sendable {
             resultText: nil,
             state: .created,
             updatedAt: now,
-            transitions: [RelayHandoffTransition(state: .created, occurredAt: now, detail: nil)]
+            transitions: [RelayHandoffTransition(state: .created, occurredAt: now, detail: nil, origin: origin)]
         )
     }
 
@@ -2373,6 +2996,71 @@ public enum RelayShim {
     target=""
     item=""
     case "$command" in
+      context)
+        subcommand="${2:-}"
+        case "$subcommand" in
+          list)
+            command="context-list"
+            shift 2
+            ;;
+          show)
+            item="${3:-}"
+            if [ -z "$item" ]; then
+              echo "context show needs a draft id" >&2
+              exit 2
+            fi
+            command="context-show"
+            shift 3
+            ;;
+          draft)
+            shift 2
+            context_name=""
+            context_file=""
+            while [ "$#" -gt 0 ]; do
+              case "$1" in
+                --name)
+                  [ "$#" -ge 2 ] || { echo "--name needs a value" >&2; exit 2; }
+                  context_name="$2"
+                  shift 2
+                  ;;
+                --file)
+                  [ "$#" -ge 2 ] || { echo "--file needs a path" >&2; exit 2; }
+                  context_file="$2"
+                  shift 2
+                  ;;
+                *)
+                  echo "unknown context draft option: $1" >&2
+                  exit 2
+                  ;;
+              esac
+            done
+            [ -n "$context_file" ] || { echo "context draft needs --file <path>" >&2; exit 2; }
+            command="context-draft"
+            target="$context_file"
+            item="$context_name"
+            ;;
+          add)
+            item="${3:-}"
+            [ -n "$item" ] || { echo "context add needs a draft id" >&2; exit 2; }
+            shift 3
+            [ "${1:-}" = "--file" ] && [ "$#" -eq 2 ] || {
+              echo "usage: parley context add <draft> --file <path>" >&2
+              exit 2
+            }
+            target="$2"
+            shift 2
+            command="context-add"
+            ;;
+          *)
+            echo "usage:" >&2
+            echo "  parley context list" >&2
+            echo "  parley context show <draft>" >&2
+            echo "  parley context draft [--name <name>] --file <path>" >&2
+            echo "  parley context add <draft> --file <path>" >&2
+            exit 2
+            ;;
+        esac
+        ;;
       relay|paste|ask|ask-many|delegate)
         target="${2:-}"
         if [ -z "$target" ]; then
@@ -2380,6 +3068,12 @@ public enum RelayShim {
           exit 2
         fi
         shift 2
+        if [ "$command" = "ask" ] && [ "${1:-}" = "--context" ]; then
+          item="${2:-}"
+          [ -n "$item" ] || { echo "--context needs a draft id" >&2; exit 2; }
+          command="context-ask"
+          shift 2
+        fi
         ;;
       answer|done|fail|wait|cancel)
         item="${2:-}"
@@ -2408,6 +3102,8 @@ public enum RelayShim {
         echo "  parley paste <pane> [text...]   paste without sending" >&2
         echo "  parley ask <pane> [question...] wait for its correlated answer" >&2
         echo "  parley ask-many <a,b> [question...] ask explicit panes independently" >&2
+        echo "  parley context draft --file <path> stage explicit context for review" >&2
+        echo "  parley ask <pane> --context <draft> [question...] wait for reviewed Ask" >&2
         echo "  parley answer current [text...] answer this pane's waiting question" >&2
         echo "  parley delegate <pane> [task...] start tracked asynchronous work" >&2
         echo "  parley status                    list work initiated by this pane as JSON" >&2
@@ -2421,7 +3117,7 @@ public enum RelayShim {
     esac
 
     case "$command" in
-      status|wait|cancel) ;;
+      status|wait|cancel|context-list|context-show|context-draft|context-add) ;;
       *)
         if [ "$#" -eq 0 ] && [ -t 0 ]; then
           echo "nothing to $command: give the text as arguments or pipe it in" >&2
@@ -2530,7 +3226,7 @@ public enum RelayShim {
     }
 
     case "$command" in
-      relay|paste|ask|ask-many|delegate)
+      relay|paste|ask|ask-many|delegate|context-ask)
         if [ "$#" -gt 0 ]; then
           printf '%s' "$*"
         else
@@ -2559,6 +3255,12 @@ public enum RelayShim {
         ;;
       cancel)
         printf '' | post
+        ;;
+      context-list|context-show)
+        printf '' | post
+        ;;
+      context-draft|context-add)
+        /bin/cat -- "$target" | post
         ;;
     esac
     """

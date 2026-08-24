@@ -38,6 +38,10 @@ struct ContentView: View {
                     Divider()
                     recipeRunStrip(recipe)
                 }
+                if let workflow = model.activeSupervisedWorkflow {
+                    Divider()
+                    supervisedWorkflowStrip(workflow)
+                }
                 if let activity = model.primaryActivity {
                     Divider()
                     activityStrip(activity)
@@ -56,6 +60,15 @@ struct ContentView: View {
         }
         .sheet(item: $model.panePermissionRequest) { request in
             PermissionProfilePickerView(model: model, request: request)
+        }
+        .sheet(isPresented: $model.askManyComparisonPresented) {
+            AskManyComparisonView(model: model)
+        }
+        .sheet(isPresented: $model.contextPackPresented) {
+            ContextPackView(model: model)
+        }
+        .sheet(isPresented: $model.supervisedWorkflowPresented) {
+            SupervisedWorkflowView(model: model)
         }
         .alert(
             "Parley needs attention",
@@ -419,6 +432,7 @@ struct ContentView: View {
             Divider().frame(height: 18)
             askMenu
             reviewMenu
+            contextPackMenu
             recipeMenu
             returnMenu
 
@@ -502,13 +516,23 @@ struct ContentView: View {
                     }
                 }
             }
+            if model.askManyComparisonRun != nil || model.canCompareAskMany {
+                Divider()
+                if let comparison = model.askManyComparisonRun {
+                    Button(comparison.isRunning ? "Open Active Comparison" : "Open Last Comparison") {
+                        model.presentAskManyComparison()
+                    }
+                }
+                Button("Compare Independently…") { model.compareAskMany() }
+                    .disabled(!model.canCompareAskMany)
+            }
         } label: {
             Label("Ask", systemImage: "arrow.turn.up.right")
         }
         .accessibilityLabel("Ask another vendor")
         .accessibilityValue("\(model.askTargets.count) available target\(model.askTargets.count == 1 ? "" : "s")")
         .accessibilityHint("Choose a different vendor pane for a correlated question")
-        .disabled(model.askTargets.isEmpty)
+        .disabled(model.askTargets.isEmpty && model.askManyComparisonRun == nil)
     }
 
     private var reviewMenu: some View {
@@ -528,6 +552,47 @@ struct ContentView: View {
         .accessibilityHint("Preview current changes, a plan, or a file before asking another vendor")
     }
 
+    private var contextPackMenu: some View {
+        Menu {
+            if !model.pendingContextReviews.isEmpty {
+                Section("Agent Drafts Requiring Review") {
+                    ForEach(model.pendingContextReviews) { review in
+                        Button {
+                            model.presentContextReview(review)
+                        } label: {
+                            let target = review.requestedTargetName.map { " → \($0)" } ?? ""
+                            Label(
+                                "\(review.sourcePaneName)\(target) · \(review.state == .awaitingReview ? "waiting" : "draft")",
+                                systemImage: review.state == .awaitingReview ? "person.crop.circle.badge.clock" : "doc.badge.ellipsis"
+                            )
+                        }
+                    }
+                }
+                Divider()
+            }
+            if let draft = model.contextPackDraft {
+                Button("Open \(draft.pack.name)") { model.presentContextPack() }
+                Divider()
+            }
+            Button("New Context Pack…") { model.newContextPack() }
+                .disabled(!model.canCreateContextPack)
+        } label: {
+            Label(
+                model.pendingContextReviews.isEmpty ? "Context" : "Context \(model.pendingContextReviews.count)",
+                systemImage: model.pendingContextReviews.isEmpty ? "shippingbox" : "shippingbox.fill"
+            )
+        }
+        .accessibilityLabel("Explicit context pack")
+        .accessibilityValue(
+            model.pendingContextReviews.isEmpty
+                ? (model.contextPackDraft.map { "\($0.pack.parts.count) sources" } ?? "No draft")
+                : "\(model.pendingContextReviews.count) agent draft\(model.pendingContextReviews.count == 1 ? "" : "s") awaiting review"
+        )
+        .help("Assemble selected files, Git changes, visible terminal output and command results before a cross-vendor handoff")
+        .accessibilityHint("Open or create an editable attributed context pack")
+        .disabled(model.contextPackDraft == nil && !model.canCreateContextPack && model.pendingContextReviews.isEmpty)
+    }
+
     private var recipeMenu: some View {
         Menu {
             if model.workspaceLead == nil {
@@ -537,6 +602,27 @@ struct ContentView: View {
                 ForEach(model.recipes) { recipe in
                     Button(recipe.name) { model.run(recipe) }
                         .disabled(!model.canRun(recipe))
+                }
+            }
+            Section("Bounded Sequence") {
+                if model.activeSupervisedWorkflow != nil {
+                    Button("Open Active Workflow…") { model.presentSupervisedWorkflow() }
+                } else {
+                    Button("Plan → Review → Implement → Verify…") {
+                        model.startSupervisedWorkflow()
+                    }
+                    .disabled(!model.canStartSupervisedWorkflow)
+                }
+                if !model.recentSupervisedWorkflows.isEmpty {
+                    Menu("Recent Workflows") {
+                        ForEach(model.recentSupervisedWorkflows.prefix(8)) { run in
+                            Button {
+                                model.presentSupervisedWorkflow(run)
+                            } label: {
+                                Text("\(run.phase.label) · \(run.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                            }
+                        }
+                    }
                 }
             }
             Divider()
@@ -552,8 +638,8 @@ struct ContentView: View {
         }
         .accessibilityLabel("Supervised workflow recipes")
         .accessibilityValue(model.workspaceLead.map { "Lead: \($0.displayName)" } ?? "No workspace lead")
-        .help("Run or edit a visible cross-vendor workflow instruction for the workspace lead")
-        .accessibilityHint("Choose a plan review, implementation review, bug hunt, or comparison recipe")
+        .help("Run a one-shot recipe or a bounded human-checkpointed cross-vendor sequence")
+        .accessibilityHint("Choose a recipe or the Plan, Review, Implement, Verify sequence")
     }
 
     private var returnMenu: some View {
@@ -579,6 +665,7 @@ struct ContentView: View {
     private var compactActionsMenu: some View {
         Menu {
             reviewMenu
+            contextPackMenu
             recipeMenu
             returnMenu
             if hasWaitingWork {
@@ -684,6 +771,33 @@ struct ContentView: View {
         .frame(height: 31)
         .background(Color.accentColor.opacity(0.055))
         .help(run.instructions)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func supervisedWorkflowStrip(_ run: SupervisedWorkflowRun) -> some View {
+        HStack(spacing: 8) {
+            Text("WORKFLOW")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+            Text(run.phase.label)
+                .font(.system(size: 10, weight: .medium))
+                .lineLimit(1)
+            if run.phase == .awaitingImplementationApproval || run.phase == .awaitingCompletionApproval {
+                Text("HUMAN CHECKPOINT")
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.orange)
+            }
+            Spacer(minLength: 8)
+            Button("Open") { model.presentSupervisedWorkflow() }
+            Button("End…", role: .destructive) { model.interruptSupervisedWorkflow() }
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .frame(height: 31)
+        .background(Color.accentColor.opacity(0.055))
+        .help("\(run.name) · \(run.phase.label)")
         .accessibilityElement(children: .contain)
     }
 

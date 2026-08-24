@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "4"
+    public static let version = "5"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -18,6 +18,17 @@ public enum AgentProtocol {
       `parley ask-many <target-a,target-b> "<question>"`. Targets are explicit,
       receive the same question concurrently, and never see one another's
       answers. Its stdout is one ordered JSON answer bundle.
+    - To stage explicit repository context, run
+      `parley context draft --name "<name>" --file <path>`. Add another file
+      with `parley context add <draft-id> --file <path>`, and inspect your own
+      drafts with `parley context list` or `parley context show <draft-id>`.
+      Agent-staged files must remain inside this pane's working folder and are
+      labelled as agent-provided rather than person-selected.
+    - To ask with a staged draft, run
+      `parley ask <target> --context <draft-id> "<question>"` and wait. Parley
+      shows the complete editable pack to the person and submits nothing until
+      they approve it. Approval sends the reviewed pack through correlated Ask;
+      refusal or timeout returns an explicit failure to this command.
     - `parley relay <target> "<text>"` submits one attributed message immediately.
       If it succeeds, the message was sent; never claim it was only pasted.
     - `parley paste <target> "<text>"` places an attributed draft without Enter.

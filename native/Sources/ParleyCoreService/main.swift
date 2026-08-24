@@ -74,14 +74,19 @@ do {
     let activityJournal = try RelayActivityJournal(
         file: controller.applicationDirectory.appendingPathComponent("activity-events.jsonl")
     )
+    let contextReviewStore = try AgentContextReviewStore(
+        file: controller.applicationDirectory.appendingPathComponent("context-reviews.json")
+    )
     let broker = RelayBroker(
         credentials: credentials,
         panes: { try controller.listPanes() },
         paste: { paneID, text in try controller.paste(text, into: paneID, submit: false) },
         submit: { paneID, text in try controller.paste(text, into: paneID, submit: true) },
+        contextSubmit: { paneID, text in try controller.pasteExplicitContext(text, into: paneID, submit: true) },
         visibleText: { paneID in try controller.capturePane(paneID) },
         handoffJournal: handoffJournal,
-        activityJournal: activityJournal
+        activityJournal: activityJournal,
+        contextReviewStore: contextReviewStore
     )
     let agentTransport = RelayFileTransport(
         broker: broker,

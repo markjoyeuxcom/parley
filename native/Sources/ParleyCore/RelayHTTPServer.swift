@@ -227,6 +227,18 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 write(broker.consultations(), to: client)
                 return
             }
+            if request.method == "GET", request.path == "/context-reviews" {
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                writeJSON(
+                    broker.contextReviews(),
+                    fallback: "could not encode context reviews",
+                    to: client
+                )
+                return
+            }
             if request.method == "GET", request.path == "/handoffs/unread" {
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
@@ -380,6 +392,58 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 let consultationID = String(path.dropFirst("/ui/answer/".count))
                 write(broker.answerFromUI(consultationID: consultationID, text: text), to: client)
+            case "/ui/ask-many":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let comparison = try? JSONDecoder().decode(
+                    RelayUIAskManyRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid native comparison request"), to: client)
+                    return
+                }
+                write(broker.handleAskManyFromUI(
+                    sourcePaneID: comparison.sourcePaneID,
+                    targetPaneIDs: comparison.targetPaneIDs,
+                    text: comparison.text,
+                    idempotencyKey: comparison.idempotencyKey,
+                    preserveFormatting: comparison.preserveFormatting ?? false
+                ), to: client)
+            case "/ui/context-reviews/approve":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let approval = try? JSONDecoder().decode(
+                    AgentContextReviewApproval.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid context review approval"), to: client)
+                    return
+                }
+                write(broker.approveContextReview(approval), to: client)
+            case "/ui/context-reviews/complete":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let approval = try? JSONDecoder().decode(
+                    AgentContextReviewApproval.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid completed context review"), to: client)
+                    return
+                }
+                write(broker.completeContextDraft(approval), to: client)
+            case let path where path.hasPrefix("/ui/context-reviews/reject/"):
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                let reviewID = String(path.dropFirst("/ui/context-reviews/reject/".count))
+                write(broker.rejectContextReview(reviewID: reviewID), to: client)
             case "/relay":
                 write(broker.handle(
                     token: token,
@@ -450,7 +514,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                         delivered: nil,
                         submitted: nil,
                         note: nil,
-                        error: "POST /relay, /paste, /ask, /ask-many, /answer/<id>, /delegate, /status, /wait/<id>, /done/<id>, /fail/<id>, /cancel/<id>, /ui/activity, /ui/answer/<id>, /ui/cancel/<id>, /ui/retry/<id> or /ui/read/<id>"
+                        error: "unknown Parley core route"
                     )
                 ), to: client)
             }

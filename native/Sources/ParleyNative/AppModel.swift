@@ -38,6 +38,41 @@ struct ActiveRecipeRun: Identifiable, Equatable {
     let instructions: String
 }
 
+struct AskManyComparisonTarget: Identifiable, Equatable {
+    let paneID: String
+    let name: String
+    let kind: PaneKind
+    let workspaceName: String?
+
+    var id: String { paneID }
+}
+
+struct AskManyComparisonRun: Identifiable, Equatable {
+    let id: String
+    let sourcePaneID: String
+    let sourceName: String
+    let sourceWorkspaceID: String
+    let question: String
+    let targets: [AskManyComparisonTarget]
+    let startedAt: Date
+    var response: RelayAskManyUIResponse?
+    var error: String?
+
+    var isRunning: Bool { response == nil && error == nil }
+}
+
+struct ActiveContextPack: Identifiable, Equatable {
+    let id: String
+    let sourcePaneID: String
+    let sourcePaneKind: PaneKind
+    let sourcePaneName: String
+    let sourceFolder: String
+    var pack: ContextPack
+    let reviewID: String?
+    var reviewState: AgentContextReviewState?
+    var requestedTargetPaneID: String?
+}
+
 enum PanePermissionAction: Equatable {
     case create(SplitDirection)
     case restart(String)
@@ -91,8 +126,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var projectContexts: [String: GitProjectContext] = [:]
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
     @Published private(set) var recipes: [HandoffRecipe] = []
+    @Published private(set) var supervisedWorkflowRuns: [SupervisedWorkflowRun] = []
+    @Published private(set) var handoffChains: [HandoffChain] = []
     @Published private(set) var permissionProfiles: [PermissionProfileDefinition] = []
     @Published private(set) var activeRecipeRun: ActiveRecipeRun?
+    @Published private(set) var askManyComparisonRun: AskManyComparisonRun?
+    @Published private(set) var contextPackDraft: ActiveContextPack?
+    @Published private(set) var contextReviews: [AgentContextReview] = []
+    @Published private(set) var contextCommandCapturing = false
     @Published private(set) var coreAvailable = false
     @Published private(set) var tmuxAvailable = false
     @Published private(set) var coreError: String?
@@ -110,6 +151,10 @@ final class AppModel: ObservableObject {
     @Published var commandPalettePresented = false
     @Published var setupPresented = false
     @Published var panePermissionRequest: PanePermissionRequest?
+    @Published var askManyComparisonPresented = false
+    @Published var contextPackPresented = false
+    @Published var supervisedWorkflowPresented = false
+    @Published private(set) var selectedSupervisedWorkflowID: String?
     @Published private(set) var requestedHelpTopicID: String?
     @Published var startupError: String?
     @Published private(set) var startupRequiresQuit = false
@@ -122,6 +167,8 @@ final class AppModel: ObservableObject {
     private let runtimeLease: RuntimeUILease?
     private let layoutStore: SavedWorkspaceLayoutStore
     private let recipeStore: HandoffRecipeStore
+    private let supervisedWorkflowStore: SupervisedWorkflowStore
+    private let handoffChainStore: HandoffChainStore
     private let permissionProfileStore: PermissionProfileStore
     private var workspaceContinuity = WorkspaceContinuityState()
     private let projectContextResolver = GitProjectContextResolver()
@@ -130,6 +177,7 @@ final class AppModel: ObservableObject {
     private var lastProjectContextRefresh = Date.distantPast
     private var relayClient: RelayCoreClient?
     private var reviewDraftBuilder: ReviewDraftBuilder?
+    private var contextPackBuilder: ContextPackBuilder?
     private let notificationEpoch = Date()
     private var observedNotificationEventIDs: Set<String> = []
     private var runtimeReadinessTask: Task<Void, Never>?
@@ -176,6 +224,12 @@ final class AppModel: ObservableObject {
         recipeStore = HandoffRecipeStore(
             file: applicationDirectory.appendingPathComponent("handoff-recipes.json")
         )
+        supervisedWorkflowStore = SupervisedWorkflowStore(
+            file: applicationDirectory.appendingPathComponent("supervised-workflows.json")
+        )
+        handoffChainStore = HandoffChainStore(
+            file: applicationDirectory.appendingPathComponent("handoff-chains.json")
+        )
         permissionProfileStore = PermissionProfileStore(
             file: applicationDirectory.appendingPathComponent("permission-profiles.json")
         )
@@ -193,6 +247,8 @@ final class AppModel: ObservableObject {
             startupRequiresQuit = true
         }
         recipes = (try? recipeStore.recipes()) ?? HandoffRecipe.defaults
+        supervisedWorkflowRuns = (try? supervisedWorkflowStore.runs()) ?? []
+        handoffChains = (try? handoffChainStore.chains()) ?? []
         permissionProfiles = (try? permissionProfileStore.profiles())
             ?? PermissionProfileDefinition.builtIns
         if runtime.mode == .production {
@@ -331,6 +387,7 @@ final class AppModel: ObservableObject {
             tmuxAvailable = true
             tmuxError = nil
             reviewDraftBuilder = ReviewDraftBuilder(environment: controller.environment)
+            contextPackBuilder = ContextPackBuilder(environment: controller.environment)
             panes = livePanes
             workspaces = liveWorkspaces
             savedLayouts = try layoutStore.layouts()
@@ -816,7 +873,111 @@ final class AppModel: ObservableObject {
                 && !$0.isDead
                 && $0.relayEnabled
                 && $0.hasCurrentProtocol
+                && $0.bracketedPasteActive
         }
+    }
+
+    var canCompareAskMany: Bool {
+        Set(askTargets.map(\.kind)).count >= 2
+            && askManyComparisonRun?.isRunning != true
+            && relayClient != nil
+    }
+
+    var askManyComparisonLead: TmuxPane? {
+        guard let run = askManyComparisonRun else { return nil }
+        return panes.first {
+            $0.windowID == run.sourceWorkspaceID
+                && $0.isWorkspaceLead
+                && $0.kind.isAgent
+                && $0.isStarted
+                && !$0.isDead
+                && $0.relayEnabled
+                && $0.hasCurrentProtocol
+        }
+    }
+
+    var askManyOutstandingConsultations: [RelayConsultation] {
+        guard let run = askManyComparisonRun, run.isRunning else { return [] }
+        let targets = Set(run.targets.map(\.paneID))
+        return consultations.filter {
+            $0.sourcePaneID == run.sourcePaneID
+                && targets.contains($0.targetPaneID)
+                && $0.question == run.question
+                && $0.createdAt >= run.startedAt
+                && $0.state == .awaitingAnswer
+        }
+    }
+
+    var canCreateContextPack: Bool {
+        guard let pane = activePane else { return false }
+        return pane.kind.isAgent
+            && pane.isStarted
+            && !pane.isDead
+            && pane.relayEnabled
+            && pane.hasCurrentProtocol
+            && contextPackBuilder != nil
+    }
+
+    var pendingContextReviews: [AgentContextReview] {
+        contextReviews.filter(\.state.needsHumanReview)
+    }
+
+    var contextPackIsAgentProposed: Bool {
+        contextPackDraft?.reviewID != nil
+    }
+
+    var contextPackSourcePane: TmuxPane? {
+        guard let draft = contextPackDraft else { return nil }
+        return panes.first {
+            $0.id == draft.sourcePaneID
+                && $0.kind == draft.sourcePaneKind
+                && $0.isStarted
+                && !$0.isDead
+                && $0.relayEnabled
+                && $0.hasCurrentProtocol
+        }
+    }
+
+    var contextPackAskTargets: [TmuxPane] {
+        guard let source = contextPackSourcePane else { return [] }
+        return panes.filter {
+            $0.kind.isAgent
+                && $0.kind != source.kind
+                && $0.isStarted
+                && !$0.isDead
+                && $0.relayEnabled
+                && $0.hasCurrentProtocol
+        }
+    }
+
+    var canCompareContextPack: Bool {
+        Set(contextPackAskTargets.map(\.kind)).count >= 2
+            && askManyComparisonRun?.isRunning != true
+            && relayClient != nil
+            && contextPackDraft?.reviewID == nil
+            && contextPackIsSendable
+    }
+
+    var contextPackRenderedByteCount: Int {
+        guard let pack = contextPackDraft?.pack, let contextPackBuilder else { return 0 }
+        return contextPackBuilder.renderedByteCount(pack)
+    }
+
+    var contextPackMaximumBytes: Int {
+        contextPackBuilder?.maximumRenderedBytes ?? ContextPackBuilder.defaultMaximumRenderedBytes
+    }
+
+    var contextPackMaximumPartBytes: Int {
+        contextPackBuilder?.maximumPartBytes ?? ContextPackBuilder.defaultMaximumPartBytes
+    }
+
+    var contextPackIsSendable: Bool {
+        guard let draft = contextPackDraft,
+              !draft.pack.parts.isEmpty,
+              !draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              contextPackSourcePane != nil,
+              let contextPackBuilder else { return false }
+        return (try? contextPackBuilder.render(draft.pack)) != nil
     }
 
     var localAskTargets: [TmuxPane] {
@@ -840,16 +1001,59 @@ final class AppModel: ObservableObject {
                 && !$0.isDead
                 && $0.relayEnabled
                 && $0.hasCurrentProtocol
+                && $0.bracketedPasteActive
         }
     }
 
-    func canRun(_ recipe: HandoffRecipe) -> Bool {
-        guard let workspace = activeWorkspace,
+    var activeSupervisedWorkflow: SupervisedWorkflowRun? {
+        guard let workspaceID = activeWorkspace?.id else { return nil }
+        return supervisedWorkflowRuns.first {
+            $0.workspaceID == workspaceID && !$0.phase.isTerminal
+        }
+    }
+
+    var presentedSupervisedWorkflow: SupervisedWorkflowRun? {
+        if let selectedSupervisedWorkflowID,
+           let selected = supervisedWorkflowRuns.first(where: { $0.id == selectedSupervisedWorkflowID }) {
+            return selected
+        }
+        return activeSupervisedWorkflow
+    }
+
+    var recentSupervisedWorkflows: [SupervisedWorkflowRun] {
+        guard let workspaceID = activeWorkspace?.id else { return [] }
+        return supervisedWorkflowRuns.filter {
+            $0.workspaceID == workspaceID && $0.phase.isTerminal
+        }
+    }
+
+    var canStartSupervisedWorkflow: Bool {
+        guard activeSupervisedWorkflow == nil,
+              activeRecipeRun == nil,
+              let workspace = activeWorkspace,
+              workspace.automationPolicy != .off,
               let lead = workspaceLead,
               lead.isStarted,
               !lead.isDead,
               lead.relayEnabled,
               lead.hasCurrentProtocol,
+              lead.bracketedPasteActive else { return false }
+        return !recipeTargets.isEmpty
+    }
+
+    func pane(for participant: SupervisedWorkflowParticipant) -> TmuxPane? {
+        panes.first { $0.id == participant.paneID && $0.windowID == participant.workspaceID }
+    }
+
+    func canRun(_ recipe: HandoffRecipe) -> Bool {
+        guard let workspace = activeWorkspace,
+              activeSupervisedWorkflow == nil,
+              let lead = workspaceLead,
+              lead.isStarted,
+              !lead.isDead,
+              lead.relayEnabled,
+              lead.hasCurrentProtocol,
+              lead.bracketedPasteActive,
               recipe.kind.isAllowed(by: workspace.automationPolicy) else { return false }
         return recipeTargets.count >= (recipe.kind == .askMany ? 2 : 1)
     }
@@ -1010,6 +1214,21 @@ final class AppModel: ObservableObject {
                 if refreshedHandoffs != handoffs { handoffs = refreshedHandoffs }
                 let refreshedUnread = try relayClient.unreadHandoffs()
                 if refreshedUnread != unreadHandoffs { unreadHandoffs = refreshedUnread }
+                let refreshedContextReviews = try relayClient.contextReviews()
+                if refreshedContextReviews != contextReviews {
+                    contextReviews = refreshedContextReviews
+                    if var draft = contextPackDraft,
+                       let reviewID = draft.reviewID,
+                       let review = refreshedContextReviews.first(where: { $0.id == reviewID }) {
+                        draft.reviewState = review.state
+                        draft.requestedTargetPaneID = review.requestedTargetPaneID
+                        if draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                           !review.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            draft.pack.note = review.pack.note
+                        }
+                        contextPackDraft = draft
+                    }
+                }
                 processNotifications(from: refreshedHandoffs + refreshedUnread)
                 coreAvailable = true
                 coreError = nil
@@ -1225,6 +1444,131 @@ final class AppModel: ObservableObject {
             dismissedHandoffIDs: dismissedHandoffIDs,
             includeDismissed: includeDismissed
         )
+    }
+
+    func statusHandoffChains(workspaceID: String?) -> [HandoffChain] {
+        HandoffChainProjection.chains(reloaded: handoffChains, workspaceID: workspaceID)
+    }
+
+    func chains(containing handoff: RelayHandoff) -> [HandoffChain] {
+        handoffChains.filter { chain in
+            chain.entries.contains(where: { $0.handoffID == handoff.id })
+        }
+    }
+
+    func chainsAccepting(_ handoff: RelayHandoff) -> [HandoffChain] {
+        handoffChains.filter { chain in
+            (chain.workspaceID == handoff.sourceWorkspaceID || chain.workspaceID == handoff.targetWorkspaceID)
+                && !chain.entries.contains(where: { $0.handoffID == handoff.id })
+        }
+    }
+
+    func createHandoffChain(from handoff: RelayHandoff) -> HandoffChain? {
+        let alert = NSAlert()
+        alert.messageText = "Start a Handoff Chain"
+        alert.informativeText = "Give this person-curated collaboration history a short title. The selected handoff is snapshotted exactly; no agent is contacted."
+        let suggested = Self.paletteSubject(handoff.text)
+        let field = NSTextField(string: String(suggested.prefix(160)))
+        field.placeholderString = "What this collaboration is about"
+        field.frame = NSRect(x: 0, y: 0, width: 380, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Create Chain")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        do {
+            let workspaceID = handoff.sourceWorkspaceID
+            let recordedWorkspaceName = handoff.sourceWorkspaceName?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let workspaceName = if let recordedWorkspaceName, !recordedWorkspaceName.isEmpty {
+                recordedWorkspaceName
+            } else {
+                workspaces.first(where: { $0.id == workspaceID })?.name ?? workspaceID
+            }
+            let chain = try handoffChainStore.create(
+                title: field.stringValue,
+                workspaceID: workspaceID,
+                workspaceName: workspaceName,
+                firstEntry: HandoffChainEntry(handoff: handoff)
+            )
+            try reloadHandoffChains()
+            terminalHandle.focus()
+            return chain
+        } catch {
+            NSAlert(error: error).runModal()
+            terminalHandle.focus()
+            return nil
+        }
+    }
+
+    func addHandoff(_ handoff: RelayHandoff, to chain: HandoffChain) {
+        perform {
+            _ = try handoffChainStore.add(entry: HandoffChainEntry(handoff: handoff), to: chain.id)
+            try reloadHandoffChains()
+            terminalHandle.focus()
+        }
+    }
+
+    func bookmarkResult(
+        from handoff: RelayHandoff,
+        in chain: HandoffChain,
+        as kind: HandoffChainBookmarkKind
+    ) {
+        guard kind != .decision,
+              let result = handoff.resultText,
+              !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let entry = chain.entries.first(where: { $0.handoffID == handoff.id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Bookmark as \(kind.label)?"
+        alert.informativeText = "Parley will preserve the complete returned result verbatim in \(chain.title). It will not summarize it or infer agreement."
+        alert.addButton(withTitle: "Bookmark \(kind.label)")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        perform {
+            _ = try handoffChainStore.bookmark(
+                chainID: chain.id,
+                entryID: entry.id,
+                kind: kind,
+                text: result
+            )
+            try reloadHandoffChains()
+            terminalHandle.focus()
+        }
+    }
+
+    func addDecision(to chain: HandoffChain) {
+        guard let decision = editSupervisedWorkflowText(
+            title: "Add Human Decision",
+            message: "Record the decision in your own words. It remains attributed to the person using Parley and is never presented as agent consensus.",
+            text: "",
+            action: "Save Decision",
+            insertVisible: { "" }
+        ) else { return }
+        perform {
+            _ = try handoffChainStore.addDecision(chainID: chain.id, text: decision)
+            try reloadHandoffChains()
+            terminalHandle.focus()
+        }
+    }
+
+    func deleteHandoffChain(_ chain: HandoffChain) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Delete \(chain.title)?"
+        alert.informativeText = "This permanently deletes the curated chain, its exact snapshots, bookmarks and human decisions. The broker's ordinary handoff journal is unchanged."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete Chain")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        do {
+            try handoffChainStore.delete(id: chain.id)
+            try reloadHandoffChains()
+            terminalHandle.focus()
+            return true
+        } catch {
+            NSAlert(error: error).runModal()
+            terminalHandle.focus()
+            return false
+        }
     }
 
     func isDismissed(_ handoff: RelayHandoff) -> Bool {
@@ -1516,6 +1860,402 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func newContextPack() {
+        guard canCreateContextPack, let source = activePane else { return }
+        if let existing = contextPackDraft, !existing.pack.parts.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Replace the current context pack?"
+            alert.informativeText = "The current pack has \(existing.pack.parts.count) explicit source\(existing.pack.parts.count == 1 ? "" : "s"). Context packs are local drafts; replacing it cannot be undone."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Replace Draft")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        contextPackDraft = ActiveContextPack(
+            id: UUID().uuidString.lowercased(),
+            sourcePaneID: source.id,
+            sourcePaneKind: source.kind,
+            sourcePaneName: source.displayName,
+            sourceFolder: source.cwd,
+            pack: ContextPack(name: "\(source.displayName) context"),
+            reviewID: nil,
+            reviewState: nil,
+            requestedTargetPaneID: nil
+        )
+        contextPackPresented = true
+    }
+
+    func presentContextPack() {
+        guard contextPackDraft != nil else { return }
+        contextPackPresented = true
+    }
+
+    func presentContextReview(_ review: AgentContextReview) {
+        guard review.state.needsHumanReview else { return }
+        if let existing = contextPackDraft,
+           existing.reviewID != review.id,
+           !existing.pack.parts.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Replace the current context pack?"
+            alert.informativeText = "The current editable pack will be replaced by \(review.sourcePaneName)'s staged context. The staged review remains available in the Context menu until you approve or decline it."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Open Agent Draft")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        contextPackDraft = ActiveContextPack(
+            id: review.id,
+            sourcePaneID: review.sourcePaneID,
+            sourcePaneKind: review.sourcePaneKind,
+            sourcePaneName: review.sourcePaneName,
+            sourceFolder: review.sourceFolder,
+            pack: review.pack,
+            reviewID: review.id,
+            reviewState: review.state,
+            requestedTargetPaneID: review.requestedTargetPaneID
+        )
+        contextPackPresented = true
+    }
+
+    func rejectCurrentContextReview() {
+        perform {
+            guard let reviewID = contextPackDraft?.reviewID, let relayClient else { return }
+            let alert = NSAlert()
+            alert.messageText = "Decline this agent context draft?"
+            alert.informativeText = "Nothing will be submitted. If the source pane is blocked in `parley ask --context`, it will receive an explicit refusal."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Decline Draft")
+            alert.addButton(withTitle: "Keep Reviewing")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let response = try relayClient.rejectContextReview(reviewID)
+            guard (200..<300).contains(response.status) else {
+                throw RelayUIError.message(response.text)
+            }
+            contextPackPresented = false
+            contextPackDraft = nil
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    func dismissContextPack() {
+        contextPackPresented = false
+        terminalHandle.focus()
+    }
+
+    func updateContextPackName(_ name: String) {
+        guard var draft = contextPackDraft else { return }
+        draft.pack.name = name
+        contextPackDraft = draft
+    }
+
+    func updateContextPackNote(_ note: String) {
+        guard var draft = contextPackDraft else { return }
+        draft.pack.note = note
+        contextPackDraft = draft
+    }
+
+    func updateContextPackPart(_ partID: String, text: String) {
+        guard var draft = contextPackDraft,
+              let index = draft.pack.parts.firstIndex(where: { $0.id == partID }) else { return }
+        draft.pack.parts[index] = draft.pack.parts[index].replacingText(text)
+        contextPackDraft = draft
+    }
+
+    func removeContextPackPart(_ partID: String) {
+        guard var draft = contextPackDraft else { return }
+        draft.pack.parts.removeAll { $0.id == partID }
+        contextPackDraft = draft
+    }
+
+    func addContextFiles() {
+        guard let draft = contextPackDraft else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Add explicit text files to \(draft.pack.name)"
+        panel.prompt = "Add Files"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.directoryURL = URL(fileURLWithPath: draft.sourceFolder)
+        guard panel.runModal() == .OK else { return }
+
+        perform {
+            guard let contextPackBuilder else { return }
+            let parts = try panel.urls.map { try contextPackBuilder.file(at: $0) }
+            try appendContextPackParts(parts, draftID: draft.id)
+        }
+    }
+
+    func addContextGitDiff() {
+        perform {
+            guard let draft = contextPackDraft, let contextPackBuilder else { return }
+            let part = try contextPackBuilder.gitDiff(in: draft.sourceFolder)
+            try appendContextPackParts([part], draftID: draft.id)
+        }
+    }
+
+    func addVisibleTerminalContext() {
+        guard let draft = contextPackDraft else { return }
+        let candidates = panes.filter { $0.isStarted && !$0.isDead }
+        guard let pane = chooseContextPane(candidates: candidates) else { return }
+        perform {
+            guard let controller, let contextPackBuilder else { return }
+            let visible = try controller.capturePane(pane.id)
+            let part = try contextPackBuilder.visibleTerminal(
+                paneID: pane.id,
+                paneName: pane.displayName,
+                text: visible
+            )
+            try appendContextPackParts([part], draftID: draft.id)
+            terminalHandle.terminal?.selectNone()
+        }
+    }
+
+    func captureContextCommand(executablePath: String, argumentLines: String) async throws {
+        guard let draft = contextPackDraft, let contextPackBuilder else {
+            throw RelayUIError.message("Open a context pack before capturing a command result.")
+        }
+        let path = executablePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let arguments = argumentLines
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        contextCommandCapturing = true
+        defer { contextCommandCapturing = false }
+        let workingDirectory = URL(fileURLWithPath: draft.sourceFolder, isDirectory: true)
+        let part = try await Task.detached(priority: .userInitiated) {
+            try contextPackBuilder.commandResult(
+                executablePath: path,
+                arguments: arguments,
+                workingDirectory: workingDirectory
+            )
+        }.value
+        try appendContextPackParts([part], draftID: draft.id)
+    }
+
+    func askWithContextPack() {
+        perform {
+            guard let draft = contextPackDraft,
+                  let source = contextPackSourcePane,
+                  let contextPackBuilder,
+                  let controller else {
+                throw RelayUIError.message("The context pack's source pane is no longer ready.")
+            }
+            let rendered = try contextPackBuilder.render(draft.pack)
+            guard let target = chooseContextTarget(
+                candidates: contextPackAskTargets,
+                preferredPaneID: draft.requestedTargetPaneID
+            ) else { return }
+            let isAwaitingAgent = draft.reviewID != nil && draft.reviewState == .awaitingReview
+            guard confirmContextSend(
+                title: isAwaitingAgent
+                    ? "Approve \(source.displayName)'s context Ask to \(target.displayName)?"
+                    : "Ask \(target.displayName) with this context pack?",
+                detail: "\(draft.pack.parts.count) source\(draft.pack.parts.count == 1 ? "" : "s") · \(rendered.utf8.count) UTF-8 bytes · from \(source.displayName)\(isAwaitingAgent ? " · approval unblocks the waiting source pane" : "")",
+                action: isAwaitingAgent ? "Approve and Ask" : "Ask with Context"
+            ) else { return }
+            if let reviewID = draft.reviewID, draft.reviewState == .awaitingReview {
+                guard let relayClient else {
+                    throw RelayUIError.message("The persistent core is unavailable, so this agent request cannot be approved.")
+                }
+                let response = try relayClient.approveContextReview(
+                    reviewID: reviewID,
+                    pack: draft.pack,
+                    targetPaneID: target.id
+                )
+                guard (200..<300).contains(response.status) else {
+                    throw RelayUIError.message(response.text)
+                }
+            } else {
+                try controller.askWithExplicitContext(from: source.id, to: target.id, text: rendered)
+                if let reviewID = draft.reviewID, let relayClient {
+                    _ = try? relayClient.completeContextDraft(
+                        reviewID: reviewID,
+                        pack: draft.pack,
+                        targetPaneID: target.id
+                    )
+                }
+            }
+            contextPackPresented = false
+            contextPackDraft = nil
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    func compareWithContextPack() {
+        perform {
+            guard canCompareContextPack,
+                  let draft = contextPackDraft,
+                  let source = contextPackSourcePane,
+                  let contextPackBuilder else {
+                throw RelayUIError.message("This context pack needs a ready source pane and at least two other target vendors.")
+            }
+            let rendered = try contextPackBuilder.render(draft.pack)
+            guard let targets = chooseAskManyTargets(candidates: contextPackAskTargets) else { return }
+            guard confirmContextSend(
+                title: "Compare this context across \(targets.count) vendors?",
+                detail: "Every selected pane receives the same \(rendered.utf8.count)-byte attributed pack and none sees a peer answer.",
+                action: "Compare Independently"
+            ) else { return }
+            contextPackPresented = false
+            DispatchQueue.main.async { [weak self] in
+                self?.launchAskMany(
+                    source: source,
+                    targets: targets,
+                    question: rendered,
+                    preserveFormatting: true
+                )
+            }
+        }
+    }
+
+    func compareAskMany() {
+        guard canCompareAskMany,
+              let source = activePane else { return }
+        guard let targets = chooseAskManyTargets(candidates: askTargets) else { return }
+        guard let question = editRelay(
+            title: "Compare Independent Answers",
+            message: "Only this exact question will be submitted to every selected pane. They answer concurrently and do not see one another's responses.",
+            text: RelayDraft.initialText(selection: terminalHandle.selectedText),
+            action: "Ask Independently",
+            insertVisible: { [weak self] in
+                guard let self, let controller = self.controller else { return "" }
+                return try controller.capturePane(source.id)
+            }
+        ) else { return }
+
+        launchAskMany(source: source, targets: targets, question: question)
+    }
+
+    private func launchAskMany(
+        source: TmuxPane,
+        targets: [TmuxPane],
+        question: String,
+        preserveFormatting: Bool = false
+    ) {
+        guard let relayClient else { return }
+        let run = AskManyComparisonRun(
+            id: UUID().uuidString.lowercased(),
+            sourcePaneID: source.id,
+            sourceName: source.displayName,
+            sourceWorkspaceID: source.windowID,
+            question: question,
+            targets: targets.map {
+                AskManyComparisonTarget(
+                    paneID: $0.id,
+                    name: $0.displayName,
+                    kind: $0.kind,
+                    workspaceName: $0.workspaceName
+                )
+            },
+            startedAt: Date(),
+            response: nil,
+            error: nil
+        )
+        askManyComparisonRun = run
+        askManyComparisonPresented = true
+        terminalHandle.terminal?.selectNone()
+
+        let targetPaneIDs = targets.map(\.id)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.askManyFromUI(
+                        sourcePaneID: source.id,
+                        targetPaneIDs: targetPaneIDs,
+                        text: question,
+                        idempotencyKey: run.id,
+                        preserveFormatting: preserveFormatting
+                    )
+                }.value
+                guard var current = self.askManyComparisonRun, current.id == run.id else { return }
+                current.response = response
+                self.askManyComparisonRun = current
+                try? self.refresh()
+                self.acknowledgeVisibleComparisonResults()
+            } catch {
+                guard var current = self.askManyComparisonRun, current.id == run.id else { return }
+                current.error = error.localizedDescription
+                self.askManyComparisonRun = current
+                try? self.refresh()
+            }
+        }
+    }
+
+    func presentAskManyComparison() {
+        guard askManyComparisonRun != nil else { return }
+        askManyComparisonPresented = true
+        acknowledgeVisibleComparisonResults()
+    }
+
+    func dismissAskManyComparison() {
+        askManyComparisonPresented = false
+        terminalHandle.focus()
+    }
+
+    func cancelAskManyComparison() {
+        let outstanding = askManyOutstandingConsultations
+        guard !outstanding.isEmpty, let relayClient else { return }
+        perform {
+            for consultation in outstanding {
+                let response = try relayClient.cancelHandoff(consultation.id)
+                guard response.status == 200 else { throw RelayUIError.message(response.text) }
+            }
+            try refresh()
+        }
+    }
+
+    func forwardComparisonAnswers(_ targetPaneIDs: Set<String>, asSynthesis: Bool) {
+        perform {
+            guard let run = askManyComparisonRun,
+                  let answers = run.response?.bundle.answers,
+                  let lead = askManyComparisonLead,
+                  let controller else {
+                throw RelayUIError.message("Mark a ready agent pane as the workspace lead before forwarding comparison results.")
+            }
+            let draft = if asSynthesis {
+                try AskManyComparisonDraft.synthesisText(question: run.question, answers: answers)
+            } else {
+                try AskManyComparisonDraft.forwardingText(
+                    question: run.question,
+                    answers: answers,
+                    selectedTargetPaneIDs: targetPaneIDs
+                )
+            }
+            let title = asSynthesis ? "Edit Synthesis for \(lead.displayName)" : "Forward Answers to \(lead.displayName)"
+            guard let edited = editRelay(
+                title: title,
+                message: "Review the exact attributed text before it is submitted to workspace lead \(lead.displayName). Parley does not create a verdict or merge the answers for you.",
+                text: draft,
+                action: asSynthesis ? "Send Edited Synthesis" : "Forward Selected",
+                insertVisible: { "" }
+            ) else { return }
+            try controller.paste(
+                "The person using Parley forwarded an independent cross-vendor comparison:\n\n\(edited)",
+                into: lead.id,
+                submit: true
+            )
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .comparisonForwarded,
+                workspaceID: run.sourceWorkspaceID,
+                workspaceName: lead.workspaceName ?? "Workspace",
+                paneID: lead.id,
+                paneName: lead.displayName,
+                paneKind: lead.kind,
+                detail: asSynthesis
+                    ? "Submitted a person-edited synthesis from an independent comparison."
+                    : "Forwarded \(targetPaneIDs.count) attributed independent answer\(targetPaneIDs.count == 1 ? "" : "s")."
+            ))
+            try controller.selectPane(lead.id)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
     func reviewChanges(with target: TmuxPane) {
         perform {
             guard let source = activePane, let reviewDraftBuilder else { return }
@@ -1540,6 +2280,285 @@ final class AppModel: ObservableObject {
             let draft = try reviewDraftBuilder.file(at: file)
             try sendReview(draft, from: source, to: target)
         }
+    }
+
+    func startSupervisedWorkflow() {
+        perform {
+            guard canStartSupervisedWorkflow,
+                  let controller,
+                  let workspace = activeWorkspace,
+                  let lead = workspaceLead else {
+                throw RelayUIError.message(
+                    "Mark a ready agent pane as workspace lead and open a ready pane from another vendor first."
+                )
+            }
+            guard let participants = chooseSupervisedWorkflowParticipants(candidates: recipeTargets) else { return }
+            let selectedContext = lead.isActive ? terminalHandle.selectedText : nil
+            var initial = "The person using Parley started a supervised Plan → Review → Implement → Verify workflow. Complete only the planning step below, then stop and wait for the next human-approved checkpoint.\n\n"
+            if let selectedContext {
+                initial += "Task context explicitly selected by the person:\n\n\(selectedContext)\n\n"
+            }
+            initial += """
+            Create a concrete implementation plan for the current task. Inspect what you need, identify risks and verification, but do not edit files or begin implementation. Stop after presenting the plan and wait for the next human-approved checkpoint.
+            """
+            guard let edited = editSupervisedWorkflowText(
+                title: "Start Supervised Workflow",
+                message: "This exact planning instruction will be submitted to \(lead.displayName). Parley will stop at every later transition for human review.",
+                text: initial,
+                action: "Start Planning",
+                insertVisible: { try controller.capturePane(lead.id) }
+            ) else { return }
+
+            let leadStamp = workflowParticipant(lead)
+            let reviewerStamp = workflowParticipant(participants.reviewer)
+            let verifierStamp = workflowParticipant(participants.verifier)
+            let run = try supervisedWorkflowStore.start(
+                workspaceID: workspace.id,
+                workspaceName: workspace.name,
+                lead: leadStamp,
+                reviewer: reviewerStamp,
+                verifier: verifierStamp,
+                planningPrompt: edited
+            )
+            do {
+                try controller.pasteExplicitContext(edited, into: lead.id, submit: true)
+            } catch {
+                _ = try? supervisedWorkflowStore.interrupt(
+                    id: run.id,
+                    detail: "Planning dispatch failed before the workflow could continue: \(error.localizedDescription)"
+                )
+                try reloadSupervisedWorkflows()
+                throw error
+            }
+            try reloadSupervisedWorkflows()
+            selectedSupervisedWorkflowID = run.id
+            supervisedWorkflowPresented = true
+            try controller.selectPane(lead.id)
+            try refresh()
+            terminalHandle.terminal?.selectNone()
+            terminalHandle.focus()
+        }
+    }
+
+    func presentSupervisedWorkflow() {
+        guard let run = activeSupervisedWorkflow else { return }
+        selectedSupervisedWorkflowID = run.id
+        supervisedWorkflowPresented = true
+    }
+
+    func presentSupervisedWorkflow(_ run: SupervisedWorkflowRun) {
+        guard supervisedWorkflowRuns.contains(where: { $0.id == run.id }) else { return }
+        selectedSupervisedWorkflowID = run.id
+        supervisedWorkflowPresented = true
+    }
+
+    func sendWorkflowPlanForReview() {
+        perform {
+            let run = try requireActiveSupervisedWorkflow(phase: .planning)
+            guard let controller else { return }
+            let lead = try requireWorkflowPane(run.lead, role: "lead")
+            let reviewer = try requireWorkflowPane(run.reviewer, role: "reviewer")
+            let visible = try controller.capturePane(lead.id)
+            let initial = """
+            \(lead.displayName) produced this proposed plan. Review it independently for correctness, missing risks, unnecessary scope and verification gaps. Do not implement anything. Return a concrete review in this pane, then stop and wait for the person using Parley.
+
+            --- PROPOSED PLAN ---
+
+            \(visible)
+            """
+            guard let plan = editSupervisedWorkflowText(
+                title: "Review the Plan",
+                message: "This is the exact payload that will be sent to \(reviewer.displayName). Nothing is implemented at this step.",
+                text: initial,
+                action: "Send for Independent Review",
+                insertVisible: { try controller.capturePane(lead.id) }
+            ) else { return }
+            try controller.pasteExplicitContext(plan, into: reviewer.id, submit: true)
+            _ = try supervisedWorkflowStore.advance(
+                id: run.id,
+                to: .reviewingPlan,
+                artifact: SupervisedWorkflowArtifact(kind: .plan, text: plan),
+                detail: "The person reviewed the captured plan and dispatched it to \(reviewer.displayName)."
+            )
+            try reloadSupervisedWorkflows()
+            try controller.selectPane(reviewer.id)
+            try refresh()
+            terminalHandle.terminal?.selectNone()
+            terminalHandle.focus()
+        }
+    }
+
+    func captureWorkflowPlanReview() {
+        perform {
+            let run = try requireActiveSupervisedWorkflow(phase: .reviewingPlan)
+            guard let controller else { return }
+            let reviewer = try requireWorkflowPane(run.reviewer, role: "reviewer")
+            let visible = try controller.capturePane(reviewer.id)
+            guard let review = editSupervisedWorkflowText(
+                title: "Capture Independent Review",
+                message: "Review and edit the exact independent answer. Saving it reaches the implementation checkpoint but submits nothing to the lead.",
+                text: visible,
+                action: "Save Review",
+                insertVisible: { try controller.capturePane(reviewer.id) }
+            ) else { return }
+            _ = try supervisedWorkflowStore.advance(
+                id: run.id,
+                to: .awaitingImplementationApproval,
+                artifact: SupervisedWorkflowArtifact(kind: .planReview, text: review),
+                detail: "The person captured the independent plan review. Implementation remains blocked."
+            )
+            try reloadSupervisedWorkflows()
+            supervisedWorkflowPresented = true
+            terminalHandle.terminal?.selectNone()
+            terminalHandle.focus()
+        }
+    }
+
+    func approveWorkflowImplementation() {
+        perform {
+            let run = try requireActiveSupervisedWorkflow(phase: .awaitingImplementationApproval)
+            guard let controller,
+                  let plan = run.artifact(.plan)?.text,
+                  let review = run.artifact(.planReview)?.text else {
+                throw RelayUIError.message("The workflow is missing its reviewed plan artifacts.")
+            }
+            let lead = try requireWorkflowPane(run.lead, role: "lead")
+            let draft = """
+            The person using Parley reviewed the proposed plan and the independent review below. Implement the sound plan, accounting for confirmed review findings. Do not treat reviewer claims as facts without checking them. Run proportionate verification, report the exact results, then stop and wait for the verification checkpoint.
+
+            --- APPROVED PLAN ---
+
+            \(plan)
+
+            --- INDEPENDENT REVIEW ---
+
+            \(review)
+            """
+            guard let edited = editSupervisedWorkflowText(
+                title: "Approve Implementation",
+                message: "This is the consequential checkpoint. Only the exact text below will be submitted to \(lead.displayName).",
+                text: draft,
+                action: "Approve and Implement",
+                insertVisible: { "" }
+            ) else { return }
+            try controller.pasteExplicitContext(edited, into: lead.id, submit: true)
+            _ = try supervisedWorkflowStore.advance(
+                id: run.id,
+                to: .implementing,
+                artifact: nil,
+                detail: "The person explicitly approved implementation and submitted the reviewed instruction to \(lead.displayName)."
+            )
+            try reloadSupervisedWorkflows()
+            try controller.selectPane(lead.id)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    func sendWorkflowImplementationForVerification() {
+        perform {
+            let run = try requireActiveSupervisedWorkflow(phase: .implementing)
+            guard let controller, let reviewDraftBuilder else { return }
+            let lead = try requireWorkflowPane(run.lead, role: "lead")
+            let verifier = try requireWorkflowPane(run.verifier, role: "verifier")
+            let evidence = try reviewDraftBuilder.changes(in: lead.cwd)
+            let initial = """
+            Independently verify the implementation evidence below. Inspect the repository as permitted, run proportionate checks, and report concrete defects or a clean result with exact command outcomes. Do not modify files. Stop after reporting in this pane and wait for the person using Parley.
+
+            --- IMPLEMENTATION EVIDENCE ---
+
+            \(evidence.text)
+            """
+            guard let edited = editSupervisedWorkflowText(
+                title: "Verify the Implementation",
+                message: "This is the exact payload that will be sent to \(verifier.displayName). The verifier is asked only to inspect and report.",
+                text: initial,
+                action: "Send for Independent Verification",
+                insertVisible: { try controller.capturePane(lead.id) }
+            ) else { return }
+            try controller.pasteExplicitContext(edited, into: verifier.id, submit: true)
+            _ = try supervisedWorkflowStore.advance(
+                id: run.id,
+                to: .verifying,
+                artifact: SupervisedWorkflowArtifact(kind: .implementation, text: edited),
+                detail: "The person reviewed the implementation evidence and dispatched it to \(verifier.displayName)."
+            )
+            try reloadSupervisedWorkflows()
+            try controller.selectPane(verifier.id)
+            try refresh()
+            terminalHandle.terminal?.selectNone()
+            terminalHandle.focus()
+        }
+    }
+
+    func captureWorkflowVerification() {
+        perform {
+            let run = try requireActiveSupervisedWorkflow(phase: .verifying)
+            guard let controller else { return }
+            let verifier = try requireWorkflowPane(run.verifier, role: "verifier")
+            let visible = try controller.capturePane(verifier.id)
+            guard let verification = editSupervisedWorkflowText(
+                title: "Capture Independent Verification",
+                message: "Review and edit the exact verification result. Saving reaches the completion checkpoint; it does not declare the work complete.",
+                text: visible,
+                action: "Save Verification",
+                insertVisible: { try controller.capturePane(verifier.id) }
+            ) else { return }
+            _ = try supervisedWorkflowStore.advance(
+                id: run.id,
+                to: .awaitingCompletionApproval,
+                artifact: SupervisedWorkflowArtifact(kind: .verification, text: verification),
+                detail: "The person captured the independent verification. Completion remains blocked."
+            )
+            try reloadSupervisedWorkflows()
+            supervisedWorkflowPresented = true
+            terminalHandle.terminal?.selectNone()
+            terminalHandle.focus()
+        }
+    }
+
+    func completeSupervisedWorkflow() {
+        perform {
+            let run = try requireActiveSupervisedWorkflow(phase: .awaitingCompletionApproval)
+            let alert = NSAlert()
+            alert.messageText = "Mark this workflow complete?"
+            alert.informativeText = "You are confirming that you reviewed the independent verification. Parley does not infer success from the verifier's prose."
+            alert.addButton(withTitle: "Mark Complete")
+            alert.addButton(withTitle: "Keep Open")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            _ = try supervisedWorkflowStore.advance(
+                id: run.id,
+                to: .completed,
+                artifact: nil,
+                detail: "The person reviewed the verification and marked the workflow complete."
+            )
+            try reloadSupervisedWorkflows()
+            terminalHandle.focus()
+        }
+    }
+
+    func interruptSupervisedWorkflow() {
+        guard let run = activeSupervisedWorkflow else { return }
+        let alert = NSAlert()
+        alert.messageText = "End this supervised workflow?"
+        alert.informativeText = "This stops Parley's sequence tracking. It does not send Control-C or cancel work already running in any agent pane."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "End Workflow")
+        alert.addButton(withTitle: "Keep Running")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        perform {
+            _ = try supervisedWorkflowStore.interrupt(
+                id: run.id,
+                detail: "The person ended workflow tracking. No agent process was interrupted automatically."
+            )
+            try reloadSupervisedWorkflows()
+            terminalHandle.focus()
+        }
+    }
+
+    func focusWorkflowParticipant(_ participant: SupervisedWorkflowParticipant) {
+        guard let pane = pane(for: participant) else { return }
+        select(pane)
     }
 
     func run(_ recipe: HandoffRecipe) {
@@ -1715,6 +2734,206 @@ final class AppModel: ObservableObject {
         alert.accessoryView = picker
         guard alert.runModal() == .alertFirstButtonReturn else { return [] }
         return [candidates[max(0, picker.indexOfSelectedItem)]]
+    }
+
+    private func chooseSupervisedWorkflowParticipants(
+        candidates: [TmuxPane]
+    ) -> (reviewer: TmuxPane, verifier: TmuxPane)? {
+        guard !candidates.isEmpty else { return nil }
+        let titles = candidates.map { "\($0.displayName) · \($0.kind.label) (\($0.id))" }
+        let reviewerPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
+        reviewerPicker.addItems(withTitles: titles)
+        let verifierPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
+        verifierPicker.addItems(withTitles: titles)
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.addArrangedSubview(NSTextField(labelWithString: "Independent plan reviewer"))
+        stack.addArrangedSubview(reviewerPicker)
+        stack.addArrangedSubview(NSTextField(labelWithString: "Independent implementation verifier"))
+        stack.addArrangedSubview(verifierPicker)
+        stack.frame = NSRect(x: 0, y: 0, width: 380, height: 96)
+
+        let alert = NSAlert()
+        alert.messageText = "Choose Workflow Participants"
+        alert.informativeText = "Both roles must use a vendor different from the workspace lead. The same pane may review and verify."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        alert.accessoryView = stack
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return (
+            candidates[max(0, reviewerPicker.indexOfSelectedItem)],
+            candidates[max(0, verifierPicker.indexOfSelectedItem)]
+        )
+    }
+
+    private func workflowParticipant(_ pane: TmuxPane) -> SupervisedWorkflowParticipant {
+        SupervisedWorkflowParticipant(
+            paneID: pane.id,
+            name: pane.displayName,
+            kind: pane.kind,
+            workspaceID: pane.windowID
+        )
+    }
+
+    private func requireActiveSupervisedWorkflow(
+        phase: SupervisedWorkflowPhase
+    ) throws -> SupervisedWorkflowRun {
+        guard let run = activeSupervisedWorkflow else {
+            throw RelayUIError.message("There is no active supervised workflow in this workspace.")
+        }
+        guard run.phase == phase else {
+            throw RelayUIError.message(
+                "This workflow is at \(run.phase.label), not the expected \(phase.label) checkpoint."
+            )
+        }
+        return run
+    }
+
+    private func requireWorkflowPane(
+        _ participant: SupervisedWorkflowParticipant,
+        role: String
+    ) throws -> TmuxPane {
+        guard let pane = pane(for: participant),
+              pane.kind == participant.kind,
+              pane.kind.isAgent,
+              pane.isStarted,
+              !pane.isDead,
+              pane.relayEnabled,
+              pane.hasCurrentProtocol,
+              pane.bracketedPasteActive else {
+            throw RelayUIError.message(
+                "The workflow \(role) \(participant.name) is not currently ready. Restart or replace that pane, or end the workflow explicitly."
+            )
+        }
+        return pane
+    }
+
+    private func reloadSupervisedWorkflows() throws {
+        supervisedWorkflowRuns = try supervisedWorkflowStore.runs()
+    }
+
+    private func reloadHandoffChains() throws {
+        handoffChains = try handoffChainStore.chains()
+    }
+
+    private func chooseAskManyTargets(candidates: [TmuxPane]) -> [TmuxPane]? {
+        let alert = NSAlert()
+        alert.messageText = "Compare with which panes?"
+        alert.informativeText = "Choose at least two panes from different vendors. Every selected pane receives the same question independently."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        let buttons = candidates.map { pane in
+            let location = pane.workspaceName.map { " · \($0)" } ?? ""
+            let button = NSButton(
+                checkboxWithTitle: "\(pane.displayName) · \(pane.kind.label)\(location) (\(pane.id))",
+                target: nil,
+                action: nil
+            )
+            button.state = .on
+            stack.addArrangedSubview(button)
+            return button
+        }
+        stack.frame = NSRect(x: 0, y: 0, width: 460, height: CGFloat(max(1, buttons.count)) * 26)
+        alert.accessoryView = stack
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        let selected = zip(candidates, buttons).compactMap { pane, button in
+            button.state == .on ? pane : nil
+        }
+        guard selected.count >= 2, Set(selected.map(\.kind)).count >= 2 else {
+            NSAlert(error: RelayUIError.message(
+                "Independent comparison needs at least two selected panes from different vendors."
+            )).runModal()
+            return nil
+        }
+        return selected
+    }
+
+    private func appendContextPackParts(_ parts: [ContextPackPart], draftID: String) throws {
+        guard !parts.isEmpty else { throw ContextPackError.emptyPart }
+        guard var draft = contextPackDraft, draft.id == draftID, let contextPackBuilder else {
+            throw RelayUIError.message("That context pack was replaced while its source was being captured.")
+        }
+        draft.pack.parts.append(contentsOf: parts)
+        _ = try contextPackBuilder.render(draft.pack)
+        contextPackDraft = draft
+    }
+
+    private func chooseContextPane(candidates: [TmuxPane]) -> TmuxPane? {
+        guard !candidates.isEmpty else {
+            NSAlert(error: RelayUIError.message("There is no running pane whose visible screen can be captured.")).runModal()
+            return nil
+        }
+        let alert = NSAlert()
+        alert.messageText = "Capture which visible pane?"
+        alert.informativeText = "Parley captures only the pane's current visible screen. Hidden scrollback and other panes are not included."
+        alert.addButton(withTitle: "Capture Visible Screen")
+        alert.addButton(withTitle: "Cancel")
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 460, height: 28))
+        picker.addItems(withTitles: candidates.map {
+            let workspace = $0.workspaceName.map { " · \($0)" } ?? ""
+            return "\($0.displayName) · \($0.kind.label)\(workspace) (\($0.id))"
+        })
+        alert.accessoryView = picker
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return candidates[max(0, picker.indexOfSelectedItem)]
+    }
+
+    private func chooseContextTarget(candidates: [TmuxPane], preferredPaneID: String? = nil) -> TmuxPane? {
+        guard !candidates.isEmpty else {
+            NSAlert(error: RelayUIError.message("Open a ready pane from another vendor before sending this context pack.")).runModal()
+            return nil
+        }
+        let alert = NSAlert()
+        alert.messageText = "Ask which vendor with this context?"
+        alert.informativeText = "The exact pack visible behind this dialog will be submitted through Parley's attributed Ask path."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 460, height: 28))
+        picker.addItems(withTitles: candidates.map {
+            let workspace = $0.workspaceName.map { " · \($0)" } ?? ""
+            return "\($0.displayName) · \($0.kind.label)\(workspace) (\($0.id))"
+        })
+        if let preferredPaneID,
+           let preferredIndex = candidates.firstIndex(where: { $0.id == preferredPaneID }) {
+            picker.selectItem(at: preferredIndex)
+        }
+        alert.accessoryView = picker
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return candidates[max(0, picker.indexOfSelectedItem)]
+    }
+
+    private func confirmContextSend(title: String, detail: String, action: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: action)
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func acknowledgeVisibleComparisonResults() {
+        guard askManyComparisonPresented,
+              let answers = askManyComparisonRun?.response?.bundle.answers,
+              let relayClient else { return }
+        let handoffIDs = answers.compactMap(\.handoffID)
+        guard !handoffIDs.isEmpty else { return }
+        Task { [weak self] in
+            await Task.detached(priority: .utility) {
+                for handoffID in handoffIDs {
+                    _ = try? relayClient.markHandoffRead(handoffID)
+                }
+            }.value
+            try? self?.refresh()
+        }
     }
 
     func returnAnswer() {
@@ -2289,6 +3508,44 @@ final class AppModel: ObservableObject {
         return cleaned.isEmpty ? nil : cleaned
     }
 
+    private func editSupervisedWorkflowText(
+        title: String,
+        message: String,
+        text: String,
+        action: String,
+        insertVisible: @escaping () throws -> String
+    ) -> String? {
+        var current = ContextPackText.normalize(text)
+        while true {
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = "\(message) Maximum \(ContextPackBuilder.defaultMaximumRenderedBytes) bytes; formatting is preserved."
+            alert.addButton(withTitle: action)
+            alert.addButton(withTitle: "Cancel")
+
+            let accessory = RelayEditorAccessory(
+                text: current,
+                insertVisible: insertVisible,
+                normalizeInserted: ContextPackText.normalize
+            )
+            alert.accessoryView = accessory
+            guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+            current = ContextPackText.normalize(accessory.text)
+            if current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                NSAlert(error: RelayUIError.message("The supervised workflow text cannot be empty.")).runModal()
+                continue
+            }
+            if current.utf8.count > ContextPackBuilder.defaultMaximumRenderedBytes {
+                NSAlert(error: RelayUIError.message(
+                    "The supervised workflow text is \(current.utf8.count) bytes. Reduce it to \(ContextPackBuilder.defaultMaximumRenderedBytes) bytes before dispatch."
+                )).runModal()
+                continue
+            }
+            return current
+        }
+    }
+
     private func sendReview(_ draft: ReviewDraft, from source: TmuxPane, to target: TmuxPane) throws {
         guard let controller else { return }
         guard let edited = editRelay(
@@ -2352,11 +3609,17 @@ private enum RelayUIError: LocalizedError {
 private final class RelayEditorAccessory: NSView {
     private let editor: NSTextView
     private let insertVisible: () throws -> String
+    private let normalizeInserted: (String) -> String
 
     var text: String { editor.string }
 
-    init(text: String, insertVisible: @escaping () throws -> String) {
+    init(
+        text: String,
+        insertVisible: @escaping () throws -> String,
+        normalizeInserted: @escaping (String) -> String = RelayText.clean
+    ) {
         self.insertVisible = insertVisible
+        self.normalizeInserted = normalizeInserted
         let frame = NSRect(x: 0, y: 0, width: 560, height: 300)
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 36, width: 560, height: 264))
         scroll.hasVerticalScroller = true
@@ -2388,7 +3651,7 @@ private final class RelayEditorAccessory: NSView {
 
     @objc private func insertVisiblePane() {
         do {
-            let visible = RelayText.clean(try insertVisible())
+            let visible = normalizeInserted(try insertVisible())
             guard !visible.isEmpty else { return }
             editor.insertText(visible, replacementRange: editor.selectedRange())
         } catch {

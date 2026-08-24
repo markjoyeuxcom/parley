@@ -190,6 +190,13 @@ public enum ParleyHelpGuide {
                     title: "Independent comparison",
                     paragraphs: [
                         "Ask Many sends the same question to explicit vendors concurrently. They do not see one another's answers, so the result is independent evidence rather than a chain of agreement.",
+                        "From an active agent pane, open Ask and choose Compare Independently. Select at least two panes from different vendors, review the exact question, then keep the comparison window open or reopen the last comparison from the same menu.",
+                    ],
+                    items: [
+                        "Returned answers appear in separate attributed cards. Failures remain visible and are never presented as answers.",
+                        "Mark an agent pane in the source workspace as Workspace Lead before forwarding. Forward one answer or several selected answers through the normal editable preview.",
+                        "Draft Synthesis opens an edited synthesis preview that preserves every attributed answer and leaves a blank Synthesis field for you to complete. Parley does not generate a consensus or conclusion.",
+                        "Cancel Outstanding stops only the tracked waits that have not returned; it does not type Control-C into vendor panes.",
                     ],
                     commands: [
                         ParleyHelpCommand("parley ask-many codex,agy \"Name the largest risk in this plan.\"", "Return one ordered, labelled JSON answer bundle after every named target finishes or times out."),
@@ -208,6 +215,42 @@ public enum ParleyHelpGuide {
                         ParleyHelpCommand("parley done current \"Implemented; tests pass.\"", "Complete work from the delegated target pane."),
                         ParleyHelpCommand("parley fail current \"Blocked by a missing fixture.\"", "Return an explicit failed result from the delegated target pane."),
                         ParleyHelpCommand("parley cancel current", "Cancel only tracking initiated by this pane; the target CLI is not interrupted."),
+                    ]
+                ),
+            ]
+        ),
+        ParleyHelpTopic(
+            id: "context-packs",
+            title: "Context packs",
+            summary: "Assemble only the local evidence you choose, inspect its provenance and byte size, then send it through Ask or independent Compare.",
+            symbol: "shippingbox",
+            sections: [
+                ParleyHelpSection(
+                    id: "context-packs-build",
+                    title: "Build an explicit pack",
+                    paragraphs: [
+                        "From a ready agent pane, open Context and choose New Context Pack. Add selected UTF-8 files, the source pane's current Git diff, one chosen pane's visible screen, or a captured command result.",
+                        "Every source remains a separate editable part with its exact path or pane/command provenance, captured UTF-8 bytes, current UTF-8 bytes and an EDITED marker when the preview differs from the capture.",
+                    ],
+                    items: [
+                        "Git capture uses read-only argv calls. Untracked files are named by status but their contents are never read implicitly.",
+                        "Visible terminal capture means the current visible screen only. Hidden scrollback, another pane and the complete transcript are not scraped.",
+                        "Command capture requires an absolute executable and treats each non-empty line as one literal argument. It never invokes a shell, expands variables, pipes or redirects.",
+                        "Both command stdout and stderr plus the exit status are retained. Time and output bounds prevent a noisy process from creating an unbounded preview.",
+                        "A pane agent can stage repository files with `parley context draft --name \"Review\" --file path` and append with `parley context add <draft> --file path`. These files must remain under that pane's working folder and are visibly labelled agent-provided because Parley did not independently capture them.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "context-packs-send",
+                    title: "Preview and send",
+                    paragraphs: [
+                        "Write the request for the receiving vendor in the pack itself. Ask One Vendor submits it through the usual attributed Ask path. Compare Vendors gives the same rendered pack to at least two target vendors independently and opens the comparison view for their separate answers.",
+                    ],
+                    items: [
+                        "The live rendered byte total includes provenance, your request and wrapper text—not just source bodies.",
+                        "An oversized source or pack stays visibly invalid and cannot be sent; Parley never silently clips the editable preview.",
+                        "Person-created context packs remain local in-memory drafts. Agent-staged review records are owner-only and durable so closing the UI cannot silently approve or lose a waiting checkpoint; workspace briefs and reusable pinned snippets remain separate later features.",
+                        "`parley ask <vendor> --context <draft> \"question\"` blocks at a visible human-review checkpoint. The Context menu shows the waiting draft; approval sends the edited pack and returns the correlated answer, while Decline submits nothing and releases the waiting pane with an explicit refusal.",
                     ]
                 ),
             ]
@@ -241,6 +284,23 @@ public enum ParleyHelpGuide {
                         "Edit Recipes changes the reusable local instruction text. Keep {{targets}} in each template.",
                         "Stop asks for confirmation, then sends Control-C only to the lead's current turn.",
                         "Stopping the lead does not cancel tracked work it already delegated. Cancel those items separately in Status Center.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "lead-bounded-workflow",
+                    title: "Run the bounded sequence",
+                    paragraphs: [
+                        "Open Recipes and choose Plan → Review → Implement → Verify. Choose explicit reviewer and verifier panes, inspect the planning instruction, then start. The same cross-vendor pane may review and verify, but neither role may use the lead's vendor.",
+                        "Parley advances only when you use the current checkpoint button. Capturing a plan, review or verification opens an editable preview; no hidden terminal history is collected. The two approval phases submit nothing until you explicitly approve them.",
+                    ],
+                    items: [
+                        "Planning tells the lead to stop before editing files.",
+                        "Independent review is submitted directly to the chosen reviewer; its answer remains in that pane until you capture it.",
+                        "Approve Implementation shows the exact combined plan and attributed review before granting the lead write work.",
+                        "Verification captures current Git changes into an editable request and asks the verifier not to modify files.",
+                        "Mark Complete records your judgment; Parley never treats successful-looking prose as proof.",
+                        "End Workflow stops sequence tracking without sending Control-C or cancelling work already running in an agent pane.",
+                        "The owner-only local record preserves participants, exact captured artifacts and every human-authorized transition across UI restarts.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -406,6 +466,20 @@ public enum ParleyHelpGuide {
                     title: "Diagnostics",
                     paragraphs: [
                         "Tools → Export Diagnostics creates a privacy-bounded local archive for troubleshooting. Review it before sharing it. Environment Check verifies local executables and runtime readiness without submitting prompts or spending model quota.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "status-chains",
+                    title: "Curate a handoff chain",
+                    paragraphs: [
+                        "A handoff chain is a readable, person-curated evidence trail. It groups exact snapshots of related Ask, Relay, Paste and Delegate records without creating a task board, contacting an agent or inventing a consensus.",
+                    ],
+                    items: [
+                        "Select a handoff in Status Center, then use Add to Chain to start a named chain or append it to an existing chain in the same workspace scope.",
+                        "For a returned Ask or Delegate result, use Bookmark Result to preserve the complete answer verbatim as either an Answer or an Objection.",
+                        "Open a chain and choose Add Human Decision to record what you decided. The decision is explicitly labelled HUMAN and is never attributed to an agent.",
+                        "Chains store exact local snapshots, so curated evidence remains readable after Parley's bounded ordinary handoff journal prunes an old record.",
+                        "Deleting a chain removes only that curated copy. It never deletes the broker handoff, changes terminal state or interrupts a pane.",
                     ]
                 ),
             ]

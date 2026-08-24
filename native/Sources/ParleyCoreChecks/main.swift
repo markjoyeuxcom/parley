@@ -29,6 +29,37 @@ private final class RecordingRunner: CommandRunning {
     }
 }
 
+private struct ContextCommandInvocation {
+    let executable: URL
+    let arguments: [String]
+    let workingDirectory: URL
+    let environment: [String: String]
+}
+
+private final class RecordingContextCommandRunner: ContextCommandRunning {
+    var calls: [ContextCommandInvocation] = []
+    var output: CommandOutput
+
+    init(output: CommandOutput) {
+        self.output = output
+    }
+
+    func run(
+        executable: URL,
+        arguments: [String],
+        workingDirectory: URL,
+        environment: [String: String]
+    ) throws -> CommandOutput {
+        calls.append(ContextCommandInvocation(
+            executable: executable,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environment: environment
+        ))
+        return output
+    }
+}
+
 private final class LockedDelivery: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: (paneID: String, text: String, submit: Bool)?
@@ -52,6 +83,23 @@ private final class LockedAskResult: @unchecked Sendable {
 
     func set(_ value: RelayTextResponse) {
         lock.withLock { storage = value }
+    }
+}
+
+private final class LockedAskManyUIResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: RelayAskManyUIResponse?
+    private var errorStorage: String?
+
+    var value: RelayAskManyUIResponse? { lock.withLock { storage } }
+    var error: String? { lock.withLock { errorStorage } }
+
+    func set(_ value: RelayAskManyUIResponse) {
+        lock.withLock { storage = value }
+    }
+
+    func set(error: Error) {
+        lock.withLock { errorStorage = error.localizedDescription }
     }
 }
 
@@ -882,7 +930,9 @@ private func checkInAppHelpGuideCoverage() throws {
     }
     for concept in [
         "workspace lead", "automation policy", "permission", "status center",
-        "saved layout", "command palette", "subscription",
+        "saved layout", "command palette", "subscription", "compare independently",
+        "edited synthesis", "context pack", "utf-8 bytes", "absolute executable",
+        "handoff chain", "objection", "human decision",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -2214,8 +2264,8 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "4", "the supervised-workflow protocol did not advance the shared protocol version")
-    for command in ["parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait", "parley cancel"] {
+    try expect(AgentProtocol.version == "5", "the guarded-context protocol did not advance the shared protocol version")
+    for command in ["parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait", "parley cancel", "parley context draft", "--context <draft-id>"] {
         try expect(AgentProtocol.text.contains(command), "shared protocol omitted \(command)")
     }
     try expect(AgentProtocol.text.contains("workspace lead"), "shared protocol omitted lead routing")
@@ -2370,6 +2420,216 @@ private func checkSupervisionMetadataAndRecipesPersistWithoutLiveIDs() throws {
     try expect(runner.calls.contains { $0.arguments.contains("@parley-automation-policy") && $0.arguments.contains("off") }, "policy control did not write tmux workspace metadata")
     try expect(runner.calls.contains { $0.arguments.contains("@parley-lead") && $0.arguments.contains("%2") && $0.arguments.contains("1") }, "lead control did not stamp the selected pane")
     try expect(runner.calls.contains { command($0.arguments) == "send-keys" && $0.arguments.contains("%2") && $0.arguments.contains("C-c") }, "explicit Stop did not target the exact lead pane")
+}
+
+private func checkBoundedSupervisedWorkflowLifecycle() throws {
+    let directory = try temporaryDirectory()
+    let file = directory.appendingPathComponent("supervised-workflows.json")
+    let store = SupervisedWorkflowStore(file: file)
+    let lead = SupervisedWorkflowParticipant(
+        paneID: "%1",
+        name: "Claude lead",
+        kind: .claude,
+        workspaceID: "@0"
+    )
+    let reviewer = SupervisedWorkflowParticipant(
+        paneID: "%2",
+        name: "Codex reviewer",
+        kind: .codex,
+        workspaceID: "@0"
+    )
+    let startedAt = Date(timeIntervalSince1970: 100)
+    let started = try store.start(
+        workspaceID: "@0",
+        workspaceName: "parley",
+        lead: lead,
+        reviewer: reviewer,
+        verifier: reviewer,
+        planningPrompt: "Create a plan and stop before implementation.",
+        now: startedAt
+    )
+    try expect(started.phase == .planning, "bounded workflow did not begin at planning")
+    try expect(started.transitions.map(\.to) == [.planning], "bounded workflow did not record its initial human transition")
+    try expect(started.transitions.allSatisfy { $0.origin == .human }, "bounded workflow invented an agent-authorized transition")
+
+    do {
+        _ = try store.advance(id: started.id, to: .implementing, artifact: nil)
+        throw CheckFailure(description: "bounded workflow skipped review and its human checkpoint")
+    } catch let error as SupervisedWorkflowError {
+        try expect(error.localizedDescription.contains("cannot move"), "invalid workflow transition refusal was unclear")
+    }
+
+    let plan = SupervisedWorkflowArtifact(
+        kind: .plan,
+        text: "Plan text\n\n    preserve indentation\n",
+        capturedAt: Date(timeIntervalSince1970: 110)
+    )
+    let reviewing = try store.advance(
+        id: started.id,
+        to: .reviewingPlan,
+        artifact: plan,
+        detail: "The person reviewed the exact plan before dispatch.",
+        now: Date(timeIntervalSince1970: 111)
+    )
+    try expect(reviewing.artifacts == [plan], "bounded workflow lost its explicitly captured plan")
+
+    let review = SupervisedWorkflowArtifact(kind: .planReview, text: "Independent objections", capturedAt: Date(timeIntervalSince1970: 120))
+    _ = try store.advance(id: started.id, to: .awaitingImplementationApproval, artifact: review)
+    _ = try store.advance(id: started.id, to: .implementing, artifact: nil)
+    let implementation = SupervisedWorkflowArtifact(kind: .implementation, text: "Reviewed diff", capturedAt: Date(timeIntervalSince1970: 130))
+    _ = try store.advance(id: started.id, to: .verifying, artifact: implementation)
+    let verification = SupervisedWorkflowArtifact(kind: .verification, text: "Tests pass; no blocking findings.", capturedAt: Date(timeIntervalSince1970: 140))
+    _ = try store.advance(id: started.id, to: .awaitingCompletionApproval, artifact: verification)
+    let completed = try store.advance(id: started.id, to: .completed, artifact: nil)
+    try expect(completed.phase == .completed && completed.artifacts.count == 4, "bounded workflow did not preserve all four explicit artifacts")
+    try expect(completed.transitions.count == 7, "bounded workflow did not preserve every supervised checkpoint")
+    try expect(completed.artifacts.first?.text == plan.text, "bounded workflow changed formatting in an explicitly reviewed artifact")
+    try expect(completed.transitions.allSatisfy { $0.origin == .human }, "bounded workflow recorded a non-human checkpoint")
+
+    let restored = try require(
+        SupervisedWorkflowStore(file: file).runs().first(where: { $0.id == started.id }),
+        "bounded workflow did not survive store reattachment"
+    )
+    try expect(restored == completed, "bounded workflow changed while being restored")
+    var metadata = stat()
+    try expect(lstat(file.path, &metadata) == 0 && metadata.st_mode & 0o077 == 0, "bounded workflow file was not owner-only")
+
+    let second = try store.start(
+        workspaceID: "@1",
+        workspaceName: "consumer",
+        lead: SupervisedWorkflowParticipant(paneID: "%3", name: "Codex lead", kind: .codex, workspaceID: "@1"),
+        reviewer: SupervisedWorkflowParticipant(paneID: "%4", name: "Claude reviewer", kind: .claude, workspaceID: "@1"),
+        verifier: SupervisedWorkflowParticipant(paneID: "%4", name: "Claude reviewer", kind: .claude, workspaceID: "@1"),
+        planningPrompt: "Plan only."
+    )
+    let interrupted = try store.interrupt(id: second.id, detail: "Stopped by the person.")
+    try expect(interrupted.phase == .interrupted, "bounded workflow could not be interrupted deliberately")
+    do {
+        _ = try store.advance(id: second.id, to: .completed, artifact: nil)
+        throw CheckFailure(description: "bounded workflow resumed after a terminal interruption")
+    } catch let error as SupervisedWorkflowError {
+        try expect(error.localizedDescription.contains("terminal"), "terminal workflow refusal was unclear")
+    }
+}
+
+private func checkReadableHandoffChainsPreserveEvidence() throws {
+    let directory = URL(
+        fileURLWithPath: "/private/tmp/parley-handoff-chains-\(UUID().uuidString.lowercased())",
+        isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("handoff-chains.json")
+    let store = HandoffChainStore(file: file)
+    let askedAt = Date(timeIntervalSince1970: 100)
+    let answer = "Use the actor boundary.\n\nDo not collapse the two failure states."
+    let first = HandoffChainEntry(
+        handoffID: "ask-1",
+        kind: .ask,
+        sourceName: "Claude",
+        sourceKind: .claude,
+        targetName: "Codex",
+        targetKind: .codex,
+        prompt: "Review the concurrency plan.",
+        result: answer,
+        state: .completed,
+        occurredAt: askedAt
+    )
+    let chain = try store.create(
+        title: "Concurrency review",
+        workspaceID: "@1",
+        workspaceName: "parley",
+        firstEntry: first,
+        now: askedAt
+    )
+    let verification = HandoffChainEntry(
+        handoffID: "verify-1",
+        kind: .delegate,
+        sourceName: "Claude",
+        sourceKind: .claude,
+        targetName: "Agy",
+        targetKind: .agy,
+        prompt: "Verify the implementation independently.",
+        result: "One regression remains in cancellation handling.",
+        state: .completed,
+        occurredAt: Date(timeIntervalSince1970: 120)
+    )
+    _ = try store.add(entry: verification, to: chain.id, now: Date(timeIntervalSince1970: 121))
+    _ = try store.bookmark(
+        chainID: chain.id,
+        entryID: first.id,
+        kind: .answer,
+        text: answer,
+        now: Date(timeIntervalSince1970: 122)
+    )
+    let objection = "One regression remains in cancellation handling."
+    _ = try store.bookmark(
+        chainID: chain.id,
+        entryID: verification.id,
+        kind: .objection,
+        text: objection,
+        now: Date(timeIntervalSince1970: 123)
+    )
+    let decision = "Keep the states separate and fix cancellation before release."
+    _ = try store.addDecision(
+        chainID: chain.id,
+        text: decision,
+        now: Date(timeIntervalSince1970: 124)
+    )
+
+    let reloaded = try require(
+        HandoffChainStore(file: file).chains().first(where: { $0.id == chain.id }),
+        "the handoff chain did not survive reattachment"
+    )
+    try expect(reloaded.entries.map(\.handoffID) == ["ask-1", "verify-1"], "explicit handoff order was not preserved")
+    try expect(reloaded.bookmarks.map(\.kind) == [.answer, .objection, .decision], "evidence kinds were smoothed into one verdict")
+    try expect(reloaded.bookmarks[0].text == answer, "the bookmarked answer was rewritten")
+    try expect(reloaded.bookmarks[1].text == objection, "the dissenting objection was rewritten")
+    try expect(reloaded.bookmarks[2].text == decision, "the human decision was rewritten")
+    try expect(reloaded.bookmarks[0].origin == nil, "an agent answer was misattributed to the human")
+    try expect(reloaded.bookmarks[1].origin == nil, "an agent objection was misattributed to the human")
+    try expect(reloaded.bookmarks[2].origin == .human, "the decision lost its human origin")
+    try expect(
+        HandoffChainProjection.chains(reloaded: [reloaded], workspaceID: "@1").map(\.id) == [chain.id],
+        "the chain was not visible in its workspace"
+    )
+    try expect(
+        HandoffChainProjection.chains(reloaded: [reloaded], workspaceID: "@2").isEmpty,
+        "the chain leaked into an unrelated workspace"
+    )
+    do {
+        _ = try store.add(entry: verification, to: chain.id)
+        throw CheckFailure(description: "the same handoff was added to a chain twice")
+    } catch let error as HandoffChainError {
+        try expect(error.errorDescription?.contains("already") == true, "duplicate membership failed without a useful explanation")
+    }
+    let permissions = try require(
+        try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber,
+        "handoff chain permissions were unavailable"
+    )
+    try expect(permissions.intValue & 0o077 == 0, "handoff chains are readable outside their owner")
+
+    let retained = try store.create(
+        title: "Release verification",
+        workspaceID: "@1",
+        workspaceName: "parley",
+        firstEntry: verification,
+        now: Date(timeIntervalSince1970: 130)
+    )
+    try store.delete(id: chain.id)
+    let remaining = try store.chains()
+    try expect(remaining.map(\.id) == [retained.id], "deleting one chain removed unrelated curated evidence")
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+    do {
+        _ = try HandoffChainStore(file: file).chains()
+        throw CheckFailure(description: "an unsafe handoff chain file was accepted")
+    } catch let error as HandoffChainError {
+        try expect(
+            error.errorDescription?.contains("owner-only") == true,
+            "unsafe handoff chain permissions failed without a useful explanation"
+        )
+    }
 }
 
 private func checkSupervisedLeadWorkflowPolicyAndCancellation() throws {
@@ -2874,6 +3134,16 @@ private func checkAsk() throws {
     try expect(runner.calls.contains { call in
         command(call.arguments) == "set-option" && call.arguments.contains("@parley-return-to") && call.arguments.contains("%1")
     }, "Ask did not record its return route")
+
+    let explicitContext = "Review this exact layout:\n\n    indented code\n\n\n┌diagram┐"
+    try controller.askWithExplicitContext(from: "%1", to: "%2", text: explicitContext)
+    let contextLoad = try require(
+        runner.calls.last(where: { command($0.arguments) == "load-buffer" }),
+        "context Ask did not load a tmux buffer"
+    )
+    let contextBody = String(decoding: try require(contextLoad.input, "context Ask buffer had no stdin"), as: UTF8.self)
+    try expect(contextBody.contains("    indented code"), "context Ask stripped meaningful indentation")
+    try expect(contextBody.contains("code\n\n\n┌diagram┐"), "context Ask collapsed blank lines or stripped Unicode source content")
 }
 
 private func checkReturn() throws {
@@ -3038,6 +3308,180 @@ private func checkReviewDraftsAreBoundedShellFreeAndExplicit() throws {
         throw CheckFailure(description: "failed git command produced a review draft")
     } catch let ReviewDraftError.commandFailed(detail) {
         try expect(detail.contains("stdout cause") && detail.contains("stderr cause"), "git failure hid stdout or stderr")
+    }
+}
+
+private func checkContextPacksAreExplicitBoundedAndAttributed() throws {
+    let repository = try temporaryDirectory()
+    let gitRunner = RecordingRunner { arguments, _ in
+        if arguments.contains("rev-parse") {
+            return CommandOutput(stdout: Data("\(repository.path)\n".utf8))
+        }
+        if arguments.contains("status") {
+            return CommandOutput(stdout: Data(" M Sources/App.swift\n?? PRIVATE-NOTE.txt\n".utf8))
+        }
+        if arguments.contains("--cached") {
+            return CommandOutput(stdout: Data("diff --git a/staged b/staged\n+staged context\n".utf8))
+        }
+        return CommandOutput(stdout: Data("diff --git a/worktree b/worktree\n+working context\n".utf8))
+    }
+    let commandRunner = RecordingContextCommandRunner(output: CommandOutput(
+        stdout: Data("command stdout\n".utf8),
+        stderr: Data("command stderr\n".utf8),
+        status: 7
+    ))
+    let builder = ContextPackBuilder(
+        environment: ["PATH": "/usr/bin:/bin"],
+        gitRunner: gitRunner,
+        commandRunner: commandRunner,
+        maximumPartBytes: 4_096,
+        maximumRenderedBytes: 20_000
+    )
+
+    let fileURL = repository.appendingPathComponent("PLAN.md")
+    try "# Plan\n\nKeep every source explicit.\n".write(to: fileURL, atomically: true, encoding: .utf8)
+    let file = try builder.file(at: fileURL)
+    try expect(file.source.kind == .file, "a selected file lost its source kind")
+    try expect(file.source.detail == fileURL.path, "a selected file lost its exact path")
+    try expect(file.byteCount == file.text.utf8.count && !file.isEdited, "a selected file reported an inexact byte count")
+
+    let changes = try builder.gitDiff(in: repository.path)
+    try expect(changes.source.kind == .gitDiff, "Git changes lost their source kind")
+    try expect(changes.source.detail == repository.path, "Git changes lost their repository path")
+    try expect(changes.text.contains("+staged context") && changes.text.contains("+working context"), "Git context omitted a diff surface")
+    try expect(changes.text.contains("?? PRIVATE-NOTE.txt"), "Git context omitted the explicit untracked filename")
+    try expect(!changes.text.contains("secret contents"), "Git context silently read untracked file contents")
+    try expect(gitRunner.calls.count == 4, "Git context ran an unexpected command")
+    try expect(gitRunner.calls.allSatisfy { $0.executable.path == "/usr/bin/git" }, "Git context invoked a shell or foreign executable")
+    try expect(gitRunner.calls.allSatisfy { $0.environment["GIT_OPTIONAL_LOCKS"] == "0" }, "Git context allowed optional index locks")
+
+    let terminal = try builder.visibleTerminal(
+        paneID: "%7",
+        paneName: "Review shell",
+        text: "Only the visible screen\nnot hidden scrollback"
+    )
+    try expect(terminal.source.kind == .visibleTerminal, "visible terminal context lost its source kind")
+    try expect(terminal.source.detail.contains("%7") && terminal.text == "Only the visible screen\nnot hidden scrollback", "visible terminal context changed its explicit capture")
+
+    let command = try builder.commandResult(
+        executablePath: "/usr/bin/printf",
+        arguments: ["%s", "literal | argument"],
+        workingDirectory: repository
+    )
+    try expect(command.source.kind == .commandResult, "command context lost its source kind")
+    try expect(command.text.contains("Exit status: 7"), "command context omitted its exit status")
+    try expect(command.text.contains("command stdout") && command.text.contains("command stderr"), "command context hid stdout or stderr")
+    let invocation = try require(commandRunner.calls.first, "command context did not execute")
+    try expect(invocation.executable.path == "/usr/bin/printf", "command context changed the executable")
+    try expect(invocation.arguments == ["%s", "literal | argument"], "command context interpreted an argument as shell syntax")
+    try expect(invocation.workingDirectory.path == repository.path, "command context ran in the wrong folder")
+    do {
+        _ = try builder.commandResult(
+            executablePath: "printf",
+            arguments: ["must not run"],
+            workingDirectory: repository
+        )
+        throw CheckFailure(description: "a context command resolved a non-absolute executable implicitly")
+    } catch ContextPackError.invalidExecutable {
+        // Expected: the person must see and approve the exact executable path.
+    }
+    try expect(commandRunner.calls.count == 1, "a refused relative command still executed")
+
+    let directRunner = ContextProcessCommandRunner(timeout: 2, maximumOutputBytes: 1_024)
+    let literal = try directRunner.run(
+        executable: URL(fileURLWithPath: "/usr/bin/printf"),
+        arguments: ["%s", "literal | argument"],
+        workingDirectory: repository,
+        environment: ["PATH": "/usr/bin:/bin"]
+    )
+    try expect(literal.status == 0 && literal.stdoutText == "literal | argument", "the real context runner interpreted a literal shell metacharacter")
+    let pwd = try directRunner.run(
+        executable: URL(fileURLWithPath: "/bin/pwd"),
+        arguments: [],
+        workingDirectory: repository,
+        environment: ["PATH": "/usr/bin:/bin"]
+    )
+    try expect(
+        canonicalPath(pwd.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)) == canonicalPath(repository.path),
+        "the real context runner ignored its exact working directory"
+    )
+    let boundedRunner = ContextProcessCommandRunner(timeout: 0.1, maximumOutputBytes: 32)
+    let noisy = try boundedRunner.run(
+        executable: URL(fileURLWithPath: "/usr/bin/yes"),
+        arguments: [],
+        workingDirectory: repository,
+        environment: ["PATH": "/usr/bin:/bin"]
+    )
+    try expect(noisy.status == 124, "a long-running context command did not reach its bounded timeout")
+    try expect(noisy.stdout.count <= 32, "a noisy context command exceeded its capture bound")
+
+    let editedTerminal = terminal.replacingText("Edited visible evidence")
+    try expect(editedTerminal.isEdited, "editing a captured part was not disclosed")
+    try expect(editedTerminal.capturedByteCount == terminal.byteCount, "editing a part changed its captured byte count")
+    try expect(editedTerminal.byteCount == "Edited visible evidence".utf8.count, "editing a part left a stale live byte count")
+
+    let oversizedEditText = String(repeating: "x", count: RelayText.maximumCharacters + 37)
+    let oversizedEdit = terminal.replacingText(oversizedEditText)
+    try expect(
+        oversizedEdit.byteCount == oversizedEditText.utf8.count,
+        "an oversized context edit was silently clipped instead of remaining visibly invalid"
+    )
+    do {
+        _ = try builder.render(ContextPack(name: "Oversized edit", parts: [oversizedEdit]))
+        throw CheckFailure(description: "an oversized edited part was rendered")
+    } catch ContextPackError.partTooLarge {
+        // Expected: the preview retains the edit and reports the explicit bound.
+    }
+
+    let pack = ContextPack(
+        name: "Release review",
+        note: "Challenge the upgrade assumptions.",
+        parts: [file, changes, editedTerminal, command]
+    )
+    let rendered = try builder.render(pack)
+    try expect(rendered.contains("Context pack: Release review"), "rendered context lost its name")
+    try expect(rendered.contains("Challenge the upgrade assumptions."), "rendered context lost the person's note")
+    for part in pack.parts {
+        try expect(rendered.contains(part.source.detail), "rendered context lost source provenance")
+        try expect(rendered.contains("Current UTF-8 bytes: \(part.byteCount)"), "rendered context omitted an exact part byte count")
+    }
+    try expect(rendered.contains("Edited after capture: yes"), "rendered context hid an edited capture")
+    try expect(rendered.utf8.count == builder.renderedByteCount(pack), "context pack total byte count disagreed with its rendered payload")
+
+    let binary = repository.appendingPathComponent("binary.dat")
+    try Data([0x41, 0, 0x42]).write(to: binary)
+    do {
+        _ = try builder.file(at: binary)
+        throw CheckFailure(description: "a binary file entered a context pack")
+    } catch ContextPackError.notText {
+        // Expected: context packs carry reviewable text, never opaque bytes.
+    }
+
+    let tinyBuilder = ContextPackBuilder(
+        environment: [:],
+        gitRunner: gitRunner,
+        commandRunner: commandRunner,
+        maximumPartBytes: 12,
+        maximumRenderedBytes: 64
+    )
+    do {
+        _ = try tinyBuilder.file(at: fileURL)
+        throw CheckFailure(description: "an oversized file entered a context pack")
+    } catch ContextPackError.partTooLarge {
+        // Expected: each source is bounded before it reaches the preview.
+    }
+    let tinyPackBuilder = ContextPackBuilder(
+        environment: [:],
+        gitRunner: gitRunner,
+        commandRunner: commandRunner,
+        maximumPartBytes: 4_096,
+        maximumRenderedBytes: 64
+    )
+    do {
+        _ = try tinyPackBuilder.render(ContextPack(name: "Too large", parts: [file]))
+        throw CheckFailure(description: "an oversized rendered context pack was accepted")
+    } catch ContextPackError.packTooLarge {
+        // Expected: wrappers and notes count toward the final handoff ceiling.
     }
 }
 
@@ -4711,9 +5155,11 @@ private func checkAskManyFansOutIndependentlyAndReturnsAnOrderedBundle() throws 
     try expect(answers.count == 2, "ask-many bundle returned the wrong answer count")
     try expect(answers[0]["requestedTarget"] as? String == "codex", "ask-many lost requested target ordering")
     try expect(answers[0]["targetPaneID"] as? String == "%2", "ask-many resolved Codex to the wrong pane")
+    try expect(answers[0]["handoffID"] as? String != nil, "ask-many omitted Codex's durable handoff identity")
     try expect(answers[0]["answer"] as? String == "Codex answer", "ask-many lost Codex's exact answer")
     try expect(answers[1]["requestedTarget"] as? String == "agy", "ask-many lost the second requested target")
     try expect(answers[1]["targetPaneID"] as? String == "%3", "ask-many resolved Agy to the wrong pane")
+    try expect(answers[1]["handoffID"] as? String != nil, "ask-many omitted Agy's durable handoff identity")
     try expect(answers[1]["answer"] as? String == "Agy answer", "ask-many lost Agy's exact answer")
 
     let retry = broker.handleAskMany(
@@ -4773,6 +5219,217 @@ private func checkAskManyFansOutIndependentlyAndReturnsAnOrderedBundle() throws 
     let partialAnswers = try require(partialJSON["answers"] as? [[String: Any]], "partial ask-many bundle omitted its results")
     try expect(partialAnswers[0]["status"] as? Int == 409 && partialAnswers[0]["error"] as? String != nil, "partial ask-many bundle hid the failed first target")
     try expect(partialAnswers[1]["answer"] as? String == "Agy survived", "partial ask-many bundle lost the successful second answer")
+}
+
+private func checkAskManyComparisonDraftPreservesIndependentAttribution() throws {
+    let answers = [
+        RelayAskManyAnswer(
+            requestedTarget: "codex",
+            targetPaneID: "%2",
+            targetName: "Security reviewer",
+            status: 200,
+            answer: "Validate the trust boundary first.",
+            error: nil
+        ),
+        RelayAskManyAnswer(
+            requestedTarget: "agy",
+            targetPaneID: "%3",
+            targetName: "Product reviewer",
+            status: 200,
+            answer: "Test whether the workflow is understandable first.",
+            error: nil
+        ),
+        RelayAskManyAnswer(
+            requestedTarget: "copilot",
+            targetPaneID: "%4",
+            targetName: "Implementation reviewer",
+            status: 409,
+            answer: nil,
+            error: "The pane was unavailable."
+        ),
+    ]
+
+    let one = try AskManyComparisonDraft.forwardingText(
+        question: "What should we validate first?",
+        answers: answers,
+        selectedTargetPaneIDs: ["%3"]
+    )
+    try expect(one.contains("Product reviewer answered independently:"), "a single forwarded answer lost its source attribution")
+    try expect(one.contains("Test whether the workflow is understandable first."), "a single forwarded answer lost its exact text")
+    try expect(!one.contains("Security reviewer"), "a single-answer draft included an unselected peer")
+
+    let several = try AskManyComparisonDraft.forwardingText(
+        question: "What should we validate first?",
+        answers: answers,
+        selectedTargetPaneIDs: ["%2", "%3"]
+    )
+    let securityRange = try require(several.range(of: "Security reviewer answered independently:"), "the first selected answer lost attribution")
+    let productRange = try require(several.range(of: "Product reviewer answered independently:"), "the second selected answer lost attribution")
+    try expect(securityRange.lowerBound < productRange.lowerBound, "comparison forwarding changed the original independent answer order")
+    try expect(!several.localizedCaseInsensitiveContains("consensus"), "comparison forwarding manufactured a consensus label")
+    try expect(!several.contains("The pane was unavailable."), "comparison forwarding presented a failure as an answer")
+
+    let synthesis = try AskManyComparisonDraft.synthesisText(
+        question: "What should we validate first?",
+        answers: answers
+    )
+    try expect(synthesis.contains("Write an edited synthesis below. The attributed answers above remain unchanged."), "the synthesis draft did not preserve an explicit human editing boundary")
+    try expect(synthesis.hasSuffix("Synthesis:\n"), "the synthesis draft pre-filled a manufactured conclusion")
+
+    do {
+        _ = try AskManyComparisonDraft.forwardingText(
+            question: "What should we validate first?",
+            answers: answers,
+            selectedTargetPaneIDs: ["%4"]
+        )
+        throw CheckFailure(description: "a failed comparison result was forwarded as an answer")
+    } catch AskManyComparisonDraftError.noSuccessfulAnswers {
+        // Expected: failures stay visible in the comparison but are not answers.
+    }
+}
+
+private func checkHumanAskManyUsesTheTrackedBrokerPath() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    _ = try credentials.token(for: "%1")
+    let codexToken = try credentials.token(for: "%2")
+    let agyToken = try credentials.token(for: "%3")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil, automationPolicy: .off),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let submissions = LockedSubmissions()
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { paneID, prompt in submissions.append(paneID: paneID, text: prompt) },
+        consultationTimeout: 2,
+        livenessPollInterval: 0.01
+    )
+
+    let result = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        result.set(broker.handleAskManyFromUI(
+            sourcePaneID: "%1",
+            targetPaneIDs: ["%2", "%3"],
+            text: "Which risk should the person inspect first?",
+            idempotencyKey: "human-compare-1"
+        ))
+    }
+    try expect(eventually { broker.consultations().count == 2 }, "the native comparison did not create two tracked consultations")
+    try expect(Set(submissions.values.map(\.paneID)) == Set(["%2", "%3"]), "the native comparison did not submit to exactly the selected panes")
+    try expect(broker.handleAnswer(token: codexToken, consultationID: "current", text: "Codex answer").status == 200, "Codex could not answer the native comparison")
+    try expect(broker.handleAnswer(token: agyToken, consultationID: "current", text: "Agy answer").status == 200, "Agy could not answer the native comparison")
+    try expect(eventually { result.value != nil }, "the native comparison stayed blocked after both answers")
+    let completed = try require(result.value, "the native comparison produced no bundle")
+    try expect(completed.status == 200, "the native comparison returned a failure status")
+    let bundle = try JSONDecoder().decode(RelayAskManyBundle.self, from: Data(completed.text.utf8))
+    try expect(bundle.answers.map(\.targetPaneID) == ["%2", "%3"], "the native comparison changed selected-pane order")
+
+    let invalid = broker.handleAskManyFromUI(
+        sourcePaneID: "%404",
+        targetPaneIDs: ["%2", "%3"],
+        text: "This must not dispatch.",
+        idempotencyKey: "human-compare-invalid"
+    )
+    try expect(invalid.status == 400 && invalid.text.contains("source"), "the native comparison accepted an unknown source pane")
+    try expect(submissions.values.count == 2, "an invalid native comparison partially dispatched")
+
+    _ = try credentials.token(for: "%4")
+    let sameVendorSubmissions = LockedSubmissions()
+    let sameVendorBroker = RelayBroker(
+        credentials: credentials,
+        panes: {
+            panes + [
+                TmuxPane(id: "%4", kind: .codex, customName: "Codex Two", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+            ]
+        },
+        paste: { _, _ in },
+        submit: { paneID, prompt in sameVendorSubmissions.append(paneID: paneID, text: prompt) },
+        consultationTimeout: 0.05,
+        livenessPollInterval: 0.01
+    )
+    let sameVendor = sameVendorBroker.handleAskManyFromUI(
+        sourcePaneID: "%1",
+        targetPaneIDs: ["%2", "%4"],
+        text: "This must remain a cross-vendor comparison.",
+        idempotencyKey: "human-compare-same-vendor"
+    )
+    try expect(
+        sameVendor.status == 400 && sameVendor.text.contains("different vendors"),
+        "the native comparison accepted two panes from the same target vendor"
+    )
+    try expect(sameVendorSubmissions.values.isEmpty, "a same-vendor comparison submitted terminal input")
+}
+
+private func checkHumanAskManyCoreControlRoute() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    _ = try credentials.token(for: "%1")
+    let codexToken = try credentials.token(for: "%2")
+    let agyToken = try credentials.token(for: "%3")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil, automationPolicy: .off),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let submissions = LockedSubmissions()
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { paneID, prompt in submissions.append(paneID: paneID, text: prompt) },
+        consultationTimeout: 2,
+        livenessPollInterval: 0.01
+    )
+    let infoFile = directory.appendingPathComponent("relay-url")
+    let controlToken = "ask-many-ui-control"
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
+    try server.start()
+    defer { server.stop() }
+
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    do {
+        _ = try unauthorized.askManyFromUI(
+            sourcePaneID: "%1",
+            targetPaneIDs: ["%2", "%3"],
+            text: "This must not dispatch.",
+            idempotencyKey: "ui-compare-unauthorized"
+        )
+        throw CheckFailure(description: "an unauthenticated UI started an Ask-many comparison")
+    } catch RelayCoreError.response(401, _) {
+        // Expected.
+    }
+    try expect(submissions.values.isEmpty, "the rejected UI comparison submitted terminal input")
+
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let result = LockedAskManyUIResult()
+    DispatchQueue.global(qos: .utility).async {
+        do {
+            result.set(try client.askManyFromUI(
+                sourcePaneID: "%1",
+                targetPaneIDs: ["%2", "%3"],
+                text: "Compare exactly:\n\n    indented evidence\n\n\n┌diagram┐",
+                idempotencyKey: "ui-compare-authorized",
+                preserveFormatting: true
+            ))
+        } catch {
+            result.set(error: error)
+        }
+    }
+    try expect(eventually { broker.consultations().count == 2 }, "the authenticated UI route did not reach both targets")
+    try expect(submissions.values.allSatisfy {
+        $0.text.contains("    indented evidence") && $0.text.contains("evidence\n\n\n┌diagram┐")
+    }, "the formatted native comparison damaged explicit context before submission")
+    try expect(broker.handleAnswer(token: codexToken, consultationID: "current", text: "Codex result").status == 200, "Codex could not answer the UI route")
+    try expect(broker.handleAnswer(token: agyToken, consultationID: "current", text: "Agy result").status == 200, "Agy could not answer the UI route")
+    try expect(eventually { result.value != nil || result.error != nil }, "the UI route did not complete")
+    try expect(result.error == nil, "the UI route failed: \(result.error ?? "unknown")")
+    let response = try require(result.value, "the UI route produced no comparison response")
+    try expect(response.status == 200 && response.bundle.ok, "the UI route did not preserve the successful bundle")
+    try expect(response.bundle.answers.map(\.answer) == ["Codex result", "Agy result"], "the UI route changed the independent answer order or text")
 }
 
 private func checkAgentAskRejectsBusyTargetAndTimesOut() throws {
@@ -5367,7 +6024,7 @@ private func checkCoreServiceUpgradeIdentity() throws {
     ])
     let development = CoreServiceIdentity.resolve(infoDictionary: nil)
 
-    try expect(packaged.contractVersion == 1, "packaged core identity has the wrong coordination contract")
+    try expect(packaged.contractVersion == 2, "packaged core identity has the wrong coordination contract")
     try expect(packaged.applicationVersion == "1.2.3", "packaged core identity lost the app version")
     try expect(packaged.build == "456", "packaged core identity lost the app build")
     try expect(development.applicationVersion == "development", "development core identity invented an app version")
@@ -5725,6 +6382,187 @@ private func checkVendorConformanceAttentionGate() throws {
     try expect(ready == nil, "normal agent prompt was incorrectly blocked")
 }
 
+private func checkAgentContextDraftsRequireHumanApprovalBeforeAsk() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let claudeToken = try credentials.token(for: "%1")
+    let codexToken = try credentials.token(for: "%2")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp/project", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp/project", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let submissions = LockedDelivery()
+    let reviewStore = try AgentContextReviewStore(
+        file: directory.appendingPathComponent("context-reviews.json")
+    )
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { paneID, text in submissions.set(paneID: paneID, text: text, submit: true) },
+        contextSubmit: { paneID, text in submissions.set(paneID: paneID, text: text, submit: true) },
+        consultationTimeout: 3,
+        contextReviewStore: reviewStore
+    )
+    let infoFile = directory.appendingPathComponent("relay-url")
+    let controlToken = "context-review-control"
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
+    try server.start()
+    defer { server.stop() }
+    let control = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+
+    let staged = broker.handleContextDraft(
+        token: claudeToken,
+        name: "Parser review",
+        path: "Sources/Parser.swift",
+        text: "func parse() { fatalError() }"
+    )
+    try expect(staged.status == 201, "an authenticated pane could not stage explicit context")
+    let stagedSummary = try JSONDecoder().decode(
+        AgentContextReviewSummary.self,
+        from: Data(staged.text.utf8)
+    )
+    let stagedReview = try require(
+        broker.contextReviews().first(where: { $0.id == stagedSummary.id }),
+        "the staged context review was not retained"
+    )
+    try expect(stagedReview.state == .draft, "a staged context file skipped draft review")
+    try expect(stagedReview.sourcePaneID == "%1", "a context draft trusted a claimed source pane")
+    try expect(stagedReview.pack.parts.first?.source.kind == .agentFileDraft, "agent-provided context was labelled as person-selected")
+    try expect(
+        stagedReview.pack.parts.first?.source.detail.contains("not independently read by Parley") == true,
+        "agent-provided context omitted its trust boundary"
+    )
+    let escaped = broker.handleContextDraft(
+        token: claudeToken,
+        name: "Escaped context",
+        path: "/etc/hosts",
+        text: "claimed external contents"
+    )
+    try expect(escaped.status == 403, "an agent could stage a file outside its pane folder")
+
+    let listed = broker.contextDrafts(token: claudeToken)
+    try expect(listed.status == 200 && listed.text.contains(stagedReview.id), "the source pane could not list its context drafts")
+    let hidden = broker.contextDraft(token: codexToken, draftID: stagedReview.id)
+    try expect(hidden.status == 404, "another pane could inspect a source pane's unsent context")
+
+    let askResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        askResult.set(broker.handleContextAsk(
+            token: claudeToken,
+            draftID: stagedReview.id,
+            target: "codex",
+            text: "Find the concrete failure modes in this parser.",
+            idempotencyKey: "context-review-ask-1"
+        ))
+    }
+    try expect(eventually { (try? control.contextReviews().first?.state) == .awaitingReview }, "context Ask did not surface through native control")
+    try expect(askResult.value == nil, "context Ask returned before the person reviewed it")
+    try expect(submissions.value == nil, "context Ask submitted before human approval")
+
+    let pending = try require(try control.contextReviews().first, "the pending context review disappeared")
+    var approvedPack = pending.pack
+    approvedPack.note = "Review only correctness and cite exact lines."
+    let approved = try control.approveContextReview(
+        reviewID: pending.id,
+        pack: approvedPack,
+        targetPaneID: "%2"
+    )
+    try expect(approved.status == 200, "the native control could not approve a context Ask")
+    try expect(eventually { submissions.value != nil }, "approval did not dispatch the context Ask")
+    try expect(submissions.value?.paneID == "%2", "approved context went to the wrong pane")
+    try expect(submissions.value?.text.contains("Review only correctness") == true, "approval dispatched the unreviewed request")
+    try expect(submissions.value?.text.contains("not independently read by Parley") == true, "approval stripped context provenance")
+    try expect(askResult.value == nil, "approved context Ask stopped waiting before its correlated answer")
+
+    let returned = broker.handleAnswer(token: codexToken, consultationID: "current", text: "The fatal error is unconditional.")
+    try expect(returned.status == 200, "the context target could not return its correlated answer")
+    try expect(eventually { askResult.value != nil }, "context Ask did not return the correlated answer")
+    try expect(askResult.value?.status == 200 && askResult.value?.text.contains("fatal error") == true, "context Ask lost the answer")
+    try expect(broker.contextReviews().first?.state == .completed, "the reviewed context did not record completion")
+
+    let persisted = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
+    try expect(persisted.reviews().first?.state == .completed, "context review state did not survive store reattachment")
+}
+
+private func checkContextReviewShimRoundTrip() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let claudeToken = try credentials.token(for: "%1")
+    let codexToken = try credentials.token(for: "%2")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let submissions = LockedDelivery()
+    let reviewStore = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { paneID, text in submissions.set(paneID: paneID, text: text, submit: true) },
+        contextSubmit: { paneID, text in submissions.set(paneID: paneID, text: text, submit: true) },
+        consultationTimeout: 3,
+        contextReviewStore: reviewStore
+    )
+    let transportDirectory = RelayFileTransport.runtimeDirectory(applicationDirectory: directory)
+    let shimDirectory = try RelayShim.install(in: directory, transportDirectory: transportDirectory)
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory)
+    try transport.start()
+    defer { transport.stop() }
+    let file = directory.appendingPathComponent("Parser.swift")
+    try "let parser = Parser()\n".write(to: file, atomically: true, encoding: .utf8)
+    let runner = ProcessCommandRunner(timeout: 4)
+    let environment = ProcessInfo.processInfo.environment.merging([
+        "PARLEY_RELAY_TOKEN": claudeToken,
+    ]) { _, supplied in supplied }
+    let staged = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [shimDirectory.appendingPathComponent("parley").path, "context", "draft", "--name", "Parser review", "--file", file.path],
+        environment: environment,
+        input: nil
+    )
+    try expect(staged.status == 0, "parley context draft failed: \(staged.stderrText)")
+    let review = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(staged.stdoutText.utf8))
+    let listed = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [shimDirectory.appendingPathComponent("parley").path, "context", "list"],
+        environment: environment,
+        input: nil
+    )
+    try expect(listed.status == 0 && listed.stdoutText.contains(review.id), "parley context list omitted the staged draft")
+    let shown = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [shimDirectory.appendingPathComponent("parley").path, "context", "show", review.id],
+        environment: environment,
+        input: nil
+    )
+    try expect(shown.status == 0 && shown.stdoutText.contains("let parser"), "parley context show omitted the staged content")
+
+    let askResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        do {
+            let output = try ProcessCommandRunner(timeout: 5).run(
+                executable: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [shimDirectory.appendingPathComponent("parley").path, "ask", "codex", "--context", review.id, "Review this parser."],
+                environment: environment,
+                input: nil
+            )
+            askResult.set(RelayTextResponse(status: Int(output.status), text: output.stdoutText + output.stderrText))
+        } catch {
+            askResult.set(RelayTextResponse(status: -1, text: error.localizedDescription))
+        }
+    }
+    try expect(eventually { broker.contextReviews().first?.state == .awaitingReview }, "shim context Ask did not reach the review queue")
+    var approvedPack = try require(broker.contextReviews().first, "shim context review disappeared").pack
+    approvedPack.note = "Review this parser for correctness."
+    try expect(broker.approveContextReview(reviewID: review.id, pack: approvedPack, targetPaneID: "%2").status == 200, "shim context Ask could not be approved")
+    try expect(eventually { submissions.value != nil }, "approved shim context Ask was not submitted")
+    try expect(broker.handleAnswer(token: codexToken, consultationID: "current", text: "Parser reviewed.").status == 200, "shim context Ask could not be answered")
+    try expect(eventually { askResult.value != nil }, "shim context Ask did not return")
+    try expect(askResult.value?.status == 0 && askResult.value?.text.contains("Parser reviewed") == true, "shim context Ask returned the wrong result")
+}
+
 let checks: [(String, () throws -> Void)] = [
     ("runtime namespaces are explicit and disjoint", checkRuntimeNamespacesAreExplicitAndDisjoint),
     ("useful copyable build information", checkBuildInformationIsUsefulAndCopyable),
@@ -5764,6 +6602,8 @@ let checks: [(String, () throws -> Void)] = [
     ("inherited Parley capability scrub", checkInheritedParleyCapabilitiesAreScrubbed),
     ("shared protocol launch adapters", checkSharedProtocolLaunchAdapters),
     ("supervision metadata and editable recipes", checkSupervisionMetadataAndRecipesPersistWithoutLiveIDs),
+    ("bounded supervised workflow lifecycle", checkBoundedSupervisedWorkflowLifecycle),
+    ("readable handoff chains preserve exact evidence", checkReadableHandoffChainsPreserveEvidence),
     ("supervised lead workflow policy and cancellation", checkSupervisedLeadWorkflowPolicyAndCancellation),
     ("tracked delegation completion and wait", checkTrackedDelegationCompletesAndWaits),
     ("tracked delegation failure and liveness", checkTrackedDelegationFailureAndLiveness),
@@ -5778,6 +6618,9 @@ let checks: [(String, () throws -> Void)] = [
     ("relay cleaning", checkRelayCleaning),
     ("selection-or-empty relay draft", checkRelayDraftStartsWithSelectionOrNothing),
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
+    ("explicit bounded attributed context packs", checkContextPacksAreExplicitBoundedAndAttributed),
+    ("agent context drafts require human approval", checkAgentContextDraftsRequireHumanApprovalBeforeAsk),
+    ("context review shim round trip", checkContextReviewShimRoundTrip),
     ("authoritative Status Center projection", checkStatusCenterProjectionUsesOnlyAuthoritativeState),
     ("in-app recovery guidance", checkRecoveryGuidanceProjectsKnownFailures),
     ("durable authoritative operational activity", checkOperationalActivityIsDurableAndAuthoritative),
@@ -5800,6 +6643,9 @@ let checks: [(String, () throws -> Void)] = [
     ("safe stable relay shim", checkStableShimInstallationDoesNotOverwriteForeignCommands),
     ("agent Ask auto-submits and returns", checkAgentAskSubmitsAndBlocksUntilTheTargetAnswers),
     ("ask-many independent ordered fanout", checkAskManyFansOutIndependentlyAndReturnsAnOrderedBundle),
+    ("ask-many comparison preserves independent attribution", checkAskManyComparisonDraftPreservesIndependentAttribution),
+    ("human ask-many uses tracked broker path", checkHumanAskManyUsesTheTrackedBrokerPath),
+    ("human ask-many core-control route", checkHumanAskManyCoreControlRoute),
     ("agent Ask busy target and timeout", checkAgentAskRejectsBusyTargetAndTimesOut),
     ("human Ask cancellation", checkHumanCancellationUnblocksAsk),
     ("safe failed-delivery retry", checkSafeFailedDeliveryRetryIsStableAndDeduplicated),

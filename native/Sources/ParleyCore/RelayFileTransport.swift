@@ -215,6 +215,32 @@ public final class RelayFileTransport: @unchecked Sendable {
                 text: request.body,
                 idempotencyKey: request.idempotencyKey
             ))
+        case "context-draft":
+            return encode(broker.handleContextDraft(
+                token: request.token,
+                name: request.item,
+                path: request.target,
+                text: request.body
+            ))
+        case "context-add":
+            return encode(broker.handleContextAdd(
+                token: request.token,
+                draftID: request.item,
+                path: request.target,
+                text: request.body
+            ))
+        case "context-list":
+            return encode(broker.contextDrafts(token: request.token))
+        case "context-show":
+            return encode(broker.contextDraft(token: request.token, draftID: request.item))
+        case "context-ask":
+            return encode(broker.handleContextAsk(
+                token: request.token,
+                draftID: request.item,
+                target: request.target,
+                text: request.body,
+                idempotencyKey: request.idempotencyKey
+            ))
         case "answer":
             return encode(broker.handleAnswer(
                 token: request.token,
@@ -269,7 +295,10 @@ public final class RelayFileTransport: @unchecked Sendable {
     private func readRequest(from directory: URL, expectedToken: String) throws -> FileRequest {
         try validateDirectory(directory)
         let command = try readField("command", from: directory, maximumBytes: 32)
-        let allowed = ["relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "done", "fail", "cancel"]
+        let allowed = [
+            "relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "done", "fail", "cancel",
+            "context-draft", "context-add", "context-list", "context-show", "context-ask",
+        ]
         guard allowed.contains(command) else { throw RelayFileTransportError.runtime("unknown command") }
         let token = try readField("token", from: directory, maximumBytes: 256)
         guard token == expectedToken else {

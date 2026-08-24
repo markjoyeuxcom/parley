@@ -41,7 +41,7 @@ The native application already has the product's essential wedge:
 - A versioned cross-vendor protocol injected into every newly started agent.
 - `relay` for an attributed asynchronous handoff, `paste` for an unsent draft,
   and correlated `ask` / `answer` for a blocking consultation.
-- Protocol v2 tracked delegation through `delegate`, `done`, `fail`, `status`
+- Protocol v5 tracked delegation through `delegate`, `done`, `fail`, `status`
   and `wait`, with exact source/target credential ownership.
 - Human Ask and Return editors with explicit control over the exact text sent.
 - Automatic submission that works across the supported agent TUIs.
@@ -577,23 +577,73 @@ between real vendor CLIs rather than a new autonomous orchestration engine.
 
 ### Better questions, comparisons and context
 
-- [ ] Add a native **Ask-many comparison view** that presents independent
+- [x] Add a native **Ask-many comparison view** that presents independent
   answers side by side without manufacturing consensus. Preserve dissent and
   let the person forward one answer, several attributed answers, or an edited
   synthesis to the workspace lead through the normal previewed handoff path.
-- [ ] Add explicit, editable **context packs** assembled from selected files,
+  The Ask menu now opens an explicit multi-pane picker and one exact editable
+  question preview, then routes the concurrent requests through the durable
+  Ask broker. The authenticated native route never exposes a pane credential,
+  bypasses agent automation policy only because the click is a human control,
+  refuses fewer than two target vendors before dispatch, and records exact
+  child handoff ids. Returned answers and failures remain separate attributed
+  cards; forwarding one or several and drafting a synthesis both use a second
+  human preview before submission to the source workspace's ready lead. The
+  synthesis starts blank, no conclusion is generated, and cancelling
+  outstanding waits does not interrupt a vendor CLI process.
+- [x] Add explicit, editable **context packs** assembled from selected files,
   a Git diff, visible terminal output and captured command results. Show the
   source and exact byte size of every part before sending; never scrape hidden
   scrollback or include a whole transcript implicitly.
-- [ ] Add bounded, predefined **workflow sequences** such as plan → independent
+  Context is now a native toolbar workflow anchored to one ready source agent.
+  Every selected UTF-8 file, read-only Git snapshot, explicitly chosen visible
+  pane screen and direct argv command result remains a separate editable part
+  with immutable provenance, captured/current byte counts and an edit marker.
+  Git names but never reads untracked files; terminal capture never requests
+  history; commands require an absolute executable, accept one literal argument
+  per line, run without a shell in the source folder, retain status plus both
+  output streams, and have hard time/output bounds. The live rendered total
+  includes the person's required receiving instruction and all attribution.
+  Oversized edits remain visible and unsendable rather than being clipped.
+  The reviewed pack can go through attributed one-vendor Ask or the independent
+  multi-vendor comparison view. Packs deliberately remain ephemeral here;
+  reusable workspace briefs and pinned snippets are the later durable layers.
+- [x] Let pane agents stage explicit context without silently collecting or
+  dispatching it. `parley context draft/add/list/show` is pane-authenticated,
+  owner-scoped and confines agent-staged files to that pane's working folder;
+  every part says the content was agent-provided and not independently read by
+  Parley. `parley ask <vendor> --context <draft>` enters a durable native review
+  checkpoint and blocks: the Context menu exposes the complete editable pack,
+  provenance, requested target and waiting source. Only a person's explicit
+  Approve and Ask action starts the correlated consultation; Decline and timeout
+  submit nothing and release the pane with an explicit failure. Person-created
+  context drafts remain ephemeral, while pending agent review records survive UI
+  reattachment and are marked interrupted rather than revived after a core
+  restart.
+- [x] Add bounded, predefined **workflow sequences** such as plan → independent
   review → human checkpoint → implementation → verification. Every transition
   remains visible and interruptible, consequential steps retain their explicit
   authorization, and the feature never becomes a generic DAG designer or
   autonomous project manager.
-- [ ] Group related Ask, review, delegation and verification records into
+  The first fixed sequence now lives under Recipes. A person chooses a ready
+  cross-vendor reviewer and verifier, reviews the planning instruction, then
+  advances through six explicit phases. Plans, independent objections, current
+  Git evidence and verification results each pass through an editable capture;
+  implementation and completion have separate human approval gates. An
+  owner-only durable state machine rejects skipped phases, preserves exact
+  captured artifacts and every human-origin transition across UI reattachment,
+  and can be ended without pretending to cancel agent work already in flight.
+  This is one bounded product workflow, not a programmable graph or autonomous
+  scheduler.
+- [x] Group related Ask, review, delegation and verification records into
   readable **handoff chains**. Allow important answers, objections and human
   decisions to be bookmarked without creating a task board or smoothing away
-  disagreement.
+  disagreement. Status Center now creates or extends explicit workspace-scoped
+  chains from selected broker records. Each entry is an exact durable snapshot;
+  returned results can be bookmarked verbatim as answers or objections, while
+  person-written decisions carry an explicit HUMAN origin. Curated records stay
+  readable after the bounded broker journal prunes its source, and no chain
+  action contacts an agent, infers consensus or changes handoff state.
 - [ ] Add a local, editable **workspace brief** containing the current goal,
   constraints and important decisions. It is never injected automatically; a
   person or an explicitly approved recipe chooses when to attach it.

@@ -623,6 +623,19 @@ public final class TmuxController {
     }
 
     public func ask(from requesterID: String, to consultantID: String, text: String? = nil) throws {
+        try ask(from: requesterID, to: consultantID, text: text, preservesExplicitFormatting: false)
+    }
+
+    public func askWithExplicitContext(from requesterID: String, to consultantID: String, text: String) throws {
+        try ask(from: requesterID, to: consultantID, text: text, preservesExplicitFormatting: true)
+    }
+
+    private func ask(
+        from requesterID: String,
+        to consultantID: String,
+        text: String?,
+        preservesExplicitFormatting: Bool
+    ) throws {
         let panes = try listPanes()
         guard let requester = panes.first(where: { $0.id == requesterID }) else {
             throw ParleyTmuxError.paneNotFound(requesterID)
@@ -634,9 +647,16 @@ public final class TmuxController {
         guard requester.kind != consultant.kind else { throw ParleyTmuxError.sameVendor }
 
         let captured = if let text { text } else { try capturePane(requesterID) }
-        let body = RelayText.clean(captured)
+        let body = preservesExplicitFormatting
+            ? ContextPackText.normalize(captured)
+            : RelayText.clean(captured)
         guard !body.isEmpty else { throw ParleyTmuxError.noRelayText }
-        try paste("\(requester.displayName) asked:\n\n\(body)", into: consultantID, submit: true)
+        let attributed = "\(requester.displayName) asked:\n\n\(body)"
+        if preservesExplicitFormatting {
+            try pasteExplicitContext(attributed, into: consultantID, submit: true)
+        } else {
+            try paste(attributed, into: consultantID, submit: true)
+        }
         _ = try runTmux(["set-option", "-p", "-t", consultantID, "@parley-return-to", requesterID])
         try selectPane(consultantID)
     }
@@ -662,6 +682,19 @@ public final class TmuxController {
     public func paste(_ text: String, into paneID: String, submit: Bool) throws {
         let cleaned = RelayText.clean(text)
         guard !cleaned.isEmpty else { throw ParleyTmuxError.noRelayText }
+        try pastePrepared(cleaned, into: paneID, submit: submit)
+    }
+
+    public func pasteExplicitContext(_ text: String, into paneID: String, submit: Bool) throws {
+        let prepared = ContextPackText.normalize(text)
+        guard !prepared.isEmpty else { throw ParleyTmuxError.noRelayText }
+        guard prepared.utf8.count <= ContextPackBuilder.defaultMaximumRenderedBytes + 4_096 else {
+            throw ContextPackError.packTooLarge
+        }
+        try pastePrepared(prepared, into: paneID, submit: submit)
+    }
+
+    private func pastePrepared(_ prepared: String, into paneID: String, submit: Bool) throws {
         let panes = try listPanes()
         guard let pane = panes.first(where: { $0.id == paneID }) else {
             throw ParleyTmuxError.paneNotFound(paneID)
@@ -710,7 +743,7 @@ public final class TmuxController {
             submitKey = nil
         }
         let buffer = "parley-\(UUID().uuidString.lowercased())"
-        _ = try runTmux(["load-buffer", "-b", buffer, "-"], input: Data(cleaned.utf8))
+        _ = try runTmux(["load-buffer", "-b", buffer, "-"], input: Data(prepared.utf8))
         do {
             // -p asks tmux to wrap the body in bracketed-paste markers only
             // when the receiving CLI requested them; -r preserves newlines.
