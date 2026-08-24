@@ -67,6 +67,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.contextPackPresented) {
             ContextPackView(model: model)
         }
+        .sheet(isPresented: $model.workspaceBriefPresented) {
+            WorkspaceBriefView(model: model)
+        }
         .sheet(isPresented: $model.supervisedWorkflowPresented) {
             SupervisedWorkflowView(model: model)
         }
@@ -576,6 +579,20 @@ struct ContentView: View {
             }
             Button("New Context Pack…") { model.newContextPack() }
                 .disabled(!model.canCreateContextPack)
+            if model.activeWorkspace != nil {
+                Divider()
+                Section("Workspace Brief") {
+                    Button(model.activeWorkspaceBrief == nil ? "Create Workspace Brief…" : "Edit Workspace Brief…") {
+                        model.editWorkspaceBrief()
+                    }
+                    if model.activeWorkspaceBrief != nil {
+                        Button("New Context Pack with Brief…") {
+                            model.newContextPackWithWorkspaceBrief()
+                        }
+                        .disabled(!model.canCreateContextPack)
+                    }
+                }
+            }
         } label: {
             Label(
                 model.pendingContextReviews.isEmpty ? "Context" : "Context \(model.pendingContextReviews.count)",
@@ -588,9 +605,14 @@ struct ContentView: View {
                 ? (model.contextPackDraft.map { "\($0.pack.parts.count) sources" } ?? "No draft")
                 : "\(model.pendingContextReviews.count) agent draft\(model.pendingContextReviews.count == 1 ? "" : "s") awaiting review"
         )
-        .help("Assemble selected files, Git changes, visible terminal output and command results before a cross-vendor handoff")
-        .accessibilityHint("Open or create an editable attributed context pack")
-        .disabled(model.contextPackDraft == nil && !model.canCreateContextPack && model.pendingContextReviews.isEmpty)
+        .help("Edit the workspace brief or assemble explicit attributed context before a cross-vendor handoff")
+        .accessibilityHint("Edit the workspace brief, or open and create an editable attributed context pack")
+        .disabled(
+            model.activeWorkspace == nil
+                && model.contextPackDraft == nil
+                && !model.canCreateContextPack
+                && model.pendingContextReviews.isEmpty
+        )
     }
 
     private var recipeMenu: some View {

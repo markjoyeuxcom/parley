@@ -932,7 +932,7 @@ private func checkInAppHelpGuideCoverage() throws {
         "workspace lead", "automation policy", "permission", "status center",
         "saved layout", "command palette", "subscription", "compare independently",
         "edited synthesis", "context pack", "utf-8 bytes", "absolute executable",
-        "handoff chain", "objection", "human decision",
+        "workspace brief", "never attached automatically", "handoff chain", "objection", "human decision",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -3482,6 +3482,82 @@ private func checkContextPacksAreExplicitBoundedAndAttributed() throws {
         throw CheckFailure(description: "an oversized rendered context pack was accepted")
     } catch ContextPackError.packTooLarge {
         // Expected: wrappers and notes count toward the final handoff ceiling.
+    }
+}
+
+private func checkWorkspaceBriefsAreDurableAndExplicitlyAttached() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("workspace-briefs.json")
+    let store = WorkspaceBriefStore(file: file)
+    let createdAt = Date(timeIntervalSince1970: 100)
+    let brief = try store.save(
+        workspaceID: "@1",
+        workspaceName: "parley",
+        goal: "Ship reviewed cross-vendor context.",
+        constraints: "No API keys.\nNo implicit agent dispatch.",
+        decisions: "Every attachment opens as editable context.",
+        now: createdAt
+    )
+    try expect(brief.createdAt == createdAt && brief.updatedAt == createdAt, "workspace brief timestamps were not stable")
+
+    let builder = ContextPackBuilder()
+    let ordinary = try builder.visibleTerminal(paneID: "%1", paneName: "Claude", text: "Visible output only")
+    let withoutBrief = try builder.render(ContextPack(
+        name: "No brief",
+        note: "Review this output.",
+        parts: [ordinary]
+    ))
+    try expect(!withoutBrief.contains(brief.goal), "a workspace brief was injected without an explicit attachment")
+
+    let attached = try builder.workspaceBrief(brief)
+    try expect(attached.source.kind == .workspaceBrief, "workspace brief attachment lost its provenance kind")
+    try expect(attached.source.detail.contains("parley") && attached.source.detail.contains("@1"), "workspace brief attachment lost its workspace provenance")
+    let withBrief = try builder.render(ContextPack(
+        name: "With brief",
+        note: "Review against the workspace brief.",
+        parts: [ordinary, attached]
+    ))
+    try expect(withBrief.contains("Current goal") && withBrief.contains(brief.goal), "explicitly attached workspace brief was omitted")
+    try expect(withBrief.contains("No API keys.\nNo implicit agent dispatch."), "workspace brief formatting was flattened")
+    let editedAttachment = attached.replacingText("Edited only for this receiving vendor.")
+    try expect(editedAttachment.isEdited, "editing an attached brief was not visible in the preview")
+    let unchangedBrief = try store.brief(workspaceID: "@1")
+    try expect(unchangedBrief?.goal == brief.goal, "editing a context snapshot rewrote the durable workspace brief")
+
+    let updated = try store.save(
+        workspaceID: "@1",
+        workspaceName: "parley-renamed",
+        goal: "Finish the workspace brief flow.",
+        constraints: brief.constraints,
+        decisions: brief.decisions,
+        now: Date(timeIntervalSince1970: 120)
+    )
+    try expect(updated.id == brief.id && updated.createdAt == createdAt, "updating a workspace brief created a second identity")
+    let updatedBriefs = try store.briefs()
+    try expect(updatedBriefs.count == 1, "one workspace acquired multiple briefs")
+    let other = try store.save(
+        workspaceID: "@2",
+        workspaceName: "consumer",
+        goal: "Verify the consumer.",
+        constraints: "Read only.",
+        decisions: "Use an independent vendor."
+    )
+    try store.delete(workspaceID: "@1")
+    let remainingBriefs = try store.briefs()
+    try expect(remainingBriefs.map(\.id) == [other.id], "deleting one workspace brief removed an unrelated workspace")
+
+    let permissions = try require(
+        try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber,
+        "workspace brief permissions were unavailable"
+    )
+    try expect(permissions.intValue & 0o077 == 0, "workspace briefs are readable outside their owner")
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+    do {
+        _ = try WorkspaceBriefStore(file: file).briefs()
+        throw CheckFailure(description: "an unsafe workspace brief file was accepted")
+    } catch let error as WorkspaceBriefError {
+        try expect(error.errorDescription?.contains("owner-only") == true, "unsafe workspace brief permissions failed unclearly")
     }
 }
 
@@ -6619,6 +6695,7 @@ let checks: [(String, () throws -> Void)] = [
     ("selection-or-empty relay draft", checkRelayDraftStartsWithSelectionOrNothing),
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
     ("explicit bounded attributed context packs", checkContextPacksAreExplicitBoundedAndAttributed),
+    ("durable explicitly attached workspace briefs", checkWorkspaceBriefsAreDurableAndExplicitlyAttached),
     ("agent context drafts require human approval", checkAgentContextDraftsRequireHumanApprovalBeforeAsk),
     ("context review shim round trip", checkContextReviewShimRoundTrip),
     ("authoritative Status Center projection", checkStatusCenterProjectionUsesOnlyAuthoritativeState),

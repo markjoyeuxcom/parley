@@ -24,6 +24,7 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
     case visibleTerminal
     case commandResult
     case agentFileDraft
+    case workspaceBrief
 
     public var label: String {
         switch self {
@@ -32,6 +33,7 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
         case .visibleTerminal: "Visible terminal"
         case .commandResult: "Command result"
         case .agentFileDraft: "Agent-provided file draft"
+        case .workspaceBrief: "Workspace brief"
         }
     }
 }
@@ -256,8 +258,8 @@ private final class BoundedContextData: @unchecked Sendable {
 /// Captures explicit local sources and renders the exact attributed payload a
 /// person can inspect before sending. Person-created drafts remain ephemeral;
 /// an agent-proposed pack may be serialized only as part of its durable,
-/// human-reviewed checkpoint. Workspace briefs and reusable snippets are
-/// separate roadmap features.
+/// human-reviewed checkpoint. Durable workspace briefs enter only through an
+/// explicit snapshot; reusable snippets remain a separate roadmap feature.
 public final class ContextPackBuilder: @unchecked Sendable {
     public static let defaultMaximumPartBytes = 60_000
     public static let defaultMaximumRenderedBytes = 90_000
@@ -366,6 +368,17 @@ public final class ContextPackBuilder: @unchecked Sendable {
                 detail: "Visible screen from \(paneName) (\(paneID))"
             ),
             text: text
+        )
+    }
+
+    public func workspaceBrief(_ brief: WorkspaceBrief) throws -> ContextPackPart {
+        try part(
+            source: ContextPackSource(
+                kind: .workspaceBrief,
+                label: brief.workspaceName,
+                detail: "Workspace brief for \(brief.workspaceName) (\(brief.workspaceID)), saved \(brief.updatedAt.formatted(.iso8601))"
+            ),
+            text: brief.renderedText
         )
     }
 
