@@ -416,8 +416,9 @@ the exact effective scope before launch, avoid repeated ordinary source-read
 prompts where the vendor supports it, and never mistake guidance for enforced
 isolation.
 
-Optional git worktrees belong here only if real use shows multiple write agents
-colliding. They are not required for cross-vendor consultation.
+Optional git worktree awareness is planned as a post-beta enhancement in
+Milestone 7. Worktrees are not required for cross-vendor consultation and will
+never be forced per agent.
 
 **Exit gate:** after a Mac restart, a person can restore a project's layout,
 choose which agents to resume, and continue work without reconstructing the
@@ -566,6 +567,117 @@ Once the core is reliable and shipped:
   full conformance harness.
 - Prefer vendors that add genuine model diversity. Supporting many wrappers
   around the same provider is not the goal.
+
+## Milestone 7 — Deepen the cross-vendor daily workflow
+
+These are post-beta candidates, not conditions for producing the first tagged
+DMG. Beta use should determine their order within the milestone. They remain
+subject to the product boundary: visible, supervised, local collaboration
+between real vendor CLIs rather than a new autonomous orchestration engine.
+
+### Better questions, comparisons and context
+
+- [ ] Add a native **Ask-many comparison view** that presents independent
+  answers side by side without manufacturing consensus. Preserve dissent and
+  let the person forward one answer, several attributed answers, or an edited
+  synthesis to the workspace lead through the normal previewed handoff path.
+- [ ] Add explicit, editable **context packs** assembled from selected files,
+  a Git diff, visible terminal output and captured command results. Show the
+  source and exact byte size of every part before sending; never scrape hidden
+  scrollback or include a whole transcript implicitly.
+- [ ] Add bounded, predefined **workflow sequences** such as plan → independent
+  review → human checkpoint → implementation → verification. Every transition
+  remains visible and interruptible, consequential steps retain their explicit
+  authorization, and the feature never becomes a generic DAG designer or
+  autonomous project manager.
+- [ ] Group related Ask, review, delegation and verification records into
+  readable **handoff chains**. Allow important answers, objections and human
+  decisions to be bookmarked without creating a task board or smoothing away
+  disagreement.
+- [ ] Add a local, editable **workspace brief** containing the current goal,
+  constraints and important decisions. It is never injected automatically; a
+  person or an explicitly approved recipe chooses when to attach it.
+- [ ] Add local **pinned context snippets** for reusable architecture notes,
+  test instructions and review criteria. Insertion always opens the existing
+  editable preview and snippets never contain credentials managed by a vendor.
+
+### Portable teams and navigation
+
+- [ ] Add reusable **team templates** containing pane vendors, names, roles,
+  permission profiles, lead, automation policy and layout. Applying one to a
+  folder creates stopped agent placeholders so no subscription session starts
+  without an explicit person action.
+- [ ] Add stable workspace-scoped **pane roles and aliases** such as `lead`,
+  `implementer`, `reviewer` and `tester`. Routing by role must remain valid
+  across display-name changes, refuse ambiguity, and never silently retarget a
+  different live pane.
+- [ ] Add deliberate **pane mobility**: move a pane between workspaces when tmux
+  can preserve it safely, or clone only its visible configuration into another
+  workspace. Folder ownership, running-process consequences and active
+  handoffs must be previewed before either action.
+- [ ] Add external entry points such as `parley open <folder>`, a Finder action
+  and a local `parley://` URL for opening or focusing a matching workspace.
+  They may focus or prepare UI state but never start a vendor turn implicitly.
+
+### Optional Git worktree awareness
+
+Worktrees are parallel filesystem locations, not Parley workspaces, tasks or
+agents. A workspace may point at a worktree folder, and several panes may share
+one intentionally when one vendor implements and another reviews the same
+uncommitted changes.
+
+- [ ] **Stage 1 — discover and open:** parse `git worktree list --porcelain`
+  without a shell, show repository, branch and worktree identity, and offer
+  **Open Existing Worktree as Workspace**. Continue to support ordinary folders
+  and never require a worktree for review or consultation.
+- [ ] **Stage 2 — collision awareness:** warn when multiple write-capable agent
+  panes share the same real worktree. Base the warning on exact canonical paths
+  and visible permission state; do not claim which process changed a file or
+  infer safety from a quiet terminal.
+- [ ] **Stage 3 — optional creation:** only after the read-only stages prove
+  useful, offer an explicitly previewed operation to create a new worktree at
+  an exact destination and branch. Parley must not automatically merge, rebase,
+  delete, prune or label any worktree as safe to remove.
+
+### Attention, history and human control
+
+- [ ] Add a restrained **menu-bar attention inbox** for waiting answers,
+  permission requests, completed delegations and failures while the main window
+  is closed. Notifications and menu labels exclude prompt and answer bodies;
+  selecting an item focuses the authoritative record in Parley.
+- [ ] Add collaboration-history search, filters, selective Markdown export and
+  **Ask this again**. Repeating a handoff always opens an editable preview and
+  receives a new identity rather than mutating or silently replaying history.
+- [ ] Add configurable local retention and explicit per-workspace export or
+  purge controls. Preserve owner-only storage, explain exactly what will be
+  removed, and retain the no-sync/no-telemetry boundary.
+- [ ] Add a human-controlled **busy queue** for a reviewed draft when a target
+  already has active work. Queued text remains visible and unsent; becoming
+  idle never causes automatic submission without the policy and explicit
+  authorization shown to the person.
+- [ ] Add a **workspace safety summary** before closing, replacing or moving a
+  workspace. Show active handoffs, running agents, dirty repositories and
+  shared-worktree writers without guessing whether an agent is thinking.
+
+### Vendor and release lifecycle
+
+- [ ] Add per-vendor compatibility checks that can run the conformance harness
+  after a CLI upgrade and report launch, submit, Ask/Answer and permission
+  support without spending model quota where the vendor permits that.
+- [ ] Prefer official vendor hooks for runtime readiness—ready, working,
+  awaiting permission or exited—and display **Unknown** when no trustworthy
+  signal exists. Terminal silence and timing heuristics never become facts.
+- [ ] Add an explicit GitHub Releases update channel with stable/beta choice,
+  release notes and verified artifacts. Never download or install an update
+  silently, and never replace the persistent core while tracked work is active.
+- [ ] Add an explicitly user-reviewed **beta feedback bundle** containing build
+  information, vendor versions, conformance results and redacted diagnostics.
+  Reuse the structural privacy boundary of diagnostics export: no prompts,
+  answers, terminal content, credentials or automatic telemetry.
+
+**Exit gate:** Parley can compare independent vendors, carry explicitly chosen
+context, reuse a stopped team safely and warn about concurrent writers without
+becoming a source-control client, task board or hidden autonomous agent.
 
 ## Explicit non-goals
 
