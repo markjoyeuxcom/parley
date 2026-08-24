@@ -620,11 +620,21 @@ between real vendor CLIs rather than a new autonomous orchestration engine.
   context drafts remain ephemeral, while pending agent review records survive UI
   reattachment and are marked interrupted rather than revived after a core
   restart.
-- [ ] Add bounded, predefined **workflow sequences** such as plan → independent
+- [x] Add bounded, predefined **workflow sequences** such as plan → independent
   review → human checkpoint → implementation → verification. Every transition
   remains visible and interruptible, consequential steps retain their explicit
   authorization, and the feature never becomes a generic DAG designer or
   autonomous project manager.
+  The first fixed sequence now lives under Recipes. A person chooses a ready
+  cross-vendor reviewer and verifier, reviews the planning instruction, then
+  advances through six explicit phases. Plans, independent objections, current
+  Git evidence and verification results each pass through an editable capture;
+  implementation and completion have separate human approval gates. An
+  owner-only durable state machine rejects skipped phases, preserves exact
+  captured artifacts and every human-origin transition across UI reattachment,
+  and can be ended without pretending to cancel agent work already in flight.
+  This is one bounded product workflow, not a programmable graph or autonomous
+  scheduler.
 - [ ] Group related Ask, review, delegation and verification records into
   readable **handoff chains**. Allow important answers, objections and human
   decisions to be bookmarked without creating a task board or smoothing away

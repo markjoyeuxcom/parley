@@ -126,6 +126,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var projectContexts: [String: GitProjectContext] = [:]
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
     @Published private(set) var recipes: [HandoffRecipe] = []
+    @Published private(set) var supervisedWorkflowRuns: [SupervisedWorkflowRun] = []
     @Published private(set) var permissionProfiles: [PermissionProfileDefinition] = []
     @Published private(set) var activeRecipeRun: ActiveRecipeRun?
     @Published private(set) var askManyComparisonRun: AskManyComparisonRun?
@@ -151,6 +152,8 @@ final class AppModel: ObservableObject {
     @Published var panePermissionRequest: PanePermissionRequest?
     @Published var askManyComparisonPresented = false
     @Published var contextPackPresented = false
+    @Published var supervisedWorkflowPresented = false
+    @Published private(set) var selectedSupervisedWorkflowID: String?
     @Published private(set) var requestedHelpTopicID: String?
     @Published var startupError: String?
     @Published private(set) var startupRequiresQuit = false
@@ -163,6 +166,7 @@ final class AppModel: ObservableObject {
     private let runtimeLease: RuntimeUILease?
     private let layoutStore: SavedWorkspaceLayoutStore
     private let recipeStore: HandoffRecipeStore
+    private let supervisedWorkflowStore: SupervisedWorkflowStore
     private let permissionProfileStore: PermissionProfileStore
     private var workspaceContinuity = WorkspaceContinuityState()
     private let projectContextResolver = GitProjectContextResolver()
@@ -218,6 +222,9 @@ final class AppModel: ObservableObject {
         recipeStore = HandoffRecipeStore(
             file: applicationDirectory.appendingPathComponent("handoff-recipes.json")
         )
+        supervisedWorkflowStore = SupervisedWorkflowStore(
+            file: applicationDirectory.appendingPathComponent("supervised-workflows.json")
+        )
         permissionProfileStore = PermissionProfileStore(
             file: applicationDirectory.appendingPathComponent("permission-profiles.json")
         )
@@ -235,6 +242,7 @@ final class AppModel: ObservableObject {
             startupRequiresQuit = true
         }
         recipes = (try? recipeStore.recipes()) ?? HandoffRecipe.defaults
+        supervisedWorkflowRuns = (try? supervisedWorkflowStore.runs()) ?? []
         permissionProfiles = (try? permissionProfileStore.profiles())
             ?? PermissionProfileDefinition.builtIns
         if runtime.mode == .production {
@@ -859,6 +867,7 @@ final class AppModel: ObservableObject {
                 && !$0.isDead
                 && $0.relayEnabled
                 && $0.hasCurrentProtocol
+                && $0.bracketedPasteActive
         }
     }
 
@@ -986,16 +995,59 @@ final class AppModel: ObservableObject {
                 && !$0.isDead
                 && $0.relayEnabled
                 && $0.hasCurrentProtocol
+                && $0.bracketedPasteActive
         }
     }
 
-    func canRun(_ recipe: HandoffRecipe) -> Bool {
-        guard let workspace = activeWorkspace,
+    var activeSupervisedWorkflow: SupervisedWorkflowRun? {
+        guard let workspaceID = activeWorkspace?.id else { return nil }
+        return supervisedWorkflowRuns.first {
+            $0.workspaceID == workspaceID && !$0.phase.isTerminal
+        }
+    }
+
+    var presentedSupervisedWorkflow: SupervisedWorkflowRun? {
+        if let selectedSupervisedWorkflowID,
+           let selected = supervisedWorkflowRuns.first(where: { $0.id == selectedSupervisedWorkflowID }) {
+            return selected
+        }
+        return activeSupervisedWorkflow
+    }
+
+    var recentSupervisedWorkflows: [SupervisedWorkflowRun] {
+        guard let workspaceID = activeWorkspace?.id else { return [] }
+        return supervisedWorkflowRuns.filter {
+            $0.workspaceID == workspaceID && $0.phase.isTerminal
+        }
+    }
+
+    var canStartSupervisedWorkflow: Bool {
+        guard activeSupervisedWorkflow == nil,
+              activeRecipeRun == nil,
+              let workspace = activeWorkspace,
+              workspace.automationPolicy != .off,
               let lead = workspaceLead,
               lead.isStarted,
               !lead.isDead,
               lead.relayEnabled,
               lead.hasCurrentProtocol,
+              lead.bracketedPasteActive else { return false }
+        return !recipeTargets.isEmpty
+    }
+
+    func pane(for participant: SupervisedWorkflowParticipant) -> TmuxPane? {
+        panes.first { $0.id == participant.paneID && $0.windowID == participant.workspaceID }
+    }
+
+    func canRun(_ recipe: HandoffRecipe) -> Bool {
+        guard let workspace = activeWorkspace,
+              activeSupervisedWorkflow == nil,
+              let lead = workspaceLead,
+              lead.isStarted,
+              !lead.isDead,
+              lead.relayEnabled,
+              lead.hasCurrentProtocol,
+              lead.bracketedPasteActive,
               recipe.kind.isAllowed(by: workspace.automationPolicy) else { return false }
         return recipeTargets.count >= (recipe.kind == .askMany ? 2 : 1)
     }
@@ -2099,6 +2151,285 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func startSupervisedWorkflow() {
+        perform {
+            guard canStartSupervisedWorkflow,
+                  let controller,
+                  let workspace = activeWorkspace,
+                  let lead = workspaceLead else {
+                throw RelayUIError.message(
+                    "Mark a ready agent pane as workspace lead and open a ready pane from another vendor first."
+                )
+            }
+            guard let participants = chooseSupervisedWorkflowParticipants(candidates: recipeTargets) else { return }
+            let selectedContext = lead.isActive ? terminalHandle.selectedText : nil
+            var initial = "The person using Parley started a supervised Plan → Review → Implement → Verify workflow. Complete only the planning step below, then stop and wait for the next human-approved checkpoint.\n\n"
+            if let selectedContext {
+                initial += "Task context explicitly selected by the person:\n\n\(selectedContext)\n\n"
+            }
+            initial += """
+            Create a concrete implementation plan for the current task. Inspect what you need, identify risks and verification, but do not edit files or begin implementation. Stop after presenting the plan and wait for the next human-approved checkpoint.
+            """
+            guard let edited = editSupervisedWorkflowText(
+                title: "Start Supervised Workflow",
+                message: "This exact planning instruction will be submitted to \(lead.displayName). Parley will stop at every later transition for human review.",
+                text: initial,
+                action: "Start Planning",
+                insertVisible: { try controller.capturePane(lead.id) }
+            ) else { return }
+
+            let leadStamp = workflowParticipant(lead)
+            let reviewerStamp = workflowParticipant(participants.reviewer)
+            let verifierStamp = workflowParticipant(participants.verifier)
+            let run = try supervisedWorkflowStore.start(
+                workspaceID: workspace.id,
+                workspaceName: workspace.name,
+                lead: leadStamp,
+                reviewer: reviewerStamp,
+                verifier: verifierStamp,
+                planningPrompt: edited
+            )
+            do {
+                try controller.pasteExplicitContext(edited, into: lead.id, submit: true)
+            } catch {
+                _ = try? supervisedWorkflowStore.interrupt(
+                    id: run.id,
+                    detail: "Planning dispatch failed before the workflow could continue: \(error.localizedDescription)"
+                )
+                try reloadSupervisedWorkflows()
+                throw error
+            }
+            try reloadSupervisedWorkflows()
+            selectedSupervisedWorkflowID = run.id
+            supervisedWorkflowPresented = true
+            try controller.selectPane(lead.id)
+            try refresh()
+            terminalHandle.terminal?.selectNone()
+            terminalHandle.focus()
+        }
+    }
+
+    func presentSupervisedWorkflow() {
+        guard let run = activeSupervisedWorkflow else { return }
+        selectedSupervisedWorkflowID = run.id
+        supervisedWorkflowPresented = true
+    }
+
+    func presentSupervisedWorkflow(_ run: SupervisedWorkflowRun) {
+        guard supervisedWorkflowRuns.contains(where: { $0.id == run.id }) else { return }
+        selectedSupervisedWorkflowID = run.id
+        supervisedWorkflowPresented = true
+    }
+
+    func sendWorkflowPlanForReview() {
+        perform {
+            let run = try requireActiveSupervisedWorkflow(phase: .planning)
+            guard let controller else { return }
+            let lead = try requireWorkflowPane(run.lead, role: "lead")
+            let reviewer = try requireWorkflowPane(run.reviewer, role: "reviewer")
+            let visible = try controller.capturePane(lead.id)
+            let initial = """
+            \(lead.displayName) produced this proposed plan. Review it independently for correctness, missing risks, unnecessary scope and verification gaps. Do not implement anything. Return a concrete review in this pane, then stop and wait for the person using Parley.
+
+            --- PROPOSED PLAN ---
+
+            \(visible)
+            """
+            guard let plan = editSupervisedWorkflowText(
+                title: "Review the Plan",
+                message: "This is the exact payload that will be sent to \(reviewer.displayName). Nothing is implemented at this step.",
+                text: initial,
+                action: "Send for Independent Review",
+                insertVisible: { try controller.capturePane(lead.id) }
+            ) else { return }
+            try controller.pasteExplicitContext(plan, into: reviewer.id, submit: true)
+            _ = try supervisedWorkflowStore.advance(
+                id: run.id,
+                to: .reviewingPlan,
+                artifact: SupervisedWorkflowArtifact(kind: .plan, text: plan),
+                detail: "The person reviewed the captured plan and dispatched it to \(reviewer.displayName)."
+            )
+            try reloadSupervisedWorkflows()
+            try controller.selectPane(reviewer.id)
+            try refresh()
+            terminalHandle.terminal?.selectNone()
+            terminalHandle.focus()
+        }
+    }
+
+    func captureWorkflowPlanReview() {
+        perform {
+            let run = try requireActiveSupervisedWorkflow(phase: .reviewingPlan)
+            guard let controller else { return }
+            let reviewer = try requireWorkflowPane(run.reviewer, role: "reviewer")
+            let visible = try controller.capturePane(reviewer.id)
+            guard let review = editSupervisedWorkflowText(
+                title: "Capture Independent Review",
+                message: "Review and edit the exact independent answer. Saving it reaches the implementation checkpoint but submits nothing to the lead.",
+                text: visible,
+                action: "Save Review",
+                insertVisible: { try controller.capturePane(reviewer.id) }
+            ) else { return }
+            _ = try supervisedWorkflowStore.advance(
+                id: run.id,
+                to: .awaitingImplementationApproval,
+                artifact: SupervisedWorkflowArtifact(kind: .planReview, text: review),
+                detail: "The person captured the independent plan review. Implementation remains blocked."
+            )
+            try reloadSupervisedWorkflows()
+            supervisedWorkflowPresented = true
+            terminalHandle.terminal?.selectNone()
+            terminalHandle.focus()
+        }
+    }
+
+    func approveWorkflowImplementation() {
+        perform {
+            let run = try requireActiveSupervisedWorkflow(phase: .awaitingImplementationApproval)
+            guard let controller,
+                  let plan = run.artifact(.plan)?.text,
+                  let review = run.artifact(.planReview)?.text else {
+                throw RelayUIError.message("The workflow is missing its reviewed plan artifacts.")
+            }
+            let lead = try requireWorkflowPane(run.lead, role: "lead")
+            let draft = """
+            The person using Parley reviewed the proposed plan and the independent review below. Implement the sound plan, accounting for confirmed review findings. Do not treat reviewer claims as facts without checking them. Run proportionate verification, report the exact results, then stop and wait for the verification checkpoint.
+
+            --- APPROVED PLAN ---
+
+            \(plan)
+
+            --- INDEPENDENT REVIEW ---
+
+            \(review)
+            """
+            guard let edited = editSupervisedWorkflowText(
+                title: "Approve Implementation",
+                message: "This is the consequential checkpoint. Only the exact text below will be submitted to \(lead.displayName).",
+                text: draft,
+                action: "Approve and Implement",
+                insertVisible: { "" }
+            ) else { return }
+            try controller.pasteExplicitContext(edited, into: lead.id, submit: true)
+            _ = try supervisedWorkflowStore.advance(
+                id: run.id,
+                to: .implementing,
+                artifact: nil,
+                detail: "The person explicitly approved implementation and submitted the reviewed instruction to \(lead.displayName)."
+            )
+            try reloadSupervisedWorkflows()
+            try controller.selectPane(lead.id)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    func sendWorkflowImplementationForVerification() {
+        perform {
+            let run = try requireActiveSupervisedWorkflow(phase: .implementing)
+            guard let controller, let reviewDraftBuilder else { return }
+            let lead = try requireWorkflowPane(run.lead, role: "lead")
+            let verifier = try requireWorkflowPane(run.verifier, role: "verifier")
+            let evidence = try reviewDraftBuilder.changes(in: lead.cwd)
+            let initial = """
+            Independently verify the implementation evidence below. Inspect the repository as permitted, run proportionate checks, and report concrete defects or a clean result with exact command outcomes. Do not modify files. Stop after reporting in this pane and wait for the person using Parley.
+
+            --- IMPLEMENTATION EVIDENCE ---
+
+            \(evidence.text)
+            """
+            guard let edited = editSupervisedWorkflowText(
+                title: "Verify the Implementation",
+                message: "This is the exact payload that will be sent to \(verifier.displayName). The verifier is asked only to inspect and report.",
+                text: initial,
+                action: "Send for Independent Verification",
+                insertVisible: { try controller.capturePane(lead.id) }
+            ) else { return }
+            try controller.pasteExplicitContext(edited, into: verifier.id, submit: true)
+            _ = try supervisedWorkflowStore.advance(
+                id: run.id,
+                to: .verifying,
+                artifact: SupervisedWorkflowArtifact(kind: .implementation, text: edited),
+                detail: "The person reviewed the implementation evidence and dispatched it to \(verifier.displayName)."
+            )
+            try reloadSupervisedWorkflows()
+            try controller.selectPane(verifier.id)
+            try refresh()
+            terminalHandle.terminal?.selectNone()
+            terminalHandle.focus()
+        }
+    }
+
+    func captureWorkflowVerification() {
+        perform {
+            let run = try requireActiveSupervisedWorkflow(phase: .verifying)
+            guard let controller else { return }
+            let verifier = try requireWorkflowPane(run.verifier, role: "verifier")
+            let visible = try controller.capturePane(verifier.id)
+            guard let verification = editSupervisedWorkflowText(
+                title: "Capture Independent Verification",
+                message: "Review and edit the exact verification result. Saving reaches the completion checkpoint; it does not declare the work complete.",
+                text: visible,
+                action: "Save Verification",
+                insertVisible: { try controller.capturePane(verifier.id) }
+            ) else { return }
+            _ = try supervisedWorkflowStore.advance(
+                id: run.id,
+                to: .awaitingCompletionApproval,
+                artifact: SupervisedWorkflowArtifact(kind: .verification, text: verification),
+                detail: "The person captured the independent verification. Completion remains blocked."
+            )
+            try reloadSupervisedWorkflows()
+            supervisedWorkflowPresented = true
+            terminalHandle.terminal?.selectNone()
+            terminalHandle.focus()
+        }
+    }
+
+    func completeSupervisedWorkflow() {
+        perform {
+            let run = try requireActiveSupervisedWorkflow(phase: .awaitingCompletionApproval)
+            let alert = NSAlert()
+            alert.messageText = "Mark this workflow complete?"
+            alert.informativeText = "You are confirming that you reviewed the independent verification. Parley does not infer success from the verifier's prose."
+            alert.addButton(withTitle: "Mark Complete")
+            alert.addButton(withTitle: "Keep Open")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            _ = try supervisedWorkflowStore.advance(
+                id: run.id,
+                to: .completed,
+                artifact: nil,
+                detail: "The person reviewed the verification and marked the workflow complete."
+            )
+            try reloadSupervisedWorkflows()
+            terminalHandle.focus()
+        }
+    }
+
+    func interruptSupervisedWorkflow() {
+        guard let run = activeSupervisedWorkflow else { return }
+        let alert = NSAlert()
+        alert.messageText = "End this supervised workflow?"
+        alert.informativeText = "This stops Parley's sequence tracking. It does not send Control-C or cancel work already running in any agent pane."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "End Workflow")
+        alert.addButton(withTitle: "Keep Running")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        perform {
+            _ = try supervisedWorkflowStore.interrupt(
+                id: run.id,
+                detail: "The person ended workflow tracking. No agent process was interrupted automatically."
+            )
+            try reloadSupervisedWorkflows()
+            terminalHandle.focus()
+        }
+    }
+
+    func focusWorkflowParticipant(_ participant: SupervisedWorkflowParticipant) {
+        guard let pane = pane(for: participant) else { return }
+        select(pane)
+    }
+
     func run(_ recipe: HandoffRecipe) {
         perform {
             guard let controller,
@@ -2272,6 +2603,85 @@ final class AppModel: ObservableObject {
         alert.accessoryView = picker
         guard alert.runModal() == .alertFirstButtonReturn else { return [] }
         return [candidates[max(0, picker.indexOfSelectedItem)]]
+    }
+
+    private func chooseSupervisedWorkflowParticipants(
+        candidates: [TmuxPane]
+    ) -> (reviewer: TmuxPane, verifier: TmuxPane)? {
+        guard !candidates.isEmpty else { return nil }
+        let titles = candidates.map { "\($0.displayName) · \($0.kind.label) (\($0.id))" }
+        let reviewerPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
+        reviewerPicker.addItems(withTitles: titles)
+        let verifierPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
+        verifierPicker.addItems(withTitles: titles)
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.addArrangedSubview(NSTextField(labelWithString: "Independent plan reviewer"))
+        stack.addArrangedSubview(reviewerPicker)
+        stack.addArrangedSubview(NSTextField(labelWithString: "Independent implementation verifier"))
+        stack.addArrangedSubview(verifierPicker)
+        stack.frame = NSRect(x: 0, y: 0, width: 380, height: 96)
+
+        let alert = NSAlert()
+        alert.messageText = "Choose Workflow Participants"
+        alert.informativeText = "Both roles must use a vendor different from the workspace lead. The same pane may review and verify."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        alert.accessoryView = stack
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return (
+            candidates[max(0, reviewerPicker.indexOfSelectedItem)],
+            candidates[max(0, verifierPicker.indexOfSelectedItem)]
+        )
+    }
+
+    private func workflowParticipant(_ pane: TmuxPane) -> SupervisedWorkflowParticipant {
+        SupervisedWorkflowParticipant(
+            paneID: pane.id,
+            name: pane.displayName,
+            kind: pane.kind,
+            workspaceID: pane.windowID
+        )
+    }
+
+    private func requireActiveSupervisedWorkflow(
+        phase: SupervisedWorkflowPhase
+    ) throws -> SupervisedWorkflowRun {
+        guard let run = activeSupervisedWorkflow else {
+            throw RelayUIError.message("There is no active supervised workflow in this workspace.")
+        }
+        guard run.phase == phase else {
+            throw RelayUIError.message(
+                "This workflow is at \(run.phase.label), not the expected \(phase.label) checkpoint."
+            )
+        }
+        return run
+    }
+
+    private func requireWorkflowPane(
+        _ participant: SupervisedWorkflowParticipant,
+        role: String
+    ) throws -> TmuxPane {
+        guard let pane = pane(for: participant),
+              pane.kind == participant.kind,
+              pane.kind.isAgent,
+              pane.isStarted,
+              !pane.isDead,
+              pane.relayEnabled,
+              pane.hasCurrentProtocol,
+              pane.bracketedPasteActive else {
+            throw RelayUIError.message(
+                "The workflow \(role) \(participant.name) is not currently ready. Restart or replace that pane, or end the workflow explicitly."
+            )
+        }
+        return pane
+    }
+
+    private func reloadSupervisedWorkflows() throws {
+        supervisedWorkflowRuns = try supervisedWorkflowStore.runs()
     }
 
     private func chooseAskManyTargets(candidates: [TmuxPane]) -> [TmuxPane]? {
@@ -2963,6 +3373,44 @@ final class AppModel: ObservableObject {
         return cleaned.isEmpty ? nil : cleaned
     }
 
+    private func editSupervisedWorkflowText(
+        title: String,
+        message: String,
+        text: String,
+        action: String,
+        insertVisible: @escaping () throws -> String
+    ) -> String? {
+        var current = ContextPackText.normalize(text)
+        while true {
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = "\(message) Maximum \(ContextPackBuilder.defaultMaximumRenderedBytes) bytes; formatting is preserved."
+            alert.addButton(withTitle: action)
+            alert.addButton(withTitle: "Cancel")
+
+            let accessory = RelayEditorAccessory(
+                text: current,
+                insertVisible: insertVisible,
+                normalizeInserted: ContextPackText.normalize
+            )
+            alert.accessoryView = accessory
+            guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+            current = ContextPackText.normalize(accessory.text)
+            if current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                NSAlert(error: RelayUIError.message("The supervised workflow text cannot be empty.")).runModal()
+                continue
+            }
+            if current.utf8.count > ContextPackBuilder.defaultMaximumRenderedBytes {
+                NSAlert(error: RelayUIError.message(
+                    "The supervised workflow text is \(current.utf8.count) bytes. Reduce it to \(ContextPackBuilder.defaultMaximumRenderedBytes) bytes before dispatch."
+                )).runModal()
+                continue
+            }
+            return current
+        }
+    }
+
     private func sendReview(_ draft: ReviewDraft, from source: TmuxPane, to target: TmuxPane) throws {
         guard let controller else { return }
         guard let edited = editRelay(
@@ -3026,11 +3474,17 @@ private enum RelayUIError: LocalizedError {
 private final class RelayEditorAccessory: NSView {
     private let editor: NSTextView
     private let insertVisible: () throws -> String
+    private let normalizeInserted: (String) -> String
 
     var text: String { editor.string }
 
-    init(text: String, insertVisible: @escaping () throws -> String) {
+    init(
+        text: String,
+        insertVisible: @escaping () throws -> String,
+        normalizeInserted: @escaping (String) -> String = RelayText.clean
+    ) {
         self.insertVisible = insertVisible
+        self.normalizeInserted = normalizeInserted
         let frame = NSRect(x: 0, y: 0, width: 560, height: 300)
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 36, width: 560, height: 264))
         scroll.hasVerticalScroller = true
@@ -3062,7 +3516,7 @@ private final class RelayEditorAccessory: NSView {
 
     @objc private func insertVisiblePane() {
         do {
-            let visible = RelayText.clean(try insertVisible())
+            let visible = normalizeInserted(try insertVisible())
             guard !visible.isEmpty else { return }
             editor.insertText(visible, replacementRange: editor.selectedRange())
         } catch {

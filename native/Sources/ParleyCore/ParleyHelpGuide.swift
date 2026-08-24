@@ -287,6 +287,23 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "lead-bounded-workflow",
+                    title: "Run the bounded sequence",
+                    paragraphs: [
+                        "Open Recipes and choose Plan → Review → Implement → Verify. Choose explicit reviewer and verifier panes, inspect the planning instruction, then start. The same cross-vendor pane may review and verify, but neither role may use the lead's vendor.",
+                        "Parley advances only when you use the current checkpoint button. Capturing a plan, review or verification opens an editable preview; no hidden terminal history is collected. The two approval phases submit nothing until you explicitly approve them.",
+                    ],
+                    items: [
+                        "Planning tells the lead to stop before editing files.",
+                        "Independent review is submitted directly to the chosen reviewer; its answer remains in that pane until you capture it.",
+                        "Approve Implementation shows the exact combined plan and attributed review before granting the lead write work.",
+                        "Verification captures current Git changes into an editable request and asks the verifier not to modify files.",
+                        "Mark Complete records your judgment; Parley never treats successful-looking prose as proof.",
+                        "End Workflow stops sequence tracking without sending Control-C or cancelling work already running in an agent pane.",
+                        "The owner-only local record preserves participants, exact captured artifacts and every human-authorized transition across UI restarts.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "lead-policy",
                     title: "Automation policy",
                     paragraphs: [

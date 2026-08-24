@@ -38,6 +38,10 @@ struct ContentView: View {
                     Divider()
                     recipeRunStrip(recipe)
                 }
+                if let workflow = model.activeSupervisedWorkflow {
+                    Divider()
+                    supervisedWorkflowStrip(workflow)
+                }
                 if let activity = model.primaryActivity {
                     Divider()
                     activityStrip(activity)
@@ -62,6 +66,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.contextPackPresented) {
             ContextPackView(model: model)
+        }
+        .sheet(isPresented: $model.supervisedWorkflowPresented) {
+            SupervisedWorkflowView(model: model)
         }
         .alert(
             "Parley needs attention",
@@ -597,6 +604,27 @@ struct ContentView: View {
                         .disabled(!model.canRun(recipe))
                 }
             }
+            Section("Bounded Sequence") {
+                if model.activeSupervisedWorkflow != nil {
+                    Button("Open Active Workflow…") { model.presentSupervisedWorkflow() }
+                } else {
+                    Button("Plan → Review → Implement → Verify…") {
+                        model.startSupervisedWorkflow()
+                    }
+                    .disabled(!model.canStartSupervisedWorkflow)
+                }
+                if !model.recentSupervisedWorkflows.isEmpty {
+                    Menu("Recent Workflows") {
+                        ForEach(model.recentSupervisedWorkflows.prefix(8)) { run in
+                            Button {
+                                model.presentSupervisedWorkflow(run)
+                            } label: {
+                                Text("\(run.phase.label) · \(run.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                            }
+                        }
+                    }
+                }
+            }
             Divider()
             Menu("Edit Recipes") {
                 ForEach(model.recipes) { recipe in
@@ -610,8 +638,8 @@ struct ContentView: View {
         }
         .accessibilityLabel("Supervised workflow recipes")
         .accessibilityValue(model.workspaceLead.map { "Lead: \($0.displayName)" } ?? "No workspace lead")
-        .help("Run or edit a visible cross-vendor workflow instruction for the workspace lead")
-        .accessibilityHint("Choose a plan review, implementation review, bug hunt, or comparison recipe")
+        .help("Run a one-shot recipe or a bounded human-checkpointed cross-vendor sequence")
+        .accessibilityHint("Choose a recipe or the Plan, Review, Implement, Verify sequence")
     }
 
     private var returnMenu: some View {
@@ -743,6 +771,33 @@ struct ContentView: View {
         .frame(height: 31)
         .background(Color.accentColor.opacity(0.055))
         .help(run.instructions)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func supervisedWorkflowStrip(_ run: SupervisedWorkflowRun) -> some View {
+        HStack(spacing: 8) {
+            Text("WORKFLOW")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+            Text(run.phase.label)
+                .font(.system(size: 10, weight: .medium))
+                .lineLimit(1)
+            if run.phase == .awaitingImplementationApproval || run.phase == .awaitingCompletionApproval {
+                Text("HUMAN CHECKPOINT")
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.orange)
+            }
+            Spacer(minLength: 8)
+            Button("Open") { model.presentSupervisedWorkflow() }
+            Button("End…", role: .destructive) { model.interruptSupervisedWorkflow() }
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .frame(height: 31)
+        .background(Color.accentColor.opacity(0.055))
+        .help("\(run.name) · \(run.phase.label)")
         .accessibilityElement(children: .contain)
     }
 

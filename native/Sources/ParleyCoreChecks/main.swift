@@ -2421,6 +2421,96 @@ private func checkSupervisionMetadataAndRecipesPersistWithoutLiveIDs() throws {
     try expect(runner.calls.contains { command($0.arguments) == "send-keys" && $0.arguments.contains("%2") && $0.arguments.contains("C-c") }, "explicit Stop did not target the exact lead pane")
 }
 
+private func checkBoundedSupervisedWorkflowLifecycle() throws {
+    let directory = try temporaryDirectory()
+    let file = directory.appendingPathComponent("supervised-workflows.json")
+    let store = SupervisedWorkflowStore(file: file)
+    let lead = SupervisedWorkflowParticipant(
+        paneID: "%1",
+        name: "Claude lead",
+        kind: .claude,
+        workspaceID: "@0"
+    )
+    let reviewer = SupervisedWorkflowParticipant(
+        paneID: "%2",
+        name: "Codex reviewer",
+        kind: .codex,
+        workspaceID: "@0"
+    )
+    let startedAt = Date(timeIntervalSince1970: 100)
+    let started = try store.start(
+        workspaceID: "@0",
+        workspaceName: "parley",
+        lead: lead,
+        reviewer: reviewer,
+        verifier: reviewer,
+        planningPrompt: "Create a plan and stop before implementation.",
+        now: startedAt
+    )
+    try expect(started.phase == .planning, "bounded workflow did not begin at planning")
+    try expect(started.transitions.map(\.to) == [.planning], "bounded workflow did not record its initial human transition")
+    try expect(started.transitions.allSatisfy { $0.origin == .human }, "bounded workflow invented an agent-authorized transition")
+
+    do {
+        _ = try store.advance(id: started.id, to: .implementing, artifact: nil)
+        throw CheckFailure(description: "bounded workflow skipped review and its human checkpoint")
+    } catch let error as SupervisedWorkflowError {
+        try expect(error.localizedDescription.contains("cannot move"), "invalid workflow transition refusal was unclear")
+    }
+
+    let plan = SupervisedWorkflowArtifact(
+        kind: .plan,
+        text: "Plan text\n\n    preserve indentation\n",
+        capturedAt: Date(timeIntervalSince1970: 110)
+    )
+    let reviewing = try store.advance(
+        id: started.id,
+        to: .reviewingPlan,
+        artifact: plan,
+        detail: "The person reviewed the exact plan before dispatch.",
+        now: Date(timeIntervalSince1970: 111)
+    )
+    try expect(reviewing.artifacts == [plan], "bounded workflow lost its explicitly captured plan")
+
+    let review = SupervisedWorkflowArtifact(kind: .planReview, text: "Independent objections", capturedAt: Date(timeIntervalSince1970: 120))
+    _ = try store.advance(id: started.id, to: .awaitingImplementationApproval, artifact: review)
+    _ = try store.advance(id: started.id, to: .implementing, artifact: nil)
+    let implementation = SupervisedWorkflowArtifact(kind: .implementation, text: "Reviewed diff", capturedAt: Date(timeIntervalSince1970: 130))
+    _ = try store.advance(id: started.id, to: .verifying, artifact: implementation)
+    let verification = SupervisedWorkflowArtifact(kind: .verification, text: "Tests pass; no blocking findings.", capturedAt: Date(timeIntervalSince1970: 140))
+    _ = try store.advance(id: started.id, to: .awaitingCompletionApproval, artifact: verification)
+    let completed = try store.advance(id: started.id, to: .completed, artifact: nil)
+    try expect(completed.phase == .completed && completed.artifacts.count == 4, "bounded workflow did not preserve all four explicit artifacts")
+    try expect(completed.transitions.count == 7, "bounded workflow did not preserve every supervised checkpoint")
+    try expect(completed.artifacts.first?.text == plan.text, "bounded workflow changed formatting in an explicitly reviewed artifact")
+    try expect(completed.transitions.allSatisfy { $0.origin == .human }, "bounded workflow recorded a non-human checkpoint")
+
+    let restored = try require(
+        SupervisedWorkflowStore(file: file).runs().first(where: { $0.id == started.id }),
+        "bounded workflow did not survive store reattachment"
+    )
+    try expect(restored == completed, "bounded workflow changed while being restored")
+    var metadata = stat()
+    try expect(lstat(file.path, &metadata) == 0 && metadata.st_mode & 0o077 == 0, "bounded workflow file was not owner-only")
+
+    let second = try store.start(
+        workspaceID: "@1",
+        workspaceName: "consumer",
+        lead: SupervisedWorkflowParticipant(paneID: "%3", name: "Codex lead", kind: .codex, workspaceID: "@1"),
+        reviewer: SupervisedWorkflowParticipant(paneID: "%4", name: "Claude reviewer", kind: .claude, workspaceID: "@1"),
+        verifier: SupervisedWorkflowParticipant(paneID: "%4", name: "Claude reviewer", kind: .claude, workspaceID: "@1"),
+        planningPrompt: "Plan only."
+    )
+    let interrupted = try store.interrupt(id: second.id, detail: "Stopped by the person.")
+    try expect(interrupted.phase == .interrupted, "bounded workflow could not be interrupted deliberately")
+    do {
+        _ = try store.advance(id: second.id, to: .completed, artifact: nil)
+        throw CheckFailure(description: "bounded workflow resumed after a terminal interruption")
+    } catch let error as SupervisedWorkflowError {
+        try expect(error.localizedDescription.contains("terminal"), "terminal workflow refusal was unclear")
+    }
+}
+
 private func checkSupervisedLeadWorkflowPolicyAndCancellation() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
@@ -6391,6 +6481,7 @@ let checks: [(String, () throws -> Void)] = [
     ("inherited Parley capability scrub", checkInheritedParleyCapabilitiesAreScrubbed),
     ("shared protocol launch adapters", checkSharedProtocolLaunchAdapters),
     ("supervision metadata and editable recipes", checkSupervisionMetadataAndRecipesPersistWithoutLiveIDs),
+    ("bounded supervised workflow lifecycle", checkBoundedSupervisedWorkflowLifecycle),
     ("supervised lead workflow policy and cancellation", checkSupervisedLeadWorkflowPolicyAndCancellation),
     ("tracked delegation completion and wait", checkTrackedDelegationCompletesAndWaits),
     ("tracked delegation failure and liveness", checkTrackedDelegationFailureAndLiveness),
