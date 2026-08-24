@@ -3,6 +3,7 @@ import SwiftUI
 
 struct StatusCenterView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
     @State private var workspaceID = ""
     @State private var selectedHandoffID: String?
     @State private var showDismissed = false
@@ -802,6 +803,12 @@ struct StatusCenterView: View {
                    target.isStarted,
                    !target.hasCurrentProtocol {
                     Button("Restart for Protocol…") { model.restart(target) }
+                }
+                if handoff.attention == .permissionRequired {
+                    Button("Permission Guide") {
+                        model.requestHelp(topicID: "cli-permissions")
+                        openWindow(id: "help")
+                    }
                 }
             }
         }

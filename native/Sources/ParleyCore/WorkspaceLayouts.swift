@@ -6,12 +6,20 @@ public struct SavedLayoutLeaf: Codable, Equatable, Sendable {
     public let name: String
     public let folder: String
     public let isWorkspaceLead: Bool
+    public let permissionSelection: PermissionProfileSelection?
 
-    public init(kind: PaneKind, name: String, folder: String, isWorkspaceLead: Bool = false) {
+    public init(
+        kind: PaneKind,
+        name: String,
+        folder: String,
+        isWorkspaceLead: Bool = false,
+        permissionSelection: PermissionProfileSelection? = nil
+    ) {
         self.kind = kind
         self.name = name
         self.folder = folder
         self.isWorkspaceLead = isWorkspaceLead
+        self.permissionSelection = permissionSelection
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -19,6 +27,7 @@ public struct SavedLayoutLeaf: Codable, Equatable, Sendable {
         case name
         case folder
         case isWorkspaceLead
+        case permissionSelection
     }
 
     public init(from decoder: Decoder) throws {
@@ -27,7 +36,11 @@ public struct SavedLayoutLeaf: Codable, Equatable, Sendable {
             kind: try values.decode(PaneKind.self, forKey: .kind),
             name: try values.decode(String.self, forKey: .name),
             folder: try values.decode(String.self, forKey: .folder),
-            isWorkspaceLead: try values.decodeIfPresent(Bool.self, forKey: .isWorkspaceLead) ?? false
+            isWorkspaceLead: try values.decodeIfPresent(Bool.self, forKey: .isWorkspaceLead) ?? false,
+            permissionSelection: try values.decodeIfPresent(
+                PermissionProfileSelection.self,
+                forKey: .permissionSelection
+            )
         )
     }
 }
@@ -54,6 +67,7 @@ public indirect enum SavedLayoutNode: Codable, Equatable, Sendable {
         case name
         case folder
         case isWorkspaceLead
+        case permissionSelection
         case direction
         case ratio
         case first
@@ -68,7 +82,11 @@ public indirect enum SavedLayoutNode: Codable, Equatable, Sendable {
                 kind: try values.decode(PaneKind.self, forKey: .kind),
                 name: try values.decode(String.self, forKey: .name),
                 folder: try values.decode(String.self, forKey: .folder),
-                isWorkspaceLead: try values.decodeIfPresent(Bool.self, forKey: .isWorkspaceLead) ?? false
+                isWorkspaceLead: try values.decodeIfPresent(Bool.self, forKey: .isWorkspaceLead) ?? false,
+                permissionSelection: try values.decodeIfPresent(
+                    PermissionProfileSelection.self,
+                    forKey: .permissionSelection
+                )
             ))
         case .split:
             self = .split(
@@ -89,6 +107,7 @@ public indirect enum SavedLayoutNode: Codable, Equatable, Sendable {
             try values.encode(leaf.name, forKey: .name)
             try values.encode(leaf.folder, forKey: .folder)
             try values.encode(leaf.isWorkspaceLead, forKey: .isWorkspaceLead)
+            try values.encodeIfPresent(leaf.permissionSelection, forKey: .permissionSelection)
         case let .split(direction, ratio, first, second):
             try values.encode(NodeKind.split, forKey: .type)
             try values.encode(direction, forKey: .direction)
@@ -160,7 +179,8 @@ public struct SavedWorkspaceLayout: Identifiable, Codable, Equatable, Sendable {
                     name: leaf.name,
                     folder: leaf.folder,
                     isStarted: false,
-                    isWorkspaceLead: leaf.isWorkspaceLead
+                    isWorkspaceLead: leaf.isWorkspaceLead,
+                    permissionSelection: leaf.permissionSelection
                 ))
             case let .split(direction, ratio, first, second):
                 .split(
@@ -183,6 +203,7 @@ public struct RestoredLayoutSlot: Identifiable, Equatable, Sendable {
     public let folder: String
     public var isStarted: Bool
     public let isWorkspaceLead: Bool
+    public let permissionSelection: PermissionProfileSelection?
 }
 
 public indirect enum RestoredLayoutNode: Equatable, Sendable {
@@ -288,7 +309,8 @@ public enum TmuxLayoutParser {
                     kind: pane.kind,
                     name: pane.displayName,
                     folder: pane.cwd,
-                    isWorkspaceLead: pane.isWorkspaceLead
+                    isWorkspaceLead: pane.isWorkspaceLead,
+                    permissionSelection: pane.permissionSelection
                 )),
                 width: width,
                 height: height

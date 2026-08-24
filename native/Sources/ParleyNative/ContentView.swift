@@ -54,6 +54,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.setupPresented) {
             SetupView(model: model)
         }
+        .sheet(item: $model.panePermissionRequest) { request in
+            PermissionProfilePickerView(model: model, request: request)
+        }
         .alert(
             "Parley needs attention",
             isPresented: Binding(
@@ -81,7 +84,8 @@ struct ContentView: View {
                             projectContext: model.projectContext(for: pane),
                             awaitingAnswerCount: model.awaitingAnswerCount(for: pane.id),
                             unreadResultCount: model.unreadResultCount(forPane: pane.id),
-                            latestFailure: model.latestFailure(for: pane.id)
+                            latestFailure: model.latestFailure(for: pane.id),
+                            permissionProfileName: model.permissionProfileName(for: pane)
                         )
                     }
                     .buttonStyle(.plain)
@@ -809,6 +813,12 @@ struct ContentView: View {
                         Divider()
                         Button(attentionActionLabel(item)) { model.focus(item, target: true) }
                             .disabled(!model.canFocus(item.targetPaneID))
+                        if item.attention == .permissionRequired {
+                            Button("Open Permission Guide") {
+                                model.requestHelp(topicID: "cli-permissions")
+                                openWindow(id: "help")
+                            }
+                        }
                     }
                     if item.canRetrySafely {
                         Divider()
@@ -1065,6 +1075,7 @@ private struct PaneRow: View {
     let awaitingAnswerCount: Int
     let unreadResultCount: Int
     let latestFailure: RelayHandoff?
+    let permissionProfileName: String?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1082,6 +1093,11 @@ private struct PaneRow: View {
                         Text("LEAD")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(Color.accentColor)
+                    }
+                    if let permissionProfileName {
+                        Text(permissionProfileName.uppercased())
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.secondary)
                     }
                     if pane.returnToPaneID != nil || awaitingAnswerCount > 0 {
                         Text(awaitingAnswerCount > 1 ? "RETURN \(awaitingAnswerCount)" : "RETURN")
@@ -1156,9 +1172,19 @@ private struct PaneRow: View {
     }
 
     private var paneHelp: String {
-        guard let projectContext else { return pane.cwd }
+        let permission = permissionProfileName.map { name in
+            let enforcement = pane.permissionEnforcement?.label ?? "not recorded"
+            return "Permissions: \(name) · \(enforcement)"
+        }
+        guard let projectContext else {
+            return [pane.cwd, permission].compactMap { $0 }.joined(separator: "\n")
+        }
         let state = projectContext.isDirty ? "dirty" : "clean"
-        return "\(pane.cwd)\nGit: \(projectContext.branch) · \(state)"
+        return [
+            pane.cwd,
+            "Git: \(projectContext.branch) · \(state)",
+            permission,
+        ].compactMap { $0 }.joined(separator: "\n")
     }
 
     private var kindColor: Color {

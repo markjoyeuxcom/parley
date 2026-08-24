@@ -265,6 +265,21 @@ public enum ParleyHelpGuide {
             symbol: "checkmark.shield",
             sections: [
                 ParleyHelpSection(
+                    id: "cli-permissions-profiles",
+                    title: "Choose intent before an agent starts",
+                    paragraphs: [
+                        "Every new, restored or restarted agent pane asks for one vendor-neutral permission profile. The pane badge preserves that choice, while the launch sheet shows the exact folder scope and how much the selected vendor can actually enforce.",
+                    ],
+                    items: [
+                        "Review only supports project reads and Git inspection without project mutation.",
+                        "Default keeps routine reads available while writes and execution remain vendor decisions.",
+                        "Flexible prepares project-local reads, writes, tests and builds; network, external folders and consequential actions stay explicit.",
+                        "Broad workspace applies only to its exact approved roots and is session-scoped by default. It is never host-wide access and never becomes the next pane's default silently.",
+                        "Enforced, Partially enforced and Guidance only describe the installed CLI's real launch controls. Model instructions are not a security boundary, and later vendor prompts remain authoritative.",
+                        "Clone a built-in to make an editable local custom profile. Built-ins and Parley's hard boundary remain immutable.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "cli-permissions-checklist",
                     title: "Check the action, path and purpose",
                     paragraphs: [

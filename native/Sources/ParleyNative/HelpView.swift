@@ -2,7 +2,7 @@ import ParleyCore
 import SwiftUI
 
 struct HelpView: View {
-    let runtime: ParleyRuntime
+    @ObservedObject var model: AppModel
     @State private var query = ""
     @State private var selectedTopicID: String? = ParleyHelpGuide.topics.first?.id
 
@@ -20,8 +20,8 @@ struct HelpView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            RuntimeBanner(runtime: runtime)
-            if runtime.visibleMarker != nil { Divider() }
+            RuntimeBanner(runtime: model.runtime)
+            if model.runtime.visibleMarker != nil { Divider() }
             NavigationSplitView {
                 List(topics, selection: $selectedTopicID) { topic in
                 Label {
@@ -62,6 +62,8 @@ struct HelpView: View {
             }
         }
         .frame(minWidth: 820, minHeight: 590)
+        .onAppear { selectRequestedTopic() }
+        .onChange(of: model.requestedHelpTopicID) { _, _ in selectRequestedTopic() }
         .onChange(of: query) { _, _ in
             if let selectedTopicID,
                topics.contains(where: { $0.id == selectedTopicID }) {
@@ -69,6 +71,13 @@ struct HelpView: View {
             }
             selectedTopicID = topics.first?.id
         }
+    }
+
+    private func selectRequestedTopic() {
+        guard let requested = model.requestedHelpTopicID,
+              ParleyHelpGuide.topics.contains(where: { $0.id == requested }) else { return }
+        query = ""
+        selectedTopicID = requested
     }
 }
 

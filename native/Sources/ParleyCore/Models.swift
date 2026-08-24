@@ -106,6 +106,8 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
     public let isStarted: Bool
     public let isWorkspaceLead: Bool
     public let automationPolicy: WorkspaceAutomationPolicy
+    public let permissionSelection: PermissionProfileSelection?
+    public let permissionEnforcement: PermissionEnforcementLevel?
 
     public init(
         id: String,
@@ -125,7 +127,9 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
         exitStatus: Int? = nil,
         isStarted: Bool = true,
         isWorkspaceLead: Bool = false,
-        automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate
+        automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate,
+        permissionSelection: PermissionProfileSelection? = nil,
+        permissionEnforcement: PermissionEnforcementLevel? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -145,6 +149,8 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
         self.isStarted = isStarted
         self.isWorkspaceLead = isWorkspaceLead
         self.automationPolicy = automationPolicy
+        self.permissionSelection = permissionSelection
+        self.permissionEnforcement = permissionEnforcement
     }
 
     public var displayName: String {

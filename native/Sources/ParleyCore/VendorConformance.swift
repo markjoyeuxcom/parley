@@ -177,16 +177,33 @@ public struct VendorConformanceAttentionReason: Codable, Equatable, Sendable {
     }
 }
 
-public enum VendorConformanceAttention {
-    /// A live probe must never type through a prompt whose purpose is to ask
-    /// the person for trust or tool authority. The phrases are deliberately
-    /// conservative: a false positive skips a quota-spending test; a false
-    /// negative can answer a question only the person should answer.
-    public static func blockedReason(
+/// Conservative recognition of a vendor TUI that is visibly waiting for the
+/// person to decide trust or permission. Prompt wording alone is insufficient:
+/// a decision affordance must also be visible, which avoids treating agent
+/// prose, documentation and ordinary "permission denied" errors as controls.
+public enum VendorPromptAttention {
+    public static func detect(
         kind: PaneKind,
         visibleText: String
     ) -> VendorConformanceAttentionReason? {
-        let visible = visibleText.lowercased()
+        let visible = visibleText
+            .split(whereSeparator: \.isNewline)
+            .suffix(60)
+            .joined(separator: "\n")
+            .lowercased()
+
+        let decisionPhrases = [
+            "allow once",
+            "yes, proceed",
+            "no, and tell",
+            "esc to cancel",
+            "no, cancel",
+            "1. yes",
+            "2. no",
+            "2. deny",
+        ]
+        let hasDecision = decisionPhrases.contains(where: visible.contains)
+
         let trustPhrases = [
             "confirm folder trust",
             "do you trust the files in this folder",
@@ -194,10 +211,11 @@ public enum VendorConformanceAttention {
             "trust this folder before",
             "trust the authors of the files in this folder",
         ]
-        if trustPhrases.contains(where: visible.contains) {
+        let trustMatches = trustPhrases.count { visible.contains($0) }
+        if trustMatches >= 2 || (trustMatches == 1 && hasDecision) {
             return VendorConformanceAttentionReason(
                 kind: .trust,
-                detail: "\(kind.label) is waiting for folder trust; no probe text was sent."
+                detail: "\(kind.label) is visibly waiting for a folder-trust decision. Parley did not answer it."
             )
         }
 
@@ -207,15 +225,37 @@ public enum VendorConformanceAttention {
             "would you like to proceed?",
             "allow this tool",
             "allow this command",
+            "allow execution of:",
             "approval required",
             "permission required",
+            "requires your approval",
         ]
-        if permissionPhrases.contains(where: visible.contains) {
+        if hasDecision, permissionPhrases.contains(where: visible.contains) {
             return VendorConformanceAttentionReason(
                 kind: .permission,
-                detail: "\(kind.label) is waiting for human permission; no probe text was sent."
+                detail: "\(kind.label) is visibly waiting for a permission decision. Parley did not answer it."
             )
         }
         return nil
+    }
+}
+
+public enum VendorConformanceAttention {
+    /// A live probe must never type through a prompt whose purpose is to ask
+    /// the person for trust or tool authority. The phrases are deliberately
+    /// conservative: a false positive skips a quota-spending test; a false
+    /// negative can answer a question only the person should answer.
+    public static func blockedReason(
+        kind: PaneKind,
+        visibleText: String
+    ) -> VendorConformanceAttentionReason? {
+        guard let detected = VendorPromptAttention.detect(kind: kind, visibleText: visibleText) else {
+            return nil
+        }
+        let subject = detected.kind == .trust ? "folder trust" : "human permission"
+        return VendorConformanceAttentionReason(
+            kind: detected.kind,
+            detail: "\(kind.label) is waiting for \(subject); no probe text was sent."
+        )
     }
 }

@@ -12,6 +12,7 @@ public final class TmuxController {
     private let runner: any CommandRunning
     private let fileManager: FileManager
     private let pause: (TimeInterval) -> Void
+    private let permissionProfileStore: PermissionProfileStore
     private var relayRuntime: RelayRuntime?
 
     public init(
@@ -43,6 +44,10 @@ public final class TmuxController {
         self.runner = runner
         self.fileManager = fileManager
         self.pause = pause
+        self.permissionProfileStore = PermissionProfileStore(
+            file: directory.appendingPathComponent("permission-profiles.json"),
+            fileManager: fileManager
+        )
 
         if prepareRuntimeFiles {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -155,6 +160,8 @@ public final class TmuxController {
             "#{pane_dead_status}",
             "#{@parley-lead}",
             "#{@parley-automation-policy}",
+            "#{@parley-permission-selection}",
+            "#{@parley-permission-enforcement}",
         ].joined(separator: separator)
         let output = try runTmux(["list-panes", "-s", "-t", exactSession, "-F", format]).stdoutText
 
@@ -181,7 +188,13 @@ public final class TmuxController {
                 isWorkspaceLead: fields.count > 17 && fields[17] == "1",
                 automationPolicy: fields.count > 18
                     ? (WorkspaceAutomationPolicy(rawValue: fields[18]) ?? .askAndDelegate)
-                    : .askAndDelegate
+                    : .askAndDelegate,
+                permissionSelection: fields.count > 19
+                    ? PermissionProfileSelection(tmuxMetadataValue: fields[19])
+                    : nil,
+                permissionEnforcement: fields.count > 20
+                    ? PermissionEnforcementLevel(rawValue: fields[20])
+                    : nil
             )
         }
     }
@@ -388,7 +401,12 @@ public final class TmuxController {
     }
 
     @discardableResult
-    public func createPane(kind: PaneKind, cwd: String, direction: SplitDirection) throws -> TmuxPane {
+    public func createPane(
+        kind: PaneKind,
+        cwd: String,
+        direction: SplitDirection,
+        permissionProfile: EffectivePermissionProfile? = nil
+    ) throws -> TmuxPane {
         try requireDirectory(cwd)
         guard let target = try activePane() else { throw ParleyTmuxError.paneNotFound("active") }
 
@@ -402,7 +420,19 @@ public final class TmuxController {
         guard !paneID.isEmpty else { throw ParleyTmuxError.commandFailed("tmux did not return the new pane id") }
         do {
             try setMetadata(paneID: paneID, kind: kind, name: kind.label)
-            _ = try runTmux(try respawnArguments(paneID: paneID, kind: kind, cwd: cwd))
+            let resolvedProfile = try effectivePermissionProfile(
+                for: kind,
+                cwd: cwd,
+                supplied: permissionProfile,
+                selection: nil
+            )
+            try setPermissionMetadata(paneID: paneID, kind: kind, profile: resolvedProfile)
+            _ = try runTmux(try respawnArguments(
+                paneID: paneID,
+                kind: kind,
+                cwd: cwd,
+                permissionProfile: resolvedProfile
+            ))
             try setRelayMetadata(paneID: paneID, enabled: kind.isAgent && relayRuntime != nil)
             try setProtocolMetadata(paneID: paneID, kind: kind)
             try setStartedMetadata(paneID: paneID, started: true)
@@ -435,25 +465,55 @@ public final class TmuxController {
         _ = try runTmux(["select-pane", "-t", paneID, "-T", trimmed])
     }
 
-    public func restartPane(_ paneID: String) throws {
+    public func restartPane(
+        _ paneID: String,
+        permissionProfile: EffectivePermissionProfile? = nil
+    ) throws {
         guard let pane = try listPanes().first(where: { $0.id == paneID }) else {
             throw ParleyTmuxError.paneNotFound(paneID)
         }
         if pane.kind.isAgent, let relayRuntime {
             _ = try relayRuntime.credentials.rotate(paneID)
         }
-        _ = try runTmux(try respawnArguments(paneID: paneID, kind: pane.kind, cwd: pane.cwd))
+        let resolvedProfile = try effectivePermissionProfile(
+            for: pane.kind,
+            cwd: pane.cwd,
+            supplied: permissionProfile,
+            selection: pane.permissionSelection
+        )
+        try setPermissionMetadata(paneID: paneID, kind: pane.kind, profile: resolvedProfile)
+        _ = try runTmux(try respawnArguments(
+            paneID: paneID,
+            kind: pane.kind,
+            cwd: pane.cwd,
+            permissionProfile: resolvedProfile
+        ))
         try setRelayMetadata(paneID: paneID, enabled: pane.kind.isAgent && relayRuntime != nil)
         try setProtocolMetadata(paneID: paneID, kind: pane.kind)
         try setStartedMetadata(paneID: paneID, started: true)
     }
 
-    public func startPane(_ paneID: String) throws {
+    public func startPane(
+        _ paneID: String,
+        permissionProfile: EffectivePermissionProfile? = nil
+    ) throws {
         guard let pane = try listPanes().first(where: { $0.id == paneID }) else {
             throw ParleyTmuxError.paneNotFound(paneID)
         }
         guard pane.kind.isAgent, !pane.isStarted else { return }
-        _ = try runTmux(try respawnArguments(paneID: paneID, kind: pane.kind, cwd: pane.cwd))
+        let resolvedProfile = try effectivePermissionProfile(
+            for: pane.kind,
+            cwd: pane.cwd,
+            supplied: permissionProfile,
+            selection: pane.permissionSelection
+        )
+        try setPermissionMetadata(paneID: paneID, kind: pane.kind, profile: resolvedProfile)
+        _ = try runTmux(try respawnArguments(
+            paneID: paneID,
+            kind: pane.kind,
+            cwd: pane.cwd,
+            permissionProfile: resolvedProfile
+        ))
         try setRelayMetadata(paneID: paneID, enabled: relayRuntime != nil)
         try setProtocolMetadata(paneID: paneID, kind: pane.kind)
         try setStartedMetadata(paneID: paneID, started: true)
@@ -524,6 +584,13 @@ public final class TmuxController {
 
     private func configureRestoredLeaf(_ leaf: SavedLayoutLeaf, paneID: String) throws {
         try setMetadata(paneID: paneID, kind: leaf.kind, name: leaf.name)
+        let profile = try effectivePermissionProfile(
+            for: leaf.kind,
+            cwd: leaf.folder,
+            supplied: nil,
+            selection: leaf.permissionSelection
+        )
+        try setPermissionMetadata(paneID: paneID, kind: leaf.kind, profile: profile)
         if leaf.isWorkspaceLead && leaf.kind.isAgent {
             _ = try runTmux(["set-option", "-p", "-t", paneID, "@parley-lead", "1"])
         } else {
@@ -726,7 +793,12 @@ public final class TmuxController {
         _ = try runTmux(["rename-window", "-t", windowID, name])
     }
 
-    private func respawnArguments(paneID: String, kind: PaneKind, cwd: String) throws -> [String] {
+    private func respawnArguments(
+        paneID: String,
+        kind: PaneKind,
+        cwd: String,
+        permissionProfile: EffectivePermissionProfile? = nil
+    ) throws -> [String] {
         var arguments = [
             "respawn-pane", "-k", "-t", paneID, "-c", cwd,
             "-e", "PARLEY_PANE=1",
@@ -778,8 +850,44 @@ public final class TmuxController {
             arguments.append(contentsOf: boundary.arguments)
             arguments.append(contentsOf: ["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE"])
         }
-        arguments.append(contentsOf: AgentProtocol.command(for: kind, protocolDirectory: protocolDirectory))
+        var command = AgentProtocol.command(for: kind, protocolDirectory: protocolDirectory)
+        if let permissionProfile {
+            command.append(contentsOf: PermissionProfileAdapter.launchPlan(
+                for: kind,
+                profile: permissionProfile
+            ).arguments)
+        }
+        arguments.append(contentsOf: command)
         return arguments
+    }
+
+    private func effectivePermissionProfile(
+        for kind: PaneKind,
+        cwd: String,
+        supplied: EffectivePermissionProfile?,
+        selection: PermissionProfileSelection?
+    ) throws -> EffectivePermissionProfile? {
+        guard kind.isAgent else { return nil }
+        if let supplied { return supplied }
+
+        let profiles = try permissionProfileStore.profiles()
+        let definition: PermissionProfileDefinition
+        if let selection,
+           let selected = profiles.first(where: { $0.id == selection.profileID }) {
+            definition = selected
+        } else {
+            guard let fallback = profiles.first(where: { $0.id == "default" }) else {
+                throw ParleyTmuxError.commandFailed("The Default permission profile is unavailable.")
+            }
+            definition = fallback
+        }
+        return try PermissionProfileResolver.resolve(
+            definition: definition,
+            paneFolder: cwd,
+            approvedRoots: definition.rootMode == .exactApprovedRoots
+                ? (selection?.approvedRoots ?? [cwd])
+                : []
+        )
     }
 
     private func loginShellExecutable() -> String {
@@ -795,6 +903,31 @@ public final class TmuxController {
         _ = try runTmux(["set-option", "-p", "-t", paneID, "@parley-kind", kind.rawValue])
         _ = try runTmux(["set-option", "-p", "-t", paneID, "@parley-name", name])
         _ = try runTmux(["select-pane", "-t", paneID, "-T", name])
+    }
+
+    private func setPermissionMetadata(
+        paneID: String,
+        kind: PaneKind,
+        profile: EffectivePermissionProfile?
+    ) throws {
+        guard let profile else {
+            _ = try runTmux([
+                "set-option", "-p", "-u", "-t", paneID, "@parley-permission-selection",
+            ], allowFailure: true)
+            _ = try runTmux([
+                "set-option", "-p", "-u", "-t", paneID, "@parley-permission-enforcement",
+            ], allowFailure: true)
+            return
+        }
+        let plan = PermissionProfileAdapter.launchPlan(for: kind, profile: profile)
+        _ = try runTmux([
+            "set-option", "-p", "-t", paneID,
+            "@parley-permission-selection", profile.selection.tmuxMetadataValue,
+        ])
+        _ = try runTmux([
+            "set-option", "-p", "-t", paneID,
+            "@parley-permission-enforcement", plan.enforcement.rawValue,
+        ])
     }
 
     private func setRelayMetadata(paneID: String, enabled: Bool) throws {

@@ -122,7 +122,7 @@ struct ParleyNativeApp: App {
         .windowResizability(.contentMinSize)
 
         Window("Parley Help", id: "help") {
-            HelpView(runtime: model.runtime)
+            HelpView(model: model)
         }
         .defaultSize(width: 980, height: 720)
         .windowResizability(.contentMinSize)

@@ -255,6 +255,294 @@ private func checkBuildInformationIsUsefulAndCopyable() throws {
     try expect(development.sourceSummary == "feat/about @ fedcba987654 · modified", "development source state is unclear")
 }
 
+private func checkPermissionProfilesAreVendorNeutralAndLocal() throws {
+    let builtIns = PermissionProfileDefinition.builtIns
+    try expect(
+        builtIns.map(\.id) == ["review-only", "default", "flexible", "broad-workspace"],
+        "permission profile built-ins or their stable order changed"
+    )
+    try expect(builtIns.allSatisfy(\.isBuiltIn), "a built-in permission profile is editable")
+
+    let review = try require(builtIns.first(where: { $0.id == "review-only" }), "Review Only is missing")
+    let standard = try require(builtIns.first(where: { $0.id == "default" }), "Default is missing")
+    let flexible = try require(builtIns.first(where: { $0.id == "flexible" }), "Flexible is missing")
+    let broad = try require(builtIns.first(where: { $0.id == "broad-workspace" }), "Broad Workspace is missing")
+
+    try expect(review.rule(for: .projectRead) == .allow, "Review Only cannot read the project")
+    try expect(review.rule(for: .projectWrite) == .deny, "Review Only can mutate the project")
+    try expect(standard.rule(for: .projectWrite) == .requireApproval, "Default silently grants project writes")
+    try expect(flexible.rule(for: .projectWrite) == .allow, "Flexible cannot perform approved project writes")
+    try expect(flexible.rule(for: .projectToolExecution) == .allow, "Flexible cannot run project tests and builds")
+    try expect(flexible.rule(for: .networkAccess) == .requireApproval, "Flexible silently grants network access")
+    try expect(broad.rootMode == .exactApprovedRoots, "Broad Workspace is not tied to exact approved roots")
+    try expect(broad.rule(for: .localProcessExecution) == .allow, "Broad Workspace does not cover broad local work")
+    try expect(broad.defaultLifetime == .session, "Broad Workspace silently persists beyond a session")
+    try expect(
+        Set(PermissionHardBoundary.allCases) == Set([
+            .parleyControlPlane,
+            .credentialsAndKeychains,
+            .permissionBypass,
+            .privilegeEscalation,
+            .destructiveHostOperations,
+        ]),
+        "the non-negotiable permission boundary changed"
+    )
+    for profile in builtIns {
+        try expect(
+            Set(profile.rules.keys) == Set(PermissionCapability.allCases),
+            "\(profile.name) does not decide every vendor-neutral capability"
+        )
+    }
+
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let project = root.appendingPathComponent("project", isDirectory: true)
+    let sibling = root.appendingPathComponent("consumer", isDirectory: true)
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: false)
+    try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: false)
+
+    let effective = try PermissionProfileResolver.resolve(
+        definition: broad,
+        paneFolder: project.path,
+        approvedRoots: [sibling.path, project.path, sibling.path]
+    )
+    try expect(
+        effective.approvedRoots == [canonicalPath(sibling.path), canonicalPath(project.path)],
+        "effective permission roots are not canonical and deduplicated"
+    )
+    try expect(effective.hardBoundaries == Set(PermissionHardBoundary.allCases), "a profile weakened hard denials")
+    try expect(effective.lifetime == .session, "Broad Workspace stopped being session-scoped")
+
+    let encoded = String(decoding: try JSONEncoder().encode(effective.selection), as: UTF8.self).lowercased()
+    try expect(!encoded.contains("token"), "a permission selection contains a token")
+    try expect(!encoded.contains("credential"), "a permission selection contains credentials")
+    try expect(!encoded.contains("relay"), "a permission selection grants relay authority")
+
+    let storeFile = root.appendingPathComponent("permission-profiles.json")
+    let store = PermissionProfileStore(file: storeFile)
+    let custom = flexible.clone(id: "custom-team-flexible", name: "Team flexible")
+    try store.saveCustom(custom)
+    let loaded = try store.profiles()
+    try expect(loaded.count == 5, "a saved custom profile was not returned beside built-ins")
+    try expect(loaded.last == custom, "a custom permission profile did not round trip")
+
+    let mode = try require(
+        (try FileManager.default.attributesOfItem(atPath: storeFile.path)[.posixPermissions] as? NSNumber)?.uint16Value,
+        "permission profile store permissions are missing"
+    )
+    try expect(mode & 0o077 == 0, "permission profile store is readable by another user")
+
+    do {
+        try store.saveCustom(review)
+        throw CheckFailure(description: "a built-in permission profile was overwritten")
+    } catch let error as PermissionProfileError {
+        try expect(error == .immutableBuiltIn, "built-in overwrite failed for the wrong reason")
+    }
+
+    let incomplete = PermissionProfileDefinition(
+        id: "custom-incomplete",
+        name: "Incomplete",
+        summary: "Missing most capability decisions.",
+        isBuiltIn: false,
+        rootMode: .paneFolder,
+        defaultLifetime: .session,
+        rules: [.projectRead: .allow]
+    )
+    do {
+        try store.saveCustom(incomplete)
+        throw CheckFailure(description: "an incomplete custom permission profile was saved")
+    } catch let error as PermissionProfileError {
+        guard case .invalid = error else {
+            throw CheckFailure(description: "incomplete profile failed for the wrong reason")
+        }
+    }
+}
+
+private func checkPermissionProfilesReachPaneLifecycleWithoutUnsafeFlags() throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let project = root.appendingPathComponent("project", isDirectory: true)
+    let consumer = root.appendingPathComponent("consumer", isDirectory: true)
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: false)
+    try FileManager.default.createDirectory(at: consumer, withIntermediateDirectories: false)
+
+    let flexibleDefinition = try require(
+        PermissionProfileDefinition.builtIns.first(where: { $0.id == "flexible" }),
+        "Flexible profile is missing"
+    )
+    let broadDefinition = try require(
+        PermissionProfileDefinition.builtIns.first(where: { $0.id == "broad-workspace" }),
+        "Broad Workspace profile is missing"
+    )
+    let flexible = try PermissionProfileResolver.resolve(
+        definition: flexibleDefinition,
+        paneFolder: project.path
+    )
+    let broad = try PermissionProfileResolver.resolve(
+        definition: broadDefinition,
+        paneFolder: project.path,
+        approvedRoots: [project.path, consumer.path]
+    )
+
+    for kind in PaneKind.allCases.filter(\.isAgent) {
+        let plan = PermissionProfileAdapter.launchPlan(for: kind, profile: broad)
+        try expect(plan.enforcement != .enforced, "\(kind.label) overclaimed complete permission enforcement")
+        for forbidden in [
+            "--dangerously-skip-permissions",
+            "--allow-dangerously-skip-permissions",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "danger-full-access",
+            "--allow-all",
+            "--yolo",
+        ] {
+            try expect(!plan.arguments.contains(forbidden), "\(kind.label) permission translation used \(forbidden)")
+        }
+        try expect(
+            plan.arguments.contains(canonicalPath(consumer.path)),
+            "\(kind.label) Broad Workspace translation omitted an exact approved root"
+        )
+        let translatedRoots = plan.arguments.indices.compactMap { index -> String? in
+            guard plan.arguments[index] == "--add-dir",
+                  plan.arguments.indices.contains(index + 1) else { return nil }
+            return plan.arguments[index + 1]
+        }
+        try expect(
+            translatedRoots == broad.approvedRoots,
+            "\(kind.label) permission translation granted an unapproved root"
+        )
+    }
+
+    let source = paneRow(id: "%1", kind: .shell, active: true)
+    let created = paneRow(
+        id: "%2",
+        kind: .claude,
+        active: true,
+        relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        permissionSelection: flexible.selection,
+        permissionEnforcement: .partiallyEnforced
+    )
+    var lists = 0
+    let runner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "list-panes":
+            lists += 1
+            return output(lists == 1 ? "\(source)\n" : "\(source)\n\(created)\n")
+        case "split-window":
+            return output("%2\n")
+        default:
+            return output()
+        }
+    }
+    let applicationDirectory = root.appendingPathComponent("application", isDirectory: true)
+    let credentials = try RelayCredentials(file: applicationDirectory.appendingPathComponent("relay-tokens.json"))
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: applicationDirectory,
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner
+    )
+    controller.configureRelay(RelayRuntime(
+        infoFile: applicationDirectory.appendingPathComponent("relay-url"),
+        shimDirectory: applicationDirectory.appendingPathComponent("bin"),
+        transportDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: applicationDirectory),
+        credentials: credentials
+    ))
+
+    let pane = try controller.createPane(
+        kind: .claude,
+        cwd: project.path,
+        direction: .horizontal,
+        permissionProfile: flexible
+    )
+    try expect(pane.permissionSelection == flexible.selection, "new pane lost its effective permission selection")
+    try expect(pane.permissionEnforcement == .partiallyEnforced, "new pane lost its honest enforcement state")
+    try expect(runner.calls.contains { call in
+        command(call.arguments) == "set-option"
+            && call.arguments.contains("@parley-permission-selection")
+            && call.arguments.contains(flexible.selection.tmuxMetadataValue)
+    }, "new pane did not persist permission selection in tmux")
+    let respawn = try require(
+        runner.calls.first(where: { command($0.arguments) == "respawn-pane" }),
+        "permission-profile pane was not spawned"
+    )
+    try expect(
+        respawn.arguments.contains("--permission-mode") && respawn.arguments.contains("acceptEdits"),
+        "Flexible Claude profile did not use Claude's supported edit mode"
+    )
+}
+
+private func checkVendorPermissionStopsBecomeAttentionWithoutAction() throws {
+    let decisions: [(PaneKind, String)] = [
+        (.claude, "Bash command\nDo you want to proceed?\n1. Yes\n2. No\nEsc to cancel"),
+        (.codex, "Would you like to run the following command?\n1. Yes, proceed\n2. No, and tell Codex what to do differently"),
+        (.agy, "Allow execution of: cat src/main.swift\n1. Allow once\n2. Deny"),
+        (.copilot, "Confirm folder trust\nDo you trust the files in this folder?\nYes\nNo, cancel"),
+    ]
+    for (kind, visible) in decisions {
+        let reason = VendorPromptAttention.detect(kind: kind, visibleText: visible)
+        try expect(reason != nil, "\(kind.label) permission/trust stop was not recognised")
+    }
+    for ordinaryOutput in [
+        "The deployment guide says permission required before production changes.",
+        "I asked whether you would like to proceed, then continued with the review.",
+        "cat: private.txt: Permission denied",
+    ] {
+        try expect(
+            VendorPromptAttention.detect(kind: .claude, visibleText: ordinaryOutput) == nil,
+            "ordinary terminal prose was mistaken for a live permission prompt"
+        )
+    }
+
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let targetToken = try credentials.token(for: "%2")
+    let source = TmuxPane(
+        id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp",
+        currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil
+    )
+    let target = TmuxPane(
+        id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp",
+        currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil
+    )
+    let submissions = LockedCounter()
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { [source, target] },
+        paste: { _, _ in },
+        submit: { _, _ in submissions.increment() },
+        visibleText: { paneID in
+            guard paneID == target.id else { return "" }
+            return decisions[1].1
+        },
+        consultationTimeout: 2,
+        livenessPollInterval: 0.01
+    )
+    let result = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        result.set(broker.handleAsk(token: sourceToken, target: "codex", text: "Review this change."))
+    }
+
+    try expect(eventually {
+        broker.handoffs().first?.attention == .permissionRequired
+    }, "a visible vendor permission stop did not become durable handoff attention")
+    let waiting = try require(broker.handoffs().first, "permission-stop handoff disappeared")
+    try expect(waiting.state == .waiting, "permission recognition ended the waiting consultation")
+    try expect(submissions.value == 1, "permission recognition typed into or resubmitted the target pane")
+    try expect(result.value == nil, "permission recognition released the blocked requester")
+
+    let answered = broker.handleAnswer(
+        token: targetToken,
+        consultationID: "current",
+        text: "The review is complete."
+    )
+    try expect(answered.status == 200, "permission-attention consultation could not answer normally")
+    try expect(eventually { result.value?.status == 200 }, "answer did not release the permission-attention Ask")
+    let completed = try require(broker.handoffs().first, "completed permission-stop handoff disappeared")
+    try expect(completed.state == .completed && completed.attention == nil, "completed answer retained stale permission attention")
+}
+
 private func checkRuntimeUILeaseRefusesDuplicateOwners() throws {
     let home = URL(
         fileURLWithPath: "/private/tmp/pri-\(UUID().uuidString.lowercased().prefix(6))",
@@ -607,7 +895,10 @@ private func checkInAppHelpGuideCoverage() throws {
         topics.first(where: { $0.id == "cli-permissions" }),
         "the in-app guide omitted CLI permission best practices"
     ).searchableText.lowercased()
-    for guidance in ["allow once", "cat", "inside the intended repository", "narrowest access", "secret"] {
+    for guidance in [
+        "allow once", "cat", "inside the intended repository", "narrowest access", "secret",
+        "review only", "broad workspace", "partially enforced", "exact approved roots",
+    ] {
         try expect(permissions.contains(guidance), "CLI permission help omitted \(guidance)")
     }
 }
@@ -831,9 +1122,11 @@ private func paneRow(
     isDead: Bool = false,
     exitStatus: Int? = nil,
     isLead: Bool = false,
-    automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate
+    automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate,
+    permissionSelection: PermissionProfileSelection? = nil,
+    permissionEnforcement: PermissionEnforcementLevel? = nil
 ) -> String {
-    [id, kind.rawValue, kind.label, kind.label, "/tmp", kind.rawValue, active ? "1" : "0", windowID, returnTo, relayEnabled ? "1" : "", protocolVersion, workspaceActive ? "1" : "0", workspaceName, bracketedPasteActive ? "1" : "0", started ? "1" : "0", isDead ? "1" : "", exitStatus.map(String.init) ?? "", isLead ? "1" : "", automationPolicy.rawValue]
+    [id, kind.rawValue, kind.label, kind.label, "/tmp", kind.rawValue, active ? "1" : "0", windowID, returnTo, relayEnabled ? "1" : "", protocolVersion, workspaceActive ? "1" : "0", workspaceName, bracketedPasteActive ? "1" : "0", started ? "1" : "0", isDead ? "1" : "", exitStatus.map(String.init) ?? "", isLead ? "1" : "", automationPolicy.rawValue, permissionSelection?.tmuxMetadataValue ?? "", permissionEnforcement?.rawValue ?? ""]
         .joined(separator: "\u{1f}")
 }
 
@@ -1324,6 +1617,11 @@ private func checkAccessibilityDescriptions() throws {
 private func checkSavedWorkspaceLayoutPersistenceAndFreshSlots() throws {
     let directory = try temporaryDirectory()
     let file = directory.appendingPathComponent("workspace-layouts.json")
+    let flexibleSelection = PermissionProfileSelection(
+        profileID: "flexible",
+        approvedRoots: ["/tmp/project"],
+        lifetime: .remembered
+    )
     let layout = SavedWorkspaceLayout(
         name: "Review Pair",
         defaultFolder: "/tmp/project",
@@ -1334,7 +1632,12 @@ private func checkSavedWorkspaceLayoutPersistenceAndFreshSlots() throws {
             second: .split(
                 direction: .vertical,
                 ratio: 0.45,
-                first: .leaf(SavedLayoutLeaf(kind: .codex, name: "Reviewer", folder: "/tmp/project")),
+                first: .leaf(SavedLayoutLeaf(
+                    kind: .codex,
+                    name: "Reviewer",
+                    folder: "/tmp/project",
+                    permissionSelection: flexibleSelection
+                )),
                 second: .leaf(SavedLayoutLeaf(kind: .agy, name: "Second opinion", folder: "/tmp/consumer"))
             )
         )
@@ -1349,6 +1652,10 @@ private func checkSavedWorkspaceLayoutPersistenceAndFreshSlots() throws {
         "restoring the same saved layout reused live slot ids"
     )
     try expect(firstRestoration.slots.map(\.folder) == ["/tmp/project", "/tmp/project", "/tmp/consumer"], "saved layout collapsed per-pane folders into the default")
+    try expect(
+        firstRestoration.slots.first(where: { $0.kind == .codex })?.permissionSelection == flexibleSelection,
+        "saved layout restoration lost the agent permission profile"
+    )
 
     let encoded = try JSONEncoder().encode(layout)
     let json = try require(String(data: encoded, encoding: .utf8), "saved layout JSON was not UTF-8")
@@ -1808,6 +2115,11 @@ private func checkRealTmuxSavedLayoutRestorationPolicy() throws {
     try controller.bootstrap(cwd: projectPath)
     let originalWorkspace = try require(try controller.listWorkspaces().first, "layout check created no initial workspace")
     let originalPaneIDs = Set(try controller.listPanes().map(\.id))
+    let flexibleSelection = PermissionProfileSelection(
+        profileID: "flexible",
+        approvedRoots: [projectPath],
+        lifetime: .remembered
+    )
     let layout = SavedWorkspaceLayout(
         name: "Restored Review",
         defaultFolder: projectPath,
@@ -1818,7 +2130,13 @@ private func checkRealTmuxSavedLayoutRestorationPolicy() throws {
             second: .split(
                 direction: .vertical,
                 ratio: 0.5,
-                first: .leaf(SavedLayoutLeaf(kind: .codex, name: "Reviewer", folder: projectPath, isWorkspaceLead: true)),
+                first: .leaf(SavedLayoutLeaf(
+                    kind: .codex,
+                    name: "Reviewer",
+                    folder: projectPath,
+                    isWorkspaceLead: true,
+                    permissionSelection: flexibleSelection
+                )),
                 second: .leaf(SavedLayoutLeaf(kind: .agy, name: "Second", folder: consumerPath))
             )
         ),
@@ -1837,6 +2155,10 @@ private func checkRealTmuxSavedLayoutRestorationPolicy() throws {
     let agents = panes.filter { $0.kind.isAgent }
     try expect(agents.count == 2, "restored layout lost an agent placeholder")
     try expect(agents.first(where: { $0.kind == .codex })?.isWorkspaceLead == true, "restored layout lost its workspace lead")
+    try expect(
+        agents.first(where: { $0.kind == .codex })?.permissionSelection == flexibleSelection,
+        "restored agent placeholder lost its permission profile"
+    )
     try expect(agents.allSatisfy { $0.automationPolicy == .askAnswer }, "pane routing metadata did not inherit the workspace automation policy")
     try expect(agents.allSatisfy { !$0.isStarted && $0.currentCommand == "sleep" }, "restored layout spent an agent session")
     try expect(agents.allSatisfy { !$0.relayEnabled && $0.protocolVersion == nil }, "stopped agent placeholder received live relay capability")
@@ -1847,6 +2169,10 @@ private func checkRealTmuxSavedLayoutRestorationPolicy() throws {
     try expect(recaptured.name == layout.name && recaptured.defaultFolder == layout.defaultFolder, "recaptured workspace lost its durable identity")
     try expect(recaptured.root.leaves.map(\.kind) == layout.root.leaves.map(\.kind), "recaptured workspace changed pane ordering or kind")
     try expect(recaptured.root.leaves.map(\.name) == layout.root.leaves.map(\.name), "recaptured workspace changed pane names")
+    try expect(
+        recaptured.root.leaves.first(where: { $0.kind == .codex })?.permissionSelection == flexibleSelection,
+        "recaptured workspace changed its selected permission profile"
+    )
     try expect(
         recaptured.root.leaves.map { canonicalPath($0.folder) } == layout.root.leaves.map { canonicalPath($0.folder) },
         "recaptured workspace changed a pane folder"
@@ -5402,6 +5728,9 @@ private func checkVendorConformanceAttentionGate() throws {
 let checks: [(String, () throws -> Void)] = [
     ("runtime namespaces are explicit and disjoint", checkRuntimeNamespacesAreExplicitAndDisjoint),
     ("useful copyable build information", checkBuildInformationIsUsefulAndCopyable),
+    ("vendor-neutral local permission profiles", checkPermissionProfilesAreVendorNeutralAndLocal),
+    ("safe permission profiles reach pane lifecycle", checkPermissionProfilesReachPaneLifecycleWithoutUnsafeFlags),
+    ("vendor permission stops become passive attention", checkVendorPermissionStopsBecomeAttentionWithoutAction),
     ("runtime UI lease refuses duplicate owners", checkRuntimeUILeaseRefusesDuplicateOwners),
     ("read-only runtime attachment requires prepared files", checkReadOnlyRuntimeAttachmentRequiresPreparedFiles),
     ("real production and development tmux isolation", checkRealProductionAndDevelopmentTmuxIsolation),

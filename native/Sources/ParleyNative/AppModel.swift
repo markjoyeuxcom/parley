@@ -38,6 +38,28 @@ struct ActiveRecipeRun: Identifiable, Equatable {
     let instructions: String
 }
 
+enum PanePermissionAction: Equatable {
+    case create(SplitDirection)
+    case restart(String)
+    case start(String)
+}
+
+struct PanePermissionRequest: Identifiable, Equatable {
+    let id = UUID()
+    let kind: PaneKind
+    let folder: String
+    let action: PanePermissionAction
+    let existingSelection: PermissionProfileSelection?
+
+    var actionLabel: String {
+        switch action {
+        case .create: "Start Pane"
+        case .restart: "Restart Pane"
+        case .start: "Start Pane"
+        }
+    }
+}
+
 struct PaletteCommand: Identifiable, Sendable {
     enum Action: Sendable {
         case openWorkspace
@@ -69,6 +91,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var projectContexts: [String: GitProjectContext] = [:]
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
     @Published private(set) var recipes: [HandoffRecipe] = []
+    @Published private(set) var permissionProfiles: [PermissionProfileDefinition] = []
     @Published private(set) var activeRecipeRun: ActiveRecipeRun?
     @Published private(set) var coreAvailable = false
     @Published private(set) var tmuxAvailable = false
@@ -86,6 +109,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var preparingToUninstall = false
     @Published var commandPalettePresented = false
     @Published var setupPresented = false
+    @Published var panePermissionRequest: PanePermissionRequest?
+    @Published private(set) var requestedHelpTopicID: String?
     @Published var startupError: String?
     @Published private(set) var startupRequiresQuit = false
 
@@ -97,6 +122,7 @@ final class AppModel: ObservableObject {
     private let runtimeLease: RuntimeUILease?
     private let layoutStore: SavedWorkspaceLayoutStore
     private let recipeStore: HandoffRecipeStore
+    private let permissionProfileStore: PermissionProfileStore
     private var workspaceContinuity = WorkspaceContinuityState()
     private let projectContextResolver = GitProjectContextResolver()
     private var projectContextRefreshTask: Task<Void, Never>?
@@ -116,6 +142,7 @@ final class AppModel: ObservableObject {
     private static let notificationWorkspacesKey = "parley.notificationWorkspaces"
     private static let dismissedHandoffsKey = "parley.dismissedStatusHandoffs"
     private static let firstRunCompletedKey = "parley.firstRunReadinessCompleted"
+    private static let permissionProfileKeyPrefix = "parley.permissionProfile"
     private static let projectContextRefreshInterval: TimeInterval = 5
 
     init() {
@@ -149,6 +176,9 @@ final class AppModel: ObservableObject {
         recipeStore = HandoffRecipeStore(
             file: applicationDirectory.appendingPathComponent("handoff-recipes.json")
         )
+        permissionProfileStore = PermissionProfileStore(
+            file: applicationDirectory.appendingPathComponent("permission-profiles.json")
+        )
         do {
             runtimeLease = runtimeResolutionError == nil
                 ? try RuntimeUILease.acquire(runtime: runtime)
@@ -163,6 +193,8 @@ final class AppModel: ObservableObject {
             startupRequiresQuit = true
         }
         recipes = (try? recipeStore.recipes()) ?? HandoffRecipe.defaults
+        permissionProfiles = (try? permissionProfileStore.profiles())
+            ?? PermissionProfileDefinition.builtIns
         if runtime.mode == .production {
             UserDefaultsDomainMigration.copyMissing(
                 keys: [
@@ -1257,7 +1289,7 @@ final class AppModel: ObservableObject {
     }
 
     func create(_ kind: PaneKind, direction: SplitDirection) {
-        create(kind, direction: direction, folder: defaultFolder)
+        preparePane(kind, direction: direction, folder: defaultFolder)
     }
 
     func createInChosenFolder(_ kind: PaneKind, direction: SplitDirection) {
@@ -1269,18 +1301,168 @@ final class AppModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.directoryURL = URL(fileURLWithPath: activePane?.cwd ?? defaultFolder)
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        create(kind, direction: direction, folder: url.standardizedFileURL.path)
+        preparePane(kind, direction: direction, folder: url.standardizedFileURL.path)
     }
 
-    private func create(_ kind: PaneKind, direction: SplitDirection, folder: String) {
+    private func preparePane(_ kind: PaneKind, direction: SplitDirection, folder: String) {
+        let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
+        guard kind.isAgent else {
+            createPane(kind, direction: direction, folder: standardized, permissionProfile: nil)
+            return
+        }
+        panePermissionRequest = PanePermissionRequest(
+            kind: kind,
+            folder: standardized,
+            action: .create(direction),
+            existingSelection: nil
+        )
+    }
+
+    private func createPane(
+        _ kind: PaneKind,
+        direction: SplitDirection,
+        folder: String,
+        permissionProfile: EffectivePermissionProfile?
+    ) {
         perform {
             guard let controller else { return }
             let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
-            _ = try controller.createPane(kind: kind, cwd: standardized, direction: direction)
+            _ = try controller.createPane(
+                kind: kind,
+                cwd: standardized,
+                direction: direction,
+                permissionProfile: permissionProfile
+            )
             rememberFolder(standardized)
             try refresh()
             terminalHandle.focus()
         }
+    }
+
+    func defaultPermissionProfileID(for request: PanePermissionRequest) -> String {
+        if let existing = request.existingSelection,
+           permissionProfiles.contains(where: { $0.id == existing.profileID }) {
+            return existing.profileID
+        }
+        let key = permissionProfilePreferenceKey(for: request.kind)
+        if let stored = preferences.string(forKey: key),
+           let profile = permissionProfiles.first(where: { $0.id == stored }),
+           profile.defaultLifetime == .remembered {
+            return profile.id
+        }
+        return "default"
+    }
+
+    func permissionProfileName(for pane: TmuxPane) -> String? {
+        guard let id = pane.permissionSelection?.profileID else { return nil }
+        return permissionProfiles.first(where: { $0.id == id })?.name ?? id
+    }
+
+    @discardableResult
+    func saveCustomPermissionProfile(_ profile: PermissionProfileDefinition) throws -> PermissionProfileDefinition {
+        try permissionProfileStore.saveCustom(profile)
+        permissionProfiles = try permissionProfileStore.profiles()
+        return profile
+    }
+
+    func clonePermissionProfile(
+        _ source: PermissionProfileDefinition,
+        name: String
+    ) throws -> PermissionProfileDefinition {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw RelayUIError.message("Enter a name for the custom permission profile.")
+        }
+        let stem = trimmed.lowercased().unicodeScalars.map { scalar -> Character in
+            let value = scalar.value
+            if (97...122).contains(value) || (48...57).contains(value) {
+                return Character(String(scalar))
+            }
+            return "-"
+        }
+        let compact = String(stem)
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .joined(separator: "-")
+        let safeStem = String((compact.isEmpty ? "profile" : compact).prefix(48))
+        let identifier = "custom-\(safeStem)-\(UUID().uuidString.lowercased().prefix(8))"
+        return try saveCustomPermissionProfile(source.clone(id: identifier, name: trimmed))
+    }
+
+    func applyPermissionProfile(
+        to request: PanePermissionRequest,
+        profileID: String,
+        approvedRoots: [String]
+    ) {
+        do {
+            guard panePermissionRequest?.id == request.id else { return }
+            guard let definition = permissionProfiles.first(where: { $0.id == profileID }) else {
+                throw RelayUIError.message("That permission profile is no longer available.")
+            }
+            let effective = try PermissionProfileResolver.resolve(
+                definition: definition,
+                paneFolder: request.folder,
+                approvedRoots: definition.rootMode == .exactApprovedRoots ? approvedRoots : []
+            )
+            guard effective.approvedRoots.contains(canonicalFolder(request.folder)) else {
+                throw RelayUIError.message("The pane folder must remain one of the approved roots.")
+            }
+
+            guard let controller else { return }
+            switch request.action {
+            case let .create(direction):
+                _ = try controller.createPane(
+                    kind: request.kind,
+                    cwd: request.folder,
+                    direction: direction,
+                    permissionProfile: effective
+                )
+                rememberFolder(request.folder)
+            case let .restart(paneID):
+                try controller.restartPane(paneID, permissionProfile: effective)
+                if let pane = panes.first(where: { $0.id == paneID }) {
+                    try recordSuccessfulActivity(RelayActivityEventRequest(
+                        kind: .paneRestarted,
+                        workspaceID: pane.windowID,
+                        workspaceName: pane.workspaceName ?? pane.windowID,
+                        paneID: pane.id,
+                        paneName: pane.displayName,
+                        paneKind: pane.kind,
+                        detail: "\(pane.kind.label) pane restarted with \(definition.name) permissions."
+                    ))
+                }
+            case let .start(paneID):
+                try controller.startPane(paneID, permissionProfile: effective)
+            }
+
+            if definition.defaultLifetime == .remembered {
+                preferences.set(
+                    definition.id,
+                    forKey: permissionProfilePreferenceKey(for: request.kind)
+                )
+            }
+            panePermissionRequest = nil
+            try refresh()
+            terminalHandle.focus()
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    func cancelPermissionProfileSelection() {
+        panePermissionRequest = nil
+        terminalHandle.focus()
+    }
+
+    func requestHelp(topicID: String) {
+        requestedHelpTopicID = topicID
+    }
+
+    private func permissionProfilePreferenceKey(for kind: PaneKind) -> String {
+        "\(Self.permissionProfileKeyPrefix).\(kind.rawValue)"
+    }
+
+    private func canonicalFolder(_ folder: String) -> String {
+        URL(fileURLWithPath: folder).resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     func select(_ pane: TmuxPane) {
@@ -1687,6 +1869,15 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Restart")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if pane.kind.isAgent {
+            panePermissionRequest = PanePermissionRequest(
+                kind: pane.kind,
+                folder: pane.cwd,
+                action: .restart(pane.id),
+                existingSelection: pane.permissionSelection
+            )
+            return
+        }
         perform {
             guard let controller else { return }
             try controller.restartPane(pane.id)
@@ -1704,11 +1895,13 @@ final class AppModel: ObservableObject {
     }
 
     func start(_ pane: TmuxPane) {
-        perform {
-            try controller?.startPane(pane.id)
-            try refresh()
-            terminalHandle.focus()
-        }
+        guard pane.kind.isAgent else { return }
+        panePermissionRequest = PanePermissionRequest(
+            kind: pane.kind,
+            folder: pane.cwd,
+            action: .start(pane.id),
+            existingSelection: pane.permissionSelection
+        )
     }
 
     func close(_ pane: TmuxPane) {

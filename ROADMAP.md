@@ -360,10 +360,15 @@ effortless without becoming task boards.
   judge the command, path, purpose and duration; covers ordinary project reads,
   the Agy `cat` case, secrets, repository execution, network and destructive
   actions; and never reduces the decision to an executable name.
-- [ ] Define one vendor-neutral, local-only permission profile schema based on
+- [x] Define one vendor-neutral, local-only permission profile schema based on
   capabilities and approved roots rather than command-name allowlists. A
   profile contains no credentials and grants no Parley relay capability.
-- [ ] Ship immutable built-ins with clear guidance:
+  `PermissionProfiles.swift` now defines complete capability decisions, exact
+  canonical root resolution, session versus remembered lifetime, immutable
+  built-in definitions and an owner-only local custom-profile store. Hard
+  boundaries are carried separately from editable definitions so a custom
+  profile cannot remove them.
+- [x] Ship immutable built-ins with clear guidance:
   - **Review only** — project reads and Git inspection, no project mutation;
   - **Default** — routine project reads, with writes and execution still
     requiring the vendor's appropriate decision;
@@ -371,25 +376,40 @@ effortless without becoming task boards.
     external folders and consequential operations remain explicit;
   - **Broad workspace (near-full)** — broad work inside exact approved roots,
     visibly session-scoped by default and never equivalent to host-wide access.
-- [ ] Keep non-negotiable denials outside every profile: Parley's private tmux
+- [x] Keep non-negotiable denials outside every profile: Parley's private tmux
   socket and pane credentials, credential/keychain directories, permission-
   bypass flags, `sudo`, destructive host operations and silent external
   mutation. Git push, deployment and infrastructure mutation always remain an
   explicit decision.
-- [ ] Add a profile picker when creating or restarting an agent pane, plus a
+- [x] Add a profile picker when creating or restarting an agent pane, plus a
   persistent pane badge, exact approved-root preview and clone-to-custom flow.
   Built-ins remain immutable and Broad Workspace never becomes sticky silently.
-- [ ] Translate each profile only through permission mechanisms the installed
+  New agent panes, stopped saved-layout agents and restarts all pass through the
+  same picker. Selections and honest enforcement state live in tmux metadata,
+  survive saved-layout capture and restoration, and remain visible in the pane
+  list. Custom clones expose capability, root-scope and lifetime editing while
+  preserving the non-editable boundary.
+- [x] Translate each profile only through permission mechanisms the installed
   Claude, Codex, Agy or Copilot CLI actually supports. Show the resolved state
   as **Enforced**, **Partially enforced** or **Guidance only**; instructions to
-  the model are never presented as a security boundary.
-- [ ] Preserve Parley's mandatory macOS process boundary underneath vendor
-  settings, and add deterministic tests proving no profile reaches sibling pane
-  credentials, Parley's control files, the tmux socket or paths outside its
-  approved roots.
-- [ ] Detect recognisable vendor permission/trust stops after delivery and link
+  the model are never presented as a security boundary. The launch adapter uses
+  only each vendor's supported safe modes, sandbox/approval controls and exact
+  directory flags; no bypass or blanket-approval mode is ever generated.
+- [x] Preserve Parley's mandatory macOS process boundary underneath vendor
+  settings. The boundary is constructed independently of the selected profile,
+  and real Seatbelt checks prove agents cannot read sibling pane credentials or
+  Parley's control files or operate its tmux socket. Adapter checks prove exact
+  root flags contain every approved root and no unapproved root. Filesystem
+  scope beyond that remains honestly vendor-specific—**Partially enforced** or
+  **Guidance only**—because claiming host-wide isolation would break vendor
+  authentication and be false.
+- [x] Detect recognisable vendor permission/trust stops after delivery and link
   the Activity and Status Center explanation directly to the relevant Help
-  topic without approving or dismissing the prompt.
+  topic without approving or dismissing the prompt. While an Ask or Delegate is
+  waiting, the persistent core observes only the target's current visible
+  screen. Conservative prompt-and-decision matching records one durable
+  permission-required transition; ordinary prose and `Permission denied` output
+  do not match, and Parley never types, approves, retries or releases the waiter.
 
 **Exit gate:** a person can choose the same named intent for every vendor, see
 the exact effective scope before launch, avoid repeated ordinary source-read
@@ -581,7 +601,7 @@ The next implementation sequence is deliberately narrow:
 10. [x] Add diff and plan review shortcuts through the same transport.
 11. [x] Isolate installed and Development runtimes, including a single-UI lease
     and an explicit developer-only production attachment mode.
-12. [ ] Add cross-vendor CLI permission profiles with visible effective
+12. [x] Add cross-vendor CLI permission profiles with visible effective
     enforcement and immutable safe boundaries.
 13. [ ] Package and test the complete native application on a clean Mac. The
     repeatable isolated install/upgrade/core-launch/uninstall gate is complete;

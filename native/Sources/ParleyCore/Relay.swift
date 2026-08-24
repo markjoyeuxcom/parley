@@ -500,6 +500,7 @@ public final class RelayBroker: @unchecked Sendable {
     public typealias Panes = () throws -> [TmuxPane]
     public typealias Paste = (_ paneID: String, _ text: String) throws -> Void
     public typealias Submit = (_ paneID: String, _ text: String) throws -> Void
+    public typealias VisibleText = (_ paneID: String) throws -> String
 
     private static let maximumRetainedHandoffs = 500
 
@@ -507,6 +508,7 @@ public final class RelayBroker: @unchecked Sendable {
     private let panes: Panes
     private let paste: Paste
     private let submit: Submit
+    private let visibleText: VisibleText?
     private let consultationTimeout: TimeInterval
     private let livenessPollInterval: TimeInterval
     private let handoffJournal: RelayHandoffJournal?
@@ -526,6 +528,7 @@ public final class RelayBroker: @unchecked Sendable {
         panes: @escaping Panes,
         paste: @escaping Paste,
         submit: @escaping Submit,
+        visibleText: VisibleText? = nil,
         consultationTimeout: TimeInterval = 30 * 60,
         livenessPollInterval: TimeInterval = 0.5,
         handoffJournal: RelayHandoffJournal? = nil,
@@ -535,6 +538,7 @@ public final class RelayBroker: @unchecked Sendable {
         self.panes = panes
         self.paste = paste
         self.submit = submit
+        self.visibleText = visibleText
         self.consultationTimeout = consultationTimeout
         self.livenessPollInterval = max(0.01, livenessPollInterval)
         self.handoffJournal = handoffJournal
@@ -1824,7 +1828,10 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 return response
             }
-            guard let failure = livenessFailure(for: record) else { continue }
+            guard let failure = livenessFailure(for: record) else {
+                observeTargetAttention(handoffID)
+                continue
+            }
 
             consultationCondition.lock()
             if askResponseLocked(for: scope) == nil, consultationRecords[handoffID] != nil {
@@ -1946,9 +1953,13 @@ public final class RelayBroker: @unchecked Sendable {
         let record = delegationRecords[handoffID]
         let handoff = handoffRecords[handoffID]
         consultationCondition.unlock()
-        guard let record,
-              let handoff,
-              let failure = delegationLivenessFailure(for: record, handoff: handoff, livePanes: livePanes) else {
+        guard let record, let handoff else { return }
+        guard let failure = delegationLivenessFailure(
+            for: record,
+            handoff: handoff,
+            livePanes: livePanes
+        ) else {
+            observeTargetAttention(handoffID)
             return
         }
 
@@ -1961,6 +1972,48 @@ public final class RelayBroker: @unchecked Sendable {
                 status: failure.status
             )
         }
+        consultationCondition.unlock()
+    }
+
+    /// Reads only the target's current visible screen after delivery. It never
+    /// writes terminal input, never changes tracking state and records at most
+    /// one attention transition for a waiting handoff.
+    private func observeTargetAttention(_ handoffID: String) {
+        guard let visibleText else { return }
+        consultationCondition.lock()
+        guard let handoff = handoffRecords[handoffID],
+              handoff.attention == nil,
+              [.delivered, .waiting].contains(handoff.state),
+              let targetKind = handoff.targetKind else {
+            consultationCondition.unlock()
+            return
+        }
+        let targetPaneID = handoff.targetPaneID
+        consultationCondition.unlock()
+
+        guard let visible = try? visibleText(targetPaneID),
+              let reason = VendorPromptAttention.detect(kind: targetKind, visibleText: visible) else {
+            return
+        }
+
+        consultationCondition.lock()
+        guard var current = handoffRecords[handoffID],
+              current.attention == nil,
+              [.delivered, .waiting].contains(current.state) else {
+            consultationCondition.unlock()
+            return
+        }
+        let now = Date()
+        current.attention = .permissionRequired
+        current.updatedAt = now
+        current.transitions.append(RelayHandoffTransition(
+            state: current.state,
+            occurredAt: now,
+            detail: reason.detail
+        ))
+        handoffRecords[handoffID] = current
+        handoffJournal?.record(current)
+        consultationCondition.broadcast()
         consultationCondition.unlock()
     }
 
