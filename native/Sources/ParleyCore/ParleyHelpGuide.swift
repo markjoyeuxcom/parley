@@ -190,6 +190,13 @@ public enum ParleyHelpGuide {
                     title: "Independent comparison",
                     paragraphs: [
                         "Ask Many sends the same question to explicit vendors concurrently. They do not see one another's answers, so the result is independent evidence rather than a chain of agreement.",
+                        "From an active agent pane, open Ask and choose Compare Independently. Select at least two panes from different vendors, review the exact question, then keep the comparison window open or reopen the last comparison from the same menu.",
+                    ],
+                    items: [
+                        "Returned answers appear in separate attributed cards. Failures remain visible and are never presented as answers.",
+                        "Mark an agent pane in the source workspace as Workspace Lead before forwarding. Forward one answer or several selected answers through the normal editable preview.",
+                        "Draft Synthesis opens an edited synthesis preview that preserves every attributed answer and leaves a blank Synthesis field for you to complete. Parley does not generate a consensus or conclusion.",
+                        "Cancel Outstanding stops only the tracked waits that have not returned; it does not type Control-C into vendor panes.",
                     ],
                     commands: [
                         ParleyHelpCommand("parley ask-many codex,agy \"Name the largest risk in this plan.\"", "Return one ordered, labelled JSON answer bundle after every named target finishes or times out."),

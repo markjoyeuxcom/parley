@@ -38,6 +38,29 @@ struct ActiveRecipeRun: Identifiable, Equatable {
     let instructions: String
 }
 
+struct AskManyComparisonTarget: Identifiable, Equatable {
+    let paneID: String
+    let name: String
+    let kind: PaneKind
+    let workspaceName: String?
+
+    var id: String { paneID }
+}
+
+struct AskManyComparisonRun: Identifiable, Equatable {
+    let id: String
+    let sourcePaneID: String
+    let sourceName: String
+    let sourceWorkspaceID: String
+    let question: String
+    let targets: [AskManyComparisonTarget]
+    let startedAt: Date
+    var response: RelayAskManyUIResponse?
+    var error: String?
+
+    var isRunning: Bool { response == nil && error == nil }
+}
+
 enum PanePermissionAction: Equatable {
     case create(SplitDirection)
     case restart(String)
@@ -93,6 +116,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var recipes: [HandoffRecipe] = []
     @Published private(set) var permissionProfiles: [PermissionProfileDefinition] = []
     @Published private(set) var activeRecipeRun: ActiveRecipeRun?
+    @Published private(set) var askManyComparisonRun: AskManyComparisonRun?
     @Published private(set) var coreAvailable = false
     @Published private(set) var tmuxAvailable = false
     @Published private(set) var coreError: String?
@@ -110,6 +134,7 @@ final class AppModel: ObservableObject {
     @Published var commandPalettePresented = false
     @Published var setupPresented = false
     @Published var panePermissionRequest: PanePermissionRequest?
+    @Published var askManyComparisonPresented = false
     @Published private(set) var requestedHelpTopicID: String?
     @Published var startupError: String?
     @Published private(set) var startupRequiresQuit = false
@@ -819,6 +844,37 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var canCompareAskMany: Bool {
+        Set(askTargets.map(\.kind)).count >= 2
+            && askManyComparisonRun?.isRunning != true
+            && relayClient != nil
+    }
+
+    var askManyComparisonLead: TmuxPane? {
+        guard let run = askManyComparisonRun else { return nil }
+        return panes.first {
+            $0.windowID == run.sourceWorkspaceID
+                && $0.isWorkspaceLead
+                && $0.kind.isAgent
+                && $0.isStarted
+                && !$0.isDead
+                && $0.relayEnabled
+                && $0.hasCurrentProtocol
+        }
+    }
+
+    var askManyOutstandingConsultations: [RelayConsultation] {
+        guard let run = askManyComparisonRun, run.isRunning else { return [] }
+        let targets = Set(run.targets.map(\.paneID))
+        return consultations.filter {
+            $0.sourcePaneID == run.sourcePaneID
+                && targets.contains($0.targetPaneID)
+                && $0.question == run.question
+                && $0.createdAt >= run.startedAt
+                && $0.state == .awaitingAnswer
+        }
+    }
+
     var localAskTargets: [TmuxPane] {
         guard let workspaceID = activeWorkspace?.id else { return [] }
         return askTargets.filter { $0.windowID == workspaceID }
@@ -1516,6 +1572,140 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func compareAskMany() {
+        guard canCompareAskMany,
+              let source = activePane,
+              let relayClient else { return }
+        guard let targets = chooseAskManyTargets(candidates: askTargets) else { return }
+        guard let question = editRelay(
+            title: "Compare Independent Answers",
+            message: "Only this exact question will be submitted to every selected pane. They answer concurrently and do not see one another's responses.",
+            text: RelayDraft.initialText(selection: terminalHandle.selectedText),
+            action: "Ask Independently",
+            insertVisible: { [weak self] in
+                guard let self, let controller = self.controller else { return "" }
+                return try controller.capturePane(source.id)
+            }
+        ) else { return }
+
+        let run = AskManyComparisonRun(
+            id: UUID().uuidString.lowercased(),
+            sourcePaneID: source.id,
+            sourceName: source.displayName,
+            sourceWorkspaceID: source.windowID,
+            question: question,
+            targets: targets.map {
+                AskManyComparisonTarget(
+                    paneID: $0.id,
+                    name: $0.displayName,
+                    kind: $0.kind,
+                    workspaceName: $0.workspaceName
+                )
+            },
+            startedAt: Date(),
+            response: nil,
+            error: nil
+        )
+        askManyComparisonRun = run
+        askManyComparisonPresented = true
+        terminalHandle.terminal?.selectNone()
+
+        let targetPaneIDs = targets.map(\.id)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.askManyFromUI(
+                        sourcePaneID: source.id,
+                        targetPaneIDs: targetPaneIDs,
+                        text: question,
+                        idempotencyKey: run.id
+                    )
+                }.value
+                guard var current = self.askManyComparisonRun, current.id == run.id else { return }
+                current.response = response
+                self.askManyComparisonRun = current
+                try? self.refresh()
+                self.acknowledgeVisibleComparisonResults()
+            } catch {
+                guard var current = self.askManyComparisonRun, current.id == run.id else { return }
+                current.error = error.localizedDescription
+                self.askManyComparisonRun = current
+                try? self.refresh()
+            }
+        }
+    }
+
+    func presentAskManyComparison() {
+        guard askManyComparisonRun != nil else { return }
+        askManyComparisonPresented = true
+        acknowledgeVisibleComparisonResults()
+    }
+
+    func dismissAskManyComparison() {
+        askManyComparisonPresented = false
+        terminalHandle.focus()
+    }
+
+    func cancelAskManyComparison() {
+        let outstanding = askManyOutstandingConsultations
+        guard !outstanding.isEmpty, let relayClient else { return }
+        perform {
+            for consultation in outstanding {
+                let response = try relayClient.cancelHandoff(consultation.id)
+                guard response.status == 200 else { throw RelayUIError.message(response.text) }
+            }
+            try refresh()
+        }
+    }
+
+    func forwardComparisonAnswers(_ targetPaneIDs: Set<String>, asSynthesis: Bool) {
+        perform {
+            guard let run = askManyComparisonRun,
+                  let answers = run.response?.bundle.answers,
+                  let lead = askManyComparisonLead,
+                  let controller else {
+                throw RelayUIError.message("Mark a ready agent pane as the workspace lead before forwarding comparison results.")
+            }
+            let draft = if asSynthesis {
+                try AskManyComparisonDraft.synthesisText(question: run.question, answers: answers)
+            } else {
+                try AskManyComparisonDraft.forwardingText(
+                    question: run.question,
+                    answers: answers,
+                    selectedTargetPaneIDs: targetPaneIDs
+                )
+            }
+            let title = asSynthesis ? "Edit Synthesis for \(lead.displayName)" : "Forward Answers to \(lead.displayName)"
+            guard let edited = editRelay(
+                title: title,
+                message: "Review the exact attributed text before it is submitted to workspace lead \(lead.displayName). Parley does not create a verdict or merge the answers for you.",
+                text: draft,
+                action: asSynthesis ? "Send Edited Synthesis" : "Forward Selected",
+                insertVisible: { "" }
+            ) else { return }
+            try controller.paste(
+                "The person using Parley forwarded an independent cross-vendor comparison:\n\n\(edited)",
+                into: lead.id,
+                submit: true
+            )
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .comparisonForwarded,
+                workspaceID: run.sourceWorkspaceID,
+                workspaceName: lead.workspaceName ?? "Workspace",
+                paneID: lead.id,
+                paneName: lead.displayName,
+                paneKind: lead.kind,
+                detail: asSynthesis
+                    ? "Submitted a person-edited synthesis from an independent comparison."
+                    : "Forwarded \(targetPaneIDs.count) attributed independent answer\(targetPaneIDs.count == 1 ? "" : "s")."
+            ))
+            try controller.selectPane(lead.id)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
     func reviewChanges(with target: TmuxPane) {
         perform {
             guard let source = activePane, let reviewDraftBuilder else { return }
@@ -1715,6 +1905,60 @@ final class AppModel: ObservableObject {
         alert.accessoryView = picker
         guard alert.runModal() == .alertFirstButtonReturn else { return [] }
         return [candidates[max(0, picker.indexOfSelectedItem)]]
+    }
+
+    private func chooseAskManyTargets(candidates: [TmuxPane]) -> [TmuxPane]? {
+        let alert = NSAlert()
+        alert.messageText = "Compare with which panes?"
+        alert.informativeText = "Choose at least two panes from different vendors. Every selected pane receives the same question independently."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        let buttons = candidates.map { pane in
+            let location = pane.workspaceName.map { " · \($0)" } ?? ""
+            let button = NSButton(
+                checkboxWithTitle: "\(pane.displayName) · \(pane.kind.label)\(location) (\(pane.id))",
+                target: nil,
+                action: nil
+            )
+            button.state = .on
+            stack.addArrangedSubview(button)
+            return button
+        }
+        stack.frame = NSRect(x: 0, y: 0, width: 460, height: CGFloat(max(1, buttons.count)) * 26)
+        alert.accessoryView = stack
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        let selected = zip(candidates, buttons).compactMap { pane, button in
+            button.state == .on ? pane : nil
+        }
+        guard selected.count >= 2, Set(selected.map(\.kind)).count >= 2 else {
+            NSAlert(error: RelayUIError.message(
+                "Independent comparison needs at least two selected panes from different vendors."
+            )).runModal()
+            return nil
+        }
+        return selected
+    }
+
+    private func acknowledgeVisibleComparisonResults() {
+        guard askManyComparisonPresented,
+              let answers = askManyComparisonRun?.response?.bundle.answers,
+              let relayClient else { return }
+        let handoffIDs = answers.compactMap(\.handoffID)
+        guard !handoffIDs.isEmpty else { return }
+        Task { [weak self] in
+            await Task.detached(priority: .utility) {
+                for handoffID in handoffIDs {
+                    _ = try? relayClient.markHandoffRead(handoffID)
+                }
+            }.value
+            try? self?.refresh()
+        }
     }
 
     func returnAnswer() {

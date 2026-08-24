@@ -55,6 +55,23 @@ private final class LockedAskResult: @unchecked Sendable {
     }
 }
 
+private final class LockedAskManyUIResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: RelayAskManyUIResponse?
+    private var errorStorage: String?
+
+    var value: RelayAskManyUIResponse? { lock.withLock { storage } }
+    var error: String? { lock.withLock { errorStorage } }
+
+    func set(_ value: RelayAskManyUIResponse) {
+        lock.withLock { storage = value }
+    }
+
+    func set(error: Error) {
+        lock.withLock { errorStorage = error.localizedDescription }
+    }
+}
+
 private final class LockedCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var storage = 0
@@ -882,7 +899,8 @@ private func checkInAppHelpGuideCoverage() throws {
     }
     for concept in [
         "workspace lead", "automation policy", "permission", "status center",
-        "saved layout", "command palette", "subscription",
+        "saved layout", "command palette", "subscription", "compare independently",
+        "edited synthesis",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -4711,9 +4729,11 @@ private func checkAskManyFansOutIndependentlyAndReturnsAnOrderedBundle() throws 
     try expect(answers.count == 2, "ask-many bundle returned the wrong answer count")
     try expect(answers[0]["requestedTarget"] as? String == "codex", "ask-many lost requested target ordering")
     try expect(answers[0]["targetPaneID"] as? String == "%2", "ask-many resolved Codex to the wrong pane")
+    try expect(answers[0]["handoffID"] as? String != nil, "ask-many omitted Codex's durable handoff identity")
     try expect(answers[0]["answer"] as? String == "Codex answer", "ask-many lost Codex's exact answer")
     try expect(answers[1]["requestedTarget"] as? String == "agy", "ask-many lost the second requested target")
     try expect(answers[1]["targetPaneID"] as? String == "%3", "ask-many resolved Agy to the wrong pane")
+    try expect(answers[1]["handoffID"] as? String != nil, "ask-many omitted Agy's durable handoff identity")
     try expect(answers[1]["answer"] as? String == "Agy answer", "ask-many lost Agy's exact answer")
 
     let retry = broker.handleAskMany(
@@ -4773,6 +4793,213 @@ private func checkAskManyFansOutIndependentlyAndReturnsAnOrderedBundle() throws 
     let partialAnswers = try require(partialJSON["answers"] as? [[String: Any]], "partial ask-many bundle omitted its results")
     try expect(partialAnswers[0]["status"] as? Int == 409 && partialAnswers[0]["error"] as? String != nil, "partial ask-many bundle hid the failed first target")
     try expect(partialAnswers[1]["answer"] as? String == "Agy survived", "partial ask-many bundle lost the successful second answer")
+}
+
+private func checkAskManyComparisonDraftPreservesIndependentAttribution() throws {
+    let answers = [
+        RelayAskManyAnswer(
+            requestedTarget: "codex",
+            targetPaneID: "%2",
+            targetName: "Security reviewer",
+            status: 200,
+            answer: "Validate the trust boundary first.",
+            error: nil
+        ),
+        RelayAskManyAnswer(
+            requestedTarget: "agy",
+            targetPaneID: "%3",
+            targetName: "Product reviewer",
+            status: 200,
+            answer: "Test whether the workflow is understandable first.",
+            error: nil
+        ),
+        RelayAskManyAnswer(
+            requestedTarget: "copilot",
+            targetPaneID: "%4",
+            targetName: "Implementation reviewer",
+            status: 409,
+            answer: nil,
+            error: "The pane was unavailable."
+        ),
+    ]
+
+    let one = try AskManyComparisonDraft.forwardingText(
+        question: "What should we validate first?",
+        answers: answers,
+        selectedTargetPaneIDs: ["%3"]
+    )
+    try expect(one.contains("Product reviewer answered independently:"), "a single forwarded answer lost its source attribution")
+    try expect(one.contains("Test whether the workflow is understandable first."), "a single forwarded answer lost its exact text")
+    try expect(!one.contains("Security reviewer"), "a single-answer draft included an unselected peer")
+
+    let several = try AskManyComparisonDraft.forwardingText(
+        question: "What should we validate first?",
+        answers: answers,
+        selectedTargetPaneIDs: ["%2", "%3"]
+    )
+    let securityRange = try require(several.range(of: "Security reviewer answered independently:"), "the first selected answer lost attribution")
+    let productRange = try require(several.range(of: "Product reviewer answered independently:"), "the second selected answer lost attribution")
+    try expect(securityRange.lowerBound < productRange.lowerBound, "comparison forwarding changed the original independent answer order")
+    try expect(!several.localizedCaseInsensitiveContains("consensus"), "comparison forwarding manufactured a consensus label")
+    try expect(!several.contains("The pane was unavailable."), "comparison forwarding presented a failure as an answer")
+
+    let synthesis = try AskManyComparisonDraft.synthesisText(
+        question: "What should we validate first?",
+        answers: answers
+    )
+    try expect(synthesis.contains("Write an edited synthesis below. The attributed answers above remain unchanged."), "the synthesis draft did not preserve an explicit human editing boundary")
+    try expect(synthesis.hasSuffix("Synthesis:\n"), "the synthesis draft pre-filled a manufactured conclusion")
+
+    do {
+        _ = try AskManyComparisonDraft.forwardingText(
+            question: "What should we validate first?",
+            answers: answers,
+            selectedTargetPaneIDs: ["%4"]
+        )
+        throw CheckFailure(description: "a failed comparison result was forwarded as an answer")
+    } catch AskManyComparisonDraftError.noSuccessfulAnswers {
+        // Expected: failures stay visible in the comparison but are not answers.
+    }
+}
+
+private func checkHumanAskManyUsesTheTrackedBrokerPath() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    _ = try credentials.token(for: "%1")
+    let codexToken = try credentials.token(for: "%2")
+    let agyToken = try credentials.token(for: "%3")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil, automationPolicy: .off),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let submissions = LockedSubmissions()
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { paneID, prompt in submissions.append(paneID: paneID, text: prompt) },
+        consultationTimeout: 2,
+        livenessPollInterval: 0.01
+    )
+
+    let result = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        result.set(broker.handleAskManyFromUI(
+            sourcePaneID: "%1",
+            targetPaneIDs: ["%2", "%3"],
+            text: "Which risk should the person inspect first?",
+            idempotencyKey: "human-compare-1"
+        ))
+    }
+    try expect(eventually { broker.consultations().count == 2 }, "the native comparison did not create two tracked consultations")
+    try expect(Set(submissions.values.map(\.paneID)) == Set(["%2", "%3"]), "the native comparison did not submit to exactly the selected panes")
+    try expect(broker.handleAnswer(token: codexToken, consultationID: "current", text: "Codex answer").status == 200, "Codex could not answer the native comparison")
+    try expect(broker.handleAnswer(token: agyToken, consultationID: "current", text: "Agy answer").status == 200, "Agy could not answer the native comparison")
+    try expect(eventually { result.value != nil }, "the native comparison stayed blocked after both answers")
+    let completed = try require(result.value, "the native comparison produced no bundle")
+    try expect(completed.status == 200, "the native comparison returned a failure status")
+    let bundle = try JSONDecoder().decode(RelayAskManyBundle.self, from: Data(completed.text.utf8))
+    try expect(bundle.answers.map(\.targetPaneID) == ["%2", "%3"], "the native comparison changed selected-pane order")
+
+    let invalid = broker.handleAskManyFromUI(
+        sourcePaneID: "%404",
+        targetPaneIDs: ["%2", "%3"],
+        text: "This must not dispatch.",
+        idempotencyKey: "human-compare-invalid"
+    )
+    try expect(invalid.status == 400 && invalid.text.contains("source"), "the native comparison accepted an unknown source pane")
+    try expect(submissions.values.count == 2, "an invalid native comparison partially dispatched")
+
+    _ = try credentials.token(for: "%4")
+    let sameVendorSubmissions = LockedSubmissions()
+    let sameVendorBroker = RelayBroker(
+        credentials: credentials,
+        panes: {
+            panes + [
+                TmuxPane(id: "%4", kind: .codex, customName: "Codex Two", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+            ]
+        },
+        paste: { _, _ in },
+        submit: { paneID, prompt in sameVendorSubmissions.append(paneID: paneID, text: prompt) },
+        consultationTimeout: 0.05,
+        livenessPollInterval: 0.01
+    )
+    let sameVendor = sameVendorBroker.handleAskManyFromUI(
+        sourcePaneID: "%1",
+        targetPaneIDs: ["%2", "%4"],
+        text: "This must remain a cross-vendor comparison.",
+        idempotencyKey: "human-compare-same-vendor"
+    )
+    try expect(
+        sameVendor.status == 400 && sameVendor.text.contains("different vendors"),
+        "the native comparison accepted two panes from the same target vendor"
+    )
+    try expect(sameVendorSubmissions.values.isEmpty, "a same-vendor comparison submitted terminal input")
+}
+
+private func checkHumanAskManyCoreControlRoute() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    _ = try credentials.token(for: "%1")
+    let codexToken = try credentials.token(for: "%2")
+    let agyToken = try credentials.token(for: "%3")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil, automationPolicy: .off),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let submissions = LockedSubmissions()
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { paneID, prompt in submissions.append(paneID: paneID, text: prompt) },
+        consultationTimeout: 2,
+        livenessPollInterval: 0.01
+    )
+    let infoFile = directory.appendingPathComponent("relay-url")
+    let controlToken = "ask-many-ui-control"
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
+    try server.start()
+    defer { server.stop() }
+
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    do {
+        _ = try unauthorized.askManyFromUI(
+            sourcePaneID: "%1",
+            targetPaneIDs: ["%2", "%3"],
+            text: "This must not dispatch.",
+            idempotencyKey: "ui-compare-unauthorized"
+        )
+        throw CheckFailure(description: "an unauthenticated UI started an Ask-many comparison")
+    } catch RelayCoreError.response(401, _) {
+        // Expected.
+    }
+    try expect(submissions.values.isEmpty, "the rejected UI comparison submitted terminal input")
+
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let result = LockedAskManyUIResult()
+    DispatchQueue.global(qos: .utility).async {
+        do {
+            result.set(try client.askManyFromUI(
+                sourcePaneID: "%1",
+                targetPaneIDs: ["%2", "%3"],
+                text: "Which result is more important?",
+                idempotencyKey: "ui-compare-authorized"
+            ))
+        } catch {
+            result.set(error: error)
+        }
+    }
+    try expect(eventually { broker.consultations().count == 2 }, "the authenticated UI route did not reach both targets")
+    try expect(broker.handleAnswer(token: codexToken, consultationID: "current", text: "Codex result").status == 200, "Codex could not answer the UI route")
+    try expect(broker.handleAnswer(token: agyToken, consultationID: "current", text: "Agy result").status == 200, "Agy could not answer the UI route")
+    try expect(eventually { result.value != nil || result.error != nil }, "the UI route did not complete")
+    try expect(result.error == nil, "the UI route failed: \(result.error ?? "unknown")")
+    let response = try require(result.value, "the UI route produced no comparison response")
+    try expect(response.status == 200 && response.bundle.ok, "the UI route did not preserve the successful bundle")
+    try expect(response.bundle.answers.map(\.answer) == ["Codex result", "Agy result"], "the UI route changed the independent answer order or text")
 }
 
 private func checkAgentAskRejectsBusyTargetAndTimesOut() throws {
@@ -5800,6 +6027,9 @@ let checks: [(String, () throws -> Void)] = [
     ("safe stable relay shim", checkStableShimInstallationDoesNotOverwriteForeignCommands),
     ("agent Ask auto-submits and returns", checkAgentAskSubmitsAndBlocksUntilTheTargetAnswers),
     ("ask-many independent ordered fanout", checkAskManyFansOutIndependentlyAndReturnsAnOrderedBundle),
+    ("ask-many comparison preserves independent attribution", checkAskManyComparisonDraftPreservesIndependentAttribution),
+    ("human ask-many uses tracked broker path", checkHumanAskManyUsesTheTrackedBrokerPath),
+    ("human ask-many core-control route", checkHumanAskManyCoreControlRoute),
     ("agent Ask busy target and timeout", checkAgentAskRejectsBusyTargetAndTimesOut),
     ("human Ask cancellation", checkHumanCancellationUnblocksAsk),
     ("safe failed-delivery retry", checkSafeFailedDeliveryRetryIsStableAndDeduplicated),

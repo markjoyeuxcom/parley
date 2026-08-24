@@ -247,6 +247,7 @@ public enum StatusCenterProjection {
                 let isPane = event.kind == .paneRestarted
                     || event.kind == .recipeSubmitted
                     || event.kind == .recipeInterrupted
+                    || event.kind == .comparisonForwarded
                 let action: String
                 switch event.kind {
                 case .paneRestarted: action = "RESTARTED"
@@ -255,6 +256,7 @@ public enum StatusCenterProjection {
                 case .workspaceRestored: action = "RESTORED"
                 case .recipeSubmitted: action = "RECIPE SUBMITTED"
                 case .recipeInterrupted: action = "RECIPE INTERRUPTED"
+                case .comparisonForwarded: action = "COMPARISON FORWARDED"
                 }
                 return StatusTimelineEvent(
                     id: "activity:\(event.id)",

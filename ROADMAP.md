@@ -577,10 +577,20 @@ between real vendor CLIs rather than a new autonomous orchestration engine.
 
 ### Better questions, comparisons and context
 
-- [ ] Add a native **Ask-many comparison view** that presents independent
+- [x] Add a native **Ask-many comparison view** that presents independent
   answers side by side without manufacturing consensus. Preserve dissent and
   let the person forward one answer, several attributed answers, or an edited
   synthesis to the workspace lead through the normal previewed handoff path.
+  The Ask menu now opens an explicit multi-pane picker and one exact editable
+  question preview, then routes the concurrent requests through the durable
+  Ask broker. The authenticated native route never exposes a pane credential,
+  bypasses agent automation policy only because the click is a human control,
+  refuses fewer than two target vendors before dispatch, and records exact
+  child handoff ids. Returned answers and failures remain separate attributed
+  cards; forwarding one or several and drafting a synthesis both use a second
+  human preview before submission to the source workspace's ready lead. The
+  synthesis starts blank, no conclusion is generated, and cancelling
+  outstanding waits does not interrupt a vendor CLI process.
 - [ ] Add explicit, editable **context packs** assembled from selected files,
   a Git diff, visible terminal output and captured command results. Show the
   source and exact byte size of every part before sending; never scrape hidden

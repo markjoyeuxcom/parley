@@ -380,6 +380,24 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 let consultationID = String(path.dropFirst("/ui/answer/".count))
                 write(broker.answerFromUI(consultationID: consultationID, text: text), to: client)
+            case "/ui/ask-many":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let comparison = try? JSONDecoder().decode(
+                    RelayUIAskManyRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid native comparison request"), to: client)
+                    return
+                }
+                write(broker.handleAskManyFromUI(
+                    sourcePaneID: comparison.sourcePaneID,
+                    targetPaneIDs: comparison.targetPaneIDs,
+                    text: comparison.text,
+                    idempotencyKey: comparison.idempotencyKey
+                ), to: client)
             case "/relay":
                 write(broker.handle(
                     token: token,
@@ -450,7 +468,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                         delivered: nil,
                         submitted: nil,
                         note: nil,
-                        error: "POST /relay, /paste, /ask, /ask-many, /answer/<id>, /delegate, /status, /wait/<id>, /done/<id>, /fail/<id>, /cancel/<id>, /ui/activity, /ui/answer/<id>, /ui/cancel/<id>, /ui/retry/<id> or /ui/read/<id>"
+                        error: "POST /relay, /paste, /ask, /ask-many, /answer/<id>, /delegate, /status, /wait/<id>, /done/<id>, /fail/<id>, /cancel/<id>, /ui/activity, /ui/ask-many, /ui/answer/<id>, /ui/cancel/<id>, /ui/retry/<id> or /ui/read/<id>"
                     )
                 ), to: client)
             }

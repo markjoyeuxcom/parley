@@ -229,6 +229,33 @@ public struct RelayCoreClient: Sendable {
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
 
+    public func askManyFromUI(
+        sourcePaneID: String,
+        targetPaneIDs: [String],
+        text: String,
+        idempotencyKey: String
+    ) throws -> RelayAskManyUIResponse {
+        let body = try JSONEncoder().encode(RelayUIAskManyRequest(
+            sourcePaneID: sourcePaneID,
+            targetPaneIDs: targetPaneIDs,
+            text: text,
+            idempotencyKey: idempotencyKey
+        ))
+        let response = try request(
+            method: "POST",
+            path: "/ui/ask-many",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body
+        )
+        guard let bundle = try? JSONDecoder().decode(RelayAskManyBundle.self, from: response.body) else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return RelayAskManyUIResponse(status: response.status, bundle: bundle)
+    }
+
     public func cancelHandoff(_ handoffID: String) throws -> RelayTextResponse {
         let response = try request(
             method: "POST",

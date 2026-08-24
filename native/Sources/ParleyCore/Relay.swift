@@ -252,14 +252,38 @@ public struct RelayAskManyAnswer: Codable, Equatable, Sendable {
     public let requestedTarget: String
     public let targetPaneID: String
     public let targetName: String
+    public let handoffID: String?
     public let status: Int
     public let answer: String?
     public let error: String?
+
+    public init(
+        requestedTarget: String,
+        targetPaneID: String,
+        targetName: String,
+        handoffID: String? = nil,
+        status: Int,
+        answer: String?,
+        error: String?
+    ) {
+        self.requestedTarget = requestedTarget
+        self.targetPaneID = targetPaneID
+        self.targetName = targetName
+        self.handoffID = handoffID
+        self.status = status
+        self.answer = answer
+        self.error = error
+    }
 }
 
 public struct RelayAskManyBundle: Codable, Equatable, Sendable {
     public let ok: Bool
     public let answers: [RelayAskManyAnswer]
+
+    public init(ok: Bool, answers: [RelayAskManyAnswer]) {
+        self.ok = ok
+        self.answers = answers
+    }
 }
 
 public enum RelayHandoffKind: String, Codable, Equatable, Sendable {
@@ -306,6 +330,7 @@ public enum RelayActivityEventKind: String, Codable, Equatable, Sendable {
     case workspaceRestored
     case recipeSubmitted
     case recipeInterrupted
+    case comparisonForwarded
 }
 
 /// A successful operation initiated from Parley's native controls. These are
@@ -1020,6 +1045,22 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey suppliedIdempotencyKey: String? = nil
     ) -> RelayTextResponse {
+        handleAsk(
+            token: token,
+            target: requestedTarget,
+            text: text,
+            idempotencyKey: suppliedIdempotencyKey,
+            humanInitiated: false
+        )
+    }
+
+    private func handleAsk(
+        token: String,
+        target requestedTarget: String,
+        text: String,
+        idempotencyKey suppliedIdempotencyKey: String?,
+        humanInitiated: Bool
+    ) -> RelayTextResponse {
         guard beginDispatch() else {
             return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
         }
@@ -1030,7 +1071,9 @@ public final class RelayBroker: @unchecked Sendable {
         let targetCredential: String
         do {
             (sender, target) = try route(token: token, requestedTarget: requestedTarget)
-            try authorize(.ask, for: sender)
+            if !humanInitiated {
+                try authorize(.ask, for: sender)
+            }
             idempotencyKey = try normalizeIdempotencyKey(suppliedIdempotencyKey)
             targetCredential = try credentials.token(for: target.id)
         } catch let error as BrokerFailure {
@@ -1081,7 +1124,8 @@ public final class RelayBroker: @unchecked Sendable {
             sender: sender,
             target: target,
             text: cleaned,
-            submitted: true
+            submitted: true,
+            origin: humanInitiated ? .human : nil
         )
         let consultation = RelayConsultation(
             id: handoff.id,
@@ -1113,8 +1157,8 @@ public final class RelayBroker: @unchecked Sendable {
         do {
             try submit(target.id, consultationPrompt(for: consultation))
             consultationCondition.lock()
-            transitionHandoffLocked(handoff.id, to: .delivered)
-            transitionHandoffLocked(handoff.id, to: .waiting)
+            transitionHandoffLocked(handoff.id, to: .delivered, origin: humanInitiated ? .human : nil)
+            transitionHandoffLocked(handoff.id, to: .waiting, origin: humanInitiated ? .human : nil)
             consultationCondition.broadcast()
             consultationCondition.unlock()
         } catch {
@@ -1127,7 +1171,8 @@ public final class RelayBroker: @unchecked Sendable {
                 handoff.id,
                 to: .failed,
                 detail: response.text,
-                failure: failureAssessment(kind: .ask, error: error)
+                failure: failureAssessment(kind: .ask, error: error),
+                origin: humanInitiated ? .human : nil
             )
             idempotencyRecords[scope]?.response = .ask(response)
             consultationRecords.removeValue(forKey: consultation.id)
@@ -1150,6 +1195,22 @@ public final class RelayBroker: @unchecked Sendable {
         targets requestedTargets: String,
         text: String,
         idempotencyKey suppliedIdempotencyKey: String? = nil
+    ) -> RelayTextResponse {
+        handleAskMany(
+            token: token,
+            targets: requestedTargets,
+            text: text,
+            idempotencyKey: suppliedIdempotencyKey,
+            humanInitiated: false
+        )
+    }
+
+    private func handleAskMany(
+        token: String,
+        targets requestedTargets: String,
+        text: String,
+        idempotencyKey suppliedIdempotencyKey: String?,
+        humanInitiated: Bool
     ) -> RelayTextResponse {
         guard beginDispatch() else {
             return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
@@ -1176,11 +1237,15 @@ public final class RelayBroker: @unchecked Sendable {
 
         let rootKey: String
         var routes: [(requested: String, pane: TmuxPane)] = []
+        var sourcePaneID: String?
         do {
             rootKey = try normalizeIdempotencyKey(suppliedIdempotencyKey)
             for requested in targets {
                 let (sender, target) = try route(token: token, requestedTarget: requested)
-                try authorize(.ask, for: sender)
+                sourcePaneID = sourcePaneID ?? sender.id
+                if !humanInitiated {
+                    try authorize(.ask, for: sender)
+                }
                 _ = try credentials.token(for: target.id)
                 if routes.contains(where: { $0.pane.id == target.id }) {
                     throw BrokerFailure(status: 400, message: "ask-many names \(target.displayName) more than once")
@@ -1193,24 +1258,42 @@ public final class RelayBroker: @unchecked Sendable {
             return RelayTextResponse(status: 409, text: error.localizedDescription)
         }
 
+        guard let sourcePaneID else {
+            return RelayTextResponse(status: 400, text: "ask-many could not resolve its source pane")
+        }
+        guard Set(routes.map(\.pane.kind)).count >= 2 else {
+            return RelayTextResponse(
+                status: 400,
+                text: "ask-many needs selected panes from at least two different vendors"
+            )
+        }
+
         let accumulator = AskManyAccumulator(count: routes.count)
         let group = DispatchGroup()
         for (index, route) in routes.enumerated() {
             group.enter()
             DispatchQueue.global(qos: .utility).async { [self] in
                 defer { group.leave() }
+                let childKey = askManyChildKey(root: rootKey, targetPaneID: route.pane.id)
                 let response = handleAsk(
                     token: token,
                     target: route.pane.id,
                     text: cleaned,
-                    idempotencyKey: askManyChildKey(root: rootKey, targetPaneID: route.pane.id)
+                    idempotencyKey: childKey,
+                    humanInitiated: humanInitiated
                 )
+                consultationCondition.lock()
+                let handoffID = idempotencyRecords[
+                    IdempotencyScope(senderPaneID: sourcePaneID, key: childKey)
+                ]?.handoffID
+                consultationCondition.unlock()
                 let succeeded = (200..<300).contains(response.status)
                 accumulator.set(
                     RelayAskManyAnswer(
                         requestedTarget: route.requested,
                         targetPaneID: route.pane.id,
                         targetName: route.pane.displayName,
+                        handoffID: handoffID,
                         status: response.status,
                         answer: succeeded ? response.text : nil,
                         error: succeeded ? nil : response.text
@@ -1234,6 +1317,43 @@ public final class RelayBroker: @unchecked Sendable {
         return RelayTextResponse(
             status: bundle.ok ? 200 : 409,
             text: String(decoding: data, as: UTF8.self)
+        )
+    }
+
+    /// The native UI owns the core-control capability, not a pane credential.
+    /// Resolve the chosen live source to its existing credential internally so
+    /// the ordinary Ask-many authorization, liveness and journal path remains
+    /// the only implementation. The credential never leaves the core.
+    public func handleAskManyFromUI(
+        sourcePaneID: String,
+        targetPaneIDs: [String],
+        text: String,
+        idempotencyKey: String? = nil
+    ) -> RelayTextResponse {
+        let livePanes: [TmuxPane]
+        do {
+            livePanes = try panes()
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+        guard let source = livePanes.first(where: { $0.id == sourcePaneID }), source.kind.isAgent else {
+            return RelayTextResponse(status: 400, text: "unknown source agent pane")
+        }
+        guard targetPaneIDs.count >= 2 else {
+            return RelayTextResponse(status: 400, text: "native comparison needs at least two selected panes")
+        }
+        let sourceToken: String
+        do {
+            sourceToken = try credentials.token(for: source.id)
+        } catch {
+            return RelayTextResponse(status: 409, text: "could not resolve the source pane credential: \(error.localizedDescription)")
+        }
+        return handleAskMany(
+            token: sourceToken,
+            targets: targetPaneIDs.joined(separator: ","),
+            text: text,
+            idempotencyKey: idempotencyKey,
+            humanInitiated: true
         )
     }
 
@@ -2114,7 +2234,8 @@ public final class RelayBroker: @unchecked Sendable {
         sender: TmuxPane,
         target: TmuxPane,
         text: String,
-        submitted: Bool
+        submitted: Bool,
+        origin: RelayTransitionOrigin? = nil
     ) -> RelayHandoff {
         let now = Date()
         return RelayHandoff(
@@ -2136,7 +2257,7 @@ public final class RelayBroker: @unchecked Sendable {
             resultText: nil,
             state: .created,
             updatedAt: now,
-            transitions: [RelayHandoffTransition(state: .created, occurredAt: now, detail: nil)]
+            transitions: [RelayHandoffTransition(state: .created, occurredAt: now, detail: nil, origin: origin)]
         )
     }
 

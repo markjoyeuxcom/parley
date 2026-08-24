@@ -57,6 +57,9 @@ struct ContentView: View {
         .sheet(item: $model.panePermissionRequest) { request in
             PermissionProfilePickerView(model: model, request: request)
         }
+        .sheet(isPresented: $model.askManyComparisonPresented) {
+            AskManyComparisonView(model: model)
+        }
         .alert(
             "Parley needs attention",
             isPresented: Binding(
@@ -502,13 +505,23 @@ struct ContentView: View {
                     }
                 }
             }
+            if model.askManyComparisonRun != nil || model.canCompareAskMany {
+                Divider()
+                if let comparison = model.askManyComparisonRun {
+                    Button(comparison.isRunning ? "Open Active Comparison" : "Open Last Comparison") {
+                        model.presentAskManyComparison()
+                    }
+                }
+                Button("Compare Independently…") { model.compareAskMany() }
+                    .disabled(!model.canCompareAskMany)
+            }
         } label: {
             Label("Ask", systemImage: "arrow.turn.up.right")
         }
         .accessibilityLabel("Ask another vendor")
         .accessibilityValue("\(model.askTargets.count) available target\(model.askTargets.count == 1 ? "" : "s")")
         .accessibilityHint("Choose a different vendor pane for a correlated question")
-        .disabled(model.askTargets.isEmpty)
+        .disabled(model.askTargets.isEmpty && model.askManyComparisonRun == nil)
     }
 
     private var reviewMenu: some View {
