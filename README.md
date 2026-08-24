@@ -207,6 +207,10 @@ Production runtime files live under:
 ~/Library/Application Support/Parley Native/
 ```
 
+The exact DMG contents, first-launch files, preferences, managed relay command,
+temporary transport and uninstall leftovers are listed in
+[INSTALL.md](INSTALL.md).
+
 Source-tree development is deliberately separate:
 
 ```text

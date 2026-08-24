@@ -149,9 +149,18 @@ export function renderInstallGuide({ version, notarized }) {
   return `PARLEY ${version} — ${trustHeading}
 
 Install
-1. Open the DMG and drag Parley.app to Applications.
+1. Open the DMG and drag Parley.app to Applications. This copies the application to /Applications/Parley.app; the DMG runs no installer script.
 2. ${firstLaunch}
 3. Parley's first-run check reports tmux and supported CLI readiness without spending model quota.
+
+Installed footprint
+- The app and its bundled coordination core, LaunchAgent definition and icon live inside /Applications/Parley.app.
+- Runtime state, private tmux and relay files, saved layouts and local collaboration history live under ~/Library/Application Support/Parley Native.
+- Parley installs its managed pane command at ~/.local/bin/parley without overwriting a foreign command.
+- Presentation settings use the normal macOS domain at ~/Library/Preferences/com.markjoyeux.parley.plist.
+- Agent-issued relay exchanges use an owner-only transient directory named /private/tmp/parley-native-<uid>-<runtime-hash>/.
+- Launch at login is off by default. Enabling it registers the LaunchAgent embedded in Parley.app through macOS Service Management; Parley does not copy a plist into ~/Library/LaunchAgents.
+- Parley does not modify shell startup files, the user's normal tmux server, vendor credentials or repositories.
 
 Verify
 Compare the downloaded DMG or ZIP with the matching entry in SHA256SUMS before opening it.
@@ -162,7 +171,7 @@ Upgrade
 3. If Ask or delegated work is active, Status Center reports Core upgrade: pending and Parley completes the handover when that work finishes. Workspace layouts and local handoff history remain under ~/Library/Application Support/Parley Native.
 
 Uninstall
-Choose Parley → Prepare to Uninstall…. It refuses active Ask or delegated work, disables launch at login, stops the coordination core, and quits without deleting tmux panes or local records. Then move Parley.app from Applications to Trash. No Mac restart is required. Remove ~/Library/Application Support/Parley Native separately only when you deliberately want to erase that record.
+Choose Parley → Prepare to Uninstall…. It refuses active Ask or delegated work, disables launch at login, stops the coordination core, and quits without deleting tmux panes or local records. Then move /Applications/Parley.app to Trash. No Mac restart is required. The Application Support tree, preferences and managed ~/.local/bin/parley command remain for a safe reinstall; remove them separately only when you deliberately want to erase all Parley state.
 
 Never disable Gatekeeper globally to install Parley.
 `
