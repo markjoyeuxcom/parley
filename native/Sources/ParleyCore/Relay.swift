@@ -2952,20 +2952,53 @@ public enum RelayShim {
         transportDirectory: URL? = nil,
         runtimeMarker: String? = nil
     ) throws -> URL {
+        let transport = transportDirectory
+            ?? RelayFileTransport.runtimeDirectory(applicationDirectory: bin.deletingLastPathComponent())
+        return try writeManagedCommand(
+            script(transportDirectory: transport, runtimeMarker: runtimeMarker),
+            in: bin
+        )
+    }
+
+    /// Installs the one command expected to survive vendor PATH rewriting.
+    /// It contains no credential and owns no runtime; the pane's injected,
+    /// non-secret runtime marker selects the isolated runtime-local shim.
+    @discardableResult
+    public static func installStableRouter(
+        in bin: URL,
+        productionCommand: URL,
+        developmentCommand: URL
+    ) throws -> URL {
+        let source = """
+        #!/bin/sh
+        # Parley Native managed relay router
+        set -eu
+        case "${PARLEY_RUNTIME:-}" in
+          DEV) command=\(shellLiteral(developmentCommand.path)) ;;
+          *) command=\(shellLiteral(productionCommand.path)) ;;
+        esac
+        if [ ! -x "$command" ]; then
+          echo "the selected Parley relay command is not prepared" >&2
+          exit 2
+        fi
+        exec "$command" "$@"
+        """
+        return try writeManagedCommand(source, in: bin)
+    }
+
+    private static func writeManagedCommand(_ source: String, in bin: URL) throws -> URL {
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         let executable = bin.appendingPathComponent("parley")
         if FileManager.default.fileExists(atPath: executable.path) {
             let existing = try String(contentsOf: executable, encoding: .utf8)
             let isManaged = existing.contains("Parley Native managed relay shim")
+                || existing.contains("Parley Native managed relay router")
                 || (existing.contains("PARLEY_RELAY_INFO") && existing.contains("parley relay <pane>"))
             guard isManaged else {
                 throw RelayShimError.commandCollision
             }
         }
-        let transport = transportDirectory
-            ?? RelayFileTransport.runtimeDirectory(applicationDirectory: bin.deletingLastPathComponent())
-        try script(transportDirectory: transport, runtimeMarker: runtimeMarker)
-            .write(to: executable, atomically: true, encoding: .utf8)
+        try source.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return executable
     }
@@ -2973,7 +3006,11 @@ public enum RelayShim {
     private static func script(transportDirectory: URL, runtimeMarker: String?) -> String {
         scriptTemplate.replacingOccurrences(
             of: "__PARLEY_TRANSPORT_ROOT__",
-            with: shellLiteral(transportDirectory.standardizedFileURL.path)
+            // Keep the exact spelling granted by AgentProcessBoundary. On
+            // macOS, standardizedFileURL rewrites /private/tmp to /tmp; those
+            // aliases are equivalent to the filesystem but not to Seatbelt's
+            // literal subpath rules.
+            with: shellLiteral(transportDirectory.path)
         ).replacingOccurrences(
             of: "__PARLEY_RUNTIME_MARKER__",
             with: shellLiteral(runtimeMarker ?? "")

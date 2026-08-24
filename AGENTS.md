@@ -180,6 +180,14 @@ Agent processes receive the broker credential and shim path, not raw tmux
 control. Remove `TMUX` and `TMUX_PANE` from their environments and do not
 expose the socket path as a shortcut.
 
+Vendor CLIs may rebuild `PATH` after launch. The runtime-local shim directory
+is therefore a preference, not a guarantee: a pane can fall back to
+`~/.local/bin/parley`. That stable command must remain a **runtime-neutral
+router**, never a shim pinned to one transport. Exact `PARLEY_RUNTIME=DEV`
+selects the Development-local shim; an unset marker and
+`DEV ATTACHED TO PRODUCTION` select Production. Only Production installs or
+upgrades the stable router. Development must never replace it.
+
 Every vendor process tree must also be launched through
 `AgentProcessBoundary`. Its macOS Seatbelt profile denies the complete Parley
 Application Support directory and exact tmux socket, then reopens only the
@@ -188,6 +196,16 @@ relay endpoint. `RelayFileTransport` must reject a token used through a
 different endpoint. Do not weaken this to Unix modes: processes in adjacent
 panes share a user id. A Shell pane remains a deliberately unsandboxed human
 shell and is the explicit trusted side of this boundary.
+
+Seatbelt subpath rules are literal enough that filesystem aliases cannot be
+treated as interchangeable. In particular, never standardize the relay
+transport from `/private/tmp/...` to `/tmp/...` in only the shim or only the
+boundary. Both must use the exact same `transportDirectory.path` spelling.
+Otherwise the core and fresh heartbeat can be healthy while the pane reports
+`the Parley relay broker is not running` because it cannot see its endpoint.
+That message is not proof that the core process is absent: verify the selected
+stable-router destination, exact endpoint spelling and heartbeat before
+restarting a broker or pane.
 
 ## Shared protocol and vendor launch behavior
 
@@ -254,6 +272,13 @@ tmux/config/protocol/core, and may neither create nor upgrade them. Development
 never installs the stable `~/.local/bin/parley` command and never changes the
 Production login item. Keep **DEV** or **DEV ATTACHED TO PRODUCTION** visible in
 every development window, diagnostics and managed agent environment.
+
+The stable command is shared only as a router because vendors may discard the
+runtime-local PATH prefix. It carries no credential and owns no transport.
+Keep its routing contract covered for all three cases: Production by default,
+Development only for exact `DEV`, and attached Development back to Production.
+Also preserve the foreign-command refusal when upgrading an older
+Parley-managed runtime-pinned shim.
 
 Live conformance must name `production` or `development`; deterministic checks
 and soak use short, fresh temporary namespaces. The lifecycle check must keep
