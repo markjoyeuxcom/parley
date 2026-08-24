@@ -229,7 +229,7 @@ public enum ParleyHelpGuide {
                     id: "context-packs-build",
                     title: "Build an explicit pack",
                     paragraphs: [
-                        "From a ready agent pane, open Context and choose New Context Pack. Add selected UTF-8 files, the source pane's current Git diff, one chosen pane's visible screen, or a captured command result.",
+                        "From a ready agent pane, open Context and choose New Context Pack. Add selected UTF-8 files, the source pane's current Git diff, one chosen pane's visible screen, a captured command result, or that workspace's saved brief.",
                         "Every source remains a separate editable part with its exact path or pane/command provenance, captured UTF-8 bytes, current UTF-8 bytes and an EDITED marker when the preview differs from the capture.",
                     ],
                     items: [
@@ -249,8 +249,22 @@ public enum ParleyHelpGuide {
                     items: [
                         "The live rendered byte total includes provenance, your request and wrapper text—not just source bodies.",
                         "An oversized source or pack stays visibly invalid and cannot be sent; Parley never silently clips the editable preview.",
-                        "Person-created context packs remain local in-memory drafts. Agent-staged review records are owner-only and durable so closing the UI cannot silently approve or lose a waiting checkpoint; workspace briefs and reusable pinned snippets remain separate later features.",
+                        "Person-created context packs remain local in-memory drafts. Agent-staged review records are owner-only and durable so closing the UI cannot silently approve or lose a waiting checkpoint. A workspace-brief attachment is a snapshot: editing it in the pack never rewrites the saved brief.",
                         "`parley ask <vendor> --context <draft> \"question\"` blocks at a visible human-review checkpoint. The Context menu shows the waiting draft; approval sends the edited pack and returns the correlated answer, while Decline submits nothing and releases the waiting pane with an explicit refusal.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "context-packs-workspace-brief",
+                    title: "Maintain a workspace brief",
+                    paragraphs: [
+                        "Open Context and choose Create Workspace Brief or Edit Workspace Brief. Record the current goal, constraints and important decisions once for that live workspace. Saving is local and contacts no agent.",
+                        "A workspace brief is never attached automatically. Choose New Context Pack with Brief, or add it from an open pack, then inspect and edit the attributed snapshot before sending.",
+                    ],
+                    items: [
+                        "Only a person-created context pack can attach the saved brief. An agent-staged draft cannot read or add it.",
+                        "The saved file is owner-only local application data. Do not place vendor credentials, tokens or other secrets in it.",
+                        "A pack carries the workspace name, identity and saved timestamp as provenance. Later brief edits do not rewrite packs already sent.",
+                        "Deleting the saved brief does not alter an existing context-pack snapshot or contact any running pane.",
                     ]
                 ),
             ]

@@ -607,7 +607,7 @@ between real vendor CLIs rather than a new autonomous orchestration engine.
   Oversized edits remain visible and unsendable rather than being clipped.
   The reviewed pack can go through attributed one-vendor Ask or the independent
   multi-vendor comparison view. Packs deliberately remain ephemeral here;
-  reusable workspace briefs and pinned snippets are the later durable layers.
+  durable reference material enters only as an explicit snapshot.
 - [x] Let pane agents stage explicit context without silently collecting or
   dispatching it. `parley context draft/add/list/show` is pane-authenticated,
   owner-scoped and confines agent-staged files to that pane's working folder;
@@ -644,9 +644,17 @@ between real vendor CLIs rather than a new autonomous orchestration engine.
   person-written decisions carry an explicit HUMAN origin. Curated records stay
   readable after the bounded broker journal prunes its source, and no chain
   action contacts an agent, infers consensus or changes handoff state.
-- [ ] Add a local, editable **workspace brief** containing the current goal,
+- [x] Add a local, editable **workspace brief** containing the current goal,
   constraints and important decisions. It is never injected automatically; a
   person or an explicitly approved recipe chooses when to attach it.
+  Context now creates and edits one owner-only durable brief per live tmux
+  workspace. The sheet separates the current goal, constraints and important
+  decisions, enforces a bounded text size and states permanently that saving
+  contacts no agent. A person can start a new pack with the brief or add it to
+  an existing editable pack; the attributed attachment is an independent
+  snapshot, so pack edits never mutate the saved reference. Agent-proposed
+  context drafts cannot read or attach a person's brief, and deleting one
+  neither contacts a pane nor rewrites an already captured snapshot.
 - [ ] Add local **pinned context snippets** for reusable architecture notes,
   test instructions and review criteria. Insertion always opens the existing
   editable preview and snippets never contain credentials managed by a vendor.

@@ -85,8 +85,12 @@ struct ContextPackView: View {
                 commandCapturePresented = true
             }
             .disabled(model.contextPackIsAgentProposed)
+            Button("Add Workspace Brief", systemImage: "doc.text") {
+                model.addWorkspaceBriefContext()
+            }
+            .disabled(!model.canAddWorkspaceBriefToContextPack)
             Spacer()
-            Text(model.contextPackIsAgentProposed ? "Edit or remove staged sources before approval" : "Only explicit sources are included")
+            Text(model.contextPackIsAgentProposed ? "Edit or remove staged sources before approval" : "Only sources you add explicitly are included")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -107,7 +111,7 @@ struct ContextPackView: View {
                         ContentUnavailableView(
                             "No Explicit Sources",
                             systemImage: "shippingbox",
-                            description: Text("Add selected files, a Git diff, one visible screen or a captured command result.")
+                            description: Text("Add selected files, a Git diff, one visible screen, a captured command result or the saved workspace brief.")
                         )
                     } else {
                         List(draft.pack.parts, selection: $selectedPartID) { part in
@@ -304,6 +308,7 @@ struct ContextPackView: View {
         case .visibleTerminal: "rectangle.inset.filled"
         case .commandResult: "terminal"
         case .agentFileDraft: "person.crop.circle.badge.questionmark"
+        case .workspaceBrief: "doc.text"
         }
     }
 }

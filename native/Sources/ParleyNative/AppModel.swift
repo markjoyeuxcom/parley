@@ -73,6 +73,17 @@ struct ActiveContextPack: Identifiable, Equatable {
     var requestedTargetPaneID: String?
 }
 
+struct ActiveWorkspaceBriefDraft: Identifiable, Equatable {
+    let workspaceID: String
+    let workspaceName: String
+    let existingBriefID: String?
+    let goal: String
+    let constraints: String
+    let decisions: String
+
+    var id: String { workspaceID }
+}
+
 enum PanePermissionAction: Equatable {
     case create(SplitDirection)
     case restart(String)
@@ -132,6 +143,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeRecipeRun: ActiveRecipeRun?
     @Published private(set) var askManyComparisonRun: AskManyComparisonRun?
     @Published private(set) var contextPackDraft: ActiveContextPack?
+    @Published private(set) var workspaceBriefs: [WorkspaceBrief] = []
+    @Published private(set) var workspaceBriefDraft: ActiveWorkspaceBriefDraft?
     @Published private(set) var contextReviews: [AgentContextReview] = []
     @Published private(set) var contextCommandCapturing = false
     @Published private(set) var coreAvailable = false
@@ -153,6 +166,7 @@ final class AppModel: ObservableObject {
     @Published var panePermissionRequest: PanePermissionRequest?
     @Published var askManyComparisonPresented = false
     @Published var contextPackPresented = false
+    @Published var workspaceBriefPresented = false
     @Published var supervisedWorkflowPresented = false
     @Published private(set) var selectedSupervisedWorkflowID: String?
     @Published private(set) var requestedHelpTopicID: String?
@@ -169,6 +183,7 @@ final class AppModel: ObservableObject {
     private let recipeStore: HandoffRecipeStore
     private let supervisedWorkflowStore: SupervisedWorkflowStore
     private let handoffChainStore: HandoffChainStore
+    private let workspaceBriefStore: WorkspaceBriefStore
     private let permissionProfileStore: PermissionProfileStore
     private var workspaceContinuity = WorkspaceContinuityState()
     private let projectContextResolver = GitProjectContextResolver()
@@ -230,6 +245,9 @@ final class AppModel: ObservableObject {
         handoffChainStore = HandoffChainStore(
             file: applicationDirectory.appendingPathComponent("handoff-chains.json")
         )
+        workspaceBriefStore = WorkspaceBriefStore(
+            file: applicationDirectory.appendingPathComponent("workspace-briefs.json")
+        )
         permissionProfileStore = PermissionProfileStore(
             file: applicationDirectory.appendingPathComponent("permission-profiles.json")
         )
@@ -249,6 +267,7 @@ final class AppModel: ObservableObject {
         recipes = (try? recipeStore.recipes()) ?? HandoffRecipe.defaults
         supervisedWorkflowRuns = (try? supervisedWorkflowStore.runs()) ?? []
         handoffChains = (try? handoffChainStore.chains()) ?? []
+        workspaceBriefs = (try? workspaceBriefStore.briefs()) ?? []
         permissionProfiles = (try? permissionProfileStore.profiles())
             ?? PermissionProfileDefinition.builtIns
         if runtime.mode == .production {
@@ -924,6 +943,23 @@ final class AppModel: ObservableObject {
 
     var contextPackIsAgentProposed: Bool {
         contextPackDraft?.reviewID != nil
+    }
+
+    var activeWorkspaceBrief: WorkspaceBrief? {
+        guard let workspaceID = activeWorkspace?.id else { return nil }
+        return workspaceBriefs.first(where: { $0.workspaceID == workspaceID })
+    }
+
+    var contextPackWorkspaceBrief: WorkspaceBrief? {
+        guard let workspaceID = contextPackSourcePane?.windowID else { return nil }
+        return workspaceBriefs.first(where: { $0.workspaceID == workspaceID })
+    }
+
+    var canAddWorkspaceBriefToContextPack: Bool {
+        guard !contextPackIsAgentProposed,
+              contextPackWorkspaceBrief != nil,
+              let parts = contextPackDraft?.pack.parts else { return false }
+        return !parts.contains(where: { $0.source.kind == .workspaceBrief })
     }
 
     var contextPackSourcePane: TmuxPane? {
@@ -1860,6 +1896,74 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func editWorkspaceBrief() {
+        guard let workspace = activeWorkspace else { return }
+        let existing = workspaceBriefs.first(where: { $0.workspaceID == workspace.id })
+        workspaceBriefDraft = ActiveWorkspaceBriefDraft(
+            workspaceID: workspace.id,
+            workspaceName: workspace.name,
+            existingBriefID: existing?.id,
+            goal: existing?.goal ?? "",
+            constraints: existing?.constraints ?? "",
+            decisions: existing?.decisions ?? ""
+        )
+        workspaceBriefPresented = true
+    }
+
+    func dismissWorkspaceBrief() {
+        workspaceBriefPresented = false
+        workspaceBriefDraft = nil
+        terminalHandle.focus()
+    }
+
+    func saveWorkspaceBrief(goal: String, constraints: String, decisions: String) {
+        do {
+            guard let draft = workspaceBriefDraft else { return }
+            _ = try workspaceBriefStore.save(
+                workspaceID: draft.workspaceID,
+                workspaceName: draft.workspaceName,
+                goal: goal,
+                constraints: constraints,
+                decisions: decisions
+            )
+            try reloadWorkspaceBriefs()
+            workspaceBriefPresented = false
+            workspaceBriefDraft = nil
+            terminalHandle.focus()
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    func deleteWorkspaceBrief() {
+        guard let draft = workspaceBriefDraft, draft.existingBriefID != nil else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete the workspace brief for \(draft.workspaceName)?"
+        alert.informativeText = "This removes only the saved local brief. Existing context-pack snapshots and agent panes are unchanged."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete Brief")
+        alert.addButton(withTitle: "Keep Brief")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try workspaceBriefStore.delete(workspaceID: draft.workspaceID)
+            try reloadWorkspaceBriefs()
+            workspaceBriefPresented = false
+            workspaceBriefDraft = nil
+            terminalHandle.focus()
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    func newContextPackWithWorkspaceBrief() {
+        guard activeWorkspaceBrief != nil else { return }
+        let previousDraftID = contextPackDraft?.id
+        newContextPack()
+        guard let newDraftID = contextPackDraft?.id,
+              newDraftID != previousDraftID else { return }
+        addWorkspaceBriefContext()
+    }
+
     func newContextPack() {
         guard canCreateContextPack, let source = activePane else { return }
         if let existing = contextPackDraft, !existing.pack.parts.isEmpty {
@@ -2008,6 +2112,40 @@ final class AppModel: ObservableObject {
             )
             try appendContextPackParts([part], draftID: draft.id)
             terminalHandle.terminal?.selectNone()
+        }
+    }
+
+    func addWorkspaceBriefContext() {
+        perform {
+            guard canAddWorkspaceBriefToContextPack,
+                  let draft = contextPackDraft,
+                  let source = contextPackSourcePane,
+                  let savedBrief = contextPackWorkspaceBrief,
+                  let contextPackBuilder else {
+                throw RelayUIError.message(
+                    "Save a brief for this context pack's workspace before attaching it."
+                )
+            }
+            let currentWorkspaceName = source.workspaceName?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let workspaceName: String
+            if let currentWorkspaceName, !currentWorkspaceName.isEmpty {
+                workspaceName = currentWorkspaceName
+            } else {
+                workspaceName = savedBrief.workspaceName
+            }
+            let brief = WorkspaceBrief(
+                id: savedBrief.id,
+                workspaceID: savedBrief.workspaceID,
+                workspaceName: workspaceName,
+                goal: savedBrief.goal,
+                constraints: savedBrief.constraints,
+                decisions: savedBrief.decisions,
+                createdAt: savedBrief.createdAt,
+                updatedAt: savedBrief.updatedAt
+            )
+            let part = try contextPackBuilder.workspaceBrief(brief)
+            try appendContextPackParts([part], draftID: draft.id)
         }
     }
 
@@ -2817,6 +2955,10 @@ final class AppModel: ObservableObject {
 
     private func reloadHandoffChains() throws {
         handoffChains = try handoffChainStore.chains()
+    }
+
+    private func reloadWorkspaceBriefs() throws {
+        workspaceBriefs = try workspaceBriefStore.briefs()
     }
 
     private func chooseAskManyTargets(candidates: [TmuxPane]) -> [TmuxPane]? {
