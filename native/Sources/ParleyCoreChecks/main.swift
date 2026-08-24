@@ -932,6 +932,7 @@ private func checkInAppHelpGuideCoverage() throws {
         "workspace lead", "automation policy", "permission", "status center",
         "saved layout", "command palette", "subscription", "compare independently",
         "edited synthesis", "context pack", "utf-8 bytes", "absolute executable",
+        "handoff chain", "objection", "human decision",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -2508,6 +2509,126 @@ private func checkBoundedSupervisedWorkflowLifecycle() throws {
         throw CheckFailure(description: "bounded workflow resumed after a terminal interruption")
     } catch let error as SupervisedWorkflowError {
         try expect(error.localizedDescription.contains("terminal"), "terminal workflow refusal was unclear")
+    }
+}
+
+private func checkReadableHandoffChainsPreserveEvidence() throws {
+    let directory = URL(
+        fileURLWithPath: "/private/tmp/parley-handoff-chains-\(UUID().uuidString.lowercased())",
+        isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("handoff-chains.json")
+    let store = HandoffChainStore(file: file)
+    let askedAt = Date(timeIntervalSince1970: 100)
+    let answer = "Use the actor boundary.\n\nDo not collapse the two failure states."
+    let first = HandoffChainEntry(
+        handoffID: "ask-1",
+        kind: .ask,
+        sourceName: "Claude",
+        sourceKind: .claude,
+        targetName: "Codex",
+        targetKind: .codex,
+        prompt: "Review the concurrency plan.",
+        result: answer,
+        state: .completed,
+        occurredAt: askedAt
+    )
+    let chain = try store.create(
+        title: "Concurrency review",
+        workspaceID: "@1",
+        workspaceName: "parley",
+        firstEntry: first,
+        now: askedAt
+    )
+    let verification = HandoffChainEntry(
+        handoffID: "verify-1",
+        kind: .delegate,
+        sourceName: "Claude",
+        sourceKind: .claude,
+        targetName: "Agy",
+        targetKind: .agy,
+        prompt: "Verify the implementation independently.",
+        result: "One regression remains in cancellation handling.",
+        state: .completed,
+        occurredAt: Date(timeIntervalSince1970: 120)
+    )
+    _ = try store.add(entry: verification, to: chain.id, now: Date(timeIntervalSince1970: 121))
+    _ = try store.bookmark(
+        chainID: chain.id,
+        entryID: first.id,
+        kind: .answer,
+        text: answer,
+        now: Date(timeIntervalSince1970: 122)
+    )
+    let objection = "One regression remains in cancellation handling."
+    _ = try store.bookmark(
+        chainID: chain.id,
+        entryID: verification.id,
+        kind: .objection,
+        text: objection,
+        now: Date(timeIntervalSince1970: 123)
+    )
+    let decision = "Keep the states separate and fix cancellation before release."
+    _ = try store.addDecision(
+        chainID: chain.id,
+        text: decision,
+        now: Date(timeIntervalSince1970: 124)
+    )
+
+    let reloaded = try require(
+        HandoffChainStore(file: file).chains().first(where: { $0.id == chain.id }),
+        "the handoff chain did not survive reattachment"
+    )
+    try expect(reloaded.entries.map(\.handoffID) == ["ask-1", "verify-1"], "explicit handoff order was not preserved")
+    try expect(reloaded.bookmarks.map(\.kind) == [.answer, .objection, .decision], "evidence kinds were smoothed into one verdict")
+    try expect(reloaded.bookmarks[0].text == answer, "the bookmarked answer was rewritten")
+    try expect(reloaded.bookmarks[1].text == objection, "the dissenting objection was rewritten")
+    try expect(reloaded.bookmarks[2].text == decision, "the human decision was rewritten")
+    try expect(reloaded.bookmarks[0].origin == nil, "an agent answer was misattributed to the human")
+    try expect(reloaded.bookmarks[1].origin == nil, "an agent objection was misattributed to the human")
+    try expect(reloaded.bookmarks[2].origin == .human, "the decision lost its human origin")
+    try expect(
+        HandoffChainProjection.chains(reloaded: [reloaded], workspaceID: "@1").map(\.id) == [chain.id],
+        "the chain was not visible in its workspace"
+    )
+    try expect(
+        HandoffChainProjection.chains(reloaded: [reloaded], workspaceID: "@2").isEmpty,
+        "the chain leaked into an unrelated workspace"
+    )
+    do {
+        _ = try store.add(entry: verification, to: chain.id)
+        throw CheckFailure(description: "the same handoff was added to a chain twice")
+    } catch let error as HandoffChainError {
+        try expect(error.errorDescription?.contains("already") == true, "duplicate membership failed without a useful explanation")
+    }
+    let permissions = try require(
+        try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber,
+        "handoff chain permissions were unavailable"
+    )
+    try expect(permissions.intValue & 0o077 == 0, "handoff chains are readable outside their owner")
+
+    let retained = try store.create(
+        title: "Release verification",
+        workspaceID: "@1",
+        workspaceName: "parley",
+        firstEntry: verification,
+        now: Date(timeIntervalSince1970: 130)
+    )
+    try store.delete(id: chain.id)
+    let remaining = try store.chains()
+    try expect(remaining.map(\.id) == [retained.id], "deleting one chain removed unrelated curated evidence")
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+    do {
+        _ = try HandoffChainStore(file: file).chains()
+        throw CheckFailure(description: "an unsafe handoff chain file was accepted")
+    } catch let error as HandoffChainError {
+        try expect(
+            error.errorDescription?.contains("owner-only") == true,
+            "unsafe handoff chain permissions failed without a useful explanation"
+        )
     }
 }
 
@@ -6482,6 +6603,7 @@ let checks: [(String, () throws -> Void)] = [
     ("shared protocol launch adapters", checkSharedProtocolLaunchAdapters),
     ("supervision metadata and editable recipes", checkSupervisionMetadataAndRecipesPersistWithoutLiveIDs),
     ("bounded supervised workflow lifecycle", checkBoundedSupervisedWorkflowLifecycle),
+    ("readable handoff chains preserve exact evidence", checkReadableHandoffChainsPreserveEvidence),
     ("supervised lead workflow policy and cancellation", checkSupervisedLeadWorkflowPolicyAndCancellation),
     ("tracked delegation completion and wait", checkTrackedDelegationCompletesAndWaits),
     ("tracked delegation failure and liveness", checkTrackedDelegationFailureAndLiveness),

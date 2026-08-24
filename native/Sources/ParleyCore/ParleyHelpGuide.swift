@@ -468,6 +468,20 @@ public enum ParleyHelpGuide {
                         "Tools → Export Diagnostics creates a privacy-bounded local archive for troubleshooting. Review it before sharing it. Environment Check verifies local executables and runtime readiness without submitting prompts or spending model quota.",
                     ]
                 ),
+                ParleyHelpSection(
+                    id: "status-chains",
+                    title: "Curate a handoff chain",
+                    paragraphs: [
+                        "A handoff chain is a readable, person-curated evidence trail. It groups exact snapshots of related Ask, Relay, Paste and Delegate records without creating a task board, contacting an agent or inventing a consensus.",
+                    ],
+                    items: [
+                        "Select a handoff in Status Center, then use Add to Chain to start a named chain or append it to an existing chain in the same workspace scope.",
+                        "For a returned Ask or Delegate result, use Bookmark Result to preserve the complete answer verbatim as either an Answer or an Objection.",
+                        "Open a chain and choose Add Human Decision to record what you decided. The decision is explicitly labelled HUMAN and is never attributed to an agent.",
+                        "Chains store exact local snapshots, so curated evidence remains readable after Parley's bounded ordinary handoff journal prunes an old record.",
+                        "Deleting a chain removes only that curated copy. It never deletes the broker handoff, changes terminal state or interrupts a pane.",
+                    ]
+                ),
             ]
         ),
         ParleyHelpTopic(

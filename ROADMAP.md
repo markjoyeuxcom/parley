@@ -635,10 +635,15 @@ between real vendor CLIs rather than a new autonomous orchestration engine.
   and can be ended without pretending to cancel agent work already in flight.
   This is one bounded product workflow, not a programmable graph or autonomous
   scheduler.
-- [ ] Group related Ask, review, delegation and verification records into
+- [x] Group related Ask, review, delegation and verification records into
   readable **handoff chains**. Allow important answers, objections and human
   decisions to be bookmarked without creating a task board or smoothing away
-  disagreement.
+  disagreement. Status Center now creates or extends explicit workspace-scoped
+  chains from selected broker records. Each entry is an exact durable snapshot;
+  returned results can be bookmarked verbatim as answers or objections, while
+  person-written decisions carry an explicit HUMAN origin. Curated records stay
+  readable after the bounded broker journal prunes its source, and no chain
+  action contacts an agent, infers consensus or changes handoff state.
 - [ ] Add a local, editable **workspace brief** containing the current goal,
   constraints and important decisions. It is never injected automatically; a
   person or an explicitly approved recipe chooses when to attach it.

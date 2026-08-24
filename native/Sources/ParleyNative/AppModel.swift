@@ -127,6 +127,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
     @Published private(set) var recipes: [HandoffRecipe] = []
     @Published private(set) var supervisedWorkflowRuns: [SupervisedWorkflowRun] = []
+    @Published private(set) var handoffChains: [HandoffChain] = []
     @Published private(set) var permissionProfiles: [PermissionProfileDefinition] = []
     @Published private(set) var activeRecipeRun: ActiveRecipeRun?
     @Published private(set) var askManyComparisonRun: AskManyComparisonRun?
@@ -167,6 +168,7 @@ final class AppModel: ObservableObject {
     private let layoutStore: SavedWorkspaceLayoutStore
     private let recipeStore: HandoffRecipeStore
     private let supervisedWorkflowStore: SupervisedWorkflowStore
+    private let handoffChainStore: HandoffChainStore
     private let permissionProfileStore: PermissionProfileStore
     private var workspaceContinuity = WorkspaceContinuityState()
     private let projectContextResolver = GitProjectContextResolver()
@@ -225,6 +227,9 @@ final class AppModel: ObservableObject {
         supervisedWorkflowStore = SupervisedWorkflowStore(
             file: applicationDirectory.appendingPathComponent("supervised-workflows.json")
         )
+        handoffChainStore = HandoffChainStore(
+            file: applicationDirectory.appendingPathComponent("handoff-chains.json")
+        )
         permissionProfileStore = PermissionProfileStore(
             file: applicationDirectory.appendingPathComponent("permission-profiles.json")
         )
@@ -243,6 +248,7 @@ final class AppModel: ObservableObject {
         }
         recipes = (try? recipeStore.recipes()) ?? HandoffRecipe.defaults
         supervisedWorkflowRuns = (try? supervisedWorkflowStore.runs()) ?? []
+        handoffChains = (try? handoffChainStore.chains()) ?? []
         permissionProfiles = (try? permissionProfileStore.profiles())
             ?? PermissionProfileDefinition.builtIns
         if runtime.mode == .production {
@@ -1438,6 +1444,131 @@ final class AppModel: ObservableObject {
             dismissedHandoffIDs: dismissedHandoffIDs,
             includeDismissed: includeDismissed
         )
+    }
+
+    func statusHandoffChains(workspaceID: String?) -> [HandoffChain] {
+        HandoffChainProjection.chains(reloaded: handoffChains, workspaceID: workspaceID)
+    }
+
+    func chains(containing handoff: RelayHandoff) -> [HandoffChain] {
+        handoffChains.filter { chain in
+            chain.entries.contains(where: { $0.handoffID == handoff.id })
+        }
+    }
+
+    func chainsAccepting(_ handoff: RelayHandoff) -> [HandoffChain] {
+        handoffChains.filter { chain in
+            (chain.workspaceID == handoff.sourceWorkspaceID || chain.workspaceID == handoff.targetWorkspaceID)
+                && !chain.entries.contains(where: { $0.handoffID == handoff.id })
+        }
+    }
+
+    func createHandoffChain(from handoff: RelayHandoff) -> HandoffChain? {
+        let alert = NSAlert()
+        alert.messageText = "Start a Handoff Chain"
+        alert.informativeText = "Give this person-curated collaboration history a short title. The selected handoff is snapshotted exactly; no agent is contacted."
+        let suggested = Self.paletteSubject(handoff.text)
+        let field = NSTextField(string: String(suggested.prefix(160)))
+        field.placeholderString = "What this collaboration is about"
+        field.frame = NSRect(x: 0, y: 0, width: 380, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Create Chain")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        do {
+            let workspaceID = handoff.sourceWorkspaceID
+            let recordedWorkspaceName = handoff.sourceWorkspaceName?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let workspaceName = if let recordedWorkspaceName, !recordedWorkspaceName.isEmpty {
+                recordedWorkspaceName
+            } else {
+                workspaces.first(where: { $0.id == workspaceID })?.name ?? workspaceID
+            }
+            let chain = try handoffChainStore.create(
+                title: field.stringValue,
+                workspaceID: workspaceID,
+                workspaceName: workspaceName,
+                firstEntry: HandoffChainEntry(handoff: handoff)
+            )
+            try reloadHandoffChains()
+            terminalHandle.focus()
+            return chain
+        } catch {
+            NSAlert(error: error).runModal()
+            terminalHandle.focus()
+            return nil
+        }
+    }
+
+    func addHandoff(_ handoff: RelayHandoff, to chain: HandoffChain) {
+        perform {
+            _ = try handoffChainStore.add(entry: HandoffChainEntry(handoff: handoff), to: chain.id)
+            try reloadHandoffChains()
+            terminalHandle.focus()
+        }
+    }
+
+    func bookmarkResult(
+        from handoff: RelayHandoff,
+        in chain: HandoffChain,
+        as kind: HandoffChainBookmarkKind
+    ) {
+        guard kind != .decision,
+              let result = handoff.resultText,
+              !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let entry = chain.entries.first(where: { $0.handoffID == handoff.id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Bookmark as \(kind.label)?"
+        alert.informativeText = "Parley will preserve the complete returned result verbatim in \(chain.title). It will not summarize it or infer agreement."
+        alert.addButton(withTitle: "Bookmark \(kind.label)")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        perform {
+            _ = try handoffChainStore.bookmark(
+                chainID: chain.id,
+                entryID: entry.id,
+                kind: kind,
+                text: result
+            )
+            try reloadHandoffChains()
+            terminalHandle.focus()
+        }
+    }
+
+    func addDecision(to chain: HandoffChain) {
+        guard let decision = editSupervisedWorkflowText(
+            title: "Add Human Decision",
+            message: "Record the decision in your own words. It remains attributed to the person using Parley and is never presented as agent consensus.",
+            text: "",
+            action: "Save Decision",
+            insertVisible: { "" }
+        ) else { return }
+        perform {
+            _ = try handoffChainStore.addDecision(chainID: chain.id, text: decision)
+            try reloadHandoffChains()
+            terminalHandle.focus()
+        }
+    }
+
+    func deleteHandoffChain(_ chain: HandoffChain) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Delete \(chain.title)?"
+        alert.informativeText = "This permanently deletes the curated chain, its exact snapshots, bookmarks and human decisions. The broker's ordinary handoff journal is unchanged."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete Chain")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        do {
+            try handoffChainStore.delete(id: chain.id)
+            try reloadHandoffChains()
+            terminalHandle.focus()
+            return true
+        } catch {
+            NSAlert(error: error).runModal()
+            terminalHandle.focus()
+            return false
+        }
     }
 
     func isDismissed(_ handoff: RelayHandoff) -> Bool {
@@ -2682,6 +2813,10 @@ final class AppModel: ObservableObject {
 
     private func reloadSupervisedWorkflows() throws {
         supervisedWorkflowRuns = try supervisedWorkflowStore.runs()
+    }
+
+    private func reloadHandoffChains() throws {
+        handoffChains = try handoffChainStore.chains()
     }
 
     private func chooseAskManyTargets(candidates: [TmuxPane]) -> [TmuxPane]? {
