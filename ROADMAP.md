@@ -833,7 +833,7 @@ uncommitted changes.
   permission requests, completed delegations and failures while the main window
   is closed. Notifications and menu labels exclude prompt and answer bodies;
   selecting an item focuses the authoritative record in Parley.
-- [ ] Add collaboration-history search, filters, selective Markdown export and
+- [x] Add collaboration-history search, filters, selective Markdown export and
   **Ask this again**. Repeating a handoff always opens an editable preview and
   receives a new identity rather than mutating or silently replaying history.
 - [ ] Add configurable local retention and explicit per-workspace export or

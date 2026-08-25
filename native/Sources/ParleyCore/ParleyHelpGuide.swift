@@ -716,6 +716,20 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "status-history-controls",
+                    title: "Search, select, export, or ask again",
+                    paragraphs: [
+                        "Collaboration History searches the bounded local handoff snapshot already loaded by Status Center. It creates no remote index and sends no search text anywhere. Multiple search words are literal, case-insensitive AND terms: every word must appear somewhere in the same handoff's participants, workspaces, question, returned result, status, attention state or delivery details.",
+                        "Kind and outcome filters compose with workspace scope and Show Dismissed. They change only this view; counts, durable handoffs and agent sessions are unchanged.",
+                    ],
+                    items: [
+                        "Tick individual records, or use Select Results for the current search. Export Selected writes only that explicit selection to a local owner-only Markdown file.",
+                        "The Markdown export deliberately contains complete question, instruction and returned-result bodies plus identities and delivery receipts. Review it before sharing; it is different from Parley's privacy-bounded diagnostics export.",
+                        "Ask This Again is available only after an Ask has ended and its original cross-vendor source and target panes are still running, relay-ready and on the current protocol.",
+                        "Repeating always opens the recorded question in an editable preview. Ask Again creates a fresh tracked handoff identity and leaves the historical record unchanged; Parley never silently replays it.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "status-diagnostics",
                     title: "Diagnostics",
                     paragraphs: [

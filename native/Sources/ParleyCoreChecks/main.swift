@@ -956,6 +956,9 @@ private func checkInAppHelpGuideCoverage() throws {
         "safety summary", "handoff state is unavailable", "does not infer whether an agent is thinking",
         "menu-bar attention inbox", "completed delegations", "permission requests",
         "main window is closed", "prompt and answer bodies", "coordination unavailable",
+        "collaboration history", "case-insensitive and terms", "select results",
+        "owner-only markdown", "ask this again", "fresh tracked handoff identity",
+        "never silently replays",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -5065,6 +5068,234 @@ private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
     try expect(unavailable.condition == .coreUnavailable, "core failure did not override secondary status")
 }
 
+private func checkCollaborationHistorySearchExportAndRepeat() throws {
+    let completedAsk = try statusHandoff(
+        id: "ask-complete",
+        kind: .ask,
+        state: .completed,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@0",
+        occurredAt: 30,
+        text: "Review the retry policy\n```dangerous example```",
+        resultText: "Timeout handling is correct.",
+        readAt: 31,
+        sourceName: "Builder",
+        targetName: "Reviewer",
+        transitionDetail: "Answer returned exactly"
+    )
+    let activeDelegate = try statusHandoff(
+        id: "delegate-active",
+        kind: .delegate,
+        state: .waiting,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@1",
+        occurredAt: 40,
+        text: "Implement the toolbar",
+        sourceName: "Lead",
+        targetName: "Builder"
+    )
+    let failedAsk = try statusHandoff(
+        id: "ask-failed",
+        kind: .ask,
+        state: .failed,
+        sourceWorkspaceID: "@1",
+        targetWorkspaceID: "@1",
+        occurredAt: 60,
+        text: "Review timeout recovery",
+        attention: .targetUnavailable,
+        sourceName: "Planner",
+        targetName: "Reviewer"
+    )
+    let failedRelay = try statusHandoff(
+        id: "relay-failed",
+        kind: .relay,
+        state: .interrupted,
+        sourceWorkspaceID: "@1",
+        targetWorkspaceID: "@0",
+        occurredAt: 50,
+        text: "Retry the transport",
+        sourceName: "Planner",
+        targetName: "Builder"
+    )
+    let handoffs = [completedAsk, activeDelegate, failedAsk, failedRelay]
+
+    let searched = CollaborationHistoryProjection.filter(
+        handoffs,
+        using: CollaborationHistoryFilter(query: "REVIEW timeout", kind: .ask, outcome: .all)
+    )
+    try expect(searched.map(\.id) == ["ask-failed", "ask-complete"], "history search was not case-insensitive AND matching across prompt and result")
+    let active = CollaborationHistoryProjection.filter(
+        handoffs,
+        using: CollaborationHistoryFilter(query: "", kind: .delegate, outcome: .active)
+    )
+    try expect(active.map(\.id) == ["delegate-active"], "history kind and active filters did not compose")
+    let attention = CollaborationHistoryProjection.filter(
+        handoffs,
+        using: CollaborationHistoryFilter(query: "reviewer", kind: .all, outcome: .needsAttention)
+    )
+    try expect(attention.map(\.id) == ["ask-failed"], "history attention filter ignored authoritative attention state")
+    let failures = CollaborationHistoryProjection.filter(
+        handoffs,
+        using: CollaborationHistoryFilter(query: "", kind: .all, outcome: .failedOrInterrupted)
+    )
+    try expect(failures.map(\.id) == ["ask-failed", "relay-failed"], "history failure filter was not newest-first")
+
+    let generatedAt = Date(timeIntervalSince1970: 100)
+    let markdown = CollaborationHistoryMarkdown.document(
+        handoffs: [completedAsk, failedRelay],
+        scopeName: "Workspace Alpha",
+        generatedAt: generatedAt
+    )
+    try expect(markdown.contains("# Parley Collaboration History"), "history export omitted its title")
+    try expect(markdown.contains("Workspace Alpha") && markdown.contains("2 selected records"), "history export omitted explicit scope and selection count")
+    try expect(markdown.contains("ask-complete") && markdown.contains("relay-failed"), "history export omitted a selected record")
+    try expect(markdown.contains(completedAsk.text) && markdown.contains(completedAsk.resultText!), "history export changed selected prompt or result text")
+    try expect(markdown.contains("Answer returned exactly"), "history export omitted delivery receipts")
+    try expect(!markdown.contains("delegate-active") && !markdown.contains("Implement the toolbar"), "history export included an unselected record")
+    try expect(markdown.contains("````text\nReview the retry policy"), "history export did not protect embedded Markdown fences")
+
+    let exportDirectory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: exportDirectory) }
+    let destination = exportDirectory.appendingPathComponent("history.md")
+    try CollaborationHistoryMarkdownWriter.write(markdown, to: destination)
+    let writtenMarkdown = try String(contentsOf: destination, encoding: .utf8)
+    try expect(writtenMarkdown == markdown, "history writer changed the reviewed Markdown")
+    let permissions = try require(
+        try FileManager.default.attributesOfItem(atPath: destination.path)[.posixPermissions] as? NSNumber,
+        "history export permissions were unavailable"
+    )
+    try expect(permissions.intValue & 0o077 == 0, "history export was readable outside its owner")
+
+    let source = TmuxPane(
+        id: completedAsk.sourcePaneID,
+        kind: .codex,
+        customName: "Builder",
+        terminalTitle: "",
+        cwd: "/tmp/a",
+        currentCommand: "codex",
+        isActive: false,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        workspaceName: "a",
+        bracketedPasteActive: true,
+        isStarted: true
+    )
+    let target = TmuxPane(
+        id: completedAsk.targetPaneID,
+        kind: .claude,
+        customName: "Reviewer",
+        terminalTitle: "",
+        cwd: "/tmp/a",
+        currentCommand: "claude",
+        isActive: false,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        workspaceName: "a",
+        bracketedPasteActive: true,
+        isStarted: true
+    )
+    let route = try require(
+        CollaborationHistoryRepeat.route(for: completedAsk, panes: [source, target]),
+        "a completed Ask with two live cross-vendor panes could not be prepared again"
+    )
+    try expect(route.sourcePaneID == source.id && route.targetPaneID == target.id, "Ask This Again changed the recorded route")
+    try expect(CollaborationHistoryRepeat.route(for: failedRelay, panes: [source, target]) == nil, "Ask This Again accepted a non-Ask handoff")
+    let staleTarget = TmuxPane(
+        id: target.id,
+        kind: target.kind,
+        customName: target.customName,
+        terminalTitle: target.terminalTitle,
+        cwd: target.cwd,
+        currentCommand: target.currentCommand,
+        isActive: target.isActive,
+        windowID: target.windowID,
+        returnToPaneID: target.returnToPaneID,
+        relayEnabled: target.relayEnabled,
+        protocolVersion: "v0",
+        workspaceName: target.workspaceName,
+        bracketedPasteActive: target.bracketedPasteActive,
+        isStarted: target.isStarted
+    )
+    try expect(CollaborationHistoryRepeat.route(for: completedAsk, panes: [source, staleTarget]) == nil, "Ask This Again bypassed the current-protocol gate")
+}
+
+private func checkHumanAskAgainUsesTrackedCoreControlRoute() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    _ = try credentials.token(for: "%source")
+    let targetToken = try credentials.token(for: "%target")
+    let panes = [
+        TmuxPane(
+            id: "%source", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp",
+            currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil,
+            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+            bracketedPasteActive: true, automationPolicy: .off
+        ),
+        TmuxPane(
+            id: "%target", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp",
+            currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil,
+            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+            bracketedPasteActive: true
+        ),
+    ]
+    let submissions = LockedSubmissions()
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { paneID, prompt in submissions.append(paneID: paneID, text: prompt) },
+        consultationTimeout: 2,
+        livenessPollInterval: 0.01
+    )
+    let infoFile = directory.appendingPathComponent("relay-url")
+    let controlToken = "ask-again-ui-control"
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
+    try server.start()
+    defer { server.stop() }
+
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    let rejected = try unauthorized.askFromUI(
+        sourcePaneID: "%source",
+        targetPaneID: "%target",
+        text: "Do not submit this.",
+        idempotencyKey: "repeat-rejected"
+    )
+    try expect(rejected.status == 401, "an unauthenticated UI repeated an Ask")
+    try expect(submissions.values.isEmpty, "the rejected repeated Ask submitted terminal input")
+
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let result = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        do {
+            result.set(try client.askFromUI(
+                sourcePaneID: "%source",
+                targetPaneID: "%target",
+                text: "Review this edited question.",
+                idempotencyKey: "repeat-new-identity"
+            ))
+        } catch {
+            result.set(RelayTextResponse(status: 599, text: error.localizedDescription))
+        }
+    }
+    try expect(eventually { broker.consultations().count == 1 }, "Ask This Again did not create a tracked consultation")
+    try expect(submissions.values.count == 1 && submissions.values[0].paneID == "%target", "Ask This Again submitted to the wrong pane")
+    try expect(submissions.values[0].text.contains("Review this edited question."), "Ask This Again submitted stale history text")
+    let repeated = try require(broker.handoffs().first, "Ask This Again did not create durable history")
+    try expect(repeated.id != "historic-handoff", "Ask This Again reused a historical identity")
+    try expect(repeated.idempotencyKey == "repeat-new-identity", "Ask This Again lost its fresh idempotency identity")
+    try expect(repeated.transitions.allSatisfy { $0.origin == .human }, "Ask This Again was not attributed to the person")
+
+    let answer = broker.handleAnswer(token: targetToken, consultationID: "current", text: "Reviewed answer")
+    try expect(answer.status == 200, "the repeated Ask target could not return its correlated answer")
+    try expect(eventually { result.value != nil }, "Ask This Again remained blocked after its answer returned")
+    let completed = try require(result.value, "Ask This Again produced no response")
+    try expect(completed.status == 200 && completed.text == "Reviewed answer", "Ask This Again lost its correlated answer")
+}
+
 private func checkRecoveryGuidanceProjectsKnownFailures() throws {
     let dead = TmuxPane(
         id: "%dead",
@@ -7363,7 +7594,7 @@ private func checkCoreServiceUpgradeIdentity() throws {
     ])
     let development = CoreServiceIdentity.resolve(infoDictionary: nil)
 
-    try expect(packaged.contractVersion == 2, "packaged core identity has the wrong coordination contract")
+    try expect(packaged.contractVersion == 3, "packaged core identity has the wrong coordination contract")
     try expect(packaged.applicationVersion == "1.2.3", "packaged core identity lost the app version")
     try expect(packaged.build == "456", "packaged core identity lost the app build")
     try expect(development.applicationVersion == "development", "development core identity invented an app version")
@@ -8732,6 +8963,8 @@ let checks: [(String, () throws -> Void)] = [
     ("context review transport bounds and escaping", checkContextReviewTransportBoundsAndEscaping),
     ("context review shim round trip", checkContextReviewShimRoundTrip),
     ("authoritative Status Center projection", checkStatusCenterProjectionUsesOnlyAuthoritativeState),
+    ("collaboration history search export and repeat", checkCollaborationHistorySearchExportAndRepeat),
+    ("human Ask This Again tracked core-control route", checkHumanAskAgainUsesTrackedCoreControlRoute),
     ("in-app recovery guidance", checkRecoveryGuidanceProjectsKnownFailures),
     ("durable authoritative operational activity", checkOperationalActivityIsDurableAndAuthoritative),
     ("agent relay submits; paste does not", checkAgentRelaySubmitsAndExplicitPasteDoesNot),

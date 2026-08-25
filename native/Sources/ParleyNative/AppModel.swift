@@ -167,6 +167,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var runtimeReadiness: RuntimeReadinessSnapshot?
     @Published private(set) var runtimeReadinessChecking = false
     @Published private(set) var diagnosticsExporting = false
+    @Published private(set) var repeatingAskHandoffID: String?
     @Published private(set) var coreLoginItemState: CoreLoginItemState = .unavailable
     @Published private(set) var coreLoginItemChanging = false
     @Published private(set) var preparingToUninstall = false
@@ -770,6 +771,14 @@ final class AppModel: ObservableObject {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd-HHmmss'Z'"
         return "Parley-Diagnostics-\(formatter.string(from: date)).zip"
+    }
+
+    private static func collaborationHistoryFilename(at date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss'Z'"
+        return "Parley-Collaboration-History-\(formatter.string(from: date)).md"
     }
 
     private static var processArchitecture: String {
@@ -1888,6 +1897,90 @@ final class AppModel: ObservableObject {
         } catch {
             NSAlert(error: error).runModal()
             return false
+        }
+    }
+
+    func exportCollaborationHistory(
+        _ handoffs: [RelayHandoff],
+        scopeName: String?
+    ) {
+        guard !handoffs.isEmpty else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Selected Collaboration History"
+        panel.message = "This local Markdown file contains the complete questions, instructions, returned results, identities, and delivery receipts for exactly the selected records. Nothing is uploaded."
+        panel.prompt = "Export Selected"
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = Self.collaborationHistoryFilename()
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        do {
+            let markdown = CollaborationHistoryMarkdown.document(
+                handoffs: handoffs,
+                scopeName: scopeName
+            )
+            try CollaborationHistoryMarkdownWriter.write(markdown, to: destination)
+            let alert = NSAlert()
+            alert.messageText = "Collaboration History Exported"
+            alert.informativeText = "Parley saved \(handoffs.count) selected record\(handoffs.count == 1 ? "" : "s") to \(destination.lastPathComponent). Nothing was uploaded."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    func canAskAgain(_ handoff: RelayHandoff) -> Bool {
+        repeatingAskHandoffID == nil
+            && CollaborationHistoryRepeat.route(for: handoff, panes: panes) != nil
+    }
+
+    func askAgain(_ handoff: RelayHandoff) {
+        guard repeatingAskHandoffID == nil,
+              let route = CollaborationHistoryRepeat.route(for: handoff, panes: panes),
+              let source = panes.first(where: { $0.id == route.sourcePaneID }),
+              let target = panes.first(where: { $0.id == route.targetPaneID }),
+              let relayClient else {
+            NSAlert(error: RelayUIError.message(
+                "This Ask cannot be repeated on its original route. Both cross-vendor panes must still be running, relay-ready, and on Parley's current protocol."
+            )).runModal()
+            return
+        }
+        guard let edited = editRelay(
+            title: "Ask \(target.displayName) Again",
+            message: "Review the complete question before sending. This creates a new tracked Ask from \(source.displayName) to \(target.displayName); the historical record remains unchanged.",
+            text: handoff.text,
+            action: "Ask Again",
+            insertVisible: { [weak self] in
+                guard let self, let controller = self.controller else { return "" }
+                return try controller.capturePane(source.id)
+            }
+        ) else { return }
+
+        let freshIdentity = UUID().uuidString.lowercased()
+        repeatingAskHandoffID = handoff.id
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.askFromUI(
+                        sourcePaneID: route.sourcePaneID,
+                        targetPaneID: route.targetPaneID,
+                        text: edited,
+                        idempotencyKey: freshIdentity
+                    )
+                }.value
+                self.repeatingAskHandoffID = nil
+                self.refreshStatusCenterQuietly()
+                guard response.status == 200 else {
+                    throw RelayUIError.message(response.text)
+                }
+            } catch {
+                self.repeatingAskHandoffID = nil
+                self.refreshStatusCenterQuietly()
+                NSAlert(error: error).runModal()
+            }
         }
     }
 

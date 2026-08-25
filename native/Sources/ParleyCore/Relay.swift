@@ -2090,6 +2090,41 @@ public final class RelayBroker: @unchecked Sendable {
         )
     }
 
+    /// The native UI may repeat one historical Ask only through the same
+    /// authenticated, journalled broker path as an agent Ask. The fresh
+    /// idempotency key creates a new handoff identity; no historical record is
+    /// mutated and the source pane's credential never leaves the core.
+    public func handleAskFromUI(
+        sourcePaneID: String,
+        targetPaneID: String,
+        text: String,
+        idempotencyKey: String
+    ) -> RelayTextResponse {
+        let livePanes: [TmuxPane]
+        do {
+            livePanes = try panes()
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+        guard let source = livePanes.first(where: { $0.id == sourcePaneID }), source.kind.isAgent else {
+            return RelayTextResponse(status: 400, text: "unknown source agent pane")
+        }
+        let sourceToken: String
+        do {
+            sourceToken = try credentials.token(for: source.id)
+        } catch {
+            return RelayTextResponse(status: 409, text: "could not resolve the source pane credential: \(error.localizedDescription)")
+        }
+        return handleAsk(
+            token: sourceToken,
+            target: targetPaneID,
+            text: text,
+            idempotencyKey: idempotencyKey,
+            humanInitiated: true,
+            preserveFormatting: false
+        )
+    }
+
     public func handleAnswer(token: String, consultationID: String, text: String) -> RelayTextResponse {
         guard let senderID = credentials.paneID(for: token) else {
             return RelayTextResponse(status: 401, text: "bad token")

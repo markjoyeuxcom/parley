@@ -1,5 +1,24 @@
 import Foundation
 
+public struct RelayUIAskRequest: Codable, Equatable, Sendable {
+    public let sourcePaneID: String
+    public let targetPaneID: String
+    public let text: String
+    public let idempotencyKey: String
+
+    public init(
+        sourcePaneID: String,
+        targetPaneID: String,
+        text: String,
+        idempotencyKey: String
+    ) {
+        self.sourcePaneID = sourcePaneID
+        self.targetPaneID = targetPaneID
+        self.text = text
+        self.idempotencyKey = idempotencyKey
+    }
+}
+
 public struct RelayUIAskManyRequest: Codable, Equatable, Sendable {
     public let sourcePaneID: String
     public let targetPaneIDs: [String]

@@ -335,6 +335,30 @@ public struct RelayCoreClient: Sendable {
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
 
+    public func askFromUI(
+        sourcePaneID: String,
+        targetPaneID: String,
+        text: String,
+        idempotencyKey: String
+    ) throws -> RelayTextResponse {
+        let body = try JSONEncoder().encode(RelayUIAskRequest(
+            sourcePaneID: sourcePaneID,
+            targetPaneID: targetPaneID,
+            text: text,
+            idempotencyKey: idempotencyKey
+        ))
+        let response = try request(
+            method: "POST",
+            path: "/ui/ask",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body
+        )
+        return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
     public func askManyFromUI(
         sourcePaneID: String,
         targetPaneIDs: [String],

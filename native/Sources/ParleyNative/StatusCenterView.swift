@@ -8,6 +8,10 @@ struct StatusCenterView: View {
     @State private var selectedHandoffID: String?
     @State private var selectedChainID: String?
     @State private var showDismissed = false
+    @State private var historyQuery = ""
+    @State private var historyKind = CollaborationHistoryKindFilter.all
+    @State private var historyOutcome = CollaborationHistoryOutcomeFilter.all
+    @State private var historyExportSelection: Set<String> = []
     // Do not rebuild an open AppKit menu while it is tracking the pointer.
     private let refresh = Timer.publish(
         every: 2,
@@ -36,6 +40,21 @@ struct StatusCenterView: View {
         return scopedChains.first(where: { $0.id == selectedChainID })
     }
 
+    private var filteredHistory: [RelayHandoff] {
+        CollaborationHistoryProjection.filter(
+            snapshot.handoffs,
+            using: CollaborationHistoryFilter(
+                query: historyQuery,
+                kind: historyKind,
+                outcome: historyOutcome
+            )
+        )
+    }
+
+    private var selectedHistoryForExport: [RelayHandoff] {
+        snapshot.handoffs.filter { historyExportSelection.contains($0.id) }
+    }
+
     private var recoveryIssues: [RecoveryGuidanceIssue] {
         RecoveryGuidanceProjection.issues(
             coreAvailable: model.coreAvailable,
@@ -61,6 +80,7 @@ struct StatusCenterView: View {
                             Color.clear.frame(height: 0).id("status-overview-top")
                             liveCollaboration
                             returnedResults
+                            collaborationHistory
                             handoffChains
                             agents
                             recovery
@@ -104,11 +124,13 @@ struct StatusCenterView: View {
         .onChange(of: workspaceID) { _, _ in
             selectedHandoffID = nil
             selectedChainID = nil
+            historyExportSelection.removeAll()
             ensureSelection()
         }
         .onChange(of: showDismissed) { _, _ in
             selectedHandoffID = nil
             selectedChainID = nil
+            historyExportSelection.formIntersection(snapshot.handoffs.map(\.id))
             applyExternalSelection()
             ensureSelection()
         }
@@ -343,6 +365,131 @@ struct StatusCenterView: View {
                 }
             }
         }
+    }
+
+    private var collaborationHistory: some View {
+        statusGroup("COLLABORATION HISTORY") {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 8) {
+                    TextField("Search questions, results, people, workspaces…", text: $historyQuery)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Search collaboration history")
+                        .accessibilityHint("Every word must match somewhere in the same local handoff record")
+                    Picker("Kind", selection: $historyKind) {
+                        ForEach(CollaborationHistoryKindFilter.allCases) { filter in
+                            Text(filter.label).tag(filter)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 125)
+                    .accessibilityLabel("Collaboration kind filter")
+                    Picker("Outcome", selection: $historyOutcome) {
+                        ForEach(CollaborationHistoryOutcomeFilter.allCases) { filter in
+                            Text(filter.label).tag(filter)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 160)
+                    .accessibilityLabel("Collaboration outcome filter")
+                }
+
+                HStack(spacing: 8) {
+                    Text("\(filteredHistory.count) matching · \(selectedHistoryForExport.count) selected")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Select Results") {
+                        historyExportSelection.formUnion(filteredHistory.map(\.id))
+                    }
+                    .disabled(filteredHistory.isEmpty)
+                    Button("Clear Selection") {
+                        historyExportSelection.removeAll()
+                    }
+                    .disabled(selectedHistoryForExport.isEmpty)
+                    Button("Export Selected…") {
+                        model.exportCollaborationHistory(
+                            selectedHistoryForExport,
+                            scopeName: selectedHistoryScopeName
+                        )
+                    }
+                    .disabled(selectedHistoryForExport.isEmpty)
+                    .accessibilityHint("Save only the selected records, including their complete questions and returned results, to a local owner-only Markdown file")
+                }
+                .controlSize(.small)
+
+                if filteredHistory.isEmpty {
+                    emptyRow("No collaboration records match these filters")
+                } else {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filteredHistory) { handoff in
+                            historyRow(handoff)
+                            if handoff.id != filteredHistory.last?.id { Divider() }
+                        }
+                    }
+                }
+            }
+            .padding(9)
+        }
+    }
+
+    private func historyRow(_ handoff: RelayHandoff) -> some View {
+        HStack(spacing: 8) {
+            Toggle(
+                "Select \(handoff.sourceName) to \(handoff.targetName) for export",
+                isOn: Binding(
+                    get: { historyExportSelection.contains(handoff.id) },
+                    set: { selected in
+                        if selected {
+                            historyExportSelection.insert(handoff.id)
+                        } else {
+                            historyExportSelection.remove(handoff.id)
+                        }
+                    }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.checkbox)
+            Button {
+                select(handoff)
+            } label: {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(handoff.sourceName) → \(handoff.targetName)")
+                            .font(.system(size: 10, weight: .medium))
+                        Text(subject(handoff.text))
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    Text(handoff.kind.rawValue.uppercased())
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text(handoff.state.rawValue.uppercased())
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(stateColor(handoff))
+                    Text(handoff.updatedAt, style: .relative)
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(WorkbenchAccessibility.handoff(handoff))
+            .accessibilityValue(selectedHandoffID == handoff.id ? "Selected for inspection" : "Not selected for inspection")
+            .accessibilityHint("Inspect this collaboration record")
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, 2)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(selectedHandoffID == handoff.id ? Color.accentColor.opacity(0.10) : Color.clear)
+        )
+    }
+
+    private var selectedHistoryScopeName: String? {
+        guard !workspaceID.isEmpty else { return nil }
+        return model.workspaces.first(where: { $0.id == workspaceID })?.name ?? workspaceID
     }
 
     private var handoffChains: some View {
@@ -896,6 +1043,21 @@ struct StatusCenterView: View {
                 } else if handoff.kind == .delegate,
                           [.created, .delivered, .waiting].contains(handoff.state) {
                     Button("Cancel Tracking…", role: .destructive) { model.cancel(handoff) }
+                }
+                if handoff.kind == .ask {
+                    Button(
+                        model.repeatingAskHandoffID == handoff.id
+                            ? "Waiting on Repeated Ask…"
+                            : "Ask This Again…"
+                    ) {
+                        model.askAgain(handoff)
+                    }
+                    .disabled(!model.canAskAgain(handoff))
+                    .help(
+                        model.canAskAgain(handoff)
+                            ? "Open the recorded question in an editable preview and create a new tracked Ask"
+                            : "Available after this Ask ends while its original cross-vendor panes remain relay-ready"
+                    )
                 }
                 if handoff.canRetrySafely {
                     Button("Retry Delivery…") { model.retry(handoff) }
