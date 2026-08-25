@@ -138,6 +138,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var recentFolders: [String] = []
     @Published private(set) var favouriteFolders: [String] = []
     @Published private(set) var projectContexts: [String: GitProjectContext] = [:]
+    @Published private(set) var worktreeScan: GitWorktreeScan = .empty
+    @Published private(set) var discoveredWorktreeRepository: GitWorktreeRepository?
+    @Published private(set) var worktreeDiscoveryLoading = false
+    @Published private(set) var worktreeDiscoveryError: String?
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
     @Published private(set) var teamTemplates: [TeamTemplate] = []
     @Published private(set) var recipes: [HandoffRecipe] = []
@@ -174,6 +178,7 @@ final class AppModel: ObservableObject {
     @Published var workspaceBriefPresented = false
     @Published var pinnedContextSnippetsPresented = false
     @Published var supervisedWorkflowPresented = false
+    @Published var worktreeBrowserPresented = false
     @Published private(set) var selectedSupervisedWorkflowID: String?
     @Published private(set) var requestedHelpTopicID: String?
     @Published private(set) var requestedStatusHandoffID: String?
@@ -196,9 +201,15 @@ final class AppModel: ObservableObject {
     private let permissionProfileStore: PermissionProfileStore
     private var workspaceContinuity = WorkspaceContinuityState()
     private let projectContextResolver = GitProjectContextResolver()
+    private let worktreeResolver = GitWorktreeResolver()
     private var projectContextRefreshTask: Task<Void, Never>?
     private var projectContextFolders: Set<String> = []
     private var lastProjectContextRefresh = Date.distantPast
+    private var worktreeRefreshTask: Task<Void, Never>?
+    private var worktreePaneFolders: [String: String] = [:]
+    private var lastWorktreeRefresh = Date.distantPast
+    private var worktreeDiscoveryTask: Task<Void, Never>?
+    private var worktreeDiscoveryID: UUID?
     private var relayClient: RelayCoreClient?
     private var reviewDraftBuilder: ReviewDraftBuilder?
     private var contextPackBuilder: ContextPackBuilder?
@@ -218,6 +229,7 @@ final class AppModel: ObservableObject {
     private static let firstRunCompletedKey = "parley.firstRunReadinessCompleted"
     private static let permissionProfileKeyPrefix = "parley.permissionProfile"
     private static let projectContextRefreshInterval: TimeInterval = 5
+    private static let worktreeRefreshInterval: TimeInterval = 15
     private static let externalAttentionHeartbeatInterval: TimeInterval = 10
 
     init() {
@@ -438,6 +450,7 @@ final class AppModel: ObservableObject {
             savedLayouts = try layoutStore.layouts()
             rememberFolder(defaultFolder)
             scheduleProjectContextRefresh(force: true)
+            scheduleWorktreeRefresh(force: true)
             publishExternalAttentionSnapshot(force: true)
         } catch {
             coreAvailable = false
@@ -784,6 +797,82 @@ final class AppModel: ObservableObject {
     func projectContext(for pane: TmuxPane) -> GitProjectContext? {
         let folder = URL(fileURLWithPath: pane.cwd).standardizedFileURL.path
         return projectContexts[folder]
+    }
+
+    var worktreeWriterCollisions: [WorktreeWriterCollision] {
+        WorktreeWriterCollisionProjection.collisions(
+            panes: panes,
+            profiles: permissionProfiles,
+            worktrees: worktreeScan.worktrees,
+            paneWorktreePaths: worktreeScan.paneWorktreePaths
+        )
+    }
+
+    var activeWorktreeWriterCollisions: [WorktreeWriterCollision] {
+        guard let workspaceID = activeWorkspace?.id else { return [] }
+        return worktreeWriterCollisions.filter { collision in
+            collision.writers.contains(where: { $0.workspaceID == workspaceID })
+        }
+    }
+
+    var activeWorktreePath: String? {
+        guard let paneID = activePane?.id else { return nil }
+        return worktreeScan.paneWorktreePaths[paneID]
+    }
+
+    func hasWorktreeWriterCollision(workspaceID: String) -> Bool {
+        worktreeWriterCollisions.contains { collision in
+            collision.writers.contains(where: { $0.workspaceID == workspaceID })
+        }
+    }
+
+    func showWorktreeBrowser() {
+        showWorktreeBrowser(sourceFolder: activePane?.cwd ?? defaultFolder)
+    }
+
+    func showWorktreeBrowser(sourceFolder: String) {
+        worktreeBrowserPresented = true
+        worktreeDiscoveryLoading = true
+        worktreeDiscoveryError = nil
+        discoveredWorktreeRepository = nil
+        worktreeDiscoveryTask?.cancel()
+        let discoveryID = UUID()
+        worktreeDiscoveryID = discoveryID
+        let resolver = worktreeResolver
+        worktreeDiscoveryTask = Task.detached(priority: .utility) { [resolver, sourceFolder, discoveryID] in
+            let result = resolver.repository(in: sourceFolder)?.repository
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.worktreeDiscoveryID == discoveryID else { return }
+                self.worktreeDiscoveryTask = nil
+                self.worktreeDiscoveryID = nil
+                self.worktreeDiscoveryLoading = false
+                self.discoveredWorktreeRepository = result
+                if result == nil {
+                    self.worktreeDiscoveryError = "The selected pane folder is not inside a discoverable Git worktree. Ordinary folders remain fully supported."
+                }
+            }
+        }
+    }
+
+    func openDiscoveredWorktree(_ worktree: GitWorktreeRecord) {
+        perform {
+            var isDirectory: ObjCBool = false
+            guard worktree.pruneReason == nil,
+                  FileManager.default.fileExists(atPath: worktree.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                throw RelayUIError.message("That worktree path is not an existing local directory. Parley did not change Git state.")
+            }
+            _ = try openWorkspace(folder: worktree.path)
+            worktreeBrowserPresented = false
+        }
+    }
+
+    func canOpenDiscoveredWorktree(_ worktree: GitWorktreeRecord) -> Bool {
+        var isDirectory: ObjCBool = false
+        return worktree.pruneReason == nil
+            && FileManager.default.fileExists(atPath: worktree.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
     }
 
     var paletteCommands: [PaletteCommand] {
@@ -1311,7 +1400,10 @@ final class AppModel: ObservableObject {
         } else {
             coreAvailable = false
         }
-        if tmuxAvailable { scheduleProjectContextRefresh() }
+        if tmuxAvailable {
+            scheduleProjectContextRefresh()
+            scheduleWorktreeRefresh()
+        }
         publishExternalAttentionSnapshot()
         if let firstError { throw firstError }
     }
@@ -1533,6 +1625,40 @@ final class AppModel: ObservableObject {
                 if contexts != self.projectContexts {
                     self.projectContexts = contexts
                 }
+            }
+        }
+    }
+
+    private func scheduleWorktreeRefresh(force: Bool = false) {
+        let paneFolders = Dictionary(uniqueKeysWithValues: panes.map { pane in
+            (pane.id, URL(fileURLWithPath: pane.cwd).standardizedFileURL.path)
+        })
+        let foldersChanged = paneFolders != worktreePaneFolders
+        let isDue = Date().timeIntervalSince(lastWorktreeRefresh) >= Self.worktreeRefreshInterval
+        guard worktreeRefreshTask == nil, force || foldersChanged || isDue else { return }
+
+        worktreePaneFolders = paneFolders
+        lastWorktreeRefresh = Date()
+        guard !paneFolders.isEmpty else {
+            worktreeScan = .empty
+            return
+        }
+
+        let resolver = worktreeResolver
+        worktreeRefreshTask = Task.detached(priority: .utility) { [paneFolders, resolver] in
+            let scan = resolver.scan(paneFolders: paneFolders)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.worktreeRefreshTask = nil
+                let currentPaneFolders = Dictionary(uniqueKeysWithValues: self.panes.map { pane in
+                    (pane.id, URL(fileURLWithPath: pane.cwd).standardizedFileURL.path)
+                })
+                guard currentPaneFolders == paneFolders else {
+                    self.scheduleWorktreeRefresh(force: true)
+                    return
+                }
+                if scan != self.worktreeScan { self.worktreeScan = scan }
             }
         }
     }

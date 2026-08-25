@@ -952,6 +952,7 @@ private func checkInAppHelpGuideCoverage() throws {
         "parley://open", "open in parley", "person-only", "vs code companion",
         "editor-provided", "one-shot manifest", "show attention and panes",
         "opaque pane or handoff ids", "stale, malformed, symlinked or non-private",
+        "existing git worktrees", "exact canonical worktree", "permission evidence only",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -1589,6 +1590,97 @@ private func checkGitProjectContextParsing() throws {
     )
     try expect(detached.branch == "@01234567", "detached Git context did not show a bounded commit identity")
     try expect(GitProjectContextResolver.parseStatus("") == nil, "empty Git output invented repository state")
+}
+
+private func checkGitWorktreeDiscoveryParsing() throws {
+    let text = [
+        "worktree /Users/example/project",
+        "HEAD 0123456789abcdef",
+        "branch refs/heads/main",
+        "",
+        "worktree /Users/example/project-review",
+        "HEAD fedcba9876543210",
+        "detached",
+        "locked review in progress",
+        "",
+    ].joined(separator: "\0")
+
+    let worktrees = GitWorktreeResolver.parsePorcelain(text)
+    try expect(worktrees.count == 2, "worktree porcelain did not produce both records")
+    try expect(worktrees[0].path == "/Users/example/project", "primary worktree path changed")
+    try expect(worktrees[0].branch == "main", "branch ref was not made human-readable")
+    try expect(worktrees[0].isPrimary, "the first porcelain record was not identified as primary")
+    try expect(worktrees[1].branch == nil && worktrees[1].isDetached, "detached worktree was mislabelled")
+    try expect(worktrees[1].lockReason == "review in progress", "worktree lock reason was lost")
+    try expect(worktrees[1].shortIdentity == "@fedcba98", "detached identity did not use the bounded commit id")
+
+    let newlineRecords = GitWorktreeResolver.parsePorcelain(text.replacingOccurrences(of: "\0", with: "\n"))
+    try expect(newlineRecords == worktrees, "newline and NUL porcelain formats parsed differently")
+}
+
+private func checkSharedWorktreeWriterCollisionProjection() throws {
+    func pane(
+        _ id: String,
+        kind: PaneKind = .codex,
+        profileID: String,
+        started: Bool = true,
+        dead: Bool = false
+    ) -> TmuxPane {
+        TmuxPane(
+            id: id,
+            kind: kind,
+            customName: "Pane \(id)",
+            terminalTitle: "",
+            cwd: "/Users/example/project",
+            currentCommand: kind.rawValue,
+            isActive: false,
+            windowID: "@0",
+            returnToPaneID: nil,
+            isDead: dead,
+            isStarted: started,
+            permissionSelection: PermissionProfileSelection(
+                profileID: profileID,
+                approvedRoots: ["/Users/example/project"],
+                lifetime: .remembered
+            ),
+            permissionEnforcement: .partiallyEnforced
+        )
+    }
+
+    let worktree = GitWorktreeRecord(
+        path: "/Users/example/project",
+        head: "0123456789abcdef",
+        branch: "main",
+        isDetached: false,
+        lockReason: nil,
+        pruneReason: nil,
+        isPrimary: true
+    )
+    let panes = [
+        pane("%1", kind: .claude, profileID: "flexible"),
+        pane("%2", profileID: "broad-workspace"),
+        pane("%3", profileID: "default"),
+        pane("%4", profileID: "flexible", started: false),
+        pane("%5", kind: .shell, profileID: "flexible"),
+    ]
+    let collisions = WorktreeWriterCollisionProjection.collisions(
+        panes: panes,
+        profiles: PermissionProfileDefinition.builtIns,
+        worktrees: [worktree],
+        paneWorktreePaths: Dictionary(uniqueKeysWithValues: panes.map { ($0.id, worktree.path) })
+    )
+
+    try expect(collisions.count == 1, "the shared write-capable worktree was not reported once")
+    try expect(collisions[0].writers.map(\.paneID) == ["%1", "%2"], "non-writers or stopped panes entered the warning")
+    try expect(collisions[0].writers.map(\.permissionProfileName) == ["Flexible", "Broad workspace"], "visible permission evidence was lost")
+
+    let separate = WorktreeWriterCollisionProjection.collisions(
+        panes: Array(panes.prefix(2)),
+        profiles: PermissionProfileDefinition.builtIns,
+        worktrees: [worktree],
+        paneWorktreePaths: ["%1": worktree.path, "%2": "/Users/example/other-worktree"]
+    )
+    try expect(separate.isEmpty, "different canonical worktrees were reported as a collision")
 }
 
 private func checkCommandPaletteSearch() throws {
@@ -8408,6 +8500,8 @@ let checks: [(String, () throws -> Void)] = [
     ("privacy-bounded local diagnostics export", checkDiagnosticsExportIsUsefulAndPrivacyBounded),
     ("robust memory plateau assessment", checkMemoryPlateauAssessment),
     ("Git project context parsing", checkGitProjectContextParsing),
+    ("Git worktree discovery parsing", checkGitWorktreeDiscoveryParsing),
+    ("shared worktree writer collision projection", checkSharedWorktreeWriterCollisionProjection),
     ("command palette search", checkCommandPaletteSearch),
     ("workbench accessibility descriptions", checkAccessibilityDescriptions),
     ("adjacent navigation order", checkAdjacentNavigationOrder),

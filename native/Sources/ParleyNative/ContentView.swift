@@ -26,6 +26,10 @@ struct ContentView: View {
                 }
                 Divider()
                 toolbar
+                if let collision = model.activeWorktreeWriterCollisions.first {
+                    Divider()
+                    worktreeWriterNotice(collision, additional: model.activeWorktreeWriterCollisions.count - 1)
+                }
                 if model.connectionState == .coreDisconnected {
                     Divider()
                     connectionNotice
@@ -75,6 +79,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.supervisedWorkflowPresented) {
             SupervisedWorkflowView(model: model)
+        }
+        .sheet(isPresented: $model.worktreeBrowserPresented) {
+            WorktreeBrowserView(model: model)
         }
         .alert(
             "Parley needs attention",
@@ -342,6 +349,11 @@ struct ContentView: View {
                                         .foregroundStyle(Color.accentColor)
                                         .labelStyle(.titleAndIcon)
                                 }
+                                if model.hasWorktreeWriterCollision(workspaceID: workspace.id) {
+                                    Image(systemName: "exclamationmark.triangle")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(Color.orange)
+                                }
                             }
                             .font(.system(size: 11, weight: workspace.isActive ? .semibold : .regular))
                             .foregroundStyle(workspace.isActive ? .primary : .secondary)
@@ -390,6 +402,7 @@ struct ContentView: View {
 
             Menu {
                 Button("Choose Folder…", action: model.createWorkspace)
+                Button("Open Existing Worktree as Workspace…", action: model.showWorktreeBrowser)
                 Button("Save Current Layout…", action: model.saveActiveWorkspaceLayout)
                 Button("Save Current as Team Template…", action: model.saveActiveWorkspaceAsTeamTemplate)
                 if !model.favouriteFolders.isEmpty {
@@ -448,7 +461,7 @@ struct ContentView: View {
             .fixedSize()
             .accessibilityLabel("Open workspace")
             .help("Open workspace")
-            .accessibilityHint("Choose a folder, favourite, recent folder, or saved layout")
+            .accessibilityHint("Choose a folder, existing Git worktree, favourite, recent folder, or saved layout")
         }
         .padding(.horizontal, 10)
         .frame(height: 36)
@@ -1092,6 +1105,26 @@ struct ContentView: View {
             action: model.retryConnections
         )
         .help(model.coreError ?? "The local Parley core is unavailable.")
+    }
+
+    private func worktreeWriterNotice(
+        _ collision: WorktreeWriterCollision,
+        additional: Int
+    ) -> some View {
+        let writers = collision.writers.map {
+            let enforcement = $0.enforcement?.label ?? "enforcement unknown"
+            return "\($0.paneName) (\($0.permissionProfileName), \(enforcement))"
+        }.joined(separator: ", ")
+        let suffix = additional > 0 ? " · \(additional) more shared worktree\(additional == 1 ? "" : "s")" : ""
+        return workbenchNotice(
+            icon: "exclamationmark.triangle",
+            title: "Shared worktree writers\(suffix)",
+            detail: "\(writers) have profiles that explicitly allow project writes at \(collision.worktree.path). Permission evidence only; Parley has not inferred file activity.",
+            color: .orange,
+            actionLabel: "Worktrees…",
+            action: { model.showWorktreeBrowser(sourceFolder: collision.worktree.path) }
+        )
+        .help("Exact canonical worktree: \(collision.worktree.path)\nA quiet pane does not prove that concurrent writes are safe.")
     }
 
     @ViewBuilder
