@@ -953,6 +953,12 @@ private func checkInAppHelpGuideCoverage() throws {
         "editor-provided", "one-shot manifest", "show attention and panes",
         "opaque pane or handoff ids", "stale, malformed, symlinked or non-private",
         "existing git worktrees", "exact canonical worktree", "permission evidence only",
+        "safety summary", "handoff state is unavailable", "does not infer whether an agent is thinking",
+        "menu-bar attention inbox", "completed delegations", "permission requests",
+        "main window is closed", "prompt and answer bodies", "coordination unavailable",
+        "collaboration history", "case-insensitive and terms", "select results",
+        "owner-only markdown", "ask this again", "fresh tracked handoff identity",
+        "never silently replays",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -1681,6 +1687,113 @@ private func checkSharedWorktreeWriterCollisionProjection() throws {
         paneWorktreePaths: ["%1": worktree.path, "%2": "/Users/example/other-worktree"]
     )
     try expect(separate.isEmpty, "different canonical worktrees were reported as a collision")
+}
+
+private func checkWorkspaceSafetySummaryUsesOnlyAuthoritativeFacts() throws {
+    let flexible = PermissionProfileSelection(
+        profileID: "flexible",
+        approvedRoots: ["/repo"],
+        lifetime: .remembered
+    )
+    let panes = [
+        TmuxPane(
+            id: "%1", kind: .claude, customName: "Planner", terminalTitle: "", cwd: "/repo",
+            currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
+            isStarted: true, permissionSelection: flexible, permissionEnforcement: .partiallyEnforced
+        ),
+        TmuxPane(
+            id: "%2", kind: .codex, customName: "Stopped reviewer", terminalTitle: "", cwd: "/repo/subdir",
+            currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil,
+            isStarted: false, permissionSelection: flexible, permissionEnforcement: .enforced
+        ),
+        TmuxPane(
+            id: "%3", kind: .shell, customName: "Tests", terminalTitle: "", cwd: "/other",
+            currentCommand: "zsh", isActive: false, windowID: "@0", returnToPaneID: nil
+        ),
+        TmuxPane(
+            id: "%4", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/repo",
+            currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
+            isStarted: true, permissionSelection: flexible, permissionEnforcement: .enforced
+        ),
+    ]
+    let active = try statusHandoff(
+        id: "active",
+        kind: .ask,
+        state: .waiting,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@1",
+        occurredAt: 100,
+        text: "PROMPT_MUST_NOT_APPEAR",
+        resultText: "RESULT_MUST_NOT_APPEAR",
+        sourceName: "Planner",
+        targetName: "Builder"
+    )
+    let completed = try statusHandoff(
+        id: "complete",
+        kind: .delegate,
+        state: .completed,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@1",
+        occurredAt: 90,
+        text: "COMPLETED_PROMPT_MUST_NOT_APPEAR"
+    )
+    let worktree = GitWorktreeRecord(
+        path: "/repo",
+        head: "0123456789abcdef",
+        branch: "feat/safety",
+        isDetached: false,
+        lockReason: nil,
+        pruneReason: nil,
+        isPrimary: true
+    )
+    let collisions = WorktreeWriterCollisionProjection.collisions(
+        panes: panes,
+        profiles: PermissionProfileDefinition.builtIns,
+        worktrees: [worktree],
+        paneWorktreePaths: ["%1": "/repo", "%2": "/repo", "%4": "/repo"]
+    )
+    let workspace = TmuxWorkspace(
+        id: "@0",
+        name: "project",
+        defaultFolder: "/repo",
+        isActive: true
+    )
+    let summary = WorkspaceSafetyProjection.summary(
+        workspace: workspace,
+        panes: panes,
+        handoffs: [completed, active],
+        projectContextsByPaneID: [
+            "%1": GitProjectContext(branch: "feat/safety", isDirty: true),
+            "%3": GitProjectContext(branch: "main", isDirty: false),
+        ],
+        paneWorktreePaths: ["%1": "/repo", "%2": "/repo", "%4": "/repo"],
+        writerCollisions: collisions,
+        coreAvailable: true
+    )
+
+    try expect(summary.totalPaneCount == 3, "workspace safety lost a pane")
+    try expect(summary.runningAgents.map(\.name) == ["Planner"], "stopped agents or shells were called running agents")
+    try expect(summary.activeHandoffs.count == 1 && summary.activeHandoffs[0].id == "active", "terminal handoffs entered the active safety list")
+    try expect(summary.dirtyRepositories.count == 1 && summary.dirtyRepositories[0].path == "/repo", "one dirty worktree was duplicated across panes")
+    try expect(summary.unavailableRepositoryPaths.isEmpty, "a second pane without its own probe made a known shared worktree unavailable")
+    try expect(summary.sharedWriterWorktrees.count == 1, "a cross-workspace shared writer warning was lost")
+    try expect(summary.detailText.contains("Planner → Builder · ASK · WAITING"), "handoff identity was not visible")
+    try expect(summary.detailText.contains("/repo") && summary.detailText.contains("Flexible"), "path or permission evidence was not visible")
+    try expect(!summary.detailText.contains("PROMPT_MUST_NOT_APPEAR"), "safety summary exposed handoff prompt content")
+    try expect(!summary.detailText.contains("RESULT_MUST_NOT_APPEAR"), "safety summary exposed handoff answer content")
+
+    let disconnected = WorkspaceSafetyProjection.summary(
+        workspace: workspace,
+        panes: panes,
+        handoffs: [active],
+        projectContextsByPaneID: [:],
+        paneWorktreePaths: ["%1": "/repo"],
+        writerCollisions: [],
+        coreAvailable: false
+    )
+    try expect(!disconnected.handoffStateAvailable, "a disconnected core was presented as authoritative handoff state")
+    try expect(disconnected.detailText.lowercased().contains("unavailable"), "unknown handoff state was presented as an all-clear")
+    try expect(disconnected.unavailableRepositoryPaths == ["/repo"], "unavailable Git state was silently presented as clean")
 }
 
 private func checkCommandPaletteSearch() throws {
@@ -2457,10 +2570,14 @@ private func checkExternalAttentionAndNavigationContract() throws {
     let resultID = "11111111-1111-4111-8111-111111111111"
     let permissionID = "22222222-2222-4222-8222-222222222222"
     let viewedID = "33333333-3333-4333-8333-333333333333"
+    let delegationID = "44444444-4444-4444-8444-444444444444"
+    let failedID = "55555555-5555-4555-8555-555555555555"
     let handoffs = [
         try statusHandoff(id: resultID, kind: .ask, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 20, text: "PROMPT SECRET", resultText: "ANSWER SECRET", sourceName: "Reviewer", targetName: "Builder"),
         try statusHandoff(id: permissionID, kind: .relay, state: .failed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 30, text: "SECOND SECRET", attention: .permissionRequired, sourceName: "Reviewer", targetName: "Builder"),
         try statusHandoff(id: viewedID, kind: .ask, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 10, resultText: "VIEWED SECRET", readAt: 11),
+        try statusHandoff(id: delegationID, kind: .delegate, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 40, text: "DELEGATION SECRET", resultText: "COMPLETION SECRET", sourceName: "Reviewer", targetName: "Builder"),
+        try statusHandoff(id: failedID, kind: .ask, state: .failed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 50, text: "FAILURE SECRET", sourceName: "Reviewer", targetName: "Builder"),
     ]
     let generatedAt = Date(timeIntervalSince1970: 100)
     let snapshot = ExternalAttentionProjection.snapshot(
@@ -2471,15 +2588,19 @@ private func checkExternalAttentionAndNavigationContract() throws {
     )
     try expect(snapshot.version == ExternalAttentionSnapshot.currentVersion, "external attention snapshot lost its contract version")
     try expect(snapshot.generatedAt == generatedAt, "external attention snapshot lost its heartbeat time")
-    try expect(snapshot.attentionCount == 2, "external attention count included viewed or routine work")
-    try expect(snapshot.workspaces.map(\.attentionCount) == [1, 1], "external attention was attributed to the wrong workspace")
+    try expect(snapshot.attentionCount == 4, "external attention count included viewed or routine work")
+    try expect(snapshot.workspaces.map(\.attentionCount) == [3, 1], "external attention was attributed to the wrong workspace")
     try expect(snapshot.panes.map(\.id) == ["%1", "%2"], "external pane focus exposed a shell or lost a live agent")
-    try expect(snapshot.items.map(\.handoffID) == [permissionID, resultID], "external attention items were not newest-first")
-    try expect(snapshot.items.map(\.reason) == [.humanInputRequired, .returnedResult], "external attention reasons were inferred incorrectly")
+    try expect(snapshot.items.map(\.handoffID) == [failedID, delegationID, permissionID, resultID], "external attention items were not newest-first")
+    try expect(snapshot.items.map(\.reason) == [.interrupted, .returnedResult, .humanInputRequired, .returnedResult], "external attention reasons were inferred incorrectly")
+    try expect(snapshot.items[0].label == "Reviewer → Builder failed", "failed work lost its specific content-free label")
+    try expect(snapshot.items[1].label == "Builder completed a delegation", "a completed delegation was not labelled specifically")
+    try expect(snapshot.items[2].label == "Builder needs permission review", "permission attention lost its specific content-free label")
+    try expect(snapshot.items[3].label == "Builder returned an answer", "an Ask result was not labelled as an answer")
 
     let encoded = try JSONEncoder().encode(snapshot)
     let visible = String(decoding: encoded, as: UTF8.self)
-    for secret in ["PROMPT SECRET", "ANSWER SECRET", "SECOND SECRET", "VIEWED SECRET", "SECRET TITLE", "SECRET COMMAND", "/tmp/library"] {
+    for secret in ["PROMPT SECRET", "ANSWER SECRET", "SECOND SECRET", "VIEWED SECRET", "DELEGATION SECRET", "COMPLETION SECRET", "FAILURE SECRET", "SECRET TITLE", "SECRET COMMAND", "/tmp/library"] {
         try expect(!visible.contains(secret), "external attention snapshot exposed content or process metadata: \(secret)")
     }
 
@@ -2526,6 +2647,47 @@ private func checkExternalAttentionAndNavigationContract() throws {
             // Expected: these routes can only focus an already-authoritative local record.
         }
     }
+}
+
+private func checkMenuBarAttentionInboxProjection() throws {
+    let items = (0..<10).map { index in
+        ExternalAttentionItem(
+            handoffID: String(format: "00000000-0000-4000-8000-%012d", index),
+            workspaceID: "@\(index % 2)",
+            workspaceName: index.isMultiple(of: 2) ? "Library" : "Consumer",
+            label: "Reviewer \(index) returned an answer",
+            reason: .returnedResult
+        )
+    }
+    let snapshot = ExternalAttentionSnapshot(
+        generatedAt: Date(timeIntervalSince1970: 100),
+        attentionCount: 12,
+        workspaces: [],
+        panes: [],
+        items: items
+    )
+
+    let connected = MenuBarAttentionProjection.summary(snapshot: snapshot, coreAvailable: true)
+    try expect(connected.totalCount == 12, "menu bar inbox lost the authoritative total")
+    try expect(connected.items.count == MenuBarAttentionProjection.maximumVisibleItems, "menu bar inbox was not visibly bounded")
+    try expect(connected.hiddenItemCount == 4, "menu bar inbox did not disclose hidden attention items")
+    try expect(connected.headline == "12 items need attention", "menu bar inbox plural headline changed")
+
+    let disconnected = MenuBarAttentionProjection.summary(snapshot: snapshot, coreAvailable: false)
+    try expect(disconnected.headline == "Coordination unavailable", "a disconnected core was presented as current attention state")
+    try expect(disconnected.items == connected.items, "last known content-free attention disappeared during disconnection")
+
+    let empty = MenuBarAttentionProjection.summary(
+        snapshot: ExternalAttentionSnapshot(
+            generatedAt: Date(timeIntervalSince1970: 101),
+            attentionCount: 0,
+            workspaces: [],
+            panes: [],
+            items: []
+        ),
+        coreAvailable: true
+    )
+    try expect(empty.headline == "No items need attention", "empty menu bar inbox did not state the all-clear")
 }
 
 private func checkTmuxLayoutBecomesAnIDFreeSavedTree() throws {
@@ -4875,12 +5037,25 @@ private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
         "stale local dismissal preferences were not pruned against durable history"
     )
 
-    let notifications = StatusNotificationProjection.events(handoffs: handoffs)
-    try expect(notifications.map(\.id) == ["failure:attention:permissionRequired", "result:result"], "notification projection emitted old, duplicate, or non-actionable events")
-    try expect(notifications[0].workspaceName == "@1", "attention notification was not routed to the target workspace")
-    try expect(notifications[1].workspaceName == "@0", "returned-result notification was not routed to the requesting workspace")
+    let interruptedNotification = try statusHandoff(
+        id: "interrupted-notification",
+        kind: .delegate,
+        state: .interrupted,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@1",
+        occurredAt: 60,
+        text: "NOTIFICATION SECRET",
+        sourceName: "Lead",
+        targetName: "Builder"
+    )
+    let notifications = StatusNotificationProjection.events(handoffs: handoffs + [interruptedNotification])
+    try expect(notifications.map(\.id) == ["interrupted-notification:failure", "failure:attention:permissionRequired", "result:result"], "notification projection emitted old, duplicate, or non-actionable events")
+    try expect(notifications.map(\.kind) == [.failure, .attention, .returnedResult], "notification kinds lost failure or attention meaning")
+    try expect(notifications[0].workspaceName == "@0", "failure notification was not routed to the requesting workspace")
+    try expect(notifications[1].workspaceName == "@1", "attention notification was not routed to the target workspace")
+    try expect(notifications[2].workspaceName == "@0", "returned-result notification was not routed to the requesting workspace")
     try expect(
-        notifications.allSatisfy { !$0.title.contains("Task") && !$0.body.contains("Returned answer") },
+        notifications.allSatisfy { !$0.title.contains("Task") && !$0.body.contains("Returned answer") && !$0.title.contains("NOTIFICATION SECRET") && !$0.body.contains("NOTIFICATION SECRET") },
         "notification text exposed prompt or result content"
     )
 
@@ -4891,6 +5066,234 @@ private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
         coreAvailable: false
     )
     try expect(unavailable.condition == .coreUnavailable, "core failure did not override secondary status")
+}
+
+private func checkCollaborationHistorySearchExportAndRepeat() throws {
+    let completedAsk = try statusHandoff(
+        id: "ask-complete",
+        kind: .ask,
+        state: .completed,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@0",
+        occurredAt: 30,
+        text: "Review the retry policy\n```dangerous example```",
+        resultText: "Timeout handling is correct.",
+        readAt: 31,
+        sourceName: "Builder",
+        targetName: "Reviewer",
+        transitionDetail: "Answer returned exactly"
+    )
+    let activeDelegate = try statusHandoff(
+        id: "delegate-active",
+        kind: .delegate,
+        state: .waiting,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@1",
+        occurredAt: 40,
+        text: "Implement the toolbar",
+        sourceName: "Lead",
+        targetName: "Builder"
+    )
+    let failedAsk = try statusHandoff(
+        id: "ask-failed",
+        kind: .ask,
+        state: .failed,
+        sourceWorkspaceID: "@1",
+        targetWorkspaceID: "@1",
+        occurredAt: 60,
+        text: "Review timeout recovery",
+        attention: .targetUnavailable,
+        sourceName: "Planner",
+        targetName: "Reviewer"
+    )
+    let failedRelay = try statusHandoff(
+        id: "relay-failed",
+        kind: .relay,
+        state: .interrupted,
+        sourceWorkspaceID: "@1",
+        targetWorkspaceID: "@0",
+        occurredAt: 50,
+        text: "Retry the transport",
+        sourceName: "Planner",
+        targetName: "Builder"
+    )
+    let handoffs = [completedAsk, activeDelegate, failedAsk, failedRelay]
+
+    let searched = CollaborationHistoryProjection.filter(
+        handoffs,
+        using: CollaborationHistoryFilter(query: "REVIEW timeout", kind: .ask, outcome: .all)
+    )
+    try expect(searched.map(\.id) == ["ask-failed", "ask-complete"], "history search was not case-insensitive AND matching across prompt and result")
+    let active = CollaborationHistoryProjection.filter(
+        handoffs,
+        using: CollaborationHistoryFilter(query: "", kind: .delegate, outcome: .active)
+    )
+    try expect(active.map(\.id) == ["delegate-active"], "history kind and active filters did not compose")
+    let attention = CollaborationHistoryProjection.filter(
+        handoffs,
+        using: CollaborationHistoryFilter(query: "reviewer", kind: .all, outcome: .needsAttention)
+    )
+    try expect(attention.map(\.id) == ["ask-failed"], "history attention filter ignored authoritative attention state")
+    let failures = CollaborationHistoryProjection.filter(
+        handoffs,
+        using: CollaborationHistoryFilter(query: "", kind: .all, outcome: .failedOrInterrupted)
+    )
+    try expect(failures.map(\.id) == ["ask-failed", "relay-failed"], "history failure filter was not newest-first")
+
+    let generatedAt = Date(timeIntervalSince1970: 100)
+    let markdown = CollaborationHistoryMarkdown.document(
+        handoffs: [completedAsk, failedRelay],
+        scopeName: "Workspace Alpha",
+        generatedAt: generatedAt
+    )
+    try expect(markdown.contains("# Parley Collaboration History"), "history export omitted its title")
+    try expect(markdown.contains("Workspace Alpha") && markdown.contains("2 selected records"), "history export omitted explicit scope and selection count")
+    try expect(markdown.contains("ask-complete") && markdown.contains("relay-failed"), "history export omitted a selected record")
+    try expect(markdown.contains(completedAsk.text) && markdown.contains(completedAsk.resultText!), "history export changed selected prompt or result text")
+    try expect(markdown.contains("Answer returned exactly"), "history export omitted delivery receipts")
+    try expect(!markdown.contains("delegate-active") && !markdown.contains("Implement the toolbar"), "history export included an unselected record")
+    try expect(markdown.contains("````text\nReview the retry policy"), "history export did not protect embedded Markdown fences")
+
+    let exportDirectory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: exportDirectory) }
+    let destination = exportDirectory.appendingPathComponent("history.md")
+    try CollaborationHistoryMarkdownWriter.write(markdown, to: destination)
+    let writtenMarkdown = try String(contentsOf: destination, encoding: .utf8)
+    try expect(writtenMarkdown == markdown, "history writer changed the reviewed Markdown")
+    let permissions = try require(
+        try FileManager.default.attributesOfItem(atPath: destination.path)[.posixPermissions] as? NSNumber,
+        "history export permissions were unavailable"
+    )
+    try expect(permissions.intValue & 0o077 == 0, "history export was readable outside its owner")
+
+    let source = TmuxPane(
+        id: completedAsk.sourcePaneID,
+        kind: .codex,
+        customName: "Builder",
+        terminalTitle: "",
+        cwd: "/tmp/a",
+        currentCommand: "codex",
+        isActive: false,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        workspaceName: "a",
+        bracketedPasteActive: true,
+        isStarted: true
+    )
+    let target = TmuxPane(
+        id: completedAsk.targetPaneID,
+        kind: .claude,
+        customName: "Reviewer",
+        terminalTitle: "",
+        cwd: "/tmp/a",
+        currentCommand: "claude",
+        isActive: false,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        workspaceName: "a",
+        bracketedPasteActive: true,
+        isStarted: true
+    )
+    let route = try require(
+        CollaborationHistoryRepeat.route(for: completedAsk, panes: [source, target]),
+        "a completed Ask with two live cross-vendor panes could not be prepared again"
+    )
+    try expect(route.sourcePaneID == source.id && route.targetPaneID == target.id, "Ask This Again changed the recorded route")
+    try expect(CollaborationHistoryRepeat.route(for: failedRelay, panes: [source, target]) == nil, "Ask This Again accepted a non-Ask handoff")
+    let staleTarget = TmuxPane(
+        id: target.id,
+        kind: target.kind,
+        customName: target.customName,
+        terminalTitle: target.terminalTitle,
+        cwd: target.cwd,
+        currentCommand: target.currentCommand,
+        isActive: target.isActive,
+        windowID: target.windowID,
+        returnToPaneID: target.returnToPaneID,
+        relayEnabled: target.relayEnabled,
+        protocolVersion: "v0",
+        workspaceName: target.workspaceName,
+        bracketedPasteActive: target.bracketedPasteActive,
+        isStarted: target.isStarted
+    )
+    try expect(CollaborationHistoryRepeat.route(for: completedAsk, panes: [source, staleTarget]) == nil, "Ask This Again bypassed the current-protocol gate")
+}
+
+private func checkHumanAskAgainUsesTrackedCoreControlRoute() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    _ = try credentials.token(for: "%source")
+    let targetToken = try credentials.token(for: "%target")
+    let panes = [
+        TmuxPane(
+            id: "%source", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp",
+            currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil,
+            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+            bracketedPasteActive: true, automationPolicy: .off
+        ),
+        TmuxPane(
+            id: "%target", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp",
+            currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil,
+            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+            bracketedPasteActive: true
+        ),
+    ]
+    let submissions = LockedSubmissions()
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { paneID, prompt in submissions.append(paneID: paneID, text: prompt) },
+        consultationTimeout: 2,
+        livenessPollInterval: 0.01
+    )
+    let infoFile = directory.appendingPathComponent("relay-url")
+    let controlToken = "ask-again-ui-control"
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
+    try server.start()
+    defer { server.stop() }
+
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    let rejected = try unauthorized.askFromUI(
+        sourcePaneID: "%source",
+        targetPaneID: "%target",
+        text: "Do not submit this.",
+        idempotencyKey: "repeat-rejected"
+    )
+    try expect(rejected.status == 401, "an unauthenticated UI repeated an Ask")
+    try expect(submissions.values.isEmpty, "the rejected repeated Ask submitted terminal input")
+
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let result = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        do {
+            result.set(try client.askFromUI(
+                sourcePaneID: "%source",
+                targetPaneID: "%target",
+                text: "Review this edited question.",
+                idempotencyKey: "repeat-new-identity"
+            ))
+        } catch {
+            result.set(RelayTextResponse(status: 599, text: error.localizedDescription))
+        }
+    }
+    try expect(eventually { broker.consultations().count == 1 }, "Ask This Again did not create a tracked consultation")
+    try expect(submissions.values.count == 1 && submissions.values[0].paneID == "%target", "Ask This Again submitted to the wrong pane")
+    try expect(submissions.values[0].text.contains("Review this edited question."), "Ask This Again submitted stale history text")
+    let repeated = try require(broker.handoffs().first, "Ask This Again did not create durable history")
+    try expect(repeated.id != "historic-handoff", "Ask This Again reused a historical identity")
+    try expect(repeated.idempotencyKey == "repeat-new-identity", "Ask This Again lost its fresh idempotency identity")
+    try expect(repeated.transitions.allSatisfy { $0.origin == .human }, "Ask This Again was not attributed to the person")
+
+    let answer = broker.handleAnswer(token: targetToken, consultationID: "current", text: "Reviewed answer")
+    try expect(answer.status == 200, "the repeated Ask target could not return its correlated answer")
+    try expect(eventually { result.value != nil }, "Ask This Again remained blocked after its answer returned")
+    let completed = try require(result.value, "Ask This Again produced no response")
+    try expect(completed.status == 200 && completed.text == "Reviewed answer", "Ask This Again lost its correlated answer")
 }
 
 private func checkRecoveryGuidanceProjectsKnownFailures() throws {
@@ -7191,7 +7594,7 @@ private func checkCoreServiceUpgradeIdentity() throws {
     ])
     let development = CoreServiceIdentity.resolve(infoDictionary: nil)
 
-    try expect(packaged.contractVersion == 2, "packaged core identity has the wrong coordination contract")
+    try expect(packaged.contractVersion == 3, "packaged core identity has the wrong coordination contract")
     try expect(packaged.applicationVersion == "1.2.3", "packaged core identity lost the app version")
     try expect(packaged.build == "456", "packaged core identity lost the app build")
     try expect(development.applicationVersion == "development", "development core identity invented an app version")
@@ -8502,6 +8905,7 @@ let checks: [(String, () throws -> Void)] = [
     ("Git project context parsing", checkGitProjectContextParsing),
     ("Git worktree discovery parsing", checkGitWorktreeDiscoveryParsing),
     ("shared worktree writer collision projection", checkSharedWorktreeWriterCollisionProjection),
+    ("authoritative workspace safety summary", checkWorkspaceSafetySummaryUsesOnlyAuthoritativeFacts),
     ("command palette search", checkCommandPaletteSearch),
     ("workbench accessibility descriptions", checkAccessibilityDescriptions),
     ("adjacent navigation order", checkAdjacentNavigationOrder),
@@ -8516,6 +8920,7 @@ let checks: [(String, () throws -> Void)] = [
     ("external workspace open contract", checkExternalWorkspaceOpenContract),
     ("external editor context import contract", checkExternalEditorContextImportContract),
     ("content-free external attention and navigation contract", checkExternalAttentionAndNavigationContract),
+    ("bounded menu bar attention inbox", checkMenuBarAttentionInboxProjection),
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),
     ("direct agent argv", checkDirectAgentSpawn),
@@ -8558,6 +8963,8 @@ let checks: [(String, () throws -> Void)] = [
     ("context review transport bounds and escaping", checkContextReviewTransportBoundsAndEscaping),
     ("context review shim round trip", checkContextReviewShimRoundTrip),
     ("authoritative Status Center projection", checkStatusCenterProjectionUsesOnlyAuthoritativeState),
+    ("collaboration history search export and repeat", checkCollaborationHistorySearchExportAndRepeat),
+    ("human Ask This Again tracked core-control route", checkHumanAskAgainUsesTrackedCoreControlRoute),
     ("in-app recovery guidance", checkRecoveryGuidanceProjectsKnownFailures),
     ("durable authoritative operational activity", checkOperationalActivityIsDurableAndAuthoritative),
     ("agent relay submits; paste does not", checkAgentRelaySubmitsAndExplicitPasteDoesNot),

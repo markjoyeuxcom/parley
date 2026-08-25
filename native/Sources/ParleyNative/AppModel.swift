@@ -167,6 +167,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var runtimeReadiness: RuntimeReadinessSnapshot?
     @Published private(set) var runtimeReadinessChecking = false
     @Published private(set) var diagnosticsExporting = false
+    @Published private(set) var repeatingAskHandoffID: String?
     @Published private(set) var coreLoginItemState: CoreLoginItemState = .unavailable
     @Published private(set) var coreLoginItemChanging = false
     @Published private(set) var preparingToUninstall = false
@@ -221,6 +222,7 @@ final class AppModel: ObservableObject {
     private var lastCoreUpgradeAttempt = Date.distantPast
     private var lastExternalAttentionSnapshot: ExternalAttentionSnapshot?
     private var lastExternalAttentionPublishedAt = Date.distantPast
+    private var periodicRefreshTimer: Timer?
     private let coreLoginItemController = CoreLoginItemController()
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
     private static let workspaceContinuityKey = "parley.workspaceContinuity"
@@ -231,6 +233,7 @@ final class AppModel: ObservableObject {
     private static let projectContextRefreshInterval: TimeInterval = 5
     private static let worktreeRefreshInterval: TimeInterval = 15
     private static let externalAttentionHeartbeatInterval: TimeInterval = 10
+    private static let periodicRefreshInterval: TimeInterval = 1
 
     init() {
         let requestedFolder = Self.argument(named: "--cwd")
@@ -461,6 +464,7 @@ final class AppModel: ObservableObject {
         refreshCoreLoginItemState()
         refreshRuntimeReadiness()
         if runtime.upgradesCore { scheduleCoreUpgradeCheck(force: true) }
+        startPeriodicRefresh()
     }
 
     var activeWorkspace: TmuxWorkspace? { workspaces.first(where: \.isActive) }
@@ -769,6 +773,14 @@ final class AppModel: ObservableObject {
         return "Parley-Diagnostics-\(formatter.string(from: date)).zip"
     }
 
+    private static func collaborationHistoryFilename(at date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss'Z'"
+        return "Parley-Collaboration-History-\(formatter.string(from: date)).md"
+    }
+
     private static var processArchitecture: String {
         #if arch(arm64)
         "arm64"
@@ -790,6 +802,13 @@ final class AppModel: ObservableObject {
         WorkbenchStateProjection.pane(activePane)
     }
 
+    var menuBarAttentionSummary: MenuBarAttentionSummary {
+        MenuBarAttentionProjection.summary(
+            snapshot: externalAttentionSnapshot(generatedAt: Date()),
+            coreAvailable: coreAvailable
+        )
+    }
+
     var canNavigateWorkspaces: Bool { workspaces.count > 1 }
 
     var canNavigatePanes: Bool { visiblePanes.count > 1 }
@@ -797,6 +816,22 @@ final class AppModel: ObservableObject {
     func projectContext(for pane: TmuxPane) -> GitProjectContext? {
         let folder = URL(fileURLWithPath: pane.cwd).standardizedFileURL.path
         return projectContexts[folder]
+    }
+
+    func workspaceSafetySummary(for workspace: TmuxWorkspace) -> WorkspaceSafetySummary {
+        let workspacePanes = panes.filter { $0.windowID == workspace.id }
+        let contextsByPaneID = Dictionary(uniqueKeysWithValues: workspacePanes.compactMap { pane in
+            projectContext(for: pane).map { (pane.id, $0) }
+        })
+        return WorkspaceSafetyProjection.summary(
+            workspace: workspace,
+            panes: panes,
+            handoffs: handoffs,
+            projectContextsByPaneID: contextsByPaneID,
+            paneWorktreePaths: worktreeScan.paneWorktreePaths,
+            writerCollisions: worktreeWriterCollisions,
+            coreAvailable: coreAvailable
+        )
     }
 
     var worktreeWriterCollisions: [WorktreeWriterCollision] {
@@ -1452,19 +1487,34 @@ final class AppModel: ObservableObject {
         scheduleCoreUpgradeCheck()
     }
 
-    private func publishExternalAttentionSnapshot(force: Bool = false) {
-        guard runtime.mode == .production else { return }
-        let now = Date()
+    private func startPeriodicRefresh() {
+        guard periodicRefreshTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.periodicRefreshInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshQuietly()
+            }
+        }
+        RunLoop.main.add(timer, forMode: MenuTrackingRefreshPolicy.runLoopMode)
+        periodicRefreshTimer = timer
+    }
+
+    private func externalAttentionSnapshot(generatedAt: Date) -> ExternalAttentionSnapshot {
         var byID: [String: RelayHandoff] = [:]
         for handoff in unreadHandoffs + statusHandoffs + handoffs {
             byID[handoff.id] = handoff
         }
-        let snapshot = ExternalAttentionProjection.snapshot(
+        return ExternalAttentionProjection.snapshot(
             workspaces: workspaces,
             panes: panes,
             handoffs: Array(byID.values),
-            generatedAt: now
+            generatedAt: generatedAt
         )
+    }
+
+    private func publishExternalAttentionSnapshot(force: Bool = false) {
+        guard runtime.mode == .production else { return }
+        let now = Date()
+        let snapshot = externalAttentionSnapshot(generatedAt: now)
         let contentChanged = lastExternalAttentionSnapshot?.hasSameContent(as: snapshot) != true
         let heartbeatDue = now.timeIntervalSince(lastExternalAttentionPublishedAt)
             >= Self.externalAttentionHeartbeatInterval
@@ -1594,7 +1644,10 @@ final class AppModel: ObservableObject {
     }
 
     private func scheduleProjectContextRefresh(force: Bool = false) {
-        let folders = Set(visiblePanes.map {
+        // Safety confirmations may describe an inactive workspace, so retain
+        // bounded Git snapshots for every live pane rather than only the
+        // currently visible workspace.
+        let folders = Set(panes.map {
             URL(fileURLWithPath: $0.cwd).standardizedFileURL.path
         })
         let foldersChanged = folders != projectContextFolders
@@ -1615,7 +1668,7 @@ final class AppModel: ObservableObject {
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.projectContextRefreshTask = nil
-                let currentFolders = Set(self.visiblePanes.map {
+                let currentFolders = Set(self.panes.map {
                     URL(fileURLWithPath: $0.cwd).standardizedFileURL.path
                 })
                 guard currentFolders == folders else {
@@ -1844,6 +1897,90 @@ final class AppModel: ObservableObject {
         } catch {
             NSAlert(error: error).runModal()
             return false
+        }
+    }
+
+    func exportCollaborationHistory(
+        _ handoffs: [RelayHandoff],
+        scopeName: String?
+    ) {
+        guard !handoffs.isEmpty else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Selected Collaboration History"
+        panel.message = "This local Markdown file contains the complete questions, instructions, returned results, identities, and delivery receipts for exactly the selected records. Nothing is uploaded."
+        panel.prompt = "Export Selected"
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = Self.collaborationHistoryFilename()
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        do {
+            let markdown = CollaborationHistoryMarkdown.document(
+                handoffs: handoffs,
+                scopeName: scopeName
+            )
+            try CollaborationHistoryMarkdownWriter.write(markdown, to: destination)
+            let alert = NSAlert()
+            alert.messageText = "Collaboration History Exported"
+            alert.informativeText = "Parley saved \(handoffs.count) selected record\(handoffs.count == 1 ? "" : "s") to \(destination.lastPathComponent). Nothing was uploaded."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    func canAskAgain(_ handoff: RelayHandoff) -> Bool {
+        repeatingAskHandoffID == nil
+            && CollaborationHistoryRepeat.route(for: handoff, panes: panes) != nil
+    }
+
+    func askAgain(_ handoff: RelayHandoff) {
+        guard repeatingAskHandoffID == nil,
+              let route = CollaborationHistoryRepeat.route(for: handoff, panes: panes),
+              let source = panes.first(where: { $0.id == route.sourcePaneID }),
+              let target = panes.first(where: { $0.id == route.targetPaneID }),
+              let relayClient else {
+            NSAlert(error: RelayUIError.message(
+                "This Ask cannot be repeated on its original route. Both cross-vendor panes must still be running, relay-ready, and on Parley's current protocol."
+            )).runModal()
+            return
+        }
+        guard let edited = editRelay(
+            title: "Ask \(target.displayName) Again",
+            message: "Review the complete question before sending. This creates a new tracked Ask from \(source.displayName) to \(target.displayName); the historical record remains unchanged.",
+            text: handoff.text,
+            action: "Ask Again",
+            insertVisible: { [weak self] in
+                guard let self, let controller = self.controller else { return "" }
+                return try controller.capturePane(source.id)
+            }
+        ) else { return }
+
+        let freshIdentity = UUID().uuidString.lowercased()
+        repeatingAskHandoffID = handoff.id
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.askFromUI(
+                        sourcePaneID: route.sourcePaneID,
+                        targetPaneID: route.targetPaneID,
+                        text: edited,
+                        idempotencyKey: freshIdentity
+                    )
+                }.value
+                self.repeatingAskHandoffID = nil
+                self.refreshStatusCenterQuietly()
+                guard response.status == 200 else {
+                    throw RelayUIError.message(response.text)
+                }
+            } catch {
+                self.repeatingAskHandoffID = nil
+                self.refreshStatusCenterQuietly()
+                NSAlert(error: error).runModal()
+            }
         }
     }
 
@@ -3692,6 +3829,14 @@ final class AppModel: ObservableObject {
             alert.messageText = "Move \(currentPane.displayName) to \(currentTarget.name)?"
             alert.informativeText = "Parley will transfer the exact tmux pane. \(preservedState) Its pane id, terminal state and folder (\(currentPane.cwd)) are unchanged. The target workspace’s \(currentTarget.automationPolicy.label) automation policy applies after the move. The source workspace remains open."
             alert.alertStyle = .warning
+            let affectedWorkspaces = [
+                workspaces.first(where: { $0.id == currentPane.windowID }),
+                currentTarget,
+            ].compactMap { $0 }
+            attachWorkspaceSafetySummaries(
+                affectedWorkspaces.map { workspaceSafetySummary(for: $0) },
+                to: alert
+            )
             alert.addButton(withTitle: "Move Pane")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -4132,8 +4277,9 @@ final class AppModel: ObservableObject {
         let paneCount = panes.filter { $0.windowID == workspace.id }.count
         let alert = NSAlert()
         alert.messageText = "Close \(workspace.name)?"
-        alert.informativeText = "This ends \(paneCount) running pane\(paneCount == 1 ? "" : "s") in this workspace. It cannot be recovered from Parley."
+        alert.informativeText = "This removes \(paneCount) pane\(paneCount == 1 ? "" : "s") and ends every process still running in them. The workspace cannot be recovered from Parley."
         alert.alertStyle = .warning
+        attachWorkspaceSafetySummaries([workspaceSafetySummary(for: workspace)], to: alert)
         alert.addButton(withTitle: "Close Workspace")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -4274,15 +4420,11 @@ final class AppModel: ObservableObject {
         let workspace = activeWorkspace
         let paneCount = workspace.map { selected in panes.count { $0.windowID == selected.id } } ?? 0
         if let workspace, paneCount > 0 {
-            let pending = handoffs.count { handoff in
-                let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
-                return activeStates.contains(handoff.state)
-                    && (handoff.sourceWorkspaceID == workspace.id || handoff.targetWorkspaceID == workspace.id)
-            }
             let alert = NSAlert()
             alert.messageText = "Open \(layout.name) over \(workspace.name)?"
-            alert.informativeText = "This ends \(paneCount) running pane\(paneCount == 1 ? "" : "s") in the current workspace\(pending == 0 ? "." : " and interrupts \(pending) active handoff\(pending == 1 ? "" : "s").") Shell panes in the saved layout start automatically; agent panes remain stopped until you choose Start."
+            alert.informativeText = "This removes \(paneCount) current pane\(paneCount == 1 ? "" : "s") and ends every process still running in them. Shell panes in the saved layout start automatically; agent panes remain stopped until you choose Start."
             alert.alertStyle = .warning
+            attachWorkspaceSafetySummaries([workspaceSafetySummary(for: workspace)], to: alert)
             alert.addButton(withTitle: "Replace Workspace")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -4495,6 +4637,40 @@ final class AppModel: ObservableObject {
             let alert = NSAlert(error: error)
             alert.runModal()
         }
+    }
+
+    private func attachWorkspaceSafetySummaries(
+        _ summaries: [WorkspaceSafetySummary],
+        to alert: NSAlert
+    ) {
+        guard !summaries.isEmpty else { return }
+        let text = summaries.map(\.detailText).joined(separator: "\n\n")
+        let lineCount = text.reduce(1) { count, character in
+            character == "\n" ? count + 1 : count
+        }
+        let height = min(320, max(170, CGFloat(lineCount) * 16 + 20))
+        let frame = NSRect(x: 0, y: 0, width: 560, height: height)
+
+        let scroll = NSScrollView(frame: frame)
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .lineBorder
+
+        let textView = NSTextView(frame: frame)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.drawsBackground = false
+        textView.font = .systemFont(ofSize: 11)
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.string = text
+        textView.setAccessibilityLabel("Workspace safety summary")
+        scroll.documentView = textView
+        alert.accessoryView = scroll
     }
 
     private static func argument(named name: String) -> String? {

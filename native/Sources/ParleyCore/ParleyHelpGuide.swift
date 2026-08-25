@@ -185,6 +185,20 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "workspaces-safety-summary",
+                    title: "Safety summary before disruptive actions",
+                    paragraphs: [
+                        "Before closing a workspace, replacing it with a saved layout, or moving a pane between workspaces, Parley shows a content-free summary of the affected workspace state. Read it before approving the action; it is evidence for a human decision, not an automatic safety verdict.",
+                    ],
+                    items: [
+                        "Running agents come from tmux process state. Stopped placeholders and shell panes are not described as running agents.",
+                        "Active handoffs come from the coordination core. If the core is disconnected, the summary says that handoff state is unavailable instead of claiming there are none.",
+                        "Dirty repositories come from bounded Git status snapshots and are deduplicated by exact discovered worktree path. A missing snapshot is shown as unavailable, not clean.",
+                        "Shared-worktree writers come from exact canonical worktree paths plus visible write-capable permission profiles. Parley does not infer whether an agent is thinking or which process changed a file.",
+                        "Prompt bodies, answers and terminal content never enter the safety summary.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "workspaces-external-open",
                     title: "Open from Terminal or Finder",
                     paragraphs: [
@@ -684,6 +698,35 @@ public enum ParleyHelpGuide {
                         "Focus the source or target pane for a selected event.",
                         "Return manually, cancel tracking, interrupt with confirmation, or retry only when the record says retry is safe.",
                         "Dismissed notifications hide locally without deleting the durable handoff record.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "status-menu-bar-inbox",
+                    title: "Menu-bar attention inbox",
+                    paragraphs: [
+                        "Parley's bell remains in the macOS menu bar while the app is running, including after the main window is closed. It shows returned answers, completed delegations, permission requests, other known attention states and failures from the same authoritative handoff record as Status Center.",
+                        "Selecting an item opens that exact handoff in Status Center. Returned results become read when the record is selected there; the durable handoff itself is not deleted.",
+                    ],
+                    items: [
+                        "The menu shows at most eight recent items and names how many more remain in Status Center.",
+                        "Menu labels contain pane and workspace names plus an opaque handoff id behind the action. Prompt and answer bodies, terminal output, folders and credentials never enter the menu-bar contract.",
+                        "If the coordination core is disconnected, the inbox says Coordination unavailable and labels retained entries as last known instead of claiming an all-clear.",
+                        "Development shows a DEV marker in the menu bar so an isolated test runtime is never confused with Production.",
+                        "Per-workspace macOS notifications remain opt-in in Status Center. Their titles and bodies follow the same content-free boundary.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "status-history-controls",
+                    title: "Search, select, export, or ask again",
+                    paragraphs: [
+                        "Collaboration History searches the bounded local handoff snapshot already loaded by Status Center. It creates no remote index and sends no search text anywhere. Multiple search words are literal, case-insensitive AND terms: every word must appear somewhere in the same handoff's participants, workspaces, question, returned result, status, attention state or delivery details.",
+                        "Kind and outcome filters compose with workspace scope and Show Dismissed. They change only this view; counts, durable handoffs and agent sessions are unchanged.",
+                    ],
+                    items: [
+                        "Tick individual records, or use Select Results for the current search. Export Selected writes only that explicit selection to a local owner-only Markdown file.",
+                        "The Markdown export deliberately contains complete question, instruction and returned-result bodies plus identities and delivery receipts. Review it before sharing; it is different from Parley's privacy-bounded diagnostics export.",
+                        "Ask This Again is available only after an Ask has ended and its original cross-vendor source and target panes are still running, relay-ready and on the current protocol.",
+                        "Repeating always opens the recorded question in an editable preview. Ask Again creates a fresh tracked handoff identity and leaves the historical record unchanged; Parley never silently replays it.",
                     ]
                 ),
                 ParleyHelpSection(

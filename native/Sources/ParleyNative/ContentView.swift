@@ -4,14 +4,6 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
-    // Default-mode timers pause while AppKit is tracking a menu. Publishing in
-    // `.common` rebuilds SwiftUI menu content under the pointer once per second,
-    // which repeatedly drops and restores the highlighted item.
-    private let refresh = Timer.publish(
-        every: 1,
-        on: .main,
-        in: MenuTrackingRefreshPolicy.runLoopMode
-    ).autoconnect()
 
     var body: some View {
         NavigationSplitView {
@@ -55,7 +47,6 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 720, minHeight: 680)
-        .onReceive(refresh) { _ in model.refreshQuietly() }
         .sheet(isPresented: $model.commandPalettePresented) {
             CommandPaletteView(model: model)
         }

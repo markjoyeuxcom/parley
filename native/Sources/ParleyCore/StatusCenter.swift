@@ -68,6 +68,7 @@ public struct StatusTimelineEvent: Identifiable, Equatable, Sendable {
 public enum StatusNotificationKind: String, Equatable, Sendable {
     case returnedResult
     case attention
+    case failure
 }
 
 public struct StatusNotificationEvent: Identifiable, Equatable, Sendable {
@@ -94,20 +95,42 @@ public enum StatusNotificationProjection {
                     workspaceName: workspace,
                     kind: .returnedResult,
                     occurredAt: handoff.updatedAt,
-                    title: "\(handoff.targetName) returned a result",
+                    title: handoff.kind == .delegate
+                        ? "\(handoff.targetName) completed a delegation"
+                        : "\(handoff.targetName) returned an answer",
                     body: "Open Parley to review the returned result in \(workspace)."
                 ))
             }
             if let attention = handoff.attention,
                let workspace = nonempty(handoff.targetWorkspaceName) ?? nonempty(handoff.targetWorkspaceID) {
+                let title = switch attention {
+                case .permissionRequired: "\(handoff.targetName) needs permission review"
+                case .targetNotReady: "\(handoff.targetName) is not ready"
+                case .targetUnavailable: "\(handoff.targetName) is unavailable"
+                }
                 events.append(StatusNotificationEvent(
                     id: "\(handoff.id):attention:\(attention.rawValue)",
                     handoffID: handoff.id,
                     workspaceName: workspace,
                     kind: .attention,
                     occurredAt: handoff.updatedAt,
-                    title: "\(handoff.targetName) needs attention",
+                    title: title,
                     body: "Open Parley to resolve the known attention state in \(workspace)."
+                ))
+            }
+            if handoff.attention == nil,
+               handoff.state == .failed || handoff.state == .interrupted,
+               let workspace = nonempty(handoff.sourceWorkspaceName) ?? nonempty(handoff.sourceWorkspaceID) {
+                events.append(StatusNotificationEvent(
+                    id: "\(handoff.id):failure",
+                    handoffID: handoff.id,
+                    workspaceName: workspace,
+                    kind: .failure,
+                    occurredAt: handoff.updatedAt,
+                    title: handoff.state == .failed
+                        ? "\(handoff.sourceName) → \(handoff.targetName) failed"
+                        : "\(handoff.sourceName) → \(handoff.targetName) was interrupted",
+                    body: "Open Parley to inspect the failed handoff in \(workspace)."
                 ))
             }
             return events

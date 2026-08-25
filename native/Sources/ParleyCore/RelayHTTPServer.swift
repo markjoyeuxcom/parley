@@ -391,6 +391,24 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 let consultationID = String(path.dropFirst("/ui/answer/".count))
                 write(broker.answerFromUI(consultationID: consultationID, text: text), to: client)
+            case "/ui/ask":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let ask = try? JSONDecoder().decode(
+                    RelayUIAskRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid native Ask request"), to: client)
+                    return
+                }
+                write(broker.handleAskFromUI(
+                    sourcePaneID: ask.sourcePaneID,
+                    targetPaneID: ask.targetPaneID,
+                    text: ask.text,
+                    idempotencyKey: ask.idempotencyKey
+                ), to: client)
             case "/ui/ask-many":
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)

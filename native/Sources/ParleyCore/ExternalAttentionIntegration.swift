@@ -35,12 +35,14 @@ public enum ExternalAttentionReason: String, Codable, Equatable, Sendable {
     case interrupted
 }
 
-public struct ExternalAttentionItem: Codable, Equatable, Sendable {
+public struct ExternalAttentionItem: Identifiable, Codable, Equatable, Sendable {
     public let handoffID: String
     public let workspaceID: String
     public let workspaceName: String
     public let label: String
     public let reason: ExternalAttentionReason
+
+    public var id: String { handoffID }
 
     public init(
         handoffID: String,
@@ -57,9 +59,10 @@ public struct ExternalAttentionItem: Codable, Equatable, Sendable {
     }
 }
 
-/// A deliberately content-free view for local editor companions. It contains
-/// human labels, counts and opaque ids only: never prompts, results, terminal
-/// output, process commands, folders, credentials or a dispatch capability.
+/// A deliberately content-free view for local attention surfaces and editor
+/// companions. It contains human labels, counts and opaque ids only: never
+/// prompts, results, terminal output, process commands, folders, credentials
+/// or a dispatch capability.
 public struct ExternalAttentionSnapshot: Codable, Equatable, Sendable {
     public static let currentVersion = 1
 
@@ -151,17 +154,25 @@ public enum ExternalAttentionProjection {
             reason = .returnedResult
             workspaceID = handoff.sourceWorkspaceID
             workspaceName = handoff.sourceWorkspaceName ?? handoff.sourceWorkspaceID
-            label = "\(handoff.targetName) returned a result"
-        } else if handoff.attention != nil {
+            label = handoff.kind == .delegate
+                ? "\(handoff.targetName) completed a delegation"
+                : "\(handoff.targetName) returned an answer"
+        } else if let attention = handoff.attention {
             reason = .humanInputRequired
             workspaceID = handoff.targetWorkspaceID
             workspaceName = handoff.targetWorkspaceName ?? handoff.targetWorkspaceID
-            label = "\(handoff.targetName) needs attention"
+            label = switch attention {
+            case .permissionRequired: "\(handoff.targetName) needs permission review"
+            case .targetNotReady: "\(handoff.targetName) is not ready"
+            case .targetUnavailable: "\(handoff.targetName) is unavailable"
+            }
         } else if handoff.state == .failed || handoff.state == .interrupted {
             reason = .interrupted
             workspaceID = handoff.sourceWorkspaceID
             workspaceName = handoff.sourceWorkspaceName ?? handoff.sourceWorkspaceID
-            label = "\(handoff.sourceName) to \(handoff.targetName) was interrupted"
+            label = handoff.state == .failed
+                ? "\(handoff.sourceName) → \(handoff.targetName) failed"
+                : "\(handoff.sourceName) → \(handoff.targetName) was interrupted"
         } else {
             return nil
         }
@@ -174,6 +185,46 @@ public enum ExternalAttentionProjection {
                 reason: reason
             ),
             handoff.updatedAt
+        )
+    }
+}
+
+public struct MenuBarAttentionSummary: Equatable, Sendable {
+    public let coreAvailable: Bool
+    public let totalCount: Int
+    public let items: [ExternalAttentionItem]
+    public let hiddenItemCount: Int
+    public let headline: String
+}
+
+/// A small, content-free slice of the same attention contract published to
+/// local editor companions. It never receives a RelayHandoff, so prompt and
+/// result bodies cannot accidentally enter menu-bar presentation code.
+public enum MenuBarAttentionProjection {
+    public static let maximumVisibleItems = 8
+
+    public static func summary(
+        snapshot: ExternalAttentionSnapshot,
+        coreAvailable: Bool
+    ) -> MenuBarAttentionSummary {
+        let totalCount = max(0, snapshot.attentionCount)
+        let items = Array(snapshot.items.prefix(maximumVisibleItems))
+        let headline: String
+        if !coreAvailable {
+            headline = "Coordination unavailable"
+        } else if totalCount == 0 {
+            headline = "No items need attention"
+        } else if totalCount == 1 {
+            headline = "1 item needs attention"
+        } else {
+            headline = "\(totalCount) items need attention"
+        }
+        return MenuBarAttentionSummary(
+            coreAvailable: coreAvailable,
+            totalCount: totalCount,
+            items: items,
+            hiddenItemCount: max(0, totalCount - items.count),
+            headline: headline
         )
     }
 }
