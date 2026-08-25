@@ -131,11 +131,39 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "workspaces-teams",
+                    title: "Portable team templates",
+                    paragraphs: [
+                        "A team template is a reusable blueprint for pane vendors, names, routing roles, permission profiles, workspace lead, automation policy and split layout. Unlike a saved layout, it contains no repository paths or permission roots.",
+                        "Use the workspace plus menu to save the current configured grid as a team. Applying a team asks for a folder and binds every pane plus its permission scope to that chosen folder.",
+                    ],
+                    items: [
+                        "Agent panes are created as stopped placeholders. Start each vendor session deliberately.",
+                        "Shell panes may start automatically because they do not spend a model subscription session.",
+                        "Live pane ids, credentials, terminal history and vendor sessions are never part of a template.",
+                        "Deleting a template never changes a workspace already created from it.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "workspaces-roles",
+                    title: "Stable routing roles",
+                    paragraphs: [
+                        "A routing role such as implementer, reviewer or tester is an optional workspace-scoped address for one agent pane. It is separate from the display name, so renaming a pane does not change how another agent reaches its role.",
+                    ],
+                    items: [
+                        "Set or clear a role from the agent pane's context menu. Roles use lowercase letters, numbers and hyphens.",
+                        "A role must be unique inside its workspace. Parley refuses ambiguity rather than silently choosing another live pane.",
+                        "Use @reviewer in the same workspace or workspace/@reviewer across workspaces. The @ keeps a stable role separate from mutable pane names.",
+                        "lead remains the special address for the explicitly marked Workspace Lead. Vendor names and lead are reserved and cannot be assigned as ordinary roles.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "workspaces-pane-menu",
                     title: "Pane context menu",
                     items: [
                         "Rename a pane to give routing a memorable, unique name.",
                         "Make or remove a Workspace Lead.",
+                        "Set or clear a stable workspace-scoped routing role.",
                         "Start a restored placeholder, restart an exited session, or close the pane deliberately.",
                         "An exited process remains visible with its final scrollback until you close or restart it.",
                     ]
@@ -168,7 +196,7 @@ public enum ParleyHelpGuide {
                     id: "handoffs-routing",
                     title: "Naming the target",
                     paragraphs: [
-                        "Use a unique pane name, vendor name or pane id. A renamed pane is addressed by its new name. The special name lead resolves to the marked lead in the sender's workspace.",
+                        "Use a unique pane name, an explicit stable role such as @reviewer, vendor name or pane id. A renamed pane is addressed by its new display name while its routing role remains unchanged. The special name lead resolves to the marked lead in the sender's workspace.",
                     ],
                     items: [
                         "Parley refuses ambiguous names instead of guessing.",

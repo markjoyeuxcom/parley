@@ -231,6 +231,24 @@ not to resend. Keep valid rendered packs at 90 KB and native control bodies at
 200 KB; the control client rejects an oversized approval before opening the
 socket so `Broken pipe` never replaces the useful error.
 
+## Portable teams and stable roles
+
+A team template is a portable blueprint, not another saved layout. It keeps
+pane vendor, display name, role, permission-profile identity and lifetime,
+lead, automation policy and split geometry. It must never persist a repository
+path, approved root, live pane/window/slot id, credential, terminal content or
+vendor session. Applying one binds every leaf to the folder the person selected
+at that moment. Agent leaves remain stopped; a template must never spend a
+subscription session merely because it was applied.
+
+A pane role is owner-controlled tmux metadata independent of the display name.
+The routing namespace is explicit: `@reviewer` locally and
+`workspace/@reviewer` across workspaces. Never make a bare name fall through to
+a role or a missing role fall through to a mutable pane name; that would let a
+route silently retarget a different live process. Roles are lowercase bounded
+slugs, unique per workspace, and vendor names plus `lead` are reserved. `lead`
+continues to resolve only through the separate workspace-lead stamp.
+
 ## Shared protocol and vendor launch behavior
 
 `AgentProtocol.version` is stamped into the process environment and a tmux

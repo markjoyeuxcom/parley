@@ -44,8 +44,22 @@ public enum WorkbenchAccessibility {
         case .protocolStale: "Protocol restart required"
         case .relayUnavailable: "Relay restart required"
         }
+        let protocolState: String = switch WorkbenchStateProjection.protocolStatus(pane) {
+        case .notAttached: "Protocol not attached"
+        case let .current(version): "Protocol v\(version), current"
+        case let .restartRequired(reportedVersion):
+            reportedVersion.map { "Protocol v\($0), restart required" }
+                ?? "Protocol unknown, restart required"
+        }
         let workspace = clean(pane.workspaceName ?? pane.windowID)
-        return "\(clean(pane.displayName)), \(pane.kind.label) agent. \(state). Workspace \(workspace)"
+        var parts = [
+            "\(clean(pane.displayName)), \(pane.kind.label) agent",
+            state,
+            protocolState,
+        ]
+        if let role = pane.role { parts.append("Routing role \(role)") }
+        parts.append("Workspace \(workspace)")
+        return sentences(parts)
     }
 
     public static func timeline(_ event: StatusTimelineEvent) -> String {

@@ -31,6 +31,8 @@ There is no API-key mode, hosted Parley service, telemetry or remote sync.
   commands.
 - A marked workspace lead, visible per-workspace automation policy, and four
   editable supervised-workflow recipes.
+- Portable team templates and stable workspace roles for recreating a named
+  cross-vendor grid in another folder without starting any agent automatically.
 - Cross-workspace Ask targets and recent-folder shortcuts.
 - Owner-only durable handoff history and a compact workspace activity strip.
 - A separate native Status Center with workspace filters, live handoffs, agent
@@ -89,7 +91,8 @@ parley cancel current
   pane. It never interrupts the target; only a person can choose that stronger
   action from the native UI.
 
-Targets may be a unique vendor name, pane id, or the marked local `lead`.
+Targets may be a unique vendor name, pane id, explicit stable role such as
+`@reviewer` (or `workspace/@reviewer`), or the marked local `lead`.
 Parley refuses ambiguous,
 same-vendor, shell and missing targets instead of guessing. Only one unanswered
 consultation or active delegation may target a pane at a time.
@@ -170,6 +173,13 @@ tree with its ratios. Opening one builds a fresh window before replacing the
 current workspace. Shells start automatically; agent panes appear as stopped
 slots with an explicit **Start** button, so restoration never spends a vendor
 subscription session. Duplicate live workspace names are visibly qualified.
+
+**Save Current as Team Template** creates a portable blueprint containing pane
+vendors, names, `@roles`, permission-profile choices, lead, automation policy
+and split layout. It stores no repository paths, approved roots, live ids,
+credentials or sessions. Applying it asks for a folder, binds the complete team
+to that folder and creates stopped agent placeholders; a person starts each
+vendor deliberately.
 
 Closing only the Parley window detaches from tmux and leaves workspaces running.
 A separate per-user core process owns the authenticated relay socket and active

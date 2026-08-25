@@ -162,6 +162,7 @@ public final class TmuxController {
             "#{@parley-automation-policy}",
             "#{@parley-permission-selection}",
             "#{@parley-permission-enforcement}",
+            "#{@parley-role}",
         ].joined(separator: separator)
         let output = try runTmux(["list-panes", "-s", "-t", exactSession, "-F", format]).stdoutText
 
@@ -186,6 +187,7 @@ public final class TmuxController {
                 exitStatus: fields.count > 16 ? Int(fields[16]) : nil,
                 isStarted: fields[14].isEmpty || fields[14] == "1",
                 isWorkspaceLead: fields.count > 17 && fields[17] == "1",
+                role: fields.count > 21 && !fields[21].isEmpty ? fields[21] : nil,
                 automationPolicy: fields.count > 18
                     ? (WorkspaceAutomationPolicy(rawValue: fields[18]) ?? .askAndDelegate)
                     : .askAndDelegate,
@@ -380,6 +382,29 @@ public final class TmuxController {
             } else {
                 _ = try runTmux(["set-option", "-p", "-u", "-t", pane.id, "@parley-lead"], allowFailure: true)
             }
+        }
+    }
+
+    /// A role is workspace-scoped routing metadata. It remains independent of
+    /// the pane's display name and grants no process or filesystem capability.
+    public func setPaneRole(_ role: String?, paneID: String, workspaceID: String) throws {
+        let workspacePanes = try listPanes().filter { $0.windowID == workspaceID }
+        guard let pane = workspacePanes.first(where: { $0.id == paneID }) else {
+            throw ParleyTmuxError.paneNotFound(paneID)
+        }
+        guard pane.kind.isAgent else { throw ParleyTmuxError.notAgentPane }
+        if let role {
+            if let error = PaneRoleRules.validationError(role) {
+                throw ParleyTmuxError.commandFailed(error)
+            }
+            guard !workspacePanes.contains(where: {
+                $0.id != paneID && $0.role?.caseInsensitiveCompare(role) == .orderedSame
+            }) else {
+                throw ParleyTmuxError.commandFailed("The role \(role) is already assigned in this workspace.")
+            }
+            _ = try runTmux(["set-option", "-p", "-t", paneID, "@parley-role", role])
+        } else {
+            _ = try runTmux(["set-option", "-p", "-u", "-t", paneID, "@parley-role"], allowFailure: true)
         }
     }
 
@@ -584,6 +609,11 @@ public final class TmuxController {
 
     private func configureRestoredLeaf(_ leaf: SavedLayoutLeaf, paneID: String) throws {
         try setMetadata(paneID: paneID, kind: leaf.kind, name: leaf.name)
+        if let role = leaf.role, leaf.kind.isAgent {
+            _ = try runTmux(["set-option", "-p", "-t", paneID, "@parley-role", role])
+        } else {
+            _ = try runTmux(["set-option", "-p", "-u", "-t", paneID, "@parley-role"], allowFailure: true)
+        }
         let profile = try effectivePermissionProfile(
             for: leaf.kind,
             cwd: leaf.folder,

@@ -139,6 +139,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var favouriteFolders: [String] = []
     @Published private(set) var projectContexts: [String: GitProjectContext] = [:]
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
+    @Published private(set) var teamTemplates: [TeamTemplate] = []
     @Published private(set) var recipes: [HandoffRecipe] = []
     @Published private(set) var supervisedWorkflowRuns: [SupervisedWorkflowRun] = []
     @Published private(set) var handoffChains: [HandoffChain] = []
@@ -185,6 +186,7 @@ final class AppModel: ObservableObject {
     private let preferences: UserDefaults
     private let runtimeLease: RuntimeUILease?
     private let layoutStore: SavedWorkspaceLayoutStore
+    private let teamTemplateStore: TeamTemplateStore
     private let recipeStore: HandoffRecipeStore
     private let supervisedWorkflowStore: SupervisedWorkflowStore
     private let handoffChainStore: HandoffChainStore
@@ -242,6 +244,9 @@ final class AppModel: ObservableObject {
         layoutStore = SavedWorkspaceLayoutStore(
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
         )
+        teamTemplateStore = TeamTemplateStore(
+            file: applicationDirectory.appendingPathComponent("team-templates.json")
+        )
         recipeStore = HandoffRecipeStore(
             file: applicationDirectory.appendingPathComponent("handoff-recipes.json")
         )
@@ -274,6 +279,7 @@ final class AppModel: ObservableObject {
             startupRequiresQuit = true
         }
         recipes = (try? recipeStore.recipes()) ?? HandoffRecipe.defaults
+        teamTemplates = (try? teamTemplateStore.templates()) ?? []
         supervisedWorkflowRuns = (try? supervisedWorkflowStore.runs()) ?? []
         handoffChains = (try? handoffChainStore.chains()) ?? []
         workspaceBriefs = (try? workspaceBriefStore.briefs()) ?? []
@@ -3446,6 +3452,38 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func setRole(_ pane: TmuxPane) {
+        guard pane.kind.isAgent else { return }
+        let alert = NSAlert()
+        alert.messageText = "Set routing role"
+        alert.informativeText = "Enter a role such as reviewer or tester. Agents address it as @reviewer or @tester; renaming the pane does not change it."
+        let field = NSTextField(string: pane.role ?? "")
+        field.placeholderString = "reviewer"
+        field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Set Role")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        var role = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if role.hasPrefix("@") { role.removeFirst() }
+        guard !role.isEmpty else { return }
+        perform {
+            guard let controller else { return }
+            try controller.setPaneRole(role, paneID: pane.id, workspaceID: pane.windowID)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    func clearRole(_ pane: TmuxPane) {
+        perform {
+            guard let controller else { return }
+            try controller.setPaneRole(nil, paneID: pane.id, workspaceID: pane.windowID)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
     func restart(_ pane: TmuxPane) {
         let alert = NSAlert()
         alert.messageText = "Restart \(pane.displayName)?"
@@ -3694,6 +3732,83 @@ final class AppModel: ObservableObject {
         saveLayout(of: workspace)
     }
 
+    func saveActiveWorkspaceAsTeamTemplate() {
+        guard let workspace = activeWorkspace else { return }
+        let alert = NSAlert()
+        alert.messageText = "Save team template"
+        alert.informativeText = "Saves pane vendors, names, roles, permission profiles, lead, automation policy and layout. Repository paths, permission roots, sessions and live ids are not stored."
+        let field = NSTextField(string: workspace.name)
+        field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save Team")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+
+        if teamTemplates.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            let overwrite = NSAlert()
+            overwrite.messageText = "Replace team template \(name)?"
+            overwrite.informativeText = "The previous portable definition will be replaced. Running panes are unchanged."
+            overwrite.alertStyle = .warning
+            overwrite.addButton(withTitle: "Replace")
+            overwrite.addButton(withTitle: "Cancel")
+            guard overwrite.runModal() == .alertFirstButtonReturn else { return }
+        }
+
+        perform {
+            guard let controller else { return }
+            let captured = try controller.captureWorkspaceLayout(workspaceID: workspace.id)
+            try teamTemplateStore.save(try TeamTemplate.capturing(captured, name: name))
+            teamTemplates = try teamTemplateStore.templates()
+            terminalHandle.focus()
+        }
+    }
+
+    func apply(_ template: TeamTemplate) {
+        let panel = NSOpenPanel()
+        panel.title = "Apply \(template.name) to a folder"
+        panel.prompt = "Create Team Workspace"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: defaultFolder)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let folder = url.standardizedFileURL.path
+        let baseName = url.lastPathComponent.isEmpty ? template.name : url.lastPathComponent
+        let workspaceName = availableWorkspaceName(baseName)
+
+        perform {
+            guard let controller else { return }
+            let layout = try template.workspaceLayout(folder: folder, workspaceName: workspaceName)
+            let restored = try controller.restoreWorkspaceLayout(layout)
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .workspaceRestored,
+                workspaceID: restored.id,
+                workspaceName: restored.name,
+                detail: "Applied team template \(template.name); agent panes left stopped."
+            ))
+            rememberFolder(folder)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    func delete(_ template: TeamTemplate) {
+        let alert = NSAlert()
+        alert.messageText = "Delete team template \(template.name)?"
+        alert.informativeText = "Running workspaces and panes are unchanged."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete Team")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        perform {
+            try teamTemplateStore.delete(named: template.name)
+            teamTemplates = try teamTemplateStore.templates()
+            terminalHandle.focus()
+        }
+    }
+
     func saveLayout(of workspace: TmuxWorkspace) {
         let alert = NSAlert()
         alert.messageText = "Save workspace layout"
@@ -3785,6 +3900,19 @@ final class AppModel: ObservableObject {
         recentFolders.insert(standardized, at: 0)
         if recentFolders.count > 8 { recentFolders.removeLast(recentFolders.count - 8) }
         preferences.set(recentFolders, forKey: Self.recentFoldersKey)
+    }
+
+    private func availableWorkspaceName(_ proposed: String) -> String {
+        if !workspaces.contains(where: { $0.name.caseInsensitiveCompare(proposed) == .orderedSame }) {
+            return proposed
+        }
+        var suffix = 2
+        while workspaces.contains(where: {
+            $0.name.caseInsensitiveCompare("\(proposed) \(suffix)") == .orderedSame
+        }) {
+            suffix += 1
+        }
+        return "\(proposed) \(suffix)"
     }
 
     private func saveNotificationWorkspaces() {

@@ -126,6 +126,13 @@ struct ContentView: View {
                         } else {
                             Button("Make Workspace Lead") { model.setWorkspaceLead(pane) }
                         }
+                        Divider()
+                        Button(pane.role == nil ? "Set Routing Role…" : "Change Routing Role…") {
+                            model.setRole(pane)
+                        }
+                        if pane.role != nil {
+                            Button("Clear Routing Role") { model.clearRole(pane) }
+                        }
                     }
                     if pane.kind.isAgent && !pane.isStarted {
                         Button("Start") { model.start(pane) }
@@ -254,7 +261,8 @@ struct ContentView: View {
         case .relayUnavailable: "relay restart required"
         }
         let lead = pane.isWorkspaceLead ? ", workspace lead" : ""
-        return "\(state)\(lead), \(folder.isEmpty ? pane.cwd : folder)"
+        let role = pane.role.map { ", routing role \($0)" } ?? ""
+        return "\(state)\(lead)\(role), \(folder.isEmpty ? pane.cwd : folder)"
     }
 
     @ViewBuilder
@@ -367,6 +375,7 @@ struct ContentView: View {
             Menu {
                 Button("Choose Folder…", action: model.createWorkspace)
                 Button("Save Current Layout…", action: model.saveActiveWorkspaceLayout)
+                Button("Save Current as Team Template…", action: model.saveActiveWorkspaceAsTeamTemplate)
                 if !model.favouriteFolders.isEmpty {
                     Divider()
                     Section("Favourite Folders") {
@@ -398,6 +407,18 @@ struct ContentView: View {
                                 Button("Open Over Current Workspace…") { model.open(layout) }
                                 Divider()
                                 Button("Delete Saved Layout…", role: .destructive) { model.delete(layout) }
+                            }
+                        }
+                    }
+                }
+                if !model.teamTemplates.isEmpty {
+                    Divider()
+                    Section("Team Templates") {
+                        ForEach(model.teamTemplates) { template in
+                            Menu(template.name) {
+                                Button("Apply to Folder…") { model.apply(template) }
+                                Divider()
+                                Button("Delete Team Template…", role: .destructive) { model.delete(template) }
                             }
                         }
                     }
@@ -1240,6 +1261,11 @@ private struct PaneRow: View {
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(Color.accentColor)
                     }
+                    if let role = pane.role {
+                        Text("@\(role)")
+                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Color.accentColor)
+                    }
                     if let permissionProfileName {
                         Text(permissionProfileName.uppercased())
                             .font(.system(size: 8, weight: .semibold))
@@ -1322,13 +1348,15 @@ private struct PaneRow: View {
             let enforcement = pane.permissionEnforcement?.label ?? "not recorded"
             return "Permissions: \(name) · \(enforcement)"
         }
+        let role = pane.role.map { "Routing role: \($0)" }
         guard let projectContext else {
-            return [pane.cwd, permission].compactMap { $0 }.joined(separator: "\n")
+            return [pane.cwd, role, permission].compactMap { $0 }.joined(separator: "\n")
         }
         let state = projectContext.isDirty ? "dirty" : "clean"
         return [
             pane.cwd,
             "Git: \(projectContext.branch) · \(state)",
+            role,
             permission,
         ].compactMap { $0 }.joined(separator: "\n")
     }

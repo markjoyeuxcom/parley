@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "6"
+    public static let version = "7"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -45,11 +45,13 @@ public enum AgentProtocol {
     - When delegated work reaches a terminal outcome, run
       `parley done current "<report>"` or `parley fail current "<reason>"`.
       Do not only print the result locally; the initiating pane owns the status.
-    - Name one cross-vendor pane by vendor or pane id. `lead` names the marked
-      workspace lead when another pane needs to return to it. Let Parley refuse
-      ambiguity. The workspace's visible automation policy is authoritative;
-      never work around a refusal. Never start another Parley instance and never
-      control its tmux server directly.
+    - Name one cross-vendor pane by vendor or pane id. A stable workspace role
+      is explicit: use `@reviewer`, or `workspace/@reviewer` across workspaces.
+      Never drop the `@`, because roles do not share the mutable pane-name
+      namespace. `lead` names the marked workspace lead when another pane needs
+      to return to it. Let Parley refuse ambiguity. The workspace's visible
+      automation policy is authoritative; never work around a refusal. Never
+      start another Parley instance and never control its tmux server directly.
 
     The latest explicit user instruction controls whether a handoff is sent or
     left as a draft. Parley's command result is authoritative about what happened.

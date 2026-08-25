@@ -946,7 +946,8 @@ private func checkInAppHelpGuideCoverage() throws {
         "saved layout", "command palette", "subscription", "compare independently",
         "edited synthesis", "context pack", "utf-8 bytes", "absolute executable",
         "workspace brief", "pinned context", "never attached automatically",
-        "handoff chain", "objection", "human decision",
+        "handoff chain", "objection", "human decision", "team template",
+        "routing role", "stopped placeholders",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -1029,6 +1030,10 @@ private func checkWorkbenchStateProjection() throws {
         WorkbenchStateProjection.pane(stopped) == .stopped,
         "an intentionally stopped agent placeholder was misreported as exited"
     )
+    try expect(
+        WorkbenchStateProjection.protocolStatus(stopped) == .notAttached,
+        "a stopped agent placeholder claimed to have an injected protocol"
+    )
 
     let exited = TmuxPane(
         id: "%3",
@@ -1079,6 +1084,29 @@ private func checkWorkbenchStateProjection() throws {
         WorkbenchStateProjection.pane(stale) == .protocolStale(reportedVersion: "1"),
         "a stale protocol was hidden by the secondary relay state"
     )
+    try expect(
+        WorkbenchStateProjection.protocolStatus(stale) == .restartRequired(reportedVersion: "1"),
+        "a stale pane did not expose its injected protocol version"
+    )
+
+    let unknownProtocol = TmuxPane(
+        id: "%6",
+        kind: .claude,
+        customName: nil,
+        terminalTitle: "",
+        cwd: "/tmp",
+        currentCommand: "claude",
+        isActive: false,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: false,
+        protocolVersion: nil,
+        isStarted: true
+    )
+    try expect(
+        WorkbenchStateProjection.protocolStatus(unknownProtocol) == .restartRequired(reportedVersion: nil),
+        "a running legacy pane without a protocol stamp was not marked for restart"
+    )
 
     let relayUnavailable = TmuxPane(
         id: "%5",
@@ -1101,6 +1129,10 @@ private func checkWorkbenchStateProjection() throws {
     try expect(
         WorkbenchStateProjection.pane(readyAgent) == .running,
         "a ready agent did not project as running"
+    )
+    try expect(
+        WorkbenchStateProjection.protocolStatus(readyAgent) == .current(version: AgentProtocol.version),
+        "a current pane did not expose its injected protocol version"
     )
 }
 
@@ -1199,9 +1231,10 @@ private func paneRow(
     isLead: Bool = false,
     automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate,
     permissionSelection: PermissionProfileSelection? = nil,
-    permissionEnforcement: PermissionEnforcementLevel? = nil
+    permissionEnforcement: PermissionEnforcementLevel? = nil,
+    role: String? = nil
 ) -> String {
-    [id, kind.rawValue, kind.label, kind.label, "/tmp", kind.rawValue, active ? "1" : "0", windowID, returnTo, relayEnabled ? "1" : "", protocolVersion, workspaceActive ? "1" : "0", workspaceName, bracketedPasteActive ? "1" : "0", started ? "1" : "0", isDead ? "1" : "", exitStatus.map(String.init) ?? "", isLead ? "1" : "", automationPolicy.rawValue, permissionSelection?.tmuxMetadataValue ?? "", permissionEnforcement?.rawValue ?? ""]
+    [id, kind.rawValue, kind.label, kind.label, "/tmp", kind.rawValue, active ? "1" : "0", windowID, returnTo, relayEnabled ? "1" : "", protocolVersion, workspaceActive ? "1" : "0", workspaceName, bracketedPasteActive ? "1" : "0", started ? "1" : "0", isDead ? "1" : "", exitStatus.map(String.init) ?? "", isLead ? "1" : "", automationPolicy.rawValue, permissionSelection?.tmuxMetadataValue ?? "", permissionEnforcement?.rawValue ?? "", role ?? ""]
         .joined(separator: "\u{1f}")
 }
 
@@ -1664,11 +1697,11 @@ private func checkAccessibilityDescriptions() throws {
         id: "%7", kind: .codex, customName: "Audit", terminalTitle: "", cwd: "/tmp/library",
         currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
         relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "library",
-        bracketedPasteActive: true, isDead: true, exitStatus: 7
+        bracketedPasteActive: true, isDead: true, exitStatus: 7, role: "reviewer"
     )
     try expect(
         WorkbenchAccessibility.agent(exited)
-            == "Audit, Codex agent. Exited with status 7. Workspace library",
+            == "Audit, Codex agent. Exited with status 7. Protocol v\(AgentProtocol.version), current. Routing role reviewer. Workspace library",
         "agent accessibility description hid its exited state or workspace"
     )
 
@@ -1755,6 +1788,132 @@ private func checkSavedWorkspaceLayoutPersistenceAndFreshSlots() throws {
     try store.delete(named: "REVIEW PAIR")
     let afterDeletion = try store.layouts()
     try expect(afterDeletion.isEmpty, "case-insensitive layout deletion left the saved layout behind")
+}
+
+private func checkPortableTeamTemplatePersistenceAndApplication() throws {
+    let directory = try temporaryDirectory()
+    let file = directory.appendingPathComponent("team-templates.json")
+    let template = TeamTemplate(
+        name: "Implementation Trio",
+        root: .split(
+            direction: .horizontal,
+            ratio: 0.55,
+            first: .leaf(TeamTemplateLeaf(
+                kind: .claude,
+                name: "Planner",
+                isWorkspaceLead: true,
+                permissionProfile: TeamTemplatePermission(
+                    profileID: "review-only",
+                    lifetime: .remembered
+                )
+            )),
+            second: .split(
+                direction: .vertical,
+                ratio: 0.5,
+                first: .leaf(TeamTemplateLeaf(
+                    kind: .codex,
+                    name: "Builder",
+                    role: "implementer",
+                    permissionProfile: TeamTemplatePermission(
+                        profileID: "flexible",
+                        lifetime: .remembered
+                    )
+                )),
+                second: .leaf(TeamTemplateLeaf(
+                    kind: .agy,
+                    name: "Review",
+                    role: "reviewer"
+                ))
+            )
+        ),
+        automationPolicy: .askAndDelegate
+    )
+
+    let applied = try template.workspaceLayout(
+        folder: "/tmp/project",
+        workspaceName: "Project Team"
+    )
+    let recaptured = try TeamTemplate.capturing(applied, name: template.name)
+    try expect(recaptured == template, "capturing a live workspace did not produce the same portable team definition")
+    try expect(applied.name == "Project Team", "applying a team template lost the requested workspace name")
+    try expect(
+        applied.root.leaves.allSatisfy { $0.folder == "/tmp/project" },
+        "a portable team retained a source-machine pane folder"
+    )
+    try expect(
+        applied.root.leaves.map(\.role) == [nil, "implementer", "reviewer"],
+        "applying a team template lost its stable pane roles"
+    )
+    try expect(
+        applied.root.leaves.first?.isWorkspaceLead == true,
+        "applying a team template lost its workspace lead"
+    )
+    let builder = try require(
+        applied.root.leaves.first(where: { $0.role == "implementer" }),
+        "the applied team omitted its implementer"
+    )
+    try expect(
+        builder.permissionSelection == PermissionProfileSelection(
+            profileID: "flexible",
+            approvedRoots: ["/tmp/project"],
+            lifetime: .remembered
+        ),
+        "a portable permission profile was not rebound to the selected folder"
+    )
+    try expect(
+        applied.fromSavedLayout().slots.allSatisfy { $0.paneID == nil && !$0.isStarted },
+        "applying a team template started an agent or reused a live pane id"
+    )
+
+    let encoded = try JSONEncoder().encode(template)
+    let json = try require(String(data: encoded, encoding: .utf8), "team template JSON was not UTF-8")
+    for forbidden in ["/tmp/project", "approvedRoots", "paneID", "windowID", "credential"] {
+        try expect(!json.contains(forbidden), "portable team template persisted forbidden state: \(forbidden)")
+    }
+    let decoded = try JSONDecoder().decode(TeamTemplate.self, from: encoded)
+    try expect(decoded == template, "team template did not round-trip")
+
+    let store = TeamTemplateStore(file: file)
+    try store.save(template)
+    let initiallyStored = try store.templates()
+    try expect(initiallyStored == [template], "team template store did not persist its first template")
+    var metadata = stat()
+    try expect(lstat(file.path, &metadata) == 0 && metadata.st_mode & 0o077 == 0, "team template file was not owner-only")
+
+    let replacement = TeamTemplate(
+        name: "implementation trio",
+        root: .leaf(TeamTemplateLeaf(kind: .copilot, name: "Builder", role: "implementer"))
+    )
+    try store.save(replacement)
+    let replaced = try store.templates()
+    try expect(replaced == [replacement], "case-insensitive team replacement created a duplicate")
+
+    let ambiguous = TeamTemplate(
+        name: "Ambiguous",
+        root: .split(
+            direction: .horizontal,
+            ratio: 0.5,
+            first: .leaf(TeamTemplateLeaf(kind: .claude, name: "One", role: "reviewer")),
+            second: .leaf(TeamTemplateLeaf(kind: .codex, name: "Two", role: "reviewer"))
+        )
+    )
+    do {
+        try store.save(ambiguous)
+        throw CheckFailure(description: "team template store accepted an ambiguous pane role")
+    } catch let error as TeamTemplateStoreError {
+        try expect(error.localizedDescription.contains("unique"), "duplicate-role refusal was unclear")
+    }
+
+    let reserved = TeamTemplate(
+        name: "Reserved",
+        root: .leaf(TeamTemplateLeaf(kind: .codex, name: "Review", role: "codex"))
+    )
+    do {
+        try store.save(reserved)
+        throw CheckFailure(description: "team template store accepted a vendor name as a role")
+    } catch let error as TeamTemplateStoreError {
+        try expect(error.localizedDescription.contains("reserved"), "reserved-role refusal was unclear")
+    }
 }
 
 private func checkTmuxLayoutBecomesAnIDFreeSavedTree() throws {
@@ -2297,7 +2456,8 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "6", "the context-lifecycle protocol did not advance the shared protocol version")
+    try expect(AgentProtocol.version == "7", "the stable-role protocol did not advance the shared protocol version")
+    try expect(AgentProtocol.text.contains("@reviewer"), "shared protocol omitted explicit stable-role addressing")
     for command in ["parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait", "parley cancel", "parley context draft", "parley context discard", "--context <draft-id>"] {
         try expect(AgentProtocol.text.contains(command), "shared protocol omitted \(command)")
     }
@@ -2427,8 +2587,8 @@ private func checkSupervisionMetadataAndRecipesPersistWithoutLiveIDs() throws {
     try expect(lstat(file.path, &metadata) == 0 && metadata.st_mode & 0o077 == 0, "recipe file was not owner-only")
 
     let paneRows = [
-        paneRow(id: "%1", kind: .claude, active: true, isLead: true, automationPolicy: .askAnswer),
-        paneRow(id: "%2", kind: .codex, active: false, automationPolicy: .askAnswer),
+        paneRow(id: "%1", kind: .claude, active: true, isLead: true, automationPolicy: .askAnswer, role: "planner"),
+        paneRow(id: "%2", kind: .codex, active: false, automationPolicy: .askAnswer, role: "implementer"),
     ].joined(separator: "\n") + "\n"
     let runner = RecordingRunner { arguments, _ in
         switch command(arguments) {
@@ -2446,12 +2606,27 @@ private func checkSupervisionMetadataAndRecipesPersistWithoutLiveIDs() throws {
     let listedPanes = try controller.listPanes()
     let listedWorkspaces = try controller.listWorkspaces()
     try expect(listedPanes.first?.isWorkspaceLead == true, "tmux pane metadata lost the workspace lead")
+    try expect(listedPanes.map(\.role) == ["planner", "implementer"], "tmux pane metadata lost stable routing roles")
     try expect(listedWorkspaces.first?.automationPolicy == .askAnswer, "tmux workspace metadata lost its automation policy")
     try controller.setWorkspaceAutomationPolicy("@0", policy: .off)
     try controller.setWorkspaceLead("%2", workspaceID: "@0")
+    try controller.setPaneRole("reviewer", paneID: "%2", workspaceID: "@0")
+    do {
+        try controller.setPaneRole("planner", paneID: "%2", workspaceID: "@0")
+        throw CheckFailure(description: "role control accepted a duplicate workspace role")
+    } catch let error as ParleyTmuxError {
+        try expect(error.localizedDescription.contains("already assigned"), "duplicate role refusal was unclear")
+    }
+    do {
+        try controller.setPaneRole("codex", paneID: "%2", workspaceID: "@0")
+        throw CheckFailure(description: "role control accepted a reserved vendor route")
+    } catch let error as ParleyTmuxError {
+        try expect(error.localizedDescription.contains("reserved"), "reserved role refusal was unclear")
+    }
     try controller.interruptPane("%2")
     try expect(runner.calls.contains { $0.arguments.contains("@parley-automation-policy") && $0.arguments.contains("off") }, "policy control did not write tmux workspace metadata")
     try expect(runner.calls.contains { $0.arguments.contains("@parley-lead") && $0.arguments.contains("%2") && $0.arguments.contains("1") }, "lead control did not stamp the selected pane")
+    try expect(runner.calls.contains { $0.arguments.contains("@parley-role") && $0.arguments.contains("%2") && $0.arguments.contains("reviewer") }, "role control did not stamp the selected pane")
     try expect(runner.calls.contains { command($0.arguments) == "send-keys" && $0.arguments.contains("%2") && $0.arguments.contains("C-c") }, "explicit Stop did not target the exact lead pane")
 }
 
@@ -4528,7 +4703,7 @@ private func checkCrossWorkspaceRelayAddressing() throws {
         TmuxPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp/api", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "api"),
         TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/api", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil, workspaceName: "api"),
         TmuxPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/web", currentCommand: "agy", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "web"),
-        TmuxPane(id: "%4", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp/web", currentCommand: "claude", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "web"),
+        TmuxPane(id: "%4", kind: .claude, customName: "Critic", terminalTitle: "", cwd: "/tmp/web", currentCommand: "claude", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "web", role: "reviewer"),
     ]
     let submitted = LockedDelivery()
     let broker = RelayBroker(
@@ -4544,8 +4719,25 @@ private func checkCrossWorkspaceRelayAddressing() throws {
     let qualified = broker.handle(token: token, target: "web/agy", text: "cross-workspace question")
     try expect(qualified.status == 200 && submitted.value?.paneID == "%3", "qualified target did not cross to the named workspace")
 
-    let uniqueFallback = broker.handle(token: token, target: "Reviewer", text: "unique global question")
-    try expect(uniqueFallback.status == 200 && submitted.value?.paneID == "%4", "unique target in another workspace was not reachable by name")
+    let stableRole = broker.handle(token: token, target: "@reviewer", text: "unique global question")
+    try expect(stableRole.status == 200 && submitted.value?.paneID == "%4", "a stable role did not survive an unrelated display name")
+    let bareRole = broker.handle(token: token, target: "reviewer", text: "must not retarget")
+    try expect(bareRole.status == 400, "a bare name silently resolved through the stable-role namespace")
+
+    let ambiguousPanes = panes + [
+        TmuxPane(id: "%5", kind: .copilot, customName: "Second critic", terminalTitle: "", cwd: "/tmp/web", currentCommand: "copilot", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "web", role: "reviewer"),
+    ]
+    let ambiguousBroker = RelayBroker(
+        credentials: credentials,
+        panes: { ambiguousPanes },
+        paste: { _, _ in },
+        submit: { _, _ in }
+    )
+    let ambiguous = ambiguousBroker.handle(token: token, target: "web/@reviewer", text: "must refuse")
+    try expect(
+        ambiguous.status == 400 && ambiguous.body.error?.contains("ambiguous") == true,
+        "duplicate workspace roles silently retargeted a pane"
+    )
 }
 
 private func checkRelayCredentialPersistsAndIdentifiesSender() throws {
@@ -7567,6 +7759,7 @@ let checks: [(String, () throws -> Void)] = [
     ("exited pane retention", checkExitedPaneRetention),
     ("embedded tmux presentation", checkEmbeddedTmuxPresentation),
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
+    ("portable team template persistence and application", checkPortableTeamTemplatePersistenceAndApplication),
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),
     ("direct agent argv", checkDirectAgentSpawn),

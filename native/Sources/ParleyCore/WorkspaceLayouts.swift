@@ -5,6 +5,7 @@ public struct SavedLayoutLeaf: Codable, Equatable, Sendable {
     public let kind: PaneKind
     public let name: String
     public let folder: String
+    public let role: String?
     public let isWorkspaceLead: Bool
     public let permissionSelection: PermissionProfileSelection?
 
@@ -12,12 +13,14 @@ public struct SavedLayoutLeaf: Codable, Equatable, Sendable {
         kind: PaneKind,
         name: String,
         folder: String,
+        role: String? = nil,
         isWorkspaceLead: Bool = false,
         permissionSelection: PermissionProfileSelection? = nil
     ) {
         self.kind = kind
         self.name = name
         self.folder = folder
+        self.role = role
         self.isWorkspaceLead = isWorkspaceLead
         self.permissionSelection = permissionSelection
     }
@@ -26,6 +29,7 @@ public struct SavedLayoutLeaf: Codable, Equatable, Sendable {
         case kind
         case name
         case folder
+        case role
         case isWorkspaceLead
         case permissionSelection
     }
@@ -36,6 +40,7 @@ public struct SavedLayoutLeaf: Codable, Equatable, Sendable {
             kind: try values.decode(PaneKind.self, forKey: .kind),
             name: try values.decode(String.self, forKey: .name),
             folder: try values.decode(String.self, forKey: .folder),
+            role: try values.decodeIfPresent(String.self, forKey: .role),
             isWorkspaceLead: try values.decodeIfPresent(Bool.self, forKey: .isWorkspaceLead) ?? false,
             permissionSelection: try values.decodeIfPresent(
                 PermissionProfileSelection.self,
@@ -66,6 +71,7 @@ public indirect enum SavedLayoutNode: Codable, Equatable, Sendable {
         case kind
         case name
         case folder
+        case role
         case isWorkspaceLead
         case permissionSelection
         case direction
@@ -82,6 +88,7 @@ public indirect enum SavedLayoutNode: Codable, Equatable, Sendable {
                 kind: try values.decode(PaneKind.self, forKey: .kind),
                 name: try values.decode(String.self, forKey: .name),
                 folder: try values.decode(String.self, forKey: .folder),
+                role: try values.decodeIfPresent(String.self, forKey: .role),
                 isWorkspaceLead: try values.decodeIfPresent(Bool.self, forKey: .isWorkspaceLead) ?? false,
                 permissionSelection: try values.decodeIfPresent(
                     PermissionProfileSelection.self,
@@ -106,6 +113,7 @@ public indirect enum SavedLayoutNode: Codable, Equatable, Sendable {
             try values.encode(leaf.kind, forKey: .kind)
             try values.encode(leaf.name, forKey: .name)
             try values.encode(leaf.folder, forKey: .folder)
+            try values.encodeIfPresent(leaf.role, forKey: .role)
             try values.encode(leaf.isWorkspaceLead, forKey: .isWorkspaceLead)
             try values.encodeIfPresent(leaf.permissionSelection, forKey: .permissionSelection)
         case let .split(direction, ratio, first, second):
@@ -178,6 +186,7 @@ public struct SavedWorkspaceLayout: Identifiable, Codable, Equatable, Sendable {
                     kind: leaf.kind,
                     name: leaf.name,
                     folder: leaf.folder,
+                    role: leaf.role,
                     isStarted: false,
                     isWorkspaceLead: leaf.isWorkspaceLead,
                     permissionSelection: leaf.permissionSelection
@@ -201,6 +210,7 @@ public struct RestoredLayoutSlot: Identifiable, Equatable, Sendable {
     public let kind: PaneKind
     public let name: String
     public let folder: String
+    public let role: String?
     public var isStarted: Bool
     public let isWorkspaceLead: Bool
     public let permissionSelection: PermissionProfileSelection?
@@ -309,6 +319,7 @@ public enum TmuxLayoutParser {
                     kind: pane.kind,
                     name: pane.displayName,
                     folder: pane.cwd,
+                    role: pane.role,
                     isWorkspaceLead: pane.isWorkspaceLead,
                     permissionSelection: pane.permissionSelection
                 )),
@@ -484,6 +495,7 @@ public final class SavedWorkspaceLayoutStore: @unchecked Sendable {
         }
         var leaves = 0
         var leads = 0
+        var roles = Set<String>()
         func validateNode(_ node: SavedLayoutNode, depth: Int) throws {
             guard depth <= 12 else {
                 throw SavedWorkspaceLayoutStoreError.invalid("the split tree is too deep")
@@ -503,6 +515,17 @@ public final class SavedWorkspaceLayoutStore: @unchecked Sendable {
                 }
                 guard leaf.folder.hasPrefix("/") else {
                     throw SavedWorkspaceLayoutStoreError.invalid("every pane folder must be absolute")
+                }
+                if let role = leaf.role {
+                    if let error = PaneRoleRules.validationError(role) {
+                        throw SavedWorkspaceLayoutStoreError.invalid(error)
+                    }
+                    guard leaf.kind.isAgent else {
+                        throw SavedWorkspaceLayoutStoreError.invalid("only agent panes may have routing roles")
+                    }
+                    guard roles.insert(role.lowercased()).inserted else {
+                        throw SavedWorkspaceLayoutStoreError.invalid("pane roles must be unique within a workspace")
+                    }
                 }
             case let .split(_, ratio, first, second):
                 guard ratio.isFinite, ratio >= 0.05, ratio <= 0.95 else {
