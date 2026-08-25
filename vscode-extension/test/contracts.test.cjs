@@ -8,6 +8,9 @@ const {
   assertLocalDesktopRuntime,
   buildManifest,
   formatDiagnostics,
+  parseAttentionSnapshot,
+  parleyFocusURL,
+  readAttentionSnapshot,
   relativeWorkspaceFile,
   stageManifest,
 } = require('../contracts.cjs')
@@ -72,4 +75,68 @@ test('staging uses the Production private inbox and owner-only permissions', () 
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }
+})
+
+test('attention snapshot accepts bounded content-free status and rejects hidden authority', () => {
+  const now = new Date('2026-08-25T10:00:20.000Z')
+  const snapshot = parseAttentionSnapshot({
+    version: 1,
+    generatedAt: '2026-08-25T10:00:10.000Z',
+    attentionCount: 2,
+    workspaces: [
+      { id: '@0', name: 'Library', attentionCount: 1 },
+      { id: '@1', name: 'Consumer', attentionCount: 1 },
+    ],
+    panes: [
+      { id: '%1', name: 'Reviewer', kind: 'codex', workspaceID: '@0', workspaceName: 'Library' },
+    ],
+    items: [
+      {
+        handoffID: '11111111-1111-4111-8111-111111111111',
+        workspaceID: '@0',
+        workspaceName: 'Library',
+        label: 'Builder returned a result',
+        reason: 'returnedResult',
+      },
+    ],
+  }, { now })
+  assert.equal(snapshot.attentionCount, 2)
+  assert.equal(snapshot.panes[0].id, '%1')
+  assert.throws(() => parseAttentionSnapshot({ ...snapshot, prompt: 'run tests' }, { now }), /unsupported/i)
+  assert.throws(() => parseAttentionSnapshot({ ...snapshot, generatedAt: '2026-08-25T09:59:00.000Z' }, { now }), /stale/i)
+  assert.throws(() => parseAttentionSnapshot({ ...snapshot, panes: [{ ...snapshot.panes[0], id: 'codex' }] }, { now }), /pane/i)
+})
+
+test('attention discovery reads only the private Production snapshot', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'parley-vscode-attention-'))
+  const application = path.join(home, 'Library/Application Support/Parley Native')
+  const file = path.join(application, 'external-attention.json')
+  const now = new Date('2026-08-25T10:00:20.000Z')
+  try {
+    fs.mkdirSync(application, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(file, JSON.stringify({
+      version: 1,
+      generatedAt: '2026-08-25T10:00:10.000Z',
+      attentionCount: 0,
+      workspaces: [],
+      panes: [],
+      items: [],
+    }), { mode: 0o600 })
+    assert.equal(readAttentionSnapshot({ home, now }).attentionCount, 0)
+    fs.chmodSync(file, 0o644)
+    assert.throws(() => readAttentionSnapshot({ home, now }), /private/i)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('focus links can carry only an opaque pane or handoff id', () => {
+  assert.equal(parleyFocusURL({ paneID: '%12' }), 'parley://focus?pane=%2512')
+  assert.equal(
+    parleyFocusURL({ handoffID: '11111111-1111-4111-8111-111111111111' }),
+    'parley://status?handoff=11111111-1111-4111-8111-111111111111',
+  )
+  assert.throws(() => parleyFocusURL({ paneID: 'codex' }), /pane/i)
+  assert.throws(() => parleyFocusURL({ handoffID: 'current' }), /handoff/i)
+  assert.throws(() => parleyFocusURL({ paneID: '%1', handoffID: '11111111-1111-4111-8111-111111111111' }), /one/i)
 })

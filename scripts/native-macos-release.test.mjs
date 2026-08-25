@@ -35,6 +35,9 @@ test('GitHub release automation is manual and can create only a draft', () => {
   )
   assert.match(workflow, /gh release create[\s\S]*--draft/)
   assert.match(workflow, /PARLEY_RELEASE_TAG/)
+  assert.match(workflow, /npm ci --prefix vscode-extension/)
+  assert.match(workflow, /npm run package:vscode/)
+  assert.match(workflow, /Parley-Companion-0\.1\.0\.vsix/)
 })
 
 test('release source must be clean and an optional tag must match package version', () => {
@@ -114,6 +117,7 @@ test('unnotarized install guide is explicit without telling users to disable Gat
   assert.match(guide, /Privacy & Security/)
   assert.match(guide, /Open Anyway/)
   assert.match(guide, /SHA256SUMS/)
+  assert.match(guide, /Install from VSIX/)
   assert.match(guide, /replaces an idle older coordination core automatically/)
   assert.match(guide, /Core upgrade: pending/)
   assert.match(guide, /Prepare to Uninstall/)

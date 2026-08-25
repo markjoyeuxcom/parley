@@ -37,8 +37,9 @@ There is no API-key mode, hosted Parley service, telemetry or remote sync.
   or clone only its visible configuration as a fresh stopped agent placeholder.
 - Installed-app entry points through `parley open <folder>`, `parley://open`,
   Finder's **Open With** menu and an **Open in Parley** Finder Service.
-- A thin local VS Code companion for opening the current workspace and placing
-  explicit editor sources into Parley's editable context-pack preview.
+- A thin local VS Code companion for opening the current workspace, placing
+  explicit editor sources into Parley's editable context-pack preview, showing
+  content-free attention counts and focusing an authoritative pane or record.
 - Cross-workspace Ask targets and recent-folder shortcuts.
 - Owner-only durable handoff history and a compact workspace activity strip.
 - A separate native Status Center with workspace filters, live handoffs, agent
@@ -220,6 +221,12 @@ remote workspaces. Parley recaptures files and diffs itself; selections and
 diagnostics remain visibly attributed to VS Code. Every action opens the normal
 editable preview, requires a ready source pane, starts no agent and sends
 nothing. Build its local VSIX with:
+
+Its status-bar item reads a current owner-only Production snapshot containing
+counts, human labels and opaque ids only. Choose it to open one durable handoff
+in Status Center or focus one exact live agent pane. It refuses a stale or
+unsafe snapshot, and the focus URLs cannot carry prompts, context, startup or
+submission instructions.
 
 ```bash
 npm install --prefix vscode-extension

@@ -299,6 +299,15 @@ the normal editable preview. The manifest has no target, vendor, permission,
 prompt or submit field. Development and remote/web editor hosts are outside the
 contract.
 
+Production also publishes a bounded owner-only `external-attention.json`
+heartbeat for the local VS Code status item. Its projection contains labels,
+counts and opaque pane/handoff ids, never prompt or result bodies, terminal
+output, process commands, folders or credentials. The companion refuses stale
+or unsafe files. Strict `parley://focus?pane=` and
+`parley://status?handoff=` routes may focus one existing pane or Status Center
+record; neither route can carry work, start a vendor or submit terminal input.
+Development never writes the Production snapshot.
+
 - `parley relay` submits one attributed cross-vendor message.
 - `parley paste` leaves the attributed message in the target prompt.
 - `parley ask` creates one correlated consultation, submits it and waits.

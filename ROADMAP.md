@@ -766,7 +766,7 @@ verified by Parley.
   workspace or create its shell. Launch-time requests queue until SwiftUI binds;
   none can carry text, context, a pane kind or a submit action. DEV deliberately
   does not claim the machine-wide scheme.
-- [ ] Build a thin local **Visual Studio Code companion extension** on those
+- [x] Build a thin local **Visual Studio Code companion extension** on those
   entry points and context packs. From a local macOS workspace it can open or
   focus the folder in Parley, place a selection, current file, diagnostics or
   Git diff into Parley's editable context-pack preview, show attention counts,
@@ -776,14 +776,16 @@ verified by Parley.
   or submits work on its own. Its first release runs in VS Code's local UI
   extension host and refuses unsupported web or remote-only execution rather
   than pretending a remote path is local.
-  The first companion slice is implemented in-tree: six Command Palette and
+  The companion is implemented in-tree: six context Command Palette and
   editor/explorer actions open or focus the local folder and stage a selection,
   saved current file, current-file diagnostics, Git diff, or selection plus
   diff. One owner-only one-shot manifest feeds the existing editable preview;
   files and diffs are recaptured by Parley, editor text stays attributed, and
-  nothing starts or sends. Remaining before this item is complete: surface
-  attention counts and add bounded doors that focus an authoritative pane or
-  Status Center record, then include the VSIX in the release workflow.
+  nothing starts or sends. An owner-only content-free Production heartbeat now
+  supplies the VS Code status item and its attention/live-pane picker; strict
+  focus URLs can select one exact pane or durable Status Center record and
+  carry no work. The VSIX is built and attached by the manual draft-release
+  workflow alongside the native macOS assets.
 
 ### Vendor-owned tools, including browser use
 
@@ -909,7 +911,7 @@ step 13 and deliberately hardens the context feature before expanding it:
     checks, build, help and protocol documentation pass together.
 15. [x] Build portable teams and navigation, beginning with stopped team
     templates and stable pane roles/aliases, then deliberate pane mobility.
-16. [ ] Build the thin VS Code companion on the completed local external-entry
+16. [x] Build the thin VS Code companion on the completed local external-entry
     contract and the same reviewed context-pack and focus contracts.
 17. [ ] Add read-only worktree discovery and writer-collision awareness. Keep
     optional worktree creation contingent on evidence from those two stages.

@@ -6,6 +6,7 @@ app. It does not embed a terminal, own a vendor session or submit work.
 Commands available from the Command Palette:
 
 - **Parley: Open or Focus Workspace**
+- **Parley: Show Attention and Panes**
 - **Parley: Open Selection in Context Preview**
 - **Parley: Open Current File in Context Preview**
 - **Parley: Open Current File Diagnostics in Context Preview**
@@ -13,6 +14,12 @@ Commands available from the Command Palette:
 - **Parley: Open Selection and Git Diff in Context Preview**
 
 Editor and Explorer context menus expose the relevant commands as well.
+
+The status-bar item shows the installed Production app's current local
+attention count. Choose it to open one durable handoff in Parley's Status
+Center or focus one exact live agent pane. When Parley is closed or its
+heartbeat is stale, the item reports status as unavailable rather than showing
+old state as current.
 
 ## Safety boundary
 
@@ -32,6 +39,12 @@ Selections and diagnostics are labelled as VS Code-provided captures. A ready
 agent pane in that workspace is required as the eventual source, but no agent
 is started and nothing is sent until the person reviews the pack and uses one
 of Parley's existing confirmed send actions.
+
+Attention uses a separate owner-only, bounded snapshot. It contains workspace
+and pane labels, counts and opaque pane/handoff ids only—never prompt or answer
+text, terminal output, commands, folders or credentials. Strict focus links can
+select an existing pane or Status Center record but cannot start an agent,
+inject terminal input or submit work.
 
 ## Development
 
@@ -58,4 +71,5 @@ npm install --prefix vscode-extension
 npm run package:vscode
 ```
 
-The package is written to `dist/parley-companion.vsix`.
+The package is written to `dist/Parley-Companion-0.1.0.vsix` and the manual
+draft-release workflow attaches that same audited artifact to GitHub Releases.

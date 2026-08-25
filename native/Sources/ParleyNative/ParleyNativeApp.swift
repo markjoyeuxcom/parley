@@ -5,6 +5,7 @@ import SwiftUI
 fileprivate enum ExternalApplicationRequest: Equatable {
     case workspace(ExternalWorkspaceOpenRequest)
     case contextManifest(URL)
+    case navigation(ExternalNavigationRequest)
 }
 
 @MainActor
@@ -42,7 +43,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if url.isFileURL {
             receive(Result { try request(forFileURL: url) })
         } else {
-            receive(Result { .workspace(try ExternalWorkspaceOpen.request(url: url)) })
+            receive(Result {
+                if url.host?.caseInsensitiveCompare(ExternalWorkspaceOpen.action) == .orderedSame {
+                    return .workspace(try ExternalWorkspaceOpen.request(url: url))
+                }
+                return .navigation(try ExternalNavigation.request(url: url))
+            })
         }
     }
 
@@ -144,6 +150,10 @@ struct ParleyNativeApp: App {
                         switch request {
                         case let .workspace(workspace): model.openExternalWorkspace(workspace)
                         case let .contextManifest(file): model.importExternalContext(file: file)
+                        case let .navigation(navigation):
+                            if model.openExternalNavigation(navigation) {
+                                openWindow(id: "status-center")
+                            }
                         }
                     }
                 }

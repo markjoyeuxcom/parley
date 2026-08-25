@@ -25,13 +25,27 @@ jobs:
       - name: Install the declared runtime dependency
         run: brew install tmux
 
+      - name: Install the locked VS Code companion toolchain
+        run: npm ci --prefix vscode-extension
+
       - name: Run deterministic checks
         run: npm test
+
+      - name: Package the VS Code companion
+        run: npm run package:vscode
 
       - name: Prepare and verify unnotarized release assets
         env:
           PARLEY_RELEASE_TAG: ${{ inputs.tag }}
         run: npm run release:mac
+
+      - name: Add the companion to the verified checksum set
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          checksums="dist/Parley-${version}-mac-arm64.SHA256SUMS"
+          (cd dist && shasum -a 256 "Parley-Companion-0.1.0.vsix" >> "$(basename "$checksums")")
+          LC_ALL=C sort -o "$checksums" "$checksums"
+          (cd dist && shasum -a 256 -c "$(basename "$checksums")")
 
       - name: Create an unpublished GitHub draft
         env:
@@ -46,6 +60,7 @@ jobs:
             "$base.release.json" \
             "$base.SHA256SUMS" \
             "${base}-INSTALL.txt" \
+            "dist/Parley-Companion-0.1.0.vsix" \
             --verify-tag \
             --draft \
             --title "Parley v${version} — unnotarized beta" \
