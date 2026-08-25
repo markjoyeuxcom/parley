@@ -26,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
     fileprivate func bindExternalRequestHandler(
         _ handler: @escaping (ExternalApplicationRequest) -> Void
     ) {
@@ -143,7 +147,7 @@ struct ParleyNativeApp: App {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        WindowGroup("Parley") {
+        WindowGroup("Parley", id: "main") {
             ContentView(model: model)
                 .onAppear {
                     appDelegate.bindExternalRequestHandler { request in
@@ -236,6 +240,13 @@ struct ParleyNativeApp: App {
                 Button("Balance Panes") { model.balance() }
             }
         }
+
+        MenuBarExtra {
+            AttentionInboxMenu(model: model)
+        } label: {
+            AttentionInboxMenuBarLabel(model: model)
+        }
+        .menuBarExtraStyle(.menu)
 
         Window("Status Center", id: "status-center") {
             StatusCenterView(model: model)

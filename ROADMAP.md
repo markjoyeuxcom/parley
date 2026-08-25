@@ -829,7 +829,7 @@ uncommitted changes.
 
 ### Attention, history and human control
 
-- [ ] Add a restrained **menu-bar attention inbox** for waiting answers,
+- [x] Add a restrained **menu-bar attention inbox** for waiting answers,
   permission requests, completed delegations and failures while the main window
   is closed. Notifications and menu labels exclude prompt and answer bodies;
   selecting an item focuses the authoritative record in Parley.

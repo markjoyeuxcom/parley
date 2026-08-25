@@ -221,6 +221,7 @@ final class AppModel: ObservableObject {
     private var lastCoreUpgradeAttempt = Date.distantPast
     private var lastExternalAttentionSnapshot: ExternalAttentionSnapshot?
     private var lastExternalAttentionPublishedAt = Date.distantPast
+    private var periodicRefreshTimer: Timer?
     private let coreLoginItemController = CoreLoginItemController()
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
     private static let workspaceContinuityKey = "parley.workspaceContinuity"
@@ -231,6 +232,7 @@ final class AppModel: ObservableObject {
     private static let projectContextRefreshInterval: TimeInterval = 5
     private static let worktreeRefreshInterval: TimeInterval = 15
     private static let externalAttentionHeartbeatInterval: TimeInterval = 10
+    private static let periodicRefreshInterval: TimeInterval = 1
 
     init() {
         let requestedFolder = Self.argument(named: "--cwd")
@@ -461,6 +463,7 @@ final class AppModel: ObservableObject {
         refreshCoreLoginItemState()
         refreshRuntimeReadiness()
         if runtime.upgradesCore { scheduleCoreUpgradeCheck(force: true) }
+        startPeriodicRefresh()
     }
 
     var activeWorkspace: TmuxWorkspace? { workspaces.first(where: \.isActive) }
@@ -788,6 +791,13 @@ final class AppModel: ObservableObject {
 
     var activePaneState: WorkbenchPaneState {
         WorkbenchStateProjection.pane(activePane)
+    }
+
+    var menuBarAttentionSummary: MenuBarAttentionSummary {
+        MenuBarAttentionProjection.summary(
+            snapshot: externalAttentionSnapshot(generatedAt: Date()),
+            coreAvailable: coreAvailable
+        )
     }
 
     var canNavigateWorkspaces: Bool { workspaces.count > 1 }
@@ -1468,19 +1478,34 @@ final class AppModel: ObservableObject {
         scheduleCoreUpgradeCheck()
     }
 
-    private func publishExternalAttentionSnapshot(force: Bool = false) {
-        guard runtime.mode == .production else { return }
-        let now = Date()
+    private func startPeriodicRefresh() {
+        guard periodicRefreshTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.periodicRefreshInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshQuietly()
+            }
+        }
+        RunLoop.main.add(timer, forMode: MenuTrackingRefreshPolicy.runLoopMode)
+        periodicRefreshTimer = timer
+    }
+
+    private func externalAttentionSnapshot(generatedAt: Date) -> ExternalAttentionSnapshot {
         var byID: [String: RelayHandoff] = [:]
         for handoff in unreadHandoffs + statusHandoffs + handoffs {
             byID[handoff.id] = handoff
         }
-        let snapshot = ExternalAttentionProjection.snapshot(
+        return ExternalAttentionProjection.snapshot(
             workspaces: workspaces,
             panes: panes,
             handoffs: Array(byID.values),
-            generatedAt: now
+            generatedAt: generatedAt
         )
+    }
+
+    private func publishExternalAttentionSnapshot(force: Bool = false) {
+        guard runtime.mode == .production else { return }
+        let now = Date()
+        let snapshot = externalAttentionSnapshot(generatedAt: now)
         let contentChanged = lastExternalAttentionSnapshot?.hasSameContent(as: snapshot) != true
         let heartbeatDue = now.timeIntervalSince(lastExternalAttentionPublishedAt)
             >= Self.externalAttentionHeartbeatInterval
