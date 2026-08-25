@@ -1851,7 +1851,7 @@ private func checkDirectAgentSpawn() throws {
 
 private func checkAgentProcessBoundaryIsMandatoryAndPaneScoped() throws {
     let root = URL(
-        fileURLWithPath: "/tmp/parley-boundary-\(UUID().uuidString.prefix(8))",
+        fileURLWithPath: "/private/tmp/parley-boundary-\(UUID().uuidString.prefix(8))",
         isDirectory: true
     )
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
@@ -1899,6 +1899,15 @@ private func checkAgentProcessBoundaryIsMandatoryAndPaneScoped() throws {
             paneToken: token
         ),
         "agent boundary and relay transport disagreed about the pane endpoint"
+    )
+    let shim = try RelayShim.installCommand(
+        in: shimDirectory,
+        transportDirectory: transportDirectory
+    )
+    let shimScript = try String(contentsOf: shim, encoding: .utf8)
+    try expect(
+        shimScript.contains("transport_root='\(transportDirectory.path)'"),
+        "relay shim changed the transport path spelling granted by the agent boundary"
     )
     let attributes = try FileManager.default.attributesOfItem(atPath: boundary.endpointDirectory.path)
     try expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o700, "pane relay endpoint was not owner-only")
@@ -5056,16 +5065,52 @@ private func runCoreServiceFixture() throws {
     }
 }
 
-private func checkStableShimInstallationDoesNotOverwriteForeignCommands() throws {
+private func checkStableRouterSelectsRuntimeAndPreservesForeignCommands() throws {
     let directory = try temporaryDirectory()
-    let executable = try RelayShim.installCommand(in: directory)
+    let productionCommand = directory.appendingPathComponent("production-parley")
+    let developmentCommand = directory.appendingPathComponent("development-parley")
+    for (command, result) in [(productionCommand, "production"), (developmentCommand, "development")] {
+        try "#!/bin/sh\nprintf '%s' '\(result)'\n".write(to: command, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: command.path)
+    }
+
+    // A production upgrade replaces Parley's old runtime-pinned managed shim
+    // with one neutral router. A foreign command is still never overwritten.
+    _ = try RelayShim.installCommand(in: directory)
+    let executable = try RelayShim.installStableRouter(
+        in: directory,
+        productionCommand: productionCommand,
+        developmentCommand: developmentCommand
+    )
     let installed = try String(contentsOf: executable, encoding: .utf8)
-    try expect(installed.contains("Parley Native managed relay shim"), "stable relay command was not recognisably managed")
+    try expect(installed.contains("Parley Native managed relay router"), "stable relay command was not recognisably managed")
+
+    let runner = ProcessCommandRunner(timeout: 2)
+    let production = try runner.run(executable: executable, arguments: [], environment: [:], input: nil)
+    let development = try runner.run(
+        executable: executable,
+        arguments: [],
+        environment: ["PARLEY_RUNTIME": "DEV"],
+        input: nil
+    )
+    let attached = try runner.run(
+        executable: executable,
+        arguments: [],
+        environment: ["PARLEY_RUNTIME": "DEV ATTACHED TO PRODUCTION"],
+        input: nil
+    )
+    try expect(production.status == 0 && production.stdoutText == "production", "stable relay router did not default to Production")
+    try expect(development.status == 0 && development.stdoutText == "development", "stable relay router did not select Development")
+    try expect(attached.status == 0 && attached.stdoutText == "production", "attached Development did not remain on Production")
 
     let foreign = "#!/bin/sh\necho foreign\n"
     try foreign.write(to: executable, atomically: true, encoding: .utf8)
     do {
-        _ = try RelayShim.installCommand(in: directory)
+        _ = try RelayShim.installStableRouter(
+            in: directory,
+            productionCommand: productionCommand,
+            developmentCommand: developmentCommand
+        )
         throw CheckFailure(description: "stable shim overwrote a foreign parley command")
     } catch RelayShimError.commandCollision {
         // Expected: a command Parley does not own is never replaced.
@@ -6717,7 +6762,7 @@ let checks: [(String, () throws -> Void)] = [
     ("core control survives UI reattachment", checkCoreControlSurvivesClientReattachment),
     ("persistent core process survives UI exit", checkPersistentCoreProcessSurvivesClientExit),
     ("core restart interrupts wait and recovers", checkCoreRestartInterruptsWaitAndRecoversDiscovery),
-    ("safe stable relay shim", checkStableShimInstallationDoesNotOverwriteForeignCommands),
+    ("runtime-aware stable relay router", checkStableRouterSelectsRuntimeAndPreservesForeignCommands),
     ("agent Ask auto-submits and returns", checkAgentAskSubmitsAndBlocksUntilTheTargetAnswers),
     ("ask-many independent ordered fanout", checkAskManyFansOutIndependentlyAndReturnsAnOrderedBundle),
     ("ask-many comparison preserves independent attribution", checkAskManyComparisonDraftPreservesIndependentAttribution),

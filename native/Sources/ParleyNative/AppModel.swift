@@ -344,11 +344,17 @@ final class AppModel: ObservableObject {
             // Persistent tmux panes retain the PATH they were born with. Put a
             // managed copy in the user's existing stable command directory so
             // reattaching the UI upgrades relay access without killing those
-            // agent conversations. A foreign `parley` command is never replaced.
+            // agent conversations. The stable command is a runtime-neutral
+            // router because vendor CLIs may rebuild PATH after launch. A
+            // foreign `parley` command is never replaced.
             if runtime.installsStableCommand {
-                _ = try RelayShim.installCommand(
-                    in: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin"),
-                    transportDirectory: agentTransportDirectory
+                let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
+                let developmentRuntime = ParleyRuntime.make(mode: .development, homeDirectory: homeDirectory)
+                _ = try RelayShim.installStableRouter(
+                    in: homeDirectory.appendingPathComponent(".local/bin"),
+                    productionCommand: shimDirectory.appendingPathComponent("parley"),
+                    developmentCommand: developmentRuntime.applicationDirectory
+                        .appendingPathComponent("bin/parley")
                 )
             }
             let infoFile = controller.applicationDirectory.appendingPathComponent("relay-url")

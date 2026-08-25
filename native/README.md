@@ -261,9 +261,19 @@ to an explicit user action.
 ## Relay behavior
 
 Agent commands reach the broker through an authenticated, owner-only request/
-response directory under `/tmp`; this works when a vendor sandbox denies all
-network syscalls. The native UI uses the broker's local Unix-domain control
+response directory in the macOS temporary root (currently `/private/tmp`);
+this works when a vendor sandbox denies all network syscalls. The generated
+shim and the outer Seatbelt profile must retain the exact same path spelling:
+rewriting only one side to the `/tmp` alias makes a healthy endpoint invisible
+inside the pane. The native UI uses the broker's local Unix-domain control
 socket. Neither path uses TCP loopback.
+
+Vendor CLIs may rebuild PATH and resolve `parley` through `~/.local/bin` rather
+than the runtime-local bin directory. That stable command is therefore a
+credential-free router: exact `PARLEY_RUNTIME=DEV` selects the isolated
+Development shim; Production and Development-attached-to-Production select
+the Production shim. Development never installs or replaces the stable
+router. Do not collapse it back into a runtime-pinned relay shim.
 
 - `parley relay` submits one attributed cross-vendor message.
 - `parley paste` leaves the attributed message in the target prompt.
