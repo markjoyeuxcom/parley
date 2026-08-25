@@ -414,6 +414,11 @@ struct StatusCenterView: View {
                         Text(pane.kind.label.uppercased())
                             .font(.system(size: 8, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.secondary)
+                        if let role = pane.role {
+                            Text("@\(role)")
+                                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Color.accentColor)
+                        }
                         if attention != nil {
                             Text("ATTENTION")
                                 .font(.system(size: 8, weight: .bold, design: .monospaced))
@@ -432,6 +437,9 @@ struct StatusCenterView: View {
                     Text(pane.workspaceName ?? pane.windowID)
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
+                    Text(protocolLabel(pane))
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(protocolColor(pane))
                     Text(readiness(pane))
                         .font(.system(size: 8, weight: .semibold, design: .monospaced))
                         .foregroundStyle(readinessColor(pane))
@@ -1219,6 +1227,25 @@ struct StatusCenterView: View {
         if pane.isDead { return .red }
         return WorkbenchStateProjection.pane(pane) == .running && pane.bracketedPasteActive
             ? .green : .orange
+    }
+
+    private func protocolLabel(_ pane: TmuxPane) -> String {
+        switch WorkbenchStateProjection.protocolStatus(pane) {
+        case .notAttached:
+            return "PROTOCOL — · NOT ATTACHED"
+        case let .current(version):
+            return "PROTOCOL V\(version) · CURRENT"
+        case let .restartRequired(reportedVersion):
+            return reportedVersion.map { "PROTOCOL V\($0) · RESTART REQUIRED" }
+                ?? "PROTOCOL UNKNOWN · RESTART REQUIRED"
+        }
+    }
+
+    private func protocolColor(_ pane: TmuxPane) -> Color {
+        switch WorkbenchStateProjection.protocolStatus(pane) {
+        case .notAttached, .current: .secondary
+        case .restartRequired: .orange
+        }
     }
 
     private func processState(_ pane: TmuxPane) -> String {

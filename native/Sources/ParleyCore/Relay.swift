@@ -2538,10 +2538,15 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     private func paneMatches(_ requested: String, pane: TmuxPane) -> Bool {
-            requested.caseInsensitiveCompare(pane.displayName) == .orderedSame
-                || requested.caseInsensitiveCompare(pane.kind.rawValue) == .orderedSame
-                || requested.caseInsensitiveCompare(pane.kind.label) == .orderedSame
-                || (requested.caseInsensitiveCompare("lead") == .orderedSame && pane.isWorkspaceLead)
+        if requested.hasPrefix("@") {
+            let role = String(requested.dropFirst())
+            guard PaneRoleRules.validationError(role) == nil else { return false }
+            return role.caseInsensitiveCompare(pane.role ?? "") == .orderedSame
+        }
+        return requested.caseInsensitiveCompare(pane.displayName) == .orderedSame
+            || requested.caseInsensitiveCompare(pane.kind.rawValue) == .orderedSame
+            || requested.caseInsensitiveCompare(pane.kind.label) == .orderedSame
+            || (requested.caseInsensitiveCompare("lead") == .orderedSame && pane.isWorkspaceLead)
     }
 
     private func authorize(_ kind: RelayHandoffKind, for sender: TmuxPane) throws {

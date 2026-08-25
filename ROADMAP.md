@@ -176,8 +176,8 @@ Center provides the detailed operational view.
 - [x] A **Live collaboration** section showing source → target, operation type,
   concise subject, elapsed time, and exact state for every active handoff.
 - [x] An **Agents** section showing pane name, vendor, workspace, process health,
-  protocol compatibility, relay availability, known attention state, and the
-  work item currently associated with that pane.
+  exact injected protocol version and compatibility, relay availability, known
+  attention state, and the work item currently associated with that pane.
 - [x] A selected-item inspector containing the complete question or instruction,
   returned answer or completion report, timestamps, and delivery receipts.
 - [x] Contextual controls for Focus Source, Focus Target, Cancel Wait, Retry
@@ -725,14 +725,25 @@ verified by Parley.
 
 ### Portable teams and navigation
 
-- [ ] Add reusable **team templates** containing pane vendors, names, roles,
+- [x] Add reusable **team templates** containing pane vendors, names, roles,
   permission profiles, lead, automation policy and layout. Applying one to a
   folder creates stopped agent placeholders so no subscription session starts
   without an explicit person action.
-- [ ] Add stable workspace-scoped **pane roles and aliases** such as `lead`,
+  Team templates now live in an owner-only bounded store and deliberately omit
+  folders, approved roots, live ids, credentials and sessions. Saving captures
+  the current configured grid; applying chooses one target folder, rebinds
+  permission profiles to it, creates a new workspace and leaves every agent
+  stopped. Shells retain the saved-layout policy and may start automatically.
+- [x] Add stable workspace-scoped **pane roles and aliases** such as `lead`,
   `implementer`, `reviewer` and `tester`. Routing by role must remain valid
   across display-name changes, refuse ambiguity, and never silently retarget a
   different live pane.
+  Roles are independent owner-controlled tmux metadata with a lowercase slug
+  grammar and one-role-per-workspace uniqueness. Their routing namespace is
+  explicit (`@reviewer` and `workspace/@reviewer`), so a missing role can never
+  fall through to a mutable display name. `lead` remains the separately marked
+  built-in role. Protocol v7 teaches every newly started vendor this syntax;
+  Status Center shows the exact injected version and restart requirement.
 - [ ] Add deliberate **pane mobility**: move a pane between workspaces when tmux
   can preserve it safely, or clone only its visible configuration into another
   workspace. Folder ownership, running-process consequences and active

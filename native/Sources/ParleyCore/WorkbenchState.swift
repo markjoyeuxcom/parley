@@ -15,6 +15,12 @@ public enum WorkbenchPaneState: Equatable, Sendable {
     case relayUnavailable
 }
 
+public enum WorkbenchProtocolStatus: Equatable, Sendable {
+    case notAttached
+    case current(version: String)
+    case restartRequired(reportedVersion: String?)
+}
+
 public enum WorkbenchStateProjection {
     public static func connection(
         tmuxAvailable: Bool,
@@ -34,5 +40,16 @@ public enum WorkbenchStateProjection {
         }
         if pane.kind.isAgent, !pane.relayEnabled { return .relayUnavailable }
         return .running
+    }
+
+    /// The version Parley injected when this agent process was started. This
+    /// is an authoritative launch stamp, not a claim that the model understood
+    /// or followed the protocol text.
+    public static func protocolStatus(_ pane: TmuxPane) -> WorkbenchProtocolStatus {
+        guard pane.kind.isAgent, pane.isStarted else { return .notAttached }
+        guard pane.protocolVersion == AgentProtocol.version else {
+            return .restartRequired(reportedVersion: pane.protocolVersion)
+        }
+        return .current(version: AgentProtocol.version)
     }
 }

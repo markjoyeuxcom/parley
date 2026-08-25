@@ -181,6 +181,11 @@ upgrades a Production tmux/core, and remains visibly marked
 - Saved layouts live in the owner-only `workspace-layouts.json`, never in tmux.
   They contain no pane/window ids. Restored shells start; restored agent slots
   remain stopped until a person chooses Start.
+- Portable teams live in owner-only `team-templates.json`. They retain vendor,
+  display name, explicit `@role`, permission-profile identity and lifetime,
+  lead, automation policy and split layout, but never a folder, approved root,
+  process id, credential or vendor session. Applying one binds every leaf to a
+  person-selected folder; agent leaves remain stopped.
 - The Review toolbar prepares an editable, size-bounded prompt from explicit
   Git status/diffs or one person-selected UTF-8 file, then uses the existing
   attributed cross-vendor Ask path.
@@ -200,8 +205,10 @@ upgrades a Production tmux/core, and remains visibly marked
   restoration are likewise stamped HUMAN in a separate owner-only,
   500-event `activity-events.jsonl` journal; they are recorded by the native
   action itself and never reconstructed from tmux output.
-- Pane kind, display name, relay availability, protocol version and legacy
-  Return route are tmux pane options.
+- Pane kind, display name, stable routing role, relay availability, protocol
+  version and legacy Return route are tmux pane options. Roles use an explicit
+  namespace (`@reviewer`, `workspace/@reviewer`) so a missing role never falls
+  through to an unrelated mutable display name.
 - Process and connection states are authoritative rather than inferred from
   terminal text. tmux retains exited panes, final output and numeric exit
   status; stopped restored seats, exited processes, stale protocols and missing
