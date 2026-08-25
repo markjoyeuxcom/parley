@@ -171,6 +171,24 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "workspaces-external-open",
+                    title: "Open from Terminal or Finder",
+                    paragraphs: [
+                        "The installed app exposes three person-controlled doors to the same operation: parley open <folder> in Terminal, Open in Parley from Finder's Services menu, and parley://open?folder=<encoded-absolute-folder> for local integrations.",
+                        "Each door validates one existing local directory, brings Parley forward, and focuses the workspace already using that canonical folder or creates a workspace containing its ordinary shell. It cannot carry a prompt, choose an agent or submit work.",
+                    ],
+                    items: [
+                        "The Finder Open With menu also offers Parley for folders. Parley registers as an alternate handler, never the system's default folder viewer.",
+                        "parley open is person-only and is refused inside an authenticated agent pane.",
+                        "The command and parley:// scheme target the installed Production app. Development remains isolated and does not claim the system-wide URL scheme.",
+                        "Opening a workspace never starts a Claude, Codex, Agy or Copilot session. Start agent panes yourself.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand("parley open /absolute/path/to/repository", "Open or focus that folder in the installed app."),
+                        ParleyHelpCommand("open 'parley://open?folder=%2Fabsolute%2Fpath'", "Invoke the bounded local URL route from a trusted integration."),
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "workspaces-pane-menu",
                     title: "Pane context menu",
                     items: [

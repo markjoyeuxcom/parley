@@ -3777,7 +3777,9 @@ final class AppModel: ObservableObject {
 
     func createWorkspace(folder: String) {
         perform {
-            guard let controller else { return }
+            guard let controller else {
+                throw RelayUIError.message("Parley cannot open a workspace while its tmux connection is unavailable.")
+            }
             let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
             if let existing = workspaces.first(where: { $0.defaultFolder == standardized }) {
                 try controller.selectWorkspace(existing.id)
@@ -3794,6 +3796,13 @@ final class AppModel: ObservableObject {
             try refresh()
             terminalHandle.focus()
         }
+    }
+
+    func openExternalWorkspace(_ request: ExternalWorkspaceOpenRequest) {
+        // External authority ends at one validated local folder. The ordinary
+        // workspace path may focus an existing tmux window or create its shell;
+        // it never starts an agent pane or submits terminal input.
+        createWorkspace(folder: request.folder)
     }
 
     func rename(_ workspace: TmuxWorkspace) {

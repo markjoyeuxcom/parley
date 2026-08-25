@@ -4,15 +4,99 @@ import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var externalWorkspaceHandler: ((ExternalWorkspaceOpenRequest) -> Void)?
+    private var pendingExternalWorkspaces: [ExternalWorkspaceOpenRequest] = []
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A SwiftPM executable has no app bundle to declare a foreground
         // activation policy. Promote it explicitly during development so its
         // WindowGroup is visible and behaves like a normal macOS application.
         NSApp.setActivationPolicy(.regular)
+        NSApp.servicesProvider = self
         DispatchQueue.main.async {
             self.applyDevelopmentIcon()
             NSApp.activate(ignoringOtherApps: true)
             NSApp.windows.first?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    func bindExternalWorkspaceHandler(
+        _ handler: @escaping (ExternalWorkspaceOpenRequest) -> Void
+    ) {
+        externalWorkspaceHandler = handler
+        let pending = pendingExternalWorkspaces
+        pendingExternalWorkspaces.removeAll()
+        for request in pending { handler(request) }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard urls.count == 1, let url = urls.first else {
+            presentExternalOpenError(ExternalWorkspaceOpenError.oneFolderRequired)
+            return
+        }
+        receive(url.isFileURL
+            ? Result { try ExternalWorkspaceOpen.request(folderPaths: [url.path]) }
+            : Result { try ExternalWorkspaceOpen.request(url: url) })
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        do {
+            enqueue(try ExternalWorkspaceOpen.request(folderPaths: filenames))
+            sender.reply(toOpenOrPrint: .success)
+        } catch {
+            presentExternalOpenError(error)
+            sender.reply(toOpenOrPrint: .failure)
+        }
+    }
+
+    @objc(openInParley:userData:error:)
+    func openInParley(
+        _ pasteboard: NSPasteboard,
+        userData: String,
+        error errorPointer: AutoreleasingUnsafeMutablePointer<NSString?>
+    ) {
+        let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+        guard let filenames = pasteboard.propertyList(forType: filenamesType) as? [String] else {
+            errorPointer.pointee = "Choose one folder in Finder, then run Open in Parley."
+            return
+        }
+        do {
+            enqueue(try ExternalWorkspaceOpen.request(folderPaths: filenames))
+        } catch {
+            errorPointer.pointee = error.localizedDescription as NSString
+            presentExternalOpenError(error)
+        }
+    }
+
+    private func receive(_ result: Result<ExternalWorkspaceOpenRequest, Error>) {
+        switch result {
+        case let .success(request): enqueue(request)
+        case let .failure(error): presentExternalOpenError(error)
+        }
+    }
+
+    private func enqueue(_ request: ExternalWorkspaceOpenRequest) {
+        foregroundApplication()
+        if let externalWorkspaceHandler {
+            externalWorkspaceHandler(request)
+        } else if !pendingExternalWorkspaces.contains(request) {
+            pendingExternalWorkspaces.append(request)
+        }
+    }
+
+    private func foregroundApplication() {
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            let mainWindow = NSApp.windows.first(where: { $0.title == "Parley" && $0.canBecomeKey })
+                ?? NSApp.windows.first(where: { $0.canBecomeKey })
+            mainWindow?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func presentExternalOpenError(_ error: Error) {
+        foregroundApplication()
+        DispatchQueue.main.async {
+            NSAlert(error: error).runModal()
         }
     }
 
@@ -35,6 +119,11 @@ struct ParleyNativeApp: App {
     var body: some Scene {
         WindowGroup("Parley") {
             ContentView(model: model)
+                .onAppear {
+                    appDelegate.bindExternalWorkspaceHandler { request in
+                        model.openExternalWorkspace(request)
+                    }
+                }
         }
         .defaultSize(width: 1_300, height: 820)
         .windowStyle(.hiddenTitleBar)

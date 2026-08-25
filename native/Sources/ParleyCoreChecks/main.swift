@@ -948,7 +948,8 @@ private func checkInAppHelpGuideCoverage() throws {
         "workspace brief", "pinned context", "never attached automatically",
         "handoff chain", "objection", "human decision", "team template",
         "routing role", "stopped placeholders", "move to workspace",
-        "clone configuration", "active handoffs",
+        "clone configuration", "active handoffs", "parley open",
+        "parley://open", "open in parley", "person-only",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -2164,6 +2165,73 @@ private func checkPaneMobilitySafetyContract() throws {
             },
         "configuration clone lost its permission profile, stable role or Workspace Lead stamp"
     )
+}
+
+private func checkExternalWorkspaceOpenContract() throws {
+    let folder = try temporaryDirectory()
+    let canonicalFolder = canonicalPath(folder.path)
+    let request = try ExternalWorkspaceOpen.request(folderPath: folder.path)
+    try expect(
+        request == ExternalWorkspaceOpenRequest(folder: canonicalFolder),
+        "external folder routing did not canonicalise its one visible input"
+    )
+    let finderRequest = try ExternalWorkspaceOpen.request(folderPaths: [folder.path])
+    try expect(
+        finderRequest == request,
+        "Finder folder routing did not use the same one-folder contract"
+    )
+
+    for invalidSelection in [[], [folder.path, folder.path]] {
+        do {
+            _ = try ExternalWorkspaceOpen.request(folderPaths: invalidSelection)
+            throw CheckFailure(description: "external route accepted \(invalidSelection.count) folders")
+        } catch ExternalWorkspaceOpenError.oneFolderRequired {
+            // Expected: no entry point can turn one user action into several workspaces.
+        }
+    }
+
+    let url = try ExternalWorkspaceOpen.url(forFolder: folder.path)
+    try expect(url.scheme == "parley" && url.host == "open", "external URL generation used the wrong route")
+    let roundTrippedRequest = try ExternalWorkspaceOpen.request(url: url)
+    try expect(
+        roundTrippedRequest == request,
+        "parley URL routing did not round-trip an encoded folder"
+    )
+
+    let unicodeFolder = folder.appendingPathComponent("UI review #2", isDirectory: true)
+    try FileManager.default.createDirectory(at: unicodeFolder, withIntermediateDirectories: false)
+    let unicodeURL = try ExternalWorkspaceOpen.url(forFolder: unicodeFolder.path)
+    let unicodeRequest = try ExternalWorkspaceOpen.request(url: unicodeURL)
+    try expect(
+        unicodeRequest.folder == canonicalPath(unicodeFolder.path),
+        "parley URL routing damaged spaces or reserved URL characters"
+    )
+
+    let forbiddenURLs = [
+        URL(string: "https://open?folder=\(folder.path)")!,
+        URL(string: "parley://ask?folder=\(folder.path)")!,
+        URL(string: "parley://open?folder=relative")!,
+        URL(string: "parley://open?folder=\(folder.path)&prompt=run%20tests")!,
+        URL(string: "parley://open?folder=\(folder.path)&folder=\(folder.path)")!,
+        URL(string: "parley://open?folder=\(folder.path)#fragment")!,
+    ]
+    for forbidden in forbiddenURLs {
+        do {
+            _ = try ExternalWorkspaceOpen.request(url: forbidden)
+            throw CheckFailure(description: "external route accepted unsupported authority: \(forbidden.absoluteString)")
+        } catch is ExternalWorkspaceOpenError {
+            // Expected: the external contract can carry a folder, never work.
+        }
+    }
+
+    let file = folder.appendingPathComponent("README.md")
+    try Data("not a workspace".utf8).write(to: file)
+    do {
+        _ = try ExternalWorkspaceOpen.request(folderPath: file.path)
+        throw CheckFailure(description: "external workspace route accepted a file")
+    } catch ExternalWorkspaceOpenError.notDirectory {
+        // Expected.
+    }
 }
 
 private func checkTmuxLayoutBecomesAnIDFreeSavedTree() throws {
@@ -5231,12 +5299,52 @@ private func checkRelayFilesystemRoundTrip() throws {
 
 private func checkRelayShimUsesPinnedFilesystemTransport() throws {
     let directory = try temporaryDirectory()
-    let executable = try RelayShim.installCommand(in: directory)
+    let fakeOpen = directory.appendingPathComponent("open-fixture")
+    try """
+    #!/bin/sh
+    /usr/bin/printf '%s\\n' "$@" > "$PARLEY_OPEN_CAPTURE"
+    """.write(to: fakeOpen, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeOpen.path)
+    let executable = try RelayShim.installCommand(in: directory, openExecutable: fakeOpen)
     let script = try String(contentsOf: executable, encoding: .utf8)
     try expect(!script.contains("/usr/bin/curl"), "relay shim still depends on a sandbox-blocked socket client")
     try expect(script.contains("Parley Native managed filesystem relay"), "relay shim does not use the managed filesystem transport")
     try expect(script.contains("request_id="), "relay shim does not correlate filesystem responses")
     try expect(script.contains("PARLEY_IDEMPOTENCY_KEY"), "relay shim sends no idempotency key")
+    try expect(script.contains("parley open <folder>"), "managed parley command omitted its external workspace entry point")
+
+    let folder = try temporaryDirectory()
+    let capture = directory.appendingPathComponent("open-arguments")
+    var externalEnvironment = ProcessInfo.processInfo.environment
+    externalEnvironment.removeValue(forKey: "PARLEY_RELAY_TOKEN")
+    externalEnvironment["PARLEY_OPEN_CAPTURE"] = capture.path
+    let opened = try ProcessCommandRunner(timeout: 3).run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [executable.path, "open", folder.path],
+        environment: externalEnvironment,
+        input: nil
+    )
+    try expect(opened.status == 0, "parley open failed: \(opened.stderrText)")
+    let openArguments = try String(contentsOf: capture, encoding: .utf8)
+        .split(whereSeparator: \.isNewline).map(String.init)
+    try expect(
+        openArguments == ["-b", ParleyRuntime.productionBundleIdentifier, canonicalPath(folder.path)],
+        "parley open did not use the installed app and one canonical folder argument"
+    )
+
+    externalEnvironment["PARLEY_RELAY_TOKEN"] = String(repeating: "a", count: 48)
+    try FileManager.default.removeItem(at: capture)
+    let agentAttempt = try ProcessCommandRunner(timeout: 3).run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [executable.path, "open", folder.path],
+        environment: externalEnvironment,
+        input: nil
+    )
+    try expect(
+        agentAttempt.status != 0 && agentAttempt.stderrText.contains("person-only")
+            && !FileManager.default.fileExists(atPath: capture.path),
+        "an agent pane could invoke the person-only external workspace route"
+    )
 }
 
 private func checkRelayFilesystemRuntimeIsProtectedAndStopsCleanly() throws {
@@ -8109,6 +8217,7 @@ let checks: [(String, () throws -> Void)] = [
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
     ("portable team template persistence and application", checkPortableTeamTemplatePersistenceAndApplication),
     ("deliberate pane mobility safety contract", checkPaneMobilitySafetyContract),
+    ("external workspace open contract", checkExternalWorkspaceOpenContract),
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),
     ("direct agent argv", checkDirectAgentSpawn),

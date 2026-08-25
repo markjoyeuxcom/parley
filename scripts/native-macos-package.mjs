@@ -70,6 +70,34 @@ export function renderInfoPlist({
   <string>Parley</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>CFBundleURLName</key>
+      <string>${BUNDLE_IDENTIFIER}.workspace</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>parley</string>
+      </array>
+    </dict>
+  </array>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Folder</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.folder</string>
+      </array>
+    </dict>
+  </array>
   <key>CFBundleShortVersionString</key>
   <string>${xml(version)}</string>
   <key>CFBundleVersion</key>
@@ -86,6 +114,24 @@ export function renderInfoPlist({
   <string>${MINIMUM_SYSTEM_VERSION}</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSServices</key>
+  <array>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict>
+        <key>default</key>
+        <string>Open in Parley</string>
+      </dict>
+      <key>NSMessage</key>
+      <string>openInParley</string>
+      <key>NSPortName</key>
+      <string>Parley</string>
+      <key>NSSendTypes</key>
+      <array>
+        <string>NSFilenamesPboardType</string>
+      </array>
+    </dict>
+  </array>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © 2026 Mark Joyeux</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key>

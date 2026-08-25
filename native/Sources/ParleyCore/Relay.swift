@@ -3174,11 +3174,17 @@ public enum RelayShim {
     public static func install(
         in applicationDirectory: URL,
         transportDirectory: URL? = nil,
-        runtimeMarker: String? = nil
+        runtimeMarker: String? = nil,
+        openExecutable: URL = URL(fileURLWithPath: "/usr/bin/open")
     ) throws -> URL {
         let bin = applicationDirectory.appendingPathComponent("bin", isDirectory: true)
         let transport = transportDirectory ?? RelayFileTransport.runtimeDirectory(applicationDirectory: applicationDirectory)
-        _ = try installCommand(in: bin, transportDirectory: transport, runtimeMarker: runtimeMarker)
+        _ = try installCommand(
+            in: bin,
+            transportDirectory: transport,
+            runtimeMarker: runtimeMarker,
+            openExecutable: openExecutable
+        )
         return bin
     }
 
@@ -3186,12 +3192,17 @@ public enum RelayShim {
     public static func installCommand(
         in bin: URL,
         transportDirectory: URL? = nil,
-        runtimeMarker: String? = nil
+        runtimeMarker: String? = nil,
+        openExecutable: URL = URL(fileURLWithPath: "/usr/bin/open")
     ) throws -> URL {
         let transport = transportDirectory
             ?? RelayFileTransport.runtimeDirectory(applicationDirectory: bin.deletingLastPathComponent())
         return try writeManagedCommand(
-            script(transportDirectory: transport, runtimeMarker: runtimeMarker),
+            script(
+                transportDirectory: transport,
+                runtimeMarker: runtimeMarker,
+                openExecutable: openExecutable
+            ),
             in: bin
         )
     }
@@ -3239,7 +3250,11 @@ public enum RelayShim {
         return executable
     }
 
-    private static func script(transportDirectory: URL, runtimeMarker: String?) -> String {
+    private static func script(
+        transportDirectory: URL,
+        runtimeMarker: String?,
+        openExecutable: URL
+    ) -> String {
         scriptTemplate.replacingOccurrences(
             of: "__PARLEY_TRANSPORT_ROOT__",
             // Keep the exact spelling granted by AgentProcessBoundary. On
@@ -3250,6 +3265,12 @@ public enum RelayShim {
         ).replacingOccurrences(
             of: "__PARLEY_RUNTIME_MARKER__",
             with: shellLiteral(runtimeMarker ?? "")
+        ).replacingOccurrences(
+            of: "__PARLEY_OPEN_EXECUTABLE__",
+            with: shellLiteral(openExecutable.path)
+        ).replacingOccurrences(
+            of: "__PARLEY_BUNDLE_IDENTIFIER__",
+            with: shellLiteral(ParleyRuntime.productionBundleIdentifier)
         )
     }
 
@@ -3268,6 +3289,34 @@ public enum RelayShim {
     command="${1:-}"
     target=""
     item=""
+    if [ "$command" = "open" ]; then
+      if [ -n "${PARLEY_RELAY_TOKEN:-}" ]; then
+        echo "parley open is a person-only external entry point; agent panes cannot invoke it" >&2
+        exit 2
+      fi
+      if [ "$#" -ne 2 ]; then
+        echo "usage: parley open <folder>" >&2
+        exit 2
+      fi
+      folder="$2"
+      case "$folder" in
+        /*) ;;
+        *) folder="$PWD/$folder" ;;
+      esac
+      if [ ! -d "$folder" ]; then
+        echo "Parley can open only an existing folder: $folder" >&2
+        exit 2
+      fi
+      folder="$(cd "$folder" 2>/dev/null && /bin/pwd -P)" || {
+        echo "Parley could not resolve that folder" >&2
+        exit 2
+      }
+      open_executable=__PARLEY_OPEN_EXECUTABLE__
+      bundle_identifier=__PARLEY_BUNDLE_IDENTIFIER__
+      "$open_executable" -b "$bundle_identifier" "$folder"
+      echo "Asked the installed Parley app to open $folder"
+      exit 0
+    fi
     case "$command" in
       context)
         subcommand="${2:-}"
@@ -3381,6 +3430,7 @@ public enum RelayShim {
           echo "Parley relay [$runtime_marker]" >&2
         fi
         echo "usage:" >&2
+        echo "  parley open <folder>             open or focus a workspace in the installed app" >&2
         echo "  parley relay <pane> [text...]   submit an attributed message" >&2
         echo "  parley paste <pane> [text...]   paste without sending" >&2
         echo "  parley ask <pane> [question...] wait for its correlated answer" >&2
