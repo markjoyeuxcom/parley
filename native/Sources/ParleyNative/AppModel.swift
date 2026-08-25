@@ -71,6 +71,9 @@ struct ActiveContextPack: Identifiable, Equatable {
     let reviewID: String?
     var reviewState: AgentContextReviewState?
     var requestedTargetPaneID: String?
+    var reviewUpdatedAt: Date?
+    var renderedByteCount = 0
+    var isValid = false
 }
 
 struct ActiveWorkspaceBriefDraft: Identifiable, Equatable {
@@ -145,6 +148,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var contextPackDraft: ActiveContextPack?
     @Published private(set) var workspaceBriefs: [WorkspaceBrief] = []
     @Published private(set) var workspaceBriefDraft: ActiveWorkspaceBriefDraft?
+    @Published private(set) var pinnedContextSnippets: [PinnedContextSnippet] = []
     @Published private(set) var contextReviews: [AgentContextReview] = []
     @Published private(set) var contextCommandCapturing = false
     @Published private(set) var coreAvailable = false
@@ -167,6 +171,7 @@ final class AppModel: ObservableObject {
     @Published var askManyComparisonPresented = false
     @Published var contextPackPresented = false
     @Published var workspaceBriefPresented = false
+    @Published var pinnedContextSnippetsPresented = false
     @Published var supervisedWorkflowPresented = false
     @Published private(set) var selectedSupervisedWorkflowID: String?
     @Published private(set) var requestedHelpTopicID: String?
@@ -184,6 +189,7 @@ final class AppModel: ObservableObject {
     private let supervisedWorkflowStore: SupervisedWorkflowStore
     private let handoffChainStore: HandoffChainStore
     private let workspaceBriefStore: WorkspaceBriefStore
+    private let pinnedContextSnippetStore: PinnedContextSnippetStore
     private let permissionProfileStore: PermissionProfileStore
     private var workspaceContinuity = WorkspaceContinuityState()
     private let projectContextResolver = GitProjectContextResolver()
@@ -248,6 +254,9 @@ final class AppModel: ObservableObject {
         workspaceBriefStore = WorkspaceBriefStore(
             file: applicationDirectory.appendingPathComponent("workspace-briefs.json")
         )
+        pinnedContextSnippetStore = PinnedContextSnippetStore(
+            file: applicationDirectory.appendingPathComponent("pinned-context-snippets.json")
+        )
         permissionProfileStore = PermissionProfileStore(
             file: applicationDirectory.appendingPathComponent("permission-profiles.json")
         )
@@ -268,6 +277,7 @@ final class AppModel: ObservableObject {
         supervisedWorkflowRuns = (try? supervisedWorkflowStore.runs()) ?? []
         handoffChains = (try? handoffChainStore.chains()) ?? []
         workspaceBriefs = (try? workspaceBriefStore.briefs()) ?? []
+        pinnedContextSnippets = (try? pinnedContextSnippetStore.snippets()) ?? []
         permissionProfiles = (try? permissionProfileStore.profiles())
             ?? PermissionProfileDefinition.builtIns
         if runtime.mode == .production {
@@ -344,11 +354,17 @@ final class AppModel: ObservableObject {
             // Persistent tmux panes retain the PATH they were born with. Put a
             // managed copy in the user's existing stable command directory so
             // reattaching the UI upgrades relay access without killing those
-            // agent conversations. A foreign `parley` command is never replaced.
+            // agent conversations. The stable command is a runtime-neutral
+            // router because vendor CLIs may rebuild PATH after launch. A
+            // foreign `parley` command is never replaced.
             if runtime.installsStableCommand {
-                _ = try RelayShim.installCommand(
-                    in: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin"),
-                    transportDirectory: agentTransportDirectory
+                let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
+                let developmentRuntime = ParleyRuntime.make(mode: .development, homeDirectory: homeDirectory)
+                _ = try RelayShim.installStableRouter(
+                    in: homeDirectory.appendingPathComponent(".local/bin"),
+                    productionCommand: shimDirectory.appendingPathComponent("parley"),
+                    developmentCommand: developmentRuntime.applicationDirectory
+                        .appendingPathComponent("bin/parley")
                 )
             }
             let infoFile = controller.applicationDirectory.appendingPathComponent("relay-url")
@@ -962,6 +978,15 @@ final class AppModel: ObservableObject {
         return !parts.contains(where: { $0.source.kind == .workspaceBrief })
     }
 
+    var availablePinnedContextSnippets: [PinnedContextSnippet] {
+        guard !contextPackIsAgentProposed,
+              let parts = contextPackDraft?.pack.parts else { return [] }
+        let attached = Set(parts.compactMap { part in
+            part.source.kind == .pinnedSnippet ? part.source.referenceID : nil
+        })
+        return pinnedContextSnippets.filter { !attached.contains($0.id) }
+    }
+
     var contextPackSourcePane: TmuxPane? {
         guard let draft = contextPackDraft else { return nil }
         return panes.first {
@@ -995,8 +1020,7 @@ final class AppModel: ObservableObject {
     }
 
     var contextPackRenderedByteCount: Int {
-        guard let pack = contextPackDraft?.pack, let contextPackBuilder else { return 0 }
-        return contextPackBuilder.renderedByteCount(pack)
+        contextPackDraft?.renderedByteCount ?? 0
     }
 
     var contextPackMaximumBytes: Int {
@@ -1011,9 +1035,8 @@ final class AppModel: ObservableObject {
         guard let draft = contextPackDraft,
               !draft.pack.parts.isEmpty,
               !draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              contextPackSourcePane != nil,
-              let contextPackBuilder else { return false }
-        return (try? contextPackBuilder.render(draft.pack)) != nil
+              contextPackSourcePane != nil else { return false }
+        return draft.isValid
     }
 
     var localAskTargets: [TmuxPane] {
@@ -1262,6 +1285,7 @@ final class AppModel: ObservableObject {
                            !review.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             draft.pack.note = review.pack.note
                         }
+                        updateContextPackMeasurement(&draft)
                         contextPackDraft = draft
                     }
                 }
@@ -1910,6 +1934,38 @@ final class AppModel: ObservableObject {
         workspaceBriefPresented = true
     }
 
+    func presentPinnedContextSnippets() {
+        pinnedContextSnippetsPresented = true
+    }
+
+    @discardableResult
+    func savePinnedContextSnippet(id: String?, title: String, text: String) -> String? {
+        do {
+            let saved = try pinnedContextSnippetStore.save(id: id, title: title, text: text)
+            try reloadPinnedContextSnippets()
+            return saved.id
+        } catch {
+            NSAlert(error: error).runModal()
+            return nil
+        }
+    }
+
+    func deletePinnedContextSnippet(_ snippet: PinnedContextSnippet) {
+        let alert = NSAlert()
+        alert.messageText = "Delete \(snippet.title)?"
+        alert.informativeText = "This removes only the reusable local snippet. Existing context-pack snapshots and agent panes are unchanged."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete Snippet")
+        alert.addButton(withTitle: "Keep Snippet")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try pinnedContextSnippetStore.delete(id: snippet.id)
+            try reloadPinnedContextSnippets()
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
     func dismissWorkspaceBrief() {
         workspaceBriefPresented = false
         workspaceBriefDraft = nil
@@ -1975,7 +2031,7 @@ final class AppModel: ObservableObject {
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
-        contextPackDraft = ActiveContextPack(
+        var draft = ActiveContextPack(
             id: UUID().uuidString.lowercased(),
             sourcePaneID: source.id,
             sourcePaneKind: source.kind,
@@ -1984,8 +2040,11 @@ final class AppModel: ObservableObject {
             pack: ContextPack(name: "\(source.displayName) context"),
             reviewID: nil,
             reviewState: nil,
-            requestedTargetPaneID: nil
+            requestedTargetPaneID: nil,
+            reviewUpdatedAt: nil
         )
+        updateContextPackMeasurement(&draft)
+        contextPackDraft = draft
         contextPackPresented = true
     }
 
@@ -2007,7 +2066,7 @@ final class AppModel: ObservableObject {
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
-        contextPackDraft = ActiveContextPack(
+        var draft = ActiveContextPack(
             id: review.id,
             sourcePaneID: review.sourcePaneID,
             sourcePaneKind: review.sourcePaneKind,
@@ -2016,19 +2075,29 @@ final class AppModel: ObservableObject {
             pack: review.pack,
             reviewID: review.id,
             reviewState: review.state,
-            requestedTargetPaneID: review.requestedTargetPaneID
+            requestedTargetPaneID: review.requestedTargetPaneID,
+            reviewUpdatedAt: review.updatedAt
         )
+        updateContextPackMeasurement(&draft)
+        contextPackDraft = draft
         contextPackPresented = true
     }
 
     func rejectCurrentContextReview() {
         perform {
-            guard let reviewID = contextPackDraft?.reviewID, let relayClient else { return }
+            guard let draft = contextPackDraft,
+                  let reviewID = draft.reviewID,
+                  let relayClient else { return }
+            let isWaitingAsk = draft.reviewState == .awaitingReview
             let alert = NSAlert()
-            alert.messageText = "Decline this agent context draft?"
-            alert.informativeText = "Nothing will be submitted. If the source pane is blocked in `parley ask --context`, it will receive an explicit refusal."
+            alert.messageText = isWaitingAsk
+                ? "Decline this agent context Ask?"
+                : "Discard this agent context draft?"
+            alert.informativeText = isWaitingAsk
+                ? "Nothing will be submitted. The source pane blocked in `parley ask --context` will receive an explicit refusal."
+                : "Nothing will be submitted. The source pane can stage a new draft later."
             alert.alertStyle = .warning
-            alert.addButton(withTitle: "Decline Draft")
+            alert.addButton(withTitle: isWaitingAsk ? "Decline Ask" : "Discard Draft")
             alert.addButton(withTitle: "Keep Reviewing")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             let response = try relayClient.rejectContextReview(reviewID)
@@ -2050,12 +2119,14 @@ final class AppModel: ObservableObject {
     func updateContextPackName(_ name: String) {
         guard var draft = contextPackDraft else { return }
         draft.pack.name = name
+        updateContextPackMeasurement(&draft)
         contextPackDraft = draft
     }
 
     func updateContextPackNote(_ note: String) {
         guard var draft = contextPackDraft else { return }
         draft.pack.note = note
+        updateContextPackMeasurement(&draft)
         contextPackDraft = draft
     }
 
@@ -2063,12 +2134,14 @@ final class AppModel: ObservableObject {
         guard var draft = contextPackDraft,
               let index = draft.pack.parts.firstIndex(where: { $0.id == partID }) else { return }
         draft.pack.parts[index] = draft.pack.parts[index].replacingText(text)
+        updateContextPackMeasurement(&draft)
         contextPackDraft = draft
     }
 
     func removeContextPackPart(_ partID: String) {
         guard var draft = contextPackDraft else { return }
         draft.pack.parts.removeAll { $0.id == partID }
+        updateContextPackMeasurement(&draft)
         contextPackDraft = draft
     }
 
@@ -2084,17 +2157,36 @@ final class AppModel: ObservableObject {
         guard panel.runModal() == .OK else { return }
 
         perform {
-            guard let contextPackBuilder else { return }
-            let parts = try panel.urls.map { try contextPackBuilder.file(at: $0) }
-            try appendContextPackParts(parts, draftID: draft.id)
+            if let reviewID = draft.reviewID {
+                try captureTrustedContext(
+                    AgentContextTrustedCaptureRequest(
+                        reviewID: reviewID,
+                        kind: .files,
+                        paths: panel.urls.map(\.path)
+                    ),
+                    draftID: draft.id
+                )
+            } else {
+                guard let contextPackBuilder else { return }
+                let parts = try panel.urls.map { try contextPackBuilder.file(at: $0) }
+                try appendContextPackParts(parts, draftID: draft.id)
+            }
         }
     }
 
     func addContextGitDiff() {
         perform {
-            guard let draft = contextPackDraft, let contextPackBuilder else { return }
-            let part = try contextPackBuilder.gitDiff(in: draft.sourceFolder)
-            try appendContextPackParts([part], draftID: draft.id)
+            guard let draft = contextPackDraft else { return }
+            if let reviewID = draft.reviewID {
+                try captureTrustedContext(
+                    AgentContextTrustedCaptureRequest(reviewID: reviewID, kind: .gitDiff),
+                    draftID: draft.id
+                )
+            } else {
+                guard let contextPackBuilder else { return }
+                let part = try contextPackBuilder.gitDiff(in: draft.sourceFolder)
+                try appendContextPackParts([part], draftID: draft.id)
+            }
         }
     }
 
@@ -2103,14 +2195,25 @@ final class AppModel: ObservableObject {
         let candidates = panes.filter { $0.isStarted && !$0.isDead }
         guard let pane = chooseContextPane(candidates: candidates) else { return }
         perform {
-            guard let controller, let contextPackBuilder else { return }
-            let visible = try controller.capturePane(pane.id)
-            let part = try contextPackBuilder.visibleTerminal(
-                paneID: pane.id,
-                paneName: pane.displayName,
-                text: visible
-            )
-            try appendContextPackParts([part], draftID: draft.id)
+            if let reviewID = draft.reviewID {
+                try captureTrustedContext(
+                    AgentContextTrustedCaptureRequest(
+                        reviewID: reviewID,
+                        kind: .visibleTerminal,
+                        paneID: pane.id
+                    ),
+                    draftID: draft.id
+                )
+            } else {
+                guard let controller, let contextPackBuilder else { return }
+                let visible = try controller.capturePane(pane.id)
+                let part = try contextPackBuilder.visibleTerminal(
+                    paneID: pane.id,
+                    paneName: pane.displayName,
+                    text: visible
+                )
+                try appendContextPackParts([part], draftID: draft.id)
+            }
             terminalHandle.terminal?.selectNone()
         }
     }
@@ -2149,8 +2252,32 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func addPinnedContextSnippets(ids: [String]) {
+        perform {
+            guard !contextPackIsAgentProposed,
+                  let draft = contextPackDraft,
+                  let contextPackBuilder else {
+                throw RelayUIError.message("Open a person-created context pack before adding pinned context.")
+            }
+            let uniqueIDs = ids.reduce(into: [String]()) { result, id in
+                if !result.contains(id) { result.append(id) }
+            }
+            guard !uniqueIDs.isEmpty else {
+                throw RelayUIError.message("Choose at least one pinned context snippet to add.")
+            }
+            let available = Dictionary(uniqueKeysWithValues: availablePinnedContextSnippets.map { ($0.id, $0) })
+            guard uniqueIDs.allSatisfy({ available[$0] != nil }) else {
+                throw RelayUIError.message("One of those snippets is unavailable or already attached.")
+            }
+            let parts = try uniqueIDs.compactMap { id in
+                try available[id].map(contextPackBuilder.pinnedSnippet)
+            }
+            try appendContextPackParts(parts, draftID: draft.id)
+        }
+    }
+
     func captureContextCommand(executablePath: String, argumentLines: String) async throws {
-        guard let draft = contextPackDraft, let contextPackBuilder else {
+        guard let draft = contextPackDraft else {
             throw RelayUIError.message("Open a context pack before capturing a command result.")
         }
         let path = executablePath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2162,6 +2289,25 @@ final class AppModel: ObservableObject {
             .filter { !$0.isEmpty }
         contextCommandCapturing = true
         defer { contextCommandCapturing = false }
+        if let reviewID = draft.reviewID {
+            guard let relayClient else {
+                throw RelayUIError.message("The persistent core is unavailable, so Parley cannot establish trusted capture provenance.")
+            }
+            let request = AgentContextTrustedCaptureRequest(
+                reviewID: reviewID,
+                kind: .commandResult,
+                executablePath: path,
+                arguments: arguments
+            )
+            let response = try await Task.detached(priority: .userInitiated) {
+                try relayClient.captureTrustedContext(request)
+            }.value
+            try appendTrustedContextResponse(response, draftID: draft.id)
+            return
+        }
+        guard let contextPackBuilder else {
+            throw RelayUIError.message("Context capture is unavailable.")
+        }
         let workingDirectory = URL(fileURLWithPath: draft.sourceFolder, isDirectory: true)
         let part = try await Task.detached(priority: .userInitiated) {
             try contextPackBuilder.commandResult(
@@ -2198,23 +2344,43 @@ final class AppModel: ObservableObject {
                 guard let relayClient else {
                     throw RelayUIError.message("The persistent core is unavailable, so this agent request cannot be approved.")
                 }
+                guard let expectedUpdatedAt = draft.reviewUpdatedAt else {
+                    throw RelayUIError.message("Reopen this agent review before approving its latest sources.")
+                }
                 let response = try relayClient.approveContextReview(
                     reviewID: reviewID,
+                    expectedUpdatedAt: expectedUpdatedAt,
                     pack: draft.pack,
                     targetPaneID: target.id
                 )
                 guard (200..<300).contains(response.status) else {
                     throw RelayUIError.message(response.text)
                 }
+            } else if let reviewID = draft.reviewID {
+                guard let relayClient else {
+                    throw RelayUIError.message("The persistent core is unavailable, so this agent draft cannot be sent safely.")
+                }
+                guard let expectedUpdatedAt = draft.reviewUpdatedAt else {
+                    throw RelayUIError.message("Reopen this agent review before sending its latest sources.")
+                }
+                let response = try relayClient.completeContextDraft(
+                    reviewID: reviewID,
+                    expectedUpdatedAt: expectedUpdatedAt,
+                    pack: draft.pack,
+                    targetPaneID: target.id
+                )
+                guard (200..<300).contains(response.status) else {
+                    throw RelayUIError.message(response.text)
+                }
+                if response.status != 200 {
+                    let alert = NSAlert()
+                    alert.messageText = "Context was sent with a record warning"
+                    alert.informativeText = response.text
+                    alert.alertStyle = .warning
+                    alert.runModal()
+                }
             } else {
                 try controller.askWithExplicitContext(from: source.id, to: target.id, text: rendered)
-                if let reviewID = draft.reviewID, let relayClient {
-                    _ = try? relayClient.completeContextDraft(
-                        reviewID: reviewID,
-                        pack: draft.pack,
-                        targetPaneID: target.id
-                    )
-                }
             }
             contextPackPresented = false
             contextPackDraft = nil
@@ -2961,6 +3127,10 @@ final class AppModel: ObservableObject {
         workspaceBriefs = try workspaceBriefStore.briefs()
     }
 
+    private func reloadPinnedContextSnippets() throws {
+        pinnedContextSnippets = try pinnedContextSnippetStore.snippets()
+    }
+
     private func chooseAskManyTargets(candidates: [TmuxPane]) -> [TmuxPane]? {
         let alert = NSAlert()
         alert.messageText = "Compare with which panes?"
@@ -3005,8 +3175,62 @@ final class AppModel: ObservableObject {
             throw RelayUIError.message("That context pack was replaced while its source was being captured.")
         }
         draft.pack.parts.append(contentsOf: parts)
-        _ = try contextPackBuilder.render(draft.pack)
+        let rendered = try contextPackBuilder.render(draft.pack)
+        draft.renderedByteCount = rendered.utf8.count
+        draft.isValid = true
         contextPackDraft = draft
+    }
+
+    private func captureTrustedContext(
+        _ request: AgentContextTrustedCaptureRequest,
+        draftID: String
+    ) throws {
+        guard let relayClient else {
+            throw RelayUIError.message(
+                "The persistent core is unavailable, so Parley cannot establish trusted capture provenance."
+            )
+        }
+        try appendTrustedContextResponse(
+            relayClient.captureTrustedContext(request),
+            draftID: draftID
+        )
+    }
+
+    private func appendTrustedContextResponse(
+        _ response: RelayTextResponse,
+        draftID: String
+    ) throws {
+        guard (200..<300).contains(response.status) else {
+            throw RelayUIError.message(response.text)
+        }
+        let captured = try JSONDecoder().decode(
+            AgentContextTrustedCaptureResponse.self,
+            from: Data(response.text.utf8)
+        )
+        guard !captured.parts.isEmpty else {
+            throw RelayUIError.message("The persistent core captured no context sources.")
+        }
+        guard var draft = contextPackDraft, draft.id == draftID else {
+            throw RelayUIError.message("That context pack was replaced while its source was being captured.")
+        }
+        // The core has already bounded and durably recorded these exact parts.
+        // Keep an oversized local edit visible and unsendable instead of hiding
+        // a successful capture merely because the person's draft diverged.
+        draft.pack.parts.append(contentsOf: captured.parts)
+        draft.reviewUpdatedAt = captured.reviewUpdatedAt
+        updateContextPackMeasurement(&draft)
+        contextPackDraft = draft
+    }
+
+    private func updateContextPackMeasurement(_ draft: inout ActiveContextPack) {
+        guard let contextPackBuilder else {
+            draft.renderedByteCount = 0
+            draft.isValid = false
+            return
+        }
+        let measurement = contextPackBuilder.measure(draft.pack)
+        draft.renderedByteCount = measurement.renderedByteCount
+        draft.isValid = measurement.isValid
     }
 
     private func chooseContextPane(candidates: [TmuxPane]) -> TmuxPane? {

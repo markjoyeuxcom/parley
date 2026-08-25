@@ -6,6 +6,7 @@ public enum AgentContextReviewState: String, Codable, Equatable, Sendable {
     case awaitingReview
     case approved
     case rejected
+    case discarded
     case completed
     case failed
     case interrupted
@@ -99,17 +100,69 @@ public struct AgentContextPartApproval: Codable, Equatable, Sendable {
 /// back from the UI.
 public struct AgentContextReviewApproval: Codable, Equatable, Sendable {
     public let reviewID: String
+    public let expectedUpdatedAt: Date
     public let targetPaneID: String
     public let name: String
     public let note: String
     public let parts: [AgentContextPartApproval]
 
-    public init(reviewID: String, targetPaneID: String, pack: ContextPack) {
+    public init(
+        reviewID: String,
+        expectedUpdatedAt: Date,
+        targetPaneID: String,
+        pack: ContextPack
+    ) {
         self.reviewID = reviewID
+        self.expectedUpdatedAt = expectedUpdatedAt
         self.targetPaneID = targetPaneID
         self.name = pack.name
         self.note = pack.note
         self.parts = pack.parts.map { AgentContextPartApproval(id: $0.id, text: $0.text) }
+    }
+}
+
+public enum AgentContextTrustedCaptureKind: String, Codable, Equatable, Sendable {
+    case files
+    case gitDiff
+    case visibleTerminal
+    case commandResult
+}
+
+/// A control-token-authorized request for the persistent core to capture a
+/// local source itself. The UI supplies only capture inputs; source identity,
+/// captured bytes and the resulting part id are established by the core.
+public struct AgentContextTrustedCaptureRequest: Codable, Equatable, Sendable {
+    public let reviewID: String
+    public let kind: AgentContextTrustedCaptureKind
+    public let paths: [String]
+    public let paneID: String?
+    public let executablePath: String?
+    public let arguments: [String]
+
+    public init(
+        reviewID: String,
+        kind: AgentContextTrustedCaptureKind,
+        paths: [String] = [],
+        paneID: String? = nil,
+        executablePath: String? = nil,
+        arguments: [String] = []
+    ) {
+        self.reviewID = reviewID
+        self.kind = kind
+        self.paths = paths
+        self.paneID = paneID
+        self.executablePath = executablePath
+        self.arguments = arguments
+    }
+}
+
+public struct AgentContextTrustedCaptureResponse: Codable, Equatable, Sendable {
+    public let parts: [ContextPackPart]
+    public let reviewUpdatedAt: Date
+
+    public init(parts: [ContextPackPart], reviewUpdatedAt: Date) {
+        self.parts = parts
+        self.reviewUpdatedAt = reviewUpdatedAt
     }
 }
 

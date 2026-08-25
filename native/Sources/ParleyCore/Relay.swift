@@ -525,15 +525,18 @@ public final class RelayBroker: @unchecked Sendable {
     public typealias Panes = () throws -> [TmuxPane]
     public typealias Paste = (_ paneID: String, _ text: String) throws -> Void
     public typealias Submit = (_ paneID: String, _ text: String) throws -> Void
+    public typealias DirectContextSubmit = (_ sourcePaneID: String, _ targetPaneID: String, _ text: String) throws -> Void
     public typealias VisibleText = (_ paneID: String) throws -> String
 
     private static let maximumRetainedHandoffs = 500
+    private static let abandonedContextDraftLifetime: TimeInterval = 7 * 24 * 60 * 60
 
     private let credentials: RelayCredentials
     private let panes: Panes
     private let paste: Paste
     private let submit: Submit
     private let contextSubmit: Submit
+    private let directContextSubmit: DirectContextSubmit
     private let visibleText: VisibleText?
     private let consultationTimeout: TimeInterval
     private let livenessPollInterval: TimeInterval
@@ -558,6 +561,7 @@ public final class RelayBroker: @unchecked Sendable {
         paste: @escaping Paste,
         submit: @escaping Submit,
         contextSubmit: Submit? = nil,
+        directContextSubmit: DirectContextSubmit? = nil,
         visibleText: VisibleText? = nil,
         consultationTimeout: TimeInterval = 30 * 60,
         livenessPollInterval: TimeInterval = 0.5,
@@ -570,6 +574,9 @@ public final class RelayBroker: @unchecked Sendable {
         self.paste = paste
         self.submit = submit
         self.contextSubmit = contextSubmit ?? submit
+        self.directContextSubmit = directContextSubmit ?? { _, targetPaneID, text in
+            try (contextSubmit ?? submit)(targetPaneID, text)
+        }
         self.visibleText = visibleText
         self.consultationTimeout = consultationTimeout
         self.livenessPollInterval = max(0.01, livenessPollInterval)
@@ -593,9 +600,19 @@ public final class RelayBroker: @unchecked Sendable {
         var recoveredContext = Dictionary(
             uniqueKeysWithValues: (contextReviewStore?.reviews() ?? []).map { ($0.id, $0) }
         )
+        let recoveredAt = Date()
+        for (id, var review) in recoveredContext
+        where review.state == .draft
+            && recoveredAt.timeIntervalSince(review.updatedAt) >= Self.abandonedContextDraftLifetime {
+            review.state = .discarded
+            review.updatedAt = recoveredAt
+            review.detail = "Parley discarded this editable draft after seven days without review activity."
+            recoveredContext[id] = review
+            try? contextReviewStore?.record(review)
+        }
         for (id, var review) in recoveredContext where review.state == .awaitingReview || review.state == .approved {
             review.state = .interrupted
-            review.updatedAt = Date()
+            review.updatedAt = recoveredAt
             review.detail = "Parley core restarted before the reviewed context Ask completed."
             recoveredContext[id] = review
             try? contextReviewStore?.record(review)
@@ -681,7 +698,6 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 throw BrokerFailure(status: 404, message: "no editable context draft named \(draftID)")
             }
-            consultationCondition.unlock()
             review.pack.parts.append(ContextPackPart(
                 source: ContextPackSource(
                     kind: .agentFileDraft,
@@ -690,9 +706,17 @@ public final class RelayBroker: @unchecked Sendable {
                 ),
                 capturedText: normalized
             ))
-            _ = try contextPackBuilder.render(review.pack)
-            review.updatedAt = Date()
-            try recordContextReview(review)
+            do {
+                _ = try contextPackBuilder.render(review.pack)
+                review.updatedAt = Date()
+                try contextReviewStore?.record(review)
+                contextReviewRecords[review.id] = review
+                consultationCondition.broadcast()
+                consultationCondition.unlock()
+            } catch {
+                consultationCondition.unlock()
+                throw error
+            }
             return encodeContext(review)
         } catch let error as BrokerFailure {
             return RelayTextResponse(status: error.status, text: error.message)
@@ -736,6 +760,143 @@ public final class RelayBroker: @unchecked Sendable {
             return RelayTextResponse(
                 status: 200,
                 text: "Context review state: \(review.state.rawValue)\nReview id: \(review.id)\n\n\(rendered)"
+            )
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func discardContextDraft(token: String, draftID: String) -> RelayTextResponse {
+        do {
+            let sender = try authenticatedSender(token: token)
+            consultationCondition.lock()
+            guard var review = contextReviewRecords[draftID], review.sourcePaneID == sender.id else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 404, text: "unknown context draft")
+            }
+            guard review.state.needsHumanReview else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: "that context draft is no longer awaiting review")
+            }
+            review.state = .discarded
+            review.updatedAt = Date()
+            review.detail = "The source pane discarded this context draft."
+            do {
+                try contextReviewStore?.record(review)
+                contextReviewRecords[review.id] = review
+            } catch {
+                consultationCondition.unlock()
+                throw error
+            }
+            consultationCondition.broadcast()
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 200, text: review.detail ?? "Context draft discarded.")
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func captureTrustedContext(_ request: AgentContextTrustedCaptureRequest) -> RelayTextResponse {
+        do {
+            consultationCondition.lock()
+            guard let original = contextReviewRecords[request.reviewID], original.state.needsHumanReview else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: "that context draft is not awaiting review")
+            }
+            let sourceFolder = original.sourceFolder
+            let existingPartCount = original.pack.parts.count
+            consultationCondition.unlock()
+
+            let captured: [ContextPackPart]
+            switch request.kind {
+            case .files:
+                guard !request.paths.isEmpty,
+                      request.paths.count <= ContextPackBuilder.maximumParts - existingPartCount,
+                      request.paneID == nil,
+                      request.executablePath == nil,
+                      request.arguments.isEmpty else {
+                    throw BrokerFailure(status: 400, message: "invalid trusted file capture request")
+                }
+                captured = try request.paths.map {
+                    try contextPackBuilder.file(at: URL(fileURLWithPath: $0))
+                }
+            case .gitDiff:
+                guard request.paths.isEmpty,
+                      request.paneID == nil,
+                      request.executablePath == nil,
+                      request.arguments.isEmpty else {
+                    throw BrokerFailure(status: 400, message: "invalid trusted Git capture request")
+                }
+                captured = [try contextPackBuilder.gitDiff(in: sourceFolder)]
+            case .visibleTerminal:
+                guard request.paths.isEmpty,
+                      let paneID = request.paneID,
+                      request.executablePath == nil,
+                      request.arguments.isEmpty,
+                      let visibleText else {
+                    throw BrokerFailure(status: 400, message: "invalid trusted visible-screen capture request")
+                }
+                guard let pane = try panes().first(where: {
+                    $0.id == paneID && $0.isStarted && !$0.isDead
+                }) else {
+                    throw BrokerFailure(status: 409, message: "that pane is no longer available for visible-screen capture")
+                }
+                captured = [try contextPackBuilder.visibleTerminal(
+                    paneID: pane.id,
+                    paneName: pane.displayName,
+                    text: try visibleText(pane.id)
+                )]
+            case .commandResult:
+                guard request.paths.isEmpty,
+                      request.paneID == nil,
+                      let executablePath = request.executablePath else {
+                    throw BrokerFailure(status: 400, message: "invalid trusted command capture request")
+                }
+                captured = [try contextPackBuilder.commandResult(
+                    executablePath: executablePath,
+                    arguments: request.arguments,
+                    workingDirectory: URL(fileURLWithPath: sourceFolder, isDirectory: true)
+                )]
+            }
+
+            consultationCondition.lock()
+            guard var review = contextReviewRecords[request.reviewID],
+                  review.state.needsHumanReview,
+                  review.sourceFolder == sourceFolder else {
+                consultationCondition.unlock()
+                return RelayTextResponse(
+                    status: 409,
+                    text: "the context draft changed while the trusted source was being captured; nothing was added"
+                )
+            }
+            review.pack.parts.append(contentsOf: captured)
+            do {
+                _ = try contextPackBuilder.render(review.pack)
+                review.updatedAt = Date()
+                review.detail = "A person added \(captured.count) source\(captured.count == 1 ? "" : "s") captured independently by Parley."
+                try contextReviewStore?.record(review)
+                contextReviewRecords[review.id] = review
+                consultationCondition.broadcast()
+                consultationCondition.unlock()
+            } catch {
+                consultationCondition.unlock()
+                throw error
+            }
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return RelayTextResponse(
+                status: 200,
+                text: String(decoding: try encoder.encode(
+                    AgentContextTrustedCaptureResponse(
+                        parts: captured,
+                        reviewUpdatedAt: review.updatedAt
+                    )
+                ), as: UTF8.self)
             )
         } catch let error as BrokerFailure {
             return RelayTextResponse(status: error.status, text: error.message)
@@ -869,23 +1030,47 @@ public final class RelayBroker: @unchecked Sendable {
         pack: ContextPack,
         targetPaneID: String
     ) -> RelayTextResponse {
+        consultationCondition.lock()
+        guard let expectedUpdatedAt = contextReviewRecords[reviewID]?.updatedAt else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 404, text: "unknown context review")
+        }
+        consultationCondition.unlock()
+        return approveContextReview(AgentContextReviewApproval(
+            reviewID: reviewID,
+            expectedUpdatedAt: expectedUpdatedAt,
+            targetPaneID: targetPaneID,
+            pack: pack
+        ))
+    }
+
+    public func approveContextReview(_ approval: AgentContextReviewApproval) -> RelayTextResponse {
         do {
-            let request = pack.note.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !request.isEmpty else { throw BrokerFailure(status: 400, message: "the reviewed pack needs a request") }
-            _ = try contextPackBuilder.render(pack)
             let livePanes = try panes()
             consultationCondition.lock()
-            guard var review = contextReviewRecords[reviewID], review.state == .awaitingReview else {
+            guard var review = contextReviewRecords[approval.reviewID], review.state == .awaitingReview else {
                 consultationCondition.unlock()
                 return RelayTextResponse(status: 409, text: "that context Ask is not awaiting review")
             }
             guard let source = livePanes.first(where: { $0.id == review.sourcePaneID }),
-                  let target = livePanes.first(where: { $0.id == targetPaneID }),
+                  let target = livePanes.first(where: { $0.id == approval.targetPaneID }),
                   source.kind.isAgent,
                   target.kind.isAgent,
                   source.kind != target.kind else {
                 consultationCondition.unlock()
                 return RelayTextResponse(status: 409, text: "the reviewed source or cross-vendor target is no longer available")
+            }
+            let pack: ContextPack
+            do {
+                pack = try reviewedContextPackLocked(approval, review: review)
+                let request = pack.note.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !request.isEmpty else {
+                    throw BrokerFailure(status: 400, message: "the reviewed pack needs a request")
+                }
+                _ = try contextPackBuilder.render(pack)
+            } catch {
+                consultationCondition.unlock()
+                throw error
             }
             review.pack = pack
             review.state = .approved
@@ -910,25 +1095,10 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
-    public func approveContextReview(_ approval: AgentContextReviewApproval) -> RelayTextResponse {
-        do {
-            return approveContextReview(
-                reviewID: approval.reviewID,
-                pack: try reviewedContextPack(approval),
-                targetPaneID: approval.targetPaneID
-            )
-        } catch let error as BrokerFailure {
-            return RelayTextResponse(status: error.status, text: error.message)
-        } catch {
-            return RelayTextResponse(status: 409, text: error.localizedDescription)
-        }
-    }
-
     public func completeContextDraft(_ approval: AgentContextReviewApproval) -> RelayTextResponse {
         do {
-            let pack = try reviewedContextPack(approval)
-            _ = try contextPackBuilder.render(pack)
             let livePanes = try panes()
+            let prepared: (source: TmuxPane, target: TmuxPane, rendered: String)
             consultationCondition.lock()
             guard var review = contextReviewRecords[approval.reviewID], review.state == .draft else {
                 consultationCondition.unlock()
@@ -942,12 +1112,20 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 return RelayTextResponse(status: 409, text: "the reviewed source or cross-vendor target is no longer available")
             }
+            let pack: ContextPack
+            do {
+                pack = try reviewedContextPackLocked(approval, review: review)
+                prepared = (source, target, try contextPackBuilder.render(pack))
+            } catch {
+                consultationCondition.unlock()
+                throw error
+            }
             review.pack = pack
-            review.state = .completed
+            review.state = .approved
             review.requestedTargetPaneID = target.id
             review.requestedTargetName = target.displayName
             review.updatedAt = Date()
-            review.detail = "Reviewed and sent directly by the person using Parley."
+            review.detail = "Direct context delivery was approved by the person using Parley."
             do {
                 try contextReviewStore?.record(review)
                 contextReviewRecords[review.id] = review
@@ -957,7 +1135,49 @@ public final class RelayBroker: @unchecked Sendable {
             }
             consultationCondition.broadcast()
             consultationCondition.unlock()
-            return RelayTextResponse(status: 200, text: review.detail ?? "Context draft sent.")
+
+            do {
+                try directContextSubmit(prepared.source.id, prepared.target.id, prepared.rendered)
+            } catch {
+                let detail = "Context delivery failed: \(error.localizedDescription). Check the target before retrying."
+                consultationCondition.lock()
+                if var failed = contextReviewRecords[approval.reviewID] {
+                    failed.state = .failed
+                    failed.updatedAt = Date()
+                    failed.detail = detail
+                    contextReviewRecords[failed.id] = failed
+                    try? contextReviewStore?.record(failed)
+                }
+                consultationCondition.broadcast()
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: detail)
+            }
+
+            consultationCondition.lock()
+            guard var completed = contextReviewRecords[approval.reviewID], completed.state == .approved else {
+                consultationCondition.unlock()
+                return RelayTextResponse(
+                    status: 202,
+                    text: "Context was delivered, but its durable review changed unexpectedly. Do not resend it."
+                )
+            }
+            completed.state = .completed
+            completed.updatedAt = Date()
+            completed.detail = "Reviewed and sent directly by the person using Parley."
+            contextReviewRecords[completed.id] = completed
+            do {
+                try contextReviewStore?.record(completed)
+                consultationCondition.broadcast()
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 200, text: completed.detail ?? "Context draft sent.")
+            } catch {
+                let detail = "Context was delivered to \(prepared.target.displayName), but Parley could not persist its completion: \(error.localizedDescription). Do not resend it."
+                completed.detail = detail
+                contextReviewRecords[completed.id] = completed
+                consultationCondition.broadcast()
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 202, text: detail)
+            }
         } catch let error as BrokerFailure {
             return RelayTextResponse(status: error.status, text: error.message)
         } catch {
@@ -971,9 +1191,12 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.unlock()
             return RelayTextResponse(status: 409, text: "that context draft is not awaiting review")
         }
-        review.state = .rejected
+        let wasAwaitingAsk = review.state == .awaitingReview
+        review.state = wasAwaitingAsk ? .rejected : .discarded
         review.updatedAt = Date()
-        review.detail = "The person declined this context draft."
+        review.detail = wasAwaitingAsk
+            ? "The person declined this context Ask."
+            : "The person discarded this context draft."
         do {
             try contextReviewStore?.record(review)
             contextReviewRecords[review.id] = review
@@ -1001,11 +1224,19 @@ public final class RelayBroker: @unchecked Sendable {
         consultationCondition.unlock()
     }
 
-    private func reviewedContextPack(_ approval: AgentContextReviewApproval) throws -> ContextPack {
-        consultationCondition.lock()
-        defer { consultationCondition.unlock() }
-        guard let review = contextReviewRecords[approval.reviewID] else {
-            throw BrokerFailure(status: 404, message: "unknown context review")
+    /// The caller must hold consultationCondition from reading `review`
+    /// through committing its state transition. That makes the editable
+    /// projection and the mutation one transaction with respect to add,
+    /// discard, timeout and competing approval.
+    private func reviewedContextPackLocked(
+        _ approval: AgentContextReviewApproval,
+        review: AgentContextReview
+    ) throws -> ContextPack {
+        guard approval.expectedUpdatedAt == review.updatedAt else {
+            throw BrokerFailure(
+                status: 409,
+                message: "the context draft changed after this preview opened; reopen it and review the latest sources"
+            )
         }
         let byID = Dictionary(uniqueKeysWithValues: review.pack.parts.map { ($0.id, $0) })
         let suppliedIDs = approval.parts.map(\.id)
@@ -2952,20 +3183,53 @@ public enum RelayShim {
         transportDirectory: URL? = nil,
         runtimeMarker: String? = nil
     ) throws -> URL {
+        let transport = transportDirectory
+            ?? RelayFileTransport.runtimeDirectory(applicationDirectory: bin.deletingLastPathComponent())
+        return try writeManagedCommand(
+            script(transportDirectory: transport, runtimeMarker: runtimeMarker),
+            in: bin
+        )
+    }
+
+    /// Installs the one command expected to survive vendor PATH rewriting.
+    /// It contains no credential and owns no runtime; the pane's injected,
+    /// non-secret runtime marker selects the isolated runtime-local shim.
+    @discardableResult
+    public static func installStableRouter(
+        in bin: URL,
+        productionCommand: URL,
+        developmentCommand: URL
+    ) throws -> URL {
+        let source = """
+        #!/bin/sh
+        # Parley Native managed relay router
+        set -eu
+        case "${PARLEY_RUNTIME:-}" in
+          DEV) command=\(shellLiteral(developmentCommand.path)) ;;
+          *) command=\(shellLiteral(productionCommand.path)) ;;
+        esac
+        if [ ! -x "$command" ]; then
+          echo "the selected Parley relay command is not prepared" >&2
+          exit 2
+        fi
+        exec "$command" "$@"
+        """
+        return try writeManagedCommand(source, in: bin)
+    }
+
+    private static func writeManagedCommand(_ source: String, in bin: URL) throws -> URL {
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         let executable = bin.appendingPathComponent("parley")
         if FileManager.default.fileExists(atPath: executable.path) {
             let existing = try String(contentsOf: executable, encoding: .utf8)
             let isManaged = existing.contains("Parley Native managed relay shim")
+                || existing.contains("Parley Native managed relay router")
                 || (existing.contains("PARLEY_RELAY_INFO") && existing.contains("parley relay <pane>"))
             guard isManaged else {
                 throw RelayShimError.commandCollision
             }
         }
-        let transport = transportDirectory
-            ?? RelayFileTransport.runtimeDirectory(applicationDirectory: bin.deletingLastPathComponent())
-        try script(transportDirectory: transport, runtimeMarker: runtimeMarker)
-            .write(to: executable, atomically: true, encoding: .utf8)
+        try source.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return executable
     }
@@ -2973,7 +3237,11 @@ public enum RelayShim {
     private static func script(transportDirectory: URL, runtimeMarker: String?) -> String {
         scriptTemplate.replacingOccurrences(
             of: "__PARLEY_TRANSPORT_ROOT__",
-            with: shellLiteral(transportDirectory.standardizedFileURL.path)
+            // Keep the exact spelling granted by AgentProcessBoundary. On
+            // macOS, standardizedFileURL rewrites /private/tmp to /tmp; those
+            // aliases are equivalent to the filesystem but not to Seatbelt's
+            // literal subpath rules.
+            with: shellLiteral(transportDirectory.path)
         ).replacingOccurrences(
             of: "__PARLEY_RUNTIME_MARKER__",
             with: shellLiteral(runtimeMarker ?? "")
@@ -3010,6 +3278,15 @@ public enum RelayShim {
               exit 2
             fi
             command="context-show"
+            shift 3
+            ;;
+          discard)
+            item="${3:-}"
+            if [ -z "$item" ]; then
+              echo "context discard needs a draft id" >&2
+              exit 2
+            fi
+            command="context-discard"
             shift 3
             ;;
           draft)
@@ -3055,6 +3332,7 @@ public enum RelayShim {
             echo "usage:" >&2
             echo "  parley context list" >&2
             echo "  parley context show <draft>" >&2
+            echo "  parley context discard <draft>" >&2
             echo "  parley context draft [--name <name>] --file <path>" >&2
             echo "  parley context add <draft> --file <path>" >&2
             exit 2
@@ -3103,6 +3381,7 @@ public enum RelayShim {
         echo "  parley ask <pane> [question...] wait for its correlated answer" >&2
         echo "  parley ask-many <a,b> [question...] ask explicit panes independently" >&2
         echo "  parley context draft --file <path> stage explicit context for review" >&2
+        echo "  parley context discard <draft>     discard your staged context" >&2
         echo "  parley ask <pane> --context <draft> [question...] wait for reviewed Ask" >&2
         echo "  parley answer current [text...] answer this pane's waiting question" >&2
         echo "  parley delegate <pane> [task...] start tracked asynchronous work" >&2
@@ -3117,7 +3396,7 @@ public enum RelayShim {
     esac
 
     case "$command" in
-      status|wait|cancel|context-list|context-show|context-draft|context-add) ;;
+      status|wait|cancel|context-list|context-show|context-discard|context-draft|context-add) ;;
       *)
         if [ "$#" -eq 0 ] && [ -t 0 ]; then
           echo "nothing to $command: give the text as arguments or pipe it in" >&2
@@ -3256,7 +3535,7 @@ public enum RelayShim {
       cancel)
         printf '' | post
         ;;
-      context-list|context-show)
+      context-list|context-show|context-discard)
         printf '' | post
         ;;
       context-draft|context-add)

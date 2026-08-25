@@ -261,13 +261,34 @@ to an explicit user action.
 ## Relay behavior
 
 Agent commands reach the broker through an authenticated, owner-only request/
-response directory under `/tmp`; this works when a vendor sandbox denies all
-network syscalls. The native UI uses the broker's local Unix-domain control
+response directory in the macOS temporary root (currently `/private/tmp`);
+this works when a vendor sandbox denies all network syscalls. The generated
+shim and the outer Seatbelt profile must retain the exact same path spelling:
+rewriting only one side to the `/tmp` alias makes a healthy endpoint invisible
+inside the pane. The native UI uses the broker's local Unix-domain control
 socket. Neither path uses TCP loopback.
+
+Vendor CLIs may rebuild PATH and resolve `parley` through `~/.local/bin` rather
+than the runtime-local bin directory. That stable command is therefore a
+credential-free router: exact `PARLEY_RUNTIME=DEV` selects the isolated
+Development shim; Production and Development-attached-to-Production select
+the Production shim. Development never installs or replaces the stable
+router. Do not collapse it back into a runtime-pinned relay shim.
 
 - `parley relay` submits one attributed cross-vendor message.
 - `parley paste` leaves the attributed message in the target prompt.
 - `parley ask` creates one correlated consultation, submits it and waits.
+- `parley context draft/add/list/show/discard` manages owner-scoped agent
+  proposals. `parley ask <target> --context <draft>` blocks at a durable native
+  review checkpoint and submits nothing before explicit human approval.
+
+Agent-provided context remains labelled as a claim. During native review, a
+person may add selected files, the source folder's Git diff, one visible pane
+screen or a shell-free direct-argv command result. The persistent core performs
+those captures, establishes their provenance and immutable original bytes, and
+rejects approval payloads that invent a source. Draft completion is also owned
+by the core so a failed delivery cannot leave an apparently untouched,
+resendable draft.
 - `parley ask-many` creates independent concurrent consultations for an
   explicit comma-separated target list and returns ordered JSON.
 - `parley answer` resolves the exact waiting consultation.
