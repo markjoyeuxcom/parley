@@ -871,7 +871,7 @@ step 13 and deliberately hardens the context feature before expanding it:
 13. [x] Complete the context reliability gate: transactional mutation and race
     tests first, then draft disposal, explicit completion failures, trusted
     human-added sources and measured editor performance.
-14. [ ] Finish and land the current context-pack arc only after its native
+14. [x] Finish and land the current context-pack arc only after its native
     checks, build, help and protocol documentation pass together.
 15. [ ] Build portable teams and navigation, beginning with stopped team
     templates and stable pane roles/aliases, then deliberate pane mobility.
