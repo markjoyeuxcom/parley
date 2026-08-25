@@ -119,6 +119,20 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "workspaces-worktrees",
+                    title: "Existing Git worktrees",
+                    paragraphs: [
+                        "Git worktrees are parallel filesystem locations, not Parley workspaces or agents. From the workspace plus menu, Open Existing Worktree as Workspace reads git worktree list --porcelain without a shell and lets you open one of that repository's existing directories as an ordinary workspace.",
+                        "Parley warns when two running agent panes point at the same exact canonical worktree and both have visible permission profiles that explicitly allow project writes. The warning is permission evidence only: Parley does not claim either process changed a file, and a quiet terminal never proves concurrent work is safe.",
+                    ],
+                    items: [
+                        "The list shows the repository, branch or detached commit identity, primary or linked worktree status, exact path, and Git's locked or prunable state.",
+                        "Ordinary folders remain supported. Parley never requires one worktree per agent or silently creates one.",
+                        "Discovery and opening do not create, move, prune, delete, merge, rebase or switch a worktree.",
+                        "A shared worktree can be intentional—for example, one vendor implements while another reviews the same uncommitted files. Decide whether simultaneous write permission is appropriate for that workflow.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "workspaces-layouts",
                     title: "Saved layouts",
                     paragraphs: [

@@ -416,9 +416,9 @@ the exact effective scope before launch, avoid repeated ordinary source-read
 prompts where the vendor supports it, and never mistake guidance for enforced
 isolation.
 
-Optional git worktree awareness is planned as a post-beta enhancement in
-Milestone 7. Worktrees are not required for cross-vendor consultation and will
-never be forced per agent.
+Read-only Git worktree discovery and shared-writer awareness are complete in
+Milestone 7. Worktrees are not required for cross-vendor consultation and are
+never forced per agent; optional creation remains contingent on real usage.
 
 **Exit gate:** after a Mac restart, a person can restore a project's layout,
 choose which agents to resume, and continue work without reconstructing the
@@ -814,11 +814,11 @@ agents. A workspace may point at a worktree folder, and several panes may share
 one intentionally when one vendor implements and another reviews the same
 uncommitted changes.
 
-- [ ] **Stage 1 — discover and open:** parse `git worktree list --porcelain`
+- [x] **Stage 1 — discover and open:** parse `git worktree list --porcelain`
   without a shell, show repository, branch and worktree identity, and offer
   **Open Existing Worktree as Workspace**. Continue to support ordinary folders
   and never require a worktree for review or consultation.
-- [ ] **Stage 2 — collision awareness:** warn when multiple write-capable agent
+- [x] **Stage 2 — collision awareness:** warn when multiple write-capable agent
   panes share the same real worktree. Base the warning on exact canonical paths
   and visible permission state; do not claim which process changed a file or
   infer safety from a quiet terminal.
@@ -913,7 +913,7 @@ step 13 and deliberately hardens the context feature before expanding it:
     templates and stable pane roles/aliases, then deliberate pane mobility.
 16. [x] Build the thin VS Code companion on the completed local external-entry
     contract and the same reviewed context-pack and focus contracts.
-17. [ ] Add read-only worktree discovery and writer-collision awareness. Keep
+17. [x] Add read-only worktree discovery and writer-collision awareness. Keep
     optional worktree creation contingent on evidence from those two stages.
 18. [ ] Improve attention and history: menu-bar inbox, search/export/retention,
     a human-controlled busy queue and workspace safety summaries.
