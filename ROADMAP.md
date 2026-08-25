@@ -744,10 +744,17 @@ verified by Parley.
   fall through to a mutable display name. `lead` remains the separately marked
   built-in role. Protocol v7 teaches every newly started vendor this syntax;
   Status Center shows the exact injected version and restart requirement.
-- [ ] Add deliberate **pane mobility**: move a pane between workspaces when tmux
+- [x] Add deliberate **pane mobility**: move a pane between workspaces when tmux
   can preserve it safely, or clone only its visible configuration into another
   workspace. Folder ownership, running-process consequences and active
   handoffs must be previewed before either action.
+  The pane context menu now names every other workspace as a destination. Move
+  uses tmux `join-pane`, keeps the exact process/id/scrollback/folder and
+  rechecks the authoritative handoff state after confirmation; the last source
+  pane, an active handoff, duplicate `@role` or duplicate lead is refused before
+  mutation. Clone leaves source work and handoffs in place, copies only visible
+  configuration and turns an agent copy into a stopped credential-free
+  placeholder. Both actions explain their consequences before running.
 - [ ] Add external entry points such as `parley open <folder>`, a Finder action
   and a local `parley://` URL for opening or focusing a matching workspace.
   They may focus or prepare UI state but never start a vendor turn implicitly.
@@ -884,7 +891,7 @@ step 13 and deliberately hardens the context feature before expanding it:
     human-added sources and measured editor performance.
 14. [x] Finish and land the current context-pack arc only after its native
     checks, build, help and protocol documentation pass together.
-15. [ ] Build portable teams and navigation, beginning with stopped team
+15. [x] Build portable teams and navigation, beginning with stopped team
     templates and stable pane roles/aliases, then deliberate pane mobility.
 16. [ ] Add local external entry points and build the thin VS Code companion on
     the same reviewed context-pack and focus contracts.

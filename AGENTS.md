@@ -249,6 +249,21 @@ route silently retarget a different live process. Roles are lowercase bounded
 slugs, unique per workspace, and vendor names plus `lead` are reserved. `lead`
 continues to resolve only through the separate workspace-lead stamp.
 
+Pane mobility has two deliberately different meanings. Move uses tmux
+`join-pane` and must preserve the exact pane id, running process, vendor session,
+scrollback, terminal state, credential and pane-local folder. Refuse it for the
+last source pane, any active handoff involving that pane, or a target role/lead
+collision; query handoffs again after the person's confirmation and revalidate
+the live pane topology immediately before mutation. The moved pane inherits the
+target window's automation policy without rewriting historical handoff records.
+
+Clone copies visible configuration only: kind, display name, folder, permission
+selection, role and lead stamp. It never copies pane ids, credentials, terminal
+history, protocol context or a vendor session. Agent clones are stopped inert
+placeholders until a person presses Start; shell clones may start. Source
+handoffs remain with the source pane. A clone failure kills the partial pane so
+there is no configuration-shaped corpse in the target workspace.
+
 ## Shared protocol and vendor launch behavior
 
 `AgentProtocol.version` is stamped into the process environment and a tmux

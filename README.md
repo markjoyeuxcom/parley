@@ -33,6 +33,8 @@ There is no API-key mode, hosted Parley service, telemetry or remote sync.
   editable supervised-workflow recipes.
 - Portable team templates and stable workspace roles for recreating a named
   cross-vendor grid in another folder without starting any agent automatically.
+- Previewed pane mobility: preserve one exact live tmux pane across workspaces,
+  or clone only its visible configuration as a fresh stopped agent placeholder.
 - Cross-workspace Ask targets and recent-folder shortcuts.
 - Owner-only durable handoff history and a compact workspace activity strip.
 - A separate native Status Center with workspace filters, live handoffs, agent
@@ -180,6 +182,15 @@ and split layout. It stores no repository paths, approved roots, live ids,
 credentials or sessions. Applying it asks for a folder, binds the complete team
 to that folder and creates stopped agent placeholders; a person starts each
 vendor deliberately.
+
+Right-click a pane to **Move to Workspace** or **Clone Configuration to
+Workspace**. Move transfers the exact tmux pane, preserving its id, process,
+vendor session, scrollback, terminal state and pane-local folder; it is refused
+for the source workspace's last pane, active handoffs, or conflicting target
+roles/leads. Clone leaves the source and its handoffs untouched, copies only the
+visible pane setup, and leaves an agent clone stopped with no session or relay
+credential until **Start**. A cloned shell starts normally. Both paths preview
+the destination, folder and process consequences before changing anything.
 
 Closing only the Parley window detaches from tmux and leaves workspaces running.
 A separate per-user core process owns the authenticated relay socket and active

@@ -158,12 +158,26 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "workspaces-mobility",
+                    title: "Move or clone a pane",
+                    paragraphs: [
+                        "Right-click a pane and choose Move to Workspace to transfer the exact live tmux pane, or Clone Configuration to Workspace to create a separate pane with the same visible setup. Every action names its destination and shows its process, folder and handoff consequences before it runs.",
+                    ],
+                    items: [
+                        "Move preserves the pane id, running process and vendor session, scrollback, terminal state and pane-local folder. The destination workspace's automation policy applies after the move.",
+                        "Parley refuses to move the last pane out of a workspace or a pane participating in active handoffs. It also refuses a destination with the same routing role or a second Workspace Lead.",
+                        "Clone leaves the source process and all its handoffs unchanged. It copies vendor, name, folder, permission profile, routing role and lead stamp, but never terminal history, a vendor session or a pane credential.",
+                        "An agent clone is a stopped placeholder until you press Start. A cloned shell starts normally.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "workspaces-pane-menu",
                     title: "Pane context menu",
                     items: [
                         "Rename a pane to give routing a memorable, unique name.",
                         "Make or remove a Workspace Lead.",
                         "Set or clear a stable workspace-scoped routing role.",
+                        "Move the exact pane or clone only its visible configuration into another workspace.",
                         "Start a restored placeholder, restart an exited session, or close the pane deliberately.",
                         "An exited process remains visible with its final scrollback until you close or restart it.",
                     ]
