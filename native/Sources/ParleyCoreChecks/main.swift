@@ -86,6 +86,19 @@ private final class LockedAskResult: @unchecked Sendable {
     }
 }
 
+private final class LockedRelayResponses: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [RelayTextResponse] = []
+
+    var values: [RelayTextResponse] {
+        lock.withLock { storage }
+    }
+
+    func append(_ value: RelayTextResponse) {
+        lock.withLock { storage.append(value) }
+    }
+}
+
 private final class LockedAskManyUIResult: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: RelayAskManyUIResponse?
@@ -932,7 +945,8 @@ private func checkInAppHelpGuideCoverage() throws {
         "workspace lead", "automation policy", "permission", "status center",
         "saved layout", "command palette", "subscription", "compare independently",
         "edited synthesis", "context pack", "utf-8 bytes", "absolute executable",
-        "workspace brief", "never attached automatically", "handoff chain", "objection", "human decision",
+        "workspace brief", "pinned context", "never attached automatically",
+        "handoff chain", "objection", "human decision",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -950,6 +964,17 @@ private func checkInAppHelpGuideCoverage() throws {
         "review only", "broad workspace", "partially enforced", "exact approved roots",
     ] {
         try expect(permissions.contains(guidance), "CLI permission help omitted \(guidance)")
+    }
+    let contextModel = try require(
+        topics.first(where: { $0.id == "context-model" }),
+        "the in-app guide omitted the dedicated context model page"
+    ).searchableText.lowercased()
+    for guidance in [
+        "pinned snippet", "application-wide", "workspace brief", "vendor pane",
+        "attributed snapshot", "one active person-created context pack draft",
+        "never attached automatically",
+    ] {
+        try expect(contextModel.contains(guidance), "the context model guide omitted \(guidance)")
     }
 }
 
@@ -1692,7 +1717,6 @@ private func checkSavedWorkspaceLayoutPersistenceAndFreshSlots() throws {
             )
         )
     )
-
     let firstRestoration = layout.fromSavedLayout()
     let secondRestoration = layout.fromSavedLayout()
     try expect(firstRestoration.slots.count == 3, "saved layout did not restore every leaf as a slot")
@@ -2273,8 +2297,8 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "5", "the guarded-context protocol did not advance the shared protocol version")
-    for command in ["parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait", "parley cancel", "parley context draft", "--context <draft-id>"] {
+    try expect(AgentProtocol.version == "6", "the context-lifecycle protocol did not advance the shared protocol version")
+    for command in ["parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait", "parley cancel", "parley context draft", "parley context discard", "--context <draft-id>"] {
         try expect(AgentProtocol.text.contains(command), "shared protocol omitted \(command)")
     }
     try expect(AgentProtocol.text.contains("workspace lead"), "shared protocol omitted lead routing")
@@ -3456,6 +3480,11 @@ private func checkContextPacksAreExplicitBoundedAndAttributed() throws {
     }
     try expect(rendered.contains("Edited after capture: yes"), "rendered context hid an edited capture")
     try expect(rendered.utf8.count == builder.renderedByteCount(pack), "context pack total byte count disagreed with its rendered payload")
+    let measurement = builder.measure(pack)
+    try expect(
+        measurement.renderedByteCount == rendered.utf8.count && measurement.isValid,
+        "one-pass context measurement disagreed with the exact send payload"
+    )
 
     let binary = repository.appendingPathComponent("binary.dat")
     try Data([0x41, 0, 0x42]).write(to: binary)
@@ -3492,6 +3521,11 @@ private func checkContextPacksAreExplicitBoundedAndAttributed() throws {
     } catch ContextPackError.packTooLarge {
         // Expected: wrappers and notes count toward the final handoff ceiling.
     }
+    let invalidMeasurement = tinyPackBuilder.measure(ContextPack(name: "Too large", parts: [file]))
+    try expect(
+        !invalidMeasurement.isValid && invalidMeasurement.renderedByteCount > tinyPackBuilder.maximumRenderedBytes,
+        "one-pass context measurement hid an oversized editable pack"
+    )
 }
 
 private func checkWorkspaceBriefsAreDurableAndExplicitlyAttached() throws {
@@ -3567,6 +3601,76 @@ private func checkWorkspaceBriefsAreDurableAndExplicitlyAttached() throws {
         throw CheckFailure(description: "an unsafe workspace brief file was accepted")
     } catch let error as WorkspaceBriefError {
         try expect(error.errorDescription?.contains("owner-only") == true, "unsafe workspace brief permissions failed unclearly")
+    }
+}
+
+private func checkPinnedContextSnippetsAreDurableReusableAndExplicit() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("pinned-context-snippets.json")
+    let store = PinnedContextSnippetStore(file: file)
+    let createdAt = Date(timeIntervalSince1970: 200)
+    let snippet = try store.save(
+        title: "Definition of done",
+        text: "Run the deterministic suite.\nReport both stdout and stderr.",
+        now: createdAt
+    )
+    try expect(snippet.createdAt == createdAt && snippet.updatedAt == createdAt, "pinned snippet timestamps were not stable")
+    let initialSnippets = try store.snippets()
+    try expect(initialSnippets == [snippet], "a pinned snippet did not survive a store reload")
+
+    let builder = ContextPackBuilder()
+    let ordinary = try builder.visibleTerminal(paneID: "%1", paneName: "Claude", text: "Implementation complete")
+    let withoutSnippet = try builder.render(ContextPack(
+        name: "No pinned context",
+        note: "Review the implementation.",
+        parts: [ordinary]
+    ))
+    try expect(!withoutSnippet.contains(snippet.text), "a pinned snippet was injected without an explicit attachment")
+
+    let attached = try builder.pinnedSnippet(snippet)
+    try expect(attached.source.kind == .pinnedSnippet, "pinned snippet attachment lost its provenance kind")
+    try expect(attached.source.referenceID == snippet.id, "pinned snippet attachment lost its durable identity")
+    let withSnippet = try builder.render(ContextPack(
+        name: "With pinned context",
+        note: "Review against the attached criteria.",
+        parts: [ordinary, attached]
+    ))
+    try expect(withSnippet.contains("Definition of done") && withSnippet.contains(snippet.text), "explicitly attached pinned snippet was omitted")
+    let editedAttachment = attached.replacingText("Use this wording for this handoff only.")
+    try expect(editedAttachment.isEdited, "editing an attached snippet was not visible in the preview")
+    let unchangedSnippet = try store.snippet(id: snippet.id)
+    try expect(unchangedSnippet?.text == snippet.text, "editing a context snapshot rewrote its pinned snippet")
+
+    let updated = try store.save(
+        id: snippet.id,
+        title: "Verification contract",
+        text: "Run tests.\nRun the production build.",
+        now: Date(timeIntervalSince1970: 220)
+    )
+    try expect(updated.id == snippet.id && updated.createdAt == createdAt, "updating a pinned snippet created a second identity")
+    do {
+        _ = try store.save(title: "verification CONTRACT", text: "Duplicate title")
+        throw CheckFailure(description: "pinned snippets accepted a case-insensitive duplicate title")
+    } catch let error as PinnedContextSnippetError {
+        try expect(error.errorDescription?.contains("already exists") == true, "duplicate snippet title failed unclearly")
+    }
+    let other = try store.save(title: "Architecture rule", text: "Keep transport shell-free.")
+    try store.delete(id: updated.id)
+    let remainingSnippetIDs = try store.snippets().map(\.id)
+    try expect(remainingSnippetIDs == [other.id], "deleting one pinned snippet removed unrelated context")
+
+    let permissions = try require(
+        try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber,
+        "pinned snippet permissions were unavailable"
+    )
+    try expect(permissions.intValue & 0o077 == 0, "pinned snippets are readable outside their owner")
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+    do {
+        _ = try PinnedContextSnippetStore(file: file).snippets()
+        throw CheckFailure(description: "an unsafe pinned snippet file was accepted")
+    } catch let error as PinnedContextSnippetError {
+        try expect(error.errorDescription?.contains("owner-only") == true, "unsafe pinned snippet permissions failed unclearly")
     }
 }
 
@@ -6586,6 +6690,7 @@ private func checkAgentContextDraftsRequireHumanApprovalBeforeAsk() throws {
     approvedPack.note = "Review only correctness and cite exact lines."
     let approved = try control.approveContextReview(
         reviewID: pending.id,
+        expectedUpdatedAt: pending.updatedAt,
         pack: approvedPack,
         targetPaneID: "%2"
     )
@@ -6604,6 +6709,732 @@ private func checkAgentContextDraftsRequireHumanApprovalBeforeAsk() throws {
 
     let persisted = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
     try expect(persisted.reviews().first?.state == .completed, "context review state did not survive store reattachment")
+}
+
+private func checkConcurrentContextAddsRetainEveryAcceptedPart() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let panes = [
+        TmuxPane(
+            id: "%1",
+            kind: .claude,
+            customName: "Claude",
+            terminalTitle: "",
+            cwd: directory.path,
+            currentCommand: "claude",
+            isActive: true,
+            windowID: "@0",
+            returnToPaneID: nil
+        ),
+    ]
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        contextReviewStore: try AgentContextReviewStore(
+            file: directory.appendingPathComponent("context-reviews.json")
+        )
+    )
+    let staged = broker.handleContextDraft(
+        token: sourceToken,
+        name: "Concurrent review",
+        path: "Initial.swift",
+        text: String(repeating: "x", count: 55_000)
+    )
+    let summary = try JSONDecoder().decode(
+        AgentContextReviewSummary.self,
+        from: Data(staged.text.utf8)
+    )
+
+    let additions = 12
+    let start = DispatchSemaphore(value: 0)
+    let finished = DispatchGroup()
+    let responses = LockedRelayResponses()
+    for index in 0..<additions {
+        finished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            start.wait()
+            responses.append(broker.handleContextAdd(
+                token: sourceToken,
+                draftID: summary.id,
+                path: "Part-\(index).swift",
+                text: "let acceptedPart\(index) = \(index)"
+            ))
+            finished.leave()
+        }
+    }
+    for _ in 0..<additions { start.signal() }
+    try expect(
+        finished.wait(timeout: .now() + 5) == .success,
+        "concurrent context additions did not finish"
+    )
+    try expect(
+        responses.values.allSatisfy { $0.status == 200 },
+        "a valid concurrent context addition was refused"
+    )
+    let review = try require(
+        broker.contextReviews().first(where: { $0.id == summary.id }),
+        "the concurrently edited context draft disappeared"
+    )
+    try expect(
+        review.pack.parts.count == additions + 1,
+        "concurrent accepted context additions overwrote one another"
+    )
+    for index in 0..<additions {
+        try expect(
+            review.pack.parts.contains { $0.text == "let acceptedPart\(index) = \(index)" },
+            "concurrent context addition \(index) was reported successful but lost"
+        )
+    }
+}
+
+private func checkContextAddRacingAskHasOneDurableWinner() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let panes = [
+        TmuxPane(
+            id: "%1",
+            kind: .claude,
+            customName: "Claude",
+            terminalTitle: "",
+            cwd: directory.path,
+            currentCommand: "claude",
+            isActive: true,
+            windowID: "@0",
+            returnToPaneID: nil
+        ),
+        TmuxPane(
+            id: "%2",
+            kind: .codex,
+            customName: "Codex",
+            terminalTitle: "",
+            cwd: directory.path,
+            currentCommand: "codex",
+            isActive: false,
+            windowID: "@0",
+            returnToPaneID: nil
+        ),
+    ]
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        consultationTimeout: 2,
+        contextReviewStore: try AgentContextReviewStore(
+            file: directory.appendingPathComponent("context-reviews.json")
+        )
+    )
+
+    for iteration in 0..<8 {
+        let staged = broker.handleContextDraft(
+            token: sourceToken,
+            name: "Ask race \(iteration)",
+            path: "Initial-\(iteration).swift",
+            text: String(repeating: "x", count: 55_000)
+        )
+        let summary = try JSONDecoder().decode(
+            AgentContextReviewSummary.self,
+            from: Data(staged.text.utf8)
+        )
+        let addedText = "let raceWinner\(iteration) = true"
+        let start = DispatchSemaphore(value: 0)
+        let addResult = LockedAskResult()
+        let askResult = LockedAskResult()
+        DispatchQueue.global(qos: .userInitiated).async {
+            start.wait()
+            addResult.set(broker.handleContextAdd(
+                token: sourceToken,
+                draftID: summary.id,
+                path: "Racing-\(iteration).swift",
+                text: addedText
+            ))
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            start.wait()
+            askResult.set(broker.handleContextAsk(
+                token: sourceToken,
+                draftID: summary.id,
+                target: "%2",
+                text: "Review iteration \(iteration).",
+                idempotencyKey: "context-add-ask-race-\(iteration)"
+            ))
+        }
+        start.signal()
+        start.signal()
+
+        try expect(eventually { addResult.value != nil }, "racing context add did not return")
+        try expect(
+            eventually {
+                broker.contextReviews().first(where: { $0.id == summary.id })?.state == .awaitingReview
+            },
+            "a context add racing Ask rolled the review back from awaiting review"
+        )
+        let review = try require(
+            broker.contextReviews().first(where: { $0.id == summary.id }),
+            "the context add/Ask race lost its review"
+        )
+        if addResult.value?.status == 200 {
+            try expect(
+                review.pack.parts.contains { $0.text == addedText },
+                "the winning context add was missing from the reviewed pack"
+            )
+        } else {
+            try expect(
+                addResult.value?.status == 404 && !review.pack.parts.contains { $0.text == addedText },
+                "the losing context add did not fail closed"
+            )
+        }
+        try expect(
+            broker.rejectContextReview(reviewID: summary.id).status == 200,
+            "the add/Ask race could not be resolved explicitly"
+        )
+        try expect(eventually { askResult.value != nil }, "rejecting the raced review left Ask blocked")
+    }
+}
+
+private func checkContextAddRacingCompletionHasOneDurableWinner() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        directContextSubmit: { _, _, _ in },
+        contextReviewStore: try AgentContextReviewStore(
+            file: directory.appendingPathComponent("context-reviews.json")
+        )
+    )
+
+    for iteration in 0..<32 {
+        let staged = broker.handleContextDraft(
+            token: sourceToken,
+            name: "Completion race \(iteration)",
+            path: "Initial-\(iteration).swift",
+            text: String(repeating: "x", count: 55_000)
+        )
+        let summary = try JSONDecoder().decode(
+            AgentContextReviewSummary.self,
+            from: Data(staged.text.utf8)
+        )
+        let previewReview = try require(
+            broker.contextReviews().first(where: { $0.id == summary.id }),
+            "completion-race draft disappeared"
+        )
+        var editableApprovalPack = previewReview.pack
+        editableApprovalPack.note = "Review this race."
+        let approvalPack = editableApprovalPack
+        let approvalRevision = previewReview.updatedAt
+        let start = DispatchSemaphore(value: 0)
+        let finished = DispatchGroup()
+        let addResult = LockedAskResult()
+        let completionResult = LockedAskResult()
+        let marker = "accepted-add-\(iteration)"
+
+        finished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            start.wait()
+            addResult.set(broker.handleContextAdd(
+                token: sourceToken,
+                draftID: summary.id,
+                path: "Added-\(iteration).swift",
+                text: marker
+            ))
+            finished.leave()
+        }
+        finished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            start.wait()
+            completionResult.set(broker.completeContextDraft(AgentContextReviewApproval(
+                reviewID: summary.id,
+                expectedUpdatedAt: approvalRevision,
+                targetPaneID: "%2",
+                pack: approvalPack
+            )))
+            finished.leave()
+        }
+        start.signal()
+        start.signal()
+        try expect(
+            finished.wait(timeout: .now() + 3) == .success,
+            "add/completion context race did not finish"
+        )
+        let add = try require(addResult.value, "add/completion race lost its add response")
+        let completion = try require(completionResult.value, "add/completion race lost its completion response")
+        let final = try require(
+            broker.contextReviews().first(where: { $0.id == summary.id }),
+            "add/completion race lost its durable record"
+        )
+        if add.status == 200 {
+            try expect(
+                completion.status == 409
+                    && final.state == .draft
+                    && final.pack.parts.contains(where: { $0.capturedText == marker }),
+                "a successful context add was overwritten or completed from a stale preview"
+            )
+        } else {
+            try expect(
+                add.status == 404 && completion.status == 200 && final.state == .completed,
+                "completion did not have one durable winner over a losing context add"
+            )
+        }
+    }
+
+    let staleStage = broker.handleContextDraft(
+        token: sourceToken,
+        name: "Known stale preview",
+        path: "Known.swift",
+        text: "let known = true"
+    )
+    let staleSummary = try JSONDecoder().decode(
+        AgentContextReviewSummary.self,
+        from: Data(staleStage.text.utf8)
+    )
+    let stalePreview = try require(
+        broker.contextReviews().first(where: { $0.id == staleSummary.id }),
+        "known stale preview disappeared"
+    )
+    try expect(
+        broker.handleContextAdd(
+            token: sourceToken,
+            draftID: stalePreview.id,
+            path: "Late.swift",
+            text: "let late = true"
+        ).status == 200,
+        "known stale fixture could not add its later source"
+    )
+    var stalePack = stalePreview.pack
+    stalePack.note = "This preview is now stale."
+    let staleCompletion = broker.completeContextDraft(AgentContextReviewApproval(
+        reviewID: stalePreview.id,
+        expectedUpdatedAt: stalePreview.updatedAt,
+        targetPaneID: "%2",
+        pack: stalePack
+    ))
+    try expect(
+        staleCompletion.status == 409 && staleCompletion.text.contains("changed after this preview"),
+        "a known stale context preview was allowed to overwrite a later source"
+    )
+}
+
+private func checkContextDraftDiscardIsOwnedReleasesAskAndCleansUpStaleDrafts() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let targetToken = try credentials.token(for: "%2")
+    let outsiderToken = try credentials.token(for: "%3")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: directory.path, currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let store = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        consultationTimeout: 2,
+        contextReviewStore: store
+    )
+
+    let staged = broker.handleContextDraft(
+        token: sourceToken,
+        name: "Disposable",
+        path: "Disposable.swift",
+        text: "let disposable = true"
+    )
+    let summary = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(staged.text.utf8))
+    try expect(
+        broker.discardContextDraft(token: outsiderToken, draftID: summary.id).status == 404,
+        "another pane could discard a context draft it did not own"
+    )
+    try expect(
+        broker.discardContextDraft(token: sourceToken, draftID: summary.id).status == 200,
+        "the authenticated source pane could not discard its context draft"
+    )
+    try expect(
+        broker.contextReviews().first(where: { $0.id == summary.id })?.state == .discarded,
+        "discarding a context draft did not record a terminal discarded state"
+    )
+    try expect(
+        broker.handleContextAdd(
+            token: sourceToken,
+            draftID: summary.id,
+            path: "TooLate.swift",
+            text: "let tooLate = true"
+        ).status == 404,
+        "a discarded context draft remained editable"
+    )
+
+    let waiting = broker.handleContextDraft(
+        token: sourceToken,
+        name: "Waiting",
+        path: "Waiting.swift",
+        text: "let waiting = true"
+    )
+    let waitingSummary = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(waiting.text.utf8))
+    let askResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        askResult.set(broker.handleContextAsk(
+            token: sourceToken,
+            draftID: waitingSummary.id,
+            target: "%2",
+            text: "Review this.",
+            idempotencyKey: "discard-waiting-context"
+        ))
+    }
+    try expect(
+        eventually { broker.contextReviews().first(where: { $0.id == waitingSummary.id })?.state == .awaitingReview },
+        "the discard fixture never reached awaiting review"
+    )
+    try expect(
+        broker.discardContextDraft(token: sourceToken, draftID: waitingSummary.id).status == 200,
+        "the source pane could not discard its waiting context Ask"
+    )
+    try expect(eventually { askResult.value != nil }, "discarding a waiting context Ask left the source blocked")
+    try expect(
+        askResult.value?.status == 409 && askResult.value?.text.contains("discarded") == true,
+        "discarding a waiting context Ask returned an ambiguous outcome"
+    )
+    try expect(
+        broker.handleAnswer(token: targetToken, consultationID: "current", text: "No consultation should exist.").status == 404,
+        "discarding review tracking created a target consultation"
+    )
+
+    let staleDirectory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: staleDirectory) }
+    let staleStore = try AgentContextReviewStore(file: staleDirectory.appendingPathComponent("context-reviews.json"))
+    let old = Date(timeIntervalSinceNow: -(8 * 24 * 60 * 60))
+    for index in 0..<32 {
+        try staleStore.record(AgentContextReview(
+            sourcePaneID: "%1",
+            sourcePaneName: "Claude",
+            sourcePaneKind: .claude,
+            sourceFolder: directory.path,
+            pack: ContextPack(
+                name: "Abandoned \(index)",
+                parts: [ContextPackPart(
+                    source: ContextPackSource(kind: .agentFileDraft, label: "Old.swift", detail: "agent-provided"),
+                    capturedText: "let old\(index) = true"
+                )]
+            ),
+            createdAt: old,
+            updatedAt: old
+        ))
+    }
+    let cleanedBroker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        contextReviewStore: staleStore
+    )
+    try expect(
+        cleanedBroker.contextReviews().allSatisfy { $0.state == .discarded },
+        "a core restart did not clean up abandoned editable context drafts"
+    )
+    try expect(
+        cleanedBroker.handleContextDraft(
+            token: sourceToken,
+            name: "Fresh after cleanup",
+            path: "Fresh.swift",
+            text: "let fresh = true"
+        ).status == 201,
+        "abandoned drafts permanently exhausted the pending-review safety bound"
+    )
+}
+
+private func checkDirectContextDraftCompletionOwnsDeliveryAndFailureState() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let delivered = LockedDelivery()
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        directContextSubmit: { _, paneID, text in delivered.set(paneID: paneID, text: text, submit: true) },
+        contextReviewStore: try AgentContextReviewStore(
+            file: directory.appendingPathComponent("context-reviews.json")
+        )
+    )
+    let staged = broker.handleContextDraft(
+        token: sourceToken,
+        name: "Direct delivery",
+        path: "Direct.swift",
+        text: "let direct = true"
+    )
+    let summary = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(staged.text.utf8))
+    let review = try require(
+        broker.contextReviews().first(where: { $0.id == summary.id }),
+        "the direct-delivery context draft disappeared"
+    )
+    var reviewedPack = review.pack
+    reviewedPack.note = "Review this direct delivery."
+    let completed = broker.completeContextDraft(AgentContextReviewApproval(
+        reviewID: review.id,
+        expectedUpdatedAt: review.updatedAt,
+        targetPaneID: "%2",
+        pack: reviewedPack
+    ))
+    try expect(completed.status == 200, "the core could not complete a direct context delivery")
+    try expect(delivered.value?.paneID == "%2", "direct context completion did not own target delivery")
+    try expect(
+        delivered.value?.text.contains("Review this direct delivery") == true,
+        "direct context completion submitted an unreviewed pack"
+    )
+    try expect(
+        broker.contextReviews().first(where: { $0.id == review.id })?.state == .completed,
+        "successful direct context delivery did not become durably completed"
+    )
+
+    let failingStore = try AgentContextReviewStore(file: directory.appendingPathComponent("failing-context-reviews.json"))
+    let failingBroker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        directContextSubmit: { _, _, _ in
+            throw RelayFileTransportError.runtime("fixture delivery failed before input")
+        },
+        contextReviewStore: failingStore
+    )
+    let failingStaged = failingBroker.handleContextDraft(
+        token: sourceToken,
+        name: "Failed delivery",
+        path: "Failed.swift",
+        text: "let failed = true"
+    )
+    let failingSummary = try JSONDecoder().decode(
+        AgentContextReviewSummary.self,
+        from: Data(failingStaged.text.utf8)
+    )
+    let failingReview = try require(
+        failingBroker.contextReviews().first(where: { $0.id == failingSummary.id }),
+        "the failing direct-delivery draft disappeared"
+    )
+    var failingPack = failingReview.pack
+    failingPack.note = "Attempt this delivery."
+    let failed = failingBroker.completeContextDraft(AgentContextReviewApproval(
+        reviewID: failingReview.id,
+        expectedUpdatedAt: failingReview.updatedAt,
+        targetPaneID: "%2",
+        pack: failingPack
+    ))
+    try expect(failed.status == 409 && failed.text.contains("fixture delivery failed"), "direct delivery failure was hidden")
+    let failedRecord = try require(
+        failingBroker.contextReviews().first(where: { $0.id == failingReview.id }),
+        "failed direct delivery lost its durable review"
+    )
+    try expect(
+        failedRecord.state == .failed && failedRecord.detail?.contains("fixture delivery failed") == true,
+        "failed direct delivery remained an apparently sendable draft"
+    )
+}
+
+private func checkTrustedContextCaptureExtendsAgentDraftWithoutTrustingApproval() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        visibleText: { paneID in "visible output from \(paneID)" },
+        contextReviewStore: try AgentContextReviewStore(
+            file: directory.appendingPathComponent("context-reviews.json")
+        )
+    )
+    let infoFile = directory.appendingPathComponent("relay-url")
+    let controlToken = "trusted-context-control"
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
+    try server.start()
+    defer { server.stop() }
+    let control = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let staged = broker.handleContextDraft(
+        token: sourceToken,
+        name: "Trust boundary",
+        path: "Claimed.swift",
+        text: "let claimed = true"
+    )
+    let summary = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(staged.text.utf8))
+    let trustedFile = directory.appendingPathComponent("Trusted.swift")
+    try "let trusted = true\n".write(to: trustedFile, atomically: true, encoding: .utf8)
+
+    let captured = try control.captureTrustedContext(AgentContextTrustedCaptureRequest(
+        reviewID: summary.id,
+        kind: .files,
+        paths: [trustedFile.path]
+    ))
+    try expect(captured.status == 200, "a person-authorized local file could not be captured by the core")
+    let capturedParts = try JSONDecoder().decode(
+        AgentContextTrustedCaptureResponse.self,
+        from: Data(captured.text.utf8)
+    ).parts
+    let trustedPart = try require(capturedParts.first, "trusted capture returned no context part")
+    try expect(trustedPart.source.kind == .file, "core-captured context retained the agent-claim label")
+    try expect(trustedPart.source.detail == trustedFile.path, "core-captured context invented its provenance")
+    try expect(trustedPart.capturedText == "let trusted = true\n", "core-captured context changed the file contents")
+
+    let binary = directory.appendingPathComponent("binary.dat")
+    try Data([0, 1, 2, 3]).write(to: binary)
+    let binaryResult = try control.captureTrustedContext(AgentContextTrustedCaptureRequest(
+        reviewID: summary.id,
+        kind: .files,
+        paths: [binary.path]
+    ))
+    try expect(binaryResult.status == 409 && binaryResult.text.localizedCaseInsensitiveContains("text"), "binary trusted context did not fail explicitly")
+    let missingResult = try control.captureTrustedContext(AgentContextTrustedCaptureRequest(
+        reviewID: summary.id,
+        kind: .files,
+        paths: [directory.appendingPathComponent("missing.swift").path]
+    ))
+    try expect(missingResult.status == 409 && missingResult.text.contains("missing.swift"), "missing trusted context did not identify the failed file")
+
+    let review = try require(
+        broker.contextReviews().first(where: { $0.id == summary.id }),
+        "trusted capture lost the durable agent draft"
+    )
+    try expect(review.pack.parts.count == 2, "failed trusted captures mutated the durable draft")
+    var forgedPack = review.pack
+    forgedPack.parts.append(ContextPackPart(
+        source: ContextPackSource(kind: .file, label: "Forged", detail: "/tmp/forged"),
+        capturedText: "invented by approval"
+    ))
+    forgedPack.note = "Review the trusted file."
+    let forged = broker.completeContextDraft(AgentContextReviewApproval(
+        reviewID: review.id,
+        expectedUpdatedAt: review.updatedAt,
+        targetPaneID: "%2",
+        pack: forgedPack
+    ))
+    try expect(forged.status == 400, "an approval payload invented a trusted context source")
+    try expect(
+        broker.contextReviews().first(where: { $0.id == summary.id })?.state == .draft,
+        "a forged approval changed the durable draft state"
+    )
+}
+
+private func checkContextReviewTransportBoundsAndEscaping() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let panes = [
+        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+    ]
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        directContextSubmit: { _, _, _ in },
+        contextReviewStore: try AgentContextReviewStore(
+            file: directory.appendingPathComponent("context-reviews.json")
+        )
+    )
+    let infoFile = directory.appendingPathComponent("relay-url")
+    let controlToken = "context-bounds-control"
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
+    try server.start()
+    defer { server.stop() }
+    let control = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+
+    let escapeHeavyText = String(repeating: "\\\"", count: 21_000)
+    let staged = broker.handleContextDraft(
+        token: sourceToken,
+        name: "Escaping boundary",
+        path: "First.swift",
+        text: escapeHeavyText
+    )
+    let summary = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(staged.text.utf8))
+    let added = broker.handleContextAdd(
+        token: sourceToken,
+        draftID: summary.id,
+        path: "Second.swift",
+        text: escapeHeavyText
+    )
+    try expect(added.status == 200, "near-limit context could not stage its second part")
+    let review = try require(
+        broker.contextReviews().first(where: { $0.id == summary.id }),
+        "near-limit context review disappeared"
+    )
+    var pack = review.pack
+    pack.note = "Review escaping without changing the bytes."
+    let renderedBytes = try ContextPackBuilder().render(pack).utf8.count
+    let encodedBytes = try JSONEncoder().encode(AgentContextReviewApproval(
+        reviewID: review.id,
+        expectedUpdatedAt: review.updatedAt,
+        targetPaneID: "%2",
+        pack: pack
+    )).count
+    try expect(renderedBytes > 80_000, "escaping fixture did not reach the context-pack boundary")
+    try expect(encodedBytes > 160_000 && encodedBytes < 200_000, "escaping fixture did not exercise the transport boundary")
+    let completed = try control.completeContextDraft(
+        reviewID: review.id,
+        expectedUpdatedAt: review.updatedAt,
+        pack: pack,
+        targetPaneID: "%2"
+    )
+    try expect(completed.status == 200, "valid near-limit JSON escaping failed across core control")
+
+    let oversizedStage = broker.handleContextDraft(
+        token: sourceToken,
+        name: "Oversized approval",
+        path: "Small.swift",
+        text: "let small = true"
+    )
+    let oversizedSummary = try JSONDecoder().decode(
+        AgentContextReviewSummary.self,
+        from: Data(oversizedStage.text.utf8)
+    )
+    let oversizedReview = try require(
+        broker.contextReviews().first(where: { $0.id == oversizedSummary.id }),
+        "oversized transport draft disappeared"
+    )
+    var oversizedPack = oversizedReview.pack
+    oversizedPack.note = String(repeating: "x", count: 205_000)
+    let oversized = try control.completeContextDraft(
+        reviewID: oversizedReview.id,
+        expectedUpdatedAt: oversizedReview.updatedAt,
+        pack: oversizedPack,
+        targetPaneID: "%2"
+    )
+    try expect(
+        oversized.status == 413 && oversized.text.contains("Reduce it"),
+        "oversized approval payload did not fail explicitly before core delivery"
+    )
+    try expect(
+        broker.contextReviews().first(where: { $0.id == oversizedReview.id })?.state == .draft,
+        "rejected oversized approval mutated the durable draft"
+    )
 }
 
 private func checkContextReviewShimRoundTrip() throws {
@@ -6659,6 +7490,31 @@ private func checkContextReviewShimRoundTrip() throws {
         input: nil
     )
     try expect(shown.status == 0 && shown.stdoutText.contains("let parser"), "parley context show omitted the staged content")
+
+    let disposable = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [shimDirectory.appendingPathComponent("parley").path, "context", "draft", "--name", "Disposable", "--file", file.path],
+        environment: environment,
+        input: nil
+    )
+    let disposableReview = try JSONDecoder().decode(
+        AgentContextReviewSummary.self,
+        from: Data(disposable.stdoutText.utf8)
+    )
+    let discarded = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [shimDirectory.appendingPathComponent("parley").path, "context", "discard", disposableReview.id],
+        environment: environment,
+        input: nil
+    )
+    try expect(
+        discarded.status == 0,
+        "parley context discard failed (\(discarded.status)): \(discarded.stdoutText)\(discarded.stderrText)"
+    )
+    try expect(
+        broker.contextReviews().first(where: { $0.id == disposableReview.id })?.state == .discarded,
+        "parley context discard did not reach the authenticated broker"
+    )
 
     let askResult = LockedAskResult()
     DispatchQueue.global(qos: .utility).async {
@@ -6741,7 +7597,15 @@ let checks: [(String, () throws -> Void)] = [
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
     ("explicit bounded attributed context packs", checkContextPacksAreExplicitBoundedAndAttributed),
     ("durable explicitly attached workspace briefs", checkWorkspaceBriefsAreDurableAndExplicitlyAttached),
+    ("durable reusable explicitly attached pinned context", checkPinnedContextSnippetsAreDurableReusableAndExplicit),
     ("agent context drafts require human approval", checkAgentContextDraftsRequireHumanApprovalBeforeAsk),
+    ("concurrent context additions are atomic", checkConcurrentContextAddsRetainEveryAcceptedPart),
+    ("context add racing Ask has one durable winner", checkContextAddRacingAskHasOneDurableWinner),
+    ("context add racing completion has one durable winner", checkContextAddRacingCompletionHasOneDurableWinner),
+    ("context draft discard is owned and bounded", checkContextDraftDiscardIsOwnedReleasesAskAndCleansUpStaleDrafts),
+    ("direct context completion owns delivery state", checkDirectContextDraftCompletionOwnsDeliveryAndFailureState),
+    ("trusted context capture preserves provenance", checkTrustedContextCaptureExtendsAgentDraftWithoutTrustingApproval),
+    ("context review transport bounds and escaping", checkContextReviewTransportBoundsAndEscaping),
     ("context review shim round trip", checkContextReviewShimRoundTrip),
     ("authoritative Status Center projection", checkStatusCenterProjectionUsesOnlyAuthoritativeState),
     ("in-app recovery guidance", checkRecoveryGuidanceProjectsKnownFailures),

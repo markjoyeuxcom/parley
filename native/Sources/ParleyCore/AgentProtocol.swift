@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "5"
+    public static let version = "6"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -22,6 +22,7 @@ public enum AgentProtocol {
       `parley context draft --name "<name>" --file <path>`. Add another file
       with `parley context add <draft-id> --file <path>`, and inspect your own
       drafts with `parley context list` or `parley context show <draft-id>`.
+      Discard an abandoned draft with `parley context discard <draft-id>`.
       Agent-staged files must remain inside this pane's working folder and are
       labelled as agent-provided rather than person-selected.
     - To ask with a staged draft, run

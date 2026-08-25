@@ -140,9 +140,10 @@ creation and revocation by a later UI process.
 
 ## Relay and consultation contract
 
-The `parley` shim connects through an authenticated Unix-domain socket. Each
-agent pane has a durable random credential establishing its real sender. A
-caller cannot choose a different source identity.
+The `parley` shim uses an authenticated capability-named filesystem endpoint;
+the native UI alone uses the core's Unix-domain control socket. Each agent pane
+has a durable random credential establishing its real sender. A caller cannot
+choose a different source identity.
 
 - `parley relay <target> <text>` submits one attributed message.
 - `parley paste <target> <text>` places the attributed text without Enter.
@@ -206,6 +207,29 @@ Otherwise the core and fresh heartbeat can be healthy while the pane reports
 That message is not proof that the core process is absent: verify the selected
 stable-router destination, exact endpoint spelling and heartbeat before
 restarting a broker or pane.
+
+## Reviewed context boundary
+
+An agent-staged context part is a claim: its path and bytes came from that pane
+and must stay labelled `agentFileDraft`. Only a separate human-authorized core
+capture may create trusted File, Git Diff, Visible Screen or Command Result
+provenance. Never let the approval form submit source metadata or captured
+originals; it may return only known part ids and edited text.
+
+All context-review state changes share `consultationCondition`. Validation,
+durable `AgentContextReviewStore.record`, the in-memory replacement and
+broadcast are one mutation. Approval also carries the exact `updatedAt` revision
+shown in the UI; if an agent adds a part after that preview opened, approval
+must fail stale instead of accepting both operations and silently dropping the
+new part.
+
+Direct context completion belongs to the persistent core. Record approved
+before terminal input, record failed delivery as terminal `.failed`, and never
+restore it to an apparently resendable draft. A successful delivery followed
+by a persistence error must say that delivery occurred and instruct the person
+not to resend. Keep valid rendered packs at 90 KB and native control bodies at
+200 KB; the control client rejects an oversized approval before opening the
+socket so `Broken pipe` never replaces the useful error.
 
 ## Shared protocol and vendor launch behavior
 

@@ -278,6 +278,17 @@ router. Do not collapse it back into a runtime-pinned relay shim.
 - `parley relay` submits one attributed cross-vendor message.
 - `parley paste` leaves the attributed message in the target prompt.
 - `parley ask` creates one correlated consultation, submits it and waits.
+- `parley context draft/add/list/show/discard` manages owner-scoped agent
+  proposals. `parley ask <target> --context <draft>` blocks at a durable native
+  review checkpoint and submits nothing before explicit human approval.
+
+Agent-provided context remains labelled as a claim. During native review, a
+person may add selected files, the source folder's Git diff, one visible pane
+screen or a shell-free direct-argv command result. The persistent core performs
+those captures, establishes their provenance and immutable original bytes, and
+rejects approval payloads that invent a source. Draft completion is also owned
+by the core so a failed delivery cannot leave an apparently untouched,
+resendable draft.
 - `parley ask-many` creates independent concurrent consultations for an
   explicit comma-separated target list and returns ordered JSON.
 - `parley answer` resolves the exact waiting consultation.

@@ -25,6 +25,7 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
     case commandResult
     case agentFileDraft
     case workspaceBrief
+    case pinnedSnippet
 
     public var label: String {
         switch self {
@@ -34,6 +35,7 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
         case .commandResult: "Command result"
         case .agentFileDraft: "Agent-provided file draft"
         case .workspaceBrief: "Workspace brief"
+        case .pinnedSnippet: "Pinned snippet"
         }
     }
 }
@@ -42,11 +44,18 @@ public struct ContextPackSource: Codable, Equatable, Sendable {
     public let kind: ContextPackSourceKind
     public let label: String
     public let detail: String
+    public let referenceID: String?
 
-    public init(kind: ContextPackSourceKind, label: String, detail: String) {
+    public init(
+        kind: ContextPackSourceKind,
+        label: String,
+        detail: String,
+        referenceID: String? = nil
+    ) {
         self.kind = kind
         self.label = label
         self.detail = detail
+        self.referenceID = referenceID
     }
 }
 
@@ -101,6 +110,16 @@ public struct ContextPack: Identifiable, Codable, Equatable, Sendable {
     }
 
     public var sourceByteCount: Int { parts.reduce(0) { $0 + $1.byteCount } }
+}
+
+public struct ContextPackMeasurement: Equatable, Sendable {
+    public let renderedByteCount: Int
+    public let isValid: Bool
+
+    public init(renderedByteCount: Int, isValid: Bool) {
+        self.renderedByteCount = renderedByteCount
+        self.isValid = isValid
+    }
 }
 
 public enum ContextPackError: LocalizedError, Equatable {
@@ -258,8 +277,8 @@ private final class BoundedContextData: @unchecked Sendable {
 /// Captures explicit local sources and renders the exact attributed payload a
 /// person can inspect before sending. Person-created drafts remain ephemeral;
 /// an agent-proposed pack may be serialized only as part of its durable,
-/// human-reviewed checkpoint. Durable workspace briefs enter only through an
-/// explicit snapshot; reusable snippets remain a separate roadmap feature.
+/// human-reviewed checkpoint. Durable workspace briefs and reusable pinned
+/// snippets enter only through explicit snapshots.
 public final class ContextPackBuilder: @unchecked Sendable {
     public static let defaultMaximumPartBytes = 60_000
     public static let defaultMaximumRenderedBytes = 90_000
@@ -376,9 +395,22 @@ public final class ContextPackBuilder: @unchecked Sendable {
             source: ContextPackSource(
                 kind: .workspaceBrief,
                 label: brief.workspaceName,
-                detail: "Workspace brief for \(brief.workspaceName) (\(brief.workspaceID)), saved \(brief.updatedAt.formatted(.iso8601))"
+                detail: "Workspace brief for \(brief.workspaceName) (\(brief.workspaceID)), saved \(brief.updatedAt.formatted(.iso8601))",
+                referenceID: brief.id
             ),
             text: brief.renderedText
+        )
+    }
+
+    public func pinnedSnippet(_ snippet: PinnedContextSnippet) throws -> ContextPackPart {
+        try part(
+            source: ContextPackSource(
+                kind: .pinnedSnippet,
+                label: snippet.title,
+                detail: "Pinned snippet \(snippet.title) (\(snippet.id)), saved \(snippet.updatedAt.formatted(.iso8601))",
+                referenceID: snippet.id
+            ),
+            text: snippet.text
         )
     }
 
@@ -433,19 +465,31 @@ public final class ContextPackBuilder: @unchecked Sendable {
     }
 
     public func render(_ pack: ContextPack) throws -> String {
+        let rendered = renderUnchecked(pack)
+        try validate(pack, rendered: rendered)
+        return rendered
+    }
+
+    public func measure(_ pack: ContextPack) -> ContextPackMeasurement {
+        let rendered = renderUnchecked(pack)
+        return ContextPackMeasurement(
+            renderedByteCount: rendered.utf8.count,
+            isValid: (try? validate(pack, rendered: rendered)) != nil
+        )
+    }
+
+    public func renderedByteCount(_ pack: ContextPack) -> Int {
+        measure(pack).renderedByteCount
+    }
+
+    private func validate(_ pack: ContextPack, rendered: String) throws {
         guard !pack.parts.isEmpty else { throw ContextPackError.noParts }
         guard pack.parts.count <= Self.maximumParts else { throw ContextPackError.tooManyParts }
         for part in pack.parts {
             guard !part.text.isEmpty else { throw ContextPackError.emptyPart }
             guard part.byteCount <= maximumPartBytes else { throw ContextPackError.partTooLarge }
         }
-        let rendered = renderUnchecked(pack)
         guard rendered.utf8.count <= maximumRenderedBytes else { throw ContextPackError.packTooLarge }
-        return rendered
-    }
-
-    public func renderedByteCount(_ pack: ContextPack) -> Int {
-        renderUnchecked(pack).utf8.count
     }
 
     private func part(source: ContextPackSource, text: String) throws -> ContextPackPart {

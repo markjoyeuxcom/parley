@@ -70,6 +70,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.workspaceBriefPresented) {
             WorkspaceBriefView(model: model)
         }
+        .sheet(isPresented: $model.pinnedContextSnippetsPresented) {
+            PinnedContextSnippetLibraryView(model: model)
+        }
         .sheet(isPresented: $model.supervisedWorkflowPresented) {
             SupervisedWorkflowView(model: model)
         }
@@ -558,14 +561,14 @@ struct ContentView: View {
     private var contextPackMenu: some View {
         Menu {
             if !model.pendingContextReviews.isEmpty {
-                Section("Agent Drafts Requiring Review") {
+                Section("Agent Drafts Awaiting Review") {
                     ForEach(model.pendingContextReviews) { review in
                         Button {
                             model.presentContextReview(review)
                         } label: {
                             let target = review.requestedTargetName.map { " → \($0)" } ?? ""
                             Label(
-                                "\(review.sourcePaneName)\(target) · \(review.state == .awaitingReview ? "waiting" : "draft")",
+                                "\(review.sourcePaneName)\(target) · \(review.state == .awaitingReview ? "awaiting review" : "draft")",
                                 systemImage: review.state == .awaitingReview ? "person.crop.circle.badge.clock" : "doc.badge.ellipsis"
                             )
                         }
@@ -574,7 +577,7 @@ struct ContentView: View {
                 Divider()
             }
             if let draft = model.contextPackDraft {
-                Button("Open \(draft.pack.name)") { model.presentContextPack() }
+                Button("Open Context Pack “\(draft.pack.name)”") { model.presentContextPack() }
                 Divider()
             }
             Button("New Context Pack…") { model.newContextPack() }
@@ -586,12 +589,25 @@ struct ContentView: View {
                         model.editWorkspaceBrief()
                     }
                     if model.activeWorkspaceBrief != nil {
-                        Button("New Context Pack with Brief…") {
+                        Button("New Context Pack with Workspace Brief…") {
                             model.newContextPackWithWorkspaceBrief()
                         }
                         .disabled(!model.canCreateContextPack)
                     }
                 }
+            }
+            Divider()
+            Section("Reusable Context") {
+                Button("Manage Pinned Snippets…") {
+                    model.presentPinnedContextSnippets()
+                }
+            }
+            Divider()
+            Button {
+                model.requestHelp(topicID: "context-model")
+                openWindow(id: "help")
+            } label: {
+                Label("How Context Works", systemImage: "questionmark.circle")
             }
         } label: {
             Label(
@@ -599,20 +615,14 @@ struct ContentView: View {
                 systemImage: model.pendingContextReviews.isEmpty ? "shippingbox" : "shippingbox.fill"
             )
         }
-        .accessibilityLabel("Explicit context pack")
+        .accessibilityLabel("Context packs and references")
         .accessibilityValue(
             model.pendingContextReviews.isEmpty
                 ? (model.contextPackDraft.map { "\($0.pack.parts.count) sources" } ?? "No draft")
                 : "\(model.pendingContextReviews.count) agent draft\(model.pendingContextReviews.count == 1 ? "" : "s") awaiting review"
         )
-        .help("Edit the workspace brief or assemble explicit attributed context before a cross-vendor handoff")
-        .accessibilityHint("Edit the workspace brief, or open and create an editable attributed context pack")
-        .disabled(
-            model.activeWorkspace == nil
-                && model.contextPackDraft == nil
-                && !model.canCreateContextPack
-                && model.pendingContextReviews.isEmpty
-        )
+        .help("Manage reusable context, edit the workspace brief or assemble explicit attributed sources before a cross-vendor handoff")
+        .accessibilityHint("Manage pinned context and the workspace brief, or open an editable attributed context pack")
     }
 
     private var recipeMenu: some View {

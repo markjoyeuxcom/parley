@@ -3,6 +3,10 @@ import Dispatch
 import Foundation
 import Security
 
+public enum RelayCoreTransportLimits {
+    public static let maximumBodyBytes = 200_000
+}
+
 struct RelayWorkspaceHistoryDeletionRequest: Codable {
     let workspaceID: String
     let workspaceName: String?
@@ -167,14 +171,17 @@ public struct RelayCoreClient: Sendable {
 
     public func approveContextReview(
         reviewID: String,
+        expectedUpdatedAt: Date,
         pack: ContextPack,
         targetPaneID: String
     ) throws -> RelayTextResponse {
         let body = try JSONEncoder().encode(AgentContextReviewApproval(
             reviewID: reviewID,
+            expectedUpdatedAt: expectedUpdatedAt,
             targetPaneID: targetPaneID,
             pack: pack
         ))
+        if let oversized = oversizedContextResponse(body) { return oversized }
         let response = try request(
             method: "POST",
             path: "/ui/context-reviews/approve",
@@ -197,16 +204,39 @@ public struct RelayCoreClient: Sendable {
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
 
+    public func captureTrustedContext(
+        _ capture: AgentContextTrustedCaptureRequest
+    ) throws -> RelayTextResponse {
+        let body = try JSONEncoder().encode(capture)
+        if let oversized = oversizedContextResponse(body) { return oversized }
+        let response = try request(
+            method: "POST",
+            path: "/ui/context-reviews/capture",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body
+        )
+        return RelayTextResponse(
+            status: response.status,
+            text: String(decoding: response.body, as: UTF8.self)
+        )
+    }
+
     public func completeContextDraft(
         reviewID: String,
+        expectedUpdatedAt: Date,
         pack: ContextPack,
         targetPaneID: String
     ) throws -> RelayTextResponse {
         let body = try JSONEncoder().encode(AgentContextReviewApproval(
             reviewID: reviewID,
+            expectedUpdatedAt: expectedUpdatedAt,
             targetPaneID: targetPaneID,
             pack: pack
         ))
+        if let oversized = oversizedContextResponse(body) { return oversized }
         let response = try request(
             method: "POST",
             path: "/ui/context-reviews/complete",
@@ -217,6 +247,14 @@ public struct RelayCoreClient: Sendable {
             body: body
         )
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
+    private func oversizedContextResponse(_ body: Data) -> RelayTextResponse? {
+        guard body.count > RelayCoreTransportLimits.maximumBodyBytes else { return nil }
+        return RelayTextResponse(
+            status: 413,
+            text: "The reviewed context payload is \(body.count) bytes. Reduce it below \(RelayCoreTransportLimits.maximumBodyBytes) bytes before sending."
+        )
     }
 
     public func handoffs(limit: Int? = nil) throws -> [RelayHandoff] {

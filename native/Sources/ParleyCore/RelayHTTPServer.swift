@@ -19,7 +19,6 @@ public enum RelayServerError: LocalizedError {
 /// network syscall, including Unix-domain socket connections.
 public final class RelayHTTPServer: @unchecked Sendable {
     private static let maximumHeaderBytes = 32_768
-    private static let maximumBodyBytes = 200_000
 
     private let broker: RelayBroker
     private let infoFile: URL
@@ -437,6 +436,19 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     return
                 }
                 write(broker.completeContextDraft(approval), to: client)
+            case "/ui/context-reviews/capture":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let capture = try? JSONDecoder().decode(
+                    AgentContextTrustedCaptureRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid trusted context capture"), to: client)
+                    return
+                }
+                write(broker.captureTrustedContext(capture), to: client)
             case let path where path.hasPrefix("/ui/context-reviews/reject/"):
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
@@ -548,7 +560,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 guard let rawLength = head.headers["content-length"], let length = Int(rawLength), length >= 0 else {
                     throw RelayServerError.malformedRequest("relay needs Content-Length")
                 }
-                guard length <= Self.maximumBodyBytes else {
+                guard length <= RelayCoreTransportLimits.maximumBodyBytes else {
                     throw RelayServerError.malformedRequest("relay text too long")
                 }
                 parsedHead = head
@@ -561,7 +573,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 let body = received.subdata(in: bodyStart..<(bodyStart + expectedLength))
                 return Request(method: parsedHead.method, path: parsedHead.path, headers: parsedHead.headers, body: body)
             }
-            if received.count > Self.maximumHeaderBytes + Self.maximumBodyBytes {
+            if received.count > Self.maximumHeaderBytes + RelayCoreTransportLimits.maximumBodyBytes {
                 throw RelayServerError.malformedRequest("relay request too large")
             }
         }

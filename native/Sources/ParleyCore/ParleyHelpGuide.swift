@@ -220,6 +220,75 @@ public enum ParleyHelpGuide {
             ]
         ),
         ParleyHelpTopic(
+            id: "context-model",
+            title: "How context works",
+            summary: "Choose the right scope for reusable guidance, workspace decisions, vendor conversation and one specific handoff.",
+            symbol: "square.stack.3d.up",
+            sections: [
+                ParleyHelpSection(
+                    id: "context-model-scopes",
+                    title: "Four separate scopes",
+                    paragraphs: [
+                        "Parley keeps different kinds of context separate so a useful note does not silently become an instruction to every agent. The scope determines where material lives and whether it survives a window.",
+                    ],
+                    items: [
+                        "Pinned Snippet — durable, application-wide reusable context such as architecture rules, test instructions and review criteria.",
+                        "Workspace Brief — durable context for one live workspace: its current goal, constraints and important decisions.",
+                        "Vendor pane — the conversation and session history owned by that vendor CLI. Parley does not manufacture or merge this memory.",
+                        "Context Pack — an ephemeral, editable bundle for one handoff. Files, diffs, terminal output and saved references enter as separately attributed snapshots.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "context-model-explicit",
+                    title: "Nothing crosses automatically",
+                    paragraphs: [
+                        "A Workspace Brief or Pinned Snippet is never attached automatically. Saving either one does not contact an agent or alter any vendor session.",
+                        "Adding saved context to a Context Pack creates an attributed snapshot. Edit that copy for the receiving vendor without changing its durable source, then inspect the complete pack before Ask or Compare submits it.",
+                    ],
+                    items: [
+                        "A person-created pack can attach a brief or pinned snippets; an agent-staged draft cannot read either library. During review, a person can add a file, Git diff, visible screen or command result through Parley's own bounded capture path.",
+                        "A pack includes only visible sources you deliberately add. Hidden terminal history and complete transcripts are not scraped.",
+                        "Deleting or updating a saved reference never rewrites a snapshot already placed in a pack.",
+                        "Context is evidence and instruction, not credential storage. Keep passwords, API keys and vendor tokens out of briefs and snippets.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "context-model-drafts",
+                    title: "Draft lifetime",
+                    paragraphs: [
+                        "Parley currently keeps one active person-created Context Pack draft across the app. Creating another pack asks before replacing a non-empty draft, and closing Parley discards that person-created draft.",
+                        "Agent-staged review checkpoints are different: they are owner-only durable records because a waiting pane must receive an explicit approval or refusal rather than lose its state when the UI closes.",
+                    ],
+                    items: [
+                        "A draft remains anchored to the pane and folder from which it was created.",
+                        "If that source pane is no longer ready, the pack remains inspectable but cannot be sent.",
+                        "A future workspace-draft refinement will replace the current app-wide draft slot; this page describes the behavior available now.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "context-model-choose",
+                    title: "Choose the smallest useful scope",
+                    items: [
+                        "Use a Workspace Brief for the current project goal, boundaries and decisions that should not be silently reopened.",
+                        "Use a Pinned Snippet for guidance you expect to reuse across repositories or workspaces.",
+                        "Use a Context Pack for the exact evidence and request another vendor needs for one implementation, review or comparison.",
+                        "Continue in the same vendor pane when the new instruction depends on that CLI's existing conversation; start another pane when it does not.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "context-model-example",
+                    title: "Example: implementation review",
+                    items: [
+                        "Maintain the feature goal and constraints in the Workspace Brief.",
+                        "Keep the standard verification checklist as a Pinned Snippet.",
+                        "From the implementer's pane, create a Context Pack and explicitly add the Workspace Brief, verification snippet and current Git diff.",
+                        "Write the receiving vendor's review request, inspect every attributed source, then use Ask One Vendor or Compare Vendors.",
+                        "The receiving agent sees the snapshots in that handoff; other panes and later requests receive nothing unless you attach it again.",
+                    ]
+                ),
+            ]
+        ),
+        ParleyHelpTopic(
             id: "context-packs",
             title: "Context packs",
             summary: "Assemble only the local evidence you choose, inspect its provenance and byte size, then send it through Ask or independent Compare.",
@@ -229,7 +298,7 @@ public enum ParleyHelpGuide {
                     id: "context-packs-build",
                     title: "Build an explicit pack",
                     paragraphs: [
-                        "From a ready agent pane, open Context and choose New Context Pack. Add selected UTF-8 files, the source pane's current Git diff, one chosen pane's visible screen, a captured command result, or that workspace's saved brief.",
+                        "From a ready agent pane, open Context and choose New Context Pack. Add selected UTF-8 files, the source pane's current Git diff, one chosen pane's visible screen, a captured command result, that workspace's saved brief, or reusable pinned context.",
                         "Every source remains a separate editable part with its exact path or pane/command provenance, captured UTF-8 bytes, current UTF-8 bytes and an EDITED marker when the preview differs from the capture.",
                     ],
                     items: [
@@ -237,7 +306,8 @@ public enum ParleyHelpGuide {
                         "Visible terminal capture means the current visible screen only. Hidden scrollback, another pane and the complete transcript are not scraped.",
                         "Command capture requires an absolute executable and treats each non-empty line as one literal argument. It never invokes a shell, expands variables, pipes or redirects.",
                         "Both command stdout and stderr plus the exit status are retained. Time and output bounds prevent a noisy process from creating an unbounded preview.",
-                        "A pane agent can stage repository files with `parley context draft --name \"Review\" --file path` and append with `parley context add <draft> --file path`. These files must remain under that pane's working folder and are visibly labelled agent-provided because Parley did not independently capture them.",
+                        "A pane agent can stage repository files with `parley context draft --name \"Review\" --file path`, append with `parley context add <draft> --file path`, and abandon its own draft with `parley context discard <draft>`. These files must remain under that pane's working folder and are visibly labelled agent-provided because Parley did not independently capture them.",
+                        "While reviewing an agent draft, a person may add Files, Git Diff, Visible Screen or Capture Command. The persistent core performs that separate capture, labels its real provenance and retains the original bytes; the agent-provided parts remain claims.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -250,6 +320,7 @@ public enum ParleyHelpGuide {
                         "The live rendered byte total includes provenance, your request and wrapper text—not just source bodies.",
                         "An oversized source or pack stays visibly invalid and cannot be sent; Parley never silently clips the editable preview.",
                         "Person-created context packs remain local in-memory drafts. Agent-staged review records are owner-only and durable so closing the UI cannot silently approve or lose a waiting checkpoint. A workspace-brief attachment is a snapshot: editing it in the pack never rewrites the saved brief.",
+                        "The Context menu lists every pending agent review separately. Discard Draft ends an unsubmitted staged draft; Decline Ask releases a pane already blocked in `ask --context`. Abandoned editable agent drafts are discarded after seven days so they cannot permanently consume the bounded review queue.",
                         "`parley ask <vendor> --context <draft> \"question\"` blocks at a visible human-review checkpoint. The Context menu shows the waiting draft; approval sends the edited pack and returns the correlated answer, while Decline submits nothing and releases the waiting pane with an explicit refusal.",
                     ]
                 ),
@@ -257,14 +328,28 @@ public enum ParleyHelpGuide {
                     id: "context-packs-workspace-brief",
                     title: "Maintain a workspace brief",
                     paragraphs: [
-                        "Open Context and choose Create Workspace Brief or Edit Workspace Brief. Record the current goal, constraints and important decisions once for that live workspace. Saving is local and contacts no agent.",
-                        "A workspace brief is never attached automatically. Choose New Context Pack with Brief, or add it from an open pack, then inspect and edit the attributed snapshot before sending.",
+                        "Open Context and choose Create Workspace Brief or Edit Workspace Brief. Record the current goal, constraints and important decisions once for that live workspace. Saving is local and does not contact an agent.",
+                        "A workspace brief is never attached automatically. Choose New Context Pack with Workspace Brief, or add it from an open pack, then inspect and edit the attributed snapshot before sending.",
                     ],
                     items: [
                         "Only a person-created context pack can attach the saved brief. An agent-staged draft cannot read or add it.",
                         "The saved file is owner-only local application data. Do not place vendor credentials, tokens or other secrets in it.",
                         "A pack carries the workspace name, identity and saved timestamp as provenance. Later brief edits do not rewrite packs already sent.",
                         "Deleting the saved brief does not alter an existing context-pack snapshot or contact any running pane.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "context-packs-pinned-snippets",
+                    title: "Reuse pinned snippets",
+                    paragraphs: [
+                        "Open Context and choose Manage Pinned Snippets to keep named architecture notes, test instructions and review criteria in one application-wide local library. Managing this library does not contact any agent.",
+                        "From a person-created Context Pack, choose Add Pinned Snippets and select one or more entries. Each becomes a separately attributed editable snapshot; it is never attached automatically.",
+                    ],
+                    items: [
+                        "Pinned names are unique without regard to case, and both names and contents have explicit local size bounds.",
+                        "An agent-staged context draft cannot read or attach the person's pinned library.",
+                        "Editing or removing a pack snapshot never changes its reusable source. Updating or deleting the saved snippet never rewrites an existing pack.",
+                        "The owner-only library is not a credential vault. Do not store API keys, vendor tokens, passwords or other secrets in snippets.",
                     ]
                 ),
             ]

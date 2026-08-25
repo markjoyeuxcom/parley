@@ -41,7 +41,7 @@ The native application already has the product's essential wedge:
 - A versioned cross-vendor protocol injected into every newly started agent.
 - `relay` for an attributed asynchronous handoff, `paste` for an unsent draft,
   and correlated `ask` / `answer` for a blocking consultation.
-- Protocol v5 tracked delegation through `delegate`, `done`, `fail`, `status`
+- Protocol v6 tracked delegation through `delegate`, `done`, `fail`, `status`
   and `wait`, with exact source/target credential ownership.
 - Human Ask and Return editors with explicit control over the exact text sent.
 - Automatic submission that works across the supported agent TUIs.
@@ -655,9 +655,73 @@ between real vendor CLIs rather than a new autonomous orchestration engine.
   snapshot, so pack edits never mutate the saved reference. Agent-proposed
   context drafts cannot read or attach a person's brief, and deleting one
   neither contacts a pane nor rewrites an already captured snapshot.
-- [ ] Add local **pinned context snippets** for reusable architecture notes,
+- [x] Add local **pinned context snippets** for reusable architecture notes,
   test instructions and review criteria. Insertion always opens the existing
   editable preview and snippets never contain credentials managed by a vendor.
+  Context now manages a bounded, owner-only application-wide library with
+  case-insensitive unique names and exact multiline content. A person-created
+  pack can open a multi-select picker and add each chosen entry as a separately
+  attributed editable snapshot with stable source identity, preventing an
+  accidental duplicate. Library edits never rewrite a captured pack and pack
+  edits never rewrite the reusable source. Agent-proposed drafts cannot read or
+  attach the person's library, nothing is injected automatically, and the UI
+  states that snippets are reference material rather than credential storage.
+
+### Context reliability gate
+
+Context packs, workspace briefs and pinned snippets stay in the product: they
+are useful safety boundaries for supervised cross-vendor work. Do not add
+another context source type until this gate is complete and beta use shows that
+the existing sources justify their complexity. Agent-provided file paths and
+content remain explicitly labelled as claims; only content captured through a
+separate person-authorized local action may be described as independently
+verified by Parley.
+
+- [x] Make every context-review mutation transactional. Concurrent `context
+  add` operations must retain both accepted parts, while `add` racing approval,
+  decline, timeout or `ask --context` must have one deterministic winner and
+  must never roll a review back to an earlier state. Add deterministic tests for
+  add/add and add/Ask races before changing the broker.
+  The broker now holds one mutation lock across validation, durable recording
+  and publication. Deterministic simultaneous-start checks cover add/add and
+  add/Ask without accepting a lost part or rolling a review back to draft.
+  Approval and direct completion also carry the exact review revision shown in
+  the preview, so a later accepted add makes that preview explicitly stale
+  instead of letting both operations succeed while one source disappears.
+- [x] Complete the draft lifecycle. Add an authenticated owner-scoped CLI and
+  native action to discard a draft, clean up abandoned drafts without weakening
+  the existing 32-pending-review safety bound, and make simultaneous pending
+  reviews selectable rather than relying on one application-wide UI draft.
+  Protocol v6 adds owner-authenticated `parley context discard`; the native
+  review uses a distinct Discard Draft action, seven-day abandoned editable
+  drafts become durable discarded records, and every pending review is
+  individually selectable from the Context menu.
+- [x] Make completion and validation failures explicit and recoverable. Never
+  silently ignore a failed durable completion after terminal delivery; cover
+  missing and binary files, near-limit JSON escaping, oversized approval
+  payloads and failed draft completion with end-to-end transport tests.
+  Direct completion is now owned by the core: it records approval before input,
+  records delivery failure as terminal failed state, and reports the rare
+  delivered-but-not-persisted case without inviting a resend. End-to-end checks
+  cover missing and binary inputs, escape-heavy 80+ KB packs, explicit 413
+  rejection before an oversized control request reaches the socket, and failed
+  direct completion.
+- [x] Let a person add missing trusted local sources to an agent-proposed pack
+  through the existing bounded, shell-free core capture paths. Keep captured
+  originals immutable and reject approval payloads that invent or relabel a
+  source outside that trusted path.
+  The agent review now permits explicit Files, Git Diff, Visible Screen and
+  direct-argv Command captures. The persistent core performs each capture,
+  creates its provenance and durable part id, returns the exact captured part
+  to the editor, and still accepts only known ids plus edited text at approval.
+- [x] Profile editing at the 90 KB pack limit. Cache or debounce rendered-size
+  work only if measurements show meaningful per-keystroke allocation or frame
+  cost; do not trade the live, exact send-size gate for speculative speed.
+  A production-optimized 88,637-byte fixture measured about 2.32 ms per full
+  size render and 2.26 ms per edit normalization on the development Mac. The
+  editor now performs one exact measurement per mutation (about 4.61 ms with
+  normalization in the same fixture) and caches byte count plus validity for
+  SwiftUI reads; the exact rendered send gate remains unchanged.
 
 ### Portable teams and navigation
 
@@ -785,7 +849,8 @@ the product small and lets each CLI improve without Parley competing with it.
 
 ## Immediate build order
 
-The next implementation sequence is deliberately narrow:
+The completed foundation remains recorded below. The active sequence starts at
+step 13 and deliberately hardens the context feature before expanding it:
 
 1. [x] Persist the now-defined handoff state machine and transition record locally.
 2. [x] Prove graceful core restart, stale discovery recovery, dead-pane handling,
@@ -803,9 +868,26 @@ The next implementation sequence is deliberately narrow:
     and an explicit developer-only production attachment mode.
 12. [x] Add cross-vendor CLI permission profiles with visible effective
     enforcement and immutable safe boundaries.
-13. [ ] Package and test the complete native application on a clean Mac. The
-    repeatable isolated install/upgrade/core-launch/uninstall gate is complete;
-    the physical second-Mac test remains.
+13. [x] Complete the context reliability gate: transactional mutation and race
+    tests first, then draft disposal, explicit completion failures, trusted
+    human-added sources and measured editor performance.
+14. [x] Finish and land the current context-pack arc only after its native
+    checks, build, help and protocol documentation pass together.
+15. [ ] Build portable teams and navigation, beginning with stopped team
+    templates and stable pane roles/aliases, then deliberate pane mobility.
+16. [ ] Add local external entry points and build the thin VS Code companion on
+    the same reviewed context-pack and focus contracts.
+17. [ ] Add read-only worktree discovery and writer-collision awareness. Keep
+    optional worktree creation contingent on evidence from those two stages.
+18. [ ] Improve attention and history: menu-bar inbox, search/export/retention,
+    a human-controlled busy queue and workspace safety summaries.
+19. [ ] Integrate vendor-owned browser/tool evidence only through truthful
+    capability checks and explicit attributed context-pack captures.
+20. [ ] Add vendor compatibility checks, trustworthy readiness hooks, the
+    stable/beta update channel and the reviewed beta feedback bundle.
+21. [ ] Finish distribution: Developer ID signing and notarization, then test
+    install, upgrade and uninstall on a physical clean Apple Silicon Mac. The
+    repeatable isolated package lifecycle remains the prerequisite gate.
 
 Anything not required by those steps waits.
 

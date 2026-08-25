@@ -5,6 +5,7 @@ struct ContextPackView: View {
     @ObservedObject var model: AppModel
     @State private var selectedPartID: String?
     @State private var commandCapturePresented = false
+    @State private var pinnedSnippetPickerPresented = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -28,6 +29,9 @@ struct ContextPackView: View {
         .sheet(isPresented: $commandCapturePresented) {
             ContextCommandCaptureView(model: model)
         }
+        .sheet(isPresented: $pinnedSnippetPickerPresented) {
+            PinnedContextSnippetPickerView(model: model)
+        }
     }
 
     private var agentDraftBanner: some View {
@@ -41,7 +45,7 @@ struct ContextPackView: View {
                     Text(
                         draft.reviewState == .awaitingReview
                             ? "\(draft.sourcePaneName) is blocked waiting for you to inspect the sources and request. Approve and Ask submits the edited pack; Decline submits nothing and releases the waiting command with a refusal."
-                            : "\(draft.sourcePaneName) staged this material. Paths and contents are claims made by that pane and were not independently read by Parley. Inspect or edit every part before sending."
+                            : "\(draft.sourcePaneName) staged this material. Parts labelled Agent file are claims made by that pane. Local sources you add here are captured separately by Parley's core with their own provenance. Inspect or edit every part before sending."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -74,23 +78,23 @@ struct ContextPackView: View {
     private var sourceToolbar: some View {
         HStack(spacing: 10) {
             Button("Add Files…", systemImage: "doc.badge.plus") { model.addContextFiles() }
-                .disabled(model.contextPackIsAgentProposed)
             Button("Add Git Diff", systemImage: "arrow.triangle.branch") { model.addContextGitDiff() }
-                .disabled(model.contextPackIsAgentProposed)
             Button("Add Visible Screen…", systemImage: "rectangle.inset.filled") {
                 model.addVisibleTerminalContext()
             }
-            .disabled(model.contextPackIsAgentProposed)
             Button("Capture Command…", systemImage: "terminal") {
                 commandCapturePresented = true
             }
-            .disabled(model.contextPackIsAgentProposed)
             Button("Add Workspace Brief", systemImage: "doc.text") {
                 model.addWorkspaceBriefContext()
             }
             .disabled(!model.canAddWorkspaceBriefToContextPack)
+            Button("Add Pinned Snippets…", systemImage: "pin") {
+                pinnedSnippetPickerPresented = true
+            }
+            .disabled(model.contextPackIsAgentProposed)
             Spacer()
-            Text(model.contextPackIsAgentProposed ? "Edit or remove staged sources before approval" : "Only sources you add explicitly are included")
+            Text(model.contextPackIsAgentProposed ? "Added local sources are captured independently by Parley" : "Only sources you add explicitly are included")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -111,7 +115,7 @@ struct ContextPackView: View {
                         ContentUnavailableView(
                             "No Explicit Sources",
                             systemImage: "shippingbox",
-                            description: Text("Add selected files, a Git diff, one visible screen, a captured command result or the saved workspace brief.")
+                            description: Text("Add files, a Git diff, one visible screen, a command result, the workspace brief or pinned context.")
                         )
                     } else {
                         List(draft.pack.parts, selection: $selectedPartID) { part in
@@ -249,7 +253,10 @@ struct ContextPackView: View {
             }
             Spacer()
             if model.contextPackIsAgentProposed {
-                Button("Decline", role: .destructive) { model.rejectCurrentContextReview() }
+                Button(
+                    model.contextPackDraft?.reviewState == .awaitingReview ? "Decline Ask" : "Discard Draft",
+                    role: .destructive
+                ) { model.rejectCurrentContextReview() }
             }
             Button("Close") { model.dismissContextPack() }
                 .keyboardShortcut(.cancelAction)
@@ -309,6 +316,7 @@ struct ContextPackView: View {
         case .commandResult: "terminal"
         case .agentFileDraft: "person.crop.circle.badge.questionmark"
         case .workspaceBrief: "doc.text"
+        case .pinnedSnippet: "pin"
         }
     }
 }

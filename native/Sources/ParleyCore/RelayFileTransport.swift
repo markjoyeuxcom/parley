@@ -233,6 +233,8 @@ public final class RelayFileTransport: @unchecked Sendable {
             return encode(broker.contextDrafts(token: request.token))
         case "context-show":
             return encode(broker.contextDraft(token: request.token, draftID: request.item))
+        case "context-discard":
+            return encode(broker.discardContextDraft(token: request.token, draftID: request.item))
         case "context-ask":
             return encode(broker.handleContextAsk(
                 token: request.token,
@@ -297,7 +299,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         let command = try readField("command", from: directory, maximumBytes: 32)
         let allowed = [
             "relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "done", "fail", "cancel",
-            "context-draft", "context-add", "context-list", "context-show", "context-ask",
+            "context-draft", "context-add", "context-list", "context-show", "context-discard", "context-ask",
         ]
         guard allowed.contains(command) else { throw RelayFileTransportError.runtime("unknown command") }
         let token = try readField("token", from: directory, maximumBytes: 256)

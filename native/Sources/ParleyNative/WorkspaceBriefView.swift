@@ -75,7 +75,7 @@ struct WorkspaceBriefView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("NEVER ATTACHED AUTOMATICALLY")
                     .font(.caption.monospaced().weight(.semibold))
-                Text("Saving contacts no agent and changes no agent session. Attach the brief only from an editable Context Pack preview. Do not store vendor credentials, tokens or other secrets here.")
+                Text("Saving the brief does not contact an agent or alter any agent session. Attach it only from an editable Context Pack preview. Do not store vendor credentials, tokens or other secrets here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
