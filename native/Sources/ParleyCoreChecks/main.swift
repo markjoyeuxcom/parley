@@ -949,7 +949,8 @@ private func checkInAppHelpGuideCoverage() throws {
         "handoff chain", "objection", "human decision", "team template",
         "routing role", "stopped placeholders", "move to workspace",
         "clone configuration", "active handoffs", "parley open",
-        "parley://open", "open in parley", "person-only",
+        "parley://open", "open in parley", "person-only", "vs code companion",
+        "editor-provided", "one-shot manifest",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -2230,6 +2231,122 @@ private func checkExternalWorkspaceOpenContract() throws {
         _ = try ExternalWorkspaceOpen.request(folderPath: file.path)
         throw CheckFailure(description: "external workspace route accepted a file")
     } catch ExternalWorkspaceOpenError.notDirectory {
+        // Expected.
+    }
+}
+
+private func checkExternalEditorContextImportContract() throws {
+    let applicationDirectory = try temporaryDirectory()
+    let project = try temporaryDirectory()
+    let sourceDirectory = project.appendingPathComponent("Sources", isDirectory: true)
+    try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: false)
+    let sourceFile = sourceDirectory.appendingPathComponent("Game.swift")
+    try Data("let winner = connectFour()\n".utf8).write(to: sourceFile)
+
+    let inbox = ExternalContextImport.inboxDirectory(applicationDirectory: applicationDirectory)
+    try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: inbox.path)
+
+    func write(_ manifest: ExternalContextImportManifest, mode: Int = 0o600) throws -> URL {
+        let file = inbox.appendingPathComponent("\(UUID().uuidString.lowercased()).parleycontext")
+        try JSONEncoder().encode(manifest).write(to: file, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: file.path)
+        return file
+    }
+
+    let manifest = ExternalContextImportManifest(
+        version: ExternalContextImport.currentVersion,
+        folder: project.path,
+        items: [
+            ExternalContextImportItem(
+                kind: .selection,
+                file: "Sources/Game.swift",
+                startLine: 1,
+                endLine: 1,
+                text: "let winner = connectFour()"
+            ),
+            ExternalContextImportItem(kind: .currentFile, file: "Sources/Game.swift"),
+            ExternalContextImportItem(
+                kind: .diagnostics,
+                file: "Sources/Game.swift",
+                text: "Sources/Game.swift:1:5 warning: example diagnostic"
+            ),
+        ]
+    )
+    let importFile = try write(manifest)
+    let request = try ExternalContextImport.consume(
+        file: importFile,
+        applicationDirectory: applicationDirectory,
+        builder: ContextPackBuilder()
+    )
+    try expect(request.folder == canonicalPath(project.path), "editor context import lost its canonical workspace")
+    try expect(
+        request.parts.map(\.source.kind) == [.editorSelection, .file, .editorDiagnostics],
+        "editor context import changed explicit source attribution"
+    )
+    try expect(request.parts[0].source.detail.contains("Sources/Game.swift:1"), "selection range provenance disappeared")
+    try expect(request.parts[1].capturedText.contains("connectFour"), "current-file import trusted supplied text instead of recapturing the file")
+    try expect(!FileManager.default.fileExists(atPath: importFile.path), "one-shot editor context manifest remained reusable")
+
+    let escaped = try write(ExternalContextImportManifest(
+        version: ExternalContextImport.currentVersion,
+        folder: project.path,
+        items: [ExternalContextImportItem(kind: .currentFile, file: "../outside.txt")]
+    ))
+    do {
+        _ = try ExternalContextImport.consume(
+            file: escaped,
+            applicationDirectory: applicationDirectory,
+            builder: ContextPackBuilder()
+        )
+        throw CheckFailure(description: "editor context import escaped its declared workspace")
+    } catch ExternalContextImportError.invalidItem {
+        // Expected.
+    }
+
+    let loose = try write(manifest, mode: 0o644)
+    do {
+        _ = try ExternalContextImport.consume(
+            file: loose,
+            applicationDirectory: applicationDirectory,
+            builder: ContextPackBuilder()
+        )
+        throw CheckFailure(description: "editor context import accepted a non-private manifest")
+    } catch ExternalContextImportError.unsafeManifest {
+        // Expected.
+    }
+
+    let linkedApplication = try temporaryDirectory()
+    let linkedTarget = linkedApplication.appendingPathComponent("inbox-target", isDirectory: true)
+    try FileManager.default.createDirectory(at: linkedTarget, withIntermediateDirectories: false)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: linkedTarget.path)
+    let linkedInbox = ExternalContextImport.inboxDirectory(applicationDirectory: linkedApplication)
+    try FileManager.default.createSymbolicLink(at: linkedInbox, withDestinationURL: linkedTarget)
+    let linkedFile = linkedInbox.appendingPathComponent("\(UUID().uuidString.lowercased()).parleycontext")
+    try JSONEncoder().encode(manifest).write(to: linkedFile)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: linkedFile.path)
+    do {
+        _ = try ExternalContextImport.consume(
+            file: linkedFile,
+            applicationDirectory: linkedApplication,
+            builder: ContextPackBuilder()
+        )
+        throw CheckFailure(description: "editor context import followed a substituted inbox symlink")
+    } catch ExternalContextImportError.unsafeManifest {
+        // Expected.
+    }
+
+    let outside = applicationDirectory.appendingPathComponent("outside.parleycontext")
+    try JSONEncoder().encode(manifest).write(to: outside)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outside.path)
+    do {
+        _ = try ExternalContextImport.consume(
+            file: outside,
+            applicationDirectory: applicationDirectory,
+            builder: ContextPackBuilder()
+        )
+        throw CheckFailure(description: "editor context import read outside its private inbox")
+    } catch ExternalContextImportError.unsafeManifest {
         // Expected.
     }
 }
@@ -8218,6 +8335,7 @@ let checks: [(String, () throws -> Void)] = [
     ("portable team template persistence and application", checkPortableTeamTemplatePersistenceAndApplication),
     ("deliberate pane mobility safety contract", checkPaneMobilitySafetyContract),
     ("external workspace open contract", checkExternalWorkspaceOpenContract),
+    ("external editor context import contract", checkExternalEditorContextImportContract),
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),
     ("direct agent argv", checkDirectAgentSpawn),

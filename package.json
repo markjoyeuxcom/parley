@@ -9,7 +9,7 @@
     "dev": "node scripts/run-native-swift.mjs dev --package-path native --runtime development --cwd .",
     "dev:restart-protocol": "node scripts/run-native-swift.mjs dev --package-path native --runtime development --cwd . --restart-stale-protocol",
     "dev:attach-production": "node scripts/run-native-swift.mjs dev --package-path native --runtime attached-production --cwd .",
-    "test": "node scripts/run-native-swift.mjs run --package-path native parley-native-checks && node --test scripts/github-security.test.mjs scripts/native-macos-package.test.mjs scripts/native-macos-release.test.mjs",
+    "test": "node scripts/run-native-swift.mjs run --package-path native parley-native-checks && node --test scripts/github-security.test.mjs scripts/native-macos-package.test.mjs scripts/native-macos-release.test.mjs vscode-extension/test/contracts.test.cjs && node --check vscode-extension/extension.cjs",
     "test:soak": "node scripts/run-native-swift.mjs run --package-path native parley-native-soak",
     "test:conformance": "node scripts/run-native-swift.mjs run --package-path native parley-conformance --runtime development",
     "test:conformance:production": "node scripts/run-native-swift.mjs run --package-path native parley-conformance --runtime production",
@@ -17,6 +17,7 @@
     "test:conformance:plan:production": "node scripts/run-native-swift.mjs run --package-path native parley-conformance --runtime production --dry-run",
     "build": "node scripts/run-native-swift.mjs build --package-path native",
     "package:mac": "node scripts/native-macos-package.mjs",
+    "package:vscode": "npm --prefix vscode-extension run package",
     "verify:package:mac": "node scripts/native-macos-release.mjs --lifecycle-only",
     "release:mac": "node scripts/native-macos-release.mjs"
   }

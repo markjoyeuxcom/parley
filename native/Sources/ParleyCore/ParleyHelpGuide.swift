@@ -189,6 +189,24 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "workspaces-vscode-companion",
+                    title: "VS Code Companion",
+                    paragraphs: [
+                        "The Parley Companion is a thin local VS Code desktop extension. Its commands can open or focus the current workspace, or place an explicit selection, saved current file, current-file diagnostics, Git diff, or selection plus Git diff into Parley's normal editable context preview.",
+                        "Current files and Git diffs are recaptured by Parley from the local workspace. Selections and diagnostics are editor-provided captures and stay labelled that way. Inspect the source, byte count and editable text in Parley before deciding whether to send it.",
+                    ],
+                    items: [
+                        "The extension refuses VS Code for the Web and remote workspaces. Its first release uses the local macOS UI extension host and the installed Production app only.",
+                        "Each context action uses one private, owner-only, one-shot manifest. Parley consumes it from its fixed integration inbox; the file cannot carry a pane target, vendor, prompt, permission or submit action.",
+                        "A ready agent pane in the workspace is required as the eventual source. The extension never starts one implicitly.",
+                        "Opening the preview sends nothing. Parley's existing human confirmation is still required to Ask one vendor or compare several independently.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand("Parley: Open or Focus Workspace", "Bring the matching local workspace forward without starting an agent."),
+                        ParleyHelpCommand("Parley: Open Selection and Git Diff in Context Preview", "Stage two explicit sources in one editable preview; nothing is sent."),
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "workspaces-pane-menu",
                     title: "Pane context menu",
                     items: [

@@ -317,6 +317,8 @@ struct ContextPackView: View {
         case .agentFileDraft: "person.crop.circle.badge.questionmark"
         case .workspaceBrief: "doc.text"
         case .pinnedSnippet: "pin"
+        case .editorSelection: "selection.pin.in.out"
+        case .editorDiagnostics: "exclamationmark.bubble"
         }
     }
 }

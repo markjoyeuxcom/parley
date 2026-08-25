@@ -26,6 +26,8 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
     case agentFileDraft
     case workspaceBrief
     case pinnedSnippet
+    case editorSelection
+    case editorDiagnostics
 
     public var label: String {
         switch self {
@@ -36,6 +38,8 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
         case .agentFileDraft: "Agent-provided file draft"
         case .workspaceBrief: "Workspace brief"
         case .pinnedSnippet: "Pinned snippet"
+        case .editorSelection: "Editor selection"
+        case .editorDiagnostics: "Editor diagnostics"
         }
     }
 }
@@ -385,6 +389,34 @@ public final class ContextPackBuilder: @unchecked Sendable {
                 kind: .visibleTerminal,
                 label: paneName,
                 detail: "Visible screen from \(paneName) (\(paneID))"
+            ),
+            text: text
+        )
+    }
+
+    public func editorSelection(
+        relativeFile: String,
+        startLine: Int,
+        endLine: Int,
+        text: String
+    ) throws -> ContextPackPart {
+        let range = startLine == endLine ? "\(startLine)" : "\(startLine)-\(endLine)"
+        return try part(
+            source: ContextPackSource(
+                kind: .editorSelection,
+                label: "VS Code selection",
+                detail: "\(relativeFile):\(range)"
+            ),
+            text: text
+        )
+    }
+
+    public func editorDiagnostics(relativeFile: String, text: String) throws -> ContextPackPart {
+        try part(
+            source: ContextPackSource(
+                kind: .editorDiagnostics,
+                label: "VS Code diagnostics",
+                detail: relativeFile
             ),
             text: text
         )

@@ -63,6 +63,7 @@ only part of this list:
 | `workspace-layouts.json` | Saved ID-free workspace layouts | Created after a layout is saved |
 | `handoff-recipes.json` | Custom recipe definitions | Created after recipes are changed |
 | `permission-profiles.json` | Saved permission profiles | Created after profiles are changed |
+| `external-context-inbox/` | Owner-only one-shot manifests placed by the local VS Code companion | Each manifest is deleted when Parley consumes it; abandoned files are bounded and may be removed later |
 | `ui.lock` | Single-UI lease target | The actual lease is held by the open process and releases on exit |
 
 Production also owns these locations outside Application Support:
@@ -84,6 +85,12 @@ own `Info.plist`. Those are LaunchServices registrations, not separate files or
 background helpers. They accept exactly one existing folder and only open or
 focus its normal shell workspace. Development builds do not register these
 machine-wide entry points or replace the installed app's ownership of them.
+
+The bundle also owns the private `.parleycontext` document type used by the
+local VS Code companion. Such a file is accepted only from Production's fixed
+owner-only integration inbox, is bounded to 200 KB, and is consumed once. It
+can prepare an editable context preview but cannot start an agent, select a
+target or submit terminal input.
 
 Parley does **not** modify shell startup files, the user's ordinary tmux server
 or configuration, vendor CLI authentication, repositories, API keys or

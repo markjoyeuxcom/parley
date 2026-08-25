@@ -6,12 +6,13 @@ import test from 'node:test'
 const repositoryRoot = join(import.meta.dirname, '..')
 const workflowsDirectory = join(repositoryRoot, '.github', 'workflows')
 
-test('Dependabot watches Swift packages and GitHub Actions weekly', () => {
+test('Dependabot watches Swift, VS Code npm packages and GitHub Actions weekly', () => {
   const configuration = join(repositoryRoot, '.github', 'dependabot.yml')
   assert.equal(existsSync(configuration), true, '.github/dependabot.yml is missing')
 
   const source = readFileSync(configuration, 'utf8')
   assert.match(source, /package-ecosystem:\s*["']?swift["']?[\s\S]*?directory:\s*["']?\/native["']?[\s\S]*?interval:\s*["']?weekly["']?/)
+  assert.match(source, /package-ecosystem:\s*["']?npm["']?[\s\S]*?directory:\s*["']?\/vscode-extension["']?[\s\S]*?interval:\s*["']?weekly["']?/)
   assert.match(source, /package-ecosystem:\s*["']?github-actions["']?[\s\S]*?directory:\s*["']?\/["']?[\s\S]*?interval:\s*["']?weekly["']?/)
 })
 

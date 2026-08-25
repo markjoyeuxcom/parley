@@ -1,0 +1,102 @@
+{
+  "name": "parley-companion",
+  "displayName": "Parley Companion",
+  "description": "Open local workspaces and explicit editor context in Parley's supervised cross-vendor preview.",
+  "version": "0.1.0",
+  "publisher": "markjoyeuxcom",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/markjoyeuxcom/parley.git",
+    "directory": "vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.134.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "main": "./extension.cjs",
+  "scripts": {
+    "test": "node --test test/contracts.test.cjs && node --check extension.cjs",
+    "package": "vsce package --out ../dist/parley-companion.vsix"
+  },
+  "activationEvents": [
+    "onCommand:parley.openWorkspace",
+    "onCommand:parley.stageSelection",
+    "onCommand:parley.stageCurrentFile",
+    "onCommand:parley.stageDiagnostics",
+    "onCommand:parley.stageGitDiff",
+    "onCommand:parley.stageSelectionAndGitDiff"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "parley.openWorkspace",
+        "title": "Parley: Open or Focus Workspace"
+      },
+      {
+        "command": "parley.stageSelection",
+        "title": "Parley: Open Selection in Context Preview"
+      },
+      {
+        "command": "parley.stageCurrentFile",
+        "title": "Parley: Open Current File in Context Preview"
+      },
+      {
+        "command": "parley.stageDiagnostics",
+        "title": "Parley: Open Current File Diagnostics in Context Preview"
+      },
+      {
+        "command": "parley.stageGitDiff",
+        "title": "Parley: Open Git Diff in Context Preview"
+      },
+      {
+        "command": "parley.stageSelectionAndGitDiff",
+        "title": "Parley: Open Selection and Git Diff in Context Preview"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "parley.stageSelection",
+          "when": "editorHasSelection && resourceScheme == file",
+          "group": "parley@1"
+        },
+        {
+          "command": "parley.stageSelectionAndGitDiff",
+          "when": "editorHasSelection && resourceScheme == file",
+          "group": "parley@2"
+        },
+        {
+          "command": "parley.stageCurrentFile",
+          "when": "resourceScheme == file",
+          "group": "parley@3"
+        },
+        {
+          "command": "parley.stageDiagnostics",
+          "when": "resourceScheme == file",
+          "group": "parley@4"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "parley.stageCurrentFile",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "parley@1"
+        },
+        {
+          "command": "parley.openWorkspace",
+          "when": "resourceScheme == file",
+          "group": "parley@2"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@vscode/vsce": "3.9.2"
+  }
+}

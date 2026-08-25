@@ -290,6 +290,15 @@ carry prompt text, context, a pane kind or a submit action. The matching Finder
 document role, Service and `parley://open?folder=` route converge on the same
 `ExternalWorkspaceOpen` parser; Development never claims the system URL scheme.
 
+The VS Code companion uses the separate `ExternalContextImport` contract. It
+writes a bounded owner-only manifest into the Production runtime's fixed
+`external-context-inbox` and opens that one-shot `.parleycontext` document with
+the app. Parley recaptures current files and Git diffs, labels selection and
+diagnostic text as editor-provided, requires a ready source pane, and opens only
+the normal editable preview. The manifest has no target, vendor, permission,
+prompt or submit field. Development and remote/web editor hosts are outside the
+contract.
+
 - `parley relay` submits one attributed cross-vendor message.
 - `parley paste` leaves the attributed message in the target prompt.
 - `parley ask` creates one correlated consultation, submits it and waits.

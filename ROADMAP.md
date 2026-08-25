@@ -776,6 +776,14 @@ verified by Parley.
   or submits work on its own. Its first release runs in VS Code's local UI
   extension host and refuses unsupported web or remote-only execution rather
   than pretending a remote path is local.
+  The first companion slice is implemented in-tree: six Command Palette and
+  editor/explorer actions open or focus the local folder and stage a selection,
+  saved current file, current-file diagnostics, Git diff, or selection plus
+  diff. One owner-only one-shot manifest feeds the existing editable preview;
+  files and diffs are recaptured by Parley, editor text stays attributed, and
+  nothing starts or sends. Remaining before this item is complete: surface
+  attention counts and add bounded doors that focus an authoritative pane or
+  Status Center record, then include the VSIX in the release workflow.
 
 ### Vendor-owned tools, including browser use
 
