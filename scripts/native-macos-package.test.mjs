@@ -46,6 +46,10 @@ test('Info.plist describes the native foreground application', () => {
   assert.match(plist, /<key>LSMinimumSystemVersion<\/key>\s*<string>14\.0<\/string>/)
   assert.match(plist, /<key>LSApplicationCategoryType<\/key>\s*<string>public\.app-category\.developer-tools<\/string>/)
   assert.match(plist, /<key>NSHighResolutionCapable<\/key>\s*<true\/>/)
+  assert.match(plist, /<key>CFBundleURLSchemes<\/key>\s*<array>\s*<string>parley<\/string>/)
+  assert.match(plist, /<key>LSItemContentTypes<\/key>\s*<array>\s*<string>public\.folder<\/string>/)
+  assert.match(plist, /<key>NSMessage<\/key>\s*<string>openInParley<\/string>/)
+  assert.match(plist, /<key>NSSendTypes<\/key>\s*<array>\s*<string>NSFilenamesPboardType<\/string>/)
 })
 
 test('bundle contract requires the UI, persistent core, launch agent, icon and runtime manifest', () => {

@@ -282,6 +282,14 @@ Development shim; Production and Development-attached-to-Production select
 the Production shim. Development never installs or replaces the stable
 router. Do not collapse it back into a runtime-pinned relay shim.
 
+The stable command also exposes `parley open <folder>` as a person-only door
+to the installed Production app. It accepts exactly one existing folder,
+canonicalises it, and asks LaunchServices to open that folder with
+`com.markjoyeux.parley`. It refuses an authenticated pane token and cannot
+carry prompt text, context, a pane kind or a submit action. The matching Finder
+document role, Service and `parley://open?folder=` route converge on the same
+`ExternalWorkspaceOpen` parser; Development never claims the system URL scheme.
+
 - `parley relay` submits one attributed cross-vendor message.
 - `parley paste` leaves the attributed message in the target prompt.
 - `parley ask` creates one correlated consultation, submits it and waits.

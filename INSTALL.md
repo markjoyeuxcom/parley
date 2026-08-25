@@ -69,7 +69,7 @@ Production also owns these locations outside Application Support:
 
 | Path | Purpose |
 | --- | --- |
-| `~/.local/bin/parley` | A managed relay command for persistent panes. Parley creates or updates only its own marked file and refuses to overwrite a foreign command. |
+| `~/.local/bin/parley` | A managed command for persistent pane relay and the person-only `parley open <folder>` entry point. Parley creates or updates only its own marked file and refuses to overwrite a foreign command. |
 | `~/Library/Preferences/com.markjoyeux.parley.plist` | The normal macOS preferences domain for presentation state, favourites and opt-in settings. macOS may cache this domain through `cfprefsd`. |
 | `/private/tmp/parley-native-<uid>-<runtime-hash>/` | Owner-only, capability-separated request/response transport used by commands issued inside agent panes. Exchange files are transient. |
 
@@ -77,6 +77,13 @@ Launch at login is off by default. If it is enabled, Parley asks macOS Service
 Management to register the signed LaunchAgent definition embedded inside
 `Parley.app`. Parley does not copy a plist into `~/Library/LaunchAgents`; macOS
 maintains the registration in its own login-item database.
+
+The installed Production bundle also registers `parley://open`, an alternate
+`public.folder` Open With role and the **Open in Parley** Finder Service in its
+own `Info.plist`. Those are LaunchServices registrations, not separate files or
+background helpers. They accept exactly one existing folder and only open or
+focus its normal shell workspace. Development builds do not register these
+machine-wide entry points or replace the installed app's ownership of them.
 
 Parley does **not** modify shell startup files, the user's ordinary tmux server
 or configuration, vendor CLI authentication, repositories, API keys or

@@ -755,9 +755,17 @@ verified by Parley.
   mutation. Clone leaves source work and handoffs in place, copies only visible
   configuration and turns an agent copy into a stopped credential-free
   placeholder. Both actions explain their consequences before running.
-- [ ] Add external entry points such as `parley open <folder>`, a Finder action
+- [x] Add external entry points such as `parley open <folder>`, a Finder action
   and a local `parley://` URL for opening or focusing a matching workspace.
   They may focus or prepare UI state but never start a vendor turn implicitly.
+  The managed command now exposes a person-only `open` verb that asks
+  LaunchServices for the installed Production app. Its Info.plist registers an
+  alternate folder handler, an Open in Parley Finder Service and the bounded
+  `parley://open?folder=` scheme. All three converge on one parser that accepts
+  exactly one existing canonical directory and one UI action: focus a matching
+  workspace or create its shell. Launch-time requests queue until SwiftUI binds;
+  none can carry text, context, a pane kind or a submit action. DEV deliberately
+  does not claim the machine-wide scheme.
 - [ ] Build a thin local **Visual Studio Code companion extension** on those
   entry points and context packs. From a local macOS workspace it can open or
   focus the folder in Parley, place a selection, current file, diagnostics or
@@ -893,8 +901,8 @@ step 13 and deliberately hardens the context feature before expanding it:
     checks, build, help and protocol documentation pass together.
 15. [x] Build portable teams and navigation, beginning with stopped team
     templates and stable pane roles/aliases, then deliberate pane mobility.
-16. [ ] Add local external entry points and build the thin VS Code companion on
-    the same reviewed context-pack and focus contracts.
+16. [ ] Build the thin VS Code companion on the completed local external-entry
+    contract and the same reviewed context-pack and focus contracts.
 17. [ ] Add read-only worktree discovery and writer-collision awareness. Keep
     optional worktree creation contingent on evidence from those two stages.
 18. [ ] Improve attention and history: menu-bar inbox, search/export/retention,

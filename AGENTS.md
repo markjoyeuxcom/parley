@@ -264,6 +264,16 @@ placeholders until a person presses Start; shell clones may start. Source
 handoffs remain with the source pane. A clone failure kills the partial pane so
 there is no configuration-shaped corpse in the target workspace.
 
+External workspace opening is one bounded, person-controlled capability.
+`parley open <folder>`, the alternate `public.folder` document role, Finder's
+Open in Parley Service and `parley://open?folder=` all converge on
+`ExternalWorkspaceOpen`. Each accepts exactly one existing directory,
+canonicalises it with `realpath`, and can only focus a matching workspace or
+create its normal shell workspace. They cannot carry prompt text, context, a
+pane kind, vendor startup or terminal input. Launch-time requests wait until the
+SwiftUI model binds. The managed command refuses an authenticated pane token,
+and Development deliberately does not claim the machine-wide URL scheme.
+
 ## Shared protocol and vendor launch behavior
 
 `AgentProtocol.version` is stamped into the process environment and a tmux

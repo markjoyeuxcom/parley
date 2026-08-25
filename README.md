@@ -35,6 +35,8 @@ There is no API-key mode, hosted Parley service, telemetry or remote sync.
   cross-vendor grid in another folder without starting any agent automatically.
 - Previewed pane mobility: preserve one exact live tmux pane across workspaces,
   or clone only its visible configuration as a fresh stopped agent placeholder.
+- Installed-app entry points through `parley open <folder>`, `parley://open`,
+  Finder's **Open With** menu and an **Open in Parley** Finder Service.
 - Cross-workspace Ask targets and recent-folder shortcuts.
 - Owner-only durable handoff history and a compact workspace activity strip.
 - A separate native Status Center with workspace filters, live handoffs, agent
@@ -191,6 +193,22 @@ roles/leads. Clone leaves the source and its handoffs untouched, copies only the
 visible pane setup, and leaves an agent clone stopped with no session or relay
 credential until **Start**. A cloned shell starts normally. Both paths preview
 the destination, folder and process consequences before changing anything.
+
+The installed app can be brought to one workspace from Terminal or Finder:
+
+```bash
+parley open /absolute/path/to/repository
+open 'parley://open?folder=%2Fabsolute%2Fpath%2Fto%2Frepository'
+```
+
+Finder exposes Parley as an alternate folder handler under **Open With**, plus
+**Services → Open in Parley** for a selected folder. Every route validates one
+existing absolute directory and either focuses the workspace already using its
+canonical path or creates a workspace with its normal shell. It cannot carry a
+prompt, select or start an agent, attach context, or submit terminal input.
+`parley open` is refused inside authenticated agent panes. These system entry
+points intentionally target the installed Production app; Development does not
+claim the machine-wide URL scheme.
 
 Closing only the Parley window detaches from tmux and leaves workspaces running.
 A separate per-user core process owns the authenticated relay socket and active
