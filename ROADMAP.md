@@ -843,7 +843,7 @@ uncommitted changes.
   already has active work. Queued text remains visible and unsent; becoming
   idle never causes automatic submission without the policy and explicit
   authorization shown to the person.
-- [ ] Add a **workspace safety summary** before closing, replacing or moving a
+- [x] Add a **workspace safety summary** before closing, replacing or moving a
   workspace. Show active handoffs, running agents, dirty repositories and
   shared-worktree writers without guessing whether an agent is thinking.
 

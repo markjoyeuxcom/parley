@@ -185,6 +185,20 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "workspaces-safety-summary",
+                    title: "Safety summary before disruptive actions",
+                    paragraphs: [
+                        "Before closing a workspace, replacing it with a saved layout, or moving a pane between workspaces, Parley shows a content-free summary of the affected workspace state. Read it before approving the action; it is evidence for a human decision, not an automatic safety verdict.",
+                    ],
+                    items: [
+                        "Running agents come from tmux process state. Stopped placeholders and shell panes are not described as running agents.",
+                        "Active handoffs come from the coordination core. If the core is disconnected, the summary says that handoff state is unavailable instead of claiming there are none.",
+                        "Dirty repositories come from bounded Git status snapshots and are deduplicated by exact discovered worktree path. A missing snapshot is shown as unavailable, not clean.",
+                        "Shared-worktree writers come from exact canonical worktree paths plus visible write-capable permission profiles. Parley does not infer whether an agent is thinking or which process changed a file.",
+                        "Prompt bodies, answers and terminal content never enter the safety summary.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "workspaces-external-open",
                     title: "Open from Terminal or Finder",
                     paragraphs: [

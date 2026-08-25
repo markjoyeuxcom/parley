@@ -953,6 +953,7 @@ private func checkInAppHelpGuideCoverage() throws {
         "editor-provided", "one-shot manifest", "show attention and panes",
         "opaque pane or handoff ids", "stale, malformed, symlinked or non-private",
         "existing git worktrees", "exact canonical worktree", "permission evidence only",
+        "safety summary", "handoff state is unavailable", "does not infer whether an agent is thinking",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -1681,6 +1682,113 @@ private func checkSharedWorktreeWriterCollisionProjection() throws {
         paneWorktreePaths: ["%1": worktree.path, "%2": "/Users/example/other-worktree"]
     )
     try expect(separate.isEmpty, "different canonical worktrees were reported as a collision")
+}
+
+private func checkWorkspaceSafetySummaryUsesOnlyAuthoritativeFacts() throws {
+    let flexible = PermissionProfileSelection(
+        profileID: "flexible",
+        approvedRoots: ["/repo"],
+        lifetime: .remembered
+    )
+    let panes = [
+        TmuxPane(
+            id: "%1", kind: .claude, customName: "Planner", terminalTitle: "", cwd: "/repo",
+            currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
+            isStarted: true, permissionSelection: flexible, permissionEnforcement: .partiallyEnforced
+        ),
+        TmuxPane(
+            id: "%2", kind: .codex, customName: "Stopped reviewer", terminalTitle: "", cwd: "/repo/subdir",
+            currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil,
+            isStarted: false, permissionSelection: flexible, permissionEnforcement: .enforced
+        ),
+        TmuxPane(
+            id: "%3", kind: .shell, customName: "Tests", terminalTitle: "", cwd: "/other",
+            currentCommand: "zsh", isActive: false, windowID: "@0", returnToPaneID: nil
+        ),
+        TmuxPane(
+            id: "%4", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/repo",
+            currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
+            isStarted: true, permissionSelection: flexible, permissionEnforcement: .enforced
+        ),
+    ]
+    let active = try statusHandoff(
+        id: "active",
+        kind: .ask,
+        state: .waiting,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@1",
+        occurredAt: 100,
+        text: "PROMPT_MUST_NOT_APPEAR",
+        resultText: "RESULT_MUST_NOT_APPEAR",
+        sourceName: "Planner",
+        targetName: "Builder"
+    )
+    let completed = try statusHandoff(
+        id: "complete",
+        kind: .delegate,
+        state: .completed,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@1",
+        occurredAt: 90,
+        text: "COMPLETED_PROMPT_MUST_NOT_APPEAR"
+    )
+    let worktree = GitWorktreeRecord(
+        path: "/repo",
+        head: "0123456789abcdef",
+        branch: "feat/safety",
+        isDetached: false,
+        lockReason: nil,
+        pruneReason: nil,
+        isPrimary: true
+    )
+    let collisions = WorktreeWriterCollisionProjection.collisions(
+        panes: panes,
+        profiles: PermissionProfileDefinition.builtIns,
+        worktrees: [worktree],
+        paneWorktreePaths: ["%1": "/repo", "%2": "/repo", "%4": "/repo"]
+    )
+    let workspace = TmuxWorkspace(
+        id: "@0",
+        name: "project",
+        defaultFolder: "/repo",
+        isActive: true
+    )
+    let summary = WorkspaceSafetyProjection.summary(
+        workspace: workspace,
+        panes: panes,
+        handoffs: [completed, active],
+        projectContextsByPaneID: [
+            "%1": GitProjectContext(branch: "feat/safety", isDirty: true),
+            "%3": GitProjectContext(branch: "main", isDirty: false),
+        ],
+        paneWorktreePaths: ["%1": "/repo", "%2": "/repo", "%4": "/repo"],
+        writerCollisions: collisions,
+        coreAvailable: true
+    )
+
+    try expect(summary.totalPaneCount == 3, "workspace safety lost a pane")
+    try expect(summary.runningAgents.map(\.name) == ["Planner"], "stopped agents or shells were called running agents")
+    try expect(summary.activeHandoffs.count == 1 && summary.activeHandoffs[0].id == "active", "terminal handoffs entered the active safety list")
+    try expect(summary.dirtyRepositories.count == 1 && summary.dirtyRepositories[0].path == "/repo", "one dirty worktree was duplicated across panes")
+    try expect(summary.unavailableRepositoryPaths.isEmpty, "a second pane without its own probe made a known shared worktree unavailable")
+    try expect(summary.sharedWriterWorktrees.count == 1, "a cross-workspace shared writer warning was lost")
+    try expect(summary.detailText.contains("Planner → Builder · ASK · WAITING"), "handoff identity was not visible")
+    try expect(summary.detailText.contains("/repo") && summary.detailText.contains("Flexible"), "path or permission evidence was not visible")
+    try expect(!summary.detailText.contains("PROMPT_MUST_NOT_APPEAR"), "safety summary exposed handoff prompt content")
+    try expect(!summary.detailText.contains("RESULT_MUST_NOT_APPEAR"), "safety summary exposed handoff answer content")
+
+    let disconnected = WorkspaceSafetyProjection.summary(
+        workspace: workspace,
+        panes: panes,
+        handoffs: [active],
+        projectContextsByPaneID: [:],
+        paneWorktreePaths: ["%1": "/repo"],
+        writerCollisions: [],
+        coreAvailable: false
+    )
+    try expect(!disconnected.handoffStateAvailable, "a disconnected core was presented as authoritative handoff state")
+    try expect(disconnected.detailText.lowercased().contains("unavailable"), "unknown handoff state was presented as an all-clear")
+    try expect(disconnected.unavailableRepositoryPaths == ["/repo"], "unavailable Git state was silently presented as clean")
 }
 
 private func checkCommandPaletteSearch() throws {
@@ -8502,6 +8610,7 @@ let checks: [(String, () throws -> Void)] = [
     ("Git project context parsing", checkGitProjectContextParsing),
     ("Git worktree discovery parsing", checkGitWorktreeDiscoveryParsing),
     ("shared worktree writer collision projection", checkSharedWorktreeWriterCollisionProjection),
+    ("authoritative workspace safety summary", checkWorkspaceSafetySummaryUsesOnlyAuthoritativeFacts),
     ("command palette search", checkCommandPaletteSearch),
     ("workbench accessibility descriptions", checkAccessibilityDescriptions),
     ("adjacent navigation order", checkAdjacentNavigationOrder),

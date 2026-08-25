@@ -799,6 +799,22 @@ final class AppModel: ObservableObject {
         return projectContexts[folder]
     }
 
+    func workspaceSafetySummary(for workspace: TmuxWorkspace) -> WorkspaceSafetySummary {
+        let workspacePanes = panes.filter { $0.windowID == workspace.id }
+        let contextsByPaneID = Dictionary(uniqueKeysWithValues: workspacePanes.compactMap { pane in
+            projectContext(for: pane).map { (pane.id, $0) }
+        })
+        return WorkspaceSafetyProjection.summary(
+            workspace: workspace,
+            panes: panes,
+            handoffs: handoffs,
+            projectContextsByPaneID: contextsByPaneID,
+            paneWorktreePaths: worktreeScan.paneWorktreePaths,
+            writerCollisions: worktreeWriterCollisions,
+            coreAvailable: coreAvailable
+        )
+    }
+
     var worktreeWriterCollisions: [WorktreeWriterCollision] {
         WorktreeWriterCollisionProjection.collisions(
             panes: panes,
@@ -1594,7 +1610,10 @@ final class AppModel: ObservableObject {
     }
 
     private func scheduleProjectContextRefresh(force: Bool = false) {
-        let folders = Set(visiblePanes.map {
+        // Safety confirmations may describe an inactive workspace, so retain
+        // bounded Git snapshots for every live pane rather than only the
+        // currently visible workspace.
+        let folders = Set(panes.map {
             URL(fileURLWithPath: $0.cwd).standardizedFileURL.path
         })
         let foldersChanged = folders != projectContextFolders
@@ -1615,7 +1634,7 @@ final class AppModel: ObservableObject {
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.projectContextRefreshTask = nil
-                let currentFolders = Set(self.visiblePanes.map {
+                let currentFolders = Set(self.panes.map {
                     URL(fileURLWithPath: $0.cwd).standardizedFileURL.path
                 })
                 guard currentFolders == folders else {
@@ -3692,6 +3711,14 @@ final class AppModel: ObservableObject {
             alert.messageText = "Move \(currentPane.displayName) to \(currentTarget.name)?"
             alert.informativeText = "Parley will transfer the exact tmux pane. \(preservedState) Its pane id, terminal state and folder (\(currentPane.cwd)) are unchanged. The target workspace’s \(currentTarget.automationPolicy.label) automation policy applies after the move. The source workspace remains open."
             alert.alertStyle = .warning
+            let affectedWorkspaces = [
+                workspaces.first(where: { $0.id == currentPane.windowID }),
+                currentTarget,
+            ].compactMap { $0 }
+            attachWorkspaceSafetySummaries(
+                affectedWorkspaces.map { workspaceSafetySummary(for: $0) },
+                to: alert
+            )
             alert.addButton(withTitle: "Move Pane")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -4132,8 +4159,9 @@ final class AppModel: ObservableObject {
         let paneCount = panes.filter { $0.windowID == workspace.id }.count
         let alert = NSAlert()
         alert.messageText = "Close \(workspace.name)?"
-        alert.informativeText = "This ends \(paneCount) running pane\(paneCount == 1 ? "" : "s") in this workspace. It cannot be recovered from Parley."
+        alert.informativeText = "This removes \(paneCount) pane\(paneCount == 1 ? "" : "s") and ends every process still running in them. The workspace cannot be recovered from Parley."
         alert.alertStyle = .warning
+        attachWorkspaceSafetySummaries([workspaceSafetySummary(for: workspace)], to: alert)
         alert.addButton(withTitle: "Close Workspace")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -4274,15 +4302,11 @@ final class AppModel: ObservableObject {
         let workspace = activeWorkspace
         let paneCount = workspace.map { selected in panes.count { $0.windowID == selected.id } } ?? 0
         if let workspace, paneCount > 0 {
-            let pending = handoffs.count { handoff in
-                let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
-                return activeStates.contains(handoff.state)
-                    && (handoff.sourceWorkspaceID == workspace.id || handoff.targetWorkspaceID == workspace.id)
-            }
             let alert = NSAlert()
             alert.messageText = "Open \(layout.name) over \(workspace.name)?"
-            alert.informativeText = "This ends \(paneCount) running pane\(paneCount == 1 ? "" : "s") in the current workspace\(pending == 0 ? "." : " and interrupts \(pending) active handoff\(pending == 1 ? "" : "s").") Shell panes in the saved layout start automatically; agent panes remain stopped until you choose Start."
+            alert.informativeText = "This removes \(paneCount) current pane\(paneCount == 1 ? "" : "s") and ends every process still running in them. Shell panes in the saved layout start automatically; agent panes remain stopped until you choose Start."
             alert.alertStyle = .warning
+            attachWorkspaceSafetySummaries([workspaceSafetySummary(for: workspace)], to: alert)
             alert.addButton(withTitle: "Replace Workspace")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -4495,6 +4519,40 @@ final class AppModel: ObservableObject {
             let alert = NSAlert(error: error)
             alert.runModal()
         }
+    }
+
+    private func attachWorkspaceSafetySummaries(
+        _ summaries: [WorkspaceSafetySummary],
+        to alert: NSAlert
+    ) {
+        guard !summaries.isEmpty else { return }
+        let text = summaries.map(\.detailText).joined(separator: "\n\n")
+        let lineCount = text.reduce(1) { count, character in
+            character == "\n" ? count + 1 : count
+        }
+        let height = min(320, max(170, CGFloat(lineCount) * 16 + 20))
+        let frame = NSRect(x: 0, y: 0, width: 560, height: height)
+
+        let scroll = NSScrollView(frame: frame)
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .lineBorder
+
+        let textView = NSTextView(frame: frame)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.drawsBackground = false
+        textView.font = .systemFont(ofSize: 11)
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.string = text
+        textView.setAccessibilityLabel("Workspace safety summary")
+        scroll.documentView = textView
+        alert.accessoryView = scroll
     }
 
     private static func argument(named name: String) -> String? {
