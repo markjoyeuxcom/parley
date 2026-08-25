@@ -176,6 +176,7 @@ final class AppModel: ObservableObject {
     @Published var supervisedWorkflowPresented = false
     @Published private(set) var selectedSupervisedWorkflowID: String?
     @Published private(set) var requestedHelpTopicID: String?
+    @Published private(set) var requestedStatusHandoffID: String?
     @Published var startupError: String?
     @Published private(set) var startupRequiresQuit = false
 
@@ -207,6 +208,8 @@ final class AppModel: ObservableObject {
     private var coreUpgradeTask: Task<Void, Never>?
     private var coreUpgradeSettled = false
     private var lastCoreUpgradeAttempt = Date.distantPast
+    private var lastExternalAttentionSnapshot: ExternalAttentionSnapshot?
+    private var lastExternalAttentionPublishedAt = Date.distantPast
     private let coreLoginItemController = CoreLoginItemController()
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
     private static let workspaceContinuityKey = "parley.workspaceContinuity"
@@ -215,6 +218,7 @@ final class AppModel: ObservableObject {
     private static let firstRunCompletedKey = "parley.firstRunReadinessCompleted"
     private static let permissionProfileKeyPrefix = "parley.permissionProfile"
     private static let projectContextRefreshInterval: TimeInterval = 5
+    private static let externalAttentionHeartbeatInterval: TimeInterval = 10
 
     init() {
         let requestedFolder = Self.argument(named: "--cwd")
@@ -434,6 +438,7 @@ final class AppModel: ObservableObject {
             savedLayouts = try layoutStore.layouts()
             rememberFolder(defaultFolder)
             scheduleProjectContextRefresh(force: true)
+            publishExternalAttentionSnapshot(force: true)
         } catch {
             coreAvailable = false
             tmuxAvailable = false
@@ -1307,6 +1312,7 @@ final class AppModel: ObservableObject {
             coreAvailable = false
         }
         if tmuxAvailable { scheduleProjectContextRefresh() }
+        publishExternalAttentionSnapshot()
         if let firstError { throw firstError }
     }
 
@@ -1352,6 +1358,37 @@ final class AppModel: ObservableObject {
     func refreshQuietly() {
         do { try refresh() } catch { /* the attached client may be between tmux redraws */ }
         scheduleCoreUpgradeCheck()
+    }
+
+    private func publishExternalAttentionSnapshot(force: Bool = false) {
+        guard runtime.mode == .production else { return }
+        let now = Date()
+        var byID: [String: RelayHandoff] = [:]
+        for handoff in unreadHandoffs + statusHandoffs + handoffs {
+            byID[handoff.id] = handoff
+        }
+        let snapshot = ExternalAttentionProjection.snapshot(
+            workspaces: workspaces,
+            panes: panes,
+            handoffs: Array(byID.values),
+            generatedAt: now
+        )
+        let contentChanged = lastExternalAttentionSnapshot?.hasSameContent(as: snapshot) != true
+        let heartbeatDue = now.timeIntervalSince(lastExternalAttentionPublishedAt)
+            >= Self.externalAttentionHeartbeatInterval
+        guard force || contentChanged || heartbeatDue else { return }
+        do {
+            try ExternalAttentionSnapshotFile.write(
+                snapshot,
+                applicationDirectory: applicationDirectory
+            )
+            lastExternalAttentionSnapshot = snapshot
+            lastExternalAttentionPublishedAt = now
+        } catch {
+            // The editor companion treats a missing or stale snapshot as
+            // unavailable. UI refresh must never fail because this optional,
+            // read-only integration surface cannot be published safely.
+        }
     }
 
     private func scheduleCoreUpgradeCheck(force: Bool = false) {
@@ -3786,6 +3823,39 @@ final class AppModel: ObservableObject {
         // workspace path may focus an existing tmux window or create its shell;
         // it never starts an agent pane or submits terminal input.
         perform { _ = try openWorkspace(folder: request.folder) }
+    }
+
+    @discardableResult
+    func openExternalNavigation(_ request: ExternalNavigationRequest) -> Bool {
+        switch request {
+        case let .pane(paneID):
+            perform {
+                guard let controller,
+                      let pane = panes.first(where: { $0.id == paneID }) else {
+                    throw RelayUIError.message("That Parley pane is no longer open.")
+                }
+                if activeWorkspace?.id != pane.windowID {
+                    try controller.selectWorkspace(pane.windowID)
+                }
+                try controller.selectPane(pane.id)
+                try refresh()
+                terminalHandle.focus()
+            }
+            return false
+        case let .handoff(handoffID):
+            refreshStatusCenterQuietly()
+            let history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+            guard history.contains(where: { $0.id == handoffID }) else {
+                NSAlert(error: RelayUIError.message("That Parley handoff is no longer in the local Status Center record.")).runModal()
+                return false
+            }
+            requestedStatusHandoffID = handoffID
+            return true
+        }
+    }
+
+    func consumeRequestedStatusHandoffID() {
+        requestedStatusHandoffID = nil
     }
 
     func importExternalContext(file: URL) {

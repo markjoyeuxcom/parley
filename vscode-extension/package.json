@@ -22,10 +22,12 @@
   "main": "./extension.cjs",
   "scripts": {
     "test": "node --test test/contracts.test.cjs && node --check extension.cjs",
-    "package": "vsce package --out ../dist/parley-companion.vsix"
+    "package": "vsce package --out ../dist/Parley-Companion-0.1.0.vsix"
   },
   "activationEvents": [
+    "onStartupFinished",
     "onCommand:parley.openWorkspace",
+    "onCommand:parley.showAttention",
     "onCommand:parley.stageSelection",
     "onCommand:parley.stageCurrentFile",
     "onCommand:parley.stageDiagnostics",
@@ -37,6 +39,10 @@
       {
         "command": "parley.openWorkspace",
         "title": "Parley: Open or Focus Workspace"
+      },
+      {
+        "command": "parley.showAttention",
+        "title": "Parley: Show Attention and Panes"
       },
       {
         "command": "parley.stageSelection",

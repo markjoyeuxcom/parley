@@ -8,6 +8,8 @@ const {
   assertLocalDesktopRuntime,
   buildManifest,
   formatDiagnostics,
+  parleyFocusURL,
+  readAttentionSnapshot,
   relativeWorkspaceFile,
   stageManifest,
 } = require('./contracts.cjs')
@@ -16,8 +18,15 @@ const PARLEY_BUNDLE_IDENTIFIER = 'com.markjoyeux.parley'
 const OPEN_EXECUTABLE = '/usr/bin/open'
 
 function activate(context) {
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10)
+  status.name = 'Parley Attention'
+  status.command = 'parley.showAttention'
+  status.show()
+  context.subscriptions.push(status)
+
   const commands = {
     'parley.openWorkspace': openWorkspace,
+    'parley.showAttention': showAttention,
     'parley.stageSelection': stageSelection,
     'parley.stageCurrentFile': stageCurrentFile,
     'parley.stageDiagnostics': stageDiagnostics,
@@ -26,6 +35,87 @@ function activate(context) {
   }
   for (const [name, handler] of Object.entries(commands)) {
     context.subscriptions.push(vscode.commands.registerCommand(name, (...args) => reportErrors(() => handler(...args))))
+  }
+
+  const refresh = () => refreshAttentionStatus(status)
+  void refresh()
+  const timer = setInterval(refresh, 5_000)
+  timer.unref()
+  context.subscriptions.push({ dispose: () => clearInterval(timer) })
+}
+
+async function showAttention() {
+  assertSupportedRuntime()
+  const snapshot = currentAttentionSnapshot()
+  if (!snapshot) {
+    throw new Error('The installed Production app is not publishing current status. Open or update Parley, then try again.')
+  }
+  const choices = []
+  if (snapshot.items.length > 0) {
+    choices.push({ label: 'Needs attention', kind: vscode.QuickPickItemKind.Separator })
+    choices.push(...snapshot.items.map((item) => ({
+      label: item.label,
+      description: item.workspaceName,
+      detail: attentionReason(item.reason),
+      route: { handoffID: item.handoffID },
+    })))
+  }
+  if (snapshot.panes.length > 0) {
+    choices.push({ label: 'Live agent panes', kind: vscode.QuickPickItemKind.Separator })
+    choices.push(...snapshot.panes.map((pane) => ({
+      label: pane.name,
+      description: pane.kind,
+      detail: pane.workspaceName,
+      route: { paneID: pane.id },
+    })))
+  }
+  if (choices.every((choice) => choice.kind === vscode.QuickPickItemKind.Separator)) {
+    void vscode.window.showInformationMessage('Parley has no attention items or live agent panes to focus.')
+    return
+  }
+  const selected = await vscode.window.showQuickPick(choices, {
+    placeHolder: 'Open an authoritative Parley record or focus a live agent pane',
+    matchOnDescription: true,
+    matchOnDetail: true,
+  })
+  if (!selected?.route) return
+  await openInParley(parleyFocusURL(selected.route))
+}
+
+function refreshAttentionStatus(status) {
+  try {
+    assertSupportedRuntime()
+    const snapshot = currentAttentionSnapshot()
+    if (!snapshot) {
+      status.text = '$(comment-discussion) Parley'
+      status.tooltip = 'Open the installed Production app to expose current local attention counts.'
+      return
+    }
+    status.text = snapshot.attentionCount > 0
+      ? `$(bell-dot) Parley ${snapshot.attentionCount}`
+      : '$(pass) Parley'
+    const workspaceCounts = snapshot.workspaces
+      .filter((workspace) => workspace.attentionCount > 0)
+      .map((workspace) => `${workspace.name}: ${workspace.attentionCount}`)
+    status.tooltip = workspaceCounts.length > 0
+      ? `Parley needs attention — ${workspaceCounts.join(' · ')}`
+      : `${snapshot.panes.length} live Parley agent pane${snapshot.panes.length === 1 ? '' : 's'} · no recorded attention`
+  } catch (error) {
+    status.text = '$(comment-discussion) Parley'
+    status.tooltip = error instanceof Error ? error.message : 'Parley status is unavailable.'
+  }
+}
+
+function currentAttentionSnapshot() {
+  return readAttentionSnapshot({ home: os.homedir(), now: new Date() })
+}
+
+function attentionReason(reason) {
+  switch (reason) {
+  case 'returnedResult': return 'Returned result — opens the Status Center record'
+  case 'humanInputRequired': return 'Human input required — opens the Status Center record'
+  case 'interrupted': return 'Interrupted handoff — opens the Status Center record'
+  default: return 'Open the Status Center record'
   }
 }
 

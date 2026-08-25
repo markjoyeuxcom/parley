@@ -284,6 +284,19 @@ provenance. It can neither name nor start a pane, choose a vendor, carry a
 permission/prompt, bypass the editable preview or submit. Web and remote VS Code
 hosts fail closed rather than translating remote paths into local ones.
 
+Editor attention is a separate read-only projection, published only by the
+Production UI as a versioned `external-attention.json` file inside its private
+Application Support directory. It has a bounded 10-second heartbeat and may
+contain only human-facing workspace/pane labels, counts and opaque pane or
+handoff ids — never prompt/result text, terminal output, process commands,
+folders, credentials or delivery state that could be replayed as authority.
+The companion rejects stale, oversized, malformed, symlinked, foreign-owned or
+non-private snapshots. `parley://focus?pane=` and `parley://status?handoff=`
+accept one syntactically bounded live id and no other query item; they may focus
+an existing pane or durable Status Center record but can never start a pane,
+carry context, inject terminal input or submit. Development does not publish to
+the Production file.
+
 ## Shared protocol and vendor launch behavior
 
 `AgentProtocol.version` is stamped into the process environment and a tmux

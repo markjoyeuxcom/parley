@@ -90,11 +90,16 @@ struct StatusCenterView: View {
         .onAppear {
             model.refreshStatusCenterQuietly()
             model.refreshRuntimeReadiness()
+            applyExternalSelection()
             ensureSelection()
         }
         .onReceive(refresh) { _ in
             model.refreshStatusCenterQuietly()
+            applyExternalSelection()
             ensureSelection()
+        }
+        .onChange(of: model.requestedStatusHandoffID) { _, _ in
+            applyExternalSelection()
         }
         .onChange(of: workspaceID) { _, _ in
             selectedHandoffID = nil
@@ -104,6 +109,7 @@ struct StatusCenterView: View {
         .onChange(of: showDismissed) { _, _ in
             selectedHandoffID = nil
             selectedChainID = nil
+            applyExternalSelection()
             ensureSelection()
         }
     }
@@ -1304,6 +1310,21 @@ struct StatusCenterView: View {
             return
         }
         if let first = snapshot.handoffs.first { select(first) }
+    }
+
+    private func applyExternalSelection() {
+        guard let requested = model.requestedStatusHandoffID else { return }
+        if !showDismissed {
+            showDismissed = true
+            return
+        }
+        guard let handoff = model.statusSnapshot(
+                workspaceID: nil,
+                includeDismissed: true
+              ).handoffs.first(where: { $0.id == requested }) else { return }
+        workspaceID = ""
+        select(handoff)
+        model.consumeRequestedStatusHandoffID()
     }
 
     private func select(_ handoff: RelayHandoff) {

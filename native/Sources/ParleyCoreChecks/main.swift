@@ -950,7 +950,8 @@ private func checkInAppHelpGuideCoverage() throws {
         "routing role", "stopped placeholders", "move to workspace",
         "clone configuration", "active handoffs", "parley open",
         "parley://open", "open in parley", "person-only", "vs code companion",
-        "editor-provided", "one-shot manifest",
+        "editor-provided", "one-shot manifest", "show attention and panes",
+        "opaque pane or handoff ids", "stale, malformed, symlinked or non-private",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -2348,6 +2349,90 @@ private func checkExternalEditorContextImportContract() throws {
         throw CheckFailure(description: "editor context import read outside its private inbox")
     } catch ExternalContextImportError.unsafeManifest {
         // Expected.
+    }
+}
+
+private func checkExternalAttentionAndNavigationContract() throws {
+    let workspaces = [
+        TmuxWorkspace(id: "@0", name: "Library", defaultFolder: "/tmp/library", isActive: true),
+        TmuxWorkspace(id: "@1", name: "Consumer", defaultFolder: "/tmp/consumer", isActive: false),
+    ]
+    let panes = [
+        TmuxPane(id: "%1", kind: .codex, customName: "Reviewer", terminalTitle: "SECRET TITLE", cwd: "/tmp/library", currentCommand: "SECRET COMMAND", isActive: true, windowID: "@0", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Library", isStarted: true),
+        TmuxPane(id: "%2", kind: .claude, customName: "Builder", terminalTitle: "", cwd: "/tmp/consumer", currentCommand: "claude", isActive: false, windowID: "@1", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Consumer", isStarted: true),
+        TmuxPane(id: "%3", kind: .shell, customName: "Server", terminalTitle: "", cwd: "/tmp/consumer", currentCommand: "zsh", isActive: false, windowID: "@1", returnToPaneID: nil),
+    ]
+    let resultID = "11111111-1111-4111-8111-111111111111"
+    let permissionID = "22222222-2222-4222-8222-222222222222"
+    let viewedID = "33333333-3333-4333-8333-333333333333"
+    let handoffs = [
+        try statusHandoff(id: resultID, kind: .ask, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 20, text: "PROMPT SECRET", resultText: "ANSWER SECRET", sourceName: "Reviewer", targetName: "Builder"),
+        try statusHandoff(id: permissionID, kind: .relay, state: .failed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 30, text: "SECOND SECRET", attention: .permissionRequired, sourceName: "Reviewer", targetName: "Builder"),
+        try statusHandoff(id: viewedID, kind: .ask, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 10, resultText: "VIEWED SECRET", readAt: 11),
+    ]
+    let generatedAt = Date(timeIntervalSince1970: 100)
+    let snapshot = ExternalAttentionProjection.snapshot(
+        workspaces: workspaces,
+        panes: panes,
+        handoffs: handoffs,
+        generatedAt: generatedAt
+    )
+    try expect(snapshot.version == ExternalAttentionSnapshot.currentVersion, "external attention snapshot lost its contract version")
+    try expect(snapshot.generatedAt == generatedAt, "external attention snapshot lost its heartbeat time")
+    try expect(snapshot.attentionCount == 2, "external attention count included viewed or routine work")
+    try expect(snapshot.workspaces.map(\.attentionCount) == [1, 1], "external attention was attributed to the wrong workspace")
+    try expect(snapshot.panes.map(\.id) == ["%1", "%2"], "external pane focus exposed a shell or lost a live agent")
+    try expect(snapshot.items.map(\.handoffID) == [permissionID, resultID], "external attention items were not newest-first")
+    try expect(snapshot.items.map(\.reason) == [.humanInputRequired, .returnedResult], "external attention reasons were inferred incorrectly")
+
+    let encoded = try JSONEncoder().encode(snapshot)
+    let visible = String(decoding: encoded, as: UTF8.self)
+    for secret in ["PROMPT SECRET", "ANSWER SECRET", "SECOND SECRET", "VIEWED SECRET", "SECRET TITLE", "SECRET COMMAND", "/tmp/library"] {
+        try expect(!visible.contains(secret), "external attention snapshot exposed content or process metadata: \(secret)")
+    }
+
+    let applicationDirectory = try temporaryDirectory()
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: applicationDirectory.path)
+    let file = try ExternalAttentionSnapshotFile.write(snapshot, applicationDirectory: applicationDirectory)
+    try expect(file.lastPathComponent == "external-attention.json", "external attention used an unstable discovery path")
+    let permissions = try require(
+        try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber,
+        "external attention file permissions were unavailable"
+    )
+    try expect(permissions.intValue & 0o077 == 0, "external attention snapshot was readable outside its owner")
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let published = try decoder.decode(ExternalAttentionSnapshot.self, from: Data(contentsOf: file))
+    try expect(published == snapshot, "published external attention snapshot did not round-trip")
+
+    let paneRoute = ExternalNavigationRequest.pane("%2")
+    let paneURL = try ExternalNavigation.url(for: paneRoute)
+    let parsedPaneRoute = try ExternalNavigation.request(url: paneURL)
+    try expect(
+        parsedPaneRoute == paneRoute,
+        "external pane focus did not round-trip its bounded URL"
+    )
+    let handoffRoute = ExternalNavigationRequest.handoff(permissionID)
+    let handoffURL = try ExternalNavigation.url(for: handoffRoute)
+    let parsedHandoffRoute = try ExternalNavigation.request(url: handoffURL)
+    try expect(
+        parsedHandoffRoute == handoffRoute,
+        "external Status Center focus did not round-trip its bounded URL"
+    )
+    let forbidden = [
+        "parley://focus?pane=%252&prompt=run",
+        "parley://focus?pane=codex",
+        "parley://status?handoff=not-an-id",
+        "parley://status?handoff=\(permissionID)&submit=1",
+        "parley://ask?handoff=\(permissionID)",
+    ]
+    for value in forbidden {
+        do {
+            _ = try ExternalNavigation.request(url: try require(URL(string: value), "invalid test URL"))
+            throw CheckFailure(description: "external navigation accepted unsupported authority: \(value)")
+        } catch is ExternalNavigationError {
+            // Expected: these routes can only focus an already-authoritative local record.
+        }
     }
 }
 
@@ -8336,6 +8421,7 @@ let checks: [(String, () throws -> Void)] = [
     ("deliberate pane mobility safety contract", checkPaneMobilitySafetyContract),
     ("external workspace open contract", checkExternalWorkspaceOpenContract),
     ("external editor context import contract", checkExternalEditorContextImportContract),
+    ("content-free external attention and navigation contract", checkExternalAttentionAndNavigationContract),
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),
     ("direct agent argv", checkDirectAgentSpawn),

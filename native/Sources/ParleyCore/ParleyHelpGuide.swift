@@ -433,6 +433,40 @@ public enum ParleyHelpGuide {
             ]
         ),
         ParleyHelpTopic(
+            id: "vscode-companion",
+            title: "VS Code companion",
+            summary: "Stage explicit editor evidence, see local attention and jump back to Parley's authoritative pane or record.",
+            symbol: "chevron.left.forwardslash.chevron.right",
+            sections: [
+                ParleyHelpSection(
+                    id: "vscode-companion-context",
+                    title: "Open editor context for review",
+                    paragraphs: [
+                        "The optional Parley Companion runs in VS Code's local macOS UI extension host. Its Command Palette and editor menus can open the current workspace or place a selection, saved file, diagnostics, Git diff, or selection plus diff into Parley's ordinary editable Context Pack preview.",
+                        "Parley recaptures files and Git diffs from disk. Selection and diagnostic text remain visibly labelled as editor-provided. A ready source pane is required, but the companion never starts an agent or sends the pack.",
+                    ],
+                    items: [
+                        "Web and remote VS Code hosts are refused; a remote path is never treated as a local Mac path.",
+                        "The one-shot owner-only manifest cannot name a target pane, vendor, permission, prompt or submit action.",
+                        "Review every attributed source in Parley, edit the request, then choose the normal Ask or Compare action yourself.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "vscode-companion-attention",
+                    title: "Attention and focus",
+                    paragraphs: [
+                        "The VS Code status bar shows the installed Production app's current attention count. Select it, or run Parley: Show Attention and Panes, to open one durable Status Center handoff or focus one exact live agent pane.",
+                    ],
+                    items: [
+                        "The local snapshot contains human labels, counts and opaque pane or handoff ids only. It never contains prompts, answers, terminal output, commands, folders or pane credentials.",
+                        "A stale, malformed, symlinked or non-private snapshot is shown as unavailable rather than trusted.",
+                        "Focus links can only identify one existing pane or handoff. They cannot carry context, vendor startup, terminal input or submission.",
+                        "Development does not publish into Production's integration file or claim its machine-wide URL scheme.",
+                    ]
+                ),
+            ]
+        ),
+        ParleyHelpTopic(
             id: "lead",
             title: "Workspace Lead and recipes",
             summary: "Let one agent supervise explicit cross-vendor work while you retain the visible controls.",
