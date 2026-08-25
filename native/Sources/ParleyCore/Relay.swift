@@ -528,7 +528,6 @@ public final class RelayBroker: @unchecked Sendable {
     public typealias DirectContextSubmit = (_ sourcePaneID: String, _ targetPaneID: String, _ text: String) throws -> Void
     public typealias VisibleText = (_ paneID: String) throws -> String
 
-    private static let maximumRetainedHandoffs = 500
     private static let abandonedContextDraftLifetime: TimeInterval = 7 * 24 * 60 * 60
 
     private let credentials: RelayCredentials
@@ -542,6 +541,7 @@ public final class RelayBroker: @unchecked Sendable {
     private let livenessPollInterval: TimeInterval
     private let handoffJournal: RelayHandoffJournal?
     private let activityJournal: RelayActivityJournal?
+    private let historyRetentionStore: CollaborationHistoryRetentionStore?
     private let contextReviewStore: AgentContextReviewStore?
     private let contextPackBuilder = ContextPackBuilder()
     private let consultationCondition = NSCondition()
@@ -550,6 +550,7 @@ public final class RelayBroker: @unchecked Sendable {
     private var delegationResponses: [String: RelayTextResponse] = [:]
     private var handoffRecords: [String: RelayHandoff] = [:]
     private var activityRecords: [String: RelayActivityEvent] = [:]
+    private var historyRetentionPolicy: CollaborationHistoryRetentionPolicy
     private var contextReviewRecords: [String: AgentContextReview] = [:]
     private var idempotencyRecords: [IdempotencyScope: IdempotencyRecord] = [:]
     private var acceptingHandoffs = true
@@ -567,6 +568,8 @@ public final class RelayBroker: @unchecked Sendable {
         livenessPollInterval: TimeInterval = 0.5,
         handoffJournal: RelayHandoffJournal? = nil,
         activityJournal: RelayActivityJournal? = nil,
+        historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy,
+        historyRetentionStore: CollaborationHistoryRetentionStore? = nil,
         contextReviewStore: AgentContextReviewStore? = nil
     ) {
         self.credentials = credentials
@@ -582,6 +585,8 @@ public final class RelayBroker: @unchecked Sendable {
         self.livenessPollInterval = max(0.01, livenessPollInterval)
         self.handoffJournal = handoffJournal
         self.activityJournal = activityJournal
+        self.historyRetentionPolicy = historyRetentionPolicy
+        self.historyRetentionStore = historyRetentionStore
         self.contextReviewStore = contextReviewStore
 
         let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
@@ -2232,9 +2237,60 @@ public final class RelayBroker: @unchecked Sendable {
         activityRecords[event.id] = event
         if let retainedIDs = activityJournal.map({ Set($0.events().map(\.id)) }) {
             activityRecords = activityRecords.filter { retainedIDs.contains($0.key) }
+        } else {
+            pruneActivityRecordsLocked()
         }
         consultationCondition.unlock()
         return event
+    }
+
+    public func collaborationHistoryRetentionPolicy() -> CollaborationHistoryRetentionPolicy {
+        consultationCondition.lock()
+        let policy = historyRetentionPolicy
+        consultationCondition.unlock()
+        return policy
+    }
+
+    /// Saves the core-owned policy, compacts both owner-only journals, then
+    /// reconciles the live projections. Active handoffs remain even when they
+    /// temporarily put the projection above the selected bound.
+    public func updateCollaborationHistoryRetention(
+        maximumRecords: Int
+    ) throws -> CollaborationHistoryRetentionChange {
+        let policy = try CollaborationHistoryRetentionPolicy(maximumRecords: maximumRecords)
+        try historyRetentionStore?.save(policy)
+        let durableHandoffRemoval = try handoffJournal?.updateMaximumHandoffs(maximumRecords)
+        let durableActivityRemoval = try activityJournal?.updateMaximumEvents(maximumRecords)
+
+        consultationCondition.lock()
+        let handoffCountBefore = handoffRecords.count
+        let activityCountBefore = activityRecords.count
+        historyRetentionPolicy = policy
+        if let retainedIDs = handoffJournal.map({ Set($0.handoffs().map(\.id)) }) {
+            handoffRecords = handoffRecords.filter { retainedIDs.contains($0.key) }
+        } else {
+            pruneHandoffsLocked()
+        }
+        if let retainedIDs = activityJournal.map({ Set($0.events().map(\.id)) }) {
+            activityRecords = activityRecords.filter { retainedIDs.contains($0.key) }
+        } else {
+            pruneActivityRecordsLocked()
+        }
+        let removedHandoffIDs = Set(idempotencyRecords.values.compactMap { record in
+            handoffRecords[record.handoffID] == nil ? record.handoffID : nil
+        })
+        idempotencyRecords = idempotencyRecords.filter { !removedHandoffIDs.contains($0.value.handoffID) }
+        delegationResponses = delegationResponses.filter { handoffRecords[$0.key] != nil }
+        let inMemoryHandoffRemoval = handoffCountBefore - handoffRecords.count
+        let inMemoryActivityRemoval = activityCountBefore - activityRecords.count
+        consultationCondition.broadcast()
+        consultationCondition.unlock()
+
+        return CollaborationHistoryRetentionChange(
+            policy: policy,
+            removedHandoffs: durableHandoffRemoval ?? inMemoryHandoffRemoval,
+            removedActivityEvents: durableActivityRemoval ?? inMemoryActivityRemoval
+        )
     }
 
     /// Records that a person viewed a returned Ask or Delegate result. This is
@@ -2279,7 +2335,9 @@ public final class RelayBroker: @unchecked Sendable {
             guard terminalStates.contains(handoff.state) else { return false }
             let idMatches = !requestedID.isEmpty
                 && (handoff.sourceWorkspaceID == requestedID || handoff.targetWorkspaceID == requestedID)
-            let nameMatches = !requestedName.isEmpty && [handoff.sourceWorkspaceName, handoff.targetWorkspaceName]
+            let nameMatches = requestedID.isEmpty
+                && !requestedName.isEmpty
+                && [handoff.sourceWorkspaceName, handoff.targetWorkspaceName]
                 .compactMap { $0 }
                 .contains { $0.caseInsensitiveCompare(requestedName) == .orderedSame }
             return idMatches || nameMatches
@@ -2287,7 +2345,8 @@ public final class RelayBroker: @unchecked Sendable {
 
         let activityRemovalIDs = Set(activityRecords.values.lazy.filter { event in
             let idMatches = !requestedID.isEmpty && event.workspaceID == requestedID
-            let nameMatches = !requestedName.isEmpty
+            let nameMatches = requestedID.isEmpty
+                && !requestedName.isEmpty
                 && event.workspaceName.caseInsensitiveCompare(requestedName) == .orderedSame
             return idMatches || nameMatches
         }.map(\.id))
@@ -3092,7 +3151,7 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     private func pruneHandoffsLocked() {
-        let excess = handoffRecords.count - Self.maximumRetainedHandoffs
+        let excess = handoffRecords.count - historyRetentionPolicy.maximumRecords
         guard excess > 0 else { return }
         let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
         let removalIDs = Set(
@@ -3109,6 +3168,16 @@ public final class RelayBroker: @unchecked Sendable {
         handoffRecords = handoffRecords.filter { !removalIDs.contains($0.key) }
         idempotencyRecords = idempotencyRecords.filter { !removalIDs.contains($0.value.handoffID) }
         delegationResponses = delegationResponses.filter { !removalIDs.contains($0.key) }
+    }
+
+    private func pruneActivityRecordsLocked() {
+        let excess = activityRecords.count - historyRetentionPolicy.maximumRecords
+        guard excess > 0 else { return }
+        let removalIDs = Set(activityRecords.values.sorted {
+            if $0.occurredAt == $1.occurredAt { return $0.id < $1.id }
+            return $0.occurredAt < $1.occurredAt
+        }.prefix(excess).map(\.id))
+        activityRecords = activityRecords.filter { !removalIDs.contains($0.key) }
     }
 
     private func failure(

@@ -88,6 +88,23 @@ public enum CollaborationHistoryProjection {
             }
     }
 
+    /// A full-workspace export is based on durable workspace identity rather
+    /// than the currently visible filters or dismissal preference. A
+    /// cross-workspace handoff belongs in both involved workspaces.
+    public static func records(
+        _ handoffs: [RelayHandoff],
+        involvingWorkspaceID workspaceID: String
+    ) -> [RelayHandoff] {
+        handoffs
+            .filter {
+                $0.sourceWorkspaceID == workspaceID || $0.targetWorkspaceID == workspaceID
+            }
+            .sorted { left, right in
+                if left.updatedAt == right.updatedAt { return left.id < right.id }
+                return left.updatedAt > right.updatedAt
+            }
+    }
+
     private static func matchesKind(
         _ handoff: RelayHandoff,
         _ filter: CollaborationHistoryKindFilter
@@ -184,6 +201,7 @@ public enum CollaborationHistoryMarkdown {
     public static func document(
         handoffs: [RelayHandoff],
         scopeName: String?,
+        selectionDescription: String? = nil,
         generatedAt: Date = Date()
     ) -> String {
         let ordered = handoffs.sorted { left, right in
@@ -197,7 +215,7 @@ public enum CollaborationHistoryMarkdown {
             "",
             "- Exported: \(timestamp(generatedAt))",
             "- Scope: \(inline(scopeName ?? "All Workspaces"))",
-            "- Selection: \(ordered.count) selected record\(ordered.count == 1 ? "" : "s")",
+            "- Selection: \(selectionDescription.map(inline) ?? "\(ordered.count) selected record\(ordered.count == 1 ? "" : "s")")",
         ]
 
         for (index, handoff) in ordered.enumerated() {

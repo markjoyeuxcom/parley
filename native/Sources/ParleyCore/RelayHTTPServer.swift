@@ -246,6 +246,18 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 write(broker.unreadHandoffs(), to: client)
                 return
             }
+            if request.method == "GET", request.path == "/ui/history/retention" {
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                writeJSON(
+                    broker.collaborationHistoryRetentionPolicy(),
+                    fallback: "could not encode history retention policy",
+                    to: client
+                )
+                return
+            }
             if request.method == "GET",
                request.path == "/handoffs" || request.path.hasPrefix("/handoffs?") {
                 guard controlAuthorized(request) else {
@@ -363,6 +375,31 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     workspaceID: scope.workspaceID,
                     workspaceName: scope.workspaceName
                 ), to: client)
+            case "/ui/history/retention":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let update = try? JSONDecoder().decode(
+                    RelayHistoryRetentionUpdateRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid history retention request"), to: client)
+                    return
+                }
+                do {
+                    writeJSON(
+                        try broker.updateCollaborationHistoryRetention(
+                            maximumRecords: update.maximumRecords
+                        ),
+                        fallback: "could not encode history retention result",
+                        to: client
+                    )
+                } catch let error as CollaborationHistoryRetentionError {
+                    write(RelayTextResponse(status: 400, text: error.localizedDescription), to: client)
+                } catch {
+                    write(RelayTextResponse(status: 500, text: error.localizedDescription), to: client)
+                }
             case let path where path.hasPrefix("/ui/read/"):
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)

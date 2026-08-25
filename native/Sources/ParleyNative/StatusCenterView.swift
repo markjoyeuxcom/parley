@@ -214,8 +214,25 @@ struct StatusCenterView: View {
                     ensureSelection()
                 }
                 .disabled(model.dismissedHandoffIDs.isEmpty)
+                Divider()
+                Section("Local retention · handoffs and activity") {
+                    ForEach(CollaborationHistoryRetentionPolicy.allowedMaximumRecords, id: \.self) { limit in
+                        Button {
+                            model.setHistoryRetention(maximumRecords: limit)
+                        } label: {
+                            if model.historyRetentionPolicy.maximumRecords == limit {
+                                Label("Up to \(limit) of each", systemImage: "checkmark")
+                            } else {
+                                Text("Up to \(limit) of each")
+                            }
+                        }
+                    }
+                }
                 if let workspace = model.workspaces.first(where: { $0.id == workspaceID }) {
                     Divider()
+                    Button("Export History for \(workspace.name)…") {
+                        model.exportWorkspaceHistory(for: workspace)
+                    }
                     Button("Delete History for \(workspace.name)…", role: .destructive) {
                         if model.deleteStatusHistory(for: workspace) {
                             selectedHandoffID = nil
@@ -229,14 +246,14 @@ struct StatusCenterView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .accessibilityLabel("Dismissed records and history")
+            .accessibilityLabel("Dismissed records, retention, export, and deletion")
             .accessibilityValue(
                 model.dismissedHandoffIDs.isEmpty
                     ? "No dismissed records"
                     : "\(model.dismissedHandoffIDs.count) dismissed record\(model.dismissedHandoffIDs.count == 1 ? "" : "s")"
             )
-            .help("Dismissed records and workspace history controls")
-            .accessibilityHint("Show or restore dismissed records, or delete history for the selected workspace")
+            .help("Dismissed records, local retention, and workspace history controls")
+            .accessibilityHint("Show or restore dismissed records, change bounded local retention, or export and delete history for the selected workspace")
             Picker("Scope", selection: $workspaceID) {
                 Text("All Workspaces").tag("")
                 ForEach(model.workspaces) { workspace in

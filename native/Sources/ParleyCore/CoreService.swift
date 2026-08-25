@@ -12,6 +12,10 @@ struct RelayWorkspaceHistoryDeletionRequest: Codable {
     let workspaceName: String?
 }
 
+struct RelayHistoryRetentionUpdateRequest: Codable {
+    let maximumRecords: Int
+}
+
 public enum RelayCoreError: LocalizedError {
     case invalidControlToken
     case randomGenerationFailed
@@ -436,6 +440,40 @@ public struct RelayCoreClient: Sendable {
             body: body
         )
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
+    public func historyRetentionPolicy() throws -> CollaborationHistoryRetentionPolicy {
+        let response = try request(
+            method: "GET",
+            path: "/ui/history/retention",
+            headers: ["X-Parley-Control": controlToken],
+            body: Data()
+        )
+        guard response.status == 200 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return try JSONDecoder().decode(CollaborationHistoryRetentionPolicy.self, from: response.body)
+    }
+
+    public func updateHistoryRetention(
+        maximumRecords: Int
+    ) throws -> CollaborationHistoryRetentionChange {
+        let body = try JSONEncoder().encode(RelayHistoryRetentionUpdateRequest(
+            maximumRecords: maximumRecords
+        ))
+        let response = try request(
+            method: "POST",
+            path: "/ui/history/retention",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body
+        )
+        guard response.status == 200 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return try JSONDecoder().decode(CollaborationHistoryRetentionChange.self, from: response.body)
     }
 
     private func request(

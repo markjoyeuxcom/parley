@@ -836,9 +836,16 @@ uncommitted changes.
 - [x] Add collaboration-history search, filters, selective Markdown export and
   **Ask this again**. Repeating a handoff always opens an editable preview and
   receives a new identity rather than mutating or silently replaying history.
-- [ ] Add configurable local retention and explicit per-workspace export or
-  purge controls. Preserve owner-only storage, explain exactly what will be
-  removed, and retain the no-sync/no-telemetry boundary.
+- [x] Add configurable local retention and explicit per-workspace export or
+  purge controls. The persistent core now owns one runtime-local 100, 250 or
+  500-record bound applied independently to handoffs and lifecycle activity;
+  lowering it immediately compacts the owner-only journals after an explicit
+  irreversible warning while preserving active work and curated chains. A
+  workspace-scoped archive action exports every retained handoff involving the
+  selected workspace, including dismissed records, and states that lifecycle
+  activity is not part of that body-containing Markdown. The existing
+  workspace-specific purge removes eligible handoffs and activity without an
+  all-workspaces shortcut. Nothing syncs or reports telemetry.
 - [ ] Add a human-controlled **busy queue** for a reviewed draft when a target
   already has active work. Queued text remains visible and unsent; becoming
   idle never causes automatic submission without the policy and explicit

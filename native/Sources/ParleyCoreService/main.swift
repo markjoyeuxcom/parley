@@ -68,11 +68,17 @@ do {
     let controlToken = try RelayCoreControlToken.loadOrCreate(
         at: controller.applicationDirectory.appendingPathComponent("core-control-token")
     )
+    let historyRetentionStore = CollaborationHistoryRetentionStore(
+        file: controller.applicationDirectory.appendingPathComponent("history-retention.json")
+    )
+    let historyRetentionPolicy = try historyRetentionStore.policy()
     let handoffJournal = try RelayHandoffJournal(
-        file: controller.applicationDirectory.appendingPathComponent("handoffs.jsonl")
+        file: controller.applicationDirectory.appendingPathComponent("handoffs.jsonl"),
+        maximumHandoffs: historyRetentionPolicy.maximumRecords
     )
     let activityJournal = try RelayActivityJournal(
-        file: controller.applicationDirectory.appendingPathComponent("activity-events.jsonl")
+        file: controller.applicationDirectory.appendingPathComponent("activity-events.jsonl"),
+        maximumEvents: historyRetentionPolicy.maximumRecords
     )
     let contextReviewStore = try AgentContextReviewStore(
         file: controller.applicationDirectory.appendingPathComponent("context-reviews.json")
@@ -89,6 +95,8 @@ do {
         visibleText: { paneID in try controller.capturePane(paneID) },
         handoffJournal: handoffJournal,
         activityJournal: activityJournal,
+        historyRetentionPolicy: historyRetentionPolicy,
+        historyRetentionStore: historyRetentionStore,
         contextReviewStore: contextReviewStore
     )
     let agentTransport = RelayFileTransport(

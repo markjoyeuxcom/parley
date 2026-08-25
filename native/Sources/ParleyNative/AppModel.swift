@@ -168,6 +168,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var runtimeReadinessChecking = false
     @Published private(set) var diagnosticsExporting = false
     @Published private(set) var repeatingAskHandoffID: String?
+    @Published private(set) var historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy
     @Published private(set) var coreLoginItemState: CoreLoginItemState = .unavailable
     @Published private(set) var coreLoginItemChanging = false
     @Published private(set) var preparingToUninstall = false
@@ -1628,6 +1629,8 @@ final class AppModel: ObservableObject {
             if history != statusHandoffs { statusHandoffs = history }
             let activity = try relayClient.activityEvents(limit: 500)
             if activity != statusActivityEvents { statusActivityEvents = activity }
+            let retention = try relayClient.historyRetentionPolicy()
+            if retention != historyRetentionPolicy { historyRetentionPolicy = retention }
             let retainedDismissals = StatusCenterVisibility.retainedDismissalIDs(
                 dismissedHandoffIDs,
                 handoffs: history
@@ -1900,15 +1903,74 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func setHistoryRetention(maximumRecords: Int) {
+        do {
+            let requested = try CollaborationHistoryRetentionPolicy(maximumRecords: maximumRecords)
+            guard requested != historyRetentionPolicy else { return }
+            let lowering = requested.maximumRecords < historyRetentionPolicy.maximumRecords
+            let alert = NSAlert()
+            alert.messageText = "Keep up to \(requested.maximumRecords) local history records?"
+            alert.informativeText = lowering
+                ? "Parley will keep up to \(requested.maximumRecords) collaboration handoffs and \(requested.maximumRecords) lifecycle events. Lowering the current \(historyRetentionPolicy.maximumRecords)-record limit permanently removes the oldest eligible records immediately and cannot restore them later. Active handoffs and curated handoff chains are always preserved. This changes only this local \(runtime.mode.label) runtime; nothing is uploaded."
+                : "Parley will keep up to \(requested.maximumRecords) collaboration handoffs and \(requested.maximumRecords) lifecycle events. Increasing the limit does not restore records previously removed. Active handoffs and curated handoff chains are preserved. This changes only this local \(runtime.mode.label) runtime; nothing is uploaded."
+            alert.alertStyle = lowering ? .warning : .informational
+            alert.addButton(withTitle: lowering ? "Apply and Prune" : "Change Retention")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            guard let relayClient else {
+                throw RelayUIError.message("The Parley coordination core is unavailable.")
+            }
+            let change = try relayClient.updateHistoryRetention(
+                maximumRecords: requested.maximumRecords
+            )
+            historyRetentionPolicy = change.policy
+            refreshStatusCenterQuietly()
+            guard change.removedHandoffs > 0 || change.removedActivityEvents > 0 else { return }
+            let result = NSAlert()
+            result.messageText = "Local History Retention Updated"
+            result.informativeText = "Parley removed \(change.removedHandoffs) terminal handoff record\(change.removedHandoffs == 1 ? "" : "s") and \(change.removedActivityEvents) lifecycle event\(change.removedActivityEvents == 1 ? "" : "s"). Active work and curated handoff chains were preserved."
+            result.addButton(withTitle: "OK")
+            result.runModal()
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    func exportWorkspaceHistory(for workspace: TmuxWorkspace) {
+        let source = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        let records = CollaborationHistoryProjection.records(
+            source,
+            involvingWorkspaceID: workspace.id
+        )
+        guard !records.isEmpty else {
+            let alert = NSAlert()
+            alert.messageText = "No Collaboration History to Export"
+            alert.informativeText = "Parley has no retained handoff records involving \(workspace.name). Lifecycle activity remains visible in Status Center but is not part of the collaboration-history Markdown export."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+        exportCollaborationHistory(
+            records,
+            scopeName: workspace.name,
+            selectionDescription: "All \(records.count) retained handoff record\(records.count == 1 ? "" : "s") involving this workspace"
+        )
+    }
+
     func exportCollaborationHistory(
         _ handoffs: [RelayHandoff],
-        scopeName: String?
+        scopeName: String?,
+        selectionDescription: String? = nil
     ) {
         guard !handoffs.isEmpty else { return }
         let panel = NSSavePanel()
-        panel.title = "Export Selected Collaboration History"
-        panel.message = "This local Markdown file contains the complete questions, instructions, returned results, identities, and delivery receipts for exactly the selected records. Nothing is uploaded."
-        panel.prompt = "Export Selected"
+        panel.title = selectionDescription == nil
+            ? "Export Selected Collaboration History"
+            : "Export Workspace Collaboration History"
+        panel.message = selectionDescription == nil
+            ? "This local Markdown file contains the complete questions, instructions, returned results, identities, and delivery receipts for exactly the selected records. Nothing is uploaded."
+            : "This local Markdown file contains complete questions, instructions, returned results, identities, and delivery receipts for every retained handoff involving this workspace, including dismissed records. Lifecycle activity is not included. Nothing is uploaded."
+        panel.prompt = selectionDescription == nil ? "Export Selected" : "Export Workspace"
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
@@ -1918,12 +1980,15 @@ final class AppModel: ObservableObject {
         do {
             let markdown = CollaborationHistoryMarkdown.document(
                 handoffs: handoffs,
-                scopeName: scopeName
+                scopeName: scopeName,
+                selectionDescription: selectionDescription
             )
             try CollaborationHistoryMarkdownWriter.write(markdown, to: destination)
             let alert = NSAlert()
             alert.messageText = "Collaboration History Exported"
-            alert.informativeText = "Parley saved \(handoffs.count) selected record\(handoffs.count == 1 ? "" : "s") to \(destination.lastPathComponent). Nothing was uploaded."
+            alert.informativeText = selectionDescription == nil
+                ? "Parley saved \(handoffs.count) selected record\(handoffs.count == 1 ? "" : "s") to \(destination.lastPathComponent). Nothing was uploaded."
+                : "Parley saved \(handoffs.count) retained workspace handoff record\(handoffs.count == 1 ? "" : "s") to \(destination.lastPathComponent). Nothing was uploaded."
             alert.addButton(withTitle: "OK")
             alert.runModal()
         } catch {

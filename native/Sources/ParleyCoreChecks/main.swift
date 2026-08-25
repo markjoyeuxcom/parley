@@ -958,7 +958,8 @@ private func checkInAppHelpGuideCoverage() throws {
         "main window is closed", "prompt and answer bodies", "coordination unavailable",
         "collaboration history", "case-insensitive and terms", "select results",
         "owner-only markdown", "ask this again", "fresh tracked handoff identity",
-        "never silently replays",
+        "never silently replays", "100, 250 or 500", "increasing it later",
+        "including dismissed records", "lifecycle activity",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -5223,6 +5224,181 @@ private func checkCollaborationHistorySearchExportAndRepeat() throws {
     try expect(CollaborationHistoryRepeat.route(for: completedAsk, panes: [source, staleTarget]) == nil, "Ask This Again bypassed the current-protocol gate")
 }
 
+private func checkConfigurableHistoryRetentionAndWorkspaceExport() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let policyFile = directory.appendingPathComponent("history-retention.json")
+    let store = CollaborationHistoryRetentionStore(file: policyFile)
+    let defaultPolicy = try store.policy()
+    try expect(
+        defaultPolicy == .defaultPolicy,
+        "a new retention store did not use Parley's bounded default"
+    )
+    let compact = try CollaborationHistoryRetentionPolicy(maximumRecords: 100)
+    try store.save(compact)
+    let reloadedPolicy = try CollaborationHistoryRetentionStore(file: policyFile).policy()
+    try expect(reloadedPolicy == compact, "retention policy did not survive reload")
+    let attributes = try FileManager.default.attributesOfItem(atPath: policyFile.path)
+    let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
+    try expect(mode & 0o077 == 0, "retention policy was readable outside its owner")
+    do {
+        _ = try CollaborationHistoryRetentionPolicy(maximumRecords: 101)
+        throw CheckFailure(description: "retention accepted a value outside its explicit choices")
+    } catch is CollaborationHistoryRetentionError {
+        // Expected: the UI and control route cannot invent an unbounded value.
+    }
+
+    let historyFile = directory.appendingPathComponent("bounded-history.jsonl")
+    let journal = try RelayHandoffJournal(file: historyFile, maximumHandoffs: 500)
+    for index in 0..<3 {
+        journal.record(try statusHandoff(
+            id: "retained-\(index)",
+            kind: .relay,
+            state: .completed,
+            sourceWorkspaceID: index == 2 ? "@1" : "@0",
+            targetWorkspaceID: index == 0 ? "@1" : "@0",
+            occurredAt: TimeInterval(index + 1),
+            text: "history \(index)"
+        ))
+    }
+    let removed = try journal.updateMaximumHandoffs(2)
+    try expect(removed == 1, "lowering durable retention did not report the removed record")
+    let retained = journal.handoffs()
+    try expect(retained.map(\.id) == ["retained-2", "retained-1"], "lowering retention did not keep the newest terminal records")
+    let replayedRetained = try RelayHandoffJournal(file: historyFile, maximumHandoffs: 2).handoffs()
+    try expect(
+        replayedRetained.map(\.id) == retained.map(\.id),
+        "the lowered retention result was not durable"
+    )
+
+    let allRecords = [
+        try statusHandoff(
+            id: "workspace-cross",
+            kind: .ask,
+            state: .completed,
+            sourceWorkspaceID: "@0",
+            targetWorkspaceID: "@1",
+            occurredAt: 10,
+            text: "cross workspace"
+        ),
+        try statusHandoff(
+            id: "workspace-local",
+            kind: .delegate,
+            state: .completed,
+            sourceWorkspaceID: "@1",
+            targetWorkspaceID: "@1",
+            occurredAt: 20,
+            text: "other workspace"
+        ),
+    ]
+    let workspaceRecords = CollaborationHistoryProjection.records(
+        allRecords,
+        involvingWorkspaceID: "@0"
+    )
+    try expect(workspaceRecords.map(\.id) == ["workspace-cross"], "workspace export included unrelated history")
+    let workspaceMarkdown = CollaborationHistoryMarkdown.document(
+        handoffs: workspaceRecords,
+        scopeName: "Workspace Zero",
+        selectionDescription: "All retained handoffs involving this workspace",
+        generatedAt: Date(timeIntervalSince1970: 100)
+    )
+    try expect(
+        workspaceMarkdown.contains("All retained handoffs involving this workspace")
+            && workspaceMarkdown.contains("workspace-cross")
+            && !workspaceMarkdown.contains("workspace-local"),
+        "workspace export did not describe and preserve its exact scope"
+    )
+}
+
+private func checkHistoryRetentionCoreControlRoute() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%source")
+    _ = try credentials.token(for: "%target")
+    let panes = [
+        TmuxPane(id: "%source", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "app"),
+        TmuxPane(id: "%target", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil, workspaceName: "app"),
+    ]
+    let retentionStore = CollaborationHistoryRetentionStore(
+        file: directory.appendingPathComponent("history-retention.json")
+    )
+    let policy = try retentionStore.policy()
+    let handoffJournal = try RelayHandoffJournal(
+        file: directory.appendingPathComponent("handoffs.jsonl"),
+        maximumHandoffs: policy.maximumRecords
+    )
+    let activityJournal = try RelayActivityJournal(
+        file: directory.appendingPathComponent("activity-events.jsonl"),
+        maximumEvents: policy.maximumRecords
+    )
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        handoffJournal: handoffJournal,
+        activityJournal: activityJournal,
+        historyRetentionPolicy: policy,
+        historyRetentionStore: retentionStore
+    )
+    let infoFile = directory.appendingPathComponent("relay-url")
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: "retention-control")
+    try server.start()
+    defer { server.stop() }
+
+    for index in 0..<101 {
+        let handoff = broker.handle(
+            token: sourceToken,
+            target: "Reviewer",
+            text: "retention control handoff \(index)",
+            idempotencyKey: "retention-control-\(index)"
+        )
+        try expect(handoff.status == 200, "retention control fixture could not create handoff \(index)")
+        _ = try broker.recordActivity(RelayActivityEventRequest(
+            kind: .paneRestarted,
+            workspaceID: "@0",
+            workspaceName: "app",
+            paneID: "%source",
+            paneName: "Builder",
+            paneKind: .codex,
+            detail: "Retention fixture event \(index)."
+        ))
+    }
+
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: "retention-control")
+    let initialPolicy = try client.historyRetentionPolicy()
+    try expect(initialPolicy == .defaultPolicy, "the UI could not read core-owned retention")
+    let change = try client.updateHistoryRetention(maximumRecords: 100)
+    try expect(change.policy.maximumRecords == 100, "the authenticated retention update did not reach the core")
+    try expect(change.removedHandoffs == 1 && change.removedActivityEvents == 1, "retention update did not report both compacted journals")
+    let retainedHandoffs = try client.handoffs()
+    let retainedActivity = try client.activityEvents()
+    try expect(retainedHandoffs.count == 100, "retention update did not compact the live handoff projection")
+    try expect(retainedActivity.count == 100, "retention update did not compact the live activity projection")
+    let persistedPolicy = try retentionStore.policy()
+    try expect(persistedPolicy.maximumRecords == 100, "the core did not persist updated retention")
+
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    var unauthorizedRejected = false
+    do {
+        _ = try unauthorized.updateHistoryRetention(maximumRecords: 250)
+    } catch let RelayCoreError.response(status, _) where status == 401 {
+        unauthorizedRejected = true
+    }
+    try expect(unauthorizedRejected, "an unauthenticated UI changed local retention")
+    let policyAfterRejection = try retentionStore.policy()
+    try expect(policyAfterRejection.maximumRecords == 100, "the rejected retention request changed durable policy")
+
+    var invalidRejected = false
+    do {
+        _ = try client.updateHistoryRetention(maximumRecords: 101)
+    } catch let RelayCoreError.response(status, _) where status == 400 {
+        invalidRejected = true
+    }
+    try expect(invalidRejected, "the core accepted an unsupported retention value")
+}
+
 private func checkHumanAskAgainUsesTrackedCoreControlRoute() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
@@ -5746,11 +5922,14 @@ private func checkWorkspaceHandoffHistoryDeletion() throws {
     let repoAToken = try credentials.token(for: "%1")
     let repoBToken = try credentials.token(for: "%2")
     let repoCToken = try credentials.token(for: "%3")
+    let duplicateNameToken = try credentials.token(for: "%5")
     let panes = [
         TmuxPane(id: "%1", kind: .codex, customName: "Codex A", terminalTitle: "", cwd: "/tmp/repo-a", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "repo-a"),
         TmuxPane(id: "%2", kind: .agy, customName: "Agy B", terminalTitle: "", cwd: "/tmp/repo-b", currentCommand: "agy", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "repo-b"),
         TmuxPane(id: "%3", kind: .claude, customName: "Claude C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "claude", isActive: false, windowID: "@2", returnToPaneID: nil, workspaceName: "repo-c"),
         TmuxPane(id: "%4", kind: .codex, customName: "Codex C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "codex", isActive: false, windowID: "@2", returnToPaneID: nil, workspaceName: "repo-c"),
+        TmuxPane(id: "%5", kind: .claude, customName: "Claude Duplicate", terminalTitle: "", cwd: "/tmp/duplicate-a", currentCommand: "claude", isActive: false, windowID: "@3", returnToPaneID: nil, workspaceName: "repo-a"),
+        TmuxPane(id: "%6", kind: .codex, customName: "Codex Duplicate", terminalTitle: "", cwd: "/tmp/duplicate-a", currentCommand: "codex", isActive: false, windowID: "@3", returnToPaneID: nil, workspaceName: "repo-a"),
     ]
     let historyFile = directory.appendingPathComponent("handoffs.jsonl")
     let journal = try RelayHandoffJournal(file: historyFile)
@@ -5778,6 +5957,13 @@ private func checkWorkspaceHandoffHistoryDeletion() throws {
         idempotencyKey: "delete-workspace-keep"
     )
     try expect(unaffected.status == 200, "workspace deletion fixture could not create unrelated history")
+    let sameNameDifferentWorkspace = broker.handle(
+        token: duplicateNameToken,
+        target: "Codex Duplicate",
+        text: "Keep this different workspace with the same display name.",
+        idempotencyKey: "delete-workspace-same-name-keep"
+    )
+    try expect(sameNameDifferentWorkspace.status == 200, "workspace deletion fixture could not create duplicate-name history")
 
     let pendingResult = LockedAskResult()
     DispatchQueue.global(qos: .utility).async {
@@ -5798,10 +5984,12 @@ private func checkWorkspaceHandoffHistoryDeletion() throws {
     let remaining = broker.handoffs()
     try expect(!remaining.contains(where: { $0.idempotencyKey == "delete-workspace-cross" }), "workspace deletion retained matching completed history")
     try expect(remaining.contains(where: { $0.idempotencyKey == "delete-workspace-keep" }), "workspace deletion removed another workspace's history")
+    try expect(remaining.contains(where: { $0.idempotencyKey == "delete-workspace-same-name-keep" }), "workspace deletion trusted a non-unique display name over the stable workspace id")
     try expect(remaining.contains(where: { $0.idempotencyKey == "delete-workspace-active" }), "workspace deletion removed active work")
     let persisted = try RelayHandoffJournal(file: historyFile).handoffs()
     try expect(!persisted.contains(where: { $0.idempotencyKey == "delete-workspace-cross" }), "workspace deletion did not compact the durable journal")
     try expect(persisted.contains(where: { $0.idempotencyKey == "delete-workspace-keep" }), "durable deletion removed unrelated history")
+    try expect(persisted.contains(where: { $0.idempotencyKey == "delete-workspace-same-name-keep" }), "durable deletion removed a duplicate-name workspace with a different id")
     try expect(persisted.contains(where: { $0.idempotencyKey == "delete-workspace-active" }), "durable deletion removed an active handoff")
 
     try expect(broker.handleAnswer(token: repoBToken, consultationID: "current", text: "Still alive.").status == 200, "the preserved Ask could not be answered")
@@ -7594,7 +7782,7 @@ private func checkCoreServiceUpgradeIdentity() throws {
     ])
     let development = CoreServiceIdentity.resolve(infoDictionary: nil)
 
-    try expect(packaged.contractVersion == 3, "packaged core identity has the wrong coordination contract")
+    try expect(packaged.contractVersion == 4, "packaged core identity has the wrong coordination contract")
     try expect(packaged.applicationVersion == "1.2.3", "packaged core identity lost the app version")
     try expect(packaged.build == "456", "packaged core identity lost the app build")
     try expect(development.applicationVersion == "development", "development core identity invented an app version")
@@ -8964,6 +9152,8 @@ let checks: [(String, () throws -> Void)] = [
     ("context review shim round trip", checkContextReviewShimRoundTrip),
     ("authoritative Status Center projection", checkStatusCenterProjectionUsesOnlyAuthoritativeState),
     ("collaboration history search export and repeat", checkCollaborationHistorySearchExportAndRepeat),
+    ("configurable history retention and workspace export", checkConfigurableHistoryRetentionAndWorkspaceExport),
+    ("history retention core control route", checkHistoryRetentionCoreControlRoute),
     ("human Ask This Again tracked core-control route", checkHumanAskAgainUsesTrackedCoreControlRoute),
     ("in-app recovery guidance", checkRecoveryGuidanceProjectsKnownFailures),
     ("durable authoritative operational activity", checkOperationalActivityIsDurableAndAuthoritative),
