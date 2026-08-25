@@ -139,6 +139,22 @@ struct ContentView: View {
                     } else {
                         Button("Restart…") { model.restart(pane) }
                     }
+                    let mobilityDestinations = model.mobilityDestinations(for: pane)
+                    if !mobilityDestinations.isEmpty {
+                        Divider()
+                        Menu("Move to Workspace") {
+                            ForEach(mobilityDestinations) { workspace in
+                                Button(workspace.name) { model.movePane(pane, to: workspace) }
+                            }
+                        }
+                        Menu("Clone Configuration to Workspace") {
+                            ForEach(mobilityDestinations) { workspace in
+                                Button(workspace.name) {
+                                    model.clonePaneConfiguration(pane, to: workspace)
+                                }
+                            }
+                        }
+                    }
                     Divider()
                     Button("Close Pane…", role: .destructive) { model.close(pane) }
                 }

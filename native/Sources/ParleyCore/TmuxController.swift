@@ -408,6 +408,108 @@ public final class TmuxController {
         }
     }
 
+    /// Transfers the exact tmux pane into another workspace. tmux retains the
+    /// pane id, process, scrollback, terminal modes and current directory; no
+    /// vendor CLI is restarted and no relay credential is rotated.
+    @discardableResult
+    public func movePane(
+        _ paneID: String,
+        toWorkspaceID targetWorkspaceID: String,
+        direction: SplitDirection,
+        activeHandoffCount: Int
+    ) throws -> TmuxPane {
+        let panes = try listPanes()
+        guard let pane = panes.first(where: { $0.id == paneID }) else {
+            throw ParleyTmuxError.paneNotFound(paneID)
+        }
+        guard let target = panes.first(where: { $0.windowID == targetWorkspaceID }) else {
+            throw ParleyTmuxError.workspaceNotFound(targetWorkspaceID)
+        }
+        let assessment = PaneMobilityPolicy.assess(
+            action: .move,
+            pane: pane,
+            targetWorkspaceID: targetWorkspaceID,
+            panes: panes,
+            activeHandoffCount: activeHandoffCount
+        )
+        guard assessment.isAllowed else {
+            throw ParleyTmuxError.commandFailed(assessment.refusalText)
+        }
+
+        _ = try runTmux([
+            "join-pane", "-d", direction == .horizontal ? "-h" : "-v",
+            "-s", paneID, "-t", target.id,
+        ])
+        try selectPane(paneID)
+        guard let moved = try listPanes().first(where: { $0.id == paneID && $0.windowID == targetWorkspaceID }) else {
+            throw ParleyTmuxError.commandFailed("tmux moved the pane but Parley could not confirm its destination.")
+        }
+        return moved
+    }
+
+    /// Copies only the source pane's visible Parley configuration. Shells
+    /// start normally; agent clones stay as inert placeholders until a person
+    /// chooses Start, which creates a fresh vendor session and relay credential.
+    @discardableResult
+    public func clonePaneConfiguration(
+        _ paneID: String,
+        toWorkspaceID targetWorkspaceID: String,
+        direction: SplitDirection,
+        activeHandoffCount: Int
+    ) throws -> TmuxPane {
+        let panes = try listPanes()
+        guard let pane = panes.first(where: { $0.id == paneID }) else {
+            throw ParleyTmuxError.paneNotFound(paneID)
+        }
+        guard let target = panes.first(where: { $0.windowID == targetWorkspaceID }) else {
+            throw ParleyTmuxError.workspaceNotFound(targetWorkspaceID)
+        }
+        let assessment = PaneMobilityPolicy.assess(
+            action: .clone,
+            pane: pane,
+            targetWorkspaceID: targetWorkspaceID,
+            panes: panes,
+            activeHandoffCount: activeHandoffCount
+        )
+        guard assessment.isAllowed else {
+            throw ParleyTmuxError.commandFailed(assessment.refusalText)
+        }
+
+        let arguments = [
+            "split-window", "-d", "-P", "-F", "#{pane_id}",
+            direction == .horizontal ? "-h" : "-v", "-t", target.id,
+            "-c", pane.cwd, "/bin/sleep", "2147483647",
+        ]
+        let cloneID = try runTmux(arguments).stdoutText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cloneID.isEmpty else {
+            throw ParleyTmuxError.commandFailed("tmux did not return the cloned pane id")
+        }
+
+        let leaf = SavedLayoutLeaf(
+            kind: pane.kind,
+            name: pane.displayName,
+            folder: pane.cwd,
+            role: pane.role,
+            isWorkspaceLead: pane.isWorkspaceLead,
+            permissionSelection: pane.permissionSelection
+        )
+        do {
+            try configureRestoredLeaf(leaf, paneID: cloneID)
+            try selectPane(cloneID)
+            guard let clone = try listPanes().first(where: {
+                $0.id == cloneID && $0.windowID == targetWorkspaceID
+            }) else {
+                throw ParleyTmuxError.commandFailed("tmux created the clone but Parley could not confirm its destination.")
+            }
+            return clone
+        } catch {
+            _ = try? runTmux(["kill-pane", "-t", cloneID], allowFailure: true)
+            try? relayRuntime?.credentials.forget(cloneID)
+            throw error
+        }
+    }
+
     public func closeWorkspace(_ windowID: String) throws {
         let workspaces = try listWorkspaces()
         guard workspaces.contains(where: { $0.id == windowID }) else {

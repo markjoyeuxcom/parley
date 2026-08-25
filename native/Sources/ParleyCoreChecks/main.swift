@@ -866,7 +866,7 @@ private func output(_ text: String = "", status: Int32 = 0) -> CommandOutput {
 private func command(_ arguments: [String]) -> String {
     let known = [
         "has-session", "new-session", "new-window", "set-option", "select-pane", "select-window", "list-panes", "list-windows",
-        "split-window", "capture-pane", "load-buffer", "paste-buffer", "send-keys",
+        "split-window", "join-pane", "capture-pane", "load-buffer", "paste-buffer", "send-keys",
         "respawn-pane", "kill-pane", "kill-window", "rename-window", "resize-pane", "select-layout", "delete-buffer", "display-message",
     ]
     return arguments.first(where: known.contains) ?? ""
@@ -947,7 +947,8 @@ private func checkInAppHelpGuideCoverage() throws {
         "edited synthesis", "context pack", "utf-8 bytes", "absolute executable",
         "workspace brief", "pinned context", "never attached automatically",
         "handoff chain", "objection", "human decision", "team template",
-        "routing role", "stopped placeholders",
+        "routing role", "stopped placeholders", "move to workspace",
+        "clone configuration", "active handoffs",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -1218,6 +1219,9 @@ private func paneRow(
     id: String,
     kind: PaneKind,
     active: Bool,
+    name: String? = nil,
+    cwd: String = "/tmp",
+    currentCommand: String? = nil,
     returnTo: String = "",
     relayEnabled: Bool = false,
     protocolVersion: String = "",
@@ -1234,7 +1238,7 @@ private func paneRow(
     permissionEnforcement: PermissionEnforcementLevel? = nil,
     role: String? = nil
 ) -> String {
-    [id, kind.rawValue, kind.label, kind.label, "/tmp", kind.rawValue, active ? "1" : "0", windowID, returnTo, relayEnabled ? "1" : "", protocolVersion, workspaceActive ? "1" : "0", workspaceName, bracketedPasteActive ? "1" : "0", started ? "1" : "0", isDead ? "1" : "", exitStatus.map(String.init) ?? "", isLead ? "1" : "", automationPolicy.rawValue, permissionSelection?.tmuxMetadataValue ?? "", permissionEnforcement?.rawValue ?? "", role ?? ""]
+    [id, kind.rawValue, name ?? kind.label, name ?? kind.label, cwd, currentCommand ?? kind.rawValue, active ? "1" : "0", windowID, returnTo, relayEnabled ? "1" : "", protocolVersion, workspaceActive ? "1" : "0", workspaceName, bracketedPasteActive ? "1" : "0", started ? "1" : "0", isDead ? "1" : "", exitStatus.map(String.init) ?? "", isLead ? "1" : "", automationPolicy.rawValue, permissionSelection?.tmuxMetadataValue ?? "", permissionEnforcement?.rawValue ?? "", role ?? ""]
         .joined(separator: "\u{1f}")
 }
 
@@ -1916,6 +1920,252 @@ private func checkPortableTeamTemplatePersistenceAndApplication() throws {
     }
 }
 
+private func checkPaneMobilitySafetyContract() throws {
+    let source = TmuxPane(
+        id: "%1", kind: .claude, customName: "Planner", terminalTitle: "", cwd: "/tmp/project",
+        currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
+        relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "project",
+        bracketedPasteActive: true, isStarted: true, isWorkspaceLead: true, role: "planner"
+    )
+    let sourcePeer = TmuxPane(
+        id: "%2", kind: .shell, customName: "Tests", terminalTitle: "", cwd: "/tmp/project",
+        currentCommand: "zsh", isActive: false, windowID: "@0", returnToPaneID: nil,
+        workspaceName: "project"
+    )
+    let targetPane = TmuxPane(
+        id: "%3", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp/consumer",
+        currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
+        relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "consumer",
+        bracketedPasteActive: true, isStarted: true, role: "builder"
+    )
+
+    let safeMove = PaneMobilityPolicy.assess(
+        action: .move,
+        pane: source,
+        targetWorkspaceID: "@1",
+        panes: [source, sourcePeer, targetPane],
+        activeHandoffCount: 0
+    )
+    try expect(safeMove.isAllowed, "a safe cross-workspace pane move was refused")
+
+    let sameWorkspace = PaneMobilityPolicy.assess(
+        action: .move,
+        pane: source,
+        targetWorkspaceID: "@0",
+        panes: [source, sourcePeer, targetPane],
+        activeHandoffCount: 0
+    )
+    try expect(sameWorkspace.blockers == [.sameWorkspace], "same-workspace mobility was not refused explicitly")
+
+    let lastSourcePane = PaneMobilityPolicy.assess(
+        action: .move,
+        pane: source,
+        targetWorkspaceID: "@1",
+        panes: [source, targetPane],
+        activeHandoffCount: 0
+    )
+    try expect(lastSourcePane.blockers == [.lastSourcePane], "moving the last source pane was not refused")
+
+    let activeMove = PaneMobilityPolicy.assess(
+        action: .move,
+        pane: source,
+        targetWorkspaceID: "@1",
+        panes: [source, sourcePeer, targetPane],
+        activeHandoffCount: 2
+    )
+    try expect(activeMove.blockers == [.activeHandoffs(2)], "a move with active handoffs was not refused")
+
+    let cloneWithHandoffs = PaneMobilityPolicy.assess(
+        action: .clone,
+        pane: source,
+        targetWorkspaceID: "@1",
+        panes: [source, sourcePeer, targetPane],
+        activeHandoffCount: 2
+    )
+    try expect(cloneWithHandoffs.isAllowed, "configuration cloning was coupled to source handoff lifecycle")
+    try expect(cloneWithHandoffs.activeHandoffCount == 2, "clone preview lost the source handoff count")
+
+    let conflictingRole = TmuxPane(
+        id: "%4", kind: .agy, customName: "Other planner", terminalTitle: "", cwd: "/tmp/consumer",
+        currentCommand: "agy", isActive: false, windowID: "@1", returnToPaneID: nil,
+        workspaceName: "consumer", role: "PLANNER"
+    )
+    let roleConflict = PaneMobilityPolicy.assess(
+        action: .clone,
+        pane: source,
+        targetWorkspaceID: "@1",
+        panes: [source, sourcePeer, targetPane, conflictingRole],
+        activeHandoffCount: 0
+    )
+    try expect(roleConflict.blockers == [.roleConflict("planner")], "duplicate target routing role was not refused")
+
+    let targetLead = TmuxPane(
+        id: "%5", kind: .codex, customName: "Lead", terminalTitle: "", cwd: "/tmp/consumer",
+        currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
+        workspaceName: "consumer", isWorkspaceLead: true
+    )
+    let leadConflict = PaneMobilityPolicy.assess(
+        action: .move,
+        pane: source,
+        targetWorkspaceID: "@1",
+        panes: [source, sourcePeer, targetPane, targetLead],
+        activeHandoffCount: 0
+    )
+    try expect(leadConflict.blockers == [.leadConflict], "duplicate target workspace leads were not refused")
+
+    var moved = false
+    let beforeMoveRows = [
+        paneRow(
+            id: "%1", kind: .claude, active: true, name: "Planner",
+            relayEnabled: true, protocolVersion: AgentProtocol.version,
+            windowID: "@0", workspaceActive: true, workspaceName: "project",
+            isLead: true, role: "planner"
+        ),
+        paneRow(id: "%2", kind: .shell, active: false, windowID: "@0", workspaceActive: true, workspaceName: "project"),
+        paneRow(id: "%3", kind: .codex, active: false, windowID: "@1", workspaceActive: false, workspaceName: "consumer"),
+    ].joined(separator: "\n") + "\n"
+    let afterMoveRows = [
+        paneRow(id: "%2", kind: .shell, active: false, windowID: "@0", workspaceActive: false, workspaceName: "project"),
+        paneRow(
+            id: "%1", kind: .claude, active: true, name: "Planner",
+            relayEnabled: true, protocolVersion: AgentProtocol.version,
+            windowID: "@1", workspaceActive: true, workspaceName: "consumer",
+            isLead: true, role: "planner"
+        ),
+        paneRow(id: "%3", kind: .codex, active: false, windowID: "@1", workspaceActive: true, workspaceName: "consumer"),
+    ].joined(separator: "\n") + "\n"
+    let moveRunner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "list-panes": return output(moved ? afterMoveRows : beforeMoveRows)
+        case "join-pane":
+            moved = true
+            return output()
+        default: return output()
+        }
+    }
+    let moveController = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: temporaryDirectory(),
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: moveRunner
+    )
+    let movedPane = try moveController.movePane(
+        "%1", toWorkspaceID: "@1", direction: .horizontal, activeHandoffCount: 0
+    )
+    try expect(movedPane.id == "%1" && movedPane.windowID == "@1", "live pane move changed identity or missed its destination")
+    try expect(
+        moveRunner.calls.contains {
+            command($0.arguments) == "join-pane"
+                && $0.arguments.contains("-s") && $0.arguments.contains("%1")
+                && $0.arguments.contains("-t") && $0.arguments.contains("%3")
+                && $0.arguments.contains("-h")
+        },
+        "live pane move did not use tmux join-pane with explicit source and target ids"
+    )
+    try expect(
+        !moveRunner.calls.contains { command($0.arguments) == "respawn-pane" },
+        "live pane move restarted a process instead of preserving it"
+    )
+
+    let blockedJoinCount = moveRunner.calls.filter { command($0.arguments) == "join-pane" }.count
+    do {
+        _ = try moveController.movePane(
+            "%1", toWorkspaceID: "@0", direction: .horizontal, activeHandoffCount: 1
+        )
+        throw CheckFailure(description: "controller moved a pane with an active handoff")
+    } catch let error as ParleyTmuxError {
+        try expect(error.localizedDescription.contains("handoff"), "controller handoff refusal was unclear")
+    }
+    try expect(
+        moveRunner.calls.filter { command($0.arguments) == "join-pane" }.count == blockedJoinCount,
+        "blocked mobility still reached tmux join-pane"
+    )
+
+    var cloned = false
+    let clonedPermission = PermissionProfileSelection(
+        profileID: "flexible",
+        approvedRoots: ["/tmp"],
+        lifetime: .remembered
+    )
+    let flexibleDefinition = try require(
+        PermissionProfileDefinition.builtIns.first(where: { $0.id == "flexible" }),
+        "the Flexible permission profile was unavailable"
+    )
+    let reboundPermission = try PermissionProfileResolver.resolve(
+        definition: flexibleDefinition,
+        paneFolder: "/tmp"
+    ).selection
+    let cloneSourceRows = [
+        paneRow(
+            id: "%1", kind: .claude, active: true, name: "Planner",
+            relayEnabled: true, protocolVersion: AgentProtocol.version,
+            windowID: "@0", workspaceActive: true, workspaceName: "project",
+            isLead: true, permissionSelection: clonedPermission,
+            permissionEnforcement: .partiallyEnforced, role: "planner"
+        ),
+        paneRow(id: "%2", kind: .shell, active: false, windowID: "@0", workspaceActive: true, workspaceName: "project"),
+        paneRow(id: "%3", kind: .codex, active: false, windowID: "@1", workspaceActive: false, workspaceName: "consumer"),
+    ].joined(separator: "\n") + "\n"
+    let cloneResultRows = cloneSourceRows + paneRow(
+        id: "%4", kind: .claude, active: false, name: "Planner", currentCommand: "sleep",
+        windowID: "@1", workspaceActive: false, workspaceName: "consumer",
+        started: false, isLead: true, permissionSelection: reboundPermission,
+        permissionEnforcement: .partiallyEnforced, role: "planner"
+    ) + "\n"
+    let cloneRunner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "list-panes": return output(cloned ? cloneResultRows : cloneSourceRows)
+        case "split-window":
+            cloned = true
+            return output("%4\n")
+        default: return output()
+        }
+    }
+    let cloneController = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: temporaryDirectory(),
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: cloneRunner
+    )
+    let clone = try cloneController.clonePaneConfiguration(
+        "%1", toWorkspaceID: "@1", direction: .vertical, activeHandoffCount: 2
+    )
+    try expect(clone.id == "%4" && !clone.isStarted, "agent configuration clone started a vendor session")
+    try expect(
+        cloneRunner.calls.contains {
+            command($0.arguments) == "split-window"
+                && $0.arguments.contains("-t") && $0.arguments.contains("%3")
+                && $0.arguments.contains("-v")
+        },
+        "configuration clone did not split the chosen destination workspace"
+    )
+    try expect(
+        cloneRunner.calls.contains {
+            command($0.arguments) == "respawn-pane"
+                && $0.arguments.contains("%4")
+                && $0.arguments.contains("/bin/sleep")
+                && $0.arguments.contains("2147483647")
+        },
+        "agent configuration clone did not become an inert stopped placeholder"
+    )
+    try expect(
+        !cloneRunner.calls.contains {
+            command($0.arguments) == "respawn-pane"
+                && $0.arguments.contains(where: { $0 == "claude" })
+        },
+        "configuration clone launched the source vendor CLI"
+    )
+    try expect(
+        cloneRunner.calls.contains { $0.arguments.contains("@parley-role") && $0.arguments.contains("planner") }
+            && cloneRunner.calls.contains { $0.arguments.contains("@parley-lead") && $0.arguments.contains("1") }
+            && cloneRunner.calls.contains {
+                $0.arguments.contains("@parley-permission-selection")
+                    && $0.arguments.contains(reboundPermission.tmuxMetadataValue)
+            },
+        "configuration clone lost its permission profile, stable role or Workspace Lead stamp"
+    )
+}
+
 private func checkTmuxLayoutBecomesAnIDFreeSavedTree() throws {
     let panes = [
         TmuxPane(id: "%2", kind: .shell, customName: "Tests", terminalTitle: "", cwd: "/tmp/project", currentCommand: "zsh", isActive: false, windowID: "@0", returnToPaneID: nil),
@@ -2227,6 +2477,104 @@ private func checkRealTmuxShellLifecycle() throws {
     try expect(
         !remainingPanes.contains(where: { $0.id == shell.id }),
         "closed real shell pane remained in tmux"
+    )
+}
+
+private func checkRealTmuxPaneMobility() throws {
+    let environment = EnvironmentResolver.resolved()
+    let tmux = try require(
+        TmuxController.findTmux(environment: environment),
+        "pane-mobility integration check could not find tmux"
+    )
+    let directory = try temporaryDirectory()
+    let folder = canonicalPath(directory.path)
+    let controller = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: directory,
+        sessionName: "parley-mobility-check",
+        environment: environment
+    )
+    defer {
+        _ = try? ProcessCommandRunner(timeout: 2).run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "kill-server"],
+            environment: controller.environment,
+            input: nil
+        )
+    }
+
+    try controller.bootstrap(cwd: folder)
+    let sourceWorkspace = try require(
+        try controller.listWorkspaces().first,
+        "pane-mobility check created no source workspace"
+    )
+    let movableShell = try controller.createPane(kind: .shell, cwd: folder, direction: .horizontal)
+    let runner = ProcessCommandRunner(timeout: 2)
+    func panePID(_ paneID: String) throws -> String {
+        try runner.run(
+            executable: tmux,
+            arguments: [
+                "-S", controller.socketPath.path, "-f", controller.configPath.path,
+                "display-message", "-p", "-t", paneID, "#{pane_pid}",
+            ],
+            environment: controller.environment,
+            input: nil
+        ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let processBeforeMove = try panePID(movableShell.id)
+    let destination = try controller.createWorkspace(folder: folder, name: "Destination")
+    let moved = try controller.movePane(
+        movableShell.id,
+        toWorkspaceID: destination.id,
+        direction: .horizontal,
+        activeHandoffCount: 0
+    )
+    let processAfterMove = try panePID(movableShell.id)
+    try expect(
+        moved.id == movableShell.id
+            && moved.windowID == destination.id
+            && processAfterMove == processBeforeMove
+            && !processAfterMove.isEmpty,
+        "real tmux move changed pane identity, destination or process id"
+    )
+    try expect(moved.cwd == folder, "real tmux move changed the pane-local folder")
+
+    let agentWorkspace = try controller.restoreWorkspaceLayout(SavedWorkspaceLayout(
+        name: "Stopped Agent Source",
+        defaultFolder: folder,
+        root: .leaf(SavedLayoutLeaf(
+            kind: .codex,
+            name: "Reviewer",
+            folder: folder,
+            role: "reviewer"
+        ))
+    ))
+    let stoppedSource = try require(
+        try controller.listPanes().first(where: { $0.windowID == agentWorkspace.id }),
+        "real mobility fixture created no stopped agent"
+    )
+    let clone = try controller.clonePaneConfiguration(
+        stoppedSource.id,
+        toWorkspaceID: sourceWorkspace.id,
+        direction: .vertical,
+        activeHandoffCount: 0
+    )
+    try expect(
+        clone.id != stoppedSource.id
+            && clone.windowID == sourceWorkspace.id
+            && clone.kind == .codex
+            && clone.displayName == "Reviewer"
+            && clone.role == "reviewer",
+        "real agent clone lost its fresh identity, destination or visible configuration"
+    )
+    try expect(
+        !clone.isStarted && !clone.relayEnabled && clone.protocolVersion == nil && clone.currentCommand == "sleep",
+        "real agent clone acquired a session, relay credential or protocol context before Start"
+    )
+    let panesAfterClone = try controller.listPanes()
+    try expect(
+        panesAfterClone.contains(where: { $0.id == stoppedSource.id }),
+        "configuration cloning changed or removed its source pane"
     )
 }
 
@@ -7760,6 +8108,7 @@ let checks: [(String, () throws -> Void)] = [
     ("embedded tmux presentation", checkEmbeddedTmuxPresentation),
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
     ("portable team template persistence and application", checkPortableTeamTemplatePersistenceAndApplication),
+    ("deliberate pane mobility safety contract", checkPaneMobilitySafetyContract),
     ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
     ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),
     ("direct agent argv", checkDirectAgentSpawn),
@@ -7767,6 +8116,7 @@ let checks: [(String, () throws -> Void)] = [
     ("stopped agent explicit start", checkStoppedAgentStartsOnlyThroughExplicitAction),
     ("shell pane login shell", checkShellPaneStartsLoginShell),
     ("real tmux shell lifecycle", checkRealTmuxShellLifecycle),
+    ("real tmux pane mobility", checkRealTmuxPaneMobility),
     ("real macOS agent process boundary", checkRealAgentProcessBoundary),
     ("real tmux saved-layout restoration policy", checkRealTmuxSavedLayoutRestorationPolicy),
     ("inherited Parley capability scrub", checkInheritedParleyCapabilitiesAreScrubbed),

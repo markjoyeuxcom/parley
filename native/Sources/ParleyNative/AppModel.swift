@@ -3484,6 +3484,159 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func mobilityDestinations(for pane: TmuxPane) -> [TmuxWorkspace] {
+        workspaces.filter { $0.id != pane.windowID }
+    }
+
+    func movePane(_ pane: TmuxPane, to targetWorkspace: TmuxWorkspace) {
+        perform {
+            guard let controller else { return }
+            try refresh()
+            guard let currentPane = panes.first(where: { $0.id == pane.id }) else {
+                throw ParleyTmuxError.paneNotFound(pane.id)
+            }
+            guard let currentTarget = workspaces.first(where: { $0.id == targetWorkspace.id }) else {
+                throw ParleyTmuxError.workspaceNotFound(targetWorkspace.id)
+            }
+            let activeCount = try verifiedActiveHandoffCount(for: currentPane, required: true)
+            let assessment = PaneMobilityPolicy.assess(
+                action: .move,
+                pane: currentPane,
+                targetWorkspaceID: currentTarget.id,
+                panes: panes,
+                activeHandoffCount: activeCount
+            )
+            guard assessment.isAllowed else {
+                showPaneMobilityRefusal(
+                    pane: currentPane,
+                    action: .move,
+                    assessment: assessment
+                )
+                return
+            }
+
+            let preservedState: String
+            if currentPane.isDead {
+                preservedState = "Its exited state and final scrollback stay intact."
+            } else if currentPane.kind.isAgent && !currentPane.isStarted {
+                preservedState = "It remains a stopped placeholder with no vendor session."
+            } else if currentPane.kind.isAgent {
+                preservedState = "Its running process and vendor session stay intact."
+            } else {
+                preservedState = "Its running shell process stays intact."
+            }
+            let alert = NSAlert()
+            alert.messageText = "Move \(currentPane.displayName) to \(currentTarget.name)?"
+            alert.informativeText = "Parley will transfer the exact tmux pane. \(preservedState) Its pane id, terminal state and folder (\(currentPane.cwd)) are unchanged. The target workspace’s \(currentTarget.automationPolicy.label) automation policy applies after the move. The source workspace remains open."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Move Pane")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+            // The modal may have been open while relay state changed. Query the
+            // core again and let TmuxController repeat every structural check
+            // against a fresh pane list immediately before join-pane.
+            let finalActiveCount = try verifiedActiveHandoffCount(for: currentPane, required: true)
+            _ = try controller.movePane(
+                currentPane.id,
+                toWorkspaceID: currentTarget.id,
+                direction: .horizontal,
+                activeHandoffCount: finalActiveCount
+            )
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    func clonePaneConfiguration(_ pane: TmuxPane, to targetWorkspace: TmuxWorkspace) {
+        perform {
+            guard let controller else { return }
+            try refresh()
+            guard let currentPane = panes.first(where: { $0.id == pane.id }) else {
+                throw ParleyTmuxError.paneNotFound(pane.id)
+            }
+            guard let currentTarget = workspaces.first(where: { $0.id == targetWorkspace.id }) else {
+                throw ParleyTmuxError.workspaceNotFound(targetWorkspace.id)
+            }
+            let activeCount = try verifiedActiveHandoffCount(for: currentPane, required: true)
+            let assessment = PaneMobilityPolicy.assess(
+                action: .clone,
+                pane: currentPane,
+                targetWorkspaceID: currentTarget.id,
+                panes: panes,
+                activeHandoffCount: activeCount
+            )
+            guard assessment.isAllowed else {
+                showPaneMobilityRefusal(
+                    pane: currentPane,
+                    action: .clone,
+                    assessment: assessment
+                )
+                return
+            }
+
+            let activeNote = activeCount > 0
+                ? " Its \(activeCount) active \(activeCount == 1 ? "handoff remains" : "handoffs remain") with the source pane."
+                : ""
+            let processNote = currentPane.kind.isAgent
+                ? "The new agent pane stays stopped with no vendor session, pane credential or protocol context until you choose Start."
+                : "The new shell starts normally."
+            let alert = NSAlert()
+            alert.messageText = "Clone \(currentPane.displayName) into \(currentTarget.name)?"
+            alert.informativeText = "The source process is unchanged. Parley copies only the visible configuration: vendor, name, folder (\(currentPane.cwd)), permission profile, routing role and Workspace Lead stamp. \(processNote)\(activeNote)"
+            alert.addButton(withTitle: "Clone Configuration")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+            let finalActiveCount = try verifiedActiveHandoffCount(for: currentPane, required: true)
+            _ = try controller.clonePaneConfiguration(
+                currentPane.id,
+                toWorkspaceID: currentTarget.id,
+                direction: .horizontal,
+                activeHandoffCount: finalActiveCount
+            )
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    private func verifiedActiveHandoffCount(for pane: TmuxPane, required: Bool) throws -> Int {
+        let history: [RelayHandoff]
+        if let relayClient {
+            history = try relayClient.handoffs(limit: 500)
+        } else if required && pane.kind.isAgent {
+            throw RelayUIError.message(
+                "Parley cannot verify this agent’s active handoffs while the core service is unavailable. Restore the core connection before moving or cloning it."
+            )
+        } else {
+            history = handoffs
+        }
+        return history.filter {
+            ($0.sourcePaneID == pane.id || $0.targetPaneID == pane.id)
+                && Self.isActiveMobilityHandoffState($0.state)
+        }.count
+    }
+
+    private static func isActiveMobilityHandoffState(_ state: RelayHandoffState) -> Bool {
+        switch state {
+        case .created, .delivered, .waiting, .answered: true
+        case .completed, .cancelled, .failed, .interrupted: false
+        }
+    }
+
+    private func showPaneMobilityRefusal(
+        pane: TmuxPane,
+        action: PaneMobilityAction,
+        assessment: PaneMobilityAssessment
+    ) {
+        let alert = NSAlert()
+        alert.messageText = "\(action == .move ? "Move" : "Clone") unavailable for \(pane.displayName)"
+        alert.informativeText = assessment.refusalText
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     func restart(_ pane: TmuxPane) {
         let alert = NSAlert()
         alert.messageText = "Restart \(pane.displayName)?"
