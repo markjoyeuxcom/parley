@@ -3777,24 +3777,7 @@ final class AppModel: ObservableObject {
 
     func createWorkspace(folder: String) {
         perform {
-            guard let controller else {
-                throw RelayUIError.message("Parley cannot open a workspace while its tmux connection is unavailable.")
-            }
-            let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
-            if let existing = workspaces.first(where: { $0.defaultFolder == standardized }) {
-                try controller.selectWorkspace(existing.id)
-            } else {
-                let created = try controller.createWorkspace(folder: standardized)
-                try recordSuccessfulActivity(RelayActivityEventRequest(
-                    kind: .workspaceCreated,
-                    workspaceID: created.id,
-                    workspaceName: created.name,
-                    detail: "Opened \(created.defaultFolder)"
-                ))
-            }
-            rememberFolder(standardized)
-            try refresh()
-            terminalHandle.focus()
+            _ = try openWorkspace(folder: folder)
         }
     }
 
@@ -3802,7 +3785,90 @@ final class AppModel: ObservableObject {
         // External authority ends at one validated local folder. The ordinary
         // workspace path may focus an existing tmux window or create its shell;
         // it never starts an agent pane or submits terminal input.
-        createWorkspace(folder: request.folder)
+        perform { _ = try openWorkspace(folder: request.folder) }
+    }
+
+    func importExternalContext(file: URL) {
+        perform {
+            guard let contextPackBuilder else {
+                throw RelayUIError.message("Context capture is unavailable while Parley is starting.")
+            }
+            let imported = try ExternalContextImport.consume(
+                file: file,
+                applicationDirectory: applicationDirectory,
+                builder: contextPackBuilder
+            )
+            let workspace = try openWorkspace(folder: imported.folder)
+            let candidates = panes.filter {
+                $0.windowID == workspace.id
+                    && $0.kind.isAgent
+                    && $0.isStarted
+                    && !$0.isDead
+                    && $0.relayEnabled
+                    && $0.hasCurrentProtocol
+            }
+            guard let source = candidates.first(where: \.isActive) ?? candidates.first else {
+                throw RelayUIError.message(
+                    "Parley opened this workspace, but it has no ready agent pane. Start the pane you want to send from, then run the VS Code command again. Nothing was submitted."
+                )
+            }
+            if let existing = contextPackDraft, !existing.pack.parts.isEmpty {
+                let alert = NSAlert()
+                alert.messageText = "Replace the current context pack?"
+                alert.informativeText = "VS Code staged \(imported.parts.count) explicit source\(imported.parts.count == 1 ? "" : "s"). Replacing the current local draft cannot be undone; nothing has been sent."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Open VS Code Context")
+                alert.addButton(withTitle: "Keep Current Draft")
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+            }
+            var draft = ActiveContextPack(
+                id: UUID().uuidString.lowercased(),
+                sourcePaneID: source.id,
+                sourcePaneKind: source.kind,
+                sourcePaneName: source.displayName,
+                sourceFolder: imported.folder,
+                pack: ContextPack(
+                    name: "\(source.displayName) · VS Code context",
+                    parts: imported.parts
+                ),
+                reviewID: nil,
+                reviewState: nil,
+                requestedTargetPaneID: nil,
+                reviewUpdatedAt: nil
+            )
+            updateContextPackMeasurement(&draft)
+            contextPackDraft = draft
+            contextPackPresented = true
+        }
+    }
+
+    @discardableResult
+    private func openWorkspace(folder: String) throws -> TmuxWorkspace {
+        guard let controller else {
+            throw RelayUIError.message("Parley cannot open a workspace while its tmux connection is unavailable.")
+        }
+        let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
+        let selectedID: String
+        if let existing = workspaces.first(where: { $0.defaultFolder == standardized }) {
+            try controller.selectWorkspace(existing.id)
+            selectedID = existing.id
+        } else {
+            let created = try controller.createWorkspace(folder: standardized)
+            selectedID = created.id
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .workspaceCreated,
+                workspaceID: created.id,
+                workspaceName: created.name,
+                detail: "Opened \(created.defaultFolder)"
+            ))
+        }
+        rememberFolder(standardized)
+        try refresh()
+        terminalHandle.focus()
+        guard let selected = workspaces.first(where: { $0.id == selectedID }) else {
+            throw RelayUIError.message("Parley opened the workspace but could not reconcile its live tmux window.")
+        }
+        return selected
     }
 
     func rename(_ workspace: TmuxWorkspace) {

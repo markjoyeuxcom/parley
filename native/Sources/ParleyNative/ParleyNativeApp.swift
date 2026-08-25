@@ -2,10 +2,15 @@ import AppKit
 import ParleyCore
 import SwiftUI
 
+fileprivate enum ExternalApplicationRequest: Equatable {
+    case workspace(ExternalWorkspaceOpenRequest)
+    case contextManifest(URL)
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var externalWorkspaceHandler: ((ExternalWorkspaceOpenRequest) -> Void)?
-    private var pendingExternalWorkspaces: [ExternalWorkspaceOpenRequest] = []
+    private var externalRequestHandler: ((ExternalApplicationRequest) -> Void)?
+    private var pendingExternalRequests: [ExternalApplicationRequest] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A SwiftPM executable has no app bundle to declare a foreground
@@ -20,12 +25,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func bindExternalWorkspaceHandler(
-        _ handler: @escaping (ExternalWorkspaceOpenRequest) -> Void
+    fileprivate func bindExternalRequestHandler(
+        _ handler: @escaping (ExternalApplicationRequest) -> Void
     ) {
-        externalWorkspaceHandler = handler
-        let pending = pendingExternalWorkspaces
-        pendingExternalWorkspaces.removeAll()
+        externalRequestHandler = handler
+        let pending = pendingExternalRequests
+        pendingExternalRequests.removeAll()
         for request in pending { handler(request) }
     }
 
@@ -34,14 +39,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             presentExternalOpenError(ExternalWorkspaceOpenError.oneFolderRequired)
             return
         }
-        receive(url.isFileURL
-            ? Result { try ExternalWorkspaceOpen.request(folderPaths: [url.path]) }
-            : Result { try ExternalWorkspaceOpen.request(url: url) })
+        if url.isFileURL {
+            receive(Result { try request(forFileURL: url) })
+        } else {
+            receive(Result { .workspace(try ExternalWorkspaceOpen.request(url: url)) })
+        }
     }
 
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
         do {
-            enqueue(try ExternalWorkspaceOpen.request(folderPaths: filenames))
+            guard filenames.count == 1, let filename = filenames.first else {
+                throw ExternalWorkspaceOpenError.oneFolderRequired
+            }
+            enqueue(try request(forFileURL: URL(fileURLWithPath: filename)))
             sender.reply(toOpenOrPrint: .success)
         } catch {
             presentExternalOpenError(error)
@@ -61,26 +71,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         do {
-            enqueue(try ExternalWorkspaceOpen.request(folderPaths: filenames))
+            enqueue(.workspace(try ExternalWorkspaceOpen.request(folderPaths: filenames)))
         } catch {
             errorPointer.pointee = error.localizedDescription as NSString
             presentExternalOpenError(error)
         }
     }
 
-    private func receive(_ result: Result<ExternalWorkspaceOpenRequest, Error>) {
+    private func request(forFileURL url: URL) throws -> ExternalApplicationRequest {
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return .workspace(try ExternalWorkspaceOpen.request(folderPaths: [url.path]))
+        } else if url.pathExtension.caseInsensitiveCompare("parleycontext") == .orderedSame {
+            return .contextManifest(url)
+        }
+        throw ExternalWorkspaceOpenError.notDirectory(url.path)
+    }
+
+    private func receive(_ result: Result<ExternalApplicationRequest, Error>) {
         switch result {
         case let .success(request): enqueue(request)
         case let .failure(error): presentExternalOpenError(error)
         }
     }
 
-    private func enqueue(_ request: ExternalWorkspaceOpenRequest) {
+    private func enqueue(_ request: ExternalApplicationRequest) {
         foregroundApplication()
-        if let externalWorkspaceHandler {
-            externalWorkspaceHandler(request)
-        } else if !pendingExternalWorkspaces.contains(request) {
-            pendingExternalWorkspaces.append(request)
+        if let externalRequestHandler {
+            externalRequestHandler(request)
+        } else if !pendingExternalRequests.contains(request) {
+            pendingExternalRequests.append(request)
         }
     }
 
@@ -120,8 +140,11 @@ struct ParleyNativeApp: App {
         WindowGroup("Parley") {
             ContentView(model: model)
                 .onAppear {
-                    appDelegate.bindExternalWorkspaceHandler { request in
-                        model.openExternalWorkspace(request)
+                    appDelegate.bindExternalRequestHandler { request in
+                        switch request {
+                        case let .workspace(workspace): model.openExternalWorkspace(workspace)
+                        case let .contextManifest(file): model.importExternalContext(file: file)
+                        }
                     }
                 }
         }

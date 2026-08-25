@@ -37,6 +37,8 @@ There is no API-key mode, hosted Parley service, telemetry or remote sync.
   or clone only its visible configuration as a fresh stopped agent placeholder.
 - Installed-app entry points through `parley open <folder>`, `parley://open`,
   Finder's **Open With** menu and an **Open in Parley** Finder Service.
+- A thin local VS Code companion for opening the current workspace and placing
+  explicit editor sources into Parley's editable context-pack preview.
 - Cross-workspace Ask targets and recent-folder shortcuts.
 - Owner-only durable handoff history and a compact workspace activity strip.
 - A separate native Status Center with workspace filters, live handoffs, agent
@@ -209,6 +211,20 @@ prompt, select or start an agent, attach context, or submit terminal input.
 `parley open` is refused inside authenticated agent panes. These system entry
 points intentionally target the installed Production app; Development does not
 claim the machine-wide URL scheme.
+
+The companion under [`vscode-extension/`](vscode-extension/) adds Command
+Palette and editor/explorer context-menu actions for the current selection,
+saved file, current-file diagnostics, Git diff, or selection plus Git diff.
+It runs only in the local macOS desktop extension host and refuses web or
+remote workspaces. Parley recaptures files and diffs itself; selections and
+diagnostics remain visibly attributed to VS Code. Every action opens the normal
+editable preview, requires a ready source pane, starts no agent and sends
+nothing. Build its local VSIX with:
+
+```bash
+npm install --prefix vscode-extension
+npm run package:vscode
+```
 
 Closing only the Parley window detaches from tmux and leaves workspaces running.
 A separate per-user core process owns the authenticated relay socket and active

@@ -97,6 +97,41 @@ export function renderInfoPlist({
         <string>public.folder</string>
       </array>
     </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Parley Context Import</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>${BUNDLE_IDENTIFIER}.context-import</string>
+      </array>
+    </dict>
+  </array>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>${BUNDLE_IDENTIFIER}.context-import</string>
+      <key>UTTypeDescription</key>
+      <string>Parley Context Import</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.json</string>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>parleycontext</string>
+        </array>
+        <key>public.mime-type</key>
+        <string>application/vnd.parley.context+json</string>
+      </dict>
+    </dict>
   </array>
   <key>CFBundleShortVersionString</key>
   <string>${xml(version)}</string>

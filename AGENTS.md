@@ -274,6 +274,16 @@ pane kind, vendor startup or terminal input. Launch-time requests wait until the
 SwiftUI model binds. The managed command refuses an authenticated pane token,
 and Development deliberately does not claim the machine-wide URL scheme.
 
+Editor context import is a separate preview-only capability. The local VS Code
+UI extension writes a versioned, bounded, mode-0600 `.parleycontext` manifest
+into Production's mode-0700 `external-context-inbox`; Parley accepts no other
+location and deletes a manifest after one read. A manifest names one canonical
+workspace and explicit sources only. Current files and Git diffs are recaptured
+by `ContextPackBuilder`; selections and diagnostics retain editor-provided
+provenance. It can neither name nor start a pane, choose a vendor, carry a
+permission/prompt, bypass the editable preview or submit. Web and remote VS Code
+hosts fail closed rather than translating remote paths into local ones.
+
 ## Shared protocol and vendor launch behavior
 
 `AgentProtocol.version` is stamped into the process environment and a tmux
