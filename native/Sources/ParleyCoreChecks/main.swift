@@ -1535,6 +1535,79 @@ private func checkWorkspaceCreationCleansAmbiguousPendingWindow() throws {
     }, "failed workspace recovery leaked the exact pending window it created")
 }
 
+private func checkWorkspaceCreationRetriesExactPendingTarget() throws {
+    var pendingName = ""
+    var displayAttempts = 0
+    let runner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "list-windows":
+            return output(workspaceRow(id: "@0", windowName: "parley", active: true, name: "parley", folder: "/tmp") + "\n")
+        case "new-window":
+            pendingName = arguments.drop(while: { $0 != "-n" }).dropFirst().first ?? ""
+            return output()
+        case "display-message":
+            displayAttempts += 1
+            return displayAttempts == 3 ? output("@2\u{1f}%9\n") : output()
+        case "list-panes":
+            return output()
+        default:
+            return output()
+        }
+    }
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: temporaryDirectory(),
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner,
+        pause: { _ in }
+    )
+
+    let created = try controller.createWorkspace(folder: "/tmp", name: "Delayed")
+
+    try expect(created.id == "@2", "delayed exact-name reconciliation returned the wrong workspace")
+    try expect(displayAttempts == 3, "workspace creation did not retry the exact provisional target")
+    try expect(runner.calls.contains { call in
+        command(call.arguments) == "display-message"
+            && call.arguments.contains(where: { $0.contains(pendingName) })
+    }, "workspace recovery enumerated state instead of targeting its unique provisional window")
+}
+
+private func checkWorkspaceCreationCleansPendingTargetWithoutCapturedIDs() throws {
+    var pendingName = ""
+    let runner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "list-windows":
+            return output(workspaceRow(id: "@0", windowName: "parley", active: true, name: "parley", folder: "/tmp") + "\n")
+        case "new-window":
+            pendingName = arguments.drop(while: { $0 != "-n" }).dropFirst().first ?? ""
+            return output()
+        case "display-message", "list-panes":
+            return output()
+        default:
+            return output()
+        }
+    }
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: temporaryDirectory(),
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner,
+        pause: { _ in }
+    )
+
+    do {
+        _ = try controller.createWorkspace(folder: "/tmp", name: "Uncaptured")
+        throw CheckFailure(description: "workspace creation succeeded without recovering any identifiers")
+    } catch is ParleyTmuxError {
+        // The exact cleanup assertion below is the contract under test.
+    }
+
+    try expect(runner.calls.contains { call in
+        command(call.arguments) == "kill-window"
+            && call.arguments.contains("=parley:=\(pendingName)")
+    }, "workspace recovery could not clean its unique provisional target without captured ids")
+}
+
 private func checkExistingSessionAdoptsOnlyUnclassifiedShells() throws {
     let workspaces = [
         workspaceRow(id: "@6", windowName: "demo", active: true, paneFolder: "/tmp/demo"),
@@ -10104,6 +10177,8 @@ let checks: [(String, () throws -> Void)] = [
     ("workspace lifecycle", checkWorkspaceLifecycle),
     ("workspace creation recovers missing tmux identifiers", checkWorkspaceCreationRecoversMissingIdentifiers),
     ("workspace creation cleans ambiguous pending windows", checkWorkspaceCreationCleansAmbiguousPendingWindow),
+    ("workspace creation retries its exact pending target", checkWorkspaceCreationRetriesExactPendingTarget),
+    ("workspace creation cleans an uncaptured exact target", checkWorkspaceCreationCleansPendingTargetWithoutCapturedIDs),
     ("existing sessions adopt only unclassified shells", checkExistingSessionAdoptsOnlyUnclassifiedShells),
     ("workspace continuity state", checkWorkspaceContinuityState),
     ("legacy packaged-app preferences migration", checkLegacyPreferencesMigration),
