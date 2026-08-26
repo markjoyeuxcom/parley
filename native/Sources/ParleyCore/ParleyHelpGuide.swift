@@ -431,6 +431,21 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "context-packs-vendor-evidence",
+                    title: "Add browser and tool evidence",
+                    paragraphs: [
+                        "Right-click an agent pane and choose Browser & Tool Capability for Parley's small per-pane summary. Unknown means exactly Unknown: a permission profile may record network intent, but terminal prose is not capability evidence and Parley does not infer browser access from a successful-looking answer.",
+                        "In an editable Context Pack, choose Add Browser/Tool Evidence to add a credential-free HTTP or HTTPS URL, person-provided selected text, a browser screenshot or a saved tool artifact. Choose the exact vendor pane you are attributing it to and review the resulting provenance before Ask or Compare.",
+                    ],
+                    items: [
+                        "Parley never opens or scrapes the vendor browser session and never reads browser profiles, cookies or website credentials.",
+                        "URLs are shape-validated but not fetched or verified. Selected text stays an explicit person's capture rather than becoming a claim that Parley saw the page.",
+                        "A local screenshot must be a readable image. Screenshots and saved artifacts are capped at 25 MB; Parley records the exact path, byte count and SHA-256 after inspecting the selected local bytes.",
+                        "Binary bytes are not embedded in the text context pack. The receiving vendor must say when its own tools or granted filesystem scope cannot read the attributed path.",
+                        "Every rendered evidence part stamps the vendor, pane, URL or artifact facts, capture basis and browser/tool capability state. Current adapters remain Unknown because none supplies a safe effective per-pane inspection that is credential-free, quota-free and configuration-free.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "context-packs-workspace-brief",
                     title: "Maintain a workspace brief",
                     paragraphs: [

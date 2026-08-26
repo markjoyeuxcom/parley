@@ -963,6 +963,9 @@ private func checkInAppHelpGuideCoverage() throws {
         "reviewed busy queue", "becoming idle never submits", "ready to review",
         "fresh human review and send", "send uncertain", "do not resend",
         "at most 32 reviewed busy drafts", "pane credentials cannot list",
+        "browser and tool evidence", "terminal prose is not capability evidence",
+        "credential-free http", "25 mb", "sha-256", "binary bytes are not embedded",
+        "cookies or website credentials", "person-provided selected text",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -4579,6 +4582,153 @@ private func checkContextPacksAreExplicitBoundedAndAttributed() throws {
     )
 }
 
+private func checkVendorToolEvidenceIsCapabilityGatedAndAttributed() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let profile = PermissionProfileDefinition(
+        id: "custom-browser-fixture",
+        name: "Browser fixture",
+        summary: "Network intent is explicit but does not prove a browser exists.",
+        isBuiltIn: false,
+        rootMode: .paneFolder,
+        defaultLifetime: .session,
+        rules: Dictionary(uniqueKeysWithValues: PermissionCapability.allCases.map {
+            ($0, $0 == .networkAccess ? PermissionRule.allow : PermissionRule.requireApproval)
+        })
+    )
+    let pane = TmuxPane(
+        id: "%browser", kind: .claude, customName: "Researcher",
+        terminalTitle: "Browser task completed successfully", cwd: directory.path,
+        currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
+        relayEnabled: true, protocolVersion: AgentProtocol.version,
+        permissionSelection: PermissionProfileSelection(
+            profileID: profile.id,
+            approvedRoots: [directory.path],
+            lifetime: .session
+        ),
+        permissionEnforcement: .partiallyEnforced
+    )
+    let capability = PaneToolCapabilityProjection.summary(for: pane, profiles: [profile])
+    try expect(capability.toolAccess == .unknown, "network permission was misreported as verified browser/tool access")
+    try expect(capability.networkRule == .allow, "the truthful capability summary lost explicit network-policy intent")
+    try expect(capability.canCaptureEvidence, "a live agent pane could not receive explicit person-selected evidence")
+    try expect(
+        capability.detail.localizedCaseInsensitiveContains("terminal")
+            && capability.detail.localizedCaseInsensitiveContains("not evidence"),
+        "the capability summary did not explain why successful-looking terminal prose proves nothing"
+    )
+
+    let stopped = TmuxPane(
+        id: "%stopped", kind: .codex, customName: nil, terminalTitle: "", cwd: directory.path,
+        currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil,
+        isStarted: false
+    )
+    let stoppedCapability = PaneToolCapabilityProjection.summary(for: stopped, profiles: [])
+    try expect(
+        stoppedCapability.toolAccess == .unavailable && !stoppedCapability.canCaptureEvidence,
+        "a stopped pane advertised live vendor-tool evidence capture"
+    )
+
+    let capturedAt = Date(timeIntervalSince1970: 1_787_680_800)
+    let builder = ContextPackBuilder(
+        maximumPartBytes: 4_096,
+        maximumRenderedBytes: 20_000,
+        maximumArtifactBytes: 1_024
+    )
+    let url = try builder.browserURLEvidence(
+        from: pane,
+        url: "https://example.com/reference?q=parley",
+        capturedAt: capturedAt
+    )
+    try expect(url.source.kind == .browserURL, "a browser URL lost its explicit source kind")
+    try expect(url.source.vendorEvidence?.vendor == .claude, "browser evidence lost its vendor attribution")
+    try expect(url.source.vendorEvidence?.paneID == pane.id, "browser evidence lost its exact pane attribution")
+    try expect(url.source.vendorEvidence?.toolAccess == .unknown, "browser evidence invented an affirmative capability")
+    try expect(url.text.localizedCaseInsensitiveContains("did not fetch"), "a URL capture implied Parley had inspected the page")
+
+    let selectionText = "Only this person-selected paragraph is evidence."
+    let selection = try builder.browserSelectionEvidence(
+        from: pane,
+        url: "https://example.com/reference",
+        text: selectionText,
+        capturedAt: capturedAt
+    )
+    try expect(selection.source.kind == .browserSelection, "browser-selected text lost its source kind")
+    try expect(selection.capturedText == selectionText, "browser-selected text changed during capture")
+
+    for invalidURL in ["file:///tmp/private", "https://person:secret@example.com/private", "javascript:alert(1)"] {
+        do {
+            _ = try builder.browserURLEvidence(from: pane, url: invalidURL, capturedAt: capturedAt)
+            throw CheckFailure(description: "unsafe browser URL entered a context pack: \(invalidURL)")
+        } catch ContextPackError.invalidEvidence {
+            // Expected: only credential-free HTTP(S) provenance is accepted.
+        }
+    }
+
+    let png = try require(
+        Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6pWQAAAAASUVORK5CYII="),
+        "PNG fixture could not be decoded"
+    )
+    let screenshotFile = directory.appendingPathComponent("browser-proof.png")
+    try png.write(to: screenshotFile)
+    let screenshot = try builder.vendorArtifactEvidence(
+        kind: .browserScreenshot,
+        from: pane,
+        file: screenshotFile,
+        sourceURL: "https://example.com/reference",
+        capturedAt: capturedAt
+    )
+    let screenshotEvidence = try require(screenshot.source.vendorEvidence, "screenshot lost its typed provenance")
+    try expect(screenshot.source.kind == .browserScreenshot, "screenshot lost its source kind")
+    try expect(screenshotEvidence.artifactByteCount == png.count, "screenshot provenance reported the wrong byte size")
+    try expect(screenshotEvidence.sha256?.count == 64, "screenshot provenance omitted its exact SHA-256 identity")
+    try expect(!screenshot.capturedText.contains(png.base64EncodedString()), "binary screenshot bytes were hidden inside a text context pack")
+
+    let artifactFile = directory.appendingPathComponent("tool-output.bin")
+    try Data([0, 1, 2, 3, 4]).write(to: artifactFile)
+    let artifact = try builder.vendorArtifactEvidence(
+        kind: .savedArtifact,
+        from: pane,
+        file: artifactFile,
+        sourceURL: nil,
+        capturedAt: capturedAt
+    )
+    try expect(artifact.source.kind == .toolArtifact, "saved tool artifact lost its source kind")
+    try expect(artifact.source.vendorEvidence?.artifactByteCount == 5, "saved artifact lost its byte size")
+
+    let rendered = try builder.render(ContextPack(
+        name: "Vendor evidence",
+        note: "Review only the attributed evidence.",
+        parts: [url, selection, screenshot, artifact]
+    ))
+    for expected in [
+        "Evidence vendor: Claude", "Evidence pane: Researcher (%browser)",
+        "Browser/tool capability: Unknown", "Artifact bytes: \(png.count)",
+        "Artifact SHA-256:", "Parley did not open, scrape or control the vendor browser session",
+    ] {
+        try expect(rendered.contains(expected), "rendered vendor evidence omitted \(expected)")
+    }
+    let roundTrip = try JSONDecoder().decode(
+        ContextPackPart.self,
+        from: JSONEncoder().encode(screenshot)
+    )
+    try expect(roundTrip == screenshot, "serialized context evidence lost its provenance")
+
+    let boundedBuilder = ContextPackBuilder(maximumArtifactBytes: 4)
+    do {
+        _ = try boundedBuilder.vendorArtifactEvidence(
+            kind: .savedArtifact,
+            from: pane,
+            file: artifactFile,
+            sourceURL: nil,
+            capturedAt: capturedAt
+        )
+        throw CheckFailure(description: "an oversized local artifact crossed the explicit evidence bound")
+    } catch ContextPackError.artifactTooLarge {
+        // Expected: metadata capture still has a deliberate source-byte ceiling.
+    }
+}
+
 private func checkWorkspaceBriefsAreDurableAndExplicitlyAttached() throws {
     let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -8121,7 +8271,7 @@ private func checkCoreServiceUpgradeIdentity() throws {
     ])
     let development = CoreServiceIdentity.resolve(infoDictionary: nil)
 
-    try expect(packaged.contractVersion == 5, "packaged core identity has the wrong coordination contract")
+    try expect(packaged.contractVersion == 6, "packaged core identity has the wrong coordination contract")
     try expect(packaged.applicationVersion == "1.2.3", "packaged core identity lost the app version")
     try expect(packaged.build == "456", "packaged core identity lost the app build")
     try expect(development.applicationVersion == "development", "development core identity invented an app version")
@@ -9174,6 +9324,38 @@ private func checkTrustedContextCaptureExtendsAgentDraftWithoutTrustingApproval(
     try expect(trustedPart.source.detail == trustedFile.path, "core-captured context invented its provenance")
     try expect(trustedPart.capturedText == "let trusted = true\n", "core-captured context changed the file contents")
 
+    let browserCapture = try control.captureTrustedContext(AgentContextTrustedCaptureRequest(
+        reviewID: summary.id,
+        kind: .browserSelection,
+        evidencePaneID: "%1",
+        sourceURL: "https://example.com/core-review",
+        selectedText: "Person-selected browser evidence."
+    ))
+    try expect(browserCapture.status == 200, "authenticated browser evidence could not extend an agent draft")
+    let browserParts = try JSONDecoder().decode(
+        AgentContextTrustedCaptureResponse.self,
+        from: Data(browserCapture.text.utf8)
+    ).parts
+    let browserPart = try require(browserParts.first, "core browser capture returned no context part")
+    try expect(browserPart.source.kind == .browserSelection, "core browser capture lost its source kind")
+    try expect(browserPart.source.vendorEvidence?.paneID == "%1", "core browser capture lost its exact pane attribution")
+    try expect(browserPart.source.vendorEvidence?.toolAccess == .unknown, "core browser capture invented tool availability")
+
+    let inventedPane = try control.captureTrustedContext(AgentContextTrustedCaptureRequest(
+        reviewID: summary.id,
+        kind: .browserURL,
+        evidencePaneID: "%invented",
+        sourceURL: "https://example.com/invented"
+    ))
+    try expect(inventedPane.status == 409, "trusted browser capture accepted an invented vendor pane")
+    let mixedFile = try control.captureTrustedContext(AgentContextTrustedCaptureRequest(
+        reviewID: summary.id,
+        kind: .files,
+        paths: [trustedFile.path],
+        sourceURL: "https://example.com/ignored"
+    ))
+    try expect(mixedFile.status == 400, "trusted file capture silently ignored browser evidence fields")
+
     let binary = directory.appendingPathComponent("binary.dat")
     try Data([0, 1, 2, 3]).write(to: binary)
     let binaryResult = try control.captureTrustedContext(AgentContextTrustedCaptureRequest(
@@ -9193,7 +9375,7 @@ private func checkTrustedContextCaptureExtendsAgentDraftWithoutTrustingApproval(
         broker.contextReviews().first(where: { $0.id == summary.id }),
         "trusted capture lost the durable agent draft"
     )
-    try expect(review.pack.parts.count == 2, "failed trusted captures mutated the durable draft")
+    try expect(review.pack.parts.count == 3, "failed trusted captures mutated the durable draft")
     var forgedPack = review.pack
     forgedPack.parts.append(ContextPackPart(
         source: ContextPackSource(kind: .file, label: "Forged", detail: "/tmp/forged"),
@@ -9478,6 +9660,7 @@ let checks: [(String, () throws -> Void)] = [
     ("selection-or-empty relay draft", checkRelayDraftStartsWithSelectionOrNothing),
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
     ("explicit bounded attributed context packs", checkContextPacksAreExplicitBoundedAndAttributed),
+    ("vendor tool evidence is capability-gated and attributed", checkVendorToolEvidenceIsCapabilityGatedAndAttributed),
     ("durable explicitly attached workspace briefs", checkWorkspaceBriefsAreDurableAndExplicitlyAttached),
     ("durable reusable explicitly attached pinned context", checkPinnedContextSnippetsAreDurableReusableAndExplicit),
     ("agent context drafts require human approval", checkAgentContextDraftsRequireHumanApprovalBeforeAsk),

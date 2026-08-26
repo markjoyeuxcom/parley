@@ -36,7 +36,7 @@ public struct RelayCoreUninstallTransaction: Equatable, Sendable {
 }
 
 public struct CoreServiceIdentity: Codable, Equatable, Sendable {
-    public static let currentContractVersion = 5
+    public static let currentContractVersion = 6
 
     public let contractVersion: Int
     public let applicationVersion: String

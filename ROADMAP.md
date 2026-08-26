@@ -795,17 +795,27 @@ configuration the person has explicitly enabled for that vendor. Parley does
 not replace that tool runtime or take custody of browser profiles, cookies or
 website credentials.
 
-- [ ] Show a small, truthful per-pane capability summary for explicitly
+- [x] Show a small, truthful per-pane capability summary for explicitly
   configured browser/tool access when the vendor exposes a trustworthy way to
   inspect it. Unknown stays **Unknown**; terminal output and successful-looking
-  browser prose are not capability evidence.
-- [ ] Let browser-derived URLs, selected text, screenshots and saved artifacts
+  browser prose are not capability evidence. The pane context menu now shows
+  the recorded network-profile intent separately from effective browser/tool
+  access. Every current vendor remains Unknown because its local help surface
+  does not establish the effective tools in one existing pane.
+- [x] Let browser-derived URLs, selected text, screenshots and saved artifacts
   be added deliberately to an editable context pack with source attribution
   and byte size before a cross-vendor handoff. Never scrape a vendor's browser
-  session, share cookies, or forward browsing results invisibly.
-- [ ] Add browser/tool checks to a vendor adapter only when the check can be
+  session, share cookies, or forward browsing results invisibly. The native
+  review sheet accepts credential-free HTTP(S) URLs and exact selected text;
+  it validates image screenshots and records a bounded local artifact's path,
+  bytes and SHA-256 without embedding binary data. Typed provenance stamps the
+  person-chosen vendor pane, the capture basis and the fail-closed capability
+  state in both the preview and rendered handoff.
+- [x] Add browser/tool checks to a vendor adapter only when the check can be
   performed without opening a website, spending model quota, changing vendor
-  configuration or exposing credentials.
+  configuration or exposing credentials. The capability projector is pure and
+  quota-free; no adapter currently emits an affirmative result, because CLI
+  help proves only that general configuration exists—not what one pane can use.
 
 ### Optional Git worktree awareness
 
@@ -929,7 +939,7 @@ step 13 and deliberately hardens the context feature before expanding it:
     optional worktree creation contingent on evidence from those two stages.
 18. [x] Improve attention and history: menu-bar inbox, search/export/retention,
     a human-controlled busy queue and workspace safety summaries.
-19. [ ] Integrate vendor-owned browser/tool evidence only through truthful
+19. [x] Integrate vendor-owned browser/tool evidence only through truthful
     capability checks and explicit attributed context-pack captures.
 20. [ ] Add vendor compatibility checks, trustworthy readiness hooks, the
     stable/beta update channel and the reviewed beta feedback bundle.

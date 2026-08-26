@@ -131,6 +131,10 @@ struct ContentView: View {
                         if pane.role != nil {
                             Button("Clear Routing Role") { model.clearRole(pane) }
                         }
+                        Divider()
+                        Button("Browser & Tool Capability…") {
+                            model.showPaneToolCapabilitySummary(pane)
+                        }
                     }
                     if pane.kind.isAgent && !pane.isStarted {
                         Button("Start") { model.start(pane) }

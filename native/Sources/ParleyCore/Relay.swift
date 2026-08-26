@@ -825,13 +825,25 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.unlock()
 
             let captured: [ContextPackPart]
+            func evidencePane() throws -> TmuxPane {
+                guard let paneID = request.evidencePaneID,
+                      let pane = try panes().first(where: {
+                          $0.id == paneID && $0.kind.isAgent && $0.isStarted && !$0.isDead
+                      }) else {
+                    throw BrokerFailure(status: 409, message: "that vendor pane is no longer available for evidence attribution")
+                }
+                return pane
+            }
             switch request.kind {
             case .files:
                 guard !request.paths.isEmpty,
                       request.paths.count <= ContextPackBuilder.maximumParts - existingPartCount,
                       request.paneID == nil,
                       request.executablePath == nil,
-                      request.arguments.isEmpty else {
+                      request.arguments.isEmpty,
+                      request.evidencePaneID == nil,
+                      request.sourceURL == nil,
+                      request.selectedText == nil else {
                     throw BrokerFailure(status: 400, message: "invalid trusted file capture request")
                 }
                 captured = try request.paths.map {
@@ -841,7 +853,10 @@ public final class RelayBroker: @unchecked Sendable {
                 guard request.paths.isEmpty,
                       request.paneID == nil,
                       request.executablePath == nil,
-                      request.arguments.isEmpty else {
+                      request.arguments.isEmpty,
+                      request.evidencePaneID == nil,
+                      request.sourceURL == nil,
+                      request.selectedText == nil else {
                     throw BrokerFailure(status: 400, message: "invalid trusted Git capture request")
                 }
                 captured = [try contextPackBuilder.gitDiff(in: sourceFolder)]
@@ -850,6 +865,9 @@ public final class RelayBroker: @unchecked Sendable {
                       let paneID = request.paneID,
                       request.executablePath == nil,
                       request.arguments.isEmpty,
+                      request.evidencePaneID == nil,
+                      request.sourceURL == nil,
+                      request.selectedText == nil,
                       let visibleText else {
                     throw BrokerFailure(status: 400, message: "invalid trusted visible-screen capture request")
                 }
@@ -866,13 +884,57 @@ public final class RelayBroker: @unchecked Sendable {
             case .commandResult:
                 guard request.paths.isEmpty,
                       request.paneID == nil,
-                      let executablePath = request.executablePath else {
+                      let executablePath = request.executablePath,
+                      request.evidencePaneID == nil,
+                      request.sourceURL == nil,
+                      request.selectedText == nil else {
                     throw BrokerFailure(status: 400, message: "invalid trusted command capture request")
                 }
                 captured = [try contextPackBuilder.commandResult(
                     executablePath: executablePath,
                     arguments: request.arguments,
                     workingDirectory: URL(fileURLWithPath: sourceFolder, isDirectory: true)
+                )]
+            case .browserURL:
+                guard request.paths.isEmpty,
+                      request.paneID == nil,
+                      request.executablePath == nil,
+                      request.arguments.isEmpty,
+                      let sourceURL = request.sourceURL,
+                      request.selectedText == nil else {
+                    throw BrokerFailure(status: 400, message: "invalid browser URL evidence request")
+                }
+                captured = [try contextPackBuilder.browserURLEvidence(
+                    from: evidencePane(),
+                    url: sourceURL
+                )]
+            case .browserSelection:
+                guard request.paths.isEmpty,
+                      request.paneID == nil,
+                      request.executablePath == nil,
+                      request.arguments.isEmpty,
+                      let sourceURL = request.sourceURL,
+                      let selectedText = request.selectedText else {
+                    throw BrokerFailure(status: 400, message: "invalid browser selection evidence request")
+                }
+                captured = [try contextPackBuilder.browserSelectionEvidence(
+                    from: evidencePane(),
+                    url: sourceURL,
+                    text: selectedText
+                )]
+            case .browserScreenshot, .toolArtifact:
+                guard request.paths.count == 1,
+                      request.paneID == nil,
+                      request.executablePath == nil,
+                      request.arguments.isEmpty,
+                      request.selectedText == nil else {
+                    throw BrokerFailure(status: 400, message: "invalid local vendor artifact evidence request")
+                }
+                captured = [try contextPackBuilder.vendorArtifactEvidence(
+                    kind: request.kind == .browserScreenshot ? .browserScreenshot : .savedArtifact,
+                    from: evidencePane(),
+                    file: URL(fileURLWithPath: request.paths[0]),
+                    sourceURL: request.sourceURL
                 )]
             }
 
@@ -890,7 +952,7 @@ public final class RelayBroker: @unchecked Sendable {
             do {
                 _ = try contextPackBuilder.render(review.pack)
                 review.updatedAt = Date()
-                review.detail = "A person added \(captured.count) source\(captured.count == 1 ? "" : "s") captured independently by Parley."
+                review.detail = "A person added \(captured.count) source\(captured.count == 1 ? "" : "s") through Parley's authenticated review control; each part states what Parley independently established."
                 try contextReviewStore?.record(review)
                 contextReviewRecords[review.id] = review
                 consultationCondition.broadcast()

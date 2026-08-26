@@ -1149,6 +1149,37 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var vendorToolEvidencePanes: [TmuxPane] {
+        panes.filter {
+            $0.kind.isAgent && $0.isStarted && !$0.isDead
+        }.sorted {
+            let left = ($0.workspaceName ?? "", $0.displayName, $0.id)
+            let right = ($1.workspaceName ?? "", $1.displayName, $1.id)
+            return left < right
+        }
+    }
+
+    func paneToolCapabilitySummary(for pane: TmuxPane) -> PaneToolCapabilitySummary {
+        PaneToolCapabilityProjection.summary(for: pane, profiles: permissionProfiles)
+    }
+
+    func showPaneToolCapabilitySummary(_ pane: TmuxPane) {
+        let summary = paneToolCapabilitySummary(for: pane)
+        let alert = NSAlert()
+        alert.messageText = "Browser & Tool Access · \(pane.displayName)"
+        alert.informativeText = """
+        Browser/tool access: \(summary.toolAccess.label)
+        Network policy: \(summary.networkLabel)
+        Evidence capture: \(summary.canCaptureEvidence ? "Available through explicit Context Pack review" : "Unavailable while this pane is stopped")
+
+        \(summary.detail)
+
+        Parley does not inspect browser profiles, cookies, website credentials or vendor MCP configuration. Network permission is not proof that a browser tool exists.
+        """
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     var canCompareContextPack: Bool {
         Set(contextPackAskTargets.map(\.kind)).count >= 2
             && askManyComparisonRun?.isRunning != true
@@ -2698,6 +2729,61 @@ final class AppModel: ObservableObject {
             }
             terminalHandle.terminal?.selectNone()
         }
+    }
+
+    func addVendorToolEvidence(
+        kind: VendorToolEvidenceKind,
+        paneID: String,
+        sourceURL: String,
+        selectedText: String,
+        artifactPath: String
+    ) throws {
+        guard let draft = contextPackDraft else {
+            throw RelayUIError.message("Open a context pack before adding browser or tool evidence.")
+        }
+        guard let pane = vendorToolEvidencePanes.first(where: { $0.id == paneID }) else {
+            throw RelayUIError.message("That vendor pane is no longer running, so Parley cannot preserve truthful attribution.")
+        }
+        let url = sourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = artifactPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let reviewID = draft.reviewID {
+            let captureKind: AgentContextTrustedCaptureKind = switch kind {
+            case .browserURL: .browserURL
+            case .browserSelection: .browserSelection
+            case .browserScreenshot: .browserScreenshot
+            case .savedArtifact: .toolArtifact
+            }
+            try captureTrustedContext(
+                AgentContextTrustedCaptureRequest(
+                    reviewID: reviewID,
+                    kind: captureKind,
+                    paths: path.isEmpty ? [] : [path],
+                    evidencePaneID: pane.id,
+                    sourceURL: url.isEmpty ? nil : url,
+                    selectedText: kind == .browserSelection ? selectedText : nil
+                ),
+                draftID: draft.id
+            )
+            return
+        }
+
+        guard let contextPackBuilder else {
+            throw RelayUIError.message("Context capture is unavailable.")
+        }
+        let part: ContextPackPart = switch kind {
+        case .browserURL:
+            try contextPackBuilder.browserURLEvidence(from: pane, url: url)
+        case .browserSelection:
+            try contextPackBuilder.browserSelectionEvidence(from: pane, url: url, text: selectedText)
+        case .browserScreenshot, .savedArtifact:
+            try contextPackBuilder.vendorArtifactEvidence(
+                kind: kind,
+                from: pane,
+                file: URL(fileURLWithPath: path),
+                sourceURL: url.isEmpty ? nil : url
+            )
+        }
+        try appendContextPackParts([part], draftID: draft.id)
     }
 
     func addWorkspaceBriefContext() {
