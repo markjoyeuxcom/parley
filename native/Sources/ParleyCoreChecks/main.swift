@@ -1277,6 +1277,19 @@ private func workspaceRow(
         .joined(separator: "\u{1f}")
 }
 
+private func unclassifiedPaneRow(
+    id: String,
+    windowID: String,
+    windowName: String,
+    cwd: String,
+    currentCommand: String,
+    isDead: Bool = false,
+    kind: String = ""
+) -> String {
+    [id, windowID, windowName, cwd, currentCommand, isDead ? "1" : "", kind]
+        .joined(separator: "\u{1f}")
+}
+
 private func checkBootstrap() throws {
     let runner = RecordingRunner { arguments, _ in
         switch command(arguments) {
@@ -1308,6 +1321,49 @@ private func checkBootstrap() throws {
     try expect(runner.calls.contains { call in
         command(call.arguments) == "set-option" && call.arguments.contains("@parley-workspace-folder") && call.arguments.contains("/tmp")
     }, "initial tmux window was not stamped with its workspace folder")
+}
+
+private func checkBootstrapRecoversMissingIdentifiers() throws {
+    var pendingName = ""
+    var sessionExists = false
+    let runner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "has-session":
+            return output(status: sessionExists ? 0 : 1)
+        case "new-session":
+            pendingName = arguments.drop(while: { $0 != "-n" }).dropFirst().first ?? ""
+            sessionExists = true
+            return output()
+        case "list-panes" where sessionExists:
+            return output(unclassifiedPaneRow(
+                id: "%0",
+                windowID: "@0",
+                windowName: pendingName,
+                cwd: "/tmp",
+                currentCommand: "zsh"
+            ) + "\n")
+        default:
+            return output()
+        }
+    }
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: temporaryDirectory(),
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner
+    )
+
+    try controller.bootstrap(cwd: "/tmp")
+
+    try expect(pendingName.hasPrefix("Parley-Pending-"), "first-run bootstrap did not create a recoverable provisional window")
+    try expect(runner.calls.contains { call in
+        command(call.arguments) == "set-option" && call.arguments.contains("%0")
+            && call.arguments.contains("@parley-kind") && call.arguments.contains("shell")
+    }, "first-run bootstrap did not recover its shell after tmux omitted the ids")
+    try expect(runner.calls.contains { call in
+        command(call.arguments) == "rename-window" && call.arguments.contains("@0") && call.arguments.contains("tmp")
+    }, "first-run bootstrap did not commit the recovered workspace name")
+    try expect(!runner.calls.contains { command($0.arguments) == "kill-window" }, "successful first-run recovery removed its live window")
 }
 
 private func checkExistingSessionAdoptsWorkspaceWithoutRestart() throws {
@@ -1368,8 +1424,9 @@ private func checkWorkspaceLifecycle() throws {
     let created = try controller.createWorkspace(folder: "/tmp", name: "Server")
     try expect(created.id == "@2" && created.name == "Server", "new workspace lost its tmux id or name")
     try expect(runner.calls.contains { call in
-        command(call.arguments) == "new-window" && call.arguments.contains("/tmp") && call.arguments.contains("Server")
-    }, "workspace creation did not create a tmux window in its folder")
+        command(call.arguments) == "new-window" && call.arguments.contains("/tmp")
+            && call.arguments.contains(where: { $0.hasPrefix("Parley-Pending-") })
+    }, "workspace creation did not create a recoverable tmux window in its folder")
     try expect(runner.calls.contains { command($0.arguments) == "select-window" && $0.arguments.contains("@2") }, "new workspace was not selected")
 
     let qualified = try controller.createWorkspace(folder: "/tmp", name: "CLIENT")
@@ -1395,6 +1452,125 @@ private func checkWorkspaceLifecycle() throws {
 
     try controller.closeWorkspace("@1")
     try expect(runner.calls.contains { command($0.arguments) == "kill-window" && $0.arguments.contains("@1") }, "workspace close did not close its tmux window")
+}
+
+private func checkWorkspaceCreationRecoversMissingIdentifiers() throws {
+    var pendingName = ""
+    var windowExists = false
+    let runner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "list-windows":
+            return output(workspaceRow(id: "@0", windowName: "parley", active: true, name: "parley", folder: "/tmp") + "\n")
+        case "new-window":
+            pendingName = arguments.drop(while: { $0 != "-n" }).dropFirst().first ?? ""
+            windowExists = true
+            return output()
+        case "list-panes" where windowExists:
+            return output(unclassifiedPaneRow(
+                id: "%9",
+                windowID: "@2",
+                windowName: pendingName,
+                cwd: "/tmp",
+                currentCommand: "zsh"
+            ) + "\n")
+        default:
+            return output()
+        }
+    }
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: temporaryDirectory(),
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner
+    )
+
+    let created = try controller.createWorkspace(folder: "/tmp", name: "Recovered")
+
+    try expect(created.id == "@2" && created.name == "Recovered", "workspace creation did not recover the ids from live tmux state")
+    try expect(pendingName.hasPrefix("Parley-Pending-"), "workspace creation did not use a uniquely recoverable temporary name")
+    try expect(!runner.calls.contains { command($0.arguments) == "kill-window" }, "successful workspace recovery killed the created window")
+    try expect(runner.calls.contains { call in
+        command(call.arguments) == "rename-window" && call.arguments.contains("@2") && call.arguments.contains("Recovered")
+    }, "recovered workspace was not committed under its requested name")
+}
+
+private func checkWorkspaceCreationCleansAmbiguousPendingWindow() throws {
+    var pendingName = ""
+    var windowExists = false
+    let runner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "list-windows":
+            return output(workspaceRow(id: "@0", windowName: "parley", active: true, name: "parley", folder: "/tmp") + "\n")
+        case "new-window":
+            pendingName = arguments.drop(while: { $0 != "-n" }).dropFirst().first ?? ""
+            windowExists = true
+            return output()
+        case "list-panes" where windowExists:
+            return output([
+                unclassifiedPaneRow(id: "%9", windowID: "@2", windowName: pendingName, cwd: "/tmp", currentCommand: "zsh"),
+                unclassifiedPaneRow(id: "%10", windowID: "@2", windowName: pendingName, cwd: "/tmp", currentCommand: "zsh"),
+            ].joined(separator: "\n") + "\n")
+        default:
+            return output()
+        }
+    }
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: temporaryDirectory(),
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner
+    )
+
+    do {
+        _ = try controller.createWorkspace(folder: "/tmp", name: "Ambiguous")
+        throw CheckFailure(description: "workspace creation accepted an ambiguous pending window")
+    } catch let error as ParleyTmuxError {
+        try expect(
+            error.errorDescription?.localizedCaseInsensitiveContains("safely identify") == true,
+            "ambiguous workspace recovery failed without a useful explanation"
+        )
+    }
+    try expect(runner.calls.contains { call in
+        command(call.arguments) == "kill-window" && call.arguments.contains("@2")
+    }, "failed workspace recovery leaked the exact pending window it created")
+}
+
+private func checkExistingSessionAdoptsOnlyUnclassifiedShells() throws {
+    let workspaces = [
+        workspaceRow(id: "@6", windowName: "demo", active: true, paneFolder: "/tmp/demo"),
+        workspaceRow(id: "@7", windowName: "agent", active: false, paneFolder: "/tmp/agent"),
+    ].joined(separator: "\n") + "\n"
+    let unclassified = [
+        unclassifiedPaneRow(id: "%27", windowID: "@6", windowName: "demo", cwd: "/tmp/demo", currentCommand: "zsh"),
+        unclassifiedPaneRow(id: "%28", windowID: "@7", windowName: "agent", cwd: "/tmp/agent", currentCommand: "codex"),
+    ].joined(separator: "\n") + "\n"
+    let runner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "has-session": output()
+        case "list-windows": output(workspaces)
+        case "list-panes": output(unclassified)
+        default: output()
+        }
+    }
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: temporaryDirectory(),
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner
+    )
+
+    try controller.bootstrap(cwd: "/tmp")
+
+    try expect(runner.calls.contains { call in
+        command(call.arguments) == "set-option" && call.arguments.contains("%27")
+            && call.arguments.contains("@parley-kind") && call.arguments.contains("shell")
+    }, "existing single-shell workspace was not recovered with metadata only")
+    try expect(!runner.calls.contains { call in
+        command(call.arguments) == "set-option" && call.arguments.contains("%28")
+            && call.arguments.contains("@parley-kind")
+    }, "an unclassified agent-looking process was incorrectly adopted as a shell")
+    try expect(!runner.calls.contains { command($0.arguments) == "respawn-pane" }, "legacy shell adoption restarted a live process")
+    try expect(!runner.calls.contains { command($0.arguments) == "kill-pane" || command($0.arguments) == "kill-window" }, "legacy shell adoption killed live state")
 }
 
 private func checkWorkspaceContinuityState() throws {
@@ -9923,8 +10099,12 @@ let checks: [(String, () throws -> Void)] = [
     ("read-only runtime attachment requires prepared files", checkReadOnlyRuntimeAttachmentRequiresPreparedFiles),
     ("real production and development tmux isolation", checkRealProductionAndDevelopmentTmuxIsolation),
     ("bootstrap", checkBootstrap),
+    ("bootstrap recovers missing tmux identifiers", checkBootstrapRecoversMissingIdentifiers),
     ("existing session workspace adoption", checkExistingSessionAdoptsWorkspaceWithoutRestart),
     ("workspace lifecycle", checkWorkspaceLifecycle),
+    ("workspace creation recovers missing tmux identifiers", checkWorkspaceCreationRecoversMissingIdentifiers),
+    ("workspace creation cleans ambiguous pending windows", checkWorkspaceCreationCleansAmbiguousPendingWindow),
+    ("existing sessions adopt only unclassified shells", checkExistingSessionAdoptsOnlyUnclassifiedShells),
     ("workspace continuity state", checkWorkspaceContinuityState),
     ("legacy packaged-app preferences migration", checkLegacyPreferencesMigration),
     ("quota-free runtime readiness probes", checkRuntimeReadinessProbesAreQuotaFree),

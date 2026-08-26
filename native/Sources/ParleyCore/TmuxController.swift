@@ -94,6 +94,7 @@ public final class TmuxController {
             try retainExitedPanes()
             // Migration is metadata-only. Existing panes and the processes
             // inside them are deliberately left untouched.
+            try adoptUnclassifiedShellPanes()
             for workspace in try listWorkspaces(fallbackFolder: cwd) {
                 try setWorkspaceMetadata(
                     windowID: workspace.id,
@@ -110,25 +111,34 @@ public final class TmuxController {
             )
         }
 
-        let result = try runTmux([
-            "new-session", "-d", "-P", "-F", "#{window_id}\u{1f}#{pane_id}",
-            "-s", sessionName, "-c", cwd, "-n", "agents",
-        ])
-        let identifiers = result.stdoutText
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(separator: "\u{1f}", omittingEmptySubsequences: false)
-            .map(String.init)
-        if identifiers.count == 2 {
-            let windowID = identifiers[0]
-            let paneID = identifiers[1]
-            try setMetadata(paneID: paneID, kind: .shell, name: "Shell")
-            try setStartedMetadata(paneID: paneID, started: true)
+        let pendingName = "Parley-Pending-\(UUID().uuidString)"
+        var createdWindowID: String?
+        do {
+            let result = try runTmux([
+                "new-session", "-d", "-P", "-F", "#{window_id}\u{1f}#{pane_id}",
+                "-s", sessionName, "-c", cwd, "-n", pendingName,
+            ])
+            let identifiers = try resolveCreatedWorkspace(
+                from: result.stdoutText,
+                pendingName: pendingName,
+                createdWindowID: &createdWindowID
+            )
+            try setMetadata(paneID: identifiers.paneID, kind: .shell, name: "Shell")
+            try setStartedMetadata(paneID: identifiers.paneID, started: true)
             try setWorkspaceMetadata(
-                windowID: windowID,
+                windowID: identifiers.windowID,
                 name: workspaceName(folder: cwd),
                 folder: cwd,
                 automationPolicy: .askAndDelegate
             )
+        } catch {
+            if createdWindowID == nil {
+                createdWindowID = try? uniquePendingWindowID(named: pendingName)
+            }
+            if let createdWindowID {
+                _ = try? runTmux(["kill-window", "-t", createdWindowID], allowFailure: true)
+            }
+            throw error
         }
         try configureEmbeddedPresentation()
         try retainExitedPanes()
@@ -286,40 +296,46 @@ public final class TmuxController {
     public func createWorkspace(folder: String, name: String? = nil) throws -> TmuxWorkspace {
         try requireDirectory(folder)
         let resolvedName = try availableWorkspaceName(workspaceName(folder: folder, proposed: name))
-        let result = try runTmux([
-            "new-window", "-d", "-P", "-F", "#{window_id}\u{1f}#{pane_id}",
-            "-t", "\(exactSession):", "-c", folder, "-n", resolvedName,
-        ])
-        let identifiers = result.stdoutText
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(separator: "\u{1f}", omittingEmptySubsequences: false)
-            .map(String.init)
-        guard identifiers.count == 2, !identifiers[0].isEmpty, !identifiers[1].isEmpty else {
-            throw ParleyTmuxError.commandFailed("tmux did not return the new workspace ids")
-        }
-        let windowID = identifiers[0]
-        let paneID = identifiers[1]
+        // A unique provisional name lets Parley reconcile the exact window
+        // even if tmux creates it but loses the `-P` response. The visible
+        // name is committed only after the pane and workspace metadata land.
+        let pendingName = "Parley-Pending-\(UUID().uuidString)"
+        var createdWindowID: String?
         do {
-            try setMetadata(paneID: paneID, kind: .shell, name: "Shell")
-            try setStartedMetadata(paneID: paneID, started: true)
+            let result = try runTmux([
+                "new-window", "-d", "-P", "-F", "#{window_id}\u{1f}#{pane_id}",
+                "-t", "\(exactSession):", "-c", folder, "-n", pendingName,
+            ])
+            let identifiers = try resolveCreatedWorkspace(
+                from: result.stdoutText,
+                pendingName: pendingName,
+                createdWindowID: &createdWindowID
+            )
+            try setMetadata(paneID: identifiers.paneID, kind: .shell, name: "Shell")
+            try setStartedMetadata(paneID: identifiers.paneID, started: true)
             try setWorkspaceMetadata(
-                windowID: windowID,
+                windowID: identifiers.windowID,
                 name: resolvedName,
                 folder: folder,
                 automationPolicy: .askAndDelegate
             )
-            try selectWorkspace(windowID)
+            try selectWorkspace(identifiers.windowID)
+            return TmuxWorkspace(
+                id: identifiers.windowID,
+                name: resolvedName,
+                defaultFolder: folder,
+                isActive: true,
+                automationPolicy: .askAndDelegate
+            )
         } catch {
-            _ = try? runTmux(["kill-window", "-t", windowID], allowFailure: true)
+            if createdWindowID == nil {
+                createdWindowID = try? uniquePendingWindowID(named: pendingName)
+            }
+            if let createdWindowID {
+                _ = try? runTmux(["kill-window", "-t", createdWindowID], allowFailure: true)
+            }
             throw error
         }
-        return TmuxWorkspace(
-            id: windowID,
-            name: resolvedName,
-            defaultFolder: folder,
-            isActive: true,
-            automationPolicy: .askAndDelegate
-        )
     }
 
     public func selectWorkspace(_ windowID: String) throws {
@@ -891,6 +907,109 @@ public final class TmuxController {
     }
 
     private var exactSession: String { "=\(sessionName)" }
+
+    private struct PaneInventoryRow {
+        let id: String
+        let windowID: String
+        let windowName: String
+        let cwd: String
+        let currentCommand: String
+        let isDead: Bool
+        let kind: String
+    }
+
+    private func createdWorkspaceIdentifiers(from output: String) -> (windowID: String, paneID: String)? {
+        let identifiers = output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "\u{1f}", omittingEmptySubsequences: false)
+            .map(String.init)
+        guard identifiers.count == 2, !identifiers[0].isEmpty, !identifiers[1].isEmpty else {
+            return nil
+        }
+        return (identifiers[0], identifiers[1])
+    }
+
+    private func resolveCreatedWorkspace(
+        from output: String,
+        pendingName: String,
+        createdWindowID: inout String?
+    ) throws -> (windowID: String, paneID: String) {
+        if let identifiers = createdWorkspaceIdentifiers(from: output) {
+            createdWindowID = identifiers.windowID
+            return identifiers
+        }
+
+        let pendingRows = try paneInventory().filter { $0.windowName == pendingName }
+        let pendingWindowIDs = Set(pendingRows.map(\.windowID))
+        guard pendingWindowIDs.count == 1, let recoveredWindowID = pendingWindowIDs.first else {
+            throw ParleyTmuxError.commandFailed(
+                "Parley could not safely identify the workspace tmux created. No existing workspace was changed."
+            )
+        }
+        createdWindowID = recoveredWindowID
+        let recoveredPanes = pendingRows.filter { $0.windowID == recoveredWindowID }
+        guard recoveredPanes.count == 1, let recoveredPane = recoveredPanes.first else {
+            throw ParleyTmuxError.commandFailed(
+                "Parley could not safely identify the new workspace pane. The incomplete workspace was removed."
+            )
+        }
+        return (recoveredWindowID, recoveredPane.id)
+    }
+
+    private func paneInventory() throws -> [PaneInventoryRow] {
+        let separator = "\u{1f}"
+        let format = [
+            "#{pane_id}",
+            "#{window_id}",
+            "#{window_name}",
+            "#{pane_current_path}",
+            "#{pane_current_command}",
+            "#{pane_dead}",
+            "#{@parley-kind}",
+        ].joined(separator: separator)
+        let output = try runTmux(["list-panes", "-s", "-t", exactSession, "-F", format]).stdoutText
+        return output.split(separator: "\n").compactMap { row in
+            let fields = row
+                .split(separator: Character(separator), omittingEmptySubsequences: false)
+                .map(String.init)
+            guard fields.count == 7 else { return nil }
+            return PaneInventoryRow(
+                id: fields[0],
+                windowID: fields[1],
+                windowName: fields[2],
+                cwd: fields[3],
+                currentCommand: fields[4],
+                isDead: fields[5] == "1",
+                kind: fields[6]
+            )
+        }
+    }
+
+    private func uniquePendingWindowID(named pendingName: String) throws -> String? {
+        let windowIDs = Set(try paneInventory().filter { $0.windowName == pendingName }.map(\.windowID))
+        return windowIDs.count == 1 ? windowIDs.first : nil
+    }
+
+    private func adoptUnclassifiedShellPanes() throws {
+        let inventory = try paneInventory()
+        let byWindow = Dictionary(grouping: inventory, by: \.windowID)
+        for rows in byWindow.values {
+            guard rows.count == 1, let pane = rows.first,
+                  pane.kind.isEmpty, !pane.isDead, isRecognizedShellCommand(pane.currentCommand) else {
+                continue
+            }
+            try setMetadata(paneID: pane.id, kind: .shell, name: "Shell")
+            try setStartedMetadata(paneID: pane.id, started: true)
+        }
+    }
+
+    private func isRecognizedShellCommand(_ command: String) -> Bool {
+        let basename = URL(fileURLWithPath: command).lastPathComponent
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+            .lowercased()
+        return ["bash", "csh", "dash", "fish", "ksh", "nu", "sh", "tcsh", "xonsh", "zsh"]
+            .contains(basename)
+    }
 
     private func listWorkspaces(fallbackFolder: String?) throws -> [TmuxWorkspace] {
         let separator = "\u{1f}"

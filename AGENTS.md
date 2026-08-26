@@ -128,6 +128,21 @@ The workspace folder is a default for new toolbar-created panes. It never
 changes a running pane's working directory. Multiple repositories across
 workspaces and panes are normal.
 
+Workspace creation is a transaction. `tmux new-window -P` can create a window
+and still return no usable identifiers to the caller, so every new workspace
+starts under a unique `Parley-Pending-<UUID>` name. Parley either receives its
+ids directly or reconciles that exact provisional name from live tmux state,
+writes pane and workspace metadata, then commits the requested visible name.
+If the provisional window cannot be resolved to exactly one pane, remove only
+that exact window and refuse to guess. Never move cleanup to after id parsing;
+that recreates invisible live windows on this failure path.
+
+An older private Parley tmux server can already contain one-pane windows made
+before this transaction completed. Bootstrap may adopt a live, unclassified,
+single-pane window only when its current command is a recognised shell. That
+migration writes metadata only. It never sends keys, respawns or kills the
+process, and it never classifies an agent-looking command as a shell.
+
 The relay broker lives in `parley-core-service`, not the SwiftUI process. The
 app starts or reattaches to that service through `RelayCoreLauncher`. Closing
 the UI leaves the core and tmux running, so an in-flight `parley ask` keeps its
