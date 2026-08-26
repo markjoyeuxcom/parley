@@ -29,6 +29,19 @@ test('macOS CI verifies pull requests and main', () => {
   assert.match(source, /run:\s*npm run build/)
 })
 
+test('macOS releases require versioned notes for the exact requested tag', () => {
+  const workflow = join(workflowsDirectory, 'macos-draft-release.yml')
+  assert.equal(existsSync(workflow), true, '.github/workflows/macos-draft-release.yml is missing')
+
+  const source = readFileSync(workflow, 'utf8')
+  assert.ok(
+    source.includes('notes=".github/release-notes/${PARLEY_RELEASE_TAG}.md"'),
+    'release notes must be selected by the exact requested tag',
+  )
+  assert.ok(source.includes('test -f "$notes"'), 'the release must fail when its versioned notes are missing')
+  assert.ok(source.includes('--notes-file "$notes"'), 'the GitHub draft must use the versioned release notes')
+})
+
 test('retired GitLab automation cannot become an apparent security gate', () => {
   assert.equal(existsSync(join(repositoryRoot, '.gitlab-ci.yml')), false)
 })
