@@ -32,7 +32,9 @@ jobs:
         run: npm test
 
       - name: Package the VS Code companion
-        run: npm run package:vscode
+        run: |
+          mkdir -p dist
+          npm run package:vscode
 
       - name: Prepare and verify unnotarized release assets
         env:
