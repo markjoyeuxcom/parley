@@ -732,6 +732,21 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "status-reviewed-busy-queue",
+                    title: "Keep a reviewed Ask while its target is busy",
+                    paragraphs: [
+                        "When a native Ask or review shortcut finds that its exact target already has tracked work, Parley can keep the text in the Reviewed Busy Queue. This is a durable owner-only draft, not an execution queue: it contains no pane credentials and becoming idle never submits it.",
+                        "Open Status Center to inspect the complete text and route. TARGET BUSY means the original target still owns tracked work. READY TO REVIEW means only that a fresh human Review and Send action is now available; it is not permission for Parley to send in the background.",
+                    ],
+                    items: [
+                        "Review and Send opens the whole draft in an editable preview and creates a normal tracked Ask with a fresh identity.",
+                        "Discard Draft removes an unsent local draft without touching either terminal.",
+                        "Parley keeps at most 32 reviewed busy drafts and refuses extra drafts rather than silently dropping old text.",
+                        "If the core stops across the exact terminal-submission boundary, the item becomes SEND UNCERTAIN and DO NOT RESEND. Dismissing that record never claims to cancel or reverse input that may already have reached the target.",
+                        "Pane credentials cannot list, create, send or discard this queue. Only the authenticated native UI can operate it.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "status-diagnostics",
                     title: "Diagnostics",
                     paragraphs: [

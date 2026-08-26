@@ -134,6 +134,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var unreadHandoffs: [RelayHandoff] = []
     @Published private(set) var statusHandoffs: [RelayHandoff] = []
     @Published private(set) var statusActivityEvents: [RelayActivityEvent] = []
+    @Published private(set) var reviewedBusyDrafts: [ReviewedBusyDraft] = []
     @Published private(set) var controller: TmuxController?
     @Published private(set) var recentFolders: [String] = []
     @Published private(set) var favouriteFolders: [String] = []
@@ -168,6 +169,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var runtimeReadinessChecking = false
     @Published private(set) var diagnosticsExporting = false
     @Published private(set) var repeatingAskHandoffID: String?
+    @Published private(set) var sendingReviewedBusyDraftID: String?
     @Published private(set) var historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy
     @Published private(set) var coreLoginItemState: CoreLoginItemState = .unavailable
     @Published private(set) var coreLoginItemChanging = false
@@ -1425,6 +1427,10 @@ final class AppModel: ObservableObject {
                         contextPackDraft = draft
                     }
                 }
+                let refreshedBusyDrafts = try relayClient.reviewedBusyDrafts()
+                if refreshedBusyDrafts != reviewedBusyDrafts {
+                    reviewedBusyDrafts = refreshedBusyDrafts
+                }
                 processNotifications(from: refreshedHandoffs + refreshedUnread)
                 coreAvailable = true
                 coreError = nil
@@ -1631,6 +1637,8 @@ final class AppModel: ObservableObject {
             if activity != statusActivityEvents { statusActivityEvents = activity }
             let retention = try relayClient.historyRetentionPolicy()
             if retention != historyRetentionPolicy { historyRetentionPolicy = retention }
+            let busyDrafts = try relayClient.reviewedBusyDrafts()
+            if busyDrafts != reviewedBusyDrafts { reviewedBusyDrafts = busyDrafts }
             let retainedDismissals = StatusCenterVisibility.retainedDismissalIDs(
                 dismissedHandoffIDs,
                 handoffs: history
@@ -1733,6 +1741,104 @@ final class AppModel: ObservableObject {
 
     func statusHandoffChains(workspaceID: String?) -> [HandoffChain] {
         HandoffChainProjection.chains(reloaded: handoffChains, workspaceID: workspaceID)
+    }
+
+    func statusReviewedBusyDrafts(workspaceID: String?) -> [ReviewedBusyDraft] {
+        reviewedBusyDrafts.filter { draft in
+            workspaceID == nil
+                || draft.sourceWorkspaceID == workspaceID
+                || draft.targetWorkspaceID == workspaceID
+        }
+    }
+
+    func reviewedBusyDraftTargetIsBusy(_ draft: ReviewedBusyDraft) -> Bool {
+        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+        let knownHistory = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        return knownHistory.contains {
+            $0.targetPaneID == draft.targetPaneID && activeStates.contains($0.state)
+        }
+    }
+
+    func canFocusReviewedBusyDraftPane(_ paneID: String) -> Bool {
+        panes.contains { $0.id == paneID }
+    }
+
+    func focusReviewedBusyDraft(_ draft: ReviewedBusyDraft, target: Bool) {
+        guard let pane = panes.first(where: {
+            $0.id == (target ? draft.targetPaneID : draft.sourcePaneID)
+        }) else { return }
+        select(pane)
+    }
+
+    func sendReviewedBusyDraft(_ draft: ReviewedBusyDraft) {
+        guard draft.state == .queued,
+              sendingReviewedBusyDraftID == nil,
+              let relayClient else { return }
+        if reviewedBusyDraftTargetIsBusy(draft) {
+            let alert = NSAlert()
+            alert.messageText = "\(draft.targetName) Is Still Busy"
+            alert.informativeText = "The reviewed draft remains visible and unsent. Parley will not submit it automatically when the target becomes idle."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+        guard let edited = editSupervisedWorkflowText(
+            title: "Review and Send to \(draft.targetName)",
+            message: "This is a fresh human authorization. The exact edited text will be submitted as a tracked Ask from \(draft.sourceName). Parley never sends this merely because the target became idle.",
+            text: draft.text,
+            action: "Send Reviewed Ask",
+            insertVisible: { "" }
+        ) else { return }
+
+        sendingReviewedBusyDraftID = draft.id
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.sendReviewedBusyDraft(ReviewedBusyDraftSendRequest(
+                        draftID: draft.id,
+                        expectedUpdatedAt: draft.updatedAt,
+                        text: edited,
+                        preserveFormatting: draft.preserveFormatting
+                    ))
+                }.value
+                self.sendingReviewedBusyDraftID = nil
+                self.refreshStatusCenterQuietly()
+                guard response.status == 200 else {
+                    throw RelayUIError.message(response.text)
+                }
+            } catch {
+                self.sendingReviewedBusyDraftID = nil
+                self.refreshStatusCenterQuietly()
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    func discardReviewedBusyDraft(_ draft: ReviewedBusyDraft) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = draft.state == .queued
+            ? "Discard Reviewed Draft?"
+            : "Dismiss Uncertain Send Record?"
+        alert.informativeText = draft.state == .queued
+            ? "This removes the local unsent draft for \(draft.targetName). No terminal input will be submitted. This cannot be undone."
+            : "Parley cannot prove whether terminal submission occurred before the interruption. Dismissing this record does not cancel or reverse input that may already have reached \(draft.targetName), and Parley will not make it resendable."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: draft.state == .queued ? "Discard Draft" : "Dismiss Record")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        do {
+            guard let relayClient else {
+                throw RelayUIError.message("The persistent core is unavailable.")
+            }
+            let response = try relayClient.cancelReviewedBusyDraft(draft.id)
+            guard response.status == 200 else { throw RelayUIError.message(response.text) }
+            refreshStatusCenterQuietly()
+            return true
+        } catch {
+            NSAlert(error: error).runModal()
+            return false
+        }
     }
 
     func chains(containing handoff: RelayHandoff) -> [HandoffChain] {
@@ -2284,7 +2390,12 @@ final class AppModel: ObservableObject {
                 action: "Ask",
                 insertVisible: { try controller.capturePane(source.id) }
             ) else { return }
-            try controller.ask(from: source.id, to: target.id, text: edited)
+            try submitOrOfferBusyQueue(
+                edited,
+                from: source,
+                to: target,
+                preserveFormatting: false
+            )
             try refresh()
             terminalHandle.terminal?.selectNone()
             terminalHandle.focus()
@@ -2694,8 +2805,7 @@ final class AppModel: ObservableObject {
         perform {
             guard let draft = contextPackDraft,
                   let source = contextPackSourcePane,
-                  let contextPackBuilder,
-                  let controller else {
+                  let contextPackBuilder else {
                 throw RelayUIError.message("The context pack's source pane is no longer ready.")
             }
             let rendered = try contextPackBuilder.render(draft.pack)
@@ -2751,7 +2861,12 @@ final class AppModel: ObservableObject {
                     alert.runModal()
                 }
             } else {
-                try controller.askWithExplicitContext(from: source.id, to: target.id, text: rendered)
+                try submitOrOfferBusyQueue(
+                    rendered,
+                    from: source,
+                    to: target,
+                    preserveFormatting: true
+                )
             }
             contextPackPresented = false
             contextPackDraft = nil
@@ -4680,10 +4795,56 @@ final class AppModel: ObservableObject {
             action: "Ask for Review",
             insertVisible: { try controller.capturePane(source.id) }
         ) else { return }
-        try controller.ask(from: source.id, to: target.id, text: edited)
+        try submitOrOfferBusyQueue(
+            edited,
+            from: source,
+            to: target,
+            preserveFormatting: false
+        )
         try refresh()
         terminalHandle.terminal?.selectNone()
         terminalHandle.focus()
+    }
+
+    private func submitOrOfferBusyQueue(
+        _ text: String,
+        from source: TmuxPane,
+        to target: TmuxPane,
+        preserveFormatting: Bool
+    ) throws {
+        guard let controller else {
+            throw RelayUIError.message("The tmux workspace is unavailable, so this reviewed Ask was not sent or queued.")
+        }
+        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+        let knownHistory = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        let targetIsBusy = knownHistory.contains {
+            $0.targetPaneID == target.id && activeStates.contains($0.state)
+        }
+        guard targetIsBusy else {
+            if preserveFormatting {
+                try controller.askWithExplicitContext(from: source.id, to: target.id, text: text)
+            } else {
+                try controller.ask(from: source.id, to: target.id, text: text)
+            }
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "\(target.displayName) Already Has Tracked Work"
+        alert.informativeText = "Keep this exact reviewed Ask in Parley's local busy queue? It remains visible and unsent. When \(target.displayName) becomes idle, Parley will still wait for you to reopen, review and explicitly send it."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Keep Reviewed Draft")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let relayClient else {
+            throw RelayUIError.message("The persistent core is unavailable, so Parley cannot keep this draft safely.")
+        }
+        _ = try relayClient.enqueueReviewedBusyDraft(ReviewedBusyDraftCreateRequest(
+            sourcePaneID: source.id,
+            targetPaneID: target.id,
+            text: text,
+            preserveFormatting: preserveFormatting
+        ))
     }
 
     private static func paletteSubject(_ text: String) -> String {

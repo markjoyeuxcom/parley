@@ -83,6 +83,9 @@ do {
     let contextReviewStore = try AgentContextReviewStore(
         file: controller.applicationDirectory.appendingPathComponent("context-reviews.json")
     )
+    let busyDraftStore = try ReviewedBusyDraftStore(
+        file: controller.applicationDirectory.appendingPathComponent("reviewed-busy-drafts.json")
+    )
     let broker = RelayBroker(
         credentials: credentials,
         panes: { try controller.listPanes() },
@@ -97,7 +100,8 @@ do {
         activityJournal: activityJournal,
         historyRetentionPolicy: historyRetentionPolicy,
         historyRetentionStore: historyRetentionStore,
-        contextReviewStore: contextReviewStore
+        contextReviewStore: contextReviewStore,
+        busyDraftStore: busyDraftStore
     )
     let agentTransport = RelayFileTransport(
         broker: broker,

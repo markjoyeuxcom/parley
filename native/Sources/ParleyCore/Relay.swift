@@ -543,9 +543,15 @@ public final class RelayBroker: @unchecked Sendable {
     private let activityJournal: RelayActivityJournal?
     private let historyRetentionStore: CollaborationHistoryRetentionStore?
     private let contextReviewStore: AgentContextReviewStore?
+    private let busyDraftStore: ReviewedBusyDraftStore?
     private let contextPackBuilder = ContextPackBuilder()
     private let consultationCondition = NSCondition()
     private var consultationRecords: [String: ConsultationRecord] = [:]
+    /// In-memory only: a persisted `.dispatching` draft after restart is an
+    /// uncertain record that the person may dismiss, while an entry here is
+    /// actively crossing the terminal-submission boundary and cannot be
+    /// truthfully described as discarded.
+    private var busyDraftDispatches: Set<String> = []
     private var delegationRecords: [String: DelegationRecord] = [:]
     private var delegationResponses: [String: RelayTextResponse] = [:]
     private var handoffRecords: [String: RelayHandoff] = [:]
@@ -570,7 +576,8 @@ public final class RelayBroker: @unchecked Sendable {
         activityJournal: RelayActivityJournal? = nil,
         historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy,
         historyRetentionStore: CollaborationHistoryRetentionStore? = nil,
-        contextReviewStore: AgentContextReviewStore? = nil
+        contextReviewStore: AgentContextReviewStore? = nil,
+        busyDraftStore: ReviewedBusyDraftStore? = nil
     ) {
         self.credentials = credentials
         self.panes = panes
@@ -588,6 +595,7 @@ public final class RelayBroker: @unchecked Sendable {
         self.historyRetentionPolicy = historyRetentionPolicy
         self.historyRetentionStore = historyRetentionStore
         self.contextReviewStore = contextReviewStore
+        self.busyDraftStore = busyDraftStore
 
         let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
         var recovered = Dictionary(uniqueKeysWithValues: (handoffJournal?.handoffs() ?? []).map { ($0.id, $0) })
@@ -1787,7 +1795,8 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey suppliedIdempotencyKey: String?,
         humanInitiated: Bool,
-        preserveFormatting: Bool
+        preserveFormatting: Bool,
+        onSubmitted: (() -> Void)? = nil
     ) -> RelayTextResponse {
         guard beginDispatch() else {
             return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
@@ -1890,6 +1899,7 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.lock()
             transitionHandoffLocked(handoff.id, to: .delivered, origin: humanInitiated ? .human : nil)
             transitionHandoffLocked(handoff.id, to: .waiting, origin: humanInitiated ? .human : nil)
+            onSubmitted?()
             consultationCondition.broadcast()
             consultationCondition.unlock()
         } catch {
@@ -2128,6 +2138,198 @@ public final class RelayBroker: @unchecked Sendable {
             humanInitiated: true,
             preserveFormatting: false
         )
+    }
+
+    /// Returns the exact durable reviewed drafts. Merely reading this list—or
+    /// observing that a target is now idle—has no dispatch side effect.
+    public func reviewedBusyDrafts() -> [ReviewedBusyDraft] {
+        busyDraftStore?.drafts() ?? []
+    }
+
+    /// Holds a person-reviewed Ask only while the exact target has active
+    /// tracked work. This core-control path never writes to a terminal.
+    public func enqueueReviewedBusyAskFromUI(
+        _ request: ReviewedBusyDraftCreateRequest
+    ) -> RelayTextResponse {
+        guard let busyDraftStore else {
+            return RelayTextResponse(status: 503, text: "reviewed busy-queue storage is unavailable")
+        }
+        let source: TmuxPane
+        let target: TmuxPane
+        do {
+            let sourceToken = try credentials.token(for: request.sourcePaneID)
+            (source, target) = try route(token: sourceToken, requestedTarget: request.targetPaneID)
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+
+        let normalized = request.preserveFormatting
+            ? ContextPackText.normalize(request.text)
+            : RelayText.clean(request.text)
+        guard !normalized.isEmpty else {
+            return RelayTextResponse(status: 400, text: "nothing to queue")
+        }
+        guard normalized.utf8.count <= ContextPackBuilder.defaultMaximumRenderedBytes else {
+            return RelayTextResponse(status: 413, text: "reviewed draft is too large to queue")
+        }
+
+        consultationCondition.lock()
+        let targetIsBusy = targetHasTrackedWorkLocked(target.id)
+        consultationCondition.unlock()
+        guard targetIsBusy else {
+            return RelayTextResponse(
+                status: 409,
+                text: "\(target.displayName) is no longer busy. Review and send this Ask directly instead of queueing it."
+            )
+        }
+
+        let now = Date()
+        let draft = ReviewedBusyDraft(
+            sourcePaneID: source.id,
+            sourceName: source.displayName,
+            sourceKind: source.kind,
+            sourceWorkspaceID: source.windowID,
+            sourceWorkspaceName: source.workspaceName,
+            targetPaneID: target.id,
+            targetName: target.displayName,
+            targetKind: target.kind,
+            targetWorkspaceID: target.windowID,
+            targetWorkspaceName: target.workspaceName,
+            text: normalized,
+            preserveFormatting: request.preserveFormatting,
+            createdAt: now,
+            updatedAt: now,
+            detail: "Held because \(target.displayName) already had tracked work. Becoming idle will not send it."
+        )
+        do {
+            try busyDraftStore.record(draft)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return RelayTextResponse(
+                status: 201,
+                text: String(decoding: try encoder.encode(draft), as: UTF8.self)
+            )
+        } catch let error as ReviewedBusyDraftStoreError {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        } catch {
+            return RelayTextResponse(status: 500, text: error.localizedDescription)
+        }
+    }
+
+    /// Dispatches only after a fresh native Review and Send action. The draft
+    /// is removed at the exact point terminal submission succeeds; before that
+    /// point any busy-route race restores it to the visible unsent queue.
+    public func sendReviewedBusyAskFromUI(
+        _ request: ReviewedBusyDraftSendRequest
+    ) -> RelayTextResponse {
+        guard let busyDraftStore,
+              let existing = busyDraftStore.draft(id: request.draftID) else {
+            return RelayTextResponse(status: 404, text: "unknown reviewed busy-queue draft")
+        }
+        let sourceToken: String
+        do {
+            sourceToken = try credentials.token(for: existing.sourcePaneID)
+            let (source, target) = try route(token: sourceToken, requestedTarget: existing.targetPaneID)
+            guard source.id == existing.sourcePaneID, target.id == existing.targetPaneID else {
+                throw BrokerFailure(status: 409, message: "the queued draft's original route is no longer available")
+            }
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+
+        let normalized = request.preserveFormatting
+            ? ContextPackText.normalize(request.text)
+            : RelayText.clean(request.text)
+        let dispatching: ReviewedBusyDraft
+        consultationCondition.lock()
+        if targetHasTrackedWorkLocked(existing.targetPaneID) {
+            consultationCondition.unlock()
+            return RelayTextResponse(
+                status: 409,
+                text: "\(existing.targetName) still has tracked work. The reviewed draft remains queued and unsent."
+            )
+        }
+        if busyDraftDispatches.contains(existing.id) {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: "this reviewed draft already has an explicit send in progress")
+        }
+        do {
+            dispatching = try busyDraftStore.beginExplicitSend(
+                id: request.draftID,
+                expectedUpdatedAt: request.expectedUpdatedAt,
+                text: normalized,
+                preserveFormatting: request.preserveFormatting
+            )
+            busyDraftDispatches.insert(dispatching.id)
+            consultationCondition.unlock()
+        } catch let error as ReviewedBusyDraftStoreError {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        } catch {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 500, text: error.localizedDescription)
+        }
+        defer {
+            consultationCondition.lock()
+            busyDraftDispatches.remove(dispatching.id)
+            consultationCondition.unlock()
+        }
+
+        var submitted = false
+        let response = handleAsk(
+            token: sourceToken,
+            target: dispatching.targetPaneID,
+            text: dispatching.text,
+            idempotencyKey: "busy-draft-\(dispatching.id)-\(UUID().uuidString.lowercased())",
+            humanInitiated: true,
+            preserveFormatting: dispatching.preserveFormatting,
+            onSubmitted: {
+                submitted = true
+                try? busyDraftStore.remove(id: dispatching.id)
+            }
+        )
+        if !submitted {
+            try? busyDraftStore.restoreQueued(
+                id: dispatching.id,
+                detail: "The explicit send did not reach terminal submission: \(response.text)"
+            )
+        }
+        return response
+    }
+
+    public func cancelReviewedBusyDraftFromUI(_ draftID: String) -> RelayTextResponse {
+        guard let busyDraftStore else {
+            return RelayTextResponse(status: 404, text: "unknown reviewed busy-queue draft")
+        }
+        consultationCondition.lock()
+        if busyDraftDispatches.contains(draftID) {
+            consultationCondition.unlock()
+            return RelayTextResponse(
+                status: 409,
+                text: "this reviewed draft has an explicit send in progress and cannot be discarded"
+            )
+        }
+        guard let draft = busyDraftStore.draft(id: draftID) else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 404, text: "unknown reviewed busy-queue draft")
+        }
+        do {
+            try busyDraftStore.remove(id: draftID)
+            consultationCondition.unlock()
+            return RelayTextResponse(
+                status: 200,
+                text: draft.state == .queued
+                    ? "Reviewed draft discarded without sending."
+                    : "Uncertain send record dismissed. This does not cancel or reverse any terminal input that may already have occurred."
+            )
+        } catch {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 500, text: error.localizedDescription)
+        }
     }
 
     public func handleAnswer(token: String, consultationID: String, text: String) -> RelayTextResponse {

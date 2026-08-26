@@ -846,10 +846,15 @@ uncommitted changes.
   activity is not part of that body-containing Markdown. The existing
   workspace-specific purge removes eligible handoffs and activity without an
   all-workspaces shortcut. Nothing syncs or reports telemetry.
-- [ ] Add a human-controlled **busy queue** for a reviewed draft when a target
-  already has active work. Queued text remains visible and unsent; becoming
-  idle never causes automatic submission without the policy and explicit
-  authorization shown to the person.
+- [x] Add a human-controlled **busy queue** for a reviewed draft when a target
+  already has active work. The persistent core keeps at most 32 owner-only
+  exact Ask drafts with their cross-vendor route and no credentials; pane
+  capabilities cannot operate the queue. Status Center keeps the complete text
+  visible as TARGET BUSY or READY TO REVIEW, but no idle observation has a
+  dispatch hook. Review and Send opens a fresh editable preview and creates a
+  normal tracked Ask only after explicit human authorization; discard touches
+  no terminal. An interrupted explicit send remains SEND UNCERTAIN and DO NOT
+  RESEND rather than being silently made safe to repeat.
 - [x] Add a **workspace safety summary** before closing, replacing or moving a
   workspace. Show active handoffs, running agents, dirty repositories and
   shared-worktree writers without guessing whether an agent is thinking.
@@ -922,7 +927,7 @@ step 13 and deliberately hardens the context feature before expanding it:
     contract and the same reviewed context-pack and focus contracts.
 17. [x] Add read-only worktree discovery and writer-collision awareness. Keep
     optional worktree creation contingent on evidence from those two stages.
-18. [ ] Improve attention and history: menu-bar inbox, search/export/retention,
+18. [x] Improve attention and history: menu-bar inbox, search/export/retention,
     a human-controlled busy queue and workspace safety summaries.
 19. [ ] Integrate vendor-owned browser/tool evidence only through truthful
     capability checks and explicit attributed context-pack captures.

@@ -960,6 +960,9 @@ private func checkInAppHelpGuideCoverage() throws {
         "owner-only markdown", "ask this again", "fresh tracked handoff identity",
         "never silently replays", "100, 250 or 500", "increasing it later",
         "including dismissed records", "lifecycle activity",
+        "reviewed busy queue", "becoming idle never submits", "ready to review",
+        "fresh human review and send", "send uncertain", "do not resend",
+        "at most 32 reviewed busy drafts", "pane credentials cannot list",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -7244,6 +7247,342 @@ private func checkAgentAskRejectsBusyTargetAndTimesOut() throws {
     try expect(expired.transitions.last?.detail?.contains("timed out") == true, "expired Ask lost its timeout reason")
 }
 
+private func checkReviewedBusyQueueRequiresExplicitHumanSend() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let targetToken = try credentials.token(for: "%2")
+    let source = TmuxPane(
+        id: "%1", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp/app",
+        currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil,
+        relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+        bracketedPasteActive: true, isStarted: true
+    )
+    let target = TmuxPane(
+        id: "%2", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp/app",
+        currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil,
+        relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+        bracketedPasteActive: true, isStarted: true
+    )
+    let submissions = LockedCounter()
+    let storeFile = directory.appendingPathComponent("reviewed-busy-drafts.json")
+    let store = try ReviewedBusyDraftStore(file: storeFile)
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { [source, target] },
+        paste: { _, _ in },
+        submit: { _, _ in submissions.increment() },
+        consultationTimeout: 10,
+        livenessPollInterval: 0.01,
+        busyDraftStore: store
+    )
+
+    let delegated = broker.handleDelegate(
+        token: sourceToken,
+        target: target.id,
+        text: "Finish the current implementation.",
+        idempotencyKey: "busy-queue-fixture"
+    )
+    let delegationID = try require(delegated.body.handoffID, "busy-queue fixture produced no delegation")
+    try expect(submissions.value == 1, "busy-queue fixture did not submit its initial work")
+
+    let queued = broker.enqueueReviewedBusyAskFromUI(ReviewedBusyDraftCreateRequest(
+        sourcePaneID: source.id,
+        targetPaneID: target.id,
+        text: "Review the finished implementation.\nPreserve this second line.",
+        preserveFormatting: true
+    ))
+    try expect(queued.status == 201, "a reviewed draft could not be queued behind active work")
+    let draft = try JSONDecoder().decode(ReviewedBusyDraft.self, from: Data(queued.text.utf8))
+    try expect(draft.state == .queued && draft.origin == .human, "the busy draft was not visibly human-reviewed and unsent")
+    try expect(submissions.value == 1, "queueing a reviewed draft submitted terminal input")
+    try expect(broker.reviewedBusyDrafts().map(\.id) == [draft.id], "the core did not expose the queued draft")
+
+    let reloaded = try ReviewedBusyDraftStore(file: storeFile).drafts()
+    try expect(reloaded == [draft], "the reviewed busy queue did not survive UI/core store reattachment")
+    let mode = (try FileManager.default.attributesOfItem(atPath: storeFile.path)[.posixPermissions] as? NSNumber)?.intValue ?? -1
+    try expect(mode & 0o077 == 0, "the reviewed busy queue was readable outside its owner")
+
+    let failedWriteFile = directory.appendingPathComponent("failed-write-busy-drafts.json")
+    let failedWriteStore = try ReviewedBusyDraftStore(file: failedWriteFile)
+    let failedWriteDraft = ReviewedBusyDraft(
+        id: "failed-write-draft",
+        sourcePaneID: source.id,
+        sourceName: source.displayName,
+        sourceKind: source.kind,
+        sourceWorkspaceID: source.windowID,
+        sourceWorkspaceName: source.workspaceName,
+        targetPaneID: target.id,
+        targetName: target.displayName,
+        targetKind: target.kind,
+        targetWorkspaceID: target.windowID,
+        targetWorkspaceName: target.workspaceName,
+        text: "Remain visible if a durable discard fails.",
+        preserveFormatting: false
+    )
+    try failedWriteStore.record(failedWriteDraft)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: failedWriteFile.path)
+    do {
+        try failedWriteStore.remove(id: failedWriteDraft.id)
+        throw CheckFailure(description: "an unsafe queue file accepted a supposedly durable discard")
+    } catch ReviewedBusyDraftStoreError.unreadable {
+        // Expected: reject the write before claiming the draft was discarded.
+    }
+    try expect(
+        failedWriteStore.draft(id: failedWriteDraft.id) == failedWriteDraft,
+        "a failed durable discard hid the draft from the live Status Center"
+    )
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: failedWriteFile.path)
+
+    let uncertainFile = directory.appendingPathComponent("uncertain-busy-drafts.json")
+    let uncertainStore = try ReviewedBusyDraftStore(file: uncertainFile)
+    try uncertainStore.record(ReviewedBusyDraft(
+        sourcePaneID: source.id,
+        sourceName: source.displayName,
+        sourceKind: source.kind,
+        sourceWorkspaceID: source.windowID,
+        sourceWorkspaceName: source.workspaceName,
+        targetPaneID: target.id,
+        targetName: target.displayName,
+        targetKind: target.kind,
+        targetWorkspaceID: target.windowID,
+        targetWorkspaceName: target.workspaceName,
+        text: "An explicit send crossed the persistence boundary.",
+        preserveFormatting: false,
+        state: .dispatching,
+        detail: "A person explicitly chose Review and Send."
+    ))
+    let uncertainReload = try ReviewedBusyDraftStore(file: uncertainFile).drafts()
+    try expect(
+        uncertainReload.first?.state == .dispatching,
+        "a restart changed an uncertain explicit send back into a safely resendable queue item"
+    )
+
+    let boundedStore = try ReviewedBusyDraftStore(
+        file: directory.appendingPathComponent("bounded-busy-drafts.json")
+    )
+    for index in 0..<ReviewedBusyDraftStore.maximumDrafts {
+        try boundedStore.record(ReviewedBusyDraft(
+            id: "bounded-\(index)",
+            sourcePaneID: source.id,
+            sourceName: source.displayName,
+            sourceKind: source.kind,
+            sourceWorkspaceID: source.windowID,
+            sourceWorkspaceName: source.workspaceName,
+            targetPaneID: target.id,
+            targetName: target.displayName,
+            targetKind: target.kind,
+            targetWorkspaceID: target.windowID,
+            targetWorkspaceName: target.workspaceName,
+            text: "Bounded draft \(index)",
+            preserveFormatting: false
+        ))
+    }
+    do {
+        try boundedStore.record(ReviewedBusyDraft(
+            id: "bounded-overflow",
+            sourcePaneID: source.id,
+            sourceName: source.displayName,
+            sourceKind: source.kind,
+            sourceWorkspaceID: source.windowID,
+            sourceWorkspaceName: source.workspaceName,
+            targetPaneID: target.id,
+            targetName: target.displayName,
+            targetKind: target.kind,
+            targetWorkspaceID: target.windowID,
+            targetWorkspaceName: target.workspaceName,
+            text: "This draft must be refused.",
+            preserveFormatting: false
+        ))
+        throw CheckFailure(description: "the reviewed busy queue exceeded its explicit bound")
+    } catch ReviewedBusyDraftStoreError.tooMany {
+        // Expected: no oldest-draft eviction and no invisible loss.
+    }
+
+    let raceStore = try ReviewedBusyDraftStore(
+        file: directory.appendingPathComponent("racing-busy-drafts.json")
+    )
+    let raceDraft = ReviewedBusyDraft(
+        id: "explicit-send-race",
+        sourcePaneID: source.id,
+        sourceName: source.displayName,
+        sourceKind: source.kind,
+        sourceWorkspaceID: source.windowID,
+        sourceWorkspaceName: source.workspaceName,
+        targetPaneID: target.id,
+        targetName: target.displayName,
+        targetKind: target.kind,
+        targetWorkspaceID: target.windowID,
+        targetWorkspaceName: target.workspaceName,
+        text: "Do not let discard race this explicit send.",
+        preserveFormatting: false
+    )
+    try raceStore.record(raceDraft)
+    let writerEntered = DispatchSemaphore(value: 0)
+    let releaseWriter = DispatchSemaphore(value: 0)
+    let raceBroker = RelayBroker(
+        credentials: credentials,
+        panes: { [source, target] },
+        paste: { _, _ in },
+        submit: { _, _ in
+            writerEntered.signal()
+            _ = releaseWriter.wait(timeout: .now() + 2)
+        },
+        consultationTimeout: 10,
+        livenessPollInterval: 0.01,
+        busyDraftStore: raceStore
+    )
+    let raceResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        raceResult.set(raceBroker.sendReviewedBusyAskFromUI(ReviewedBusyDraftSendRequest(
+            draftID: raceDraft.id,
+            expectedUpdatedAt: raceDraft.updatedAt,
+            text: raceDraft.text
+        )))
+    }
+    try expect(
+        writerEntered.wait(timeout: .now() + 1) == .success,
+        "explicit-send race never reached its terminal writer"
+    )
+    let racedDiscard = raceBroker.cancelReviewedBusyDraftFromUI(raceDraft.id)
+    try expect(
+        racedDiscard.status == 409,
+        "discard claimed success while an explicit terminal send was in progress"
+    )
+    releaseWriter.signal()
+    try expect(eventually { raceBroker.consultations().count == 1 }, "explicit-send race produced no consultation")
+    let raceAskID = try require(raceBroker.consultations().first?.id, "explicit-send race lost its consultation")
+    try expect(
+        raceBroker.handleAnswer(token: targetToken, consultationID: raceAskID, text: "Race review done.").status == 200,
+        "explicit-send race could not complete"
+    )
+    try expect(eventually { raceResult.value?.status == 200 }, "explicit-send race did not return normally")
+
+    let completed = broker.handleDelegationResult(
+        token: targetToken,
+        handoffID: delegationID,
+        text: "Implementation finished.",
+        succeeded: true
+    )
+    try expect(completed.status == 200, "busy-queue fixture could not finish its active work")
+    Thread.sleep(forTimeInterval: 0.05)
+    try expect(submissions.value == 1, "an idle target automatically received queued text")
+    try expect(broker.reviewedBusyDrafts().map(\.id) == [draft.id], "becoming idle silently consumed the reviewed draft")
+
+    let sendResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        sendResult.set(broker.sendReviewedBusyAskFromUI(ReviewedBusyDraftSendRequest(
+            draftID: draft.id,
+            expectedUpdatedAt: draft.updatedAt,
+            text: "Review the finished implementation.\nPreserve this edited second line.",
+            preserveFormatting: true
+        )))
+    }
+    try expect(eventually { submissions.value == 2 }, "explicit human authorization did not submit the reviewed draft")
+    try expect(broker.reviewedBusyDrafts().isEmpty, "a submitted busy draft remained presented as unsent")
+    let activeAsk = try require(broker.consultations().first, "explicit busy-queue send created no tracked Ask")
+    try expect(
+        broker.handleAnswer(token: targetToken, consultationID: activeAsk.id, text: "Review passed.").status == 200,
+        "the explicitly sent queued Ask could not return normally"
+    )
+    try expect(eventually { sendResult.value?.status == 200 }, "the explicitly sent queued Ask did not complete")
+
+    let noLongerBusy = broker.enqueueReviewedBusyAskFromUI(ReviewedBusyDraftCreateRequest(
+        sourcePaneID: source.id,
+        targetPaneID: target.id,
+        text: "Do not queue this while idle."
+    ))
+    try expect(noLongerBusy.status == 409, "the core accepted a busy-queue draft for an idle target")
+    try expect(submissions.value == 2, "a rejected queue request touched the target terminal")
+
+    let secondDelegation = broker.handleDelegate(
+        token: sourceToken,
+        target: target.id,
+        text: "Hold the target busy for the control-route check.",
+        idempotencyKey: "busy-queue-control-fixture"
+    )
+    try expect(secondDelegation.status == 200, "busy-queue control fixture did not start")
+    let infoFile = directory.appendingPathComponent("relay-url")
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: "busy-control")
+    try server.start()
+    defer { server.stop() }
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: "busy-control")
+    let clientDraft = try client.enqueueReviewedBusyDraft(ReviewedBusyDraftCreateRequest(
+        sourcePaneID: source.id,
+        targetPaneID: target.id,
+        text: "Review through the authenticated native route."
+    ))
+    let clientDrafts = try client.reviewedBusyDrafts()
+    try expect(clientDrafts.map(\.id) == [clientDraft.id], "the authenticated UI could not reattach to the durable busy queue")
+
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    do {
+        _ = try unauthorized.reviewedBusyDrafts()
+        throw CheckFailure(description: "an unauthenticated client read reviewed busy text")
+    } catch RelayCoreError.response(401, _) {
+        // Expected: pane credentials and unrelated local clients never receive the queue.
+    }
+    let cancelled = try client.cancelReviewedBusyDraft(clientDraft.id)
+    try expect(cancelled.status == 200, "the authenticated person could not discard an unsent queued draft")
+    let afterCancel = try client.reviewedBusyDrafts()
+    try expect(afterCancel.isEmpty, "discarding a queued draft left it visible")
+    try expect(submissions.value == 3, "listing or discarding a queued draft wrote terminal input")
+
+    let secondDelegationID = try require(secondDelegation.body.handoffID, "control fixture had no id")
+    try expect(
+        broker.handleDelegationResult(
+            token: targetToken,
+            handoffID: secondDelegationID,
+            text: "Control fixture done.",
+            succeeded: true
+        ).status == 200,
+        "control fixture could not release the target"
+    )
+    let slowFixture = broker.handleDelegate(
+        token: sourceToken,
+        target: target.id,
+        text: "Hold busy before the slow reviewed Ask.",
+        idempotencyKey: "busy-queue-slow-fixture"
+    )
+    let slowFixtureID = try require(slowFixture.body.handoffID, "slow fixture produced no id")
+    let slowDraft = try client.enqueueReviewedBusyDraft(ReviewedBusyDraftCreateRequest(
+        sourcePaneID: source.id,
+        targetPaneID: target.id,
+        text: "Take longer than the ordinary local-control timeout to review this."
+    ))
+    try expect(
+        broker.handleDelegationResult(
+            token: targetToken,
+            handoffID: slowFixtureID,
+            text: "Slow fixture ready.",
+            succeeded: true
+        ).status == 200,
+        "slow fixture could not release the target"
+    )
+    let slowResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        do {
+            slowResult.set(try client.sendReviewedBusyDraft(ReviewedBusyDraftSendRequest(
+                draftID: slowDraft.id,
+                expectedUpdatedAt: slowDraft.updatedAt,
+                text: slowDraft.text
+            )))
+        } catch {
+            slowResult.set(RelayTextResponse(status: -1, text: error.localizedDescription))
+        }
+    }
+    try expect(eventually { broker.consultations().count == 1 }, "slow explicit send never created its tracked Ask")
+    Thread.sleep(forTimeInterval: 3.2)
+    let slowAskID = try require(broker.consultations().first?.id, "slow explicit send lost its consultation")
+    try expect(
+        broker.handleAnswer(token: targetToken, consultationID: slowAskID, text: "Slow review passed.").status == 200,
+        "slow explicit send could not return its answer"
+    )
+    try expect(eventually { slowResult.value != nil }, "slow explicit send did not return to the native client")
+    try expect(slowResult.value?.status == 200, "native busy-queue send timed out before a normal agent answer")
+}
+
 private func checkHumanCancellationUnblocksAsk() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
@@ -7782,7 +8121,7 @@ private func checkCoreServiceUpgradeIdentity() throws {
     ])
     let development = CoreServiceIdentity.resolve(infoDictionary: nil)
 
-    try expect(packaged.contractVersion == 4, "packaged core identity has the wrong coordination contract")
+    try expect(packaged.contractVersion == 5, "packaged core identity has the wrong coordination contract")
     try expect(packaged.applicationVersion == "1.2.3", "packaged core identity lost the app version")
     try expect(packaged.build == "456", "packaged core identity lost the app build")
     try expect(development.applicationVersion == "development", "development core identity invented an app version")
@@ -9180,6 +9519,7 @@ let checks: [(String, () throws -> Void)] = [
     ("human ask-many uses tracked broker path", checkHumanAskManyUsesTheTrackedBrokerPath),
     ("human ask-many core-control route", checkHumanAskManyCoreControlRoute),
     ("agent Ask busy target and timeout", checkAgentAskRejectsBusyTargetAndTimesOut),
+    ("reviewed busy queue requires explicit human send", checkReviewedBusyQueueRequiresExplicitHumanSend),
     ("human Ask cancellation", checkHumanCancellationUnblocksAsk),
     ("safe failed-delivery retry", checkSafeFailedDeliveryRetryIsStableAndDeduplicated),
     ("uncertain and Ask retry refusal", checkUncertainAndAskFailuresCannotBeRetried),
