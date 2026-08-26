@@ -351,6 +351,11 @@ This is a narrow exception: the command is fixed, contains no user or agent
 input, uses sentinel-delimited output and has a hard timeout. This is necessary
 because Finder-launched apps inherit a minimal PATH.
 
+Finder launches may also omit every effective character-locale variable. The
+packaged app and core LaunchAgent declare `LANG=C.UTF-8`, and
+`EnvironmentResolver` applies the same fallback when `LANG`, `LC_ALL` and
+`LC_CTYPE` are all absent or empty. Never overwrite an explicit locale.
+
 `PARLEY_TMUX` is accepted only as an absolute executable path. Otherwise tmux
 is resolved from the corrected PATH and known macOS locations.
 

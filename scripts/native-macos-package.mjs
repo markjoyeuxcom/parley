@@ -23,6 +23,7 @@ export const BUNDLE_IDENTIFIER = 'com.markjoyeux.parley'
 export const CORE_LAUNCH_AGENT_LABEL = `${BUNDLE_IDENTIFIER}.core`
 export const CORE_LAUNCH_AGENT_PLIST = `${CORE_LAUNCH_AGENT_LABEL}.plist`
 export const MINIMUM_SYSTEM_VERSION = '14.0'
+export const UTF8_FALLBACK_LOCALE = 'C.UTF-8'
 export const requiredBundlePaths = [
   'Contents/Info.plist',
   'Contents/MacOS/parley-native',
@@ -151,6 +152,11 @@ export function renderInfoPlist({
   <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>
   <string>${MINIMUM_SYSTEM_VERSION}</string>
+  <key>LSEnvironment</key>
+  <dict>
+    <key>LANG</key>
+    <string>${UTF8_FALLBACK_LOCALE}</string>
+  </dict>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSServices</key>
@@ -196,6 +202,11 @@ export function renderCoreLaunchAgentPlist() {
   </array>
   <key>RunAtLoad</key>
   <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>LANG</key>
+    <string>${UTF8_FALLBACK_LOCALE}</string>
+  </dict>
   <key>ProcessType</key>
   <string>Background</string>
   <key>AssociatedBundleIdentifiers</key>

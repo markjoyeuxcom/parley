@@ -147,7 +147,7 @@ struct ParleyNativeApp: App {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        WindowGroup("Parley", id: "main") {
+        Window("Parley", id: "main") {
             ContentView(model: model)
                 .onAppear {
                     appDelegate.bindExternalRequestHandler { request in

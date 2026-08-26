@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Dispatch
 import Foundation
@@ -647,6 +648,44 @@ private func checkRuntimeUILeaseRefusesDuplicateOwners() throws {
     withExtendedLifetime(productionLease) {}
 }
 
+private func checkChildProcessCannotRetainRuntimeUILease() throws {
+    let home = URL(
+        fileURLWithPath: "/private/tmp/pri-\(UUID().uuidString.lowercased().prefix(6))",
+        isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: false)
+    let ready = home.appendingPathComponent("child-ready")
+    let group = DispatchGroup()
+    defer {
+        group.wait()
+        try? FileManager.default.removeItem(at: home)
+    }
+    let runtime = try ParleyRuntime.resolve(
+        arguments: [],
+        homeDirectory: home,
+        isBundledApplication: true
+    )
+    var lease: RuntimeUILease? = try RuntimeUILease.acquire(runtime: runtime)
+    var preparedEnvironment = ProcessInfo.processInfo.environment
+    preparedEnvironment["PARLEY_UI_LEASE_CHILD_FIXTURE"] = ready.path
+    let environment = preparedEnvironment
+    group.enter()
+    DispatchQueue.global(qos: .utility).async {
+        _ = try? ProcessCommandRunner(timeout: 3).run(
+            executable: URL(fileURLWithPath: CommandLine.arguments[0]),
+            arguments: [],
+            environment: environment,
+            input: nil
+        )
+        group.leave()
+    }
+    try expect(eventually { FileManager.default.fileExists(atPath: ready.path) }, "lease child fixture did not start")
+
+    lease = nil
+    lease = try RuntimeUILease.acquire(runtime: runtime)
+    try expect(lease != nil, "a spawned child retained the UI lease after Parley released it")
+}
+
 private func checkReadOnlyRuntimeAttachmentRequiresPreparedFiles() throws {
     let directory = try temporaryDirectory()
     let runner = RecordingRunner()
@@ -851,6 +890,30 @@ private func checkRealProductionAndDevelopmentTmuxIsolation() throws {
     try expect(stoppedDevelopment.status == 0, "development tmux could not be stopped independently")
     let survivingProductionPanes = try productionController.listPanes()
     try expect(survivingProductionPanes.count == 1, "stopping development also stopped production panes")
+}
+
+private func checkUTF8LocaleFallbackPreservesExplicitConfiguration() throws {
+    let fallback = EnvironmentResolver.applyingUTF8LocaleFallback(to: [
+        "PATH": "/usr/bin:/bin",
+    ])
+    try expect(fallback["LANG"] == "C.UTF-8", "an environment without a character locale did not receive the UTF-8 fallback")
+
+    for explicit in [
+        ["LANG": "en_GB.UTF-8"],
+        ["LANG": "C"],
+        ["LC_CTYPE": "de_DE.UTF-8"],
+        ["LC_ALL": "fr_FR.UTF-8"],
+    ] {
+        let resolved = EnvironmentResolver.applyingUTF8LocaleFallback(to: explicit)
+        try expect(resolved == explicit, "the UTF-8 fallback replaced an explicit locale: \(explicit)")
+    }
+
+    let blank = EnvironmentResolver.applyingUTF8LocaleFallback(to: [
+        "LANG": "",
+        "LC_CTYPE": "",
+        "LC_ALL": "",
+    ])
+    try expect(blank["LANG"] == "C.UTF-8", "empty locale variables blocked the UTF-8 fallback")
 }
 
 private func argument(named name: String) -> String? {
@@ -1261,7 +1324,7 @@ private func paneRow(
     role: String? = nil
 ) -> String {
     [id, kind.rawValue, name ?? kind.label, name ?? kind.label, cwd, currentCommand ?? kind.rawValue, active ? "1" : "0", windowID, returnTo, relayEnabled ? "1" : "", protocolVersion, workspaceActive ? "1" : "0", workspaceName, bracketedPasteActive ? "1" : "0", started ? "1" : "0", isDead ? "1" : "", exitStatus.map(String.init) ?? "", isLead ? "1" : "", automationPolicy.rawValue, permissionSelection?.tmuxMetadataValue ?? "", permissionEnforcement?.rawValue ?? "", role ?? ""]
-        .joined(separator: "\u{1f}")
+        .joined(separator: TmuxController.outputFieldSeparator)
 }
 
 private func workspaceRow(
@@ -1274,7 +1337,7 @@ private func workspaceRow(
     automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate
 ) -> String {
     [id, windowName, active ? "1" : "0", name, folder, paneFolder, automationPolicy.rawValue]
-        .joined(separator: "\u{1f}")
+        .joined(separator: TmuxController.outputFieldSeparator)
 }
 
 private func unclassifiedPaneRow(
@@ -1287,14 +1350,14 @@ private func unclassifiedPaneRow(
     kind: String = ""
 ) -> String {
     [id, windowID, windowName, cwd, currentCommand, isDead ? "1" : "", kind]
-        .joined(separator: "\u{1f}")
+        .joined(separator: TmuxController.outputFieldSeparator)
 }
 
 private func checkBootstrap() throws {
     let runner = RecordingRunner { arguments, _ in
         switch command(arguments) {
         case "has-session": output(status: 1)
-        case "new-session": output("@0\u{1f}%0\n")
+        case "new-session": output("@0\(TmuxController.outputFieldSeparator)%0\n")
         default: output()
         }
     }
@@ -1410,7 +1473,7 @@ private func checkWorkspaceLifecycle() throws {
         switch command(arguments) {
         case "list-windows": output(existing)
         case "list-panes": output(panes)
-        case "new-window": output("@2\u{1f}%9\n")
+        case "new-window": output("@2\(TmuxController.outputFieldSeparator)%9\n")
         default: output()
         }
     }
@@ -1547,7 +1610,7 @@ private func checkWorkspaceCreationRetriesExactPendingTarget() throws {
             return output()
         case "display-message":
             displayAttempts += 1
-            return displayAttempts == 3 ? output("@2\u{1f}%9\n") : output()
+            return displayAttempts == 3 ? output("@2\(TmuxController.outputFieldSeparator)%9\n") : output()
         case "list-panes":
             return output()
         default:
@@ -3529,7 +3592,16 @@ private func checkShellPaneStartsLoginShell() throws {
 }
 
 private func checkRealTmuxShellLifecycle() throws {
-    let environment = EnvironmentResolver.resolved()
+    var environment = EnvironmentResolver.resolved()
+    for key in environment.keys where key == "LANG" || key.hasPrefix("LC_") {
+        environment.removeValue(forKey: key)
+    }
+    environment["LANG"] = "C"
+    environment["LC_ALL"] = "C"
+    try expect(
+        TmuxController.outputFieldSeparator.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value <= 0x7e },
+        "tmux field separator is not printable ASCII"
+    )
     let tmux = try require(
         TmuxController.findTmux(environment: environment),
         "real tmux integration check could not find tmux"
@@ -8688,6 +8760,111 @@ private func checkCommandTimeout() throws {
     try expect(Date().timeIntervalSince(started) < 2, "command timeout did not bound the wait")
 }
 
+private func checkCommandInputAndBothOutputStreams() throws {
+    var environment = ProcessInfo.processInfo.environment
+    environment["PARLEY_COMMAND_IO_FIXTURE"] = "1"
+    let input = Data(String(repeating: "command-io\n", count: 8_192).utf8)
+    let result = try ProcessCommandRunner(timeout: 3).run(
+        executable: URL(fileURLWithPath: CommandLine.arguments[0]),
+        arguments: [],
+        environment: environment,
+        input: input
+    )
+    try expect(result.status == 23, "command runner lost the child exit status: \(result.status)")
+    try expect(result.stdout == Data("stdout:".utf8) + input, "command runner lost or truncated stdout")
+    try expect(result.stderr == Data("stderr:".utf8) + input, "command runner lost or truncated stderr")
+}
+
+private func checkDaemonizingCommandCannotHoldOutputCaptureOpen() throws {
+    var environment = ProcessInfo.processInfo.environment
+    environment["PARLEY_DAEMON_OUTPUT_FIXTURE"] = "1"
+    let started = Date()
+    let result = try ProcessCommandRunner(timeout: 0.5).run(
+        executable: URL(fileURLWithPath: CommandLine.arguments[0]),
+        arguments: [],
+        environment: environment,
+        input: nil,
+        outputExpectation: .mayArriveAfterClientExit
+    )
+    try expect(result.status == 0, "daemon-output fixture lost its exit status")
+    try expect(result.stdoutText == "daemon-ready", "daemon-output fixture lost stdout")
+    try expect(
+        Date().timeIntervalSince(started) < 1,
+        "a daemon descendant kept the completed command's output capture open"
+    )
+}
+
+private func checkLaunchServicesCommandOutputCapture() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let bundle = directory.appendingPathComponent("CommandCaptureProbe.app", isDirectory: true)
+    let contents = bundle.appendingPathComponent("Contents", isDirectory: true)
+    let executables = contents.appendingPathComponent("MacOS", isDirectory: true)
+    try FileManager.default.createDirectory(at: executables, withIntermediateDirectories: true)
+
+    let executable = executables.appendingPathComponent("command-capture-probe")
+    try FileManager.default.copyItem(
+        at: URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL,
+        to: executable
+    )
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+    let result = directory.appendingPathComponent("result.txt")
+    let info: [String: Any] = [
+        "CFBundleExecutable": executable.lastPathComponent,
+        "CFBundleIdentifier": "com.markjoyeux.parley.command-capture-probe.\(UUID().uuidString.lowercased())",
+        "CFBundleName": "Parley Command Capture Probe",
+        "CFBundlePackageType": "APPL",
+        "LSBackgroundOnly": true,
+        "LSEnvironment": ["PARLEY_COMMAND_CAPTURE_PROBE_RESULT": result.path],
+    ]
+    let plist = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+    try plist.write(to: contents.appendingPathComponent("Info.plist"), options: .atomic)
+
+    let launched = try ProcessCommandRunner(timeout: 8).run(
+        executable: URL(fileURLWithPath: "/usr/bin/open"),
+        arguments: ["-W", "-n", bundle.path],
+        environment: ProcessInfo.processInfo.environment,
+        input: nil
+    )
+    try expect(
+        launched.status == 0,
+        "Launch Services command-output probe did not exit cleanly: \(launched.stdoutText)\(launched.stderrText)"
+    )
+    let captured = try String(contentsOf: result, encoding: .utf8)
+    try expect(
+        captured == "status=0\nstdout=PARLEY_GUI_CAPTURE_OK\n",
+        "a Launch Services-owned AppKit process lost child stdout: \(captured)"
+    )
+}
+
+private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate {
+    private let resultPath: String
+
+    init(resultPath: String) {
+        self.resultPath = resultPath
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        do {
+            let output = try ProcessCommandRunner(timeout: 2).run(
+                executable: URL(fileURLWithPath: "/usr/bin/printf"),
+                arguments: ["PARLEY_GUI_CAPTURE_OK"],
+                environment: ProcessInfo.processInfo.environment,
+                input: nil
+            )
+            let result = "status=\(output.status)\nstdout=\(output.stdoutText)\n"
+            try result.write(toFile: resultPath, atomically: true, encoding: .utf8)
+        } catch {
+            try? "error=\(error.localizedDescription)\n".write(
+                toFile: resultPath,
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+        NSApplication.shared.terminate(nil)
+    }
+}
+
 private func checkCoreStartupTimeoutReportsLastPhase() throws {
     let directory = try temporaryDirectory()
     var environment = ProcessInfo.processInfo.environment
@@ -10169,8 +10346,10 @@ let checks: [(String, () throws -> Void)] = [
     ("safe permission profiles reach pane lifecycle", checkPermissionProfilesReachPaneLifecycleWithoutUnsafeFlags),
     ("vendor permission stops become passive attention", checkVendorPermissionStopsBecomeAttentionWithoutAction),
     ("runtime UI lease refuses duplicate owners", checkRuntimeUILeaseRefusesDuplicateOwners),
+    ("child process cannot retain runtime UI lease", checkChildProcessCannotRetainRuntimeUILease),
     ("read-only runtime attachment requires prepared files", checkReadOnlyRuntimeAttachmentRequiresPreparedFiles),
     ("real production and development tmux isolation", checkRealProductionAndDevelopmentTmuxIsolation),
+    ("UTF-8 locale fallback preserves explicit configuration", checkUTF8LocaleFallbackPreservesExplicitConfiguration),
     ("bootstrap", checkBootstrap),
     ("bootstrap recovers missing tmux identifiers", checkBootstrapRecoversMissingIdentifiers),
     ("existing session workspace adoption", checkExistingSessionAdoptsWorkspaceWithoutRestart),
@@ -10286,6 +10465,9 @@ let checks: [(String, () throws -> Void)] = [
     ("Ask dead-pane and target-restart recovery", checkAskDetectsDeadAndRestartedPanes),
     ("consultation shim round trip", checkConsultationShimRoundTrip),
     ("ask-many shim round trip", checkAskManyShimRoundTrip),
+    ("Launch Services child-output capture", checkLaunchServicesCommandOutputCapture),
+    ("child-process input and both output streams", checkCommandInputAndBothOutputStreams),
+    ("daemon child cannot hold output capture open", checkDaemonizingCommandCannotHoldOutputCaptureOpen),
     ("child-process timeout", checkCommandTimeout),
     ("core startup timeout diagnostics", checkCoreStartupTimeoutReportsLastPhase),
     ("bundled core service resolution", checkBundledCoreServiceResolution),
@@ -10321,6 +10503,63 @@ if ProcessInfo.processInfo.environment["PARLEY_CORE_HANG_FIXTURE"] == "1" {
     FileHandle.standardError.write(Data("fixture reached startup\n".utf8))
     Thread.sleep(forTimeInterval: 5)
     exit(0)
+}
+
+if let readyPath = ProcessInfo.processInfo.environment["PARLEY_UI_LEASE_CHILD_FIXTURE"] {
+    try? "ready".write(toFile: readyPath, atomically: true, encoding: .utf8)
+    Thread.sleep(forTimeInterval: 1)
+    exit(0)
+}
+
+if ProcessInfo.processInfo.environment["PARLEY_COMMAND_IO_FIXTURE"] == "1" {
+    let input = FileHandle.standardInput.readDataToEndOfFile()
+    FileHandle.standardOutput.write(Data("stdout:".utf8) + input)
+    FileHandle.standardError.write(Data("stderr:".utf8) + input)
+    exit(23)
+}
+
+if ProcessInfo.processInfo.environment["PARLEY_DELAYED_OUTPUT_CHILD"] == "1" {
+    usleep(50_000)
+    _ = "daemon-ready".withCString { pointer in
+        Darwin.write(STDOUT_FILENO, pointer, strlen(pointer))
+    }
+    sleep(2)
+    exit(0)
+}
+
+if ProcessInfo.processInfo.environment["PARLEY_DAEMON_OUTPUT_FIXTURE"] == "1" {
+    let executable = CommandLine.arguments[0]
+    var arguments: [UnsafeMutablePointer<CChar>?] = [strdup(executable), nil]
+    var childEnvironment: [UnsafeMutablePointer<CChar>?] = ProcessInfo.processInfo.environment
+        .map { strdup("\($0.key)=\($0.value)") }
+    childEnvironment.append(strdup("PARLEY_DELAYED_OUTPUT_CHILD=1"))
+    childEnvironment.append(nil)
+    defer {
+        for argument in arguments.dropLast() {
+            if let argument { free(argument) }
+        }
+        for variable in childEnvironment.dropLast() {
+            if let variable { free(variable) }
+        }
+    }
+    var child = pid_t()
+    let spawnStatus = executable.withCString { path in
+        arguments.withUnsafeMutableBufferPointer { buffer in
+            childEnvironment.withUnsafeMutableBufferPointer { environmentBuffer in
+                posix_spawn(&child, path, nil, nil, buffer.baseAddress!, environmentBuffer.baseAddress!)
+            }
+        }
+    }
+    guard spawnStatus == 0 else { exit(1) }
+    exit(0)
+}
+
+if let resultPath = ProcessInfo.processInfo.environment["PARLEY_COMMAND_CAPTURE_PROBE_RESULT"] {
+    let application = NSApplication.shared
+    let delegate = CommandCaptureProbeDelegate(resultPath: resultPath)
+    application.delegate = delegate
+    application.run()
+    exit(FileManager.default.fileExists(atPath: resultPath) ? 0 : 1)
 }
 
 if ProcessInfo.processInfo.environment["PARLEY_UI_FIXTURE"] == "1" {
