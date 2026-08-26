@@ -54,6 +54,8 @@ jobs:
         run: |
           version="$(node -p "require('./package.json').version")"
           base="dist/Parley-${version}-mac-arm64"
+          notes=".github/release-notes/${PARLEY_RELEASE_TAG}.md"
+          test -f "$notes"
           gh release create "$PARLEY_RELEASE_TAG" \
             "$base.dmg" \
             "$base.zip" \
@@ -64,4 +66,4 @@ jobs:
             --verify-tag \
             --draft \
             --title "Parley v${version} — unnotarized beta" \
-            --notes-file "${base}-INSTALL.txt"
+            --notes-file "$notes"
