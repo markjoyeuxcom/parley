@@ -56,11 +56,12 @@ test('Info.plist describes the native foreground application', () => {
   assert.match(plist, /<key>LSItemContentTypes<\/key>\s*<array>\s*<string>com\.markjoyeux\.parley\.context-import<\/string>/)
 })
 
-test('bundle contract requires the UI, persistent core, launch agent, icon and runtime manifest', () => {
+test('bundle contract requires the UI, persistent core, conformance runner, launch agent, icon and runtime manifest', () => {
   assert.deepEqual(requiredBundlePaths, [
     'Contents/Info.plist',
     'Contents/MacOS/parley-native',
     'Contents/MacOS/parley-core-service',
+    'Contents/MacOS/parley-conformance',
     'Contents/Library/LaunchAgents/com.markjoyeux.parley.core.plist',
     'Contents/Resources/Parley.icns',
     'Contents/Resources/runtime-components.json',
@@ -96,11 +97,13 @@ test('bundle structure rejects a missing core and non-executable binaries', (con
   assert.deepEqual(validateBundleStructure(bundle), [
     'Contents/MacOS/parley-native is not executable',
     'Contents/MacOS/parley-core-service is missing',
+    'Contents/MacOS/parley-conformance is missing',
     'Contents/Library/LaunchAgents/com.markjoyeux.parley.core.plist is missing',
   ])
 
   chmodSync(join(bundle, 'Contents/MacOS/parley-native'), 0o755)
   writeFileSync(join(bundle, 'Contents/MacOS/parley-core-service'), 'core', { mode: 0o755 })
+  writeFileSync(join(bundle, 'Contents/MacOS/parley-conformance'), 'conformance', { mode: 0o755 })
   mkdirSync(join(bundle, 'Contents/Library/LaunchAgents'), { recursive: true })
   writeFileSync(
     join(bundle, 'Contents/Library/LaunchAgents/com.markjoyeux.parley.core.plist'),

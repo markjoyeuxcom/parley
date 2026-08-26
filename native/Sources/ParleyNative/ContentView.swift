@@ -74,6 +74,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.worktreeBrowserPresented) {
             WorktreeBrowserView(model: model)
         }
+        .sheet(isPresented: $model.releaseLifecyclePresented) {
+            ReleaseLifecycleView(model: model)
+        }
         .alert(
             "Parley needs attention",
             isPresented: Binding(

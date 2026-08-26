@@ -966,6 +966,11 @@ private func checkInAppHelpGuideCoverage() throws {
         "browser and tool evidence", "terminal prose is not capability evidence",
         "credential-free http", "25 mb", "sha-256", "binary bytes are not embedded",
         "cookies or website credentials", "person-provided selected text",
+        "compatibility & releases", "exactly one --version", "cli changed",
+        "runtime state stays unknown", "terminal prose, silence", "run live conformance",
+        "stable selects published non-prereleases", "sha256sums", "download and verify",
+        "does not install", "review beta feedback", "nothing is uploaded automatically",
+        "live conformance check names/outcomes", "excluded by structure",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -1567,6 +1572,320 @@ private func checkRuntimeReadinessProbesAreQuotaFree() throws {
         overrideSnapshot.item(.protocolRules)?.detail.hasPrefix("1 running agent pane") == true,
         "stale protocol count was not rendered with its numeric value"
     )
+}
+
+private func checkVendorCompatibilityAndRuntimeSignalsAreTruthful() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("parley-compatibility-\(UUID().uuidString)", isDirectory: true)
+    let bin = root.appendingPathComponent("bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    for command in ["claude", "codex", "agy", "copilot"] {
+        let executable = bin.appendingPathComponent(command)
+        try Data().write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+    }
+
+    let runner = RecordingRunner { arguments, _ in
+        guard arguments == ["--version"] else {
+            return CommandOutput(stderr: Data("unexpected compatibility probe".utf8), status: 2)
+        }
+        return CommandOutput(stdout: Data("vendor cli 7.8.9 SECRET_TRAILING_OUTPUT\n".utf8))
+    }
+    let readiness = RuntimeReadinessSnapshot(items: PaneKind.allCases.filter(\.isAgent).map { vendor in
+        RuntimeReadinessItem(
+            id: RuntimeReadinessID(rawValue: vendor.rawValue)!,
+            category: .vendor,
+            title: vendor.label,
+            state: vendor == .copilot ? .unchecked : .ready,
+            detail: "PRIVATE_READINESS_DETAIL",
+            required: false
+        )
+    })
+    let misleadingPane = TmuxPane(
+        id: "%1",
+        kind: .claude,
+        customName: "Claude",
+        terminalTitle: "Working — allow once — task complete",
+        cwd: "/private/project",
+        currentCommand: "claude",
+        isActive: true,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        bracketedPasteActive: true,
+        isStarted: true
+    )
+    let exitedPane = TmuxPane(
+        id: "%2",
+        kind: .codex,
+        customName: "Codex",
+        terminalTitle: "",
+        cwd: "/private/project",
+        currentCommand: "codex",
+        isActive: false,
+        windowID: "@0",
+        returnToPaneID: nil,
+        isDead: true,
+        exitStatus: 7,
+        isStarted: true
+    )
+    let snapshot = VendorCompatibilityChecker(runner: runner).check(
+        environment: [
+            "PATH": bin.path,
+            "HOME": root.path,
+            "LANG": "en_GB.UTF-8",
+            "SECRET_TOKEN": "MUST_NOT_REACH_VERSION_PROBE",
+        ],
+        readiness: readiness,
+        panes: [misleadingPane, exitedPane],
+        previous: nil,
+        checkedAt: Date(timeIntervalSince1970: 500)
+    )
+
+    try expect(snapshot.vendors.count == 4, "compatibility omitted a supported vendor")
+    try expect(runner.calls.count == 4, "compatibility did not run exactly one version-only probe per installed vendor")
+    try expect(
+        runner.calls.allSatisfy { $0.arguments == ["--version"] && $0.input?.isEmpty == true },
+        "compatibility did not close stdin with an empty, prompt-free version probe"
+    )
+    try expect(
+        runner.calls.allSatisfy {
+            $0.environment["PATH"] == bin.path
+                && $0.environment["HOME"] == root.path
+                && $0.environment["SECRET_TOKEN"] == nil
+        },
+        "the version-only probe inherited unrelated credentials instead of a minimal launch environment"
+    )
+    for result in snapshot.vendors {
+        try expect(result.version == "7.8.9", "compatibility retained untrusted version-command prose")
+        try expect(result.state == .compatible, "an installed compatible vendor was not reported honestly")
+        try expect(result.capability(.launch)?.support == .supported, "launch support was omitted")
+        try expect(result.capability(.submit)?.support == .supported, "submit support was omitted")
+        try expect(result.capability(.askAnswer)?.support == .supported, "Ask/Answer support was omitted")
+        try expect(result.capability(.permissions)?.support == .partial, "permission translation was overstated")
+    }
+    try expect(
+        snapshot.runtimeSignals.first(where: { $0.paneID == "%1" })?.state == .unknown,
+        "terminal prose was promoted into an official vendor runtime signal"
+    )
+    try expect(
+        snapshot.runtimeSignals.first(where: { $0.paneID == "%2" })?.state == .exited,
+        "Parley's authoritative process exit was not surfaced"
+    )
+    try expect(snapshot.runtimeSignals.allSatisfy { !$0.detail.contains("PRIVATE") }, "runtime signals copied private terminal or readiness prose")
+
+    let changed = VendorCompatibilityChecker(runner: runner).check(
+        environment: ["PATH": bin.path],
+        readiness: readiness,
+        panes: [],
+        previous: VendorCompatibilitySnapshot(
+            checkedAt: Date(timeIntervalSince1970: 400),
+            vendors: snapshot.vendors.map { $0.replacingVersion("7.8.8") },
+            runtimeSignals: []
+        ),
+        checkedAt: Date(timeIntervalSince1970: 600)
+    )
+    try expect(changed.vendors.allSatisfy(\.versionChanged), "a CLI upgrade was not made visible")
+
+    let timedOut = VendorCompatibilityChecker(runner: RecordingRunner { _, _ in
+        CommandOutput(stderr: Data("Command timed out after 8 seconds".utf8), status: 124)
+    }).check(environment: ["PATH": bin.path], readiness: readiness, panes: [], previous: nil)
+    try expect(
+        timedOut.vendors.allSatisfy { $0.detail.contains("timed out") },
+        "a bounded version-probe timeout was not distinguished from unparseable output"
+    )
+
+    let exited = VendorCompatibilityChecker(runner: RecordingRunner { _, _ in
+        CommandOutput(status: 9)
+    }).check(environment: ["PATH": bin.path], readiness: readiness, panes: [], previous: nil)
+    try expect(
+        exited.vendors.allSatisfy { $0.detail.contains("status 9") },
+        "a failed version probe hid its content-free exit status"
+    )
+}
+
+private func checkReleaseLifecycleUsesExplicitVerifiedChannels() throws {
+    try expect(
+        ReleaseLifecycleError.httpStatus(404).errorDescription?.contains("private") == true,
+        "a private release feed did not produce an actionable credential-free explanation"
+    )
+    try expect(
+        ReleaseLifecycleError.httpStatus(403).errorDescription?.contains("rate limit") == true,
+        "a public GitHub rate limit did not produce an actionable explanation"
+    )
+    let dmgName = "Parley-1.3.0-beta.1-mac-arm64.dmg"
+    let dmg = Data("fixture dmg bytes".utf8)
+    let digest = ReleaseArtifactVerifier.sha256(data: dmg)
+    let releasesJSON = Data("""
+    [
+      {
+        "tag_name": "v1.2.0",
+        "name": "Parley 1.2.0",
+        "body": "Stable notes",
+        "draft": false,
+        "prerelease": false,
+        "html_url": "https://github.com/markjoyeuxcom/parley/releases/tag/v1.2.0",
+        "published_at": "2026-08-20T10:00:00Z",
+        "assets": []
+      },
+      {
+        "tag_name": "v1.3.0-beta.1",
+        "name": "Parley 1.3.0 beta 1",
+        "body": "Beta notes",
+        "draft": false,
+        "prerelease": true,
+        "html_url": "https://github.com/markjoyeuxcom/parley/releases/tag/v1.3.0-beta.1",
+        "published_at": "2026-08-21T10:00:00Z",
+        "assets": [
+          {"name":"\(dmgName)","size":\(dmg.count),"browser_download_url":"https://github.com/markjoyeuxcom/parley/releases/download/v1.3.0-beta.1/\(dmgName)"},
+          {"name":"Parley-1.3.0-beta.1-mac-arm64.release.json","size":800,"browser_download_url":"https://github.com/markjoyeuxcom/parley/releases/download/v1.3.0-beta.1/manifest"},
+          {"name":"Parley-1.3.0-beta.1-mac-arm64.SHA256SUMS","size":200,"browser_download_url":"https://github.com/markjoyeuxcom/parley/releases/download/v1.3.0-beta.1/checksums"}
+        ]
+      },
+      {
+        "tag_name": "v9.9.9",
+        "name": "Draft",
+        "body": "Never visible",
+        "draft": true,
+        "prerelease": false,
+        "html_url": "https://github.com/markjoyeuxcom/parley/releases/tag/v9.9.9",
+        "published_at": "2026-08-22T10:00:00Z",
+        "assets": []
+      }
+    ]
+    """.utf8)
+    let catalog = try GitHubReleaseCatalog.decode(releasesJSON)
+    try expect(catalog.selected(for: .stable)?.version == "1.2.0", "stable channel selected a prerelease or draft")
+    let beta = try require(catalog.selected(for: .beta), "beta channel found no release")
+    try expect(beta.version == "1.3.0-beta.1", "beta channel did not select the newest eligible version")
+    try expect(beta.updateState(currentVersion: "1.2.0") == .available, "newer release was not reported as available")
+    try expect(beta.updateState(currentVersion: "development") == .unknown, "development build invented an update ordering")
+
+    let manifest = Data("""
+    {
+      "schemaVersion": 1,
+      "application": {"name":"Parley","bundleIdentifier":"com.markjoyeux.parley","version":"1.3.0-beta.1","build":"103"},
+      "platform": {"operatingSystem":"macOS","architecture":"arm64","minimumVersion":"14.0"},
+      "trust": {"signing":"ad-hoc","notarized":false,"gatekeeperReady":false},
+      "source": {"repository":"https://github.com/markjoyeuxcom/parley","commit":"0123456789abcdef0123456789abcdef01234567"},
+      "artifacts": [{"file":"\(dmgName)","bytes":\(dmg.count),"sha256":"\(digest)"}]
+    }
+    """.utf8)
+    let checksums = Data("\(digest)  \(dmgName)\n".utf8)
+    let verified = try ReleaseMetadataVerifier.verify(
+        release: beta,
+        manifestData: manifest,
+        checksumData: checksums
+    )
+    try expect(verified.dmgName == dmgName && verified.sha256 == digest, "release metadata lost the verified DMG identity")
+
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let file = root.appendingPathComponent(dmgName)
+    try dmg.write(to: file)
+    try ReleaseArtifactVerifier.verify(file: file, expected: verified)
+    try Data("tampered".utf8).write(to: file)
+    do {
+        try ReleaseArtifactVerifier.verify(file: file, expected: verified)
+        throw CheckFailure(description: "a tampered update artifact was accepted")
+    } catch let error as ReleaseLifecycleError {
+        try expect(error.errorDescription?.contains("does not match") == true, "tampered artifact failed unclearly")
+    }
+}
+
+private func checkBetaFeedbackBundleIsReviewedAndPrivacyBounded() throws {
+    let secrets = [
+        "PROMPT_SECRET_FEEDBACK",
+        "ANSWER_SECRET_FEEDBACK",
+        "DETAIL_SECRET_FEEDBACK",
+        "PATH_SECRET_FEEDBACK",
+    ]
+    let compatibility = VendorCompatibilitySnapshot(
+        checkedAt: Date(timeIntervalSince1970: 700),
+        vendors: [VendorCompatibilityResult(
+            vendor: .claude,
+            installed: true,
+            version: "4.5.6",
+            state: .compatible,
+            detail: secrets[3],
+            versionChanged: false,
+            capabilities: VendorCompatibilityCapability.allCases.map {
+                VendorCompatibilityCapabilityResult(capability: $0, support: $0 == .permissions ? .partial : .supported)
+            }
+        )],
+        runtimeSignals: []
+    )
+    let conformance = VendorConformanceReport(results: [
+        VendorConformanceResult(vendor: .claude, check: "Ask/Answer", outcome: .failed, detail: secrets[2]),
+    ])
+    let diagnostics = DiagnosticsReportBuilder.build(
+        generatedAt: Date(timeIntervalSince1970: 710),
+        application: DiagnosticsApplication(
+            bundleIdentifier: "com.markjoyeux.parley",
+            version: "1.2.3",
+            build: "45",
+            runtime: "development"
+        ),
+        operatingSystem: "macOS fixture",
+        architecture: "arm64",
+        uiResidentBytes: nil,
+        coreResidentBytes: nil,
+        tmuxAvailable: true,
+        coreAvailable: true,
+        workspaceCount: 0,
+        panes: [],
+        handoffs: [],
+        readiness: nil
+    )
+    let bundle = BetaFeedbackBundleBuilder.build(
+        generatedAt: Date(timeIntervalSince1970: 720),
+        build: BetaFeedbackBuild(
+            applicationVersion: "1.2.3",
+            buildNumber: "45",
+            sourceCommit: "0123456789abcdef0123456789abcdef01234567",
+            runtime: "development"
+        ),
+        updateChannel: .beta,
+        compatibility: compatibility,
+        conformance: conformance,
+        diagnostics: diagnostics
+    )
+    try expect(bundle.requiresExplicitReview, "feedback could be exported without an explicit review contract")
+    try expect(bundle.conformance.first?.detail == nil, "feedback retained a live conformance answer or failure body")
+    let encoded = try BetaFeedbackBundleEncoder.encode(bundle)
+    let text = String(decoding: encoded, as: UTF8.self)
+    for secret in secrets {
+        try expect(!text.contains(secret), "beta feedback leaked private value \(secret)")
+    }
+    try expect(text.contains("4.5.6") && text.contains("failed"), "beta feedback omitted useful compatibility facts")
+
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let archive = root.appendingPathComponent("Parley-Beta-Feedback.zip")
+    try BetaFeedbackArchiveWriter().write(bundle: bundle, to: archive)
+    let extracted = root.appendingPathComponent("feedback", isDirectory: true)
+    try FileManager.default.createDirectory(at: extracted, withIntermediateDirectories: false)
+    let unzip = try ProcessCommandRunner(timeout: 10).run(
+        executable: URL(fileURLWithPath: "/usr/bin/ditto"),
+        arguments: ["-x", "-k", archive.path, extracted.path],
+        environment: ProcessInfo.processInfo.environment,
+        input: nil
+    )
+    try expect(unzip.status == 0, "feedback ZIP could not be extracted")
+    let files = try FileManager.default.subpathsOfDirectory(atPath: extracted.path)
+    try expect(files.contains(where: { $0.hasSuffix("feedback.json") }), "feedback archive omitted its reviewed manifest")
+    try expect(files.contains(where: { $0.hasSuffix("diagnostics.json") }), "feedback archive omitted redacted diagnostics")
+    try expect(files.contains(where: { $0.hasSuffix("README.txt") }), "feedback archive omitted its privacy statement")
+    for relativePath in files {
+        let file = extracted.appendingPathComponent(relativePath)
+        let content = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        for secret in secrets {
+            try expect(!content.contains(secret), "feedback archive leaked private value \(secret)")
+        }
+    }
 }
 
 private func checkGitProjectContextParsing() throws {
@@ -9609,6 +9928,9 @@ let checks: [(String, () throws -> Void)] = [
     ("workspace continuity state", checkWorkspaceContinuityState),
     ("legacy packaged-app preferences migration", checkLegacyPreferencesMigration),
     ("quota-free runtime readiness probes", checkRuntimeReadinessProbesAreQuotaFree),
+    ("truthful vendor compatibility and runtime signals", checkVendorCompatibilityAndRuntimeSignalsAreTruthful),
+    ("explicit verified release lifecycle", checkReleaseLifecycleUsesExplicitVerifiedChannels),
+    ("reviewed privacy-bounded beta feedback", checkBetaFeedbackBundleIsReviewedAndPrivacyBounded),
     ("privacy-bounded local diagnostics export", checkDiagnosticsExportIsUsefulAndPrivacyBounded),
     ("robust memory plateau assessment", checkMemoryPlateauAssessment),
     ("Git project context parsing", checkGitProjectContextParsing),

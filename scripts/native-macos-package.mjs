@@ -27,6 +27,7 @@ export const requiredBundlePaths = [
   'Contents/Info.plist',
   'Contents/MacOS/parley-native',
   'Contents/MacOS/parley-core-service',
+  'Contents/MacOS/parley-conformance',
   `Contents/Library/LaunchAgents/${CORE_LAUNCH_AGENT_PLIST}`,
   'Contents/Resources/Parley.icns',
   'Contents/Resources/runtime-components.json',
@@ -264,7 +265,7 @@ function sourceMetadata() {
 }
 
 function swiftReleaseBinPath() {
-  for (const product of ['parley-native', 'parley-core-service']) {
+  for (const product of ['parley-native', 'parley-core-service', 'parley-conformance']) {
     run('node', [
       'scripts/run-native-swift.mjs',
       'build',
@@ -317,6 +318,13 @@ function runtimeComponentsManifest() {
         foregroundApplication: false,
       },
     },
+    conformance: {
+      implementation: 'parley-conformance',
+      location: 'Contents/MacOS/parley-conformance',
+      invocation: 'explicit human action only',
+      quotaFreePlanning: true,
+      liveProbeRequiresConfirmation: true,
+    },
     relay: {
       implementation: 'ParleyCore.RelayShim',
       delivery: 'generated from the bundled implementation at application launch',
@@ -364,10 +372,13 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
 
   const appExecutable = join(macOS, 'parley-native')
   const coreExecutable = join(macOS, 'parley-core-service')
+  const conformanceExecutable = join(macOS, 'parley-conformance')
   copyFileSync(join(bin, 'parley-native'), appExecutable)
   copyFileSync(join(bin, 'parley-core-service'), coreExecutable)
+  copyFileSync(join(bin, 'parley-conformance'), conformanceExecutable)
   chmodSync(appExecutable, 0o755)
   chmodSync(coreExecutable, 0o755)
+  chmodSync(conformanceExecutable, 0o755)
   copyFileSync(join(repositoryRoot, 'resources/icon.icns'), join(resources, 'Parley.icns'))
   writeFileSync(join(resources, 'runtime-components.json'), runtimeComponentsManifest(), { mode: 0o644 })
   writeFileSync(join(launchAgents, CORE_LAUNCH_AGENT_PLIST), renderCoreLaunchAgentPlist(), { mode: 0o644 })
@@ -388,10 +399,12 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
   if (structureErrors.length > 0) throw new Error(structureErrors.join('\n'))
   verifyArchitecture(appExecutable)
   verifyArchitecture(coreExecutable)
+  verifyArchitecture(conformanceExecutable)
 
   run('xattr', ['-cr', bundle])
   const identity = process.env.PARLEY_CODESIGN_IDENTITY || '-'
   sign(coreExecutable, identity)
+  sign(conformanceExecutable, identity)
   sign(appExecutable, identity)
   sign(bundle, identity)
   run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', bundle])

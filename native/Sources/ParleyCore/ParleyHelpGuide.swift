@@ -785,6 +785,78 @@ public enum ParleyHelpGuide {
             ]
         ),
         ParleyHelpTopic(
+            id: "release-lifecycle",
+            title: "Compatibility, updates and feedback",
+            summary: "Check CLI changes honestly, choose a release channel, verify a DMG and review exactly what beta feedback contains.",
+            symbol: "checkmark.shield",
+            sections: [
+                ParleyHelpSection(
+                    id: "release-compatibility",
+                    title: "Quota-free vendor compatibility",
+                    paragraphs: [
+                        "Open Tools → Compatibility & Releases. Parley runs exactly one --version command for each installed Claude, Codex, Agy and Copilot CLI. The probe receives a minimal allowlisted launch environment and closed empty stdin, then Parley retains only the semantic version and reports adapter support for Launch, Submit, Ask/Answer and Permissions. No session is opened, no prompt is submitted, no vendor configuration is inspected and no model quota is spent.",
+                        "CLI CHANGED means the semantic version differs from the previous runtime-local check. It is a reason to consider live conformance, not a claim that conformance passed. Permission support remains Partial because Parley translates only documented safe controls and vendor prompts remain authoritative.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "release-runtime-hooks",
+                    title: "Runtime state stays Unknown without evidence",
+                    paragraphs: [
+                        "Parley shows Ready, Working or Awaiting Permission only if a vendor supplies a trustworthy structured per-session hook. Current vendors do not, so a running pane is Unknown. Terminal prose, silence, animation and elapsed time never become runtime facts.",
+                        "Exited is different: Parley owns the process lifecycle and can report an observed exit and status without reading terminal content. The older conservative prompt detector remains only a safety stop for the opt-in live conformance runner; it never becomes a Status claim.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "release-live-conformance",
+                    title: "Run live conformance deliberately",
+                    paragraphs: [
+                        "Run Live Conformance is an explicit quota-spending action. After confirmation, the bundled runner uses eligible existing panes to prove protocol injection, exact multiline bracketed paste, automatic submission, correlated answer current routing, inactive-target and cross-workspace delivery. It never creates, restarts or closes a pane.",
+                    ],
+                    items: [
+                        "Parley refuses the run while tracked Ask or delegated work is active.",
+                        "A visible trust or permission decision blocks the probe; Parley never answers it.",
+                        "The result is kept in memory for review. A beta feedback bundle retains only vendor, check name and outcome—not returned text or failure detail.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand(
+                            "PARLEY_LIVE=1 npm run test:conformance",
+                            "Developer equivalent for the isolated Development runtime. It spends vendor subscription quota and should follow the dry-run plan."
+                        ),
+                        ParleyHelpCommand(
+                            "npm run test:conformance:plan",
+                            "Print the safe Development probe plan without sending text or spending quota."
+                        ),
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "release-updates",
+                    title: "Stable and Beta GitHub Releases",
+                    paragraphs: [
+                        "Stable selects published non-prereleases. Beta selects the newest published release including prereleases. Parley contacts its public GitHub Releases API only after you press Check GitHub; there is no background update check.",
+                        "Before offering a DMG, Parley requires the GitHub asset list, release manifest and SHA256SUMS to agree on version, repository, architecture, filename, byte count and SHA-256. Download and Verify hashes the complete downloaded DMG before saving it locally. It does not install, relaunch or replace the persistent core.",
+                        "The automatic check is deliberately credential-free. A private releases repository returns HTTP 404 and cannot be checked from the app; Open Releases uses your signed-in browser, while automatic checks require releases to be published from a public repository.",
+                    ],
+                    items: [
+                        "Release notes are shown before any download.",
+                        "An unnotarized beta stays visibly labelled; checksum verification is not code signing or notarization.",
+                        "Installation remains a separate human action. When the new app opens, the existing core handover gate defers replacement while tracked Ask or delegated work is active.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "release-feedback",
+                    title: "Review beta feedback before export",
+                    paragraphs: [
+                        "The Beta Feedback tab opens a field-level review before it can write an owner-only local ZIP. Nothing is uploaded automatically. The archive contains feedback.json, diagnostics.json and a privacy README.",
+                    ],
+                    items: [
+                        "Included: build facts, selected update channel, semantic vendor versions, compatibility states, capability outcomes, live conformance check names/outcomes and structurally redacted diagnostics.",
+                        "Excluded by structure: prompts, delegated instructions, answers, result bodies, terminal contents, selections, titles, commands, folders, display names, credentials, tokens, sockets, raw journals, raw logs, browser profiles and subscription data.",
+                        "Review the generated files again before attaching the ZIP to an issue or sending it to another person.",
+                    ]
+                ),
+            ]
+        ),
+        ParleyHelpTopic(
             id: "shortcuts",
             title: "Keyboard shortcuts",
             summary: "Move around the workbench without taking your hands away from an agent prompt.",

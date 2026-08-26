@@ -5,11 +5,13 @@ import SwiftUI
 struct AboutView: View {
     let runtime: ParleyRuntime
     let information: ParleyBuildInformation
+    let updateChannel: UpdateChannel
 
     @State private var copied = false
 
-    init(runtime: ParleyRuntime) {
+    init(runtime: ParleyRuntime, updateChannel: UpdateChannel) {
         self.runtime = runtime
+        self.updateChannel = updateChannel
         information = .current(runtime: runtime)
     }
 
@@ -45,6 +47,7 @@ struct AboutView: View {
                     buildRow("macOS", information.operatingSystem)
                     buildRow("Agent protocol", "v\(AgentProtocol.version)")
                     buildRow("Core contract", "v\(CoreServiceIdentity.currentContractVersion)")
+                    buildRow("Update channel", updateChannel.label)
                     buildRow("Executable", information.executablePath)
                 }
                 .textSelection(.enabled)
@@ -94,7 +97,10 @@ struct AboutView: View {
     private func copyBuildInformation() {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(information.copyableText, forType: .string)
+        pasteboard.setString(
+            information.copyableText + "\nUpdate channel: \(updateChannel.label)",
+            forType: .string
+        )
         copied = true
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(2))

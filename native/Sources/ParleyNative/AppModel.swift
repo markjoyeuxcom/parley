@@ -167,6 +167,17 @@ final class AppModel: ObservableObject {
     @Published private(set) var dismissedHandoffIDs: Set<String> = []
     @Published private(set) var runtimeReadiness: RuntimeReadinessSnapshot?
     @Published private(set) var runtimeReadinessChecking = false
+    @Published private(set) var vendorCompatibility: VendorCompatibilitySnapshot?
+    @Published private(set) var vendorCompatibilityChecking = false
+    @Published private(set) var liveConformanceReport: VendorConformanceReport?
+    @Published private(set) var liveConformanceRunning = false
+    @Published private(set) var releaseChannel: UpdateChannel = .stable
+    @Published private(set) var releaseCheck: ReleaseCheckResult?
+    @Published private(set) var releaseChecking = false
+    @Published private(set) var releaseDownloading = false
+    @Published private(set) var releaseLifecycleMessage: String?
+    @Published private(set) var betaFeedbackBundle: BetaFeedbackBundle?
+    @Published private(set) var betaFeedbackExporting = false
     @Published private(set) var diagnosticsExporting = false
     @Published private(set) var repeatingAskHandoffID: String?
     @Published private(set) var sendingReviewedBusyDraftID: String?
@@ -183,6 +194,8 @@ final class AppModel: ObservableObject {
     @Published var pinnedContextSnippetsPresented = false
     @Published var supervisedWorkflowPresented = false
     @Published var worktreeBrowserPresented = false
+    @Published var releaseLifecyclePresented = false
+    @Published var betaFeedbackPresented = false
     @Published private(set) var selectedSupervisedWorkflowID: String?
     @Published private(set) var requestedHelpTopicID: String?
     @Published private(set) var requestedStatusHandoffID: String?
@@ -220,6 +233,7 @@ final class AppModel: ObservableObject {
     private let notificationEpoch = Date()
     private var observedNotificationEventIDs: Set<String> = []
     private var runtimeReadinessTask: Task<Void, Never>?
+    private var releaseTask: Task<Void, Never>?
     private var coreUpgradeTask: Task<Void, Never>?
     private var coreUpgradeSettled = false
     private var lastCoreUpgradeAttempt = Date.distantPast
@@ -232,6 +246,8 @@ final class AppModel: ObservableObject {
     private static let notificationWorkspacesKey = "parley.notificationWorkspaces"
     private static let dismissedHandoffsKey = "parley.dismissedStatusHandoffs"
     private static let firstRunCompletedKey = "parley.firstRunReadinessCompleted"
+    private static let vendorCompatibilityKey = "parley.vendorCompatibility"
+    private static let releaseChannelKey = "parley.releaseChannel"
     private static let permissionProfileKeyPrefix = "parley.permissionProfile"
     private static let projectContextRefreshInterval: TimeInterval = 5
     private static let worktreeRefreshInterval: TimeInterval = 15
@@ -315,6 +331,8 @@ final class AppModel: ObservableObject {
                     Self.workspaceContinuityKey,
                     Self.notificationWorkspacesKey,
                     Self.dismissedHandoffsKey,
+                    Self.vendorCompatibilityKey,
+                    Self.releaseChannelKey,
                 ],
                 from: "parley-native",
                 to: preferences
@@ -332,6 +350,14 @@ final class AppModel: ObservableObject {
         dismissedHandoffIDs = Set(
             preferences.stringArray(forKey: Self.dismissedHandoffsKey) ?? []
         )
+        if let data = preferences.data(forKey: Self.vendorCompatibilityKey) {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            vendorCompatibility = try? decoder.decode(VendorCompatibilitySnapshot.self, from: data)
+        }
+        releaseChannel = preferences.string(forKey: Self.releaseChannelKey)
+            .flatMap(UpdateChannel.init(rawValue:))
+            ?? .stable
         setupPresented = !preferences.bool(forKey: Self.firstRunCompletedKey)
 
         guard runtimeLease != nil, startupError == nil else {
@@ -672,23 +698,37 @@ final class AppModel: ObservableObject {
     func refreshRuntimeReadiness() {
         runtimeReadinessTask?.cancel()
         runtimeReadinessChecking = true
+        vendorCompatibilityChecking = true
         let environment = controller?.environment ?? EnvironmentResolver.resolved()
         let applicationDirectory = applicationDirectory
         let coreHealthy = coreAvailable
         let paneSnapshot = panes
-        let checker = RuntimeReadinessChecker()
+        let previousCompatibility = vendorCompatibility
+        let readinessChecker = RuntimeReadinessChecker()
+        let compatibilityChecker = VendorCompatibilityChecker()
         runtimeReadinessTask = Task { [weak self] in
-            let snapshot = await Task.detached(priority: .utility) {
-                checker.check(
+            let (readiness, compatibility) = await Task.detached(priority: .utility) {
+                let readiness = readinessChecker.check(
                     environment: environment,
                     applicationDirectory: applicationDirectory,
                     coreHealthy: coreHealthy,
                     panes: paneSnapshot
                 )
+                let compatibility = compatibilityChecker.check(
+                    environment: environment,
+                    readiness: readiness,
+                    panes: paneSnapshot,
+                    previous: previousCompatibility
+                )
+                return (readiness, compatibility)
             }.value
             guard !Task.isCancelled else { return }
-            self?.runtimeReadiness = snapshot
-            self?.runtimeReadinessChecking = false
+            guard let self else { return }
+            self.runtimeReadiness = readiness
+            self.vendorCompatibility = compatibility
+            self.runtimeReadinessChecking = false
+            self.vendorCompatibilityChecking = false
+            self.saveVendorCompatibility()
         }
     }
 
@@ -696,6 +736,195 @@ final class AppModel: ObservableObject {
         preferences.set(true, forKey: Self.firstRunCompletedKey)
         setupPresented = false
         terminalHandle.focus()
+    }
+
+    func showReleaseLifecycle() {
+        releaseLifecyclePresented = true
+        refreshRuntimeReadiness()
+    }
+
+    func setReleaseChannel(_ channel: UpdateChannel) {
+        guard channel != releaseChannel else { return }
+        releaseChannel = channel
+        preferences.set(channel.rawValue, forKey: Self.releaseChannelKey)
+        releaseCheck = nil
+        releaseLifecycleMessage = nil
+    }
+
+    func checkForUpdates() {
+        guard !releaseChecking else { return }
+        releaseTask?.cancel()
+        releaseChecking = true
+        releaseLifecycleMessage = nil
+        let channel = releaseChannel
+        let currentVersion = ParleyBuildInformation.current(runtime: runtime).applicationVersion
+        let service = GitHubReleaseService()
+        releaseTask = Task { [weak self] in
+            do {
+                let result = try await service.check(channel: channel, currentVersion: currentVersion)
+                guard !Task.isCancelled, let self else { return }
+                self.releaseCheck = result
+                self.releaseChecking = false
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                self.releaseChecking = false
+                self.releaseLifecycleMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func openCheckedReleasePage() {
+        guard let url = releaseCheck?.release.htmlURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func openReleasesPage() {
+        NSWorkspace.shared.open(GitHubReleaseService.releasesPageURL)
+    }
+
+    func downloadCheckedRelease() {
+        guard let verification = releaseCheck?.verification, !releaseDownloading else { return }
+        let panel = NSSavePanel()
+        panel.title = "Download Verified Parley DMG"
+        panel.message = "Parley downloads the published DMG, verifies its byte count and SHA-256, and saves it. It does not install or restart anything."
+        panel.prompt = "Download and Verify"
+        panel.allowedContentTypes = [.diskImage]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = verification.dmgName
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        releaseDownloading = true
+        releaseLifecycleMessage = nil
+        let service = GitHubReleaseService()
+        Task { [weak self] in
+            do {
+                try await service.downloadVerifiedDMG(verification, to: destination)
+                guard let self else { return }
+                self.releaseDownloading = false
+                self.releaseLifecycleMessage = "Verified \(verification.dmgName) and saved it locally. Parley did not install or restart anything."
+            } catch {
+                guard let self else { return }
+                self.releaseDownloading = false
+                self.releaseLifecycleMessage = error.localizedDescription
+            }
+        }
+    }
+
+    var canRunLiveConformance: Bool {
+        guard !liveConformanceRunning,
+              coreAvailable,
+              Self.conformanceExecutable() != nil else { return false }
+        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+        return consultations.isEmpty && !handoffs.contains { activeStates.contains($0.state) }
+    }
+
+    func runLiveConformance() {
+        guard canRunLiveConformance, let executable = Self.conformanceExecutable() else {
+            releaseLifecycleMessage = "Live conformance needs the bundled runner, a healthy core, and no active Ask or delegated work."
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Run Live Vendor Conformance?"
+        alert.informativeText = "This opt-in check types a small, attributed probe into eligible existing vendor panes and spends subscription quota. It never starts, restarts or closes a pane, and it stops at visible trust or permission prompts."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Run Live Check")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        liveConformanceRunning = true
+        releaseLifecycleMessage = nil
+        var preparedEnvironment = controller?.environment ?? EnvironmentResolver.resolved()
+        preparedEnvironment["PARLEY_LIVE"] = "1"
+        let environment = preparedEnvironment
+        let arguments = [
+            "--application-directory", applicationDirectory.path,
+            "--timeout", "90",
+            "--json",
+        ]
+        Task { [weak self] in
+            do {
+                let output = try await Task.detached(priority: .utility) {
+                    try ProcessCommandRunner(timeout: 600).run(
+                        executable: executable,
+                        arguments: arguments,
+                        environment: environment,
+                        input: nil
+                    )
+                }.value
+                let report = try JSONDecoder().decode(VendorConformanceReport.self, from: output.stdout)
+                guard let self else { return }
+                self.liveConformanceReport = report
+                self.liveConformanceRunning = false
+                self.releaseLifecycleMessage = report.hasFailures || report.hasBlockedChecks
+                    ? "Live conformance completed with failures or blocked checks. Review the result below."
+                    : "Live conformance completed."
+            } catch {
+                guard let self else { return }
+                self.liveConformanceRunning = false
+                self.releaseLifecycleMessage = "Live conformance failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func prepareBetaFeedbackReview() {
+        guard let compatibility = vendorCompatibility else {
+            releaseLifecycleMessage = "Run the quota-free compatibility check before reviewing a feedback bundle."
+            return
+        }
+        var history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        if let relayClient, let refreshed = try? relayClient.handoffs(limit: 500) {
+            history = refreshed
+            if refreshed != statusHandoffs { statusHandoffs = refreshed }
+        }
+        let information = ParleyBuildInformation.current(runtime: runtime)
+        betaFeedbackBundle = BetaFeedbackBundleBuilder.build(
+            build: BetaFeedbackBuild(
+                applicationVersion: information.applicationVersion,
+                buildNumber: information.buildNumber,
+                sourceCommit: information.sourceCommit,
+                runtime: runtime.mode.rawValue
+            ),
+            updateChannel: releaseChannel,
+            compatibility: compatibility,
+            conformance: liveConformanceReport,
+            diagnostics: makeDiagnosticsReport(handoffs: history)
+        )
+        betaFeedbackPresented = true
+    }
+
+    func exportReviewedBetaFeedback() {
+        guard let bundle = betaFeedbackBundle, !betaFeedbackExporting else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Reviewed Beta Feedback"
+        panel.message = "Creates an owner-only local ZIP containing only the fields shown in this review. Nothing is uploaded."
+        panel.prompt = "Export Reviewed Bundle"
+        panel.allowedContentTypes = [.zip]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = Self.betaFeedbackFilename()
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        betaFeedbackExporting = true
+        Task { [weak self] in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try BetaFeedbackArchiveWriter().write(bundle: bundle, to: destination)
+                }.value
+                guard let self else { return }
+                self.betaFeedbackExporting = false
+                self.betaFeedbackPresented = false
+                self.releaseLifecycleMessage = "Saved reviewed beta feedback to \(destination.lastPathComponent). Nothing was uploaded."
+            } catch {
+                guard let self else { return }
+                self.betaFeedbackExporting = false
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    func clearReleaseLifecycleMessage() {
+        releaseLifecycleMessage = nil
     }
 
     func exportDiagnostics() {
@@ -774,6 +1003,33 @@ final class AppModel: ObservableObject {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd-HHmmss'Z'"
         return "Parley-Diagnostics-\(formatter.string(from: date)).zip"
+    }
+
+    private func saveVendorCompatibility() {
+        guard let vendorCompatibility else { return }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        if let data = try? encoder.encode(vendorCompatibility) {
+            preferences.set(data, forKey: Self.vendorCompatibilityKey)
+        }
+    }
+
+    private static func conformanceExecutable() -> URL? {
+        let candidates = [
+            Bundle.main.executableURL?.deletingLastPathComponent()
+                .appendingPathComponent("parley-conformance"),
+            URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+                .deletingLastPathComponent().appendingPathComponent("parley-conformance"),
+        ].compactMap { $0 }
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    private static func betaFeedbackFilename(at date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss'Z'"
+        return "Parley-Beta-Feedback-\(formatter.string(from: date)).zip"
     }
 
     private static func collaborationHistoryFilename(at date: Date = Date()) -> String {

@@ -871,19 +871,42 @@ uncommitted changes.
 
 ### Vendor and release lifecycle
 
-- [ ] Add per-vendor compatibility checks that can run the conformance harness
+- [x] Add per-vendor compatibility checks that can run the conformance harness
   after a CLI upgrade and report launch, submit, Ask/Answer and permission
-  support without spending model quota where the vendor permits that.
-- [ ] Prefer official vendor hooks for runtime readiness—ready, working,
+  support without spending model quota where the vendor permits that. The
+  native lifecycle sheet runs one bounded `--version` probe per installed CLI,
+  gives it a minimal allowlisted environment and closed empty stdin, retains
+  only the semantic version, marks version changes against the prior
+  runtime-local check and shows the four adapter contracts. The packaged,
+  signed conformance runner remains a separate explicit action with a quota
+  warning, refuses existing tracked work and emits a structured in-memory
+  report without creating or restarting panes.
+- [x] Prefer official vendor hooks for runtime readiness—ready, working,
   awaiting permission or exited—and display **Unknown** when no trustworthy
   signal exists. Terminal silence and timing heuristics never become facts.
-- [ ] Add an explicit GitHub Releases update channel with stable/beta choice,
+  The projection currently reports every running vendor as Unknown because no
+  supported CLI exposes a safe structured per-session hook. Only a process exit
+  is authoritative Parley state; the conservative prompt detector remains a
+  live-probe safety stop and never becomes a runtime-status claim.
+- [x] Add an explicit GitHub Releases update channel with stable/beta choice,
   release notes and verified artifacts. Never download or install an update
   silently, and never replace the persistent core while tracked work is active.
-- [ ] Add an explicitly user-reviewed **beta feedback bundle** containing build
+  Checks occur only on the button, against Parley's public GitHub repository.
+  A release is offered only when the asset list, release manifest and
+  `SHA256SUMS` agree; Download and Verify hashes the complete DMG before saving
+  it but cannot install or relaunch anything. The existing atomic core handover
+  remains the only replacement path and continues to defer for active work.
+  The repository is private today, so the credential-free check explains its
+  HTTP 404 and offers Open Releases through the signed-in browser; automatic
+  checks become available only when this or a dedicated release feed is public.
+- [x] Add an explicitly user-reviewed **beta feedback bundle** containing build
   information, vendor versions, conformance results and redacted diagnostics.
   Reuse the structural privacy boundary of diagnostics export: no prompts,
-  answers, terminal content, credentials or automatic telemetry.
+  answers, terminal content, credentials or automatic telemetry. The review
+  names every included field and structural exclusion before it can create an
+  owner-only local ZIP. Conformance details are reduced to vendor, check and
+  outcome; failure text and returned answers never enter it, and Parley has no
+  upload action.
 
 **Exit gate:** Parley can compare independent vendors, carry explicitly chosen
 context, reuse a stopped team safely and warn about concurrent writers without
@@ -941,7 +964,7 @@ step 13 and deliberately hardens the context feature before expanding it:
     a human-controlled busy queue and workspace safety summaries.
 19. [x] Integrate vendor-owned browser/tool evidence only through truthful
     capability checks and explicit attributed context-pack captures.
-20. [ ] Add vendor compatibility checks, trustworthy readiness hooks, the
+20. [x] Add vendor compatibility checks, trustworthy readiness hooks, the
     stable/beta update channel and the reviewed beta feedback bundle.
 21. [ ] Finish distribution: Developer ID signing and notarization, then test
     install, upgrade and uninstall on a physical clean Apple Silicon Mac. The
