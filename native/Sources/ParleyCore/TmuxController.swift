@@ -1,6 +1,10 @@
 import Foundation
 
 public final class TmuxController {
+    /// Printable ASCII survives tmux's `C` locale sanitisation. Control-byte
+    /// separators are rewritten to `_` when Parley is launched by Finder.
+    public static let outputFieldSeparator = "|:parley-field:|"
+
     public let tmuxExecutable: URL
     public let socketPath: URL
     public let configPath: URL
@@ -14,6 +18,7 @@ public final class TmuxController {
     private let pause: (TimeInterval) -> Void
     private let permissionProfileStore: PermissionProfileStore
     private var relayRuntime: RelayRuntime?
+    private var recentCommandDiagnostics: [String] = []
 
     public init(
         tmuxExecutable: URL? = nil,
@@ -115,7 +120,7 @@ public final class TmuxController {
         var createdWindowID: String?
         do {
             let result = try runTmux([
-                "new-session", "-d", "-P", "-F", "#{window_id}\u{1f}#{pane_id}",
+                "new-session", "-d", "-P", "-F", "#{window_id}\(Self.outputFieldSeparator)#{pane_id}",
                 "-s", sessionName, "-c", cwd, "-n", pendingName,
             ])
             let identifiers = try resolveCreatedWorkspace(
@@ -150,7 +155,7 @@ public final class TmuxController {
     }
 
     public func listPanes() throws -> [TmuxPane] {
-        let separator = "\u{1f}"
+        let separator = Self.outputFieldSeparator
         let format = [
             "#{pane_id}",
             "#{@parley-kind}",
@@ -178,7 +183,7 @@ public final class TmuxController {
         let output = try runTmux(["list-panes", "-s", "-t", exactSession, "-F", format]).stdoutText
 
         return output.split(separator: "\n").compactMap { row in
-            let fields = row.split(separator: Character(separator), omittingEmptySubsequences: false).map(String.init)
+            let fields = String(row).components(separatedBy: separator)
             guard fields.count >= 15, let kind = PaneKind(rawValue: fields[1]) else { return nil }
             return TmuxPane(
                 id: fields[0],
@@ -304,7 +309,7 @@ public final class TmuxController {
         var createdWindowID: String?
         do {
             let result = try runTmux([
-                "new-window", "-d", "-P", "-F", "#{window_id}\u{1f}#{pane_id}",
+                "new-window", "-d", "-P", "-F", "#{window_id}\(Self.outputFieldSeparator)#{pane_id}",
                 "-t", "\(exactSession):", "-c", folder, "-n", pendingName,
             ])
             let identifiers = try resolveCreatedWorkspace(
@@ -923,8 +928,7 @@ public final class TmuxController {
     private func createdWorkspaceIdentifiers(from output: String) -> (windowID: String, paneID: String)? {
         let identifiers = output
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(separator: "\u{1f}", omittingEmptySubsequences: false)
-            .map(String.init)
+            .components(separatedBy: Self.outputFieldSeparator)
         guard identifiers.count == 2, !identifiers[0].isEmpty, !identifiers[1].isEmpty else {
             return nil
         }
@@ -947,7 +951,7 @@ public final class TmuxController {
 
             let direct = try? runTmux([
                 "display-message", "-p", "-t", pendingWindowTarget(named: pendingName),
-                "#{window_id}\u{1f}#{pane_id}",
+                "#{window_id}\(Self.outputFieldSeparator)#{pane_id}",
             ], allowFailure: true)
             if let direct, direct.status == 0,
                let identifiers = createdWorkspaceIdentifiers(from: direct.stdoutText) {
@@ -972,12 +976,15 @@ public final class TmuxController {
         }
 
         throw ParleyTmuxError.commandFailed(
-            "Parley could not safely identify the workspace tmux created after retrying its exact provisional target. No existing workspace was changed."
+            persistCommandDiagnostics(
+                failure: "workspace-id-resolution",
+                message: "Parley could not safely identify the workspace tmux created after retrying its exact provisional target. No existing workspace was changed."
+            )
         )
     }
 
     private func paneInventory() throws -> [PaneInventoryRow] {
-        let separator = "\u{1f}"
+        let separator = Self.outputFieldSeparator
         let format = [
             "#{pane_id}",
             "#{window_id}",
@@ -989,9 +996,7 @@ public final class TmuxController {
         ].joined(separator: separator)
         let output = try runTmux(["list-panes", "-s", "-t", exactSession, "-F", format]).stdoutText
         return output.split(separator: "\n").compactMap { row in
-            let fields = row
-                .split(separator: Character(separator), omittingEmptySubsequences: false)
-                .map(String.init)
+            let fields = String(row).components(separatedBy: separator)
             guard fields.count == 7 else { return nil }
             return PaneInventoryRow(
                 id: fields[0],
@@ -1031,7 +1036,7 @@ public final class TmuxController {
     }
 
     private func listWorkspaces(fallbackFolder: String?) throws -> [TmuxWorkspace] {
-        let separator = "\u{1f}"
+        let separator = Self.outputFieldSeparator
         let format = [
             "#{window_id}",
             "#{window_name}",
@@ -1043,7 +1048,7 @@ public final class TmuxController {
         ].joined(separator: separator)
         let output = try runTmux(["list-windows", "-t", exactSession, "-F", format]).stdoutText
         return output.split(separator: "\n").compactMap { row in
-            let fields = row.split(separator: Character(separator), omittingEmptySubsequences: false).map(String.init)
+            let fields = String(row).components(separatedBy: separator)
             guard fields.count == 7 else { return nil }
             let folder = !fields[4].isEmpty
                 ? fields[4]
@@ -1284,13 +1289,64 @@ public final class TmuxController {
             executable: tmuxExecutable,
             arguments: arguments,
             environment: environment,
-            input: input
+            input: input,
+            outputExpectation: expectsOutput(command)
+                ? .mayArriveAfterClientExit
+                : .immediate
         )
+        let operation = command.first ?? "unknown"
+        let identifierHex: String
+        if ["new-session", "new-window", "display-message"].contains(operation),
+           output.stdout.count <= 64 {
+            identifierHex = output.stdout.map { String(format: "%02x", $0) }.joined()
+        } else {
+            identifierHex = "omitted"
+        }
+        recentCommandDiagnostics.append([
+            "operation=\(operation)",
+            "status=\(output.status)",
+            "stdoutBytes=\(output.stdout.count)",
+            "stderrBytes=\(output.stderr.count)",
+            "identifierHex=\(identifierHex)",
+            output.diagnostic ?? "runnerDiagnostic=unavailable",
+        ].joined(separator: " "))
+        if recentCommandDiagnostics.count > 24 {
+            recentCommandDiagnostics.removeFirst(recentCommandDiagnostics.count - 24)
+        }
         if output.status != 0, !allowFailure {
             let detail = output.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
             throw ParleyTmuxError.commandFailed(detail.isEmpty ? "tmux command failed: \(command.first ?? "unknown")" : detail)
         }
         return output
+    }
+
+    private func persistCommandDiagnostics(failure: String, message: String) -> String {
+        let lines = [
+            "failure=\(failure)",
+            "recordedAt=\(ISO8601DateFormatter().string(from: Date()))",
+            "tmux=\(tmuxExecutable.path)",
+            "socket=\(socketPath.path)",
+        ] + recentCommandDiagnostics
+        let file = applicationDirectory.appendingPathComponent("tmux-command-diagnostics.log")
+        do {
+            try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: file, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        } catch {
+            return "\(message) Diagnostic recording also failed: \(error.localizedDescription)"
+        }
+        return "\(message) Details were saved to \(file.path)."
+    }
+
+    private func expectsOutput(_ command: [String]) -> Bool {
+        guard let operation = command.first else { return false }
+        if command.contains("-P") { return true }
+        return [
+            "capture-pane",
+            "display-message",
+            "list-panes",
+            "list-windows",
+            "show-options",
+        ].contains(operation)
     }
 
     private static func scrubInheritedCapabilities(_ environment: [String: String]) -> [String: String] {

@@ -313,6 +313,10 @@ destinations.
 
 The app resolves the user's login-shell PATH at startup, so CLIs installed
 outside the minimal PATH supplied to GUI applications remain discoverable.
+Finder and other Launch Services entry points may also omit a character
+locale. Packaged UI and core launches therefore receive `LANG=C.UTF-8`, while
+direct and Development launches add that fallback only when `LANG`, `LC_ALL`
+and `LC_CTYPE` are all absent. An explicit user locale is preserved.
 `PARLEY_TMUX` may point to an explicit absolute tmux executable.
 
 ## Develop

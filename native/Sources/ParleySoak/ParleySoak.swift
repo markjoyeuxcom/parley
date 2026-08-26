@@ -426,13 +426,13 @@ private struct ParleySoak {
             runner: runner,
             arguments: [
                 "list-panes", "-s", "-t", "=\(controller.sessionName)",
-                "-F", "#{pane_id}\u{1f}#{pane_pid}",
+                "-F", "#{pane_id}\(TmuxController.outputFieldSeparator)#{pane_pid}",
             ]
         )
         return Dictionary(uniqueKeysWithValues: output.stdoutText.split(separator: "\n").compactMap { row in
-            let fields = row.split(separator: "\u{1f}", omittingEmptySubsequences: false)
+            let fields = String(row).components(separatedBy: TmuxController.outputFieldSeparator)
             guard fields.count == 2, let pid = Int32(fields[1]) else { return nil }
-            return (String(fields[0]), pid)
+            return (fields[0], pid)
         })
     }
 

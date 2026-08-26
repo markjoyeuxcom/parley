@@ -77,6 +77,10 @@ Service Management registration is off by default. Its relocatable
 the authenticated coordination transports but does not create tmux, a
 workspace, the foreground window or a vendor process. If a healthy core already
 exists, the login invocation exits successfully without creating a duplicate.
+Both the signed app's `LSEnvironment` and the embedded core LaunchAgent declare
+`LANG=C.UTF-8`. The shared environment resolver applies the same fallback for
+direct and Development starts only when `LANG`, `LC_ALL` and `LC_CTYPE` are all
+missing or empty, so an explicit locale is never replaced at runtime.
 
 The UI and core expose an owner-authenticated version/build/contract handshake.
 After the app bundle is replaced, an idle old core closes its admission gate,

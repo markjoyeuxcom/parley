@@ -177,6 +177,14 @@ public final class RuntimeUILease: @unchecked Sendable {
             throw RuntimeUILeaseError.io(runtime.mode, String(cString: strerror(errno)))
         }
 
+        let descriptorFlags = Darwin.fcntl(descriptor, F_GETFD)
+        guard descriptorFlags >= 0,
+              Darwin.fcntl(descriptor, F_SETFD, descriptorFlags | FD_CLOEXEC) >= 0 else {
+            let detail = String(cString: strerror(errno))
+            _ = Darwin.close(descriptor)
+            throw RuntimeUILeaseError.io(runtime.mode, detail)
+        }
+
         _ = Darwin.fchmod(descriptor, S_IRUSR | S_IWUSR)
         let record = "pid=\(ProcessInfo.processInfo.processIdentifier) runtime=\(runtime.mode.rawValue)\n"
         _ = Darwin.ftruncate(descriptor, 0)
