@@ -15,6 +15,18 @@ const {
   stageManifest,
 } = require('../contracts.cjs')
 
+test('companion is distributed under the repository Apache-2.0 licence', () => {
+  const repositoryLicense = fs.readFileSync(path.join(__dirname, '../../LICENSE'), 'utf8')
+  const companionLicense = fs.readFileSync(path.join(__dirname, '../LICENSE'), 'utf8')
+  const repositoryNotice = fs.readFileSync(path.join(__dirname, '../../NOTICE'), 'utf8')
+  const companionNotice = fs.readFileSync(path.join(__dirname, '../NOTICE'), 'utf8')
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8'))
+
+  assert.equal(manifest.license, 'Apache-2.0')
+  assert.equal(companionLicense, repositoryLicense)
+  assert.equal(companionNotice, repositoryNotice)
+})
+
 test('companion refuses non-macOS, web and remote extension hosts', () => {
   assert.doesNotThrow(() => assertLocalDesktopRuntime({ platform: 'darwin' }))
   assert.throws(() => assertLocalDesktopRuntime({ platform: 'linux' }), /macOS/)

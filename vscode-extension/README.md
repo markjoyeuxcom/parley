@@ -1,5 +1,8 @@
 # Parley Companion for VS Code
 
+This companion is open source with Parley under the
+[Apache License 2.0](LICENSE).
+
 The Parley Companion is a thin local remote control for the installed macOS
 app. It does not embed a terminal, own a vendor session or submit work.
 

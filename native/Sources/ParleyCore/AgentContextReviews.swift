@@ -126,6 +126,10 @@ public enum AgentContextTrustedCaptureKind: String, Codable, Equatable, Sendable
     case gitDiff
     case visibleTerminal
     case commandResult
+    case browserURL
+    case browserSelection
+    case browserScreenshot
+    case toolArtifact
 }
 
 /// A control-token-authorized request for the persistent core to capture a
@@ -138,6 +142,9 @@ public struct AgentContextTrustedCaptureRequest: Codable, Equatable, Sendable {
     public let paneID: String?
     public let executablePath: String?
     public let arguments: [String]
+    public let evidencePaneID: String?
+    public let sourceURL: String?
+    public let selectedText: String?
 
     public init(
         reviewID: String,
@@ -145,7 +152,10 @@ public struct AgentContextTrustedCaptureRequest: Codable, Equatable, Sendable {
         paths: [String] = [],
         paneID: String? = nil,
         executablePath: String? = nil,
-        arguments: [String] = []
+        arguments: [String] = [],
+        evidencePaneID: String? = nil,
+        sourceURL: String? = nil,
+        selectedText: String? = nil
     ) {
         self.reviewID = reviewID
         self.kind = kind
@@ -153,6 +163,9 @@ public struct AgentContextTrustedCaptureRequest: Codable, Equatable, Sendable {
         self.paneID = paneID
         self.executablePath = executablePath
         self.arguments = arguments
+        self.evidencePaneID = evidencePaneID
+        self.sourceURL = sourceURL
+        self.selectedText = selectedText
     }
 }
 

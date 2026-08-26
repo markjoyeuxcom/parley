@@ -528,7 +528,6 @@ public final class RelayBroker: @unchecked Sendable {
     public typealias DirectContextSubmit = (_ sourcePaneID: String, _ targetPaneID: String, _ text: String) throws -> Void
     public typealias VisibleText = (_ paneID: String) throws -> String
 
-    private static let maximumRetainedHandoffs = 500
     private static let abandonedContextDraftLifetime: TimeInterval = 7 * 24 * 60 * 60
 
     private let credentials: RelayCredentials
@@ -542,14 +541,22 @@ public final class RelayBroker: @unchecked Sendable {
     private let livenessPollInterval: TimeInterval
     private let handoffJournal: RelayHandoffJournal?
     private let activityJournal: RelayActivityJournal?
+    private let historyRetentionStore: CollaborationHistoryRetentionStore?
     private let contextReviewStore: AgentContextReviewStore?
+    private let busyDraftStore: ReviewedBusyDraftStore?
     private let contextPackBuilder = ContextPackBuilder()
     private let consultationCondition = NSCondition()
     private var consultationRecords: [String: ConsultationRecord] = [:]
+    /// In-memory only: a persisted `.dispatching` draft after restart is an
+    /// uncertain record that the person may dismiss, while an entry here is
+    /// actively crossing the terminal-submission boundary and cannot be
+    /// truthfully described as discarded.
+    private var busyDraftDispatches: Set<String> = []
     private var delegationRecords: [String: DelegationRecord] = [:]
     private var delegationResponses: [String: RelayTextResponse] = [:]
     private var handoffRecords: [String: RelayHandoff] = [:]
     private var activityRecords: [String: RelayActivityEvent] = [:]
+    private var historyRetentionPolicy: CollaborationHistoryRetentionPolicy
     private var contextReviewRecords: [String: AgentContextReview] = [:]
     private var idempotencyRecords: [IdempotencyScope: IdempotencyRecord] = [:]
     private var acceptingHandoffs = true
@@ -567,7 +574,10 @@ public final class RelayBroker: @unchecked Sendable {
         livenessPollInterval: TimeInterval = 0.5,
         handoffJournal: RelayHandoffJournal? = nil,
         activityJournal: RelayActivityJournal? = nil,
-        contextReviewStore: AgentContextReviewStore? = nil
+        historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy,
+        historyRetentionStore: CollaborationHistoryRetentionStore? = nil,
+        contextReviewStore: AgentContextReviewStore? = nil,
+        busyDraftStore: ReviewedBusyDraftStore? = nil
     ) {
         self.credentials = credentials
         self.panes = panes
@@ -582,7 +592,10 @@ public final class RelayBroker: @unchecked Sendable {
         self.livenessPollInterval = max(0.01, livenessPollInterval)
         self.handoffJournal = handoffJournal
         self.activityJournal = activityJournal
+        self.historyRetentionPolicy = historyRetentionPolicy
+        self.historyRetentionStore = historyRetentionStore
         self.contextReviewStore = contextReviewStore
+        self.busyDraftStore = busyDraftStore
 
         let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
         var recovered = Dictionary(uniqueKeysWithValues: (handoffJournal?.handoffs() ?? []).map { ($0.id, $0) })
@@ -812,13 +825,25 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.unlock()
 
             let captured: [ContextPackPart]
+            func evidencePane() throws -> TmuxPane {
+                guard let paneID = request.evidencePaneID,
+                      let pane = try panes().first(where: {
+                          $0.id == paneID && $0.kind.isAgent && $0.isStarted && !$0.isDead
+                      }) else {
+                    throw BrokerFailure(status: 409, message: "that vendor pane is no longer available for evidence attribution")
+                }
+                return pane
+            }
             switch request.kind {
             case .files:
                 guard !request.paths.isEmpty,
                       request.paths.count <= ContextPackBuilder.maximumParts - existingPartCount,
                       request.paneID == nil,
                       request.executablePath == nil,
-                      request.arguments.isEmpty else {
+                      request.arguments.isEmpty,
+                      request.evidencePaneID == nil,
+                      request.sourceURL == nil,
+                      request.selectedText == nil else {
                     throw BrokerFailure(status: 400, message: "invalid trusted file capture request")
                 }
                 captured = try request.paths.map {
@@ -828,7 +853,10 @@ public final class RelayBroker: @unchecked Sendable {
                 guard request.paths.isEmpty,
                       request.paneID == nil,
                       request.executablePath == nil,
-                      request.arguments.isEmpty else {
+                      request.arguments.isEmpty,
+                      request.evidencePaneID == nil,
+                      request.sourceURL == nil,
+                      request.selectedText == nil else {
                     throw BrokerFailure(status: 400, message: "invalid trusted Git capture request")
                 }
                 captured = [try contextPackBuilder.gitDiff(in: sourceFolder)]
@@ -837,6 +865,9 @@ public final class RelayBroker: @unchecked Sendable {
                       let paneID = request.paneID,
                       request.executablePath == nil,
                       request.arguments.isEmpty,
+                      request.evidencePaneID == nil,
+                      request.sourceURL == nil,
+                      request.selectedText == nil,
                       let visibleText else {
                     throw BrokerFailure(status: 400, message: "invalid trusted visible-screen capture request")
                 }
@@ -853,13 +884,57 @@ public final class RelayBroker: @unchecked Sendable {
             case .commandResult:
                 guard request.paths.isEmpty,
                       request.paneID == nil,
-                      let executablePath = request.executablePath else {
+                      let executablePath = request.executablePath,
+                      request.evidencePaneID == nil,
+                      request.sourceURL == nil,
+                      request.selectedText == nil else {
                     throw BrokerFailure(status: 400, message: "invalid trusted command capture request")
                 }
                 captured = [try contextPackBuilder.commandResult(
                     executablePath: executablePath,
                     arguments: request.arguments,
                     workingDirectory: URL(fileURLWithPath: sourceFolder, isDirectory: true)
+                )]
+            case .browserURL:
+                guard request.paths.isEmpty,
+                      request.paneID == nil,
+                      request.executablePath == nil,
+                      request.arguments.isEmpty,
+                      let sourceURL = request.sourceURL,
+                      request.selectedText == nil else {
+                    throw BrokerFailure(status: 400, message: "invalid browser URL evidence request")
+                }
+                captured = [try contextPackBuilder.browserURLEvidence(
+                    from: evidencePane(),
+                    url: sourceURL
+                )]
+            case .browserSelection:
+                guard request.paths.isEmpty,
+                      request.paneID == nil,
+                      request.executablePath == nil,
+                      request.arguments.isEmpty,
+                      let sourceURL = request.sourceURL,
+                      let selectedText = request.selectedText else {
+                    throw BrokerFailure(status: 400, message: "invalid browser selection evidence request")
+                }
+                captured = [try contextPackBuilder.browserSelectionEvidence(
+                    from: evidencePane(),
+                    url: sourceURL,
+                    text: selectedText
+                )]
+            case .browserScreenshot, .toolArtifact:
+                guard request.paths.count == 1,
+                      request.paneID == nil,
+                      request.executablePath == nil,
+                      request.arguments.isEmpty,
+                      request.selectedText == nil else {
+                    throw BrokerFailure(status: 400, message: "invalid local vendor artifact evidence request")
+                }
+                captured = [try contextPackBuilder.vendorArtifactEvidence(
+                    kind: request.kind == .browserScreenshot ? .browserScreenshot : .savedArtifact,
+                    from: evidencePane(),
+                    file: URL(fileURLWithPath: request.paths[0]),
+                    sourceURL: request.sourceURL
                 )]
             }
 
@@ -877,7 +952,7 @@ public final class RelayBroker: @unchecked Sendable {
             do {
                 _ = try contextPackBuilder.render(review.pack)
                 review.updatedAt = Date()
-                review.detail = "A person added \(captured.count) source\(captured.count == 1 ? "" : "s") captured independently by Parley."
+                review.detail = "A person added \(captured.count) source\(captured.count == 1 ? "" : "s") through Parley's authenticated review control; each part states what Parley independently established."
                 try contextReviewStore?.record(review)
                 contextReviewRecords[review.id] = review
                 consultationCondition.broadcast()
@@ -1782,7 +1857,8 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey suppliedIdempotencyKey: String?,
         humanInitiated: Bool,
-        preserveFormatting: Bool
+        preserveFormatting: Bool,
+        onSubmitted: (() -> Void)? = nil
     ) -> RelayTextResponse {
         guard beginDispatch() else {
             return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
@@ -1885,6 +1961,7 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.lock()
             transitionHandoffLocked(handoff.id, to: .delivered, origin: humanInitiated ? .human : nil)
             transitionHandoffLocked(handoff.id, to: .waiting, origin: humanInitiated ? .human : nil)
+            onSubmitted?()
             consultationCondition.broadcast()
             consultationCondition.unlock()
         } catch {
@@ -2125,6 +2202,198 @@ public final class RelayBroker: @unchecked Sendable {
         )
     }
 
+    /// Returns the exact durable reviewed drafts. Merely reading this list—or
+    /// observing that a target is now idle—has no dispatch side effect.
+    public func reviewedBusyDrafts() -> [ReviewedBusyDraft] {
+        busyDraftStore?.drafts() ?? []
+    }
+
+    /// Holds a person-reviewed Ask only while the exact target has active
+    /// tracked work. This core-control path never writes to a terminal.
+    public func enqueueReviewedBusyAskFromUI(
+        _ request: ReviewedBusyDraftCreateRequest
+    ) -> RelayTextResponse {
+        guard let busyDraftStore else {
+            return RelayTextResponse(status: 503, text: "reviewed busy-queue storage is unavailable")
+        }
+        let source: TmuxPane
+        let target: TmuxPane
+        do {
+            let sourceToken = try credentials.token(for: request.sourcePaneID)
+            (source, target) = try route(token: sourceToken, requestedTarget: request.targetPaneID)
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+
+        let normalized = request.preserveFormatting
+            ? ContextPackText.normalize(request.text)
+            : RelayText.clean(request.text)
+        guard !normalized.isEmpty else {
+            return RelayTextResponse(status: 400, text: "nothing to queue")
+        }
+        guard normalized.utf8.count <= ContextPackBuilder.defaultMaximumRenderedBytes else {
+            return RelayTextResponse(status: 413, text: "reviewed draft is too large to queue")
+        }
+
+        consultationCondition.lock()
+        let targetIsBusy = targetHasTrackedWorkLocked(target.id)
+        consultationCondition.unlock()
+        guard targetIsBusy else {
+            return RelayTextResponse(
+                status: 409,
+                text: "\(target.displayName) is no longer busy. Review and send this Ask directly instead of queueing it."
+            )
+        }
+
+        let now = Date()
+        let draft = ReviewedBusyDraft(
+            sourcePaneID: source.id,
+            sourceName: source.displayName,
+            sourceKind: source.kind,
+            sourceWorkspaceID: source.windowID,
+            sourceWorkspaceName: source.workspaceName,
+            targetPaneID: target.id,
+            targetName: target.displayName,
+            targetKind: target.kind,
+            targetWorkspaceID: target.windowID,
+            targetWorkspaceName: target.workspaceName,
+            text: normalized,
+            preserveFormatting: request.preserveFormatting,
+            createdAt: now,
+            updatedAt: now,
+            detail: "Held because \(target.displayName) already had tracked work. Becoming idle will not send it."
+        )
+        do {
+            try busyDraftStore.record(draft)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return RelayTextResponse(
+                status: 201,
+                text: String(decoding: try encoder.encode(draft), as: UTF8.self)
+            )
+        } catch let error as ReviewedBusyDraftStoreError {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        } catch {
+            return RelayTextResponse(status: 500, text: error.localizedDescription)
+        }
+    }
+
+    /// Dispatches only after a fresh native Review and Send action. The draft
+    /// is removed at the exact point terminal submission succeeds; before that
+    /// point any busy-route race restores it to the visible unsent queue.
+    public func sendReviewedBusyAskFromUI(
+        _ request: ReviewedBusyDraftSendRequest
+    ) -> RelayTextResponse {
+        guard let busyDraftStore,
+              let existing = busyDraftStore.draft(id: request.draftID) else {
+            return RelayTextResponse(status: 404, text: "unknown reviewed busy-queue draft")
+        }
+        let sourceToken: String
+        do {
+            sourceToken = try credentials.token(for: existing.sourcePaneID)
+            let (source, target) = try route(token: sourceToken, requestedTarget: existing.targetPaneID)
+            guard source.id == existing.sourcePaneID, target.id == existing.targetPaneID else {
+                throw BrokerFailure(status: 409, message: "the queued draft's original route is no longer available")
+            }
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+
+        let normalized = request.preserveFormatting
+            ? ContextPackText.normalize(request.text)
+            : RelayText.clean(request.text)
+        let dispatching: ReviewedBusyDraft
+        consultationCondition.lock()
+        if targetHasTrackedWorkLocked(existing.targetPaneID) {
+            consultationCondition.unlock()
+            return RelayTextResponse(
+                status: 409,
+                text: "\(existing.targetName) still has tracked work. The reviewed draft remains queued and unsent."
+            )
+        }
+        if busyDraftDispatches.contains(existing.id) {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: "this reviewed draft already has an explicit send in progress")
+        }
+        do {
+            dispatching = try busyDraftStore.beginExplicitSend(
+                id: request.draftID,
+                expectedUpdatedAt: request.expectedUpdatedAt,
+                text: normalized,
+                preserveFormatting: request.preserveFormatting
+            )
+            busyDraftDispatches.insert(dispatching.id)
+            consultationCondition.unlock()
+        } catch let error as ReviewedBusyDraftStoreError {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        } catch {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 500, text: error.localizedDescription)
+        }
+        defer {
+            consultationCondition.lock()
+            busyDraftDispatches.remove(dispatching.id)
+            consultationCondition.unlock()
+        }
+
+        var submitted = false
+        let response = handleAsk(
+            token: sourceToken,
+            target: dispatching.targetPaneID,
+            text: dispatching.text,
+            idempotencyKey: "busy-draft-\(dispatching.id)-\(UUID().uuidString.lowercased())",
+            humanInitiated: true,
+            preserveFormatting: dispatching.preserveFormatting,
+            onSubmitted: {
+                submitted = true
+                try? busyDraftStore.remove(id: dispatching.id)
+            }
+        )
+        if !submitted {
+            try? busyDraftStore.restoreQueued(
+                id: dispatching.id,
+                detail: "The explicit send did not reach terminal submission: \(response.text)"
+            )
+        }
+        return response
+    }
+
+    public func cancelReviewedBusyDraftFromUI(_ draftID: String) -> RelayTextResponse {
+        guard let busyDraftStore else {
+            return RelayTextResponse(status: 404, text: "unknown reviewed busy-queue draft")
+        }
+        consultationCondition.lock()
+        if busyDraftDispatches.contains(draftID) {
+            consultationCondition.unlock()
+            return RelayTextResponse(
+                status: 409,
+                text: "this reviewed draft has an explicit send in progress and cannot be discarded"
+            )
+        }
+        guard let draft = busyDraftStore.draft(id: draftID) else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 404, text: "unknown reviewed busy-queue draft")
+        }
+        do {
+            try busyDraftStore.remove(id: draftID)
+            consultationCondition.unlock()
+            return RelayTextResponse(
+                status: 200,
+                text: draft.state == .queued
+                    ? "Reviewed draft discarded without sending."
+                    : "Uncertain send record dismissed. This does not cancel or reverse any terminal input that may already have occurred."
+            )
+        } catch {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 500, text: error.localizedDescription)
+        }
+    }
+
     public func handleAnswer(token: String, consultationID: String, text: String) -> RelayTextResponse {
         guard let senderID = credentials.paneID(for: token) else {
             return RelayTextResponse(status: 401, text: "bad token")
@@ -2232,9 +2501,60 @@ public final class RelayBroker: @unchecked Sendable {
         activityRecords[event.id] = event
         if let retainedIDs = activityJournal.map({ Set($0.events().map(\.id)) }) {
             activityRecords = activityRecords.filter { retainedIDs.contains($0.key) }
+        } else {
+            pruneActivityRecordsLocked()
         }
         consultationCondition.unlock()
         return event
+    }
+
+    public func collaborationHistoryRetentionPolicy() -> CollaborationHistoryRetentionPolicy {
+        consultationCondition.lock()
+        let policy = historyRetentionPolicy
+        consultationCondition.unlock()
+        return policy
+    }
+
+    /// Saves the core-owned policy, compacts both owner-only journals, then
+    /// reconciles the live projections. Active handoffs remain even when they
+    /// temporarily put the projection above the selected bound.
+    public func updateCollaborationHistoryRetention(
+        maximumRecords: Int
+    ) throws -> CollaborationHistoryRetentionChange {
+        let policy = try CollaborationHistoryRetentionPolicy(maximumRecords: maximumRecords)
+        try historyRetentionStore?.save(policy)
+        let durableHandoffRemoval = try handoffJournal?.updateMaximumHandoffs(maximumRecords)
+        let durableActivityRemoval = try activityJournal?.updateMaximumEvents(maximumRecords)
+
+        consultationCondition.lock()
+        let handoffCountBefore = handoffRecords.count
+        let activityCountBefore = activityRecords.count
+        historyRetentionPolicy = policy
+        if let retainedIDs = handoffJournal.map({ Set($0.handoffs().map(\.id)) }) {
+            handoffRecords = handoffRecords.filter { retainedIDs.contains($0.key) }
+        } else {
+            pruneHandoffsLocked()
+        }
+        if let retainedIDs = activityJournal.map({ Set($0.events().map(\.id)) }) {
+            activityRecords = activityRecords.filter { retainedIDs.contains($0.key) }
+        } else {
+            pruneActivityRecordsLocked()
+        }
+        let removedHandoffIDs = Set(idempotencyRecords.values.compactMap { record in
+            handoffRecords[record.handoffID] == nil ? record.handoffID : nil
+        })
+        idempotencyRecords = idempotencyRecords.filter { !removedHandoffIDs.contains($0.value.handoffID) }
+        delegationResponses = delegationResponses.filter { handoffRecords[$0.key] != nil }
+        let inMemoryHandoffRemoval = handoffCountBefore - handoffRecords.count
+        let inMemoryActivityRemoval = activityCountBefore - activityRecords.count
+        consultationCondition.broadcast()
+        consultationCondition.unlock()
+
+        return CollaborationHistoryRetentionChange(
+            policy: policy,
+            removedHandoffs: durableHandoffRemoval ?? inMemoryHandoffRemoval,
+            removedActivityEvents: durableActivityRemoval ?? inMemoryActivityRemoval
+        )
     }
 
     /// Records that a person viewed a returned Ask or Delegate result. This is
@@ -2279,7 +2599,9 @@ public final class RelayBroker: @unchecked Sendable {
             guard terminalStates.contains(handoff.state) else { return false }
             let idMatches = !requestedID.isEmpty
                 && (handoff.sourceWorkspaceID == requestedID || handoff.targetWorkspaceID == requestedID)
-            let nameMatches = !requestedName.isEmpty && [handoff.sourceWorkspaceName, handoff.targetWorkspaceName]
+            let nameMatches = requestedID.isEmpty
+                && !requestedName.isEmpty
+                && [handoff.sourceWorkspaceName, handoff.targetWorkspaceName]
                 .compactMap { $0 }
                 .contains { $0.caseInsensitiveCompare(requestedName) == .orderedSame }
             return idMatches || nameMatches
@@ -2287,7 +2609,8 @@ public final class RelayBroker: @unchecked Sendable {
 
         let activityRemovalIDs = Set(activityRecords.values.lazy.filter { event in
             let idMatches = !requestedID.isEmpty && event.workspaceID == requestedID
-            let nameMatches = !requestedName.isEmpty
+            let nameMatches = requestedID.isEmpty
+                && !requestedName.isEmpty
                 && event.workspaceName.caseInsensitiveCompare(requestedName) == .orderedSame
             return idMatches || nameMatches
         }.map(\.id))
@@ -3092,7 +3415,7 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     private func pruneHandoffsLocked() {
-        let excess = handoffRecords.count - Self.maximumRetainedHandoffs
+        let excess = handoffRecords.count - historyRetentionPolicy.maximumRecords
         guard excess > 0 else { return }
         let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
         let removalIDs = Set(
@@ -3109,6 +3432,16 @@ public final class RelayBroker: @unchecked Sendable {
         handoffRecords = handoffRecords.filter { !removalIDs.contains($0.key) }
         idempotencyRecords = idempotencyRecords.filter { !removalIDs.contains($0.value.handoffID) }
         delegationResponses = delegationResponses.filter { !removalIDs.contains($0.key) }
+    }
+
+    private func pruneActivityRecordsLocked() {
+        let excess = activityRecords.count - historyRetentionPolicy.maximumRecords
+        guard excess > 0 else { return }
+        let removalIDs = Set(activityRecords.values.sorted {
+            if $0.occurredAt == $1.occurredAt { return $0.id < $1.id }
+            return $0.occurredAt < $1.occurredAt
+        }.prefix(excess).map(\.id))
+        activityRecords = activityRecords.filter { !removalIDs.contains($0.key) }
     }
 
     private func failure(

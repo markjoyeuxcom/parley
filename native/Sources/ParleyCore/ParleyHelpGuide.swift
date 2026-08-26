@@ -431,6 +431,21 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "context-packs-vendor-evidence",
+                    title: "Add browser and tool evidence",
+                    paragraphs: [
+                        "Right-click an agent pane and choose Browser & Tool Capability for Parley's small per-pane summary. Unknown means exactly Unknown: a permission profile may record network intent, but terminal prose is not capability evidence and Parley does not infer browser access from a successful-looking answer.",
+                        "In an editable Context Pack, choose Add Browser/Tool Evidence to add a credential-free HTTP or HTTPS URL, person-provided selected text, a browser screenshot or a saved tool artifact. Choose the exact vendor pane you are attributing it to and review the resulting provenance before Ask or Compare.",
+                    ],
+                    items: [
+                        "Parley never opens or scrapes the vendor browser session and never reads browser profiles, cookies or website credentials.",
+                        "URLs are shape-validated but not fetched or verified. Selected text stays an explicit person's capture rather than becoming a claim that Parley saw the page.",
+                        "A local screenshot must be a readable image. Screenshots and saved artifacts are capped at 25 MB; Parley records the exact path, byte count and SHA-256 after inspecting the selected local bytes.",
+                        "Binary bytes are not embedded in the text context pack. The receiving vendor must say when its own tools or granted filesystem scope cannot read the attributed path.",
+                        "Every rendered evidence part stamps the vendor, pane, URL or artifact facts, capture basis and browser/tool capability state. Current adapters remain Unknown because none supplies a safe effective per-pane inspection that is credential-free, quota-free and configuration-free.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "context-packs-workspace-brief",
                     title: "Maintain a workspace brief",
                     paragraphs: [
@@ -724,9 +739,26 @@ public enum ParleyHelpGuide {
                     ],
                     items: [
                         "Tick individual records, or use Select Results for the current search. Export Selected writes only that explicit selection to a local owner-only Markdown file.",
+                        "With one workspace selected in Status Center, the archive menu can export every retained handoff involving that workspace, including dismissed records. The export contains handoff bodies and receipts, not lifecycle activity. The neighbouring Delete History action removes eligible handoffs and lifecycle activity only after a workspace-specific destructive confirmation; active work remains.",
+                        "Local retention is core-owned and separate for Production and Development. Choose a bound of 100, 250 or 500 for both handoffs and lifecycle events. Lowering it immediately and irreversibly removes the oldest eligible records; active handoffs and curated handoff chains are preserved, and increasing it later cannot restore deleted history.",
                         "The Markdown export deliberately contains complete question, instruction and returned-result bodies plus identities and delivery receipts. Review it before sharing; it is different from Parley's privacy-bounded diagnostics export.",
                         "Ask This Again is available only after an Ask has ended and its original cross-vendor source and target panes are still running, relay-ready and on the current protocol.",
                         "Repeating always opens the recorded question in an editable preview. Ask Again creates a fresh tracked handoff identity and leaves the historical record unchanged; Parley never silently replays it.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "status-reviewed-busy-queue",
+                    title: "Keep a reviewed Ask while its target is busy",
+                    paragraphs: [
+                        "When a native Ask or review shortcut finds that its exact target already has tracked work, Parley can keep the text in the Reviewed Busy Queue. This is a durable owner-only draft, not an execution queue: it contains no pane credentials and becoming idle never submits it.",
+                        "Open Status Center to inspect the complete text and route. TARGET BUSY means the original target still owns tracked work. READY TO REVIEW means only that a fresh human Review and Send action is now available; it is not permission for Parley to send in the background.",
+                    ],
+                    items: [
+                        "Review and Send opens the whole draft in an editable preview and creates a normal tracked Ask with a fresh identity.",
+                        "Discard Draft removes an unsent local draft without touching either terminal.",
+                        "Parley keeps at most 32 reviewed busy drafts and refuses extra drafts rather than silently dropping old text.",
+                        "If the core stops across the exact terminal-submission boundary, the item becomes SEND UNCERTAIN and DO NOT RESEND. Dismissing that record never claims to cancel or reverse input that may already have reached the target.",
+                        "Pane credentials cannot list, create, send or discard this queue. Only the authenticated native UI can operate it.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -748,6 +780,78 @@ public enum ParleyHelpGuide {
                         "Open a chain and choose Add Human Decision to record what you decided. The decision is explicitly labelled HUMAN and is never attributed to an agent.",
                         "Chains store exact local snapshots, so curated evidence remains readable after Parley's bounded ordinary handoff journal prunes an old record.",
                         "Deleting a chain removes only that curated copy. It never deletes the broker handoff, changes terminal state or interrupts a pane.",
+                    ]
+                ),
+            ]
+        ),
+        ParleyHelpTopic(
+            id: "release-lifecycle",
+            title: "Compatibility, updates and feedback",
+            summary: "Check CLI changes honestly, choose a release channel, verify a DMG and review exactly what beta feedback contains.",
+            symbol: "checkmark.shield",
+            sections: [
+                ParleyHelpSection(
+                    id: "release-compatibility",
+                    title: "Quota-free vendor compatibility",
+                    paragraphs: [
+                        "Open Tools → Compatibility & Releases. Parley runs exactly one --version command for each installed Claude, Codex, Agy and Copilot CLI. The probe receives a minimal allowlisted launch environment and closed empty stdin, then Parley retains only the semantic version and reports adapter support for Launch, Submit, Ask/Answer and Permissions. No session is opened, no prompt is submitted, no vendor configuration is inspected and no model quota is spent.",
+                        "CLI CHANGED means the semantic version differs from the previous runtime-local check. It is a reason to consider live conformance, not a claim that conformance passed. Permission support remains Partial because Parley translates only documented safe controls and vendor prompts remain authoritative.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "release-runtime-hooks",
+                    title: "Runtime state stays Unknown without evidence",
+                    paragraphs: [
+                        "Parley shows Ready, Working or Awaiting Permission only if a vendor supplies a trustworthy structured per-session hook. Current vendors do not, so a running pane is Unknown. Terminal prose, silence, animation and elapsed time never become runtime facts.",
+                        "Exited is different: Parley owns the process lifecycle and can report an observed exit and status without reading terminal content. The older conservative prompt detector remains only a safety stop for the opt-in live conformance runner; it never becomes a Status claim.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "release-live-conformance",
+                    title: "Run live conformance deliberately",
+                    paragraphs: [
+                        "Run Live Conformance is an explicit quota-spending action. After confirmation, the bundled runner uses eligible existing panes to prove protocol injection, exact multiline bracketed paste, automatic submission, correlated answer current routing, inactive-target and cross-workspace delivery. It never creates, restarts or closes a pane.",
+                    ],
+                    items: [
+                        "Parley refuses the run while tracked Ask or delegated work is active.",
+                        "A visible trust or permission decision blocks the probe; Parley never answers it.",
+                        "The result is kept in memory for review. A beta feedback bundle retains only vendor, check name and outcome—not returned text or failure detail.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand(
+                            "PARLEY_LIVE=1 npm run test:conformance",
+                            "Developer equivalent for the isolated Development runtime. It spends vendor subscription quota and should follow the dry-run plan."
+                        ),
+                        ParleyHelpCommand(
+                            "npm run test:conformance:plan",
+                            "Print the safe Development probe plan without sending text or spending quota."
+                        ),
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "release-updates",
+                    title: "Stable and Beta GitHub Releases",
+                    paragraphs: [
+                        "Stable selects published non-prereleases. Beta selects the newest published release including prereleases. Parley contacts its public GitHub Releases API only after you press Check GitHub; there is no background update check.",
+                        "Before offering a DMG, Parley requires the GitHub asset list, release manifest and SHA256SUMS to agree on version, repository, architecture, filename, byte count and SHA-256. Download and Verify hashes the complete downloaded DMG before saving it locally. It does not install, relaunch or replace the persistent core.",
+                        "The automatic check is deliberately credential-free. A private releases repository returns HTTP 404 and cannot be checked from the app; Open Releases uses your signed-in browser, while automatic checks require releases to be published from a public repository.",
+                    ],
+                    items: [
+                        "Release notes are shown before any download.",
+                        "An unnotarized beta stays visibly labelled; checksum verification is not code signing or notarization.",
+                        "Installation remains a separate human action. When the new app opens, the existing core handover gate defers replacement while tracked Ask or delegated work is active.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "release-feedback",
+                    title: "Review beta feedback before export",
+                    paragraphs: [
+                        "The Beta Feedback tab opens a field-level review before it can write an owner-only local ZIP. Nothing is uploaded automatically. The archive contains feedback.json, diagnostics.json and a privacy README.",
+                    ],
+                    items: [
+                        "Included: build facts, selected update channel, semantic vendor versions, compatibility states, capability outcomes, live conformance check names/outcomes and structurally redacted diagnostics.",
+                        "Excluded by structure: prompts, delegated instructions, answers, result bodies, terminal contents, selections, titles, commands, folders, display names, credentials, tokens, sockets, raw journals, raw logs, browser profiles and subscription data.",
+                        "Review the generated files again before attaching the ZIP to an issue or sending it to another person.",
                     ]
                 ),
             ]

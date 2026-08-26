@@ -958,7 +958,19 @@ private func checkInAppHelpGuideCoverage() throws {
         "main window is closed", "prompt and answer bodies", "coordination unavailable",
         "collaboration history", "case-insensitive and terms", "select results",
         "owner-only markdown", "ask this again", "fresh tracked handoff identity",
-        "never silently replays",
+        "never silently replays", "100, 250 or 500", "increasing it later",
+        "including dismissed records", "lifecycle activity",
+        "reviewed busy queue", "becoming idle never submits", "ready to review",
+        "fresh human review and send", "send uncertain", "do not resend",
+        "at most 32 reviewed busy drafts", "pane credentials cannot list",
+        "browser and tool evidence", "terminal prose is not capability evidence",
+        "credential-free http", "25 mb", "sha-256", "binary bytes are not embedded",
+        "cookies or website credentials", "person-provided selected text",
+        "compatibility & releases", "exactly one --version", "cli changed",
+        "runtime state stays unknown", "terminal prose, silence", "run live conformance",
+        "stable selects published non-prereleases", "sha256sums", "download and verify",
+        "does not install", "review beta feedback", "nothing is uploaded automatically",
+        "live conformance check names/outcomes", "excluded by structure",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -1560,6 +1572,320 @@ private func checkRuntimeReadinessProbesAreQuotaFree() throws {
         overrideSnapshot.item(.protocolRules)?.detail.hasPrefix("1 running agent pane") == true,
         "stale protocol count was not rendered with its numeric value"
     )
+}
+
+private func checkVendorCompatibilityAndRuntimeSignalsAreTruthful() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("parley-compatibility-\(UUID().uuidString)", isDirectory: true)
+    let bin = root.appendingPathComponent("bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    for command in ["claude", "codex", "agy", "copilot"] {
+        let executable = bin.appendingPathComponent(command)
+        try Data().write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+    }
+
+    let runner = RecordingRunner { arguments, _ in
+        guard arguments == ["--version"] else {
+            return CommandOutput(stderr: Data("unexpected compatibility probe".utf8), status: 2)
+        }
+        return CommandOutput(stdout: Data("vendor cli 7.8.9 SECRET_TRAILING_OUTPUT\n".utf8))
+    }
+    let readiness = RuntimeReadinessSnapshot(items: PaneKind.allCases.filter(\.isAgent).map { vendor in
+        RuntimeReadinessItem(
+            id: RuntimeReadinessID(rawValue: vendor.rawValue)!,
+            category: .vendor,
+            title: vendor.label,
+            state: vendor == .copilot ? .unchecked : .ready,
+            detail: "PRIVATE_READINESS_DETAIL",
+            required: false
+        )
+    })
+    let misleadingPane = TmuxPane(
+        id: "%1",
+        kind: .claude,
+        customName: "Claude",
+        terminalTitle: "Working — allow once — task complete",
+        cwd: "/private/project",
+        currentCommand: "claude",
+        isActive: true,
+        windowID: "@0",
+        returnToPaneID: nil,
+        relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        bracketedPasteActive: true,
+        isStarted: true
+    )
+    let exitedPane = TmuxPane(
+        id: "%2",
+        kind: .codex,
+        customName: "Codex",
+        terminalTitle: "",
+        cwd: "/private/project",
+        currentCommand: "codex",
+        isActive: false,
+        windowID: "@0",
+        returnToPaneID: nil,
+        isDead: true,
+        exitStatus: 7,
+        isStarted: true
+    )
+    let snapshot = VendorCompatibilityChecker(runner: runner).check(
+        environment: [
+            "PATH": bin.path,
+            "HOME": root.path,
+            "LANG": "en_GB.UTF-8",
+            "SECRET_TOKEN": "MUST_NOT_REACH_VERSION_PROBE",
+        ],
+        readiness: readiness,
+        panes: [misleadingPane, exitedPane],
+        previous: nil,
+        checkedAt: Date(timeIntervalSince1970: 500)
+    )
+
+    try expect(snapshot.vendors.count == 4, "compatibility omitted a supported vendor")
+    try expect(runner.calls.count == 4, "compatibility did not run exactly one version-only probe per installed vendor")
+    try expect(
+        runner.calls.allSatisfy { $0.arguments == ["--version"] && $0.input?.isEmpty == true },
+        "compatibility did not close stdin with an empty, prompt-free version probe"
+    )
+    try expect(
+        runner.calls.allSatisfy {
+            $0.environment["PATH"] == bin.path
+                && $0.environment["HOME"] == root.path
+                && $0.environment["SECRET_TOKEN"] == nil
+        },
+        "the version-only probe inherited unrelated credentials instead of a minimal launch environment"
+    )
+    for result in snapshot.vendors {
+        try expect(result.version == "7.8.9", "compatibility retained untrusted version-command prose")
+        try expect(result.state == .compatible, "an installed compatible vendor was not reported honestly")
+        try expect(result.capability(.launch)?.support == .supported, "launch support was omitted")
+        try expect(result.capability(.submit)?.support == .supported, "submit support was omitted")
+        try expect(result.capability(.askAnswer)?.support == .supported, "Ask/Answer support was omitted")
+        try expect(result.capability(.permissions)?.support == .partial, "permission translation was overstated")
+    }
+    try expect(
+        snapshot.runtimeSignals.first(where: { $0.paneID == "%1" })?.state == .unknown,
+        "terminal prose was promoted into an official vendor runtime signal"
+    )
+    try expect(
+        snapshot.runtimeSignals.first(where: { $0.paneID == "%2" })?.state == .exited,
+        "Parley's authoritative process exit was not surfaced"
+    )
+    try expect(snapshot.runtimeSignals.allSatisfy { !$0.detail.contains("PRIVATE") }, "runtime signals copied private terminal or readiness prose")
+
+    let changed = VendorCompatibilityChecker(runner: runner).check(
+        environment: ["PATH": bin.path],
+        readiness: readiness,
+        panes: [],
+        previous: VendorCompatibilitySnapshot(
+            checkedAt: Date(timeIntervalSince1970: 400),
+            vendors: snapshot.vendors.map { $0.replacingVersion("7.8.8") },
+            runtimeSignals: []
+        ),
+        checkedAt: Date(timeIntervalSince1970: 600)
+    )
+    try expect(changed.vendors.allSatisfy(\.versionChanged), "a CLI upgrade was not made visible")
+
+    let timedOut = VendorCompatibilityChecker(runner: RecordingRunner { _, _ in
+        CommandOutput(stderr: Data("Command timed out after 8 seconds".utf8), status: 124)
+    }).check(environment: ["PATH": bin.path], readiness: readiness, panes: [], previous: nil)
+    try expect(
+        timedOut.vendors.allSatisfy { $0.detail.contains("timed out") },
+        "a bounded version-probe timeout was not distinguished from unparseable output"
+    )
+
+    let exited = VendorCompatibilityChecker(runner: RecordingRunner { _, _ in
+        CommandOutput(status: 9)
+    }).check(environment: ["PATH": bin.path], readiness: readiness, panes: [], previous: nil)
+    try expect(
+        exited.vendors.allSatisfy { $0.detail.contains("status 9") },
+        "a failed version probe hid its content-free exit status"
+    )
+}
+
+private func checkReleaseLifecycleUsesExplicitVerifiedChannels() throws {
+    try expect(
+        ReleaseLifecycleError.httpStatus(404).errorDescription?.contains("private") == true,
+        "a private release feed did not produce an actionable credential-free explanation"
+    )
+    try expect(
+        ReleaseLifecycleError.httpStatus(403).errorDescription?.contains("rate limit") == true,
+        "a public GitHub rate limit did not produce an actionable explanation"
+    )
+    let dmgName = "Parley-1.3.0-beta.1-mac-arm64.dmg"
+    let dmg = Data("fixture dmg bytes".utf8)
+    let digest = ReleaseArtifactVerifier.sha256(data: dmg)
+    let releasesJSON = Data("""
+    [
+      {
+        "tag_name": "v1.2.0",
+        "name": "Parley 1.2.0",
+        "body": "Stable notes",
+        "draft": false,
+        "prerelease": false,
+        "html_url": "https://github.com/markjoyeuxcom/parley/releases/tag/v1.2.0",
+        "published_at": "2026-08-20T10:00:00Z",
+        "assets": []
+      },
+      {
+        "tag_name": "v1.3.0-beta.1",
+        "name": "Parley 1.3.0 beta 1",
+        "body": "Beta notes",
+        "draft": false,
+        "prerelease": true,
+        "html_url": "https://github.com/markjoyeuxcom/parley/releases/tag/v1.3.0-beta.1",
+        "published_at": "2026-08-21T10:00:00Z",
+        "assets": [
+          {"name":"\(dmgName)","size":\(dmg.count),"browser_download_url":"https://github.com/markjoyeuxcom/parley/releases/download/v1.3.0-beta.1/\(dmgName)"},
+          {"name":"Parley-1.3.0-beta.1-mac-arm64.release.json","size":800,"browser_download_url":"https://github.com/markjoyeuxcom/parley/releases/download/v1.3.0-beta.1/manifest"},
+          {"name":"Parley-1.3.0-beta.1-mac-arm64.SHA256SUMS","size":200,"browser_download_url":"https://github.com/markjoyeuxcom/parley/releases/download/v1.3.0-beta.1/checksums"}
+        ]
+      },
+      {
+        "tag_name": "v9.9.9",
+        "name": "Draft",
+        "body": "Never visible",
+        "draft": true,
+        "prerelease": false,
+        "html_url": "https://github.com/markjoyeuxcom/parley/releases/tag/v9.9.9",
+        "published_at": "2026-08-22T10:00:00Z",
+        "assets": []
+      }
+    ]
+    """.utf8)
+    let catalog = try GitHubReleaseCatalog.decode(releasesJSON)
+    try expect(catalog.selected(for: .stable)?.version == "1.2.0", "stable channel selected a prerelease or draft")
+    let beta = try require(catalog.selected(for: .beta), "beta channel found no release")
+    try expect(beta.version == "1.3.0-beta.1", "beta channel did not select the newest eligible version")
+    try expect(beta.updateState(currentVersion: "1.2.0") == .available, "newer release was not reported as available")
+    try expect(beta.updateState(currentVersion: "development") == .unknown, "development build invented an update ordering")
+
+    let manifest = Data("""
+    {
+      "schemaVersion": 1,
+      "application": {"name":"Parley","bundleIdentifier":"com.markjoyeux.parley","version":"1.3.0-beta.1","build":"103"},
+      "platform": {"operatingSystem":"macOS","architecture":"arm64","minimumVersion":"14.0"},
+      "trust": {"signing":"ad-hoc","notarized":false,"gatekeeperReady":false},
+      "source": {"repository":"https://github.com/markjoyeuxcom/parley","commit":"0123456789abcdef0123456789abcdef01234567"},
+      "artifacts": [{"file":"\(dmgName)","bytes":\(dmg.count),"sha256":"\(digest)"}]
+    }
+    """.utf8)
+    let checksums = Data("\(digest)  \(dmgName)\n".utf8)
+    let verified = try ReleaseMetadataVerifier.verify(
+        release: beta,
+        manifestData: manifest,
+        checksumData: checksums
+    )
+    try expect(verified.dmgName == dmgName && verified.sha256 == digest, "release metadata lost the verified DMG identity")
+
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let file = root.appendingPathComponent(dmgName)
+    try dmg.write(to: file)
+    try ReleaseArtifactVerifier.verify(file: file, expected: verified)
+    try Data("tampered".utf8).write(to: file)
+    do {
+        try ReleaseArtifactVerifier.verify(file: file, expected: verified)
+        throw CheckFailure(description: "a tampered update artifact was accepted")
+    } catch let error as ReleaseLifecycleError {
+        try expect(error.errorDescription?.contains("does not match") == true, "tampered artifact failed unclearly")
+    }
+}
+
+private func checkBetaFeedbackBundleIsReviewedAndPrivacyBounded() throws {
+    let secrets = [
+        "PROMPT_SECRET_FEEDBACK",
+        "ANSWER_SECRET_FEEDBACK",
+        "DETAIL_SECRET_FEEDBACK",
+        "PATH_SECRET_FEEDBACK",
+    ]
+    let compatibility = VendorCompatibilitySnapshot(
+        checkedAt: Date(timeIntervalSince1970: 700),
+        vendors: [VendorCompatibilityResult(
+            vendor: .claude,
+            installed: true,
+            version: "4.5.6",
+            state: .compatible,
+            detail: secrets[3],
+            versionChanged: false,
+            capabilities: VendorCompatibilityCapability.allCases.map {
+                VendorCompatibilityCapabilityResult(capability: $0, support: $0 == .permissions ? .partial : .supported)
+            }
+        )],
+        runtimeSignals: []
+    )
+    let conformance = VendorConformanceReport(results: [
+        VendorConformanceResult(vendor: .claude, check: "Ask/Answer", outcome: .failed, detail: secrets[2]),
+    ])
+    let diagnostics = DiagnosticsReportBuilder.build(
+        generatedAt: Date(timeIntervalSince1970: 710),
+        application: DiagnosticsApplication(
+            bundleIdentifier: "com.markjoyeux.parley",
+            version: "1.2.3",
+            build: "45",
+            runtime: "development"
+        ),
+        operatingSystem: "macOS fixture",
+        architecture: "arm64",
+        uiResidentBytes: nil,
+        coreResidentBytes: nil,
+        tmuxAvailable: true,
+        coreAvailable: true,
+        workspaceCount: 0,
+        panes: [],
+        handoffs: [],
+        readiness: nil
+    )
+    let bundle = BetaFeedbackBundleBuilder.build(
+        generatedAt: Date(timeIntervalSince1970: 720),
+        build: BetaFeedbackBuild(
+            applicationVersion: "1.2.3",
+            buildNumber: "45",
+            sourceCommit: "0123456789abcdef0123456789abcdef01234567",
+            runtime: "development"
+        ),
+        updateChannel: .beta,
+        compatibility: compatibility,
+        conformance: conformance,
+        diagnostics: diagnostics
+    )
+    try expect(bundle.requiresExplicitReview, "feedback could be exported without an explicit review contract")
+    try expect(bundle.conformance.first?.detail == nil, "feedback retained a live conformance answer or failure body")
+    let encoded = try BetaFeedbackBundleEncoder.encode(bundle)
+    let text = String(decoding: encoded, as: UTF8.self)
+    for secret in secrets {
+        try expect(!text.contains(secret), "beta feedback leaked private value \(secret)")
+    }
+    try expect(text.contains("4.5.6") && text.contains("failed"), "beta feedback omitted useful compatibility facts")
+
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let archive = root.appendingPathComponent("Parley-Beta-Feedback.zip")
+    try BetaFeedbackArchiveWriter().write(bundle: bundle, to: archive)
+    let extracted = root.appendingPathComponent("feedback", isDirectory: true)
+    try FileManager.default.createDirectory(at: extracted, withIntermediateDirectories: false)
+    let unzip = try ProcessCommandRunner(timeout: 10).run(
+        executable: URL(fileURLWithPath: "/usr/bin/ditto"),
+        arguments: ["-x", "-k", archive.path, extracted.path],
+        environment: ProcessInfo.processInfo.environment,
+        input: nil
+    )
+    try expect(unzip.status == 0, "feedback ZIP could not be extracted")
+    let files = try FileManager.default.subpathsOfDirectory(atPath: extracted.path)
+    try expect(files.contains(where: { $0.hasSuffix("feedback.json") }), "feedback archive omitted its reviewed manifest")
+    try expect(files.contains(where: { $0.hasSuffix("diagnostics.json") }), "feedback archive omitted redacted diagnostics")
+    try expect(files.contains(where: { $0.hasSuffix("README.txt") }), "feedback archive omitted its privacy statement")
+    for relativePath in files {
+        let file = extracted.appendingPathComponent(relativePath)
+        let content = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        for secret in secrets {
+            try expect(!content.contains(secret), "feedback archive leaked private value \(secret)")
+        }
+    }
 }
 
 private func checkGitProjectContextParsing() throws {
@@ -4575,6 +4901,153 @@ private func checkContextPacksAreExplicitBoundedAndAttributed() throws {
     )
 }
 
+private func checkVendorToolEvidenceIsCapabilityGatedAndAttributed() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let profile = PermissionProfileDefinition(
+        id: "custom-browser-fixture",
+        name: "Browser fixture",
+        summary: "Network intent is explicit but does not prove a browser exists.",
+        isBuiltIn: false,
+        rootMode: .paneFolder,
+        defaultLifetime: .session,
+        rules: Dictionary(uniqueKeysWithValues: PermissionCapability.allCases.map {
+            ($0, $0 == .networkAccess ? PermissionRule.allow : PermissionRule.requireApproval)
+        })
+    )
+    let pane = TmuxPane(
+        id: "%browser", kind: .claude, customName: "Researcher",
+        terminalTitle: "Browser task completed successfully", cwd: directory.path,
+        currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
+        relayEnabled: true, protocolVersion: AgentProtocol.version,
+        permissionSelection: PermissionProfileSelection(
+            profileID: profile.id,
+            approvedRoots: [directory.path],
+            lifetime: .session
+        ),
+        permissionEnforcement: .partiallyEnforced
+    )
+    let capability = PaneToolCapabilityProjection.summary(for: pane, profiles: [profile])
+    try expect(capability.toolAccess == .unknown, "network permission was misreported as verified browser/tool access")
+    try expect(capability.networkRule == .allow, "the truthful capability summary lost explicit network-policy intent")
+    try expect(capability.canCaptureEvidence, "a live agent pane could not receive explicit person-selected evidence")
+    try expect(
+        capability.detail.localizedCaseInsensitiveContains("terminal")
+            && capability.detail.localizedCaseInsensitiveContains("not evidence"),
+        "the capability summary did not explain why successful-looking terminal prose proves nothing"
+    )
+
+    let stopped = TmuxPane(
+        id: "%stopped", kind: .codex, customName: nil, terminalTitle: "", cwd: directory.path,
+        currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil,
+        isStarted: false
+    )
+    let stoppedCapability = PaneToolCapabilityProjection.summary(for: stopped, profiles: [])
+    try expect(
+        stoppedCapability.toolAccess == .unavailable && !stoppedCapability.canCaptureEvidence,
+        "a stopped pane advertised live vendor-tool evidence capture"
+    )
+
+    let capturedAt = Date(timeIntervalSince1970: 1_787_680_800)
+    let builder = ContextPackBuilder(
+        maximumPartBytes: 4_096,
+        maximumRenderedBytes: 20_000,
+        maximumArtifactBytes: 1_024
+    )
+    let url = try builder.browserURLEvidence(
+        from: pane,
+        url: "https://example.com/reference?q=parley",
+        capturedAt: capturedAt
+    )
+    try expect(url.source.kind == .browserURL, "a browser URL lost its explicit source kind")
+    try expect(url.source.vendorEvidence?.vendor == .claude, "browser evidence lost its vendor attribution")
+    try expect(url.source.vendorEvidence?.paneID == pane.id, "browser evidence lost its exact pane attribution")
+    try expect(url.source.vendorEvidence?.toolAccess == .unknown, "browser evidence invented an affirmative capability")
+    try expect(url.text.localizedCaseInsensitiveContains("did not fetch"), "a URL capture implied Parley had inspected the page")
+
+    let selectionText = "Only this person-selected paragraph is evidence."
+    let selection = try builder.browserSelectionEvidence(
+        from: pane,
+        url: "https://example.com/reference",
+        text: selectionText,
+        capturedAt: capturedAt
+    )
+    try expect(selection.source.kind == .browserSelection, "browser-selected text lost its source kind")
+    try expect(selection.capturedText == selectionText, "browser-selected text changed during capture")
+
+    for invalidURL in ["file:///tmp/private", "https://person:secret@example.com/private", "javascript:alert(1)"] {
+        do {
+            _ = try builder.browserURLEvidence(from: pane, url: invalidURL, capturedAt: capturedAt)
+            throw CheckFailure(description: "unsafe browser URL entered a context pack: \(invalidURL)")
+        } catch ContextPackError.invalidEvidence {
+            // Expected: only credential-free HTTP(S) provenance is accepted.
+        }
+    }
+
+    let png = try require(
+        Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6pWQAAAAASUVORK5CYII="),
+        "PNG fixture could not be decoded"
+    )
+    let screenshotFile = directory.appendingPathComponent("browser-proof.png")
+    try png.write(to: screenshotFile)
+    let screenshot = try builder.vendorArtifactEvidence(
+        kind: .browserScreenshot,
+        from: pane,
+        file: screenshotFile,
+        sourceURL: "https://example.com/reference",
+        capturedAt: capturedAt
+    )
+    let screenshotEvidence = try require(screenshot.source.vendorEvidence, "screenshot lost its typed provenance")
+    try expect(screenshot.source.kind == .browserScreenshot, "screenshot lost its source kind")
+    try expect(screenshotEvidence.artifactByteCount == png.count, "screenshot provenance reported the wrong byte size")
+    try expect(screenshotEvidence.sha256?.count == 64, "screenshot provenance omitted its exact SHA-256 identity")
+    try expect(!screenshot.capturedText.contains(png.base64EncodedString()), "binary screenshot bytes were hidden inside a text context pack")
+
+    let artifactFile = directory.appendingPathComponent("tool-output.bin")
+    try Data([0, 1, 2, 3, 4]).write(to: artifactFile)
+    let artifact = try builder.vendorArtifactEvidence(
+        kind: .savedArtifact,
+        from: pane,
+        file: artifactFile,
+        sourceURL: nil,
+        capturedAt: capturedAt
+    )
+    try expect(artifact.source.kind == .toolArtifact, "saved tool artifact lost its source kind")
+    try expect(artifact.source.vendorEvidence?.artifactByteCount == 5, "saved artifact lost its byte size")
+
+    let rendered = try builder.render(ContextPack(
+        name: "Vendor evidence",
+        note: "Review only the attributed evidence.",
+        parts: [url, selection, screenshot, artifact]
+    ))
+    for expected in [
+        "Evidence vendor: Claude", "Evidence pane: Researcher (%browser)",
+        "Browser/tool capability: Unknown", "Artifact bytes: \(png.count)",
+        "Artifact SHA-256:", "Parley did not open, scrape or control the vendor browser session",
+    ] {
+        try expect(rendered.contains(expected), "rendered vendor evidence omitted \(expected)")
+    }
+    let roundTrip = try JSONDecoder().decode(
+        ContextPackPart.self,
+        from: JSONEncoder().encode(screenshot)
+    )
+    try expect(roundTrip == screenshot, "serialized context evidence lost its provenance")
+
+    let boundedBuilder = ContextPackBuilder(maximumArtifactBytes: 4)
+    do {
+        _ = try boundedBuilder.vendorArtifactEvidence(
+            kind: .savedArtifact,
+            from: pane,
+            file: artifactFile,
+            sourceURL: nil,
+            capturedAt: capturedAt
+        )
+        throw CheckFailure(description: "an oversized local artifact crossed the explicit evidence bound")
+    } catch ContextPackError.artifactTooLarge {
+        // Expected: metadata capture still has a deliberate source-byte ceiling.
+    }
+}
+
 private func checkWorkspaceBriefsAreDurableAndExplicitlyAttached() throws {
     let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -5223,6 +5696,181 @@ private func checkCollaborationHistorySearchExportAndRepeat() throws {
     try expect(CollaborationHistoryRepeat.route(for: completedAsk, panes: [source, staleTarget]) == nil, "Ask This Again bypassed the current-protocol gate")
 }
 
+private func checkConfigurableHistoryRetentionAndWorkspaceExport() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let policyFile = directory.appendingPathComponent("history-retention.json")
+    let store = CollaborationHistoryRetentionStore(file: policyFile)
+    let defaultPolicy = try store.policy()
+    try expect(
+        defaultPolicy == .defaultPolicy,
+        "a new retention store did not use Parley's bounded default"
+    )
+    let compact = try CollaborationHistoryRetentionPolicy(maximumRecords: 100)
+    try store.save(compact)
+    let reloadedPolicy = try CollaborationHistoryRetentionStore(file: policyFile).policy()
+    try expect(reloadedPolicy == compact, "retention policy did not survive reload")
+    let attributes = try FileManager.default.attributesOfItem(atPath: policyFile.path)
+    let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
+    try expect(mode & 0o077 == 0, "retention policy was readable outside its owner")
+    do {
+        _ = try CollaborationHistoryRetentionPolicy(maximumRecords: 101)
+        throw CheckFailure(description: "retention accepted a value outside its explicit choices")
+    } catch is CollaborationHistoryRetentionError {
+        // Expected: the UI and control route cannot invent an unbounded value.
+    }
+
+    let historyFile = directory.appendingPathComponent("bounded-history.jsonl")
+    let journal = try RelayHandoffJournal(file: historyFile, maximumHandoffs: 500)
+    for index in 0..<3 {
+        journal.record(try statusHandoff(
+            id: "retained-\(index)",
+            kind: .relay,
+            state: .completed,
+            sourceWorkspaceID: index == 2 ? "@1" : "@0",
+            targetWorkspaceID: index == 0 ? "@1" : "@0",
+            occurredAt: TimeInterval(index + 1),
+            text: "history \(index)"
+        ))
+    }
+    let removed = try journal.updateMaximumHandoffs(2)
+    try expect(removed == 1, "lowering durable retention did not report the removed record")
+    let retained = journal.handoffs()
+    try expect(retained.map(\.id) == ["retained-2", "retained-1"], "lowering retention did not keep the newest terminal records")
+    let replayedRetained = try RelayHandoffJournal(file: historyFile, maximumHandoffs: 2).handoffs()
+    try expect(
+        replayedRetained.map(\.id) == retained.map(\.id),
+        "the lowered retention result was not durable"
+    )
+
+    let allRecords = [
+        try statusHandoff(
+            id: "workspace-cross",
+            kind: .ask,
+            state: .completed,
+            sourceWorkspaceID: "@0",
+            targetWorkspaceID: "@1",
+            occurredAt: 10,
+            text: "cross workspace"
+        ),
+        try statusHandoff(
+            id: "workspace-local",
+            kind: .delegate,
+            state: .completed,
+            sourceWorkspaceID: "@1",
+            targetWorkspaceID: "@1",
+            occurredAt: 20,
+            text: "other workspace"
+        ),
+    ]
+    let workspaceRecords = CollaborationHistoryProjection.records(
+        allRecords,
+        involvingWorkspaceID: "@0"
+    )
+    try expect(workspaceRecords.map(\.id) == ["workspace-cross"], "workspace export included unrelated history")
+    let workspaceMarkdown = CollaborationHistoryMarkdown.document(
+        handoffs: workspaceRecords,
+        scopeName: "Workspace Zero",
+        selectionDescription: "All retained handoffs involving this workspace",
+        generatedAt: Date(timeIntervalSince1970: 100)
+    )
+    try expect(
+        workspaceMarkdown.contains("All retained handoffs involving this workspace")
+            && workspaceMarkdown.contains("workspace-cross")
+            && !workspaceMarkdown.contains("workspace-local"),
+        "workspace export did not describe and preserve its exact scope"
+    )
+}
+
+private func checkHistoryRetentionCoreControlRoute() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%source")
+    _ = try credentials.token(for: "%target")
+    let panes = [
+        TmuxPane(id: "%source", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "app"),
+        TmuxPane(id: "%target", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil, workspaceName: "app"),
+    ]
+    let retentionStore = CollaborationHistoryRetentionStore(
+        file: directory.appendingPathComponent("history-retention.json")
+    )
+    let policy = try retentionStore.policy()
+    let handoffJournal = try RelayHandoffJournal(
+        file: directory.appendingPathComponent("handoffs.jsonl"),
+        maximumHandoffs: policy.maximumRecords
+    )
+    let activityJournal = try RelayActivityJournal(
+        file: directory.appendingPathComponent("activity-events.jsonl"),
+        maximumEvents: policy.maximumRecords
+    )
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        handoffJournal: handoffJournal,
+        activityJournal: activityJournal,
+        historyRetentionPolicy: policy,
+        historyRetentionStore: retentionStore
+    )
+    let infoFile = directory.appendingPathComponent("relay-url")
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: "retention-control")
+    try server.start()
+    defer { server.stop() }
+
+    for index in 0..<101 {
+        let handoff = broker.handle(
+            token: sourceToken,
+            target: "Reviewer",
+            text: "retention control handoff \(index)",
+            idempotencyKey: "retention-control-\(index)"
+        )
+        try expect(handoff.status == 200, "retention control fixture could not create handoff \(index)")
+        _ = try broker.recordActivity(RelayActivityEventRequest(
+            kind: .paneRestarted,
+            workspaceID: "@0",
+            workspaceName: "app",
+            paneID: "%source",
+            paneName: "Builder",
+            paneKind: .codex,
+            detail: "Retention fixture event \(index)."
+        ))
+    }
+
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: "retention-control")
+    let initialPolicy = try client.historyRetentionPolicy()
+    try expect(initialPolicy == .defaultPolicy, "the UI could not read core-owned retention")
+    let change = try client.updateHistoryRetention(maximumRecords: 100)
+    try expect(change.policy.maximumRecords == 100, "the authenticated retention update did not reach the core")
+    try expect(change.removedHandoffs == 1 && change.removedActivityEvents == 1, "retention update did not report both compacted journals")
+    let retainedHandoffs = try client.handoffs()
+    let retainedActivity = try client.activityEvents()
+    try expect(retainedHandoffs.count == 100, "retention update did not compact the live handoff projection")
+    try expect(retainedActivity.count == 100, "retention update did not compact the live activity projection")
+    let persistedPolicy = try retentionStore.policy()
+    try expect(persistedPolicy.maximumRecords == 100, "the core did not persist updated retention")
+
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    var unauthorizedRejected = false
+    do {
+        _ = try unauthorized.updateHistoryRetention(maximumRecords: 250)
+    } catch let RelayCoreError.response(status, _) where status == 401 {
+        unauthorizedRejected = true
+    }
+    try expect(unauthorizedRejected, "an unauthenticated UI changed local retention")
+    let policyAfterRejection = try retentionStore.policy()
+    try expect(policyAfterRejection.maximumRecords == 100, "the rejected retention request changed durable policy")
+
+    var invalidRejected = false
+    do {
+        _ = try client.updateHistoryRetention(maximumRecords: 101)
+    } catch let RelayCoreError.response(status, _) where status == 400 {
+        invalidRejected = true
+    }
+    try expect(invalidRejected, "the core accepted an unsupported retention value")
+}
+
 private func checkHumanAskAgainUsesTrackedCoreControlRoute() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
@@ -5746,11 +6394,14 @@ private func checkWorkspaceHandoffHistoryDeletion() throws {
     let repoAToken = try credentials.token(for: "%1")
     let repoBToken = try credentials.token(for: "%2")
     let repoCToken = try credentials.token(for: "%3")
+    let duplicateNameToken = try credentials.token(for: "%5")
     let panes = [
         TmuxPane(id: "%1", kind: .codex, customName: "Codex A", terminalTitle: "", cwd: "/tmp/repo-a", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "repo-a"),
         TmuxPane(id: "%2", kind: .agy, customName: "Agy B", terminalTitle: "", cwd: "/tmp/repo-b", currentCommand: "agy", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "repo-b"),
         TmuxPane(id: "%3", kind: .claude, customName: "Claude C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "claude", isActive: false, windowID: "@2", returnToPaneID: nil, workspaceName: "repo-c"),
         TmuxPane(id: "%4", kind: .codex, customName: "Codex C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "codex", isActive: false, windowID: "@2", returnToPaneID: nil, workspaceName: "repo-c"),
+        TmuxPane(id: "%5", kind: .claude, customName: "Claude Duplicate", terminalTitle: "", cwd: "/tmp/duplicate-a", currentCommand: "claude", isActive: false, windowID: "@3", returnToPaneID: nil, workspaceName: "repo-a"),
+        TmuxPane(id: "%6", kind: .codex, customName: "Codex Duplicate", terminalTitle: "", cwd: "/tmp/duplicate-a", currentCommand: "codex", isActive: false, windowID: "@3", returnToPaneID: nil, workspaceName: "repo-a"),
     ]
     let historyFile = directory.appendingPathComponent("handoffs.jsonl")
     let journal = try RelayHandoffJournal(file: historyFile)
@@ -5778,6 +6429,13 @@ private func checkWorkspaceHandoffHistoryDeletion() throws {
         idempotencyKey: "delete-workspace-keep"
     )
     try expect(unaffected.status == 200, "workspace deletion fixture could not create unrelated history")
+    let sameNameDifferentWorkspace = broker.handle(
+        token: duplicateNameToken,
+        target: "Codex Duplicate",
+        text: "Keep this different workspace with the same display name.",
+        idempotencyKey: "delete-workspace-same-name-keep"
+    )
+    try expect(sameNameDifferentWorkspace.status == 200, "workspace deletion fixture could not create duplicate-name history")
 
     let pendingResult = LockedAskResult()
     DispatchQueue.global(qos: .utility).async {
@@ -5798,10 +6456,12 @@ private func checkWorkspaceHandoffHistoryDeletion() throws {
     let remaining = broker.handoffs()
     try expect(!remaining.contains(where: { $0.idempotencyKey == "delete-workspace-cross" }), "workspace deletion retained matching completed history")
     try expect(remaining.contains(where: { $0.idempotencyKey == "delete-workspace-keep" }), "workspace deletion removed another workspace's history")
+    try expect(remaining.contains(where: { $0.idempotencyKey == "delete-workspace-same-name-keep" }), "workspace deletion trusted a non-unique display name over the stable workspace id")
     try expect(remaining.contains(where: { $0.idempotencyKey == "delete-workspace-active" }), "workspace deletion removed active work")
     let persisted = try RelayHandoffJournal(file: historyFile).handoffs()
     try expect(!persisted.contains(where: { $0.idempotencyKey == "delete-workspace-cross" }), "workspace deletion did not compact the durable journal")
     try expect(persisted.contains(where: { $0.idempotencyKey == "delete-workspace-keep" }), "durable deletion removed unrelated history")
+    try expect(persisted.contains(where: { $0.idempotencyKey == "delete-workspace-same-name-keep" }), "durable deletion removed a duplicate-name workspace with a different id")
     try expect(persisted.contains(where: { $0.idempotencyKey == "delete-workspace-active" }), "durable deletion removed an active handoff")
 
     try expect(broker.handleAnswer(token: repoBToken, consultationID: "current", text: "Still alive.").status == 200, "the preserved Ask could not be answered")
@@ -7056,6 +7716,342 @@ private func checkAgentAskRejectsBusyTargetAndTimesOut() throws {
     try expect(expired.transitions.last?.detail?.contains("timed out") == true, "expired Ask lost its timeout reason")
 }
 
+private func checkReviewedBusyQueueRequiresExplicitHumanSend() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let targetToken = try credentials.token(for: "%2")
+    let source = TmuxPane(
+        id: "%1", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp/app",
+        currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil,
+        relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+        bracketedPasteActive: true, isStarted: true
+    )
+    let target = TmuxPane(
+        id: "%2", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp/app",
+        currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil,
+        relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+        bracketedPasteActive: true, isStarted: true
+    )
+    let submissions = LockedCounter()
+    let storeFile = directory.appendingPathComponent("reviewed-busy-drafts.json")
+    let store = try ReviewedBusyDraftStore(file: storeFile)
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { [source, target] },
+        paste: { _, _ in },
+        submit: { _, _ in submissions.increment() },
+        consultationTimeout: 10,
+        livenessPollInterval: 0.01,
+        busyDraftStore: store
+    )
+
+    let delegated = broker.handleDelegate(
+        token: sourceToken,
+        target: target.id,
+        text: "Finish the current implementation.",
+        idempotencyKey: "busy-queue-fixture"
+    )
+    let delegationID = try require(delegated.body.handoffID, "busy-queue fixture produced no delegation")
+    try expect(submissions.value == 1, "busy-queue fixture did not submit its initial work")
+
+    let queued = broker.enqueueReviewedBusyAskFromUI(ReviewedBusyDraftCreateRequest(
+        sourcePaneID: source.id,
+        targetPaneID: target.id,
+        text: "Review the finished implementation.\nPreserve this second line.",
+        preserveFormatting: true
+    ))
+    try expect(queued.status == 201, "a reviewed draft could not be queued behind active work")
+    let draft = try JSONDecoder().decode(ReviewedBusyDraft.self, from: Data(queued.text.utf8))
+    try expect(draft.state == .queued && draft.origin == .human, "the busy draft was not visibly human-reviewed and unsent")
+    try expect(submissions.value == 1, "queueing a reviewed draft submitted terminal input")
+    try expect(broker.reviewedBusyDrafts().map(\.id) == [draft.id], "the core did not expose the queued draft")
+
+    let reloaded = try ReviewedBusyDraftStore(file: storeFile).drafts()
+    try expect(reloaded == [draft], "the reviewed busy queue did not survive UI/core store reattachment")
+    let mode = (try FileManager.default.attributesOfItem(atPath: storeFile.path)[.posixPermissions] as? NSNumber)?.intValue ?? -1
+    try expect(mode & 0o077 == 0, "the reviewed busy queue was readable outside its owner")
+
+    let failedWriteFile = directory.appendingPathComponent("failed-write-busy-drafts.json")
+    let failedWriteStore = try ReviewedBusyDraftStore(file: failedWriteFile)
+    let failedWriteDraft = ReviewedBusyDraft(
+        id: "failed-write-draft",
+        sourcePaneID: source.id,
+        sourceName: source.displayName,
+        sourceKind: source.kind,
+        sourceWorkspaceID: source.windowID,
+        sourceWorkspaceName: source.workspaceName,
+        targetPaneID: target.id,
+        targetName: target.displayName,
+        targetKind: target.kind,
+        targetWorkspaceID: target.windowID,
+        targetWorkspaceName: target.workspaceName,
+        text: "Remain visible if a durable discard fails.",
+        preserveFormatting: false
+    )
+    try failedWriteStore.record(failedWriteDraft)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: failedWriteFile.path)
+    do {
+        try failedWriteStore.remove(id: failedWriteDraft.id)
+        throw CheckFailure(description: "an unsafe queue file accepted a supposedly durable discard")
+    } catch ReviewedBusyDraftStoreError.unreadable {
+        // Expected: reject the write before claiming the draft was discarded.
+    }
+    try expect(
+        failedWriteStore.draft(id: failedWriteDraft.id) == failedWriteDraft,
+        "a failed durable discard hid the draft from the live Status Center"
+    )
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: failedWriteFile.path)
+
+    let uncertainFile = directory.appendingPathComponent("uncertain-busy-drafts.json")
+    let uncertainStore = try ReviewedBusyDraftStore(file: uncertainFile)
+    try uncertainStore.record(ReviewedBusyDraft(
+        sourcePaneID: source.id,
+        sourceName: source.displayName,
+        sourceKind: source.kind,
+        sourceWorkspaceID: source.windowID,
+        sourceWorkspaceName: source.workspaceName,
+        targetPaneID: target.id,
+        targetName: target.displayName,
+        targetKind: target.kind,
+        targetWorkspaceID: target.windowID,
+        targetWorkspaceName: target.workspaceName,
+        text: "An explicit send crossed the persistence boundary.",
+        preserveFormatting: false,
+        state: .dispatching,
+        detail: "A person explicitly chose Review and Send."
+    ))
+    let uncertainReload = try ReviewedBusyDraftStore(file: uncertainFile).drafts()
+    try expect(
+        uncertainReload.first?.state == .dispatching,
+        "a restart changed an uncertain explicit send back into a safely resendable queue item"
+    )
+
+    let boundedStore = try ReviewedBusyDraftStore(
+        file: directory.appendingPathComponent("bounded-busy-drafts.json")
+    )
+    for index in 0..<ReviewedBusyDraftStore.maximumDrafts {
+        try boundedStore.record(ReviewedBusyDraft(
+            id: "bounded-\(index)",
+            sourcePaneID: source.id,
+            sourceName: source.displayName,
+            sourceKind: source.kind,
+            sourceWorkspaceID: source.windowID,
+            sourceWorkspaceName: source.workspaceName,
+            targetPaneID: target.id,
+            targetName: target.displayName,
+            targetKind: target.kind,
+            targetWorkspaceID: target.windowID,
+            targetWorkspaceName: target.workspaceName,
+            text: "Bounded draft \(index)",
+            preserveFormatting: false
+        ))
+    }
+    do {
+        try boundedStore.record(ReviewedBusyDraft(
+            id: "bounded-overflow",
+            sourcePaneID: source.id,
+            sourceName: source.displayName,
+            sourceKind: source.kind,
+            sourceWorkspaceID: source.windowID,
+            sourceWorkspaceName: source.workspaceName,
+            targetPaneID: target.id,
+            targetName: target.displayName,
+            targetKind: target.kind,
+            targetWorkspaceID: target.windowID,
+            targetWorkspaceName: target.workspaceName,
+            text: "This draft must be refused.",
+            preserveFormatting: false
+        ))
+        throw CheckFailure(description: "the reviewed busy queue exceeded its explicit bound")
+    } catch ReviewedBusyDraftStoreError.tooMany {
+        // Expected: no oldest-draft eviction and no invisible loss.
+    }
+
+    let raceStore = try ReviewedBusyDraftStore(
+        file: directory.appendingPathComponent("racing-busy-drafts.json")
+    )
+    let raceDraft = ReviewedBusyDraft(
+        id: "explicit-send-race",
+        sourcePaneID: source.id,
+        sourceName: source.displayName,
+        sourceKind: source.kind,
+        sourceWorkspaceID: source.windowID,
+        sourceWorkspaceName: source.workspaceName,
+        targetPaneID: target.id,
+        targetName: target.displayName,
+        targetKind: target.kind,
+        targetWorkspaceID: target.windowID,
+        targetWorkspaceName: target.workspaceName,
+        text: "Do not let discard race this explicit send.",
+        preserveFormatting: false
+    )
+    try raceStore.record(raceDraft)
+    let writerEntered = DispatchSemaphore(value: 0)
+    let releaseWriter = DispatchSemaphore(value: 0)
+    let raceBroker = RelayBroker(
+        credentials: credentials,
+        panes: { [source, target] },
+        paste: { _, _ in },
+        submit: { _, _ in
+            writerEntered.signal()
+            _ = releaseWriter.wait(timeout: .now() + 2)
+        },
+        consultationTimeout: 10,
+        livenessPollInterval: 0.01,
+        busyDraftStore: raceStore
+    )
+    let raceResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        raceResult.set(raceBroker.sendReviewedBusyAskFromUI(ReviewedBusyDraftSendRequest(
+            draftID: raceDraft.id,
+            expectedUpdatedAt: raceDraft.updatedAt,
+            text: raceDraft.text
+        )))
+    }
+    try expect(
+        writerEntered.wait(timeout: .now() + 1) == .success,
+        "explicit-send race never reached its terminal writer"
+    )
+    let racedDiscard = raceBroker.cancelReviewedBusyDraftFromUI(raceDraft.id)
+    try expect(
+        racedDiscard.status == 409,
+        "discard claimed success while an explicit terminal send was in progress"
+    )
+    releaseWriter.signal()
+    try expect(eventually { raceBroker.consultations().count == 1 }, "explicit-send race produced no consultation")
+    let raceAskID = try require(raceBroker.consultations().first?.id, "explicit-send race lost its consultation")
+    try expect(
+        raceBroker.handleAnswer(token: targetToken, consultationID: raceAskID, text: "Race review done.").status == 200,
+        "explicit-send race could not complete"
+    )
+    try expect(eventually { raceResult.value?.status == 200 }, "explicit-send race did not return normally")
+
+    let completed = broker.handleDelegationResult(
+        token: targetToken,
+        handoffID: delegationID,
+        text: "Implementation finished.",
+        succeeded: true
+    )
+    try expect(completed.status == 200, "busy-queue fixture could not finish its active work")
+    Thread.sleep(forTimeInterval: 0.05)
+    try expect(submissions.value == 1, "an idle target automatically received queued text")
+    try expect(broker.reviewedBusyDrafts().map(\.id) == [draft.id], "becoming idle silently consumed the reviewed draft")
+
+    let sendResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        sendResult.set(broker.sendReviewedBusyAskFromUI(ReviewedBusyDraftSendRequest(
+            draftID: draft.id,
+            expectedUpdatedAt: draft.updatedAt,
+            text: "Review the finished implementation.\nPreserve this edited second line.",
+            preserveFormatting: true
+        )))
+    }
+    try expect(eventually { submissions.value == 2 }, "explicit human authorization did not submit the reviewed draft")
+    try expect(broker.reviewedBusyDrafts().isEmpty, "a submitted busy draft remained presented as unsent")
+    let activeAsk = try require(broker.consultations().first, "explicit busy-queue send created no tracked Ask")
+    try expect(
+        broker.handleAnswer(token: targetToken, consultationID: activeAsk.id, text: "Review passed.").status == 200,
+        "the explicitly sent queued Ask could not return normally"
+    )
+    try expect(eventually { sendResult.value?.status == 200 }, "the explicitly sent queued Ask did not complete")
+
+    let noLongerBusy = broker.enqueueReviewedBusyAskFromUI(ReviewedBusyDraftCreateRequest(
+        sourcePaneID: source.id,
+        targetPaneID: target.id,
+        text: "Do not queue this while idle."
+    ))
+    try expect(noLongerBusy.status == 409, "the core accepted a busy-queue draft for an idle target")
+    try expect(submissions.value == 2, "a rejected queue request touched the target terminal")
+
+    let secondDelegation = broker.handleDelegate(
+        token: sourceToken,
+        target: target.id,
+        text: "Hold the target busy for the control-route check.",
+        idempotencyKey: "busy-queue-control-fixture"
+    )
+    try expect(secondDelegation.status == 200, "busy-queue control fixture did not start")
+    let infoFile = directory.appendingPathComponent("relay-url")
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: "busy-control")
+    try server.start()
+    defer { server.stop() }
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: "busy-control")
+    let clientDraft = try client.enqueueReviewedBusyDraft(ReviewedBusyDraftCreateRequest(
+        sourcePaneID: source.id,
+        targetPaneID: target.id,
+        text: "Review through the authenticated native route."
+    ))
+    let clientDrafts = try client.reviewedBusyDrafts()
+    try expect(clientDrafts.map(\.id) == [clientDraft.id], "the authenticated UI could not reattach to the durable busy queue")
+
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    do {
+        _ = try unauthorized.reviewedBusyDrafts()
+        throw CheckFailure(description: "an unauthenticated client read reviewed busy text")
+    } catch RelayCoreError.response(401, _) {
+        // Expected: pane credentials and unrelated local clients never receive the queue.
+    }
+    let cancelled = try client.cancelReviewedBusyDraft(clientDraft.id)
+    try expect(cancelled.status == 200, "the authenticated person could not discard an unsent queued draft")
+    let afterCancel = try client.reviewedBusyDrafts()
+    try expect(afterCancel.isEmpty, "discarding a queued draft left it visible")
+    try expect(submissions.value == 3, "listing or discarding a queued draft wrote terminal input")
+
+    let secondDelegationID = try require(secondDelegation.body.handoffID, "control fixture had no id")
+    try expect(
+        broker.handleDelegationResult(
+            token: targetToken,
+            handoffID: secondDelegationID,
+            text: "Control fixture done.",
+            succeeded: true
+        ).status == 200,
+        "control fixture could not release the target"
+    )
+    let slowFixture = broker.handleDelegate(
+        token: sourceToken,
+        target: target.id,
+        text: "Hold busy before the slow reviewed Ask.",
+        idempotencyKey: "busy-queue-slow-fixture"
+    )
+    let slowFixtureID = try require(slowFixture.body.handoffID, "slow fixture produced no id")
+    let slowDraft = try client.enqueueReviewedBusyDraft(ReviewedBusyDraftCreateRequest(
+        sourcePaneID: source.id,
+        targetPaneID: target.id,
+        text: "Take longer than the ordinary local-control timeout to review this."
+    ))
+    try expect(
+        broker.handleDelegationResult(
+            token: targetToken,
+            handoffID: slowFixtureID,
+            text: "Slow fixture ready.",
+            succeeded: true
+        ).status == 200,
+        "slow fixture could not release the target"
+    )
+    let slowResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        do {
+            slowResult.set(try client.sendReviewedBusyDraft(ReviewedBusyDraftSendRequest(
+                draftID: slowDraft.id,
+                expectedUpdatedAt: slowDraft.updatedAt,
+                text: slowDraft.text
+            )))
+        } catch {
+            slowResult.set(RelayTextResponse(status: -1, text: error.localizedDescription))
+        }
+    }
+    try expect(eventually { broker.consultations().count == 1 }, "slow explicit send never created its tracked Ask")
+    Thread.sleep(forTimeInterval: 3.2)
+    let slowAskID = try require(broker.consultations().first?.id, "slow explicit send lost its consultation")
+    try expect(
+        broker.handleAnswer(token: targetToken, consultationID: slowAskID, text: "Slow review passed.").status == 200,
+        "slow explicit send could not return its answer"
+    )
+    try expect(eventually { slowResult.value != nil }, "slow explicit send did not return to the native client")
+    try expect(slowResult.value?.status == 200, "native busy-queue send timed out before a normal agent answer")
+}
+
 private func checkHumanCancellationUnblocksAsk() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
@@ -7594,7 +8590,7 @@ private func checkCoreServiceUpgradeIdentity() throws {
     ])
     let development = CoreServiceIdentity.resolve(infoDictionary: nil)
 
-    try expect(packaged.contractVersion == 3, "packaged core identity has the wrong coordination contract")
+    try expect(packaged.contractVersion == 6, "packaged core identity has the wrong coordination contract")
     try expect(packaged.applicationVersion == "1.2.3", "packaged core identity lost the app version")
     try expect(packaged.build == "456", "packaged core identity lost the app build")
     try expect(development.applicationVersion == "development", "development core identity invented an app version")
@@ -8647,6 +9643,38 @@ private func checkTrustedContextCaptureExtendsAgentDraftWithoutTrustingApproval(
     try expect(trustedPart.source.detail == trustedFile.path, "core-captured context invented its provenance")
     try expect(trustedPart.capturedText == "let trusted = true\n", "core-captured context changed the file contents")
 
+    let browserCapture = try control.captureTrustedContext(AgentContextTrustedCaptureRequest(
+        reviewID: summary.id,
+        kind: .browserSelection,
+        evidencePaneID: "%1",
+        sourceURL: "https://example.com/core-review",
+        selectedText: "Person-selected browser evidence."
+    ))
+    try expect(browserCapture.status == 200, "authenticated browser evidence could not extend an agent draft")
+    let browserParts = try JSONDecoder().decode(
+        AgentContextTrustedCaptureResponse.self,
+        from: Data(browserCapture.text.utf8)
+    ).parts
+    let browserPart = try require(browserParts.first, "core browser capture returned no context part")
+    try expect(browserPart.source.kind == .browserSelection, "core browser capture lost its source kind")
+    try expect(browserPart.source.vendorEvidence?.paneID == "%1", "core browser capture lost its exact pane attribution")
+    try expect(browserPart.source.vendorEvidence?.toolAccess == .unknown, "core browser capture invented tool availability")
+
+    let inventedPane = try control.captureTrustedContext(AgentContextTrustedCaptureRequest(
+        reviewID: summary.id,
+        kind: .browserURL,
+        evidencePaneID: "%invented",
+        sourceURL: "https://example.com/invented"
+    ))
+    try expect(inventedPane.status == 409, "trusted browser capture accepted an invented vendor pane")
+    let mixedFile = try control.captureTrustedContext(AgentContextTrustedCaptureRequest(
+        reviewID: summary.id,
+        kind: .files,
+        paths: [trustedFile.path],
+        sourceURL: "https://example.com/ignored"
+    ))
+    try expect(mixedFile.status == 400, "trusted file capture silently ignored browser evidence fields")
+
     let binary = directory.appendingPathComponent("binary.dat")
     try Data([0, 1, 2, 3]).write(to: binary)
     let binaryResult = try control.captureTrustedContext(AgentContextTrustedCaptureRequest(
@@ -8666,7 +9694,7 @@ private func checkTrustedContextCaptureExtendsAgentDraftWithoutTrustingApproval(
         broker.contextReviews().first(where: { $0.id == summary.id }),
         "trusted capture lost the durable agent draft"
     )
-    try expect(review.pack.parts.count == 2, "failed trusted captures mutated the durable draft")
+    try expect(review.pack.parts.count == 3, "failed trusted captures mutated the durable draft")
     var forgedPack = review.pack
     forgedPack.parts.append(ContextPackPart(
         source: ContextPackSource(kind: .file, label: "Forged", detail: "/tmp/forged"),
@@ -8900,6 +9928,9 @@ let checks: [(String, () throws -> Void)] = [
     ("workspace continuity state", checkWorkspaceContinuityState),
     ("legacy packaged-app preferences migration", checkLegacyPreferencesMigration),
     ("quota-free runtime readiness probes", checkRuntimeReadinessProbesAreQuotaFree),
+    ("truthful vendor compatibility and runtime signals", checkVendorCompatibilityAndRuntimeSignalsAreTruthful),
+    ("explicit verified release lifecycle", checkReleaseLifecycleUsesExplicitVerifiedChannels),
+    ("reviewed privacy-bounded beta feedback", checkBetaFeedbackBundleIsReviewedAndPrivacyBounded),
     ("privacy-bounded local diagnostics export", checkDiagnosticsExportIsUsefulAndPrivacyBounded),
     ("robust memory plateau assessment", checkMemoryPlateauAssessment),
     ("Git project context parsing", checkGitProjectContextParsing),
@@ -8951,6 +9982,7 @@ let checks: [(String, () throws -> Void)] = [
     ("selection-or-empty relay draft", checkRelayDraftStartsWithSelectionOrNothing),
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
     ("explicit bounded attributed context packs", checkContextPacksAreExplicitBoundedAndAttributed),
+    ("vendor tool evidence is capability-gated and attributed", checkVendorToolEvidenceIsCapabilityGatedAndAttributed),
     ("durable explicitly attached workspace briefs", checkWorkspaceBriefsAreDurableAndExplicitlyAttached),
     ("durable reusable explicitly attached pinned context", checkPinnedContextSnippetsAreDurableReusableAndExplicit),
     ("agent context drafts require human approval", checkAgentContextDraftsRequireHumanApprovalBeforeAsk),
@@ -8964,6 +9996,8 @@ let checks: [(String, () throws -> Void)] = [
     ("context review shim round trip", checkContextReviewShimRoundTrip),
     ("authoritative Status Center projection", checkStatusCenterProjectionUsesOnlyAuthoritativeState),
     ("collaboration history search export and repeat", checkCollaborationHistorySearchExportAndRepeat),
+    ("configurable history retention and workspace export", checkConfigurableHistoryRetentionAndWorkspaceExport),
+    ("history retention core control route", checkHistoryRetentionCoreControlRoute),
     ("human Ask This Again tracked core-control route", checkHumanAskAgainUsesTrackedCoreControlRoute),
     ("in-app recovery guidance", checkRecoveryGuidanceProjectsKnownFailures),
     ("durable authoritative operational activity", checkOperationalActivityIsDurableAndAuthoritative),
@@ -8990,6 +10024,7 @@ let checks: [(String, () throws -> Void)] = [
     ("human ask-many uses tracked broker path", checkHumanAskManyUsesTheTrackedBrokerPath),
     ("human ask-many core-control route", checkHumanAskManyCoreControlRoute),
     ("agent Ask busy target and timeout", checkAgentAskRejectsBusyTargetAndTimesOut),
+    ("reviewed busy queue requires explicit human send", checkReviewedBusyQueueRequiresExplicitHumanSend),
     ("human Ask cancellation", checkHumanCancellationUnblocksAsk),
     ("safe failed-delivery retry", checkSafeFailedDeliveryRetryIsStableAndDeduplicated),
     ("uncertain and Ask retry refusal", checkUncertainAndAskFailuresCannotBeRetried),

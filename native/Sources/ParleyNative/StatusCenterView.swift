@@ -7,6 +7,7 @@ struct StatusCenterView: View {
     @State private var workspaceID = ""
     @State private var selectedHandoffID: String?
     @State private var selectedChainID: String?
+    @State private var selectedBusyDraftID: String?
     @State private var showDismissed = false
     @State private var historyQuery = ""
     @State private var historyKind = CollaborationHistoryKindFilter.all
@@ -27,8 +28,17 @@ struct StatusCenterView: View {
     }
 
     private var selectedHandoff: RelayHandoff? {
-        guard selectedChainID == nil else { return nil }
+        guard selectedChainID == nil, selectedBusyDraftID == nil else { return nil }
         return snapshot.handoffs.first(where: { $0.id == selectedHandoffID })
+    }
+
+    private var scopedBusyDrafts: [ReviewedBusyDraft] {
+        model.statusReviewedBusyDrafts(workspaceID: workspaceID.isEmpty ? nil : workspaceID)
+    }
+
+    private var selectedBusyDraft: ReviewedBusyDraft? {
+        guard let selectedBusyDraftID else { return nil }
+        return scopedBusyDrafts.first(where: { $0.id == selectedBusyDraftID })
     }
 
     private var scopedChains: [HandoffChain] {
@@ -78,6 +88,7 @@ struct StatusCenterView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
                             Color.clear.frame(height: 0).id("status-overview-top")
+                            reviewedBusyQueue
                             liveCollaboration
                             returnedResults
                             collaborationHistory
@@ -124,12 +135,14 @@ struct StatusCenterView: View {
         .onChange(of: workspaceID) { _, _ in
             selectedHandoffID = nil
             selectedChainID = nil
+            selectedBusyDraftID = nil
             historyExportSelection.removeAll()
             ensureSelection()
         }
         .onChange(of: showDismissed) { _, _ in
             selectedHandoffID = nil
             selectedChainID = nil
+            selectedBusyDraftID = nil
             historyExportSelection.formIntersection(snapshot.handoffs.map(\.id))
             applyExternalSelection()
             ensureSelection()
@@ -214,8 +227,25 @@ struct StatusCenterView: View {
                     ensureSelection()
                 }
                 .disabled(model.dismissedHandoffIDs.isEmpty)
+                Divider()
+                Section("Local retention · handoffs and activity") {
+                    ForEach(CollaborationHistoryRetentionPolicy.allowedMaximumRecords, id: \.self) { limit in
+                        Button {
+                            model.setHistoryRetention(maximumRecords: limit)
+                        } label: {
+                            if model.historyRetentionPolicy.maximumRecords == limit {
+                                Label("Up to \(limit) of each", systemImage: "checkmark")
+                            } else {
+                                Text("Up to \(limit) of each")
+                            }
+                        }
+                    }
+                }
                 if let workspace = model.workspaces.first(where: { $0.id == workspaceID }) {
                     Divider()
+                    Button("Export History for \(workspace.name)…") {
+                        model.exportWorkspaceHistory(for: workspace)
+                    }
                     Button("Delete History for \(workspace.name)…", role: .destructive) {
                         if model.deleteStatusHistory(for: workspace) {
                             selectedHandoffID = nil
@@ -229,14 +259,14 @@ struct StatusCenterView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .accessibilityLabel("Dismissed records and history")
+            .accessibilityLabel("Dismissed records, retention, export, and deletion")
             .accessibilityValue(
                 model.dismissedHandoffIDs.isEmpty
                     ? "No dismissed records"
                     : "\(model.dismissedHandoffIDs.count) dismissed record\(model.dismissedHandoffIDs.count == 1 ? "" : "s")"
             )
-            .help("Dismissed records and workspace history controls")
-            .accessibilityHint("Show or restore dismissed records, or delete history for the selected workspace")
+            .help("Dismissed records, local retention, and workspace history controls")
+            .accessibilityHint("Show or restore dismissed records, change bounded local retention, or export and delete history for the selected workspace")
             Picker("Scope", selection: $workspaceID) {
                 Text("All Workspaces").tag("")
                 ForEach(model.workspaces) { workspace in
@@ -280,6 +310,71 @@ struct StatusCenterView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var reviewedBusyQueue: some View {
+        statusGroup("REVIEWED BUSY QUEUE") {
+            if scopedBusyDrafts.isEmpty {
+                emptyRow("No reviewed drafts are waiting on busy targets in this scope")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(scopedBusyDrafts) { draft in
+                        Button {
+                            select(draft)
+                        } label: {
+                            HStack(spacing: 10) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 5) {
+                                        Text(draft.sourceName)
+                                        Image(systemName: "arrow.right")
+                                            .font(.system(size: 8))
+                                            .foregroundStyle(.tertiary)
+                                        Text(draft.targetName)
+                                    }
+                                    .font(.system(size: 11, weight: .medium))
+                                    Text(subject(draft.text))
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 8)
+                                VStack(alignment: .trailing, spacing: 4) {
+                                    Text("REVIEWED ASK")
+                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                    Text(
+                                        draft.state == .dispatching
+                                            ? "SEND UNCERTAIN"
+                                            : (model.reviewedBusyDraftTargetIsBusy(draft) ? "TARGET BUSY" : "READY TO REVIEW")
+                                    )
+                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(
+                                            draft.state == .dispatching || model.reviewedBusyDraftTargetIsBusy(draft)
+                                                ? Color.orange : Color.accentColor
+                                        )
+                                    Text(draft.createdAt.formatted(date: .omitted, time: .shortened))
+                                        .font(.system(size: 8, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(9)
+                            .background(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(selectedBusyDraftID == draft.id ? Color.accentColor.opacity(0.10) : Color.clear)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            "Reviewed Ask from \(draft.sourceName) to \(draft.targetName). \(draft.state == .dispatching ? "Submission status uncertain" : (model.reviewedBusyDraftTargetIsBusy(draft) ? "Target busy and unsent" : "Ready for fresh review and unsent"))"
+                        )
+                        .accessibilityValue(selectedBusyDraftID == draft.id ? "Selected" : "Not selected")
+                        .accessibilityHint("Inspect the exact queued text; Parley never sends it automatically")
+                        if draft.id != scopedBusyDrafts.last?.id { Divider() }
+                    }
+                }
+            }
+        }
     }
 
     private var liveCollaboration: some View {
@@ -898,7 +993,9 @@ struct StatusCenterView: View {
 
     @ViewBuilder
     private var inspector: some View {
-        if let chain = selectedChain {
+        if let draft = selectedBusyDraft {
+            reviewedBusyDraftInspector(draft)
+        } else if let chain = selectedChain {
             chainInspector(chain)
         } else if let handoff = selectedHandoff {
             ScrollView {
@@ -985,6 +1082,92 @@ struct StatusCenterView: View {
                 systemImage: "arrow.left.arrow.right",
                 description: Text("Choose a live handoff or timeline event to inspect its authoritative record.")
             )
+        }
+    }
+
+    private func reviewedBusyDraftInspector(_ draft: ReviewedBusyDraft) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("REVIEWED BUSY QUEUE")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text("\(draft.sourceName) → \(draft.targetName)")
+                        .font(.system(size: 16, weight: .semibold))
+                    HStack(spacing: 7) {
+                        statusChip("ASK", color: .secondary)
+                        statusChip("HUMAN REVIEWED", color: .accentColor)
+                        statusChip(
+                            draft.state == .dispatching
+                                ? "SEND UNCERTAIN"
+                                : (model.reviewedBusyDraftTargetIsBusy(draft) ? "TARGET BUSY" : "READY TO REVIEW"),
+                            color: draft.state == .dispatching || model.reviewedBusyDraftTargetIsBusy(draft)
+                                ? .orange : .accentColor
+                        )
+                        statusChip(draft.state == .queued ? "UNSENT" : "DO NOT RESEND", color: .secondary)
+                    }
+                }
+                .accessibilityRepresentation {
+                    Text(
+                        draft.state == .queued
+                            ? "Reviewed unsent Ask from \(draft.sourceName) to \(draft.targetName). Parley will not submit it automatically."
+                            : "Reviewed Ask from \(draft.sourceName) to \(draft.targetName). Terminal submission is uncertain and Parley will not resend it."
+                    )
+                }
+
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Button("Focus Source") {
+                            model.focusReviewedBusyDraft(draft, target: false)
+                        }
+                        .disabled(!model.canFocusReviewedBusyDraftPane(draft.sourcePaneID))
+                        Button("Focus Target") {
+                            model.focusReviewedBusyDraft(draft, target: true)
+                        }
+                        .disabled(!model.canFocusReviewedBusyDraftPane(draft.targetPaneID))
+                    }
+                    HStack {
+                        Button(
+                            model.sendingReviewedBusyDraftID == draft.id
+                                ? "Waiting on Sent Ask…"
+                                : "Review and Send…"
+                        ) {
+                            model.sendReviewedBusyDraft(draft)
+                        }
+                        .disabled(
+                            draft.state != .queued
+                                || model.reviewedBusyDraftTargetIsBusy(draft)
+                                || model.sendingReviewedBusyDraftID != nil
+                        )
+                        .help(
+                            model.reviewedBusyDraftTargetIsBusy(draft)
+                                ? "The target still has tracked work; the draft remains unsent"
+                                : "Open the exact text in a fresh editable review before submitting"
+                        )
+                        Button(draft.state == .queued ? "Discard Draft…" : "Dismiss Record…", role: .destructive) {
+                            if model.discardReviewedBusyDraft(draft) {
+                                selectedBusyDraftID = nil
+                                ensureSelection()
+                            }
+                        }
+                        .disabled(model.sendingReviewedBusyDraftID == draft.id)
+                    }
+                }
+                .controlSize(.small)
+
+                inspectorSection(draft.state == .queued ? "REVIEWED UNSENT TEXT" : "REVIEWED TEXT", draft.text)
+                if let detail = draft.detail, !detail.isEmpty {
+                    inspectorSection("QUEUE RECEIPT", detail)
+                }
+                Text(
+                    draft.state == .queued
+                        ? "Becoming idle never sends this draft. Review and Send is a new human authorization and creates a normal tracked Ask with a fresh identity."
+                        : "Parley cannot prove whether terminal submission occurred before the interruption. It keeps this non-resendable record visible until you dismiss it."
+                )
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(16)
         }
     }
 
@@ -1462,6 +1645,10 @@ struct StatusCenterView: View {
     }
 
     private func ensureSelection() {
+        if let selectedBusyDraftID,
+           scopedBusyDrafts.contains(where: { $0.id == selectedBusyDraftID }) {
+            return
+        }
         if let selectedChainID,
            scopedChains.contains(where: { $0.id == selectedChainID }) {
             return
@@ -1471,7 +1658,11 @@ struct StatusCenterView: View {
             if selected.hasUnreadResult { model.markRead(selected) }
             return
         }
-        if let first = snapshot.handoffs.first { select(first) }
+        if let firstDraft = scopedBusyDrafts.first {
+            select(firstDraft)
+        } else if let first = snapshot.handoffs.first {
+            select(first)
+        }
     }
 
     private func applyExternalSelection() {
@@ -1491,12 +1682,20 @@ struct StatusCenterView: View {
 
     private func select(_ handoff: RelayHandoff) {
         selectedChainID = nil
+        selectedBusyDraftID = nil
         selectedHandoffID = handoff.id
         if handoff.hasUnreadResult { model.markRead(handoff) }
     }
 
     private func select(_ chain: HandoffChain) {
         selectedHandoffID = nil
+        selectedBusyDraftID = nil
         selectedChainID = chain.id
+    }
+
+    private func select(_ draft: ReviewedBusyDraft) {
+        selectedHandoffID = nil
+        selectedChainID = nil
+        selectedBusyDraftID = draft.id
     }
 }

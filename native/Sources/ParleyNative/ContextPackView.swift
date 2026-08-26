@@ -1,11 +1,13 @@
 import ParleyCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContextPackView: View {
     @ObservedObject var model: AppModel
     @State private var selectedPartID: String?
     @State private var commandCapturePresented = false
     @State private var pinnedSnippetPickerPresented = false
+    @State private var vendorEvidencePresented = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -31,6 +33,9 @@ struct ContextPackView: View {
         }
         .sheet(isPresented: $pinnedSnippetPickerPresented) {
             PinnedContextSnippetPickerView(model: model)
+        }
+        .sheet(isPresented: $vendorEvidencePresented) {
+            VendorToolEvidenceCaptureView(model: model)
         }
     }
 
@@ -85,16 +90,22 @@ struct ContextPackView: View {
             Button("Capture Command…", systemImage: "terminal") {
                 commandCapturePresented = true
             }
-            Button("Add Workspace Brief", systemImage: "doc.text") {
-                model.addWorkspaceBriefContext()
+            Menu("More Sources", systemImage: "plus") {
+                Button("Add Browser/Tool Evidence…", systemImage: "globe") {
+                    vendorEvidencePresented = true
+                }
+                .disabled(model.vendorToolEvidencePanes.isEmpty)
+                Button("Add Workspace Brief", systemImage: "doc.text") {
+                    model.addWorkspaceBriefContext()
+                }
+                .disabled(!model.canAddWorkspaceBriefToContextPack)
+                Button("Add Pinned Snippets…", systemImage: "pin") {
+                    pinnedSnippetPickerPresented = true
+                }
+                .disabled(model.contextPackIsAgentProposed)
             }
-            .disabled(!model.canAddWorkspaceBriefToContextPack)
-            Button("Add Pinned Snippets…", systemImage: "pin") {
-                pinnedSnippetPickerPresented = true
-            }
-            .disabled(model.contextPackIsAgentProposed)
             Spacer()
-            Text(model.contextPackIsAgentProposed ? "Added local sources are captured independently by Parley" : "Only sources you add explicitly are included")
+            Text(model.contextPackIsAgentProposed ? "Every added source states exactly what Parley established" : "Only sources you add explicitly are included")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -115,7 +126,7 @@ struct ContextPackView: View {
                         ContentUnavailableView(
                             "No Explicit Sources",
                             systemImage: "shippingbox",
-                            description: Text("Add files, a Git diff, one visible screen, a command result, the workspace brief or pinned context.")
+                            description: Text("Add files, a Git diff, one visible screen, a command result, browser/tool evidence, the workspace brief or pinned context.")
                         )
                     } else {
                         List(draft.pack.parts, selection: $selectedPartID) { part in
@@ -161,6 +172,16 @@ struct ContextPackView: View {
                 Text("\(part.byteCount.formatted()) bytes")
                     .font(.caption2.monospaced())
                     .foregroundStyle(part.byteCount > model.contextPackMaximumPartBytes ? Color.red : Color.secondary)
+                if let evidence = part.source.vendorEvidence {
+                    Text("TOOL \(evidence.toolAccess.label.uppercased())")
+                        .font(.caption2.monospaced().weight(.semibold))
+                        .foregroundStyle(evidence.toolAccess == .verified ? Color.green : Color.orange)
+                    if let artifactBytes = evidence.artifactByteCount {
+                        Text("Artifact: \(artifactBytes.formatted()) bytes")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .padding(.vertical, 3)
@@ -190,6 +211,20 @@ struct ContextPackView: View {
                 Text("Editing changes only this preview. The original source and captured byte count remain recorded above.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let evidence = part.source.vendorEvidence {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Attributed by the person to \(evidence.paneName) · \(evidence.vendor.label) · \(evidence.paneID)")
+                        Text("Browser/tool capability: \(evidence.toolAccess.label). \(evidence.toolAccessDetail)")
+                        if let sourceURL = evidence.sourceURL { Text("URL: \(sourceURL)") }
+                        if let artifactPath = evidence.artifactPath { Text("Local artifact: \(artifactPath)") }
+                        if let bytes = evidence.artifactByteCount { Text("Artifact: \(bytes.formatted()) bytes") }
+                        if let digest = evidence.sha256 { Text("SHA-256: \(digest)") }
+                        Text("Parley did not open, scrape or control the vendor browser session.")
+                    }
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                }
                 TextEditor(text: partTextBinding(part.id))
                     .font(.body.monospaced())
                     .textSelection(.enabled)
@@ -319,7 +354,161 @@ struct ContextPackView: View {
         case .pinnedSnippet: "pin"
         case .editorSelection: "selection.pin.in.out"
         case .editorDiagnostics: "exclamationmark.bubble"
+        case .browserURL: "link"
+        case .browserSelection: "text.quote"
+        case .browserScreenshot: "photo"
+        case .toolArtifact: "doc.badge.gearshape"
         }
+    }
+}
+
+private struct VendorToolEvidenceCaptureView: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedPaneID: String
+    @State private var kind = VendorToolEvidenceKind.browserURL
+    @State private var sourceURL = ""
+    @State private var selectedText = ""
+    @State private var artifactPath = ""
+    @State private var errorMessage: String?
+
+    init(model: AppModel) {
+        self.model = model
+        _selectedPaneID = State(
+            initialValue: model.contextPackSourcePane?.id
+                ?? model.vendorToolEvidencePanes.first?.id
+                ?? ""
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add Browser or Tool Evidence")
+                .font(.title2.weight(.semibold))
+            Text("Parley records what you select and who you attribute it to. It does not inspect the vendor's browser session, MCP servers, cookies or credentials.")
+                .foregroundStyle(.secondary)
+
+            Form {
+                Picker("Evidence from", selection: $selectedPaneID) {
+                    ForEach(model.vendorToolEvidencePanes) { pane in
+                        Text("\(pane.displayName) · \(pane.kind.label) · \(pane.workspaceName ?? pane.windowID)")
+                            .tag(pane.id)
+                    }
+                }
+                Picker("Evidence type", selection: $kind) {
+                    ForEach(VendorToolEvidenceKind.allCases, id: \.rawValue) { evidenceKind in
+                        Text(evidenceKind.label).tag(evidenceKind)
+                    }
+                }
+                if kind == .browserURL || kind == .browserSelection {
+                    TextField("HTTP(S) source URL", text: $sourceURL)
+                } else {
+                    TextField("HTTP(S) source URL (optional)", text: $sourceURL)
+                }
+                if kind == .browserSelection {
+                    LabeledContent("Selected text") {
+                        TextEditor(text: $selectedText)
+                            .font(.body.monospaced())
+                            .frame(minHeight: 150)
+                            .border(Color.secondary.opacity(0.25))
+                    }
+                }
+                if kind == .browserScreenshot || kind == .savedArtifact {
+                    LabeledContent("Local file") {
+                        HStack {
+                            Text(artifactPath.isEmpty ? "No file selected" : artifactPath)
+                                .lineLimit(2)
+                                .textSelection(.enabled)
+                            Spacer()
+                            Button("Choose…") { chooseArtifact() }
+                        }
+                    }
+                }
+            }
+
+            if let capability {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("BROWSER/TOOL ACCESS · \(capability.toolAccess.label.uppercased())")
+                        .font(.caption.monospaced().weight(.semibold))
+                        .foregroundStyle(capability.toolAccess == .verified ? Color.green : Color.orange)
+                    Text(capability.detail)
+                    Text("Network policy: \(capability.networkLabel). This is permission intent, not proof that a browser tool exists.")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            Text(kind == .browserScreenshot || kind == .savedArtifact
+                ? "Parley validates, measures and hashes at most 25 MB. Binary bytes are not embedded; the reviewed pack carries the exact local path, size and SHA-256."
+                : "The URL and selected text are person-provided. Parley validates the URL shape but never fetches or verifies the page.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Add to Editable Pack") {
+                    do {
+                        try model.addVendorToolEvidence(
+                            kind: kind,
+                            paneID: selectedPaneID,
+                            sourceURL: sourceURL,
+                            selectedText: selectedText,
+                            artifactPath: artifactPath
+                        )
+                        dismiss()
+                    } catch {
+                        errorMessage = error.localizedDescription
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canAdd)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 700, minHeight: 520)
+        .alert(
+            "Evidence was not added",
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            ),
+            actions: { Button("OK") { errorMessage = nil } },
+            message: { Text(errorMessage ?? "Unknown error") }
+        )
+    }
+
+    private var capability: PaneToolCapabilitySummary? {
+        guard let pane = model.vendorToolEvidencePanes.first(where: { $0.id == selectedPaneID }) else {
+            return nil
+        }
+        return model.paneToolCapabilitySummary(for: pane)
+    }
+
+    private var canAdd: Bool {
+        guard capability?.canCaptureEvidence == true else { return false }
+        switch kind {
+        case .browserURL:
+            return !sourceURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .browserSelection:
+            return !sourceURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .browserScreenshot, .savedArtifact:
+            return !artifactPath.isEmpty
+        }
+    }
+
+    private func chooseArtifact() {
+        let panel = NSOpenPanel()
+        panel.title = kind == .browserScreenshot ? "Choose Browser Screenshot" : "Choose Saved Tool Artifact"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if kind == .browserScreenshot { panel.allowedContentTypes = [.image] }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        artifactPath = url.path
     }
 }
 

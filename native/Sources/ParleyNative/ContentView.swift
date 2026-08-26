@@ -74,6 +74,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.worktreeBrowserPresented) {
             WorktreeBrowserView(model: model)
         }
+        .sheet(isPresented: $model.releaseLifecyclePresented) {
+            ReleaseLifecycleView(model: model)
+        }
         .alert(
             "Parley needs attention",
             isPresented: Binding(
@@ -130,6 +133,10 @@ struct ContentView: View {
                         }
                         if pane.role != nil {
                             Button("Clear Routing Role") { model.clearRole(pane) }
+                        }
+                        Divider()
+                        Button("Browser & Tool Capability…") {
+                            model.showPaneToolCapabilitySummary(pane)
                         }
                     }
                     if pane.kind.isAgent && !pane.isStarted {

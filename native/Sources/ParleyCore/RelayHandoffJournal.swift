@@ -24,7 +24,7 @@ public enum RelayHandoffJournalError: LocalizedError {
 /// record remains append-only between those bounded compactions.
 public final class RelayHandoffJournal: @unchecked Sendable {
     private let file: URL
-    private let maximumHandoffs: Int
+    private var maximumHandoffs: Int
     private let lock = NSLock()
     private var byID: [String: RelayHandoff]
     private var eventCount: Int
@@ -99,6 +99,31 @@ public final class RelayHandoffJournal: @unchecked Sendable {
                 return removed.count
             } catch {
                 byID.merge(removed) { _, original in original }
+                storedError = error.localizedDescription
+                throw error
+            }
+        }
+    }
+
+    /// Applies a person-selected bound immediately and durably. Only terminal
+    /// records are eligible; active work may keep the journal above the bound
+    /// until it reaches a terminal state.
+    @discardableResult
+    public func updateMaximumHandoffs(_ maximumHandoffs: Int) throws -> Int {
+        try lock.withLock {
+            let previousMaximum = self.maximumHandoffs
+            let previous = byID
+            self.maximumHandoffs = max(1, maximumHandoffs)
+            let removed = pruneLocked()
+            let removedCount = previous.count - byID.count
+            guard removed else { return 0 }
+            do {
+                try compactLocked()
+                storedError = nil
+                return removedCount
+            } catch {
+                self.maximumHandoffs = previousMaximum
+                byID = previous
                 storedError = error.localizedDescription
                 throw error
             }

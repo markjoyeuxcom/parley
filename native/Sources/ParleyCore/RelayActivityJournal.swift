@@ -23,7 +23,7 @@ public enum RelayActivityJournalError: LocalizedError {
 /// atomically instead of exposing a half-deleted history across two launches.
 public final class RelayActivityJournal: @unchecked Sendable {
     private let file: URL
-    private let maximumEvents: Int
+    private var maximumEvents: Int
     private let lock = NSLock()
     private var byID: [String: RelayActivityEvent]
 
@@ -77,6 +77,28 @@ public final class RelayActivityJournal: @unchecked Sendable {
                 return removed.count
             } catch {
                 byID.merge(removed) { _, original in original }
+                throw error
+            }
+        }
+    }
+
+    /// Applies the same core-owned bound used for handoff history. Lifecycle
+    /// events have no active state, so the oldest events are removed first.
+    @discardableResult
+    public func updateMaximumEvents(_ maximumEvents: Int) throws -> Int {
+        try lock.withLock {
+            let previousMaximum = self.maximumEvents
+            let previous = byID
+            self.maximumEvents = max(1, maximumEvents)
+            let removed = pruneLocked()
+            let removedCount = previous.count - byID.count
+            guard removed else { return 0 }
+            do {
+                try compactLocked()
+                return removedCount
+            } catch {
+                self.maximumEvents = previousMaximum
+                byID = previous
                 throw error
             }
         }

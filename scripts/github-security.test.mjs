@@ -24,8 +24,27 @@ test('macOS CI verifies pull requests and main', () => {
   assert.match(source, /pull_request:/)
   assert.match(source, /push:[\s\S]*?branches:\s*\[main\]/)
   assert.match(source, /runs-on:\s*macos-latest/)
+  assert.match(source, /fetch-depth:\s*0/, 'CI must fetch complete history for the publication scan')
   assert.match(source, /run:\s*npm test/)
   assert.match(source, /run:\s*npm run build/)
+})
+
+test('retired GitLab automation cannot become an apparent security gate', () => {
+  assert.equal(existsSync(join(repositoryRoot, '.gitlab-ci.yml')), false)
+})
+
+test('public repository policy files describe the Apache-2.0 open-source boundary', () => {
+  const license = readFileSync(join(repositoryRoot, 'LICENSE'), 'utf8')
+  const security = readFileSync(join(repositoryRoot, 'SECURITY.md'), 'utf8')
+  const privacy = readFileSync(join(repositoryRoot, 'PRIVACY.md'), 'utf8')
+  const contributing = readFileSync(join(repositoryRoot, 'CONTRIBUTING.md'), 'utf8')
+
+  assert.match(license, /Apache License/)
+  assert.match(license, /Version 2\.0, January 2004/)
+  assert.match(security, /Report a vulnerability/)
+  assert.match(security, /Cross-vendor messages.*untrusted/s)
+  assert.match(privacy, /does not collect telemetry/)
+  assert.match(contributing, /Apache License 2\.0/)
 })
 
 test('external GitHub Actions are pinned to immutable full commit SHAs', () => {

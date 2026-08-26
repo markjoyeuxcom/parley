@@ -41,7 +41,7 @@ The native application already has the product's essential wedge:
 - A versioned cross-vendor protocol injected into every newly started agent.
 - `relay` for an attributed asynchronous handoff, `paste` for an unsent draft,
   and correlated `ask` / `answer` for a blocking consultation.
-- Protocol v6 tracked delegation through `delegate`, `done`, `fail`, `status`
+- Protocol v7 tracked delegation through `delegate`, `done`, `fail`, `status`
   and `wait`, with exact source/target credential ownership.
 - Human Ask and Return editors with explicit control over the exact text sent.
 - Automatic submission that works across the supported agent TUIs.
@@ -795,17 +795,27 @@ configuration the person has explicitly enabled for that vendor. Parley does
 not replace that tool runtime or take custody of browser profiles, cookies or
 website credentials.
 
-- [ ] Show a small, truthful per-pane capability summary for explicitly
+- [x] Show a small, truthful per-pane capability summary for explicitly
   configured browser/tool access when the vendor exposes a trustworthy way to
   inspect it. Unknown stays **Unknown**; terminal output and successful-looking
-  browser prose are not capability evidence.
-- [ ] Let browser-derived URLs, selected text, screenshots and saved artifacts
+  browser prose are not capability evidence. The pane context menu now shows
+  the recorded network-profile intent separately from effective browser/tool
+  access. Every current vendor remains Unknown because its local help surface
+  does not establish the effective tools in one existing pane.
+- [x] Let browser-derived URLs, selected text, screenshots and saved artifacts
   be added deliberately to an editable context pack with source attribution
   and byte size before a cross-vendor handoff. Never scrape a vendor's browser
-  session, share cookies, or forward browsing results invisibly.
-- [ ] Add browser/tool checks to a vendor adapter only when the check can be
+  session, share cookies, or forward browsing results invisibly. The native
+  review sheet accepts credential-free HTTP(S) URLs and exact selected text;
+  it validates image screenshots and records a bounded local artifact's path,
+  bytes and SHA-256 without embedding binary data. Typed provenance stamps the
+  person-chosen vendor pane, the capture basis and the fail-closed capability
+  state in both the preview and rendered handoff.
+- [x] Add browser/tool checks to a vendor adapter only when the check can be
   performed without opening a website, spending model quota, changing vendor
-  configuration or exposing credentials.
+  configuration or exposing credentials. The capability projector is pure and
+  quota-free; no adapter currently emits an affirmative result, because CLI
+  help proves only that general configuration exists—not what one pane can use.
 
 ### Optional Git worktree awareness
 
@@ -836,32 +846,68 @@ uncommitted changes.
 - [x] Add collaboration-history search, filters, selective Markdown export and
   **Ask this again**. Repeating a handoff always opens an editable preview and
   receives a new identity rather than mutating or silently replaying history.
-- [ ] Add configurable local retention and explicit per-workspace export or
-  purge controls. Preserve owner-only storage, explain exactly what will be
-  removed, and retain the no-sync/no-telemetry boundary.
-- [ ] Add a human-controlled **busy queue** for a reviewed draft when a target
-  already has active work. Queued text remains visible and unsent; becoming
-  idle never causes automatic submission without the policy and explicit
-  authorization shown to the person.
+- [x] Add configurable local retention and explicit per-workspace export or
+  purge controls. The persistent core now owns one runtime-local 100, 250 or
+  500-record bound applied independently to handoffs and lifecycle activity;
+  lowering it immediately compacts the owner-only journals after an explicit
+  irreversible warning while preserving active work and curated chains. A
+  workspace-scoped archive action exports every retained handoff involving the
+  selected workspace, including dismissed records, and states that lifecycle
+  activity is not part of that body-containing Markdown. The existing
+  workspace-specific purge removes eligible handoffs and activity without an
+  all-workspaces shortcut. Nothing syncs or reports telemetry.
+- [x] Add a human-controlled **busy queue** for a reviewed draft when a target
+  already has active work. The persistent core keeps at most 32 owner-only
+  exact Ask drafts with their cross-vendor route and no credentials; pane
+  capabilities cannot operate the queue. Status Center keeps the complete text
+  visible as TARGET BUSY or READY TO REVIEW, but no idle observation has a
+  dispatch hook. Review and Send opens a fresh editable preview and creates a
+  normal tracked Ask only after explicit human authorization; discard touches
+  no terminal. An interrupted explicit send remains SEND UNCERTAIN and DO NOT
+  RESEND rather than being silently made safe to repeat.
 - [x] Add a **workspace safety summary** before closing, replacing or moving a
   workspace. Show active handoffs, running agents, dirty repositories and
   shared-worktree writers without guessing whether an agent is thinking.
 
 ### Vendor and release lifecycle
 
-- [ ] Add per-vendor compatibility checks that can run the conformance harness
+- [x] Add per-vendor compatibility checks that can run the conformance harness
   after a CLI upgrade and report launch, submit, Ask/Answer and permission
-  support without spending model quota where the vendor permits that.
-- [ ] Prefer official vendor hooks for runtime readiness—ready, working,
+  support without spending model quota where the vendor permits that. The
+  native lifecycle sheet runs one bounded `--version` probe per installed CLI,
+  gives it a minimal allowlisted environment and closed empty stdin, retains
+  only the semantic version, marks version changes against the prior
+  runtime-local check and shows the four adapter contracts. The packaged,
+  signed conformance runner remains a separate explicit action with a quota
+  warning, refuses existing tracked work and emits a structured in-memory
+  report without creating or restarting panes.
+- [x] Prefer official vendor hooks for runtime readiness—ready, working,
   awaiting permission or exited—and display **Unknown** when no trustworthy
   signal exists. Terminal silence and timing heuristics never become facts.
-- [ ] Add an explicit GitHub Releases update channel with stable/beta choice,
+  The projection currently reports every running vendor as Unknown because no
+  supported CLI exposes a safe structured per-session hook. Only a process exit
+  is authoritative Parley state; the conservative prompt detector remains a
+  live-probe safety stop and never becomes a runtime-status claim.
+- [x] Add an explicit GitHub Releases update channel with stable/beta choice,
   release notes and verified artifacts. Never download or install an update
   silently, and never replace the persistent core while tracked work is active.
-- [ ] Add an explicitly user-reviewed **beta feedback bundle** containing build
+  Checks occur only on the button, against Parley's public GitHub repository.
+  A release is offered only when the asset list, release manifest and
+  `SHA256SUMS` agree; Download and Verify hashes the complete DMG before saving
+  it but cannot install or relaunch anything. The existing atomic core handover
+  remains the only replacement path and continues to defer for active work.
+  The credential-free client works only while the configured repository or a
+  dedicated release feed is publicly readable. A private or unavailable feed
+  is reported as such and offers Open Releases without requesting a GitHub
+  credential from Parley.
+- [x] Add an explicitly user-reviewed **beta feedback bundle** containing build
   information, vendor versions, conformance results and redacted diagnostics.
   Reuse the structural privacy boundary of diagnostics export: no prompts,
-  answers, terminal content, credentials or automatic telemetry.
+  answers, terminal content, credentials or automatic telemetry. The review
+  names every included field and structural exclusion before it can create an
+  owner-only local ZIP. Conformance details are reduced to vendor, check and
+  outcome; failure text and returned answers never enter it, and Parley has no
+  upload action.
 
 **Exit gate:** Parley can compare independent vendors, carry explicitly chosen
 context, reuse a stopped team safely and warn about concurrent writers without
@@ -915,11 +961,11 @@ step 13 and deliberately hardens the context feature before expanding it:
     contract and the same reviewed context-pack and focus contracts.
 17. [x] Add read-only worktree discovery and writer-collision awareness. Keep
     optional worktree creation contingent on evidence from those two stages.
-18. [ ] Improve attention and history: menu-bar inbox, search/export/retention,
+18. [x] Improve attention and history: menu-bar inbox, search/export/retention,
     a human-controlled busy queue and workspace safety summaries.
-19. [ ] Integrate vendor-owned browser/tool evidence only through truthful
+19. [x] Integrate vendor-owned browser/tool evidence only through truthful
     capability checks and explicit attributed context-pack captures.
-20. [ ] Add vendor compatibility checks, trustworthy readiness hooks, the
+20. [x] Add vendor compatibility checks, trustworthy readiness hooks, the
     stable/beta update channel and the reviewed beta feedback bundle.
 21. [ ] Finish distribution: Developer ID signing and notarization, then test
     install, upgrade and uninstall on a physical clean Apple Silicon Mac. The

@@ -4,6 +4,7 @@ import ParleyCore
 
 private struct Options {
     var dryRun = false
+    var json = false
     var timeout: TimeInterval = 90
     var vendors: [PaneKind] = []
     var applicationDirectory: URL?
@@ -16,6 +17,8 @@ private struct Options {
             switch arguments[index] {
             case "--dry-run":
                 options.dryRun = true
+            case "--json":
+                options.json = true
             case "--timeout":
                 index += 1
                 guard arguments.indices.contains(index),
@@ -81,10 +84,11 @@ private enum ConformanceCLIError: LocalizedError {
 
 private func printUsage() {
     print("""
-    usage: parley-conformance --runtime <production|development> [--dry-run] [--vendor <name>] [--timeout <seconds>]
+    usage: parley-conformance --runtime <production|development> [--dry-run] [--json] [--vendor <name>] [--timeout <seconds>]
 
       --runtime <name>     target exactly one isolated Parley runtime
       --dry-run            inspect open panes and print the plan; spend no quota
+      --json               emit only the final live report as JSON
       --vendor <name>      probe only claude, codex, agy, or copilot; repeatable
       --timeout <seconds>  bound each live Ask (default 90; range 5...600)
 
@@ -310,8 +314,11 @@ do {
     guard client.isHealthy() else {
         throw ConformanceCLIError.runtime("Parley's coordination core is not healthy. Open Parley and retry.")
     }
-    guard try client.consultations().isEmpty else {
-        throw ConformanceCLIError.runtime("An Ask is already waiting. Complete or cancel it before running live conformance.")
+    let existingHandoffs = try client.handoffs(limit: 500)
+    let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+    guard try client.consultations().isEmpty,
+          !existingHandoffs.contains(where: { activeStates.contains($0.state) }) else {
+        throw ConformanceCLIError.runtime("Tracked Ask or delegated work is active. Complete or cancel it before running live conformance.")
     }
 
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
@@ -319,7 +326,9 @@ do {
     let infoFile = directory.appendingPathComponent("relay-url")
     var allResults: [VendorConformanceResult] = []
 
-    print("Parley live vendor conformance — existing panes will receive explicit probe messages\n")
+    if !options.json {
+        print("Parley live vendor conformance — existing panes will receive explicit probe messages\n")
+    }
     for item in plan {
         switch item {
         case let .skipped(vendor, reason):
@@ -331,7 +340,7 @@ do {
                 detail: reason
             ))
         case let .probe(probe):
-            print("Probing \(probe.vendor.label) in pane \(probe.target.id)…")
+            if !options.json { print("Probing \(probe.vendor.label) in pane \(probe.target.id)…") }
             allResults += try runProbe(
                 probe,
                 controller: controller,
@@ -346,7 +355,13 @@ do {
     }
 
     let report = VendorConformanceReport(results: allResults)
-    print("\n\(report.rendered())")
+    if options.json {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        FileHandle.standardOutput.write(try encoder.encode(report))
+    } else {
+        print("\n\(report.rendered())")
+    }
     exit(report.hasFailures || report.hasBlockedChecks ? 1 : 0)
 } catch {
     FileHandle.standardError.write(Data("Parley conformance: \(error.localizedDescription)\n".utf8))

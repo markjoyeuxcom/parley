@@ -26,8 +26,9 @@ Dragging the app to the DMG's Applications link creates:
 
 The destination can instead be a user-owned Applications folder. The bundle
 contains the SwiftUI application, the local coordination core, the optional
-Service Management LaunchAgent definition, the runtime-component manifest and
-the Parley icon. It does not contain any vendor credentials.
+Service Management LaunchAgent definition, the runtime-component manifest,
+third-party licence notices and the Parley icon. It does not contain any vendor
+credentials.
 
 The release icon is deliberately source-controlled in two forms:
 

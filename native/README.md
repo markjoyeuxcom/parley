@@ -52,7 +52,8 @@ Packaging builds release versions of `parley-native` and
 `parley-core-service`, places them side-by-side in a standard macOS app bundle,
 signs the nested service before the hardened-runtime outer app, verifies the
 seal, and emits ZIP and DMG artifacts under `dist/`. SwiftTerm is linked into
-the UI executable. The relay command is installed from the bundled core code
+the UI executable, and its complete licence notice is copied into the bundle's
+Resources directory. The relay command is installed from the bundled core code
 on launch, while tmux is detected as an external local dependency and always
 uses Parley's private socket and configuration.
 

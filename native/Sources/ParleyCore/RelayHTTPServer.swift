@@ -238,12 +238,36 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 )
                 return
             }
+            if request.method == "GET", request.path == "/ui/reviewed-busy-drafts" {
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                writeJSON(
+                    broker.reviewedBusyDrafts(),
+                    fallback: "could not encode reviewed busy drafts",
+                    to: client
+                )
+                return
+            }
             if request.method == "GET", request.path == "/handoffs/unread" {
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
                 write(broker.unreadHandoffs(), to: client)
+                return
+            }
+            if request.method == "GET", request.path == "/ui/history/retention" {
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                writeJSON(
+                    broker.collaborationHistoryRetentionPolicy(),
+                    fallback: "could not encode history retention policy",
+                    to: client
+                )
                 return
             }
             if request.method == "GET",
@@ -363,6 +387,31 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     workspaceID: scope.workspaceID,
                     workspaceName: scope.workspaceName
                 ), to: client)
+            case "/ui/history/retention":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let update = try? JSONDecoder().decode(
+                    RelayHistoryRetentionUpdateRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid history retention request"), to: client)
+                    return
+                }
+                do {
+                    writeJSON(
+                        try broker.updateCollaborationHistoryRetention(
+                            maximumRecords: update.maximumRecords
+                        ),
+                        fallback: "could not encode history retention result",
+                        to: client
+                    )
+                } catch let error as CollaborationHistoryRetentionError {
+                    write(RelayTextResponse(status: 400, text: error.localizedDescription), to: client)
+                } catch {
+                    write(RelayTextResponse(status: 500, text: error.localizedDescription), to: client)
+                }
             case let path where path.hasPrefix("/ui/read/"):
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
@@ -428,6 +477,39 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     idempotencyKey: comparison.idempotencyKey,
                     preserveFormatting: comparison.preserveFormatting ?? false
                 ), to: client)
+            case "/ui/reviewed-busy-drafts":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let draft = try? JSONDecoder().decode(
+                    ReviewedBusyDraftCreateRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid reviewed busy draft"), to: client)
+                    return
+                }
+                write(broker.enqueueReviewedBusyAskFromUI(draft), to: client)
+            case "/ui/reviewed-busy-drafts/send":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let send = try? JSONDecoder().decode(
+                    ReviewedBusyDraftSendRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid reviewed busy-draft send"), to: client)
+                    return
+                }
+                write(broker.sendReviewedBusyAskFromUI(send), to: client)
+            case let path where path.hasPrefix("/ui/reviewed-busy-drafts/cancel/"):
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                let draftID = String(path.dropFirst("/ui/reviewed-busy-drafts/cancel/".count))
+                write(broker.cancelReviewedBusyDraftFromUI(draftID), to: client)
             case "/ui/context-reviews/approve":
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)

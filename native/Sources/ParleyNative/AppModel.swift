@@ -134,6 +134,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var unreadHandoffs: [RelayHandoff] = []
     @Published private(set) var statusHandoffs: [RelayHandoff] = []
     @Published private(set) var statusActivityEvents: [RelayActivityEvent] = []
+    @Published private(set) var reviewedBusyDrafts: [ReviewedBusyDraft] = []
     @Published private(set) var controller: TmuxController?
     @Published private(set) var recentFolders: [String] = []
     @Published private(set) var favouriteFolders: [String] = []
@@ -166,8 +167,21 @@ final class AppModel: ObservableObject {
     @Published private(set) var dismissedHandoffIDs: Set<String> = []
     @Published private(set) var runtimeReadiness: RuntimeReadinessSnapshot?
     @Published private(set) var runtimeReadinessChecking = false
+    @Published private(set) var vendorCompatibility: VendorCompatibilitySnapshot?
+    @Published private(set) var vendorCompatibilityChecking = false
+    @Published private(set) var liveConformanceReport: VendorConformanceReport?
+    @Published private(set) var liveConformanceRunning = false
+    @Published private(set) var releaseChannel: UpdateChannel = .stable
+    @Published private(set) var releaseCheck: ReleaseCheckResult?
+    @Published private(set) var releaseChecking = false
+    @Published private(set) var releaseDownloading = false
+    @Published private(set) var releaseLifecycleMessage: String?
+    @Published private(set) var betaFeedbackBundle: BetaFeedbackBundle?
+    @Published private(set) var betaFeedbackExporting = false
     @Published private(set) var diagnosticsExporting = false
     @Published private(set) var repeatingAskHandoffID: String?
+    @Published private(set) var sendingReviewedBusyDraftID: String?
+    @Published private(set) var historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy
     @Published private(set) var coreLoginItemState: CoreLoginItemState = .unavailable
     @Published private(set) var coreLoginItemChanging = false
     @Published private(set) var preparingToUninstall = false
@@ -180,6 +194,8 @@ final class AppModel: ObservableObject {
     @Published var pinnedContextSnippetsPresented = false
     @Published var supervisedWorkflowPresented = false
     @Published var worktreeBrowserPresented = false
+    @Published var releaseLifecyclePresented = false
+    @Published var betaFeedbackPresented = false
     @Published private(set) var selectedSupervisedWorkflowID: String?
     @Published private(set) var requestedHelpTopicID: String?
     @Published private(set) var requestedStatusHandoffID: String?
@@ -217,6 +233,7 @@ final class AppModel: ObservableObject {
     private let notificationEpoch = Date()
     private var observedNotificationEventIDs: Set<String> = []
     private var runtimeReadinessTask: Task<Void, Never>?
+    private var releaseTask: Task<Void, Never>?
     private var coreUpgradeTask: Task<Void, Never>?
     private var coreUpgradeSettled = false
     private var lastCoreUpgradeAttempt = Date.distantPast
@@ -229,6 +246,8 @@ final class AppModel: ObservableObject {
     private static let notificationWorkspacesKey = "parley.notificationWorkspaces"
     private static let dismissedHandoffsKey = "parley.dismissedStatusHandoffs"
     private static let firstRunCompletedKey = "parley.firstRunReadinessCompleted"
+    private static let vendorCompatibilityKey = "parley.vendorCompatibility"
+    private static let releaseChannelKey = "parley.releaseChannel"
     private static let permissionProfileKeyPrefix = "parley.permissionProfile"
     private static let projectContextRefreshInterval: TimeInterval = 5
     private static let worktreeRefreshInterval: TimeInterval = 15
@@ -312,6 +331,8 @@ final class AppModel: ObservableObject {
                     Self.workspaceContinuityKey,
                     Self.notificationWorkspacesKey,
                     Self.dismissedHandoffsKey,
+                    Self.vendorCompatibilityKey,
+                    Self.releaseChannelKey,
                 ],
                 from: "parley-native",
                 to: preferences
@@ -329,6 +350,14 @@ final class AppModel: ObservableObject {
         dismissedHandoffIDs = Set(
             preferences.stringArray(forKey: Self.dismissedHandoffsKey) ?? []
         )
+        if let data = preferences.data(forKey: Self.vendorCompatibilityKey) {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            vendorCompatibility = try? decoder.decode(VendorCompatibilitySnapshot.self, from: data)
+        }
+        releaseChannel = preferences.string(forKey: Self.releaseChannelKey)
+            .flatMap(UpdateChannel.init(rawValue:))
+            ?? .stable
         setupPresented = !preferences.bool(forKey: Self.firstRunCompletedKey)
 
         guard runtimeLease != nil, startupError == nil else {
@@ -669,23 +698,37 @@ final class AppModel: ObservableObject {
     func refreshRuntimeReadiness() {
         runtimeReadinessTask?.cancel()
         runtimeReadinessChecking = true
+        vendorCompatibilityChecking = true
         let environment = controller?.environment ?? EnvironmentResolver.resolved()
         let applicationDirectory = applicationDirectory
         let coreHealthy = coreAvailable
         let paneSnapshot = panes
-        let checker = RuntimeReadinessChecker()
+        let previousCompatibility = vendorCompatibility
+        let readinessChecker = RuntimeReadinessChecker()
+        let compatibilityChecker = VendorCompatibilityChecker()
         runtimeReadinessTask = Task { [weak self] in
-            let snapshot = await Task.detached(priority: .utility) {
-                checker.check(
+            let (readiness, compatibility) = await Task.detached(priority: .utility) {
+                let readiness = readinessChecker.check(
                     environment: environment,
                     applicationDirectory: applicationDirectory,
                     coreHealthy: coreHealthy,
                     panes: paneSnapshot
                 )
+                let compatibility = compatibilityChecker.check(
+                    environment: environment,
+                    readiness: readiness,
+                    panes: paneSnapshot,
+                    previous: previousCompatibility
+                )
+                return (readiness, compatibility)
             }.value
             guard !Task.isCancelled else { return }
-            self?.runtimeReadiness = snapshot
-            self?.runtimeReadinessChecking = false
+            guard let self else { return }
+            self.runtimeReadiness = readiness
+            self.vendorCompatibility = compatibility
+            self.runtimeReadinessChecking = false
+            self.vendorCompatibilityChecking = false
+            self.saveVendorCompatibility()
         }
     }
 
@@ -693,6 +736,195 @@ final class AppModel: ObservableObject {
         preferences.set(true, forKey: Self.firstRunCompletedKey)
         setupPresented = false
         terminalHandle.focus()
+    }
+
+    func showReleaseLifecycle() {
+        releaseLifecyclePresented = true
+        refreshRuntimeReadiness()
+    }
+
+    func setReleaseChannel(_ channel: UpdateChannel) {
+        guard channel != releaseChannel else { return }
+        releaseChannel = channel
+        preferences.set(channel.rawValue, forKey: Self.releaseChannelKey)
+        releaseCheck = nil
+        releaseLifecycleMessage = nil
+    }
+
+    func checkForUpdates() {
+        guard !releaseChecking else { return }
+        releaseTask?.cancel()
+        releaseChecking = true
+        releaseLifecycleMessage = nil
+        let channel = releaseChannel
+        let currentVersion = ParleyBuildInformation.current(runtime: runtime).applicationVersion
+        let service = GitHubReleaseService()
+        releaseTask = Task { [weak self] in
+            do {
+                let result = try await service.check(channel: channel, currentVersion: currentVersion)
+                guard !Task.isCancelled, let self else { return }
+                self.releaseCheck = result
+                self.releaseChecking = false
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                self.releaseChecking = false
+                self.releaseLifecycleMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func openCheckedReleasePage() {
+        guard let url = releaseCheck?.release.htmlURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func openReleasesPage() {
+        NSWorkspace.shared.open(GitHubReleaseService.releasesPageURL)
+    }
+
+    func downloadCheckedRelease() {
+        guard let verification = releaseCheck?.verification, !releaseDownloading else { return }
+        let panel = NSSavePanel()
+        panel.title = "Download Verified Parley DMG"
+        panel.message = "Parley downloads the published DMG, verifies its byte count and SHA-256, and saves it. It does not install or restart anything."
+        panel.prompt = "Download and Verify"
+        panel.allowedContentTypes = [.diskImage]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = verification.dmgName
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        releaseDownloading = true
+        releaseLifecycleMessage = nil
+        let service = GitHubReleaseService()
+        Task { [weak self] in
+            do {
+                try await service.downloadVerifiedDMG(verification, to: destination)
+                guard let self else { return }
+                self.releaseDownloading = false
+                self.releaseLifecycleMessage = "Verified \(verification.dmgName) and saved it locally. Parley did not install or restart anything."
+            } catch {
+                guard let self else { return }
+                self.releaseDownloading = false
+                self.releaseLifecycleMessage = error.localizedDescription
+            }
+        }
+    }
+
+    var canRunLiveConformance: Bool {
+        guard !liveConformanceRunning,
+              coreAvailable,
+              Self.conformanceExecutable() != nil else { return false }
+        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+        return consultations.isEmpty && !handoffs.contains { activeStates.contains($0.state) }
+    }
+
+    func runLiveConformance() {
+        guard canRunLiveConformance, let executable = Self.conformanceExecutable() else {
+            releaseLifecycleMessage = "Live conformance needs the bundled runner, a healthy core, and no active Ask or delegated work."
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Run Live Vendor Conformance?"
+        alert.informativeText = "This opt-in check types a small, attributed probe into eligible existing vendor panes and spends subscription quota. It never starts, restarts or closes a pane, and it stops at visible trust or permission prompts."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Run Live Check")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        liveConformanceRunning = true
+        releaseLifecycleMessage = nil
+        var preparedEnvironment = controller?.environment ?? EnvironmentResolver.resolved()
+        preparedEnvironment["PARLEY_LIVE"] = "1"
+        let environment = preparedEnvironment
+        let arguments = [
+            "--application-directory", applicationDirectory.path,
+            "--timeout", "90",
+            "--json",
+        ]
+        Task { [weak self] in
+            do {
+                let output = try await Task.detached(priority: .utility) {
+                    try ProcessCommandRunner(timeout: 600).run(
+                        executable: executable,
+                        arguments: arguments,
+                        environment: environment,
+                        input: nil
+                    )
+                }.value
+                let report = try JSONDecoder().decode(VendorConformanceReport.self, from: output.stdout)
+                guard let self else { return }
+                self.liveConformanceReport = report
+                self.liveConformanceRunning = false
+                self.releaseLifecycleMessage = report.hasFailures || report.hasBlockedChecks
+                    ? "Live conformance completed with failures or blocked checks. Review the result below."
+                    : "Live conformance completed."
+            } catch {
+                guard let self else { return }
+                self.liveConformanceRunning = false
+                self.releaseLifecycleMessage = "Live conformance failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func prepareBetaFeedbackReview() {
+        guard let compatibility = vendorCompatibility else {
+            releaseLifecycleMessage = "Run the quota-free compatibility check before reviewing a feedback bundle."
+            return
+        }
+        var history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        if let relayClient, let refreshed = try? relayClient.handoffs(limit: 500) {
+            history = refreshed
+            if refreshed != statusHandoffs { statusHandoffs = refreshed }
+        }
+        let information = ParleyBuildInformation.current(runtime: runtime)
+        betaFeedbackBundle = BetaFeedbackBundleBuilder.build(
+            build: BetaFeedbackBuild(
+                applicationVersion: information.applicationVersion,
+                buildNumber: information.buildNumber,
+                sourceCommit: information.sourceCommit,
+                runtime: runtime.mode.rawValue
+            ),
+            updateChannel: releaseChannel,
+            compatibility: compatibility,
+            conformance: liveConformanceReport,
+            diagnostics: makeDiagnosticsReport(handoffs: history)
+        )
+        betaFeedbackPresented = true
+    }
+
+    func exportReviewedBetaFeedback() {
+        guard let bundle = betaFeedbackBundle, !betaFeedbackExporting else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Reviewed Beta Feedback"
+        panel.message = "Creates an owner-only local ZIP containing only the fields shown in this review. Nothing is uploaded."
+        panel.prompt = "Export Reviewed Bundle"
+        panel.allowedContentTypes = [.zip]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = Self.betaFeedbackFilename()
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        betaFeedbackExporting = true
+        Task { [weak self] in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try BetaFeedbackArchiveWriter().write(bundle: bundle, to: destination)
+                }.value
+                guard let self else { return }
+                self.betaFeedbackExporting = false
+                self.betaFeedbackPresented = false
+                self.releaseLifecycleMessage = "Saved reviewed beta feedback to \(destination.lastPathComponent). Nothing was uploaded."
+            } catch {
+                guard let self else { return }
+                self.betaFeedbackExporting = false
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    func clearReleaseLifecycleMessage() {
+        releaseLifecycleMessage = nil
     }
 
     func exportDiagnostics() {
@@ -771,6 +1003,33 @@ final class AppModel: ObservableObject {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd-HHmmss'Z'"
         return "Parley-Diagnostics-\(formatter.string(from: date)).zip"
+    }
+
+    private func saveVendorCompatibility() {
+        guard let vendorCompatibility else { return }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        if let data = try? encoder.encode(vendorCompatibility) {
+            preferences.set(data, forKey: Self.vendorCompatibilityKey)
+        }
+    }
+
+    private static func conformanceExecutable() -> URL? {
+        let candidates = [
+            Bundle.main.executableURL?.deletingLastPathComponent()
+                .appendingPathComponent("parley-conformance"),
+            URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+                .deletingLastPathComponent().appendingPathComponent("parley-conformance"),
+        ].compactMap { $0 }
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    private static func betaFeedbackFilename(at date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss'Z'"
+        return "Parley-Beta-Feedback-\(formatter.string(from: date)).zip"
     }
 
     private static func collaborationHistoryFilename(at date: Date = Date()) -> String {
@@ -1146,6 +1405,37 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var vendorToolEvidencePanes: [TmuxPane] {
+        panes.filter {
+            $0.kind.isAgent && $0.isStarted && !$0.isDead
+        }.sorted {
+            let left = ($0.workspaceName ?? "", $0.displayName, $0.id)
+            let right = ($1.workspaceName ?? "", $1.displayName, $1.id)
+            return left < right
+        }
+    }
+
+    func paneToolCapabilitySummary(for pane: TmuxPane) -> PaneToolCapabilitySummary {
+        PaneToolCapabilityProjection.summary(for: pane, profiles: permissionProfiles)
+    }
+
+    func showPaneToolCapabilitySummary(_ pane: TmuxPane) {
+        let summary = paneToolCapabilitySummary(for: pane)
+        let alert = NSAlert()
+        alert.messageText = "Browser & Tool Access · \(pane.displayName)"
+        alert.informativeText = """
+        Browser/tool access: \(summary.toolAccess.label)
+        Network policy: \(summary.networkLabel)
+        Evidence capture: \(summary.canCaptureEvidence ? "Available through explicit Context Pack review" : "Unavailable while this pane is stopped")
+
+        \(summary.detail)
+
+        Parley does not inspect browser profiles, cookies, website credentials or vendor MCP configuration. Network permission is not proof that a browser tool exists.
+        """
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     var canCompareContextPack: Bool {
         Set(contextPackAskTargets.map(\.kind)).count >= 2
             && askManyComparisonRun?.isRunning != true
@@ -1424,6 +1714,10 @@ final class AppModel: ObservableObject {
                         contextPackDraft = draft
                     }
                 }
+                let refreshedBusyDrafts = try relayClient.reviewedBusyDrafts()
+                if refreshedBusyDrafts != reviewedBusyDrafts {
+                    reviewedBusyDrafts = refreshedBusyDrafts
+                }
                 processNotifications(from: refreshedHandoffs + refreshedUnread)
                 coreAvailable = true
                 coreError = nil
@@ -1628,6 +1922,10 @@ final class AppModel: ObservableObject {
             if history != statusHandoffs { statusHandoffs = history }
             let activity = try relayClient.activityEvents(limit: 500)
             if activity != statusActivityEvents { statusActivityEvents = activity }
+            let retention = try relayClient.historyRetentionPolicy()
+            if retention != historyRetentionPolicy { historyRetentionPolicy = retention }
+            let busyDrafts = try relayClient.reviewedBusyDrafts()
+            if busyDrafts != reviewedBusyDrafts { reviewedBusyDrafts = busyDrafts }
             let retainedDismissals = StatusCenterVisibility.retainedDismissalIDs(
                 dismissedHandoffIDs,
                 handoffs: history
@@ -1730,6 +2028,104 @@ final class AppModel: ObservableObject {
 
     func statusHandoffChains(workspaceID: String?) -> [HandoffChain] {
         HandoffChainProjection.chains(reloaded: handoffChains, workspaceID: workspaceID)
+    }
+
+    func statusReviewedBusyDrafts(workspaceID: String?) -> [ReviewedBusyDraft] {
+        reviewedBusyDrafts.filter { draft in
+            workspaceID == nil
+                || draft.sourceWorkspaceID == workspaceID
+                || draft.targetWorkspaceID == workspaceID
+        }
+    }
+
+    func reviewedBusyDraftTargetIsBusy(_ draft: ReviewedBusyDraft) -> Bool {
+        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+        let knownHistory = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        return knownHistory.contains {
+            $0.targetPaneID == draft.targetPaneID && activeStates.contains($0.state)
+        }
+    }
+
+    func canFocusReviewedBusyDraftPane(_ paneID: String) -> Bool {
+        panes.contains { $0.id == paneID }
+    }
+
+    func focusReviewedBusyDraft(_ draft: ReviewedBusyDraft, target: Bool) {
+        guard let pane = panes.first(where: {
+            $0.id == (target ? draft.targetPaneID : draft.sourcePaneID)
+        }) else { return }
+        select(pane)
+    }
+
+    func sendReviewedBusyDraft(_ draft: ReviewedBusyDraft) {
+        guard draft.state == .queued,
+              sendingReviewedBusyDraftID == nil,
+              let relayClient else { return }
+        if reviewedBusyDraftTargetIsBusy(draft) {
+            let alert = NSAlert()
+            alert.messageText = "\(draft.targetName) Is Still Busy"
+            alert.informativeText = "The reviewed draft remains visible and unsent. Parley will not submit it automatically when the target becomes idle."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+        guard let edited = editSupervisedWorkflowText(
+            title: "Review and Send to \(draft.targetName)",
+            message: "This is a fresh human authorization. The exact edited text will be submitted as a tracked Ask from \(draft.sourceName). Parley never sends this merely because the target became idle.",
+            text: draft.text,
+            action: "Send Reviewed Ask",
+            insertVisible: { "" }
+        ) else { return }
+
+        sendingReviewedBusyDraftID = draft.id
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.sendReviewedBusyDraft(ReviewedBusyDraftSendRequest(
+                        draftID: draft.id,
+                        expectedUpdatedAt: draft.updatedAt,
+                        text: edited,
+                        preserveFormatting: draft.preserveFormatting
+                    ))
+                }.value
+                self.sendingReviewedBusyDraftID = nil
+                self.refreshStatusCenterQuietly()
+                guard response.status == 200 else {
+                    throw RelayUIError.message(response.text)
+                }
+            } catch {
+                self.sendingReviewedBusyDraftID = nil
+                self.refreshStatusCenterQuietly()
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    func discardReviewedBusyDraft(_ draft: ReviewedBusyDraft) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = draft.state == .queued
+            ? "Discard Reviewed Draft?"
+            : "Dismiss Uncertain Send Record?"
+        alert.informativeText = draft.state == .queued
+            ? "This removes the local unsent draft for \(draft.targetName). No terminal input will be submitted. This cannot be undone."
+            : "Parley cannot prove whether terminal submission occurred before the interruption. Dismissing this record does not cancel or reverse input that may already have reached \(draft.targetName), and Parley will not make it resendable."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: draft.state == .queued ? "Discard Draft" : "Dismiss Record")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        do {
+            guard let relayClient else {
+                throw RelayUIError.message("The persistent core is unavailable.")
+            }
+            let response = try relayClient.cancelReviewedBusyDraft(draft.id)
+            guard response.status == 200 else { throw RelayUIError.message(response.text) }
+            refreshStatusCenterQuietly()
+            return true
+        } catch {
+            NSAlert(error: error).runModal()
+            return false
+        }
     }
 
     func chains(containing handoff: RelayHandoff) -> [HandoffChain] {
@@ -1900,15 +2296,74 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func setHistoryRetention(maximumRecords: Int) {
+        do {
+            let requested = try CollaborationHistoryRetentionPolicy(maximumRecords: maximumRecords)
+            guard requested != historyRetentionPolicy else { return }
+            let lowering = requested.maximumRecords < historyRetentionPolicy.maximumRecords
+            let alert = NSAlert()
+            alert.messageText = "Keep up to \(requested.maximumRecords) local history records?"
+            alert.informativeText = lowering
+                ? "Parley will keep up to \(requested.maximumRecords) collaboration handoffs and \(requested.maximumRecords) lifecycle events. Lowering the current \(historyRetentionPolicy.maximumRecords)-record limit permanently removes the oldest eligible records immediately and cannot restore them later. Active handoffs and curated handoff chains are always preserved. This changes only this local \(runtime.mode.label) runtime; nothing is uploaded."
+                : "Parley will keep up to \(requested.maximumRecords) collaboration handoffs and \(requested.maximumRecords) lifecycle events. Increasing the limit does not restore records previously removed. Active handoffs and curated handoff chains are preserved. This changes only this local \(runtime.mode.label) runtime; nothing is uploaded."
+            alert.alertStyle = lowering ? .warning : .informational
+            alert.addButton(withTitle: lowering ? "Apply and Prune" : "Change Retention")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            guard let relayClient else {
+                throw RelayUIError.message("The Parley coordination core is unavailable.")
+            }
+            let change = try relayClient.updateHistoryRetention(
+                maximumRecords: requested.maximumRecords
+            )
+            historyRetentionPolicy = change.policy
+            refreshStatusCenterQuietly()
+            guard change.removedHandoffs > 0 || change.removedActivityEvents > 0 else { return }
+            let result = NSAlert()
+            result.messageText = "Local History Retention Updated"
+            result.informativeText = "Parley removed \(change.removedHandoffs) terminal handoff record\(change.removedHandoffs == 1 ? "" : "s") and \(change.removedActivityEvents) lifecycle event\(change.removedActivityEvents == 1 ? "" : "s"). Active work and curated handoff chains were preserved."
+            result.addButton(withTitle: "OK")
+            result.runModal()
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    func exportWorkspaceHistory(for workspace: TmuxWorkspace) {
+        let source = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        let records = CollaborationHistoryProjection.records(
+            source,
+            involvingWorkspaceID: workspace.id
+        )
+        guard !records.isEmpty else {
+            let alert = NSAlert()
+            alert.messageText = "No Collaboration History to Export"
+            alert.informativeText = "Parley has no retained handoff records involving \(workspace.name). Lifecycle activity remains visible in Status Center but is not part of the collaboration-history Markdown export."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+        exportCollaborationHistory(
+            records,
+            scopeName: workspace.name,
+            selectionDescription: "All \(records.count) retained handoff record\(records.count == 1 ? "" : "s") involving this workspace"
+        )
+    }
+
     func exportCollaborationHistory(
         _ handoffs: [RelayHandoff],
-        scopeName: String?
+        scopeName: String?,
+        selectionDescription: String? = nil
     ) {
         guard !handoffs.isEmpty else { return }
         let panel = NSSavePanel()
-        panel.title = "Export Selected Collaboration History"
-        panel.message = "This local Markdown file contains the complete questions, instructions, returned results, identities, and delivery receipts for exactly the selected records. Nothing is uploaded."
-        panel.prompt = "Export Selected"
+        panel.title = selectionDescription == nil
+            ? "Export Selected Collaboration History"
+            : "Export Workspace Collaboration History"
+        panel.message = selectionDescription == nil
+            ? "This local Markdown file contains the complete questions, instructions, returned results, identities, and delivery receipts for exactly the selected records. Nothing is uploaded."
+            : "This local Markdown file contains complete questions, instructions, returned results, identities, and delivery receipts for every retained handoff involving this workspace, including dismissed records. Lifecycle activity is not included. Nothing is uploaded."
+        panel.prompt = selectionDescription == nil ? "Export Selected" : "Export Workspace"
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
@@ -1918,12 +2373,15 @@ final class AppModel: ObservableObject {
         do {
             let markdown = CollaborationHistoryMarkdown.document(
                 handoffs: handoffs,
-                scopeName: scopeName
+                scopeName: scopeName,
+                selectionDescription: selectionDescription
             )
             try CollaborationHistoryMarkdownWriter.write(markdown, to: destination)
             let alert = NSAlert()
             alert.messageText = "Collaboration History Exported"
-            alert.informativeText = "Parley saved \(handoffs.count) selected record\(handoffs.count == 1 ? "" : "s") to \(destination.lastPathComponent). Nothing was uploaded."
+            alert.informativeText = selectionDescription == nil
+                ? "Parley saved \(handoffs.count) selected record\(handoffs.count == 1 ? "" : "s") to \(destination.lastPathComponent). Nothing was uploaded."
+                : "Parley saved \(handoffs.count) retained workspace handoff record\(handoffs.count == 1 ? "" : "s") to \(destination.lastPathComponent). Nothing was uploaded."
             alert.addButton(withTitle: "OK")
             alert.runModal()
         } catch {
@@ -2219,7 +2677,12 @@ final class AppModel: ObservableObject {
                 action: "Ask",
                 insertVisible: { try controller.capturePane(source.id) }
             ) else { return }
-            try controller.ask(from: source.id, to: target.id, text: edited)
+            try submitOrOfferBusyQueue(
+                edited,
+                from: source,
+                to: target,
+                preserveFormatting: false
+            )
             try refresh()
             terminalHandle.terminal?.selectNone()
             terminalHandle.focus()
@@ -2524,6 +2987,61 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func addVendorToolEvidence(
+        kind: VendorToolEvidenceKind,
+        paneID: String,
+        sourceURL: String,
+        selectedText: String,
+        artifactPath: String
+    ) throws {
+        guard let draft = contextPackDraft else {
+            throw RelayUIError.message("Open a context pack before adding browser or tool evidence.")
+        }
+        guard let pane = vendorToolEvidencePanes.first(where: { $0.id == paneID }) else {
+            throw RelayUIError.message("That vendor pane is no longer running, so Parley cannot preserve truthful attribution.")
+        }
+        let url = sourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = artifactPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let reviewID = draft.reviewID {
+            let captureKind: AgentContextTrustedCaptureKind = switch kind {
+            case .browserURL: .browserURL
+            case .browserSelection: .browserSelection
+            case .browserScreenshot: .browserScreenshot
+            case .savedArtifact: .toolArtifact
+            }
+            try captureTrustedContext(
+                AgentContextTrustedCaptureRequest(
+                    reviewID: reviewID,
+                    kind: captureKind,
+                    paths: path.isEmpty ? [] : [path],
+                    evidencePaneID: pane.id,
+                    sourceURL: url.isEmpty ? nil : url,
+                    selectedText: kind == .browserSelection ? selectedText : nil
+                ),
+                draftID: draft.id
+            )
+            return
+        }
+
+        guard let contextPackBuilder else {
+            throw RelayUIError.message("Context capture is unavailable.")
+        }
+        let part: ContextPackPart = switch kind {
+        case .browserURL:
+            try contextPackBuilder.browserURLEvidence(from: pane, url: url)
+        case .browserSelection:
+            try contextPackBuilder.browserSelectionEvidence(from: pane, url: url, text: selectedText)
+        case .browserScreenshot, .savedArtifact:
+            try contextPackBuilder.vendorArtifactEvidence(
+                kind: kind,
+                from: pane,
+                file: URL(fileURLWithPath: path),
+                sourceURL: url.isEmpty ? nil : url
+            )
+        }
+        try appendContextPackParts([part], draftID: draft.id)
+    }
+
     func addWorkspaceBriefContext() {
         perform {
             guard canAddWorkspaceBriefToContextPack,
@@ -2629,8 +3147,7 @@ final class AppModel: ObservableObject {
         perform {
             guard let draft = contextPackDraft,
                   let source = contextPackSourcePane,
-                  let contextPackBuilder,
-                  let controller else {
+                  let contextPackBuilder else {
                 throw RelayUIError.message("The context pack's source pane is no longer ready.")
             }
             let rendered = try contextPackBuilder.render(draft.pack)
@@ -2686,7 +3203,12 @@ final class AppModel: ObservableObject {
                     alert.runModal()
                 }
             } else {
-                try controller.askWithExplicitContext(from: source.id, to: target.id, text: rendered)
+                try submitOrOfferBusyQueue(
+                    rendered,
+                    from: source,
+                    to: target,
+                    preserveFormatting: true
+                )
             }
             contextPackPresented = false
             contextPackDraft = nil
@@ -4615,10 +5137,56 @@ final class AppModel: ObservableObject {
             action: "Ask for Review",
             insertVisible: { try controller.capturePane(source.id) }
         ) else { return }
-        try controller.ask(from: source.id, to: target.id, text: edited)
+        try submitOrOfferBusyQueue(
+            edited,
+            from: source,
+            to: target,
+            preserveFormatting: false
+        )
         try refresh()
         terminalHandle.terminal?.selectNone()
         terminalHandle.focus()
+    }
+
+    private func submitOrOfferBusyQueue(
+        _ text: String,
+        from source: TmuxPane,
+        to target: TmuxPane,
+        preserveFormatting: Bool
+    ) throws {
+        guard let controller else {
+            throw RelayUIError.message("The tmux workspace is unavailable, so this reviewed Ask was not sent or queued.")
+        }
+        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+        let knownHistory = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        let targetIsBusy = knownHistory.contains {
+            $0.targetPaneID == target.id && activeStates.contains($0.state)
+        }
+        guard targetIsBusy else {
+            if preserveFormatting {
+                try controller.askWithExplicitContext(from: source.id, to: target.id, text: text)
+            } else {
+                try controller.ask(from: source.id, to: target.id, text: text)
+            }
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "\(target.displayName) Already Has Tracked Work"
+        alert.informativeText = "Keep this exact reviewed Ask in Parley's local busy queue? It remains visible and unsent. When \(target.displayName) becomes idle, Parley will still wait for you to reopen, review and explicitly send it."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Keep Reviewed Draft")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let relayClient else {
+            throw RelayUIError.message("The persistent core is unavailable, so Parley cannot keep this draft safely.")
+        }
+        _ = try relayClient.enqueueReviewedBusyDraft(ReviewedBusyDraftCreateRequest(
+            sourcePaneID: source.id,
+            targetPaneID: target.id,
+            text: text,
+            preserveFormatting: preserveFormatting
+        ))
     }
 
     private static func paletteSubject(_ text: String) -> String {

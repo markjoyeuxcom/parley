@@ -202,6 +202,7 @@ struct ParleyNativeApp: App {
             }
             CommandMenu("Tools") {
                 Button("Environment Check…") { model.showEnvironmentCheck() }
+                Button("Compatibility & Releases…") { model.showReleaseLifecycle() }
                 Divider()
                 Toggle(
                     "Keep Coordination Core Available at Login",
@@ -261,7 +262,7 @@ struct ParleyNativeApp: App {
         .windowResizability(.contentMinSize)
 
         Window("About Parley", id: "about") {
-            AboutView(runtime: model.runtime)
+            AboutView(runtime: model.runtime, updateChannel: model.releaseChannel)
         }
         .windowResizability(.contentSize)
     }

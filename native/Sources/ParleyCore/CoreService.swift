@@ -5,11 +5,16 @@ import Security
 
 public enum RelayCoreTransportLimits {
     public static let maximumBodyBytes = 200_000
+    public static let trackedResponseTimeout: TimeInterval = 31 * 60
 }
 
 struct RelayWorkspaceHistoryDeletionRequest: Codable {
     let workspaceID: String
     let workspaceName: String?
+}
+
+struct RelayHistoryRetentionUpdateRequest: Codable {
+    let maximumRecords: Int
 }
 
 public enum RelayCoreError: LocalizedError {
@@ -189,7 +194,8 @@ public struct RelayCoreClient: Sendable {
                 "X-Parley-Control": controlToken,
                 "Content-Type": "application/json",
             ],
-            body: body
+            body: body,
+            receiveTimeout: RelayCoreTransportLimits.trackedResponseTimeout
         )
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
@@ -244,7 +250,8 @@ public struct RelayCoreClient: Sendable {
                 "X-Parley-Control": controlToken,
                 "Content-Type": "application/json",
             ],
-            body: body
+            body: body,
+            receiveTimeout: RelayCoreTransportLimits.trackedResponseTimeout
         )
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
@@ -354,7 +361,8 @@ public struct RelayCoreClient: Sendable {
                 "X-Parley-Control": controlToken,
                 "Content-Type": "application/json",
             ],
-            body: body
+            body: body,
+            receiveTimeout: RelayCoreTransportLimits.trackedResponseTimeout
         )
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
@@ -380,12 +388,77 @@ public struct RelayCoreClient: Sendable {
                 "X-Parley-Control": controlToken,
                 "Content-Type": "application/json",
             ],
-            body: body
+            body: body,
+            receiveTimeout: RelayCoreTransportLimits.trackedResponseTimeout
         )
         guard let bundle = try? JSONDecoder().decode(RelayAskManyBundle.self, from: response.body) else {
             throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
         }
         return RelayAskManyUIResponse(status: response.status, bundle: bundle)
+    }
+
+    public func reviewedBusyDrafts() throws -> [ReviewedBusyDraft] {
+        let response = try request(
+            method: "GET",
+            path: "/ui/reviewed-busy-drafts",
+            headers: ["X-Parley-Control": controlToken],
+            body: Data()
+        )
+        if response.status == 404 {
+            // A new UI may remain attached to the previous core contract while
+            // an active Ask prevents handover. That core cannot own drafts yet.
+            return []
+        }
+        guard response.status == 200 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return try JSONDecoder().decode([ReviewedBusyDraft].self, from: response.body)
+    }
+
+    public func enqueueReviewedBusyDraft(
+        _ requestBody: ReviewedBusyDraftCreateRequest
+    ) throws -> ReviewedBusyDraft {
+        let body = try JSONEncoder().encode(requestBody)
+        let response = try request(
+            method: "POST",
+            path: "/ui/reviewed-busy-drafts",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body
+        )
+        guard response.status == 201 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return try JSONDecoder().decode(ReviewedBusyDraft.self, from: response.body)
+    }
+
+    public func sendReviewedBusyDraft(
+        _ requestBody: ReviewedBusyDraftSendRequest
+    ) throws -> RelayTextResponse {
+        let body = try JSONEncoder().encode(requestBody)
+        let response = try request(
+            method: "POST",
+            path: "/ui/reviewed-busy-drafts/send",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body,
+            receiveTimeout: RelayCoreTransportLimits.trackedResponseTimeout
+        )
+        return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
+    public func cancelReviewedBusyDraft(_ draftID: String) throws -> RelayTextResponse {
+        let response = try request(
+            method: "POST",
+            path: "/ui/reviewed-busy-drafts/cancel/\(draftID)",
+            headers: ["X-Parley-Control": controlToken],
+            body: Data()
+        )
+        return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
 
     public func cancelHandoff(_ handoffID: String) throws -> RelayTextResponse {
@@ -438,11 +511,46 @@ public struct RelayCoreClient: Sendable {
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
 
+    public func historyRetentionPolicy() throws -> CollaborationHistoryRetentionPolicy {
+        let response = try request(
+            method: "GET",
+            path: "/ui/history/retention",
+            headers: ["X-Parley-Control": controlToken],
+            body: Data()
+        )
+        guard response.status == 200 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return try JSONDecoder().decode(CollaborationHistoryRetentionPolicy.self, from: response.body)
+    }
+
+    public func updateHistoryRetention(
+        maximumRecords: Int
+    ) throws -> CollaborationHistoryRetentionChange {
+        let body = try JSONEncoder().encode(RelayHistoryRetentionUpdateRequest(
+            maximumRecords: maximumRecords
+        ))
+        let response = try request(
+            method: "POST",
+            path: "/ui/history/retention",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body
+        )
+        guard response.status == 200 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return try JSONDecoder().decode(CollaborationHistoryRetentionChange.self, from: response.body)
+    }
+
     private func request(
         method: String,
         path: String,
         headers: [String: String] = [:],
-        body: Data
+        body: Data,
+        receiveTimeout: TimeInterval = 3
     ) throws -> CoreHTTPResponse {
         let locator = try String(contentsOf: infoFile, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -455,9 +563,12 @@ public struct RelayCoreClient: Sendable {
 
         var noSignal: Int32 = 1
         _ = setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout.size(ofValue: noSignal)))
-        var timeout = timeval(tv_sec: 3, tv_usec: 0)
-        _ = setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout.size(ofValue: timeout)))
-        _ = setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout.size(ofValue: timeout)))
+        let wholeSeconds = Int(receiveTimeout.rounded(.down))
+        let fractionalMicroseconds = Int((receiveTimeout - Double(wholeSeconds)) * 1_000_000)
+        var receive = timeval(tv_sec: wholeSeconds, tv_usec: Int32(fractionalMicroseconds))
+        var sendTimeout = timeval(tv_sec: 3, tv_usec: 0)
+        _ = setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &receive, socklen_t(MemoryLayout.size(ofValue: receive)))
+        _ = setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout.size(ofValue: sendTimeout)))
 
         var address = try unixAddress(path: socketPath)
         let status = withUnsafePointer(to: &address) { pointer in

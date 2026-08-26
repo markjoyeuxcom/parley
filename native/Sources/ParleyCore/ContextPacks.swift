@@ -1,5 +1,7 @@
 import Darwin
+import CryptoKit
 import Foundation
+import ImageIO
 
 public enum ContextPackText {
     /// Normalizes only transport controls. Unlike terminal relay cleaning it
@@ -28,6 +30,10 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
     case pinnedSnippet
     case editorSelection
     case editorDiagnostics
+    case browserURL
+    case browserSelection
+    case browserScreenshot
+    case toolArtifact
 
     public var label: String {
         switch self {
@@ -40,6 +46,10 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
         case .pinnedSnippet: "Pinned snippet"
         case .editorSelection: "Editor selection"
         case .editorDiagnostics: "Editor diagnostics"
+        case .browserURL: "Browser URL"
+        case .browserSelection: "Browser selected text"
+        case .browserScreenshot: "Browser screenshot"
+        case .toolArtifact: "Saved tool artifact"
         }
     }
 }
@@ -49,17 +59,20 @@ public struct ContextPackSource: Codable, Equatable, Sendable {
     public let label: String
     public let detail: String
     public let referenceID: String?
+    public let vendorEvidence: VendorToolEvidenceProvenance?
 
     public init(
         kind: ContextPackSourceKind,
         label: String,
         detail: String,
-        referenceID: String? = nil
+        referenceID: String? = nil,
+        vendorEvidence: VendorToolEvidenceProvenance? = nil
     ) {
         self.kind = kind
         self.label = label
         self.detail = detail
         self.referenceID = referenceID
+        self.vendorEvidence = vendorEvidence
     }
 }
 
@@ -136,7 +149,9 @@ public enum ContextPackError: LocalizedError, Equatable {
     case tooManyParts
     case partTooLarge
     case packTooLarge
+    case artifactTooLarge
     case notText
+    case invalidEvidence(String)
     case commandFailed(String)
 
     public var errorDescription: String? {
@@ -159,8 +174,12 @@ public enum ContextPackError: LocalizedError, Equatable {
             "That source is too large for one context pack. Narrow the file, diff, screen or command output."
         case .packTooLarge:
             "This context pack is too large for one Parley handoff. Remove or shorten one or more parts."
+        case .artifactTooLarge:
+            "That saved browser/tool artifact is too large to inspect safely. Select an artifact no larger than 25 MB."
         case .notText:
             "Context packs can contain UTF-8 text only."
+        case let .invalidEvidence(detail):
+            detail
         case let .commandFailed(detail):
             detail
         }
@@ -286,10 +305,12 @@ private final class BoundedContextData: @unchecked Sendable {
 public final class ContextPackBuilder: @unchecked Sendable {
     public static let defaultMaximumPartBytes = 60_000
     public static let defaultMaximumRenderedBytes = 90_000
+    public static let defaultMaximumArtifactBytes = 25 * 1_024 * 1_024
     public static let maximumParts = 16
 
     public let maximumPartBytes: Int
     public let maximumRenderedBytes: Int
+    public let maximumArtifactBytes: Int
 
     private let gitExecutable: URL
     private let environment: [String: String]
@@ -304,6 +325,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
         commandRunner: (any ContextCommandRunning)? = nil,
         maximumPartBytes: Int = ContextPackBuilder.defaultMaximumPartBytes,
         maximumRenderedBytes: Int = ContextPackBuilder.defaultMaximumRenderedBytes,
+        maximumArtifactBytes: Int = ContextPackBuilder.defaultMaximumArtifactBytes,
         fileManager: FileManager = .default
     ) {
         self.gitExecutable = gitExecutable
@@ -316,6 +338,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
         self.gitRunner = gitRunner
         self.maximumPartBytes = max(1, maximumPartBytes)
         self.maximumRenderedBytes = max(1, maximumRenderedBytes)
+        self.maximumArtifactBytes = max(1, maximumArtifactBytes)
         self.commandRunner = commandRunner ?? ContextProcessCommandRunner(
             maximumOutputBytes: max(1, maximumRenderedBytes + 1)
         )
@@ -419,6 +442,115 @@ public final class ContextPackBuilder: @unchecked Sendable {
                 detail: relativeFile
             ),
             text: text
+        )
+    }
+
+    public func browserURLEvidence(
+        from pane: TmuxPane,
+        url: String,
+        capturedAt: Date = Date()
+    ) throws -> ContextPackPart {
+        let capability = try evidenceCapability(for: pane)
+        let webURL = try validWebURL(url)
+        let provenance = evidenceProvenance(
+            kind: .browserURL,
+            pane: pane,
+            capability: capability,
+            sourceURL: webURL,
+            capturedAt: capturedAt,
+            captureBasis: .personProvidedURL
+        )
+        return try part(
+            source: ContextPackSource(
+                kind: .browserURL,
+                label: URL(string: webURL)?.host ?? "Web page",
+                detail: "Person-provided URL attributed to \(pane.displayName) (\(pane.id))",
+                vendorEvidence: provenance
+            ),
+            text: "Person-selected web URL: \(webURL)\nParley did not fetch or verify this page."
+        )
+    }
+
+    public func browserSelectionEvidence(
+        from pane: TmuxPane,
+        url: String,
+        text: String,
+        capturedAt: Date = Date()
+    ) throws -> ContextPackPart {
+        let capability = try evidenceCapability(for: pane)
+        let webURL = try validWebURL(url)
+        let selected = ContextPackText.normalize(text)
+        guard !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ContextPackError.invalidEvidence("Paste the exact selected browser text before adding this evidence.")
+        }
+        let provenance = evidenceProvenance(
+            kind: .browserSelection,
+            pane: pane,
+            capability: capability,
+            sourceURL: webURL,
+            capturedAt: capturedAt,
+            captureBasis: .personProvidedSelection
+        )
+        return try part(
+            source: ContextPackSource(
+                kind: .browserSelection,
+                label: URL(string: webURL)?.host ?? "Web selection",
+                detail: "Person-provided selection attributed to \(pane.displayName) (\(pane.id))",
+                vendorEvidence: provenance
+            ),
+            text: selected
+        )
+    }
+
+    public func vendorArtifactEvidence(
+        kind: VendorToolEvidenceKind,
+        from pane: TmuxPane,
+        file: URL,
+        sourceURL: String?,
+        capturedAt: Date = Date()
+    ) throws -> ContextPackPart {
+        guard kind == .browserScreenshot || kind == .savedArtifact else {
+            throw ContextPackError.invalidEvidence("Choose Browser screenshot or Saved tool artifact for a local file.")
+        }
+        let capability = try evidenceCapability(for: pane)
+        let selected = file.standardizedFileURL
+        let values = try selected.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true else {
+            throw ContextPackError.invalidEvidence("The selected browser/tool artifact is not a regular file: \(selected.path)")
+        }
+        guard let measuredSize = values.fileSize, measuredSize <= maximumArtifactBytes else {
+            throw ContextPackError.artifactTooLarge
+        }
+        let data = try Data(contentsOf: selected, options: .mappedIfSafe)
+        guard data.count <= maximumArtifactBytes else { throw ContextPackError.artifactTooLarge }
+        if kind == .browserScreenshot, CGImageSourceCreateWithData(data as CFData, nil) == nil {
+            throw ContextPackError.invalidEvidence("The selected screenshot is not a readable image file.")
+        }
+        let webURL = try sourceURL.flatMap { value -> String? in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : try validWebURL(trimmed)
+        }
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let provenance = evidenceProvenance(
+            kind: kind,
+            pane: pane,
+            capability: capability,
+            sourceURL: webURL,
+            artifactPath: selected.path,
+            artifactByteCount: data.count,
+            sha256: digest,
+            capturedAt: capturedAt,
+            captureBasis: .parleyInspectedLocalArtifact
+        )
+        let sourceKind: ContextPackSourceKind = kind == .browserScreenshot ? .browserScreenshot : .toolArtifact
+        return try part(
+            source: ContextPackSource(
+                kind: sourceKind,
+                label: selected.lastPathComponent,
+                detail: "Person-selected local \(kind.label.lowercased()) attributed to \(pane.displayName) (\(pane.id))",
+                vendorEvidence: provenance
+            ),
+            text: "Local file selected by the person: \(selected.path)\nThe file bytes are not embedded in this text context pack. The receiving vendor must say if its own tools or granted filesystem scope cannot read that path."
         )
     }
 
@@ -541,13 +673,31 @@ public final class ContextPackBuilder: @unchecked Sendable {
         ]
         if !note.isEmpty { sections.append("Request for the receiving vendor:\n\(note)") }
         for (index, part) in pack.parts.enumerated() {
+            var metadata = [
+                "Context part \(index + 1) of \(pack.parts.count)",
+                "Type: \(part.source.kind.label)",
+                "Source: \(part.source.detail)",
+                "Captured UTF-8 bytes: \(part.capturedByteCount)",
+                "Current UTF-8 bytes: \(part.byteCount)",
+                "Edited after capture: \(part.isEdited ? "yes" : "no")",
+            ]
+            if let evidence = part.source.vendorEvidence {
+                metadata.append(contentsOf: [
+                    "Evidence vendor: \(evidence.vendor.label)",
+                    "Evidence pane: \(evidence.paneName) (\(evidence.paneID))",
+                    "Browser/tool capability: \(evidence.toolAccess.label)",
+                    "Capability basis: \(evidence.toolAccessDetail)",
+                    "Attribution basis: \(evidence.captureBasis.detail)",
+                    "Parley browser boundary: Parley did not open, scrape or control the vendor browser session.",
+                ])
+                if let sourceURL = evidence.sourceURL { metadata.append("Evidence URL: \(sourceURL)") }
+                if let artifactPath = evidence.artifactPath { metadata.append("Local artifact: \(artifactPath)") }
+                if let bytes = evidence.artifactByteCount { metadata.append("Artifact bytes: \(bytes)") }
+                if let sha256 = evidence.sha256 { metadata.append("Artifact SHA-256: \(sha256)") }
+                metadata.append("Evidence captured: \(evidence.capturedAt.formatted(.iso8601))")
+            }
             sections.append("""
-            Context part \(index + 1) of \(pack.parts.count)
-            Type: \(part.source.kind.label)
-            Source: \(part.source.detail)
-            Captured UTF-8 bytes: \(part.capturedByteCount)
-            Current UTF-8 bytes: \(part.byteCount)
-            Edited after capture: \(part.isEdited ? "yes" : "no")
+            \(metadata.joined(separator: "\n"))
 
             --- begin explicit context ---
             \(part.text)
@@ -555,6 +705,56 @@ public final class ContextPackBuilder: @unchecked Sendable {
             """)
         }
         return ContextPackText.normalize(sections.joined(separator: "\n\n"))
+    }
+
+    private func evidenceCapability(for pane: TmuxPane) throws -> PaneToolCapabilitySummary {
+        let capability = PaneToolCapabilityProjection.summary(for: pane, profiles: [])
+        guard capability.canCaptureEvidence else {
+            throw ContextPackError.invalidEvidence(capability.detail)
+        }
+        return capability
+    }
+
+    private func evidenceProvenance(
+        kind: VendorToolEvidenceKind,
+        pane: TmuxPane,
+        capability: PaneToolCapabilitySummary,
+        sourceURL: String?,
+        artifactPath: String? = nil,
+        artifactByteCount: Int? = nil,
+        sha256: String? = nil,
+        capturedAt: Date,
+        captureBasis: VendorToolEvidenceCaptureBasis
+    ) -> VendorToolEvidenceProvenance {
+        VendorToolEvidenceProvenance(
+            kind: kind,
+            vendor: pane.kind,
+            paneID: pane.id,
+            paneName: pane.displayName,
+            sourceURL: sourceURL,
+            artifactPath: artifactPath,
+            artifactByteCount: artifactByteCount,
+            sha256: sha256,
+            capturedAt: capturedAt,
+            captureBasis: captureBasis,
+            toolAccess: capability.toolAccess,
+            toolAccessDetail: capability.detail
+        )
+    }
+
+    private func validWebURL(_ value: String) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.utf8.count <= 8_192,
+              let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              components.host?.isEmpty == false,
+              components.user == nil,
+              components.password == nil,
+              let url = components.url else {
+            throw ContextPackError.invalidEvidence("Evidence URLs must be credential-free HTTP or HTTPS URLs.")
+        }
+        return url.absoluteString
     }
 
     private func git(in folder: String, _ arguments: [String]) throws -> String {
