@@ -41,7 +41,7 @@ The native application already has the product's essential wedge:
 - A versioned cross-vendor protocol injected into every newly started agent.
 - `relay` for an attributed asynchronous handoff, `paste` for an unsent draft,
   and correlated `ask` / `answer` for a blocking consultation.
-- Protocol v6 tracked delegation through `delegate`, `done`, `fail`, `status`
+- Protocol v7 tracked delegation through `delegate`, `done`, `fail`, `status`
   and `wait`, with exact source/target credential ownership.
 - Human Ask and Return editors with explicit control over the exact text sent.
 - Automatic submission that works across the supported agent TUIs.
@@ -896,9 +896,10 @@ uncommitted changes.
   `SHA256SUMS` agree; Download and Verify hashes the complete DMG before saving
   it but cannot install or relaunch anything. The existing atomic core handover
   remains the only replacement path and continues to defer for active work.
-  The repository is private today, so the credential-free check explains its
-  HTTP 404 and offers Open Releases through the signed-in browser; automatic
-  checks become available only when this or a dedicated release feed is public.
+  The credential-free client works only while the configured repository or a
+  dedicated release feed is publicly readable. A private or unavailable feed
+  is reported as such and offers Open Releases without requesting a GitHub
+  credential from Parley.
 - [x] Add an explicitly user-reviewed **beta feedback bundle** containing build
   information, vendor versions, conformance results and redacted diagnostics.
   Reuse the structural privacy boundary of diagnostics export: no prompts,

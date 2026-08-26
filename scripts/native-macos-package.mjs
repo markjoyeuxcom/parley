@@ -31,6 +31,9 @@ export const requiredBundlePaths = [
   `Contents/Library/LaunchAgents/${CORE_LAUNCH_AGENT_PLIST}`,
   'Contents/Resources/Parley.icns',
   'Contents/Resources/runtime-components.json',
+  'Contents/Resources/LICENSE',
+  'Contents/Resources/NOTICE',
+  'Contents/Resources/THIRD_PARTY_NOTICES.md',
 ]
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -380,6 +383,12 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
   chmodSync(coreExecutable, 0o755)
   chmodSync(conformanceExecutable, 0o755)
   copyFileSync(join(repositoryRoot, 'resources/icon.icns'), join(resources, 'Parley.icns'))
+  copyFileSync(join(repositoryRoot, 'LICENSE'), join(resources, 'LICENSE'))
+  copyFileSync(join(repositoryRoot, 'NOTICE'), join(resources, 'NOTICE'))
+  copyFileSync(
+    join(repositoryRoot, 'THIRD_PARTY_NOTICES.md'),
+    join(resources, 'THIRD_PARTY_NOTICES.md'),
+  )
   writeFileSync(join(resources, 'runtime-components.json'), runtimeComponentsManifest(), { mode: 0o644 })
   writeFileSync(join(launchAgents, CORE_LAUNCH_AGENT_PLIST), renderCoreLaunchAgentPlist(), { mode: 0o644 })
   writeFileSync(

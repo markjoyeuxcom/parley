@@ -4,7 +4,7 @@
   "description": "Open local workspaces and explicit editor context in Parley's supervised cross-vendor preview.",
   "version": "0.1.0",
   "publisher": "markjoyeuxcom",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/markjoyeuxcom/parley.git",

@@ -11,6 +11,12 @@ that asked.
 
 There is no API-key mode, hosted Parley service, telemetry or remote sync.
 
+Parley is open source under the [Apache License 2.0](LICENSE). See
+[SECURITY.md](SECURITY.md), [PRIVACY.md](PRIVACY.md) and
+[CONTRIBUTING.md](CONTRIBUTING.md). Third-party licence text shipped with the
+app is recorded in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## What works
 
 - A SwiftUI app with a native SwiftTerm terminal surface.
@@ -261,6 +267,7 @@ scripts/
 resources/
   icon.icns
   icon.png
+THIRD_PARTY_NOTICES.md   linked dependency attribution bundled with the app
 ```
 
 Production runtime files live under:
@@ -313,6 +320,7 @@ outside the minimal PATH supplied to GUI applications remain discoverable.
 No JavaScript dependency installation is required.
 
 ```bash
+npm run scan:public
 npm test
 npm run build
 npm run dev
@@ -415,6 +423,10 @@ creates an unpublished draft containing the DMG, ZIP, manifest, checksums and
 install guide. Nothing is published merely by pushing a tag. Until Developer ID
 and notarization are added, the draft title and instructions remain explicitly
 unnotarized.
+
+The normal GitHub CI checkout includes complete repository history because
+`npm test` runs the publication scan over both current tracked files and every
+reachable patch. Reducing it to a shallow checkout would weaken that gate.
 
 Upgrades preserve the live workbench: quit Parley, replace the app, and reopen
 it. The new UI compares its versioned coordination contract with the persistent

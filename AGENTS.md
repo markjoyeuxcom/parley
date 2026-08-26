@@ -58,6 +58,7 @@ Breaking any of these changes the product.
 ## Commands
 
 ```bash
+npm run scan:public      # scan tracked files and complete Git history for secrets
 npm test                 # deterministic native checks; starts no AI CLI
 npm run build            # build the Swift package
 npm run dev              # run the native app from this checkout
@@ -394,10 +395,11 @@ The checks must remain deterministic and must not launch a vendor CLI, consume
 subscription quota, mutate the user's default tmux server or depend on network
 access.
 
-The SwiftUI package requires macOS, so the current GitLab configuration performs
-security scanning only. Local native checks and build are mandatory until a
-macOS runner is configured. Do not add a Linux job that appears green while
-skipping the application target.
+The SwiftUI package requires macOS. GitHub CI runs the deterministic checks and
+native build on a macOS runner and fetches complete history for the public
+repository scan. Do not add a Linux job that appears green while skipping the
+application target or reduce checkout depth in a way that makes the history
+scan inspect only the latest commit.
 
 ## Version policy
 
@@ -429,7 +431,7 @@ consistent.
 - Branch instead of committing directly to `main`.
 - Never force-push `main`.
 - Before every commit, scan staged files for AWS access keys, private keys,
-  passwords and tokens. Stop if any are found.
+  passwords and tokens. Run `npm run scan:public`; stop if it reports anything.
 - Include this trailer on commits made by an agent:
 
 ```text
