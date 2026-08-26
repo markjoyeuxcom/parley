@@ -42,6 +42,17 @@ test('macOS releases require versioned notes for the exact requested tag', () =>
   assert.ok(source.includes('--notes-file "$notes"'), 'the GitHub draft must use the versioned release notes')
 })
 
+test('macOS release packaging creates the shared artifact directory on a clean checkout', () => {
+  const workflow = join(workflowsDirectory, 'macos-draft-release.yml')
+  const source = readFileSync(workflow, 'utf8')
+  const createDirectory = source.indexOf('mkdir -p dist')
+  const packageCompanion = source.indexOf('npm run package:vscode')
+
+  assert.ok(createDirectory >= 0, 'the release workflow must create dist before packaging')
+  assert.ok(packageCompanion >= 0, 'the release workflow must package the VS Code companion')
+  assert.ok(createDirectory < packageCompanion, 'dist must exist before VS Code packaging writes its VSIX')
+})
+
 test('retired GitLab automation cannot become an apparent security gate', () => {
   assert.equal(existsSync(join(repositoryRoot, '.gitlab-ci.yml')), false)
 })
