@@ -132,11 +132,12 @@ public final class TmuxController {
                 automationPolicy: .askAndDelegate
             )
         } catch {
-            if createdWindowID == nil {
-                createdWindowID = try? uniquePendingWindowID(named: pendingName)
-            }
             if let createdWindowID {
                 _ = try? runTmux(["kill-window", "-t", createdWindowID], allowFailure: true)
+            } else {
+                _ = try? runTmux([
+                    "kill-window", "-t", pendingWindowTarget(named: pendingName),
+                ], allowFailure: true)
             }
             throw error
         }
@@ -328,11 +329,12 @@ public final class TmuxController {
                 automationPolicy: .askAndDelegate
             )
         } catch {
-            if createdWindowID == nil {
-                createdWindowID = try? uniquePendingWindowID(named: pendingName)
-            }
             if let createdWindowID {
                 _ = try? runTmux(["kill-window", "-t", createdWindowID], allowFailure: true)
+            } else {
+                _ = try? runTmux([
+                    "kill-window", "-t", pendingWindowTarget(named: pendingName),
+                ], allowFailure: true)
             }
             throw error
         }
@@ -939,21 +941,39 @@ public final class TmuxController {
             return identifiers
         }
 
-        let pendingRows = try paneInventory().filter { $0.windowName == pendingName }
-        let pendingWindowIDs = Set(pendingRows.map(\.windowID))
-        guard pendingWindowIDs.count == 1, let recoveredWindowID = pendingWindowIDs.first else {
-            throw ParleyTmuxError.commandFailed(
-                "Parley could not safely identify the workspace tmux created. No existing workspace was changed."
-            )
+        let retryDelays: [TimeInterval] = [0, 0.05, 0.1, 0.2, 0.4]
+        for delay in retryDelays {
+            if delay > 0 { pause(delay) }
+
+            let direct = try? runTmux([
+                "display-message", "-p", "-t", pendingWindowTarget(named: pendingName),
+                "#{window_id}\u{1f}#{pane_id}",
+            ], allowFailure: true)
+            if let direct, direct.status == 0,
+               let identifiers = createdWorkspaceIdentifiers(from: direct.stdoutText) {
+                createdWindowID = identifiers.windowID
+                return identifiers
+            }
+
+            guard let inventory = try? paneInventory() else { continue }
+            let pendingRows = inventory.filter { $0.windowName == pendingName }
+            let pendingWindowIDs = Set(pendingRows.map(\.windowID))
+            guard pendingWindowIDs.count == 1, let recoveredWindowID = pendingWindowIDs.first else {
+                continue
+            }
+            createdWindowID = recoveredWindowID
+            let recoveredPanes = pendingRows.filter { $0.windowID == recoveredWindowID }
+            guard recoveredPanes.count == 1, let recoveredPane = recoveredPanes.first else {
+                throw ParleyTmuxError.commandFailed(
+                    "Parley could not safely identify the new workspace pane. The incomplete workspace was removed."
+                )
+            }
+            return (recoveredWindowID, recoveredPane.id)
         }
-        createdWindowID = recoveredWindowID
-        let recoveredPanes = pendingRows.filter { $0.windowID == recoveredWindowID }
-        guard recoveredPanes.count == 1, let recoveredPane = recoveredPanes.first else {
-            throw ParleyTmuxError.commandFailed(
-                "Parley could not safely identify the new workspace pane. The incomplete workspace was removed."
-            )
-        }
-        return (recoveredWindowID, recoveredPane.id)
+
+        throw ParleyTmuxError.commandFailed(
+            "Parley could not safely identify the workspace tmux created after retrying its exact provisional target. No existing workspace was changed."
+        )
     }
 
     private func paneInventory() throws -> [PaneInventoryRow] {
@@ -985,9 +1005,8 @@ public final class TmuxController {
         }
     }
 
-    private func uniquePendingWindowID(named pendingName: String) throws -> String? {
-        let windowIDs = Set(try paneInventory().filter { $0.windowName == pendingName }.map(\.windowID))
-        return windowIDs.count == 1 ? windowIDs.first : nil
+    private func pendingWindowTarget(named pendingName: String) -> String {
+        "\(exactSession):=\(pendingName)"
     }
 
     private func adoptUnclassifiedShellPanes() throws {
@@ -1029,9 +1048,12 @@ public final class TmuxController {
             let folder = !fields[4].isEmpty
                 ? fields[4]
                 : (!fields[5].isEmpty ? fields[5] : (fallbackFolder ?? "/"))
+            let provisionalName = fields[1] == "agents" || fields[1].hasPrefix("Parley-Pending-")
+                ? nil
+                : fields[1]
             let name = !fields[3].isEmpty
                 ? fields[3]
-                : workspaceName(folder: folder, proposed: fields[1] == "agents" ? nil : fields[1])
+                : workspaceName(folder: folder, proposed: provisionalName)
             return TmuxWorkspace(
                 id: fields[0],
                 name: name,

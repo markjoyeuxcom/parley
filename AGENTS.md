@@ -131,11 +131,12 @@ workspaces and panes are normal.
 Workspace creation is a transaction. `tmux new-window -P` can create a window
 and still return no usable identifiers to the caller, so every new workspace
 starts under a unique `Parley-Pending-<UUID>` name. Parley either receives its
-ids directly or reconciles that exact provisional name from live tmux state,
-writes pane and workspace metadata, then commits the requested visible name.
-If the provisional window cannot be resolved to exactly one pane, remove only
-that exact window and refuse to guess. Never move cleanup to after id parsing;
-that recreates invisible live windows on this failure path.
+ids directly or retries that exact provisional target with bounded delays,
+falling back to a live inventory before it writes pane and workspace metadata
+and commits the requested visible name. If the provisional window cannot be
+resolved to exactly one pane, remove that exact target by name even when no id
+was captured, and refuse to guess. Never move cleanup to after id parsing; that
+recreates invisible live windows on this failure path.
 
 An older private Parley tmux server can already contain one-pane windows made
 before this transaction completed. Bootstrap may adopt a live, unclassified,
