@@ -1,6 +1,6 @@
 {
   "name": "parley",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "description": "A native macOS workbench for supervised cross-vendor AI CLI collaboration.",
   "license": "Apache-2.0",

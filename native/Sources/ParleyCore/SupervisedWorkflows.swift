@@ -178,11 +178,11 @@ public final class SupervisedWorkflowStore: @unchecked Sendable {
             try validate(participant: lead, role: "lead", workspaceID: workspaceID)
             try validate(participant: reviewer, role: "reviewer", workspaceID: workspaceID)
             try validate(participant: verifier, role: "verifier", workspaceID: workspaceID)
-            guard reviewer.paneID != lead.paneID, reviewer.kind != lead.kind else {
-                throw SupervisedWorkflowError.invalid("The plan reviewer must be a different pane and vendor from the lead.")
+            guard reviewer.paneID != lead.paneID else {
+                throw SupervisedWorkflowError.invalid("The plan reviewer must be a different pane from the lead.")
             }
-            guard verifier.paneID != lead.paneID, verifier.kind != lead.kind else {
-                throw SupervisedWorkflowError.invalid("The verifier must be a different pane and vendor from the lead.")
+            guard verifier.paneID != lead.paneID else {
+                throw SupervisedWorkflowError.invalid("The verifier must be a different pane from the lead.")
             }
             guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   prompt.utf8.count <= ContextPackBuilder.defaultMaximumRenderedBytes else {

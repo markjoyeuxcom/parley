@@ -197,7 +197,8 @@ struct ParleyNativeApp: App {
             CommandMenu("Workspace") {
                 Button("Open Workspace…") { model.createWorkspace() }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
-                Button("Choose Workspace Folder…") { model.chooseFolder() }
+                Button("Open New Workspace…") { model.createAdditionalWorkspace() }
+                Button("Choose New Pane Folder…") { model.chooseFolder() }
                     .disabled(model.activeWorkspace == nil)
             }
             CommandMenu("Tools") {

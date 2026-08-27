@@ -154,16 +154,22 @@ upgrades a Production tmux/core, and remains visibly marked
 
 - A tmux window is a Parley workspace.
 - A tmux pane is a live shell or agent pane.
-- Workspace names and default folders are tmux window options.
+- Workspace names, stable home folders and mutable New Pane Folders are tmux
+  window options. The home is used for folder opening; the New Pane Folder
+  affects only future toolbar-created panes.
 - Workspace presentation continuity lives in UserDefaults as ID-free
-  name/folder bookmarks: favourite folders are directly accessible in the
-  sidebar, Move Left/Right tab order, and the last selected workspace survive a
-  UI restart without changing tmux windows or starting an agent.
+  name/home bookmarks: favourite folders are directly accessible in the
+  sidebar and have a dedicated add-folder picker that does not retarget the
+  active workspace. Move Left/Right tab order and the last selected workspace
+  survive a UI restart without changing tmux windows or starting an agent.
+- Several named task workspaces may share one canonical home. Folder opening
+  focuses one match, displays a chooser for several, and never guesses.
 - Pane rows show their folder plus bounded Git branch and dirty state. A single
   argv-based Git status runs per distinct visible folder off the main thread,
   with optional locks disabled and a hard process timeout.
 - Every pane-creation menu can explicitly split into another chosen folder;
-  this affects only that new pane and never changes the workspace default.
+  it also offers the active pane's live folder when that differs from the New
+  Pane Folder. Either choice affects only the new pane.
 - The native ⌘K palette searches workspaces, panes, valid cross-vendor Ask
   targets and recent handoff activity, then routes through the existing visible
   selection, editable Ask and Status Center actions.
@@ -313,7 +319,7 @@ or unsafe files. Strict `parley://focus?pane=` and
 record; neither route can carry work, start a vendor or submit terminal input.
 Development never writes the Production snapshot.
 
-- `parley relay` submits one attributed cross-vendor message.
+- `parley relay` submits one attributed agent-to-agent message; same-vendor routes are allowed between distinct panes.
 - `parley paste` leaves the attributed message in the target prompt.
 - `parley ask` creates one correlated consultation, submits it and waits.
 - `parley context draft/add/list/show/discard` manages owner-scoped agent

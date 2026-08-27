@@ -22,6 +22,11 @@ final class TerminalHandle: ObservableObject {
     }
 }
 
+private enum WorkspaceOpenChoice {
+    case existing(String)
+    case create
+}
+
 struct WorkspaceAskGroup: Identifiable {
     let workspace: TmuxWorkspace
     let panes: [TmuxPane]
@@ -1297,7 +1302,7 @@ final class AppModel: ObservableObject {
               source.hasCurrentProtocol else { return [] }
         return panes.filter {
             $0.kind.isAgent
-                && $0.kind != source.kind
+                && $0.id != source.id
                 && $0.isStarted
                 && !$0.isDead
                 && $0.relayEnabled
@@ -1307,7 +1312,7 @@ final class AppModel: ObservableObject {
     }
 
     var canCompareAskMany: Bool {
-        Set(askTargets.map(\.kind)).count >= 2
+        askTargets.count >= 2
             && askManyComparisonRun?.isRunning != true
             && relayClient != nil
     }
@@ -1397,7 +1402,7 @@ final class AppModel: ObservableObject {
         guard let source = contextPackSourcePane else { return [] }
         return panes.filter {
             $0.kind.isAgent
-                && $0.kind != source.kind
+                && $0.id != source.id
                 && $0.isStarted
                 && !$0.isDead
                 && $0.relayEnabled
@@ -1437,7 +1442,7 @@ final class AppModel: ObservableObject {
     }
 
     var canCompareContextPack: Bool {
-        Set(contextPackAskTargets.map(\.kind)).count >= 2
+        contextPackAskTargets.count >= 2
             && askManyComparisonRun?.isRunning != true
             && relayClient != nil
             && contextPackDraft?.reviewID == nil
@@ -1480,7 +1485,6 @@ final class AppModel: ObservableObject {
             $0.windowID == lead.windowID
                 && $0.id != lead.id
                 && $0.kind.isAgent
-                && $0.kind != lead.kind
                 && $0.isStarted
                 && !$0.isDead
                 && $0.relayEnabled
@@ -2401,7 +2405,7 @@ final class AppModel: ObservableObject {
               let target = panes.first(where: { $0.id == route.targetPaneID }),
               let relayClient else {
             NSAlert(error: RelayUIError.message(
-                "This Ask cannot be repeated on its original route. Both cross-vendor panes must still be running, relay-ready, and on Parley's current protocol."
+                "This Ask cannot be repeated on its original route. Both original panes must still be running, relay-ready, and on Parley's current protocol."
             )).runModal()
             return
         }
@@ -2460,6 +2464,11 @@ final class AppModel: ObservableObject {
         preparePane(kind, direction: direction, folder: defaultFolder)
     }
 
+    func createInActivePaneFolder(_ kind: PaneKind, direction: SplitDirection) {
+        guard let activePane else { return }
+        preparePane(kind, direction: direction, folder: activePane.cwd)
+    }
+
     func createInChosenFolder(_ kind: PaneKind, direction: SplitDirection) {
         let panel = NSOpenPanel()
         panel.title = "Choose a folder for the new \(kind.label) pane"
@@ -2473,7 +2482,7 @@ final class AppModel: ObservableObject {
     }
 
     private func preparePane(_ kind: PaneKind, direction: SplitDirection, folder: String) {
-        let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
+        let standardized = WorkspaceFolderIdentity.normalized(folder)
         guard kind.isAgent else {
             createPane(kind, direction: direction, folder: standardized, permissionProfile: nil)
             return
@@ -2494,7 +2503,7 @@ final class AppModel: ObservableObject {
     ) {
         perform {
             guard let controller else { return }
-            let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
+            let standardized = WorkspaceFolderIdentity.normalized(folder)
             _ = try controller.createPane(
                 kind: kind,
                 cwd: standardized,
@@ -3223,12 +3232,12 @@ final class AppModel: ObservableObject {
                   let draft = contextPackDraft,
                   let source = contextPackSourcePane,
                   let contextPackBuilder else {
-                throw RelayUIError.message("This context pack needs a ready source pane and at least two other target vendors.")
+                throw RelayUIError.message("This context pack needs a ready source pane and at least two other target panes.")
             }
             let rendered = try contextPackBuilder.render(draft.pack)
             guard let targets = chooseAskManyTargets(candidates: contextPackAskTargets) else { return }
             guard confirmContextSend(
-                title: "Compare this context across \(targets.count) vendors?",
+                title: "Compare this context across \(targets.count) panes?",
                 detail: "Every selected pane receives the same \(rendered.utf8.count)-byte attributed pack and none sees a peer answer.",
                 action: "Compare Independently"
             ) else { return }
@@ -3819,8 +3828,8 @@ final class AppModel: ObservableObject {
         guard candidates.count >= required else {
             throw RelayUIError.message(
                 required == 2
-                    ? "Open at least two ready agent panes from vendors different to the lead."
-                    : "Open a ready agent pane from a vendor different to the lead."
+                    ? "Open at least two ready agent panes other than the lead."
+                    : "Open a ready agent pane other than the lead."
             )
         }
 
@@ -3828,7 +3837,7 @@ final class AppModel: ObservableObject {
         alert.messageText = "Targets for \(recipe.name)"
         alert.informativeText = recipe.kind == .askMany
             ? "Choose at least two explicit panes. They will answer independently."
-            : "Choose the exact cross-vendor pane the lead should use."
+            : "Choose the exact agent pane the lead should use."
         alert.addButton(withTitle: "Continue")
         alert.addButton(withTitle: "Cancel")
 
@@ -3890,7 +3899,7 @@ final class AppModel: ObservableObject {
 
         let alert = NSAlert()
         alert.messageText = "Choose Workflow Participants"
-        alert.informativeText = "Both roles must use a vendor different from the workspace lead. The same pane may review and verify."
+        alert.informativeText = "Both roles must use a pane different from the workspace lead. The same pane may review and verify, including another pane from the lead's vendor."
         alert.addButton(withTitle: "Continue")
         alert.addButton(withTitle: "Cancel")
         alert.accessoryView = stack
@@ -3962,7 +3971,7 @@ final class AppModel: ObservableObject {
     private func chooseAskManyTargets(candidates: [TmuxPane]) -> [TmuxPane]? {
         let alert = NSAlert()
         alert.messageText = "Compare with which panes?"
-        alert.informativeText = "Choose at least two panes from different vendors. Every selected pane receives the same question independently."
+        alert.informativeText = "Choose at least two distinct panes. Every selected pane receives the same question independently."
         alert.addButton(withTitle: "Continue")
         alert.addButton(withTitle: "Cancel")
 
@@ -3988,9 +3997,9 @@ final class AppModel: ObservableObject {
         let selected = zip(candidates, buttons).compactMap { pane, button in
             button.state == .on ? pane : nil
         }
-        guard selected.count >= 2, Set(selected.map(\.kind)).count >= 2 else {
+        guard selected.count >= 2 else {
             NSAlert(error: RelayUIError.message(
-                "Independent comparison needs at least two selected panes from different vendors."
+                "Independent comparison needs at least two selected panes."
             )).runModal()
             return nil
         }
@@ -4540,7 +4549,9 @@ final class AppModel: ObservableObject {
 
     func chooseFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Choose the default folder for \(activeWorkspace?.name ?? "this workspace")"
+        panel.title = "Choose the New Pane Folder for \(activeWorkspace?.name ?? "this workspace")"
+        panel.message = "Choose where newly created panes in this workspace should start. Running panes will not move or restart."
+        panel.prompt = "Choose"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -4553,32 +4564,57 @@ final class AppModel: ObservableObject {
     func setWorkspaceFolder(_ folder: String) {
         perform {
             guard let controller, let workspace = activeWorkspace else { return }
-            let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
+            let standardized = WorkspaceFolderIdentity.normalized(folder)
             try controller.setWorkspaceFolder(workspace.id, folder: standardized)
             workspaceContinuity.updateWorkspace(
                 from: workspace,
                 to: TmuxWorkspace(
                     id: workspace.id,
                     name: workspace.name,
+                    homeFolder: workspace.homeFolder,
                     defaultFolder: standardized,
-                    isActive: workspace.isActive
+                    isActive: workspace.isActive,
+                    automationPolicy: workspace.automationPolicy
                 )
             )
             saveWorkspaceContinuity()
-            rememberFolder(folder)
+            rememberFolder(standardized)
             try refresh()
         }
     }
 
     func isFavouriteFolder(_ folder: String) -> Bool {
-        let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
-        return favouriteFolders.contains(standardized)
+        let standardized = WorkspaceFolderIdentity.normalized(folder)
+        return favouriteFolders.contains {
+            WorkspaceFolderIdentity.matches($0, standardized)
+        }
     }
 
     func toggleFavouriteFolder(_ folder: String) {
         _ = workspaceContinuity.toggleFavourite(folder: folder)
         favouriteFolders = workspaceContinuity.favouriteFolders
         saveWorkspaceContinuity()
+    }
+
+    func addFavouriteFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "Add a favourite folder"
+        panel.message = "Bookmark a folder for quick workspace access without changing the active workspace."
+        panel.prompt = "Add"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: defaultFolder)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        addFavouriteFolder(url.standardizedFileURL.path)
+    }
+
+    func addFavouriteFolder(_ folder: String) {
+        let standardized = WorkspaceFolderIdentity.normalized(folder)
+        _ = workspaceContinuity.addFavourite(folder: standardized)
+        favouriteFolders = workspaceContinuity.favouriteFolders
+        saveWorkspaceContinuity()
+        rememberFolder(standardized)
     }
 
     func canMove(_ workspace: TmuxWorkspace, by offset: Int) -> Bool {
@@ -4596,7 +4632,8 @@ final class AppModel: ObservableObject {
     func createWorkspace() {
         let panel = NSOpenPanel()
         panel.title = "Open a folder as a workspace"
-        panel.prompt = "Open Workspace"
+        panel.message = "Choose a folder to focus its workspace, choose among matching workspaces, or open a new shell workspace."
+        panel.prompt = "Open"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -4605,9 +4642,28 @@ final class AppModel: ObservableObject {
         createWorkspace(folder: url.standardizedFileURL.path)
     }
 
+    func createAdditionalWorkspace() {
+        let panel = NSOpenPanel()
+        panel.title = "Open another workspace from a folder"
+        panel.message = "Choose a workspace home. Parley will create another task workspace even when that folder is already open."
+        panel.prompt = "Open New"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: activeWorkspace?.homeFolder ?? defaultFolder)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        createNewWorkspace(folder: url.standardizedFileURL.path)
+    }
+
     func createWorkspace(folder: String) {
         perform {
             _ = try openWorkspace(folder: folder)
+        }
+    }
+
+    func createNewWorkspace(folder: String) {
+        perform {
+            _ = try openWorkspace(folder: folder, forceNew: true)
         }
     }
 
@@ -4706,23 +4762,37 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    private func openWorkspace(folder: String) throws -> TmuxWorkspace {
+    private func openWorkspace(folder: String, forceNew: Bool = false) throws -> TmuxWorkspace {
         guard let controller else {
             throw RelayUIError.message("Parley cannot open a workspace while its tmux connection is unavailable.")
         }
-        let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
-        let selectedID: String
-        if let existing = workspaces.first(where: { $0.defaultFolder == standardized }) {
-            try controller.selectWorkspace(existing.id)
-            selectedID = existing.id
+        let standardized = WorkspaceFolderIdentity.normalized(folder)
+        let choice: WorkspaceOpenChoice
+        if forceNew {
+            choice = .create
         } else {
+            choice = switch WorkspaceFolderRouting.resolve(folder: standardized, in: workspaces) {
+            case .create:
+                .create
+            case let .focus(workspaceID):
+                .existing(workspaceID)
+            case let .choose(workspaceIDs):
+                try chooseWorkspace(for: standardized, workspaceIDs: workspaceIDs)
+            }
+        }
+        let selectedID: String
+        switch choice {
+        case let .existing(workspaceID):
+            try controller.selectWorkspace(workspaceID)
+            selectedID = workspaceID
+        case .create:
             let created = try controller.createWorkspace(folder: standardized)
             selectedID = created.id
             try recordSuccessfulActivity(RelayActivityEventRequest(
                 kind: .workspaceCreated,
                 workspaceID: created.id,
                 workspaceName: created.name,
-                detail: "Opened \(created.defaultFolder)"
+                detail: "Opened \(created.homeFolder)"
             ))
         }
         rememberFolder(standardized)
@@ -4732,6 +4802,45 @@ final class AppModel: ObservableObject {
             throw RelayUIError.message("Parley opened the workspace but could not reconcile its live tmux window.")
         }
         return selected
+    }
+
+    private func chooseWorkspace(for folder: String, workspaceIDs: [String]) throws -> WorkspaceOpenChoice {
+        let candidates = workspaceIDs.compactMap { id in
+            workspaces.first(where: { $0.id == id })
+        }
+        guard candidates.count == workspaceIDs.count, candidates.count > 1 else {
+            throw RelayUIError.message("The matching workspace list changed. Nothing was opened; try again.")
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Several workspaces use this folder"
+        alert.informativeText = "Choose the task workspace to open, or create another one at \(folder)."
+        alert.addButton(withTitle: "Open Selected")
+        alert.addButton(withTitle: "Open New Workspace")
+        alert.addButton(withTitle: "Cancel")
+
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 26), pullsDown: false)
+        for workspace in candidates {
+            picker.addItem(withTitle: workspace.name)
+            picker.lastItem?.representedObject = workspace.id
+        }
+        if let activeIndex = candidates.firstIndex(where: \.isActive) {
+            picker.selectItem(at: activeIndex)
+        }
+        alert.accessoryView = picker
+
+        return switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            if let workspaceID = picker.selectedItem?.representedObject as? String {
+                .existing(workspaceID)
+            } else {
+                throw RelayUIError.message("Parley could not identify the selected workspace. Nothing was opened.")
+            }
+        case .alertSecondButtonReturn:
+            .create
+        default:
+            throw CancellationError()
+        }
     }
 
     func rename(_ workspace: TmuxWorkspace) {
@@ -4753,6 +4862,7 @@ final class AppModel: ObservableObject {
                 to: TmuxWorkspace(
                     id: workspace.id,
                     name: renamed,
+                    homeFolder: workspace.homeFolder,
                     defaultFolder: workspace.defaultFolder,
                     isActive: workspace.isActive,
                     automationPolicy: workspace.automationPolicy
@@ -4983,8 +5093,10 @@ final class AppModel: ObservableObject {
     }
 
     private func rememberFolder(_ folder: String) {
-        let standardized = URL(fileURLWithPath: folder).standardizedFileURL.path
-        recentFolders.removeAll { $0 == standardized }
+        let standardized = WorkspaceFolderIdentity.normalized(folder)
+        recentFolders.removeAll {
+            WorkspaceFolderIdentity.matches($0, standardized)
+        }
         recentFolders.insert(standardized, at: 0)
         if recentFolders.count > 8 { recentFolders.removeLast(recentFolders.count - 8) }
         preferences.set(recentFolders, forKey: Self.recentFoldersKey)
@@ -5201,6 +5313,8 @@ final class AppModel: ObservableObject {
     private func perform(_ operation: () throws -> Void) {
         do {
             try operation()
+        } catch is CancellationError {
+            return
         } catch {
             let alert = NSAlert(error: error)
             alert.runModal()

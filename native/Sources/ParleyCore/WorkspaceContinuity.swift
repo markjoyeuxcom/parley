@@ -1,5 +1,54 @@
 import Foundation
 
+/// Keeps the person's durable path spelling separate from the canonical key
+/// used for folder lookup. This avoids rewriting visible /tmp-style paths while
+/// still recognising filesystem aliases as one directory.
+public enum WorkspaceFolderIdentity {
+    public static func normalized(_ folder: String) -> String {
+        URL(fileURLWithPath: folder).standardizedFileURL.path
+    }
+
+    public static func matchingKey(_ folder: String) -> String {
+        URL(fileURLWithPath: normalized(folder))
+            .resolvingSymlinksInPath()
+            .standardizedFileURL.path
+    }
+
+    public static func matches(_ left: String, _ right: String) -> Bool {
+        matchingKey(left) == matchingKey(right)
+    }
+
+    public static func displayName(for folder: String) -> String {
+        let normalized = normalized(folder)
+        let component = URL(fileURLWithPath: normalized).lastPathComponent
+        return component.isEmpty ? normalized : component
+    }
+}
+
+public enum WorkspaceFolderOpenResolution: Equatable, Sendable {
+    case create
+    case focus(String)
+    case choose([String])
+}
+
+/// Folder opening is a query over stable workspace homes. A directory may
+/// intentionally anchor several task workspaces, so ambiguity is surfaced
+/// instead of selecting whichever tmux window happens to be first.
+public enum WorkspaceFolderRouting {
+    public static func matches(folder: String, in workspaces: [TmuxWorkspace]) -> [TmuxWorkspace] {
+        workspaces.filter { WorkspaceFolderIdentity.matches($0.homeFolder, folder) }
+    }
+
+    public static func resolve(folder: String, in workspaces: [TmuxWorkspace]) -> WorkspaceFolderOpenResolution {
+        let ids = matches(folder: folder, in: workspaces).map(\.id)
+        return switch ids.count {
+        case 0: .create
+        case 1: .focus(ids[0])
+        default: .choose(ids)
+        }
+    }
+}
+
 /// A process-independent identity for workspace presentation preferences.
 /// tmux ids are deliberately excluded because they do not survive a new tmux
 /// server; Parley updates the name stamp when a unique folder match reveals a
@@ -14,20 +63,20 @@ public struct WorkspaceBookmark: Codable, Equatable, Hashable, Sendable {
     }
 
     public init(workspace: TmuxWorkspace) {
-        self.init(name: workspace.name, folder: workspace.defaultFolder)
+        self.init(name: workspace.name, folder: workspace.homeFolder)
     }
 
     fileprivate func exactlyMatches(_ workspace: TmuxWorkspace) -> Bool {
         name.caseInsensitiveCompare(workspace.name) == .orderedSame
-            && folder == Self.standardized(workspace.defaultFolder)
+            && WorkspaceFolderIdentity.matches(folder, workspace.homeFolder)
     }
 
     fileprivate func folderMatches(_ workspace: TmuxWorkspace) -> Bool {
-        folder == Self.standardized(workspace.defaultFolder)
+        WorkspaceFolderIdentity.matches(folder, workspace.homeFolder)
     }
 
     fileprivate static func standardized(_ folder: String) -> String {
-        URL(fileURLWithPath: folder).standardizedFileURL.path
+        WorkspaceFolderIdentity.normalized(folder)
     }
 }
 
@@ -116,8 +165,25 @@ public struct WorkspaceContinuityState: Codable, Equatable, Sendable {
     public mutating func toggleFavourite(folder: String) -> Bool {
         let standardized = WorkspaceBookmark.standardized(folder)
         guard standardized.hasPrefix("/") else { return false }
-        if let index = favouriteFolders.firstIndex(of: standardized) {
+        if let index = favouriteFolders.firstIndex(where: { WorkspaceFolderIdentity.matches($0, standardized) }) {
             favouriteFolders.remove(at: index)
+            return false
+        }
+        favouriteFolders.append(standardized)
+        return true
+    }
+
+    /// Adds a favourite without turning an already-saved folder into a remove
+    /// action. The sidebar's folder picker uses this idempotent path so adding
+    /// a bookmark never changes the active workspace or surprises a person who
+    /// selects the same directory twice.
+    @discardableResult
+    public mutating func addFavourite(folder: String) -> Bool {
+        let standardized = WorkspaceBookmark.standardized(folder)
+        guard standardized.hasPrefix("/"),
+              !favouriteFolders.contains(where: {
+                  WorkspaceFolderIdentity.matches($0, standardized)
+              }) else {
             return false
         }
         favouriteFolders.append(standardized)
@@ -134,7 +200,8 @@ public struct WorkspaceContinuityState: Codable, Equatable, Sendable {
         var seen: Set<String> = []
         return folders.compactMap { folder in
             let standardized = WorkspaceBookmark.standardized(folder)
-            guard standardized.hasPrefix("/"), seen.insert(standardized).inserted else { return nil }
+            let key = WorkspaceFolderIdentity.matchingKey(standardized)
+            guard standardized.hasPrefix("/"), seen.insert(key).inserted else { return nil }
             return standardized
         }
     }

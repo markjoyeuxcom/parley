@@ -296,10 +296,10 @@ struct ContextPackView: View {
             Button("Close") { model.dismissContextPack() }
                 .keyboardShortcut(.cancelAction)
             Button(
-                model.contextPackDraft?.reviewState == .awaitingReview ? "Approve and Ask…" : "Ask One Vendor…"
+                model.contextPackDraft?.reviewState == .awaitingReview ? "Approve and Ask…" : "Ask One Pane…"
             ) { model.askWithContextPack() }
                 .disabled(!model.contextPackIsSendable || model.contextPackAskTargets.isEmpty)
-            Button("Compare Vendors…") { model.compareWithContextPack() }
+            Button("Compare Panes…") { model.compareWithContextPack() }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!model.canCompareContextPack)
         }

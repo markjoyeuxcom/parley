@@ -107,14 +107,16 @@ public enum ParleyHelpGuide {
             sections: [
                 ParleyHelpSection(
                     id: "workspaces-folders",
-                    title: "Folders are pane-local",
+                    title: "Workspace home and pane folders",
                     paragraphs: [
-                        "Every pane starts with its own working folder and keeps it for the lifetime of that process. The workspace folder control only chooses where the next toolbar-created pane opens.",
+                        "A workspace is a named collaboration container. Its home folder is the stable folder-opening association; the New Pane Folder is only where future toolbar-created panes start. Every pane then owns its live working directory.",
                     ],
                     items: [
-                        "A split inherits the folder of the pane it grew from.",
-                        "Changing the workspace's default folder does not move or restart running panes.",
-                        "Use favourite folders in the sidebar for frequently used repositories.",
+                        "Split Right and Split Below use the visible New Pane Folder.",
+                        "When the active pane has moved elsewhere, Split Right Here and Split Below Here explicitly use that pane's current folder.",
+                        "Changing the New Pane Folder does not move or restart running panes.",
+                        "Several task workspaces may share one home folder. Opening that folder presents a chooser instead of guessing; Open New Workspace Here deliberately creates another.",
+                        "Use the plus beside Favourite Folders to bookmark a repository without changing the active workspace. A row shows whether it will create, focus or choose among matching workspaces.",
                         "Cross-workspace handoffs work; qualify an ambiguous target as workspace/pane.",
                     ]
                 ),
@@ -203,7 +205,7 @@ public enum ParleyHelpGuide {
                     title: "Open from Terminal or Finder",
                     paragraphs: [
                         "The installed app exposes three person-controlled doors to the same operation: parley open <folder> in Terminal, Open in Parley from Finder's Services menu, and parley://open?folder=<encoded-absolute-folder> for local integrations.",
-                        "Each door validates one existing local directory, brings Parley forward, and focuses the workspace already using that canonical folder or creates a workspace containing its ordinary shell. It cannot carry a prompt, choose an agent or submit work.",
+                        "Each door validates one existing local directory and brings Parley forward. It focuses one matching workspace, asks you to choose when several task workspaces share that home, or creates a workspace containing its ordinary shell when none exists. It cannot carry a prompt, choose an agent or submit work.",
                     ],
                     items: [
                         "The Finder Open With menu also offers Parley for folders. Parley registers as an alternate handler, never the system's default folder viewer.",
@@ -279,7 +281,7 @@ public enum ParleyHelpGuide {
                     items: [
                         "Parley refuses ambiguous names instead of guessing.",
                         "Use workspace/pane to disambiguate a pane in another workspace.",
-                        "Targets must be a different vendor. Use the vendor CLI's own tools for same-vendor agents.",
+                        "The target must be another agent pane. Same-vendor routes are supported; a pane cannot target itself.",
                         "Shell panes can never receive automatic agent handoffs.",
                     ]
                 ),
@@ -295,8 +297,8 @@ public enum ParleyHelpGuide {
                     id: "coordination-compare",
                     title: "Independent comparison",
                     paragraphs: [
-                        "Ask Many sends the same question to explicit vendors concurrently. They do not see one another's answers, so the result is independent evidence rather than a chain of agreement.",
-                        "From an active agent pane, open Ask and choose Compare Independently. Select at least two panes from different vendors, review the exact question, then keep the comparison window open or reopen the last comparison from the same menu.",
+                        "Ask Many sends the same question to explicit agent panes concurrently. They do not see one another's answers, so the result is independent evidence rather than a chain of agreement.",
+                        "From an active agent pane, open Ask and choose Compare Independently. Select at least two other panes, review the exact question, then keep the comparison window open or reopen the last comparison from the same menu. The targets may use the same vendor.",
                     ],
                     items: [
                         "Returned answers appear in separate attributed cards. Failures remain visible and are never presented as answers.",
@@ -312,7 +314,7 @@ public enum ParleyHelpGuide {
                     id: "coordination-delegate",
                     title: "Tracked delegation",
                     paragraphs: [
-                        "Delegate starts asynchronous cross-vendor work and immediately returns a tracking id. The receiving agent must report a terminal result through Parley; merely printing the result in its pane does not complete the tracking relationship.",
+                        "Delegate starts asynchronous agent-to-agent work and immediately returns a tracking id. The receiving agent must report a terminal result through Parley; merely printing the result in its pane does not complete the tracking relationship.",
                     ],
                     commands: [
                         ParleyHelpCommand("parley delegate codex \"Implement the reviewed fix and verify it.\"", "Assign one bounded task to another vendor."),
@@ -388,7 +390,7 @@ public enum ParleyHelpGuide {
                         "Maintain the feature goal and constraints in the Workspace Brief.",
                         "Keep the standard verification checklist as a Pinned Snippet.",
                         "From the implementer's pane, create a Context Pack and explicitly add the Workspace Brief, verification snippet and current Git diff.",
-                        "Write the receiving vendor's review request, inspect every attributed source, then use Ask One Vendor or Compare Vendors.",
+                        "Write the receiving pane's review request, inspect every attributed source, then use Ask One Pane or Compare Panes.",
                         "The receiving agent sees the snapshots in that handoff; other panes and later requests receive nothing unless you attach it again.",
                     ]
                 ),
@@ -420,7 +422,7 @@ public enum ParleyHelpGuide {
                     id: "context-packs-send",
                     title: "Preview and send",
                     paragraphs: [
-                        "Write the request for the receiving vendor in the pack itself. Ask One Vendor submits it through the usual attributed Ask path. Compare Vendors gives the same rendered pack to at least two target vendors independently and opens the comparison view for their separate answers.",
+                        "Write the request for the receiving pane in the pack itself. Ask One Pane submits it through the usual attributed Ask path. Compare Panes gives the same rendered pack to at least two target panes independently and opens the comparison view for their separate answers.",
                     ],
                     items: [
                         "The live rendered byte total includes provenance, your request and wrapper text—not just source bodies.",
@@ -544,7 +546,7 @@ public enum ParleyHelpGuide {
                     id: "lead-bounded-workflow",
                     title: "Run the bounded sequence",
                     paragraphs: [
-                        "Open Recipes and choose Plan → Review → Implement → Verify. Choose explicit reviewer and verifier panes, inspect the planning instruction, then start. The same cross-vendor pane may review and verify, but neither role may use the lead's vendor.",
+                        "Open Recipes and choose Plan → Review → Implement → Verify. Choose explicit reviewer and verifier panes, inspect the planning instruction, then start. The same pane may review and verify, and either role may use another pane from the lead's vendor.",
                         "Parley advances only when you use the current checkpoint button. Capturing a plan, review or verification opens an editable preview; no hidden terminal history is collected. The two approval phases submit nothing until you explicitly approve them.",
                     ],
                     items: [
@@ -566,7 +568,7 @@ public enum ParleyHelpGuide {
                     items: [
                         "Off blocks automatic Relay, Ask and Delegate. Paste remains a non-submitted draft.",
                         "Ask/Answer permits Relay and correlated consultation but not tracked delegation.",
-                        "Ask + Delegation permits all cross-vendor coordination commands.",
+                        "Ask + Delegation permits all agent coordination commands.",
                         "Native controls remain human controls; agents cannot silently raise the policy themselves.",
                     ]
                 ),
