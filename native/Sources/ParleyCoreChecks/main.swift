@@ -4395,6 +4395,68 @@ private func checkRealTmuxControlModeStreamsPaneOutput() throws {
     try expect(!connection.isRunning, "control-mode client survived stop")
 }
 
+private func checkRealTmuxPaneModeSeeding() throws {
+    // A native view attaching to a pane must learn the modes the program
+    // enabled before attach — mouse reporting above all — or a mouse-aware
+    // CLI silently loses its mouse in the control-mode host.
+    let environment = EnvironmentResolver.resolved()
+    let tmux = try require(
+        TmuxController.findTmux(environment: environment),
+        "mode-seed check could not find tmux"
+    )
+    let directory = try temporaryDirectory()
+    let controller = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: directory,
+        sessionName: "parley-mode-seed-check",
+        environment: environment
+    )
+    let runner = ProcessCommandRunner(timeout: 2)
+    defer {
+        _ = try? runner.run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "kill-server"],
+            environment: controller.environment,
+            input: nil
+        )
+    }
+
+    try controller.bootstrap(cwd: directory.path)
+    let pane = try require(try controller.listPanes().first, "mode-seed check created no pane")
+    _ = try runner.run(
+        executable: tmux,
+        arguments: [
+            "-S", controller.socketPath.path, "-f", controller.configPath.path,
+            "respawn-pane", "-k", "-t", pane.id,
+            "/bin/sh", "-c",
+            "printf '\\033[?1049h\\033[?1002h\\033[?1006h\\033[?2004h'; /bin/sleep 30",
+        ],
+        environment: controller.environment,
+        input: nil
+    )
+    let seeded = eventually(timeout: 5) {
+        guard let modes = try? controller.capturePaneModeSeed(pane.id),
+              let text = String(data: modes, encoding: .utf8) else { return false }
+        return text.contains("\u{1b}[?1002h") && text.contains("\u{1b}[?1006h")
+            && text.contains("\u{1b}[?2004h") && text.hasSuffix("\u{1b}[?1049h")
+    }
+    try expect(seeded, "pre-attach pane modes were not seeded (mouse, paste, alternate screen last)")
+
+    _ = try runner.run(
+        executable: tmux,
+        arguments: [
+            "-S", controller.socketPath.path, "-f", controller.configPath.path,
+            "respawn-pane", "-k", "-t", pane.id, "/bin/sleep", "30",
+        ],
+        environment: controller.environment,
+        input: nil
+    )
+    let quiet = eventually(timeout: 5) {
+        (try? controller.capturePaneModeSeed(pane.id))?.isEmpty == true
+    }
+    try expect(quiet, "a plain pane produced spurious mode sequences")
+}
+
 private func checkRealTmuxWindowPerPaneCreationAndClose() throws {
     // Windows-as-panes creation: a new pane becomes its own member window of
     // the active workspace, the workspace list still shows one workspace, and
@@ -11323,6 +11385,7 @@ let checks: [(String, () throws -> Void)] = [
     ("real tmux delivery needs no viewer", checkRealTmuxDeliveryNeedsNoViewer),
     ("real tmux window-per-pane creation and close", checkRealTmuxWindowPerPaneCreationAndClose),
     ("real tmux control mode streams pane output", checkRealTmuxControlModeStreamsPaneOutput),
+    ("real tmux pane mode seeding", checkRealTmuxPaneModeSeeding),
     ("real macOS agent process boundary", checkRealAgentProcessBoundary),
     ("real tmux saved-layout restoration policy", checkRealTmuxSavedLayoutRestorationPolicy),
     ("inherited Parley capability scrub", checkInheritedParleyCapabilitiesAreScrubbed),

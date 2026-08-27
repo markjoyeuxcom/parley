@@ -664,6 +664,8 @@ final class AppModel: ObservableObject {
         controlPending[paneID] = Data()
         let seed = (try? controller?.capturePaneSeed(paneID)) ?? Data()
         if !seed.isEmpty { view.feed(byteArray: ArraySlice(seed)) }
+        let modes = (try? controller?.capturePaneModeSeed(paneID)) ?? Data()
+        if !modes.isEmpty { view.feed(byteArray: ArraySlice(modes)) }
         if let pending = controlPending.removeValue(forKey: paneID), !pending.isEmpty {
             view.feed(byteArray: ArraySlice(pending))
         }

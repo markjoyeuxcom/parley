@@ -976,6 +976,43 @@ public final class TmuxController {
         return seeded
     }
 
+    /// Terminal modes the pane's program enabled before a native view
+    /// attached, as the escape sequences that re-enable them. Without this a
+    /// mouse-aware CLI that requested mouse reporting at startup loses its
+    /// mouse until it re-asserts the mode. The alternate-screen switch comes
+    /// last so the content seed stays in the primary buffer as scrollback and
+    /// the program's next repaint lands in the alternate buffer.
+    public func capturePaneModeSeed(_ paneID: String) throws -> Data {
+        let flags = try runTmux([
+            "display-message", "-p", "-t", paneID,
+            [
+                "#{keypad_cursor_flag}", "#{keypad_flag}", "#{wrap_flag}", "#{insert_flag}",
+                "#{origin_flag}", "#{bracket_paste_flag}", "#{mouse_standard_flag}",
+                "#{mouse_button_flag}", "#{mouse_all_flag}", "#{mouse_utf8_flag}",
+                "#{mouse_sgr_flag}", "#{cursor_flag}", "#{alternate_on}",
+            ].joined(separator: " "),
+        ]).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: " ").map { $0 == "1" }
+        guard flags.count == 13 else {
+            throw ParleyTmuxError.commandFailed("tmux reported an unexpected pane mode summary")
+        }
+        var sequences = ""
+        if flags[0] { sequences += "\u{1b}[?1h" }
+        if flags[1] { sequences += "\u{1b}=" }
+        if !flags[2] { sequences += "\u{1b}[?7l" }
+        if flags[3] { sequences += "\u{1b}[4h" }
+        if flags[4] { sequences += "\u{1b}[?6h" }
+        if flags[5] { sequences += "\u{1b}[?2004h" }
+        if flags[6] { sequences += "\u{1b}[?1000h" }
+        if flags[7] { sequences += "\u{1b}[?1002h" }
+        if flags[8] { sequences += "\u{1b}[?1003h" }
+        if flags[9] { sequences += "\u{1b}[?1005h" }
+        if flags[10] { sequences += "\u{1b}[?1006h" }
+        if !flags[11] { sequences += "\u{1b}[?25l" }
+        if flags[12] { sequences += "\u{1b}[?1049h" }
+        return Data(sequences.utf8)
+    }
+
     /// Sets an explicit grid size for a single-pane member window so the
     /// window always matches its one native view. resize-window switches the
     /// window to manual sizing, which is exactly the contract here.
