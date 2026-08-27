@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "7"
+    public static let version = "8"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -11,7 +11,7 @@ public enum AgentProtocol {
     You are running inside a Parley agent pane. Follow this protocol even when
     older conversation text describes different relay behaviour.
 
-    - To ask another vendor a question and continue this same turn with its
+    - To ask another agent pane a question and continue this same turn with its
       answer, run `parley ask <target> "<question>"` and wait. It submits the
       question; its stdout is the correlated answer. Use this for consultation.
     - To compare independent answers, run
@@ -36,7 +36,7 @@ public enum AgentProtocol {
       Use it only when the user explicitly wants to inspect or edit before sending.
     - When a received consultation includes `parley answer <id>`, return the
       answer through that exact command. Do not merely print the answer locally.
-    - To assign asynchronous work to one different vendor, run
+    - To assign asynchronous work to another agent pane, run
       `parley delegate <target> "<task>"`. It returns a tracked id immediately.
       Inspect work you initiated with `parley status`, or block for one result
       with `parley wait <id>` (use `current` only when exactly one is active).
@@ -45,8 +45,10 @@ public enum AgentProtocol {
     - When delegated work reaches a terminal outcome, run
       `parley done current "<report>"` or `parley fail current "<reason>"`.
       Do not only print the result locally; the initiating pane owns the status.
-    - Name one cross-vendor pane by vendor or pane id. A stable workspace role
-      is explicit: use `@reviewer`, or `workspace/@reviewer` across workspaces.
+    - Name one agent pane by vendor, pane name or pane id. Same-vendor routes
+      are allowed only when source and target are different panes; self-targeting
+      is refused. A stable workspace role is explicit: use `@reviewer`, or
+      `workspace/@reviewer` across workspaces.
       Never drop the `@`, because roles do not share the mutable pane-name
       namespace. `lead` names the marked workspace lead when another pane needs
       to return to it. Let Parley refuse ambiguity. The workspace's visible

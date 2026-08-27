@@ -235,14 +235,14 @@ public final class ReviewedBusyDraftStore: @unchecked Sendable {
         guard draft.origin == .human,
               draft.sourceKind.isAgent,
               draft.targetKind.isAgent,
-              draft.sourceKind != draft.targetKind,
               !draft.sourcePaneID.isEmpty,
               !draft.targetPaneID.isEmpty,
+              draft.sourcePaneID != draft.targetPaneID,
               !draft.sourceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !draft.targetName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !draft.sourceWorkspaceID.isEmpty,
               !draft.targetWorkspaceID.isEmpty else {
-            throw ReviewedBusyDraftStoreError.invalid("A queued draft needs an exact live cross-vendor route.")
+            throw ReviewedBusyDraftStoreError.invalid("A queued draft needs an exact route between two distinct live agent panes.")
         }
         guard !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ReviewedBusyDraftStoreError.invalid("A queued draft cannot be empty.")

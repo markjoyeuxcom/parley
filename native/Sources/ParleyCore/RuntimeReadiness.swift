@@ -82,7 +82,7 @@ public struct RuntimeReadinessSnapshot: Equatable, Sendable {
 
     public var isOperational: Bool {
         localItems.allSatisfy { !$0.required || $0.state == .ready }
-            && availableVendorCount >= 2
+            && availableVendorCount >= 1
     }
 }
 
@@ -152,7 +152,7 @@ public final class RuntimeReadinessChecker: @unchecked Sendable {
                 .core,
                 "Coordination core",
                 .attention,
-                "The terminal grid can remain attached, but cross-vendor actions are paused.",
+                "The terminal grid can remain attached, but agent coordination actions are paused.",
                 recovery: "Use Reconnect in the workbench before sending an Ask."
             )
     }
@@ -182,7 +182,7 @@ public final class RuntimeReadinessChecker: @unchecked Sendable {
               installed == AgentProtocol.text else {
             return local(
                 .protocolRules,
-                "Cross-vendor protocol",
+                "Agent coordination protocol",
                 .attention,
                 "The installed agent instructions do not match this Parley build.",
                 recovery: "Reopen Parley to refresh the shared protocol file."
@@ -192,7 +192,7 @@ public final class RuntimeReadinessChecker: @unchecked Sendable {
         guard stale.isEmpty else {
             return local(
                 .protocolRules,
-                "Cross-vendor protocol",
+                "Agent coordination protocol",
                 .attention,
                 "\(stale.count) running agent pane\(stale.count == 1 ? " has" : "s have") an older protocol.",
                 recovery: "Restart only the panes marked Protocol Stale when you are ready to end those conversations."

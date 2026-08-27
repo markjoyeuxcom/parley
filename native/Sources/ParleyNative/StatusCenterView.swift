@@ -1239,7 +1239,7 @@ struct StatusCenterView: View {
                     .help(
                         model.canAskAgain(handoff)
                             ? "Open the recorded question in an editable preview and create a new tracked Ask"
-                            : "Available after this Ask ends while its original cross-vendor panes remain relay-ready"
+                            : "Available after this Ask ends while its original source and target panes remain relay-ready"
                     )
                 }
                 if handoff.canRetrySafely {

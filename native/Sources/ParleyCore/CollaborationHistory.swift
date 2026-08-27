@@ -168,7 +168,7 @@ public struct RepeatAskRoute: Equatable, Sendable {
 }
 
 /// Repeating is available only when the original route can still pass the
-/// same cross-vendor readiness boundary as a new Ask. The caller must still
+/// same distinct-pane readiness boundary as a new Ask. The caller must still
 /// show an editable preview and dispatch a fresh handoff identity.
 public enum CollaborationHistoryRepeat {
     public static func route(
@@ -183,7 +183,6 @@ public enum CollaborationHistoryRepeat {
               source.id != target.id,
               source.kind.isAgent,
               target.kind.isAgent,
-              source.kind != target.kind,
               source.isStarted,
               !source.isDead,
               source.relayEnabled,

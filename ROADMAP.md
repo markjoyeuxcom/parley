@@ -276,7 +276,8 @@ decisions; Parley transports work and reports state.
 - [x] No agent receives raw tmux control, pane credentials belonging to another
   agent, or permission to create and destroy workspaces.
 - [x] Message size limits, sender attribution, exact target resolution, and
-  cross-vendor enforcement remain mandatory.
+  distinct-pane enforcement remain mandatory. Same-vendor routes are allowed;
+  self-targeting is refused.
 - [x] Fan-out always names its recipients; there is no implicit broadcast to every
   pane.
 
@@ -300,10 +301,19 @@ effortless without becoming task boards.
 - [x] Restore shells automatically; restore agent panes as stopped placeholders
   requiring an explicit Start, so reopening Parley never spends subscription
   quota unexpectedly.
+- [x] Separate the stable workspace home from the mutable New Pane Folder.
+  Migrate older tmux windows metadata-only, preserve pane processes and use one
+  canonical matching key without rewriting the person's displayed path.
 - [x] Preserve recent and favourite folders, expose favourites in the sidebar,
   and retain user-controlled tab ordering and the last selected workspace. The
-  order and selection use name/folder stamps, never persisted tmux ids; native
-  rename and folder changes retain their tab position.
+  order and selection use name/home stamps, never persisted tmux ids; native
+  rename and New Pane Folder changes retain their tab position.
+- [x] Allow several named task workspaces to share one home folder. Folder
+  opening focuses one match, offers an explicit chooser for several, or creates
+  a shell workspace for none; **Open New Workspace Here** bypasses matching
+  deliberately.
+- [x] Keep toolbar creation deterministic from New Pane Folder while offering
+  explicit **Split Right/Below Here** actions for the active pane's live folder.
 - [x] Make duplicate workspace names impossible or visibly qualify them.
 
 ### Project context
@@ -585,7 +595,7 @@ between real vendor CLIs rather than a new autonomous orchestration engine.
   question preview, then routes the concurrent requests through the durable
   Ask broker. The authenticated native route never exposes a pane credential,
   bypasses agent automation policy only because the click is a human control,
-  refuses fewer than two target vendors before dispatch, and records exact
+  refuses fewer than two distinct target panes before dispatch, and records exact
   child handoff ids. Returned answers and failures remain separate attributed
   cards; forwarding one or several and drafting a synthesis both use a second
   human preview before submission to the source workspace's ready lead. The

@@ -34,9 +34,10 @@ Breaking any of these changes the product.
    prompts and session behavior. Parley does not replace them with a chat UI.
 3. **No dangerous bypass flags.** Never pass a `--dangerously-*` option,
    `danger-full-access` or an equivalent approval bypass.
-4. **Cross-vendor by design.** Automatic targets are explicit agent panes from
-   a different vendor. Never broadcast implicitly, target a shell or guess
-   between ambiguous panes.
+4. **Cross-vendor first, pane-explicit.** Automatic targets are explicit agent
+   panes other than the sender. Same-vendor routes are allowed between distinct
+   panes, including Copilot panes using different models. Never broadcast
+   implicitly, target a shell or guess between ambiguous panes.
 5. **Visible and interruptible.** The person can see every participant and
    handoff, focus either side and stop tracked work. Do not create invisible
    background agent activity.
@@ -116,7 +117,7 @@ Runtime files are under `~/Library/Application Support/Parley Native/`.
 
 - A tmux window is a workspace.
 - A tmux pane is a live shell or vendor CLI.
-- Workspace names and default folders are stored as window options.
+- Workspace names, home folders and New Pane Folders are stored as window options.
 - Pane kind, name, relay availability, protocol stamp and legacy Return route
   are stored as pane options.
 - Closing the UI detaches; tmux panes and processes keep running.
@@ -124,9 +125,15 @@ Runtime files are under `~/Library/Application Support/Parley Native/`.
 - A new session starts with one shell. Agent panes start only after a user
   chooses a vendor.
 
-The workspace folder is a default for new toolbar-created panes. It never
-changes a running pane's working directory. Multiple repositories across
-workspaces and panes are normal.
+A workspace is a named collaboration container, not a folder identity. Its
+home folder is the stable association used by favourites and external opening;
+its independently mutable New Pane Folder is the default for new
+toolbar-created panes. Existing panes own their live working directories.
+Changing workspace metadata never changes a running process. Multiple
+repositories across panes are normal, and several task workspaces may
+intentionally share one canonical home folder. A folder-opening route focuses
+one match, offers an explicit choice for several, or creates a normal shell
+workspace when none exists. Never guess among matches.
 
 Workspace creation is a transaction. `tmux new-window -P` can create a window
 and still return no usable identifiers to the caller, so every new workspace
@@ -180,7 +187,8 @@ user. Do not silently change it back to paste-only behavior. `paste` is the
 explicit review-before-send path.
 
 Targets resolve by exact pane id or by vendor only when unique. Ambiguous,
-missing, same-vendor, same-pane, shell and busy targets are refused. There is at
+missing, same-pane, shell and busy targets are refused. Same-vendor routing is
+allowed only between distinct panes. There is at
 most one unanswered consultation or active delegation per target until the
 roadmap introduces explicit scheduling.
 

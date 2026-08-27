@@ -44,22 +44,23 @@ public enum VendorConformancePlanner {
 
         let sources = panes.filter {
             $0.kind.isAgent
-                && $0.kind != vendor
                 && $0.isStarted
                 && !$0.isDead
                 && $0.relayEnabled
                 && $0.hasCurrentProtocol
         }
-        guard !sources.isEmpty else {
+        guard sources.count >= 2 else {
             return .skipped(
                 vendor: vendor,
-                reason: "No current, relay-enabled pane from a different vendor is open."
+                reason: "No other current, relay-enabled agent pane is open."
             )
         }
 
         let candidates = targets.flatMap { target in
-            sources.map { source in
-                VendorConformanceProbe(vendor: vendor, source: source, target: target)
+            sources.compactMap { source in
+                source.id == target.id
+                    ? nil
+                    : VendorConformanceProbe(vendor: vendor, source: source, target: target)
             }
         }
         let selected = candidates.enumerated().max { left, right in
@@ -68,7 +69,7 @@ public enum VendorConformancePlanner {
                 : score(left.element) < score(right.element)
         }?.element
         guard let selected else {
-            return .skipped(vendor: vendor, reason: "No safe cross-vendor probe route is available.")
+            return .skipped(vendor: vendor, reason: "No safe distinct-pane probe route is available.")
         }
         return .probe(selected)
     }

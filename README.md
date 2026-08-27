@@ -106,9 +106,10 @@ parley cancel current
 
 Targets may be a unique vendor name, pane id, explicit stable role such as
 `@reviewer` (or `workspace/@reviewer`), or the marked local `lead`.
-Parley refuses ambiguous,
-same-vendor, shell and missing targets instead of guessing. Only one unanswered
-consultation or active delegation may target a pane at a time.
+Parley refuses ambiguous, self, shell and missing targets instead of guessing.
+Same-vendor routing is supported between distinct panes, including two Copilot
+panes using different models. Only one unanswered consultation or active
+delegation may target a pane at a time.
 
 The workspace tab always shows its automation level: Off, Ask/Answer, or Ask +
 Delegation. The broker enforces that policy before model-initiated dispatch.
@@ -173,9 +174,15 @@ restarting a stale pane restores the normal workflow.
 
 Each workspace tab represents one live tmux window:
 
-- Opening a folder creates or focuses its workspace.
-- Changing the workspace folder affects newly created panes only.
+- A workspace is a named collaboration container with a stable home folder.
+- Opening a folder creates a workspace, focuses its one match, or offers a
+  chooser when several task workspaces share that home.
+- **Open New Workspace** deliberately creates another workspace even when its
+  home folder is already open.
+- Changing the independent **New Pane Folder** affects newly created panes only.
 - Running panes keep the working directory with which they were created.
+- Pane menus can explicitly split from the New Pane Folder, the active pane's
+  live folder, or another chosen folder.
 - Workspaces can contain different pane arrangements and agent vendors.
 - An Ask target can live in the current workspace or another open workspace.
 - Closing a workspace explicitly ends all processes inside it.
@@ -212,9 +219,10 @@ open 'parley://open?folder=%2Fabsolute%2Fpath%2Fto%2Frepository'
 
 Finder exposes Parley as an alternate folder handler under **Open With**, plus
 **Services → Open in Parley** for a selected folder. Every route validates one
-existing absolute directory and either focuses the workspace already using its
-canonical path or creates a workspace with its normal shell. It cannot carry a
-prompt, select or start an agent, attach context, or submit terminal input.
+existing absolute directory and either focuses one matching workspace, asks
+which workspace to use when several share that canonical home, or creates a
+workspace with its normal shell. It cannot carry a prompt, select or start an
+agent, attach context, or submit terminal input.
 `parley open` is refused inside authenticated agent panes. These system entry
 points intentionally target the installed Production app; Development does not
 claim the machine-wide URL scheme.

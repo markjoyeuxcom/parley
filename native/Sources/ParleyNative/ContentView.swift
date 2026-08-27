@@ -164,12 +164,30 @@ struct ContentView: View {
                     Button("Close Pane…", role: .destructive) { model.close(pane) }
                 }
             }
-            if !model.favouriteFolders.isEmpty {
-                Divider()
-                VStack(alignment: .leading, spacing: 5) {
+            Divider()
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
                     Text("FAVOURITE FOLDERS")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer()
+                    Button(action: model.addFavouriteFolder) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(width: 18, height: 18)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Add a favourite folder without changing this workspace")
+                    .accessibilityLabel("Add favourite folder")
+                    .accessibilityHint("Choose a folder to bookmark for opening as a workspace")
+                }
+                if model.favouriteFolders.isEmpty {
+                    Text("Add folders for quick workspace access")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                } else {
                     ScrollView(.vertical, showsIndicators: model.favouriteFolders.count > 5) {
                         LazyVStack(alignment: .leading, spacing: 2) {
                             ForEach(model.favouriteFolders, id: \.self) { folder in
@@ -179,25 +197,28 @@ struct ContentView: View {
                     }
                     .frame(height: min(CGFloat(model.favouriteFolders.count) * 26, 130))
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
             Divider()
             VStack(alignment: .leading, spacing: 5) {
-                Text("WORKSPACE FOLDER")
+                Text("NEW PANE FOLDER")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
                 Menu {
-                    Button("Choose Folder…", action: model.chooseFolder)
-                    Button(model.isFavouriteFolder(model.defaultFolder) ? "Remove from Favourites" : "Add to Favourites") {
+                    Button("Choose New Pane Folder…", action: model.chooseFolder)
+                    Button(model.isFavouriteFolder(model.defaultFolder) ? "Remove This Folder from Favourites" : "Add This Folder to Favourites") {
                         model.toggleFavouriteFolder(model.defaultFolder)
                     }
-                    let favouriteAlternatives = model.favouriteFolders.filter { $0 != model.defaultFolder }
+                    let favouriteAlternatives = model.favouriteFolders.filter {
+                        !WorkspaceFolderIdentity.matches($0, model.defaultFolder)
+                    }
                     if !favouriteAlternatives.isEmpty {
                         Divider()
                         Section("Favourites") {
                             ForEach(favouriteAlternatives, id: \.self) { folder in
-                                Button(URL(fileURLWithPath: folder).lastPathComponent) {
+                                Button("Use \(WorkspaceFolderIdentity.displayName(for: folder)) for New Panes") {
                                     model.setWorkspaceFolder(folder)
                                 }
                                 .help(folder)
@@ -205,13 +226,14 @@ struct ContentView: View {
                         }
                     }
                     let recentAlternatives = model.recentFolders.filter {
-                        $0 != model.defaultFolder && !model.favouriteFolders.contains($0)
+                        !WorkspaceFolderIdentity.matches($0, model.defaultFolder)
+                            && !model.favouriteFolders.contains($0)
                     }
                     if !recentAlternatives.isEmpty {
                         Divider()
                         Section("Recent") {
                             ForEach(recentAlternatives, id: \.self) { folder in
-                                Button(URL(fileURLWithPath: folder).lastPathComponent) {
+                                Button("Use \(WorkspaceFolderIdentity.displayName(for: folder)) for New Panes") {
                                     model.setWorkspaceFolder(folder)
                                 }
                                 .help(folder)
@@ -219,11 +241,11 @@ struct ContentView: View {
                         }
                     }
                 } label: {
-                    Label(URL(fileURLWithPath: model.defaultFolder).lastPathComponent, systemImage: "folder")
+                    Label(WorkspaceFolderIdentity.displayName(for: model.defaultFolder), systemImage: "folder")
                         .lineLimit(1)
                 }
                 .menuStyle(.borderlessButton)
-                .accessibilityLabel("Workspace folder")
+                .accessibilityLabel("New pane folder")
                 .accessibilityValue(model.defaultFolder)
                 .accessibilityHint("Choose where newly opened toolbar panes start")
                 .help("New panes in this workspace open in \(model.defaultFolder). Running panes keep their own folders.")
@@ -233,8 +255,19 @@ struct ContentView: View {
     }
 
     private func favouriteFolderRow(_ folder: String) -> some View {
-        let name = URL(fileURLWithPath: folder).lastPathComponent
-        let isActive = model.workspaces.contains { $0.isActive && $0.defaultFolder == folder }
+        let name = WorkspaceFolderIdentity.displayName(for: folder)
+        let matchingWorkspaces = WorkspaceFolderRouting.matches(folder: folder, in: model.workspaces)
+        let activeWorkspace = matchingWorkspaces.first(where: \.isActive)
+        let isActive = activeWorkspace != nil
+        let actionDescription = if isActive {
+            "Already active: \(activeWorkspace?.name ?? "this workspace") at \(folder)"
+        } else if matchingWorkspaces.count == 1 {
+            "Switch to \(matchingWorkspaces[0].name) at \(folder)"
+        } else if matchingWorkspaces.count > 1 {
+            "Choose from \(matchingWorkspaces.count) workspaces at \(folder)"
+        } else {
+            "Open a new workspace at \(folder)"
+        }
         return Button {
             model.createWorkspace(folder: folder)
         } label: {
@@ -248,6 +281,15 @@ struct ContentView: View {
                 if isActive {
                     Image(systemName: "checkmark")
                         .font(.system(size: 9, weight: .semibold))
+                } else if matchingWorkspaces.count > 1 {
+                    Text("\(matchingWorkspaces.count)")
+                        .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                        .accessibilityHidden(true)
+                } else if matchingWorkspaces.count == 1 {
+                    Circle()
+                        .fill(Color.secondary)
+                        .frame(width: 5, height: 5)
+                        .accessibilityHidden(true)
                 }
             }
             .font(.system(size: 11, weight: isActive ? .semibold : .regular))
@@ -261,18 +303,64 @@ struct ContentView: View {
             )
         }
         .buttonStyle(.plain)
-        .help("Open workspace at \(folder)")
-        .accessibilityLabel("Open favourite folder \(name)")
-        .accessibilityHint(folder)
+        .help(actionDescription)
+        .accessibilityLabel("Favourite folder \(name)")
+        .accessibilityValue(
+            isActive
+                ? "Active workspace"
+                : (matchingWorkspaces.isEmpty ? "Not open" : "\(matchingWorkspaces.count) open workspace\(matchingWorkspaces.count == 1 ? "" : "s")")
+        )
+        .accessibilityHint(actionDescription)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
         .contextMenu {
+            Button("Open New Workspace Here") {
+                model.createNewWorkspace(folder: folder)
+            }
+            Divider()
             Button("Remove from Favourites") {
                 model.toggleFavouriteFolder(folder)
             }
         }
     }
 
+    private func workspaceTabHelp(_ workspace: TmuxWorkspace) -> String {
+        let folders = WorkspaceFolderIdentity.matches(workspace.homeFolder, workspace.defaultFolder)
+            ? ["Home and new panes: \(workspace.homeFolder)"]
+            : [
+                "Home: \(workspace.homeFolder)",
+                "New panes: \(workspace.defaultFolder)",
+            ]
+        return (folders + workspaceTabStatusDetails(workspace) + ["Control-Tab switches workspaces"])
+            .joined(separator: "\n")
+    }
+
+    private func workspaceTabAccessibilityValue(_ workspace: TmuxWorkspace) -> String {
+        ([workspace.isActive ? "Selected" : "Not selected"] + workspaceTabStatusDetails(workspace))
+            .joined(separator: ", ")
+    }
+
+    private func workspaceTabStatusDetails(_ workspace: TmuxWorkspace) -> [String] {
+        var details = ["Automation \(workspace.automationPolicy.label)"]
+        let waiting = model.waitingCount(for: workspace.id)
+        if waiting > 0 { details.append("\(waiting) waiting") }
+        let failures = model.failureCount(for: workspace.id)
+        if failures > 0 {
+            details.append(
+                model.requiresHumanAttention(workspace.id)
+                    ? "\(failures) need human attention"
+                    : "\(failures) failed"
+            )
+        }
+        let unread = model.unreadResultCount(forWorkspace: workspace.id)
+        if unread > 0 { details.append("\(unread) unread") }
+        if model.hasWorktreeWriterCollision(workspaceID: workspace.id) {
+            details.append("Shared worktree writer warning")
+        }
+        return details
+    }
+
     private func paneAccessibilityValue(_ pane: TmuxPane) -> String {
-        let folder = URL(fileURLWithPath: pane.cwd).lastPathComponent
+        let folder = WorkspaceFolderIdentity.displayName(for: pane.cwd)
         let state: String = switch WorkbenchStateProjection.pane(pane) {
         case .empty: "empty"
         case .running: pane.isActive ? "selected" : "running"
@@ -283,7 +371,7 @@ struct ContentView: View {
         }
         let lead = pane.isWorkspaceLead ? ", workspace lead" : ""
         let role = pane.role.map { ", routing role \($0)" } ?? ""
-        return "\(state)\(lead)\(role), \(folder.isEmpty ? pane.cwd : folder)"
+        return "\(state)\(lead)\(role), \(folder)"
     }
 
     @ViewBuilder
@@ -323,27 +411,31 @@ struct ContentView: View {
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                     .frame(maxWidth: 150)
-                                Text(workspace.automationPolicy == .off ? "OFF" : (workspace.automationPolicy == .askAnswer ? "ASK" : "DELEGATE"))
-                                    .font(.system(size: 7, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(workspace.automationPolicy == .off ? Color.secondary : Color.accentColor)
                                 let waiting = model.waitingCount(for: workspace.id)
+                                let failures = model.failureCount(for: workspace.id)
+                                let requiresAttention = model.requiresHumanAttention(workspace.id)
+                                let unread = model.unreadResultCount(forWorkspace: workspace.id)
+                                Text(workspace.automationPolicy == .off ? "OFF" : (workspace.automationPolicy == .askAnswer ? "ASK" : "DELEGATE"))
+                                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(workspace.automationPolicy == .off ? Color.secondary : Color.accentColor)
                                 if waiting > 0 {
                                     Label("\(waiting)", systemImage: "clock")
-                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                         .foregroundStyle(Color.accentColor)
                                         .labelStyle(.titleAndIcon)
                                 }
-                                let failures = model.failureCount(for: workspace.id)
                                 if failures > 0 {
-                                    Label("\(failures)", systemImage: "exclamationmark.triangle.fill")
-                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                                        .foregroundStyle(model.requiresHumanAttention(workspace.id) ? Color.orange : Color.red)
+                                    Label(
+                                        "\(failures)",
+                                        systemImage: requiresAttention ? "exclamationmark.triangle.fill" : "xmark.octagon.fill"
+                                    )
+                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(requiresAttention ? Color.orange : Color.red)
                                         .labelStyle(.titleAndIcon)
                                 }
-                                let unread = model.unreadResultCount(forWorkspace: workspace.id)
                                 if unread > 0 {
                                     Label("\(unread)", systemImage: "envelope.badge")
-                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                         .foregroundStyle(Color.accentColor)
                                         .labelStyle(.titleAndIcon)
                                 }
@@ -363,10 +455,10 @@ struct ContentView: View {
                             )
                         }
                         .buttonStyle(.plain)
-                        .help("\(workspace.defaultFolder)\nControl-Tab switches workspaces")
+                        .help(workspaceTabHelp(workspace))
                         .accessibilityLabel("Workspace \(workspace.name)")
-                        .accessibilityValue("\(workspace.isActive ? "Selected" : "Not selected"), automation \(workspace.automationPolicy.label)")
-                        .accessibilityHint("Open workspace at \(workspace.defaultFolder)")
+                        .accessibilityValue(workspaceTabAccessibilityValue(workspace))
+                        .accessibilityHint("Open workspace with home folder \(workspace.homeFolder)")
                         .contextMenu {
                             Button("Rename…") { model.rename(workspace) }
                             Button("Save Layout…") { model.saveLayout(of: workspace) }
@@ -382,8 +474,11 @@ struct ContentView: View {
                             if model.panes.contains(where: { $0.windowID == workspace.id && $0.isWorkspaceLead }) {
                                 Button("Clear Workspace Lead") { model.clearWorkspaceLead(workspace) }
                             }
-                            Button(model.isFavouriteFolder(workspace.defaultFolder) ? "Remove Folder from Favourites" : "Add Folder to Favourites") {
-                                model.toggleFavouriteFolder(workspace.defaultFolder)
+                            Button(model.isFavouriteFolder(workspace.homeFolder) ? "Remove Home from Favourites" : "Add Home to Favourites") {
+                                model.toggleFavouriteFolder(workspace.homeFolder)
+                            }
+                            Button("Open New Workspace Here") {
+                                model.createNewWorkspace(folder: workspace.homeFolder)
                             }
                             Divider()
                             Button("Move Tab Left") { model.move(workspace, by: -1) }
@@ -399,7 +494,8 @@ struct ContentView: View {
             }
 
             Menu {
-                Button("Choose Folder…", action: model.createWorkspace)
+                Button("Open or Focus Folder…", action: model.createWorkspace)
+                Button("Open New Workspace…", action: model.createAdditionalWorkspace)
                 Button("Open Existing Worktree as Workspace…", action: model.showWorktreeBrowser)
                 Button("Save Current Layout…", action: model.saveActiveWorkspaceLayout)
                 Button("Save Current as Team Template…", action: model.saveActiveWorkspaceAsTeamTemplate)
@@ -407,19 +503,19 @@ struct ContentView: View {
                     Divider()
                     Section("Favourite Folders") {
                         ForEach(model.favouriteFolders, id: \.self) { folder in
-                            Button(URL(fileURLWithPath: folder).lastPathComponent) {
+                            Button(WorkspaceFolderIdentity.displayName(for: folder)) {
                                 model.createWorkspace(folder: folder)
                             }
                             .help(folder)
                         }
                     }
                 }
-                let nonFavouriteRecents = model.recentFolders.filter { !model.favouriteFolders.contains($0) }
+                let nonFavouriteRecents = model.recentFolders.filter { !model.isFavouriteFolder($0) }
                 if !nonFavouriteRecents.isEmpty {
                     Divider()
                     Section("Recent Folders") {
                         ForEach(nonFavouriteRecents, id: \.self) { folder in
-                            Button(URL(fileURLWithPath: folder).lastPathComponent) {
+                            Button(WorkspaceFolderIdentity.displayName(for: folder)) {
                                 model.createWorkspace(folder: folder)
                             }
                             .help(folder)
@@ -585,7 +681,7 @@ struct ContentView: View {
         }
         .accessibilityLabel("Ask another vendor")
         .accessibilityValue("\(model.askTargets.count) available target\(model.askTargets.count == 1 ? "" : "s")")
-        .accessibilityHint("Choose a different vendor pane for a correlated question")
+        .accessibilityHint("Choose another agent pane for a correlated question")
         .disabled(model.askTargets.isEmpty && model.askManyComparisonRun == nil)
     }
 
@@ -810,7 +906,7 @@ struct ContentView: View {
     @ViewBuilder
     private func activePaneContext(maxWidth: CGFloat) -> some View {
         if let active = model.activePane {
-            Text("\(active.displayName) · \(URL(fileURLWithPath: active.cwd).lastPathComponent)")
+            Text("\(active.displayName) · \(WorkspaceFolderIdentity.displayName(for: active.cwd))")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -1249,9 +1345,21 @@ struct ContentView: View {
 
     @ViewBuilder
     private func paneCreationItems(kind: PaneKind) -> some View {
-        Section("Workspace Folder") {
+        Section("New Pane Folder") {
             Button("Split Right") { model.create(kind, direction: .horizontal) }
             Button("Split Below") { model.create(kind, direction: .vertical) }
+        }
+        if let activePane = model.activePane,
+           !WorkspaceFolderIdentity.matches(activePane.cwd, model.defaultFolder) {
+            Divider()
+            Section("Active Pane Folder") {
+                Button("Split Right Here") {
+                    model.createInActivePaneFolder(kind, direction: .horizontal)
+                }
+                Button("Split Below Here") {
+                    model.createInActivePaneFolder(kind, direction: .vertical)
+                }
+            }
         }
         Divider()
         Section("Another Folder") {
@@ -1372,8 +1480,7 @@ private struct PaneRow: View {
     }
 
     private var folderName: String {
-        let name = URL(fileURLWithPath: pane.cwd).lastPathComponent
-        return name.isEmpty ? pane.cwd : name
+        WorkspaceFolderIdentity.displayName(for: pane.cwd)
     }
 
     private var processLabel: String {

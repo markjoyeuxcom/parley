@@ -104,6 +104,7 @@ public final class TmuxController {
                 try setWorkspaceMetadata(
                     windowID: workspace.id,
                     name: workspace.name,
+                    homeFolder: workspace.homeFolder,
                     folder: workspace.defaultFolder,
                     automationPolicy: workspace.automationPolicy
                 )
@@ -133,6 +134,7 @@ public final class TmuxController {
             try setWorkspaceMetadata(
                 windowID: identifiers.windowID,
                 name: workspaceName(folder: cwd),
+                homeFolder: cwd,
                 folder: cwd,
                 automationPolicy: .askAndDelegate
             )
@@ -264,13 +266,19 @@ public final class TmuxController {
         }
 
         let temporaryName = "Restoring-\(UUID().uuidString.prefix(8))"
-        let created = try createWorkspace(folder: layout.defaultFolder, name: temporaryName)
+        let replacementHome = if let replacedWorkspaceID {
+            try listWorkspaces().first(where: { $0.id == replacedWorkspaceID })?.homeFolder ?? layout.defaultFolder
+        } else {
+            layout.defaultFolder
+        }
+        let created = try createWorkspace(folder: layout.defaultFolder, name: temporaryName, homeFolder: replacementHome)
         do {
             let initialPane = try requirePane(in: created.id)
             try configureRestoredNode(layout.root, in: initialPane.id)
             try setWorkspaceMetadata(
                 windowID: created.id,
                 name: layout.name,
+                homeFolder: created.homeFolder,
                 folder: layout.defaultFolder,
                 automationPolicy: layout.automationPolicy
             )
@@ -285,6 +293,7 @@ public final class TmuxController {
             return TmuxWorkspace(
                 id: created.id,
                 name: layout.name,
+                homeFolder: created.homeFolder,
                 defaultFolder: layout.defaultFolder,
                 isActive: true,
                 automationPolicy: layout.automationPolicy
@@ -299,8 +308,10 @@ public final class TmuxController {
     }
 
     @discardableResult
-    public func createWorkspace(folder: String, name: String? = nil) throws -> TmuxWorkspace {
+    public func createWorkspace(folder: String, name: String? = nil, homeFolder: String? = nil) throws -> TmuxWorkspace {
         try requireDirectory(folder)
+        let resolvedHomeFolder = homeFolder ?? folder
+        try requireDirectory(resolvedHomeFolder)
         let resolvedName = try availableWorkspaceName(workspaceName(folder: folder, proposed: name))
         // A unique provisional name lets Parley reconcile the exact window
         // even if tmux creates it but loses the `-P` response. The visible
@@ -322,6 +333,7 @@ public final class TmuxController {
             try setWorkspaceMetadata(
                 windowID: identifiers.windowID,
                 name: resolvedName,
+                homeFolder: resolvedHomeFolder,
                 folder: folder,
                 automationPolicy: .askAndDelegate
             )
@@ -329,6 +341,7 @@ public final class TmuxController {
             return TmuxWorkspace(
                 id: identifiers.windowID,
                 name: resolvedName,
+                homeFolder: resolvedHomeFolder,
                 defaultFolder: folder,
                 isActive: true,
                 automationPolicy: .askAndDelegate
@@ -799,7 +812,7 @@ public final class TmuxController {
             throw ParleyTmuxError.paneNotFound(consultantID)
         }
         guard requester.kind.isAgent, consultant.kind.isAgent else { throw ParleyTmuxError.notAgentPane }
-        guard requester.kind != consultant.kind else { throw ParleyTmuxError.sameVendor }
+        guard requester.id != consultant.id else { throw ParleyTmuxError.samePane }
 
         let captured = if let text { text } else { try capturePane(requesterID) }
         let body = preservesExplicitFormatting
@@ -1042,6 +1055,7 @@ public final class TmuxController {
             "#{window_name}",
             "#{window_active}",
             "#{@parley-workspace-name}",
+            "#{@parley-workspace-home-folder}",
             "#{@parley-workspace-folder}",
             "#{pane_current_path}",
             "#{@parley-automation-policy}",
@@ -1049,10 +1063,11 @@ public final class TmuxController {
         let output = try runTmux(["list-windows", "-t", exactSession, "-F", format]).stdoutText
         return output.split(separator: "\n").compactMap { row in
             let fields = String(row).components(separatedBy: separator)
-            guard fields.count == 7 else { return nil }
-            let folder = !fields[4].isEmpty
-                ? fields[4]
-                : (!fields[5].isEmpty ? fields[5] : (fallbackFolder ?? "/"))
+            guard fields.count == 8 else { return nil }
+            let folder = !fields[5].isEmpty
+                ? fields[5]
+                : (!fields[6].isEmpty ? fields[6] : (fallbackFolder ?? "/"))
+            let homeFolder = fields[4].isEmpty ? folder : fields[4]
             let provisionalName = fields[1] == "agents" || fields[1].hasPrefix("Parley-Pending-")
                 ? nil
                 : fields[1]
@@ -1062,9 +1077,10 @@ public final class TmuxController {
             return TmuxWorkspace(
                 id: fields[0],
                 name: name,
+                homeFolder: homeFolder,
                 defaultFolder: folder,
                 isActive: fields[2] == "1",
-                automationPolicy: WorkspaceAutomationPolicy(rawValue: fields[6]) ?? .askAndDelegate
+                automationPolicy: WorkspaceAutomationPolicy(rawValue: fields[7]) ?? .askAndDelegate
             )
         }
     }
@@ -1093,10 +1109,12 @@ public final class TmuxController {
     private func setWorkspaceMetadata(
         windowID: String,
         name: String,
+        homeFolder: String,
         folder: String,
         automationPolicy: WorkspaceAutomationPolicy
     ) throws {
         _ = try runTmux(["set-option", "-w", "-t", windowID, "@parley-workspace-name", name])
+        _ = try runTmux(["set-option", "-w", "-t", windowID, "@parley-workspace-home-folder", homeFolder])
         _ = try runTmux(["set-option", "-w", "-t", windowID, "@parley-workspace-folder", folder])
         _ = try runTmux([
             "set-option", "-w", "-t", windowID, "@parley-automation-policy", automationPolicy.rawValue,

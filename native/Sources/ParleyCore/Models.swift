@@ -63,11 +63,13 @@ public enum WorkspaceAutomationPolicy: String, CaseIterable, Codable, Equatable,
 }
 
 /// A Parley workspace is a durable tmux window. The id belongs only to the
-/// live tmux server; the human-facing name and default folder are stored as
-/// window options so closing and reopening the UI does not lose them.
+/// live tmux server. Its home folder is the stable folder-opening association;
+/// its default folder is only the mutable starting point for future panes.
+/// Both are stored as window options so reattaching the UI does not lose them.
 public struct TmuxWorkspace: Identifiable, Equatable, Sendable {
     public let id: String
     public let name: String
+    public let homeFolder: String
     public let defaultFolder: String
     public let isActive: Bool
     public let automationPolicy: WorkspaceAutomationPolicy
@@ -75,12 +77,14 @@ public struct TmuxWorkspace: Identifiable, Equatable, Sendable {
     public init(
         id: String,
         name: String,
+        homeFolder: String? = nil,
         defaultFolder: String,
         isActive: Bool,
         automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate
     ) {
         self.id = id
         self.name = name
+        self.homeFolder = homeFolder ?? defaultFolder
         self.defaultFolder = defaultFolder
         self.isActive = isActive
         self.automationPolicy = automationPolicy
@@ -172,7 +176,7 @@ public enum ParleyTmuxError: LocalizedError, Equatable {
     case commandFailed(String)
     case paneNotFound(String)
     case noRelayText
-    case sameVendor
+    case samePane
     case notAgentPane
     case noReturnRoute
     case cannotCloseLastPane
@@ -193,8 +197,8 @@ public enum ParleyTmuxError: LocalizedError, Equatable {
             "The tmux pane no longer exists: \(id)"
         case .noRelayText:
             "That pane has no output to relay yet."
-        case .sameVendor:
-            "Ask is cross-vendor; use the CLI's own delegation for the same vendor."
+        case .samePane:
+            "Choose another agent pane; a pane cannot send an Ask to itself."
         case .notAgentPane:
             "Ask requires two agent panes."
         case .noReturnRoute:

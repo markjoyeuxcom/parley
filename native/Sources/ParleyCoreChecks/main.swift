@@ -1020,6 +1020,7 @@ private func checkInAppHelpGuideCoverage() throws {
         "menu-bar attention inbox", "completed delegations", "permission requests",
         "main window is closed", "prompt and answer bodies", "coordination unavailable",
         "collaboration history", "case-insensitive and terms", "select results",
+        "workspace home", "new pane folder", "split right here", "open new workspace here",
         "owner-only markdown", "ask this again", "fresh tracked handoff identity",
         "never silently replays", "100, 250 or 500", "increasing it later",
         "including dismissed records", "lifecycle activity",
@@ -1332,11 +1333,12 @@ private func workspaceRow(
     windowName: String,
     active: Bool,
     name: String = "",
+    homeFolder: String = "",
     folder: String = "",
     paneFolder: String = "/tmp",
     automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate
 ) -> String {
-    [id, windowName, active ? "1" : "0", name, folder, paneFolder, automationPolicy.rawValue]
+    [id, windowName, active ? "1" : "0", name, homeFolder, folder, paneFolder, automationPolicy.rawValue]
         .joined(separator: TmuxController.outputFieldSeparator)
 }
 
@@ -1458,6 +1460,10 @@ private func checkExistingSessionAdoptsWorkspaceWithoutRestart() throws {
         command(call.arguments) == "set-option" && call.arguments.contains("@0")
             && call.arguments.contains("@parley-workspace-folder") && call.arguments.contains("/tmp")
     }, "adoption did not persist the live pane folder")
+    try expect(runner.calls.contains { call in
+        command(call.arguments) == "set-option" && call.arguments.contains("@0")
+            && call.arguments.contains("@parley-workspace-home-folder") && call.arguments.contains("/tmp")
+    }, "adoption did not migrate the live pane folder into a workspace home")
 }
 
 private func checkWorkspaceLifecycle() throws {
@@ -1485,7 +1491,16 @@ private func checkWorkspaceLifecycle() throws {
     )
 
     let created = try controller.createWorkspace(folder: "/tmp", name: "Server")
-    try expect(created.id == "@2" && created.name == "Server", "new workspace lost its tmux id or name")
+    try expect(
+        created.id == "@2" && created.name == "Server"
+            && created.homeFolder == "/tmp" && created.defaultFolder == "/tmp",
+        "new workspace lost its tmux id, name, home or New Pane Folder"
+    )
+    try expect(runner.calls.contains { call in
+        command(call.arguments) == "set-option"
+            && call.arguments.contains("@parley-workspace-home-folder")
+            && call.arguments.contains("/tmp")
+    }, "new workspace home was not persisted")
     try expect(runner.calls.contains { call in
         command(call.arguments) == "new-window" && call.arguments.contains("/tmp")
             && call.arguments.contains(where: { $0.hasPrefix("Parley-Pending-") })
@@ -1710,6 +1725,16 @@ private func checkExistingSessionAdoptsOnlyUnclassifiedShells() throws {
 }
 
 private func checkWorkspaceContinuityState() throws {
+    try expect(WorkspaceFolderIdentity.displayName(for: "/") == "/", "root workspace folder rendered with a blank name")
+    try expect(
+        WorkspaceFolderIdentity.normalized("/tmp/reviewer/../reviewer/") == "/tmp/reviewer",
+        "workspace folder identity did not remove equivalent path spelling"
+    )
+    try expect(
+        WorkspaceFolderIdentity.matches("/tmp/reviewer/", "/tmp/reviewer"),
+        "equivalent workspace folders did not match"
+    )
+
     let api = TmuxWorkspace(id: "@0", name: "api", defaultFolder: "/tmp/api", isActive: false)
     let renamedWeb = TmuxWorkspace(id: "@1", name: "website", defaultFolder: "/tmp/web", isActive: true)
     let worker = TmuxWorkspace(id: "@2", name: "worker", defaultFolder: "/tmp/worker", isActive: false)
@@ -1746,10 +1771,95 @@ private func checkWorkspaceContinuityState() throws {
     try expect(!state.toggleFavourite(folder: "/tmp/api/"), "removing an existing favourite reported the wrong state")
     try expect(state.toggleFavourite(folder: "/tmp/consumer"), "adding a favourite reported the wrong state")
     try expect(state.favouriteFolders == ["/tmp/web", "/tmp/consumer"], "favourite toggle did not preserve deterministic order")
+    try expect(state.addFavourite(folder: "/tmp/reviewer/"), "explicit favourite addition did not report a new folder")
+    try expect(!state.addFavourite(folder: "/tmp/reviewer"), "explicit favourite addition was not idempotent")
+    try expect(
+        state.favouriteFolders == ["/tmp/web", "/tmp/consumer", "/tmp/reviewer"],
+        "explicit favourite addition changed or duplicated the existing order"
+    )
 
     let encoded = try JSONEncoder().encode(state)
     let decoded = try JSONDecoder().decode(WorkspaceContinuityState.self, from: encoded)
     try expect(decoded == state, "workspace continuity state did not round-trip losslessly")
+}
+
+private func checkWorkspaceHomeAndNewPaneFolderModel() throws {
+    let legacy = TmuxWorkspace(
+        id: "@legacy",
+        name: "Legacy",
+        defaultFolder: "/tmp/legacy",
+        isActive: false
+    )
+    try expect(
+        legacy.homeFolder == "/tmp/legacy",
+        "legacy workspace did not migrate its New Pane Folder into a home folder"
+    )
+
+    let implementation = TmuxWorkspace(
+        id: "@implementation",
+        name: "Implementation",
+        homeFolder: "/tmp/project",
+        defaultFolder: "/tmp/project/feature",
+        isActive: true
+    )
+    try expect(
+        implementation.homeFolder == "/tmp/project"
+            && implementation.defaultFolder == "/tmp/project/feature",
+        "workspace home and New Pane Folder were not independent"
+    )
+
+    let review = TmuxWorkspace(
+        id: "@review",
+        name: "Security Review",
+        homeFolder: "/tmp/project",
+        defaultFolder: "/tmp/project",
+        isActive: false
+    )
+    try expect(
+        WorkspaceFolderRouting.resolve(folder: "/tmp/project", in: [implementation, review])
+            == .choose(["@implementation", "@review"]),
+        "two task workspaces sharing one home folder were not presented as an explicit choice"
+    )
+    try expect(
+        WorkspaceFolderRouting.resolve(folder: "/tmp/legacy", in: [legacy, implementation])
+            == .focus("@legacy"),
+        "one workspace home did not resolve directly"
+    )
+    try expect(
+        WorkspaceFolderRouting.resolve(folder: "/tmp/new", in: [legacy, implementation]) == .create,
+        "an unopened folder did not resolve to workspace creation"
+    )
+
+    var continuity = WorkspaceContinuityState(
+        workspaceOrder: [WorkspaceBookmark(workspace: implementation)],
+        lastSelected: WorkspaceBookmark(workspace: implementation)
+    )
+    let retargeted = TmuxWorkspace(
+        id: implementation.id,
+        name: implementation.name,
+        homeFolder: implementation.homeFolder,
+        defaultFolder: "/tmp/project/docs",
+        isActive: true
+    )
+    continuity.updateWorkspace(from: implementation, to: retargeted)
+    try expect(
+        continuity.lastSelected == WorkspaceBookmark(workspace: implementation),
+        "changing the New Pane Folder changed the workspace continuity identity"
+    )
+
+    let directory = try temporaryDirectory()
+    let real = directory.appendingPathComponent("real", isDirectory: true)
+    let alias = directory.appendingPathComponent("alias", isDirectory: true)
+    try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+    try expect(
+        WorkspaceFolderIdentity.matches(real.path, alias.path),
+        "workspace lookup treated a symlinked spelling as a different directory"
+    )
+    try expect(
+        WorkspaceFolderIdentity.normalized(alias.path) == alias.standardizedFileURL.path,
+        "workspace display storage rewrote the person's chosen path"
+    )
 }
 
 private func checkLegacyPreferencesMigration() throws {
@@ -1837,6 +1947,22 @@ private func checkRuntimeReadinessProbesAreQuotaFree() throws {
     try expect(snapshot.item(.copilot)?.state == .unchecked, "Copilot invented an authentication result")
     try expect(snapshot.readyVendorCount == 2, "ready vendor count did not use confirmed authentication")
     try expect(snapshot.isOperational, "two authenticated vendors and healthy local services should be operational")
+
+    let oneVendor = RuntimeReadinessSnapshot(items: snapshot.items.map { item in
+        guard item.category == .vendor, item.id != .claude else { return item }
+        return RuntimeReadinessItem(
+            id: item.id,
+            category: item.category,
+            title: item.title,
+            state: .unavailable,
+            detail: "Unavailable in one-vendor fixture.",
+            required: item.required
+        )
+    })
+    try expect(
+        oneVendor.availableVendorCount == 1 && oneVendor.isOperational,
+        "one available CLI did not support a same-vendor multi-pane workspace"
+    )
 
     let calls = runner.calls.map(\.arguments)
     try expect(calls.contains(["-V"]), "tmux executable was not probed")
@@ -3975,8 +4101,12 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "7", "the stable-role protocol did not advance the shared protocol version")
+    try expect(AgentProtocol.version == "8", "the distinct-pane routing protocol did not advance the shared protocol version")
     try expect(AgentProtocol.text.contains("@reviewer"), "shared protocol omitted explicit stable-role addressing")
+    try expect(
+        AgentProtocol.text.lowercased().contains("same-vendor") && AgentProtocol.text.contains("different pane"),
+        "shared protocol omitted the same-vendor, distinct-pane routing rule"
+    )
     for command in ["parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait", "parley cancel", "parley context draft", "parley context discard", "--context <draft-id>"] {
         try expect(AgentProtocol.text.contains(command), "shared protocol omitted \(command)")
     }
@@ -4161,8 +4291,8 @@ private func checkBoundedSupervisedWorkflowLifecycle() throws {
     )
     let reviewer = SupervisedWorkflowParticipant(
         paneID: "%2",
-        name: "Codex reviewer",
-        kind: .codex,
+        name: "Claude reviewer",
+        kind: .claude,
         workspaceID: "@0"
     )
     let startedAt = Date(timeIntervalSince1970: 100)
@@ -4906,10 +5036,16 @@ private func checkReturn() throws {
     }, "Return did not consume its route")
 }
 
-private func checkCrossVendorGuard() throws {
+private func checkDistinctPaneRouting() throws {
     let panes = [
         paneRow(id: "%1", kind: .claude, active: true),
-        paneRow(id: "%2", kind: .claude, active: false),
+        paneRow(
+            id: "%2",
+            kind: .claude,
+            active: false,
+            relayEnabled: true,
+            protocolVersion: AgentProtocol.version
+        ),
     ].joined(separator: "\n") + "\n"
     let runner = RecordingRunner { arguments, _ in
         command(arguments) == "list-panes" ? output(panes) : output()
@@ -4921,13 +5057,28 @@ private func checkCrossVendorGuard() throws {
         runner: runner
     )
 
+    try controller.ask(from: "%1", to: "%2", text: "review this")
+    _ = try require(
+        runner.calls.first(where: { command($0.arguments) == "load-buffer" }),
+        "same-vendor Ask did not relay content to a distinct pane"
+    )
+    let paste = try require(
+        runner.calls.first(where: { command($0.arguments) == "paste-buffer" }),
+        "same-vendor Ask did not paste its loaded content"
+    )
+    try expect(paste.arguments.contains("%2"), "same-vendor Ask targeted the wrong pane")
+
+    let submissionCount = runner.calls.filter { command($0.arguments) == "load-buffer" }.count
     do {
-        try controller.ask(from: "%1", to: "%2", text: "review this")
-        throw CheckFailure(description: "same-vendor Ask was accepted")
-    } catch ParleyTmuxError.sameVendor {
-        // Expected: Parley only automates the cross-vendor gap.
+        try controller.ask(from: "%1", to: "%1", text: "do not send this")
+        throw CheckFailure(description: "Ask accepted its own source pane as the target")
+    } catch ParleyTmuxError.samePane {
+        // Expected: pane identity, rather than vendor identity, is the boundary.
     }
-    try expect(!runner.calls.contains { command($0.arguments) == "load-buffer" }, "rejected Ask still relayed content")
+    try expect(
+        runner.calls.filter { command($0.arguments) == "load-buffer" }.count == submissionCount,
+        "a rejected self-target Ask relayed content"
+    )
 }
 
 private func checkRelayCleaning() throws {
@@ -5978,11 +6129,11 @@ private func checkCollaborationHistorySearchExportAndRepeat() throws {
     )
     let target = TmuxPane(
         id: completedAsk.targetPaneID,
-        kind: .claude,
-        customName: "Reviewer",
+        kind: .codex,
+        customName: "Codex Reviewer",
         terminalTitle: "",
         cwd: "/tmp/a",
-        currentCommand: "claude",
+        currentCommand: "codex",
         isActive: false,
         windowID: "@0",
         returnToPaneID: nil,
@@ -5994,7 +6145,7 @@ private func checkCollaborationHistorySearchExportAndRepeat() throws {
     )
     let route = try require(
         CollaborationHistoryRepeat.route(for: completedAsk, panes: [source, target]),
-        "a completed Ask with two live cross-vendor panes could not be prepared again"
+        "a completed Ask with two live distinct panes could not be prepared again"
     )
     try expect(route.sourcePaneID == source.id && route.targetPaneID == target.id, "Ask This Again changed the recorded route")
     try expect(CollaborationHistoryRepeat.route(for: failedRelay, panes: [source, target]) == nil, "Ask This Again accepted a non-Ask handoff")
@@ -7888,7 +8039,7 @@ private func checkHumanAskManyUsesTheTrackedBrokerPath() throws {
     try expect(invalid.status == 400 && invalid.text.contains("source"), "the native comparison accepted an unknown source pane")
     try expect(submissions.values.count == 2, "an invalid native comparison partially dispatched")
 
-    _ = try credentials.token(for: "%4")
+    let codexTwoToken = try credentials.token(for: "%4")
     let sameVendorSubmissions = LockedSubmissions()
     let sameVendorBroker = RelayBroker(
         credentials: credentials,
@@ -7902,17 +8053,32 @@ private func checkHumanAskManyUsesTheTrackedBrokerPath() throws {
         consultationTimeout: 0.05,
         livenessPollInterval: 0.01
     )
-    let sameVendor = sameVendorBroker.handleAskManyFromUI(
-        sourcePaneID: "%1",
-        targetPaneIDs: ["%2", "%4"],
-        text: "This must remain a cross-vendor comparison.",
-        idempotencyKey: "human-compare-same-vendor"
+    let sameVendorResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        sameVendorResult.set(sameVendorBroker.handleAskManyFromUI(
+            sourcePaneID: "%1",
+            targetPaneIDs: ["%2", "%4"],
+            text: "Compare these recommendations independently.",
+            idempotencyKey: "human-compare-same-vendor"
+        ))
+    }
+    try expect(
+        eventually { sameVendorBroker.consultations().count == 2 },
+        "same-vendor comparison did not establish two independent consultations"
     )
     try expect(
-        sameVendor.status == 400 && sameVendor.text.contains("different vendors"),
-        "the native comparison accepted two panes from the same target vendor"
+        Set(sameVendorSubmissions.values.map(\.paneID)) == Set(["%2", "%4"]),
+        "same-vendor comparison did not submit to both distinct panes"
     )
-    try expect(sameVendorSubmissions.values.isEmpty, "a same-vendor comparison submitted terminal input")
+    try expect(
+        sameVendorBroker.handleAnswer(token: codexToken, consultationID: "current", text: "First Codex answer").status == 200,
+        "the first same-vendor comparison target could not answer"
+    )
+    try expect(
+        sameVendorBroker.handleAnswer(token: codexTwoToken, consultationID: "current", text: "Second Codex answer").status == 200,
+        "the second same-vendor comparison target could not answer"
+    )
+    try expect(eventually { sameVendorResult.value?.status == 200 }, "same-vendor comparison did not return its ordered bundle")
 }
 
 private func checkHumanAskManyCoreControlRoute() throws {
@@ -8050,8 +8216,8 @@ private func checkReviewedBusyQueueRequiresExplicitHumanSend() throws {
         bracketedPasteActive: true, isStarted: true
     )
     let target = TmuxPane(
-        id: "%2", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp/app",
-        currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil,
+        id: "%2", kind: .codex, customName: "Codex Reviewer", terminalTitle: "", cwd: "/tmp/app",
+        currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil,
         relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
         bracketedPasteActive: true, isStarted: true
     )
@@ -9269,10 +9435,20 @@ private func checkVendorConformancePlanning() throws {
         throw CheckFailure(description: "ready Codex panes were unexpectedly skipped")
     }
     try expect(probe.target.id == "%2", "conformance planner did not prefer an inactive target")
-    try expect(probe.source.id == "%3", "conformance planner did not select the first stable cross-workspace source")
     try expect(probe.testsInactiveTarget, "conformance probe lost inactive-pane coverage")
     try expect(probe.testsCrossWorkspace, "conformance probe lost cross-workspace coverage")
-    try expect(probe.source.kind != probe.target.kind, "conformance planner selected a same-vendor source")
+    try expect(probe.source.id != probe.target.id, "conformance planner selected the target pane as its own source")
+
+    let sameVendorPlan = VendorConformancePlanner.plan(panes: Array(panes.prefix(2)), vendors: [.codex])
+    guard case let .probe(sameVendorProbe) = sameVendorPlan.first else {
+        throw CheckFailure(description: "same-vendor conformance panes were unexpectedly skipped")
+    }
+    try expect(
+        sameVendorProbe.source.kind == .codex
+            && sameVendorProbe.target.kind == .codex
+            && sameVendorProbe.source.id != sameVendorProbe.target.id,
+        "conformance planner did not use two distinct same-vendor panes"
+    )
 }
 
 private func checkVendorConformancePlanningFailsClosed() throws {
@@ -9378,10 +9554,10 @@ private func checkAgentContextDraftsRequireHumanApprovalBeforeAsk() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let claudeToken = try credentials.token(for: "%1")
-    let codexToken = try credentials.token(for: "%2")
+    let reviewerToken = try credentials.token(for: "%2")
     let panes = [
         TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp/project", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp/project", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%2", kind: .claude, customName: "Claude Reviewer", terminalTitle: "", cwd: "/tmp/project", currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil),
     ]
     let submissions = LockedDelivery()
     let reviewStore = try AgentContextReviewStore(
@@ -9435,7 +9611,7 @@ private func checkAgentContextDraftsRequireHumanApprovalBeforeAsk() throws {
 
     let listed = broker.contextDrafts(token: claudeToken)
     try expect(listed.status == 200 && listed.text.contains(stagedReview.id), "the source pane could not list its context drafts")
-    let hidden = broker.contextDraft(token: codexToken, draftID: stagedReview.id)
+    let hidden = broker.contextDraft(token: reviewerToken, draftID: stagedReview.id)
     try expect(hidden.status == 404, "another pane could inspect a source pane's unsent context")
 
     let askResult = LockedAskResult()
@@ -9443,7 +9619,7 @@ private func checkAgentContextDraftsRequireHumanApprovalBeforeAsk() throws {
         askResult.set(broker.handleContextAsk(
             token: claudeToken,
             draftID: stagedReview.id,
-            target: "codex",
+            target: "%2",
             text: "Find the concrete failure modes in this parser.",
             idempotencyKey: "context-review-ask-1"
         ))
@@ -9468,7 +9644,7 @@ private func checkAgentContextDraftsRequireHumanApprovalBeforeAsk() throws {
     try expect(submissions.value?.text.contains("not independently read by Parley") == true, "approval stripped context provenance")
     try expect(askResult.value == nil, "approved context Ask stopped waiting before its correlated answer")
 
-    let returned = broker.handleAnswer(token: codexToken, consultationID: "current", text: "The fatal error is unconditional.")
+    let returned = broker.handleAnswer(token: reviewerToken, consultationID: "current", text: "The fatal error is unconditional.")
     try expect(returned.status == 200, "the context target could not return its correlated answer")
     try expect(eventually { askResult.value != nil }, "context Ask did not return the correlated answer")
     try expect(askResult.value?.status == 200 && askResult.value?.text.contains("fatal error") == true, "context Ask lost the answer")
@@ -9932,7 +10108,7 @@ private func checkDirectContextDraftCompletionOwnsDeliveryAndFailureState() thro
     let sourceToken = try credentials.token(for: "%1")
     let panes = [
         TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        TmuxPane(id: "%2", kind: .claude, customName: "Claude Reviewer", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil),
     ]
     let delivered = LockedDelivery()
     let broker = RelayBroker(
@@ -10360,6 +10536,7 @@ let checks: [(String, () throws -> Void)] = [
     ("workspace creation cleans an uncaptured exact target", checkWorkspaceCreationCleansPendingTargetWithoutCapturedIDs),
     ("existing sessions adopt only unclassified shells", checkExistingSessionAdoptsOnlyUnclassifiedShells),
     ("workspace continuity state", checkWorkspaceContinuityState),
+    ("workspace home and New Pane Folder model", checkWorkspaceHomeAndNewPaneFolderModel),
     ("legacy packaged-app preferences migration", checkLegacyPreferencesMigration),
     ("quota-free runtime readiness probes", checkRuntimeReadinessProbesAreQuotaFree),
     ("truthful vendor compatibility and runtime signals", checkVendorCompatibilityAndRuntimeSignalsAreTruthful),
@@ -10411,7 +10588,7 @@ let checks: [(String, () throws -> Void)] = [
     ("safe relay target gate", checkPasteRequiresRelayReadyBracketedTarget),
     ("Ask and route", checkAsk),
     ("Return and consume route", checkReturn),
-    ("cross-vendor guard", checkCrossVendorGuard),
+    ("distinct-pane routing", checkDistinctPaneRouting),
     ("relay cleaning", checkRelayCleaning),
     ("selection-or-empty relay draft", checkRelayDraftStartsWithSelectionOrNothing),
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),

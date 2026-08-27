@@ -1131,9 +1131,9 @@ public final class RelayBroker: @unchecked Sendable {
                   let target = livePanes.first(where: { $0.id == approval.targetPaneID }),
                   source.kind.isAgent,
                   target.kind.isAgent,
-                  source.kind != target.kind else {
+                  source.id != target.id else {
                 consultationCondition.unlock()
-                return RelayTextResponse(status: 409, text: "the reviewed source or cross-vendor target is no longer available")
+                return RelayTextResponse(status: 409, text: "the reviewed source or selected target pane is no longer available")
             }
             let pack: ContextPack
             do {
@@ -1183,9 +1183,9 @@ public final class RelayBroker: @unchecked Sendable {
                   let target = livePanes.first(where: { $0.id == approval.targetPaneID }),
                   source.kind.isAgent,
                   target.kind.isAgent,
-                  source.kind != target.kind else {
+                  source.id != target.id else {
                 consultationCondition.unlock()
-                return RelayTextResponse(status: 409, text: "the reviewed source or cross-vendor target is no longer available")
+                return RelayTextResponse(status: 409, text: "the reviewed source or selected target pane is no longer available")
             }
             let pack: ContextPack
             do {
@@ -1568,7 +1568,7 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
-    /// Starts cross-vendor work without blocking the initiating command. The
+    /// Starts agent-to-agent work without blocking the initiating command. The
     /// exact target owns the terminal result, while status and wait remain
     /// scoped to the initiating pane's authenticated identity.
     public func handleDelegate(
@@ -1988,7 +1988,7 @@ public final class RelayBroker: @unchecked Sendable {
         return waitForAskResponse(scope: scope, handoffID: handoff.id, targetName: target.displayName)
     }
 
-    /// Asks an explicit comma-separated set of cross-vendor panes the same
+    /// Asks an explicit comma-separated set of distinct agent panes the same
     /// question concurrently. Every target receives only the human-authored
     /// question; answers are collected by the caller and never relayed between
     /// respondents. Static routing is validated for the entire set before the
@@ -2068,13 +2068,6 @@ public final class RelayBroker: @unchecked Sendable {
         guard let sourcePaneID else {
             return RelayTextResponse(status: 400, text: "ask-many could not resolve its source pane")
         }
-        guard Set(routes.map(\.pane.kind)).count >= 2 else {
-            return RelayTextResponse(
-                status: 400,
-                text: "ask-many needs selected panes from at least two different vendors"
-            )
-        }
-
         let accumulator = AskManyAccumulator(count: routes.count)
         let group = DispatchGroup()
         for (index, route) in routes.enumerated() {
@@ -2943,12 +2936,6 @@ public final class RelayBroker: @unchecked Sendable {
         }
         guard target.kind.isAgent else {
             throw BrokerFailure(status: 400, message: "relay target must be an agent pane")
-        }
-        guard target.kind != sender.kind else {
-            throw BrokerFailure(
-                status: 400,
-                message: "relay is cross-vendor; use the CLI's own delegation for the same vendor"
-            )
         }
         return (sender, target)
     }

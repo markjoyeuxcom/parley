@@ -71,7 +71,7 @@ struct SetupView: View {
                 .foregroundStyle(snapshot.isOperational ? Color.accentColor : Color.orange)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
-                Text(snapshot.isOperational ? "Ready for cross-vendor work" : "Setup needs attention")
+                Text(snapshot.isOperational ? "Ready for agent collaboration" : "Setup needs attention")
                     .font(.system(size: 14, weight: .semibold))
                 Text(summaryDetail(snapshot))
                     .font(.system(size: 12))
@@ -173,9 +173,9 @@ struct SetupView: View {
         }
         let localAttention = snapshot.localItems.filter { $0.required && $0.state != .ready }.count
         if localAttention > 0 {
-            return "Resolve the local system item\(localAttention == 1 ? "" : "s") below before relying on cross-vendor handoffs. Existing terminal panes remain local and visible."
+            return "Resolve the local system item\(localAttention == 1 ? "" : "s") below before relying on agent handoffs. Existing terminal panes remain local and visible."
         }
-        return "Parley needs at least two available vendor CLIs for cross-vendor work. You can continue now and return to this check from the Tools menu."
+        return "Parley needs at least one available agent CLI. Open two panes when you want agent-to-agent collaboration; they may use the same vendor. You can continue now and return to this check from the Tools menu."
     }
 
     private func icon(for state: RuntimeReadinessState) -> String {
