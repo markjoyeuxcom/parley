@@ -1,15 +1,19 @@
+import AppKit
 import ParleyCore
 import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
+    @State private var sidebarVisible = true
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 170, ideal: 220, max: 290)
-        } detail: {
+        HSplitView {
+            if sidebarVisible {
+                sidebar
+                    .frame(minWidth: 170, idealWidth: 220, maxWidth: 290, maxHeight: .infinity)
+                    .background(EdgeToEdgeSidebarMaterial())
+            }
             VStack(spacing: 0) {
                 workspaceTabs
                 if model.runtime.visibleMarker != nil {
@@ -42,11 +46,29 @@ struct ContentView: View {
                     Divider()
                     activityStrip(activity)
                 }
+                if model.visiblePanes.count > 1, !sidebarVisible {
+                    Divider()
+                    paneFocusStrip
+                }
                 Divider()
                 terminal
             }
         }
         .frame(minWidth: 720, minHeight: 680)
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    sidebarVisible.toggle()
+                } label: {
+                    Image(systemName: "sidebar.leading")
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+                .help(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+                .accessibilityLabel(sidebarVisible ? "Hide sidebar" : "Show sidebar")
+            }
+        }
+        .parleyFlatWindowToolbar()
         .sheet(isPresented: $model.commandPalettePresented) {
             CommandPaletteView(model: model)
         }
@@ -120,7 +142,7 @@ struct ContentView: View {
                     if pane.kind.isAgent {
                         if pane.isWorkspaceLead {
                             Button("Remove as Workspace Lead") {
-                                if let workspace = model.workspaces.first(where: { $0.id == pane.windowID }) {
+                                if let workspace = model.workspaces.first(where: { $0.workspaceID == pane.workspaceID }) {
                                     model.clearWorkspaceLead(workspace)
                                 }
                             }
@@ -164,6 +186,7 @@ struct ContentView: View {
                     Button("Close Pane…", role: .destructive) { model.close(pane) }
                 }
             }
+            .scrollContentBackground(.hidden)
             Divider()
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
@@ -361,6 +384,9 @@ struct ContentView: View {
 
     private func paneAccessibilityValue(_ pane: TmuxPane) -> String {
         let folder = WorkspaceFolderIdentity.displayName(for: pane.cwd)
+        if pane.isInCopyMode {
+            return "copy mode, \(folder)"
+        }
         let state: String = switch WorkbenchStateProjection.pane(pane) {
         case .empty: "empty"
         case .running: pane.isActive ? "selected" : "running"
@@ -471,7 +497,7 @@ struct ContentView: View {
                                     }
                                 }
                             }
-                            if model.panes.contains(where: { $0.windowID == workspace.id && $0.isWorkspaceLead }) {
+                            if model.panes.contains(where: { $0.workspaceID == workspace.workspaceID && $0.isWorkspaceLead }) {
                                 Button("Clear Workspace Lead") { model.clearWorkspaceLead(workspace) }
                             }
                             Button(model.isFavouriteFolder(workspace.homeFolder) ? "Remove Home from Favourites" : "Add Home to Favourites") {
@@ -593,6 +619,13 @@ struct ContentView: View {
 
             Spacer()
             activePaneContext(maxWidth: 240)
+            Button(action: model.toggleCopyMode) {
+                Image(systemName: model.activePane?.isInCopyMode == true ? "xmark.square" : "doc.on.doc")
+            }
+            .disabled(model.activePane == nil)
+            .accessibilityLabel(model.activePane?.isInCopyMode == true ? "Exit copy mode" : "Enter copy mode")
+            .help(model.activePane?.isInCopyMode == true ? "Exit pane history copy mode" : "Select and copy from pane history")
+            .accessibilityHint("Use tmux-owned scrollback; drag to select and release to copy to the macOS clipboard")
             Button(action: model.zoom) { Image(systemName: "arrow.up.left.and.arrow.down.right") }
                 .accessibilityLabel("Zoom active pane")
                 .help("Zoom active pane")
@@ -848,13 +881,15 @@ struct ContentView: View {
                 waitingMenu
             }
             Divider()
+            Button(model.activePane?.isInCopyMode == true ? "Exit Copy Mode" : "Enter Copy Mode", action: model.toggleCopyMode)
+                .disabled(model.activePane == nil)
             Button("Zoom Active Pane", action: model.zoom)
             Button("Balance Panes", action: model.balance)
         } label: {
             Label("Actions", systemImage: "ellipsis.circle")
         }
         .accessibilityLabel("Pane actions")
-        .accessibilityHint("Review, return, inspect waiting work, zoom, or balance panes")
+        .accessibilityHint("Review, return, inspect waiting work, copy pane history, zoom, or balance panes")
     }
 
     private var hasWaitingWork: Bool {
@@ -1302,6 +1337,120 @@ struct ContentView: View {
         return "\(pane.displayName) exited with status \(status)"
     }
 
+    private var paneFocusStrip: some View {
+        HStack(spacing: 8) {
+            Text(model.activeWorkspace?.isZoomed == true ? "ZOOMED PANE" : "PANES")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(model.visiblePanes) { pane in
+                        paneFocusButton(pane)
+                    }
+                }
+                .padding(.vertical, 3)
+            }
+
+            if model.activeWorkspace?.isZoomed == true {
+                Button("Show Grid", action: model.zoom)
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("Return to the full pane grid")
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 32)
+        .background(Color.secondary.opacity(0.035))
+        .accessibilityElement(children: .contain)
+    }
+
+    private func paneFocusButton(_ pane: TmuxPane) -> some View {
+        Button {
+            model.select(pane)
+        } label: {
+            HStack(spacing: 6) {
+                Rectangle()
+                    .fill(paneFocusColor(pane.kind))
+                    .frame(width: 3, height: 16)
+                    .accessibilityHidden(true)
+                Text(pane.displayName)
+                    .font(.system(size: 10, weight: pane.isActive ? .semibold : .regular))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let role = pane.role {
+                    Text("@\(role)")
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.accentColor)
+                }
+                if let state = paneFocusState(pane) {
+                    Text(state.label)
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundStyle(state.color)
+                }
+            }
+            .foregroundStyle(pane.isActive ? .primary : .secondary)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(pane.isActive ? Color.accentColor.opacity(0.08) : Color.clear)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(pane.isActive ? Color.accentColor : Color.clear)
+                    .frame(height: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .help(paneFocusHelp(pane))
+        .accessibilityLabel("Focus \(pane.displayName), \(pane.kind.label) pane")
+        .accessibilityValue(paneAccessibilityValue(pane))
+        .accessibilityHint(
+            model.activeWorkspace?.isZoomed == true
+                ? "Show this pane while keeping the workspace zoomed"
+                : "Focus this pane in the visible grid"
+        )
+    }
+
+    private func paneFocusState(_ pane: TmuxPane) -> (label: String, color: Color)? {
+        if pane.isInCopyMode { return ("COPY", .accentColor) }
+        if let failure = model.latestFailure(for: pane.id) {
+            return failure.attention == nil ? ("FAILED", .red) : ("ATTENTION", .orange)
+        }
+        let awaiting = model.awaitingAnswerCount(for: pane.id)
+        if pane.returnToPaneID != nil || awaiting > 0 {
+            return (awaiting > 1 ? "RETURN \(awaiting)" : "RETURN", .accentColor)
+        }
+        let unread = model.unreadResultCount(forPane: pane.id)
+        if unread > 0 { return (unread > 1 ? "RESULT \(unread)" : "RESULT", .accentColor) }
+        return switch WorkbenchStateProjection.pane(pane) {
+        case .empty, .running: nil
+        case .stopped: ("STOPPED", .secondary)
+        case let .exited(status): (status.map { "EXITED \($0)" } ?? "EXITED", .red)
+        case .protocolStale: ("PROTOCOL", .orange)
+        case .relayUnavailable: ("RELAY OFF", .orange)
+        }
+    }
+
+    private func paneFocusColor(_ kind: PaneKind) -> Color {
+        switch kind {
+        case .claude: .orange
+        case .codex: .blue
+        case .agy: .purple
+        case .copilot: .green
+        case .shell: .secondary
+        }
+    }
+
+    private func paneFocusHelp(_ pane: TmuxPane) -> String {
+        let action = model.activeWorkspace?.isZoomed == true
+            ? "Focus while keeping the workspace zoomed"
+            : "Focus in the visible pane grid"
+        let state = pane.isInCopyMode
+            ? "Copy mode: drag to select, scroll through history, and release to copy"
+            : "Enter Copy Mode when a mouse-aware CLI captures normal dragging"
+        return [action, pane.cwd, state].joined(separator: "\n")
+    }
+
     @ViewBuilder
     private var terminal: some View {
         if model.connectionState == .tmuxDisconnected {
@@ -1321,6 +1470,8 @@ struct ContentView: View {
             } actions: {
                 Button("Open Workspace…", action: model.createWorkspace)
             }
+        } else if model.windowsAsPanesPreview, !model.previewWindowViewers.isEmpty {
+            previewViewerSplit
         } else if let configuration = model.attachConfiguration {
             TerminalHost(configuration: configuration, handle: model.terminalHandle)
                 .background(Color(nsColor: NSColor(white: 0.085, alpha: 1)))
@@ -1330,6 +1481,40 @@ struct ContentView: View {
                 systemImage: "terminal",
                 description: Text(model.startupError ?? "Parley could not create its isolated session.")
             )
+        }
+    }
+
+    /// Windows-as-panes preview: one confined viewer client per member window,
+    /// split natively. The active pane's viewer shares the legacy terminal
+    /// handle so focus and selection call sites keep working.
+    private var previewViewerSplit: some View {
+        HSplitView {
+            ForEach(model.previewWindowViewers) { viewer in
+                previewViewerLeaf(viewer)
+                    .background(Color(nsColor: NSColor(white: 0.085, alpha: 1)))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func previewViewerLeaf(_ viewer: AppModel.PreviewWindowViewer) -> some View {
+        let handle = viewer.containsActivePane
+            ? model.terminalHandle
+            : model.viewerHandle(forWindow: viewer.windowID)
+        if viewer.isSinglePane {
+            // Native scrollback and selection; no pty client, no copy mode.
+            ControlTerminalHost(
+                paneID: viewer.representativePaneID,
+                windowID: viewer.windowID,
+                model: model,
+                handle: handle
+            )
+        } else if let configuration = model.viewerAttachConfiguration(
+            representativePaneID: viewer.representativePaneID
+        ) {
+            // Legacy multi-pane grids keep the confined pty viewer until the
+            // marked break-pane migration retires them.
+            TerminalHost(configuration: configuration, handle: handle)
         }
     }
 
@@ -1436,6 +1621,9 @@ private struct PaneRow: View {
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(Color.accentColor)
                     }
+                    if pane.isInCopyMode {
+                        stateLabel("COPY", color: .accentColor)
+                    }
                     switch WorkbenchStateProjection.pane(pane) {
                     case .empty, .running:
                         EmptyView()
@@ -1531,6 +1719,29 @@ private struct PaneRow: View {
         case .targetNotReady: "NOT READY"
         case .targetUnavailable: "UNAVAILABLE"
         case nil: "DELIVERY FAILED"
+        }
+    }
+}
+
+private struct EdgeToEdgeSidebarMaterial: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+}
+
+private extension View {
+    @ViewBuilder
+    func parleyFlatWindowToolbar() -> some View {
+        if #available(macOS 15.0, *) {
+            toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        } else {
+            self
         }
     }
 }

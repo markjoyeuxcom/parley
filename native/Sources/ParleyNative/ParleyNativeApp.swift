@@ -12,6 +12,7 @@ fileprivate enum ExternalApplicationRequest: Equatable {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var externalRequestHandler: ((ExternalApplicationRequest) -> Void)?
     private var pendingExternalRequests: [ExternalApplicationRequest] = []
+    private var titlebarZoomRecognizer: NSClickGestureRecognizer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A SwiftPM executable has no app bundle to declare a foreground
@@ -21,6 +22,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.servicesProvider = self
         DispatchQueue.main.async {
             self.applyDevelopmentIcon()
+            if let window = NSApp.windows.first(where: { $0.title == "Parley" && $0.canBecomeKey })
+                ?? NSApp.windows.first(where: { $0.canBecomeKey }) {
+                self.configureMainWindow(window)
+            }
             NSApp.activate(ignoringOtherApps: true)
             NSApp.windows.first?.makeKeyAndOrderFront(nil)
         }
@@ -138,6 +143,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.applicationIconImage = image
         }
     }
+
+    private func configureMainWindow(_ window: NSWindow) {
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.toolbarStyle = .unifiedCompact
+        window.isMovable = true
+
+        guard let frameView = window.contentView?.superview else { return }
+        frameView.wantsLayer = true
+        frameView.layer?.cornerRadius = 16
+        frameView.layer?.cornerCurve = .continuous
+        frameView.layer?.masksToBounds = true
+        installTitlebarZoomRecognizer(on: window)
+        window.invalidateShadow()
+    }
+
+    private func installTitlebarZoomRecognizer(on window: NSWindow) {
+        if let titlebarZoomRecognizer {
+            titlebarZoomRecognizer.view?.removeGestureRecognizer(titlebarZoomRecognizer)
+        }
+        guard let titlebar = titlebarInteractionView(for: window) else { return }
+        let recognizer = NSClickGestureRecognizer(target: self, action: #selector(zoomFromTitlebar(_:)))
+        recognizer.numberOfClicksRequired = 2
+        recognizer.buttonMask = 0x1
+        recognizer.delaysPrimaryMouseButtonEvents = false
+        titlebar.addGestureRecognizer(recognizer)
+        titlebarZoomRecognizer = recognizer
+    }
+
+    private func titlebarInteractionView(for window: NSWindow) -> NSView? {
+        guard let closeButton = window.standardWindowButton(.closeButton) else { return nil }
+        var candidate = closeButton.superview
+        while let view = candidate {
+            if view.bounds.width >= window.frame.width * 0.7,
+               view.bounds.height >= 24,
+               view.bounds.height <= 120 {
+                return view
+            }
+            candidate = view.superview
+        }
+        return nil
+    }
+
+    @objc
+    private func zoomFromTitlebar(_ recognizer: NSClickGestureRecognizer) {
+        guard recognizer.state == .ended else { return }
+        recognizer.view?.window?.performZoom(recognizer)
+    }
 }
 
 @main
@@ -204,6 +258,13 @@ struct ParleyNativeApp: App {
             CommandMenu("Tools") {
                 Button("Environment Check…") { model.showEnvironmentCheck() }
                 Button("Compatibility & Releases…") { model.showReleaseLifecycle() }
+                Toggle(
+                    "Windows-as-Panes Preview",
+                    isOn: Binding(
+                        get: { model.windowsAsPanesPreview },
+                        set: { model.windowsAsPanesPreview = $0 }
+                    )
+                )
                 Divider()
                 Toggle(
                     "Keep Coordination Core Available at Login",
@@ -237,6 +298,11 @@ struct ParleyNativeApp: App {
                 Button("Return Answer") { model.returnAnswer() }
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
                     .disabled(!model.canReturn)
+                Button(model.activePane?.isInCopyMode == true ? "Exit Copy Mode" : "Enter Copy Mode") {
+                    model.toggleCopyMode()
+                }
+                    .keyboardShortcut("c", modifiers: [.command, .control])
+                    .disabled(model.activePane == nil)
                 Button("Zoom Active Pane") { model.zoom() }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
                 Button("Balance Panes") { model.balance() }

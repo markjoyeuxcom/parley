@@ -12,7 +12,7 @@ public struct VendorConformanceProbe: Equatable, Sendable {
     }
 
     public var testsInactiveTarget: Bool { !target.isActive }
-    public var testsCrossWorkspace: Bool { source.windowID != target.windowID }
+    public var testsCrossWorkspace: Bool { source.workspaceID != target.workspaceID }
 }
 
 public enum VendorConformancePlanItem: Equatable, Sendable {

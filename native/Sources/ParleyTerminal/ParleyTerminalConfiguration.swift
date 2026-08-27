@@ -7,6 +7,12 @@ import SwiftTerm
 public enum ParleyTerminalConfiguration {
     @MainActor
     public static func apply(to terminal: LocalProcessTerminalView) {
+        applyAppearance(to: terminal)
+    }
+
+    /// Shared by the pty-attached host and the headless control-mode host.
+    @MainActor
+    public static func applyAppearance(to terminal: TerminalView) {
         terminal.autoresizingMask = [.width, .height]
         terminal.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         terminal.nativeForegroundColor = NSColor(white: 0.88, alpha: 1)

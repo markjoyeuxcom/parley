@@ -103,7 +103,7 @@ public enum WorkspaceSafetyProjection {
         coreAvailable: Bool
     ) -> WorkspaceSafetySummary {
         let workspacePanes = panes
-            .filter { $0.windowID == workspace.id }
+            .filter { $0.workspaceID == workspace.workspaceID }
             .sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
         let runningAgents = workspacePanes.compactMap { pane -> WorkspaceSafetyAgent? in
             guard pane.kind.isAgent, pane.isStarted, !pane.isDead else { return nil }

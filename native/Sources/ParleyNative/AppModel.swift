@@ -7,7 +7,7 @@ import UserNotifications
 
 @MainActor
 final class TerminalHandle: ObservableObject {
-    weak var terminal: LocalProcessTerminalView?
+    weak var terminal: TerminalView?
 
     var selectedText: String? {
         guard let selected = terminal?.getSelection(), !selected.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty else {
@@ -209,11 +209,30 @@ final class AppModel: ObservableObject {
 
     let runtime: ParleyRuntime
     let terminalHandle = TerminalHandle()
+    /// Windows-as-panes preview: each member window of the selected workspace
+    /// renders through its own confined viewer client instead of one shared
+    /// attach. The legacy single handle keeps addressing the active pane so
+    /// existing focus and selection call sites stay correct.
+    @Published var windowsAsPanesPreview = false {
+        didSet {
+            guard oldValue != windowsAsPanesPreview else { return }
+            preferences.set(windowsAsPanesPreview, forKey: Self.windowsAsPanesPreviewKey)
+            if windowsAsPanesPreview {
+                ensurePreviewViewSessions(for: panes)
+                ensureControlConnection()
+            } else {
+                stopControlConnection()
+            }
+        }
+    }
+    private static let windowsAsPanesPreviewKey = "ParleyWindowsAsPanesPreview"
+    private var viewerHandles: [String: TerminalHandle] = [:]
     private let fallbackFolder: String
     private let applicationDirectory: URL
     private let preferences: UserDefaults
     private let runtimeLease: RuntimeUILease?
     private let layoutStore: SavedWorkspaceLayoutStore
+    private let workspaceRegistry: WorkspaceRegistry
     private let teamTemplateStore: TeamTemplateStore
     private let recipeStore: HandoffRecipeStore
     private let supervisedWorkflowStore: SupervisedWorkflowStore
@@ -284,8 +303,12 @@ final class AppModel: ObservableObject {
         runtime = resolvedRuntime
         applicationDirectory = runtime.applicationDirectory
         preferences = UserDefaults(suiteName: runtime.preferenceSuiteName) ?? .standard
+        windowsAsPanesPreview = preferences.bool(forKey: Self.windowsAsPanesPreviewKey)
         layoutStore = SavedWorkspaceLayoutStore(
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
+        )
+        workspaceRegistry = WorkspaceRegistry(
+            file: applicationDirectory.appendingPathComponent("workspace-registry.json")
         )
         teamTemplateStore = TeamTemplateStore(
             file: applicationDirectory.appendingPathComponent("team-templates.json")
@@ -511,11 +534,160 @@ final class AppModel: ObservableObject {
     var defaultFolder: String { activeWorkspace?.defaultFolder ?? fallbackFolder }
 
     var visiblePanes: [TmuxPane] {
-        guard let workspaceID = activeWorkspace?.id else { return panes }
-        return panes.filter { $0.windowID == workspaceID }
+        guard let workspaceID = activeWorkspace?.workspaceID else { return panes }
+        return panes.filter { $0.workspaceID == workspaceID }
     }
 
     var activePane: TmuxPane? { visiblePanes.first(where: \.isActive) }
+
+    /// One viewer per member window of the selected workspace. Under legacy
+    /// topology a window may hold several panes; its one viewer shows them
+    /// all, and windows-as-panes creation will make window and pane coincide.
+    struct PreviewWindowViewer: Identifiable, Equatable {
+        let windowID: String
+        let representativePaneID: String
+        let containsActivePane: Bool
+        let isSinglePane: Bool
+        var id: String { windowID }
+    }
+
+    var previewWindowViewers: [PreviewWindowViewer] {
+        let grouped = Dictionary(grouping: visiblePanes, by: \.windowID)
+        return grouped.keys.sorted().compactMap { windowID in
+            guard let members = grouped[windowID],
+                  let representative = members.min(by: { $0.id < $1.id }) else { return nil }
+            return PreviewWindowViewer(
+                windowID: windowID,
+                representativePaneID: representative.id,
+                containsActivePane: members.contains(where: \.isActive),
+                isSinglePane: members.count == 1
+            )
+        }
+    }
+
+    func viewerHandle(forWindow windowID: String) -> TerminalHandle {
+        if let existing = viewerHandles[windowID] { return existing }
+        let handle = TerminalHandle()
+        viewerHandles[windowID] = handle
+        return handle
+    }
+
+    func viewerAttachConfiguration(representativePaneID: String) -> AttachConfiguration? {
+        guard let controller else { return nil }
+        var environment = controller.environment
+        environment["TERM"] = "xterm-256color"
+        environment["COLORTERM"] = "truecolor"
+        return AttachConfiguration(
+            executable: controller.tmuxExecutable.path,
+            arguments: controller.attachArguments(viewingPane: representativePaneID),
+            environment: environment.map { "\($0.key)=\($0.value)" },
+            cwd: defaultFolder
+        )
+    }
+
+    private func ensurePreviewViewSessions(for allPanes: [TmuxPane]) {
+        guard let controller, let workspaceID = activeWorkspace?.workspaceID else { return }
+        var seenWindows: Set<String> = []
+        // pty viewers remain only for legacy multi-pane grid windows; a
+        // single-pane window renders through the control-mode native host.
+        var windowPaneCounts: [String: Int] = [:]
+        for pane in allPanes { windowPaneCounts[pane.windowID, default: 0] += 1 }
+        for pane in allPanes.sorted(by: { $0.id < $1.id })
+        where pane.workspaceID == workspaceID
+            && windowPaneCounts[pane.windowID, default: 0] > 1
+            && seenWindows.insert(pane.windowID).inserted {
+            try? controller.ensureViewSession(paneID: pane.id)
+        }
+    }
+
+    // MARK: Control-mode native terminals (windows-as-panes preview)
+
+    private var controlConnection: TmuxControlModeConnection?
+    private var controlSubscribers: [String: (Data) -> Void] = [:]
+    private var controlPending: [String: Data] = [:]
+
+    private func ensureControlConnection() {
+        guard windowsAsPanesPreview, controlConnection == nil, let controller else { return }
+        let connection = TmuxControlModeConnection(
+            tmuxExecutable: controller.tmuxExecutable,
+            socketPath: controller.socketPath,
+            configPath: controller.configPath,
+            sessionName: controller.sessionName,
+            environment: controller.environment,
+            onPaneOutput: { [weak self] paneID, bytes in
+                Task { @MainActor [weak self] in
+                    self?.routeControlOutput(paneID: paneID, bytes: bytes)
+                }
+            },
+            onEvent: { [weak self] event in
+                Task { @MainActor [weak self] in self?.handleControlEvent(event) }
+            }
+        )
+        do {
+            try connection.start()
+            controlConnection = connection
+        } catch {
+            // The pty viewer path still renders; the next refresh retries.
+        }
+    }
+
+    private func stopControlConnection() {
+        controlConnection?.stop()
+        controlConnection = nil
+        controlSubscribers.removeAll()
+        controlPending.removeAll()
+    }
+
+    private func routeControlOutput(paneID: String, bytes: Data) {
+        if let subscriber = controlSubscribers[paneID] {
+            subscriber(bytes)
+        } else if controlPending[paneID] != nil {
+            controlPending[paneID]?.append(bytes)
+        }
+    }
+
+    private func handleControlEvent(_ event: TmuxControlModeConnection.Event) {
+        switch event {
+        case .exited:
+            // A killed or upgraded server drops the stream; while the preview
+            // stays on, the next refresh reattaches.
+            controlConnection = nil
+        case .windowAdded, .windowClosed, .windowRenamed, .paneModeChanged:
+            try? refresh()
+        }
+    }
+
+    func attachControlStream(paneID: String, to view: TerminalView) {
+        // Live output between subscription and the seed capture lands in the
+        // pending buffer; the capture may also contain its first bytes, so an
+        // actively printing pane can repeat a line at attach. Bounded, honest.
+        controlPending[paneID] = Data()
+        let seed = (try? controller?.capturePaneSeed(paneID)) ?? Data()
+        if !seed.isEmpty { view.feed(byteArray: ArraySlice(seed)) }
+        if let pending = controlPending.removeValue(forKey: paneID), !pending.isEmpty {
+            view.feed(byteArray: ArraySlice(pending))
+        }
+        controlSubscribers[paneID] = { [weak view] bytes in
+            view?.feed(byteArray: ArraySlice(bytes))
+        }
+    }
+
+    func detachControlStream(paneID: String) {
+        controlSubscribers[paneID] = nil
+        controlPending[paneID] = nil
+    }
+
+    func sendControlInput(paneID: String, bytes: ArraySlice<UInt8>) {
+        guard !bytes.isEmpty else { return }
+        let hex = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+        controlConnection?.sendCommand("send-keys -t \(paneID) -H \(hex)")
+    }
+
+    func resizeControlWindow(_ windowID: String, columns: Int, rows: Int) {
+        controlConnection?.sendCommand(
+            "resize-window -t \(windowID) -x \(max(2, columns)) -y \(max(2, rows))"
+        )
+    }
 
     func showEnvironmentCheck() {
         setupPresented = true
@@ -1083,7 +1255,7 @@ final class AppModel: ObservableObject {
     }
 
     func workspaceSafetySummary(for workspace: TmuxWorkspace) -> WorkspaceSafetySummary {
-        let workspacePanes = panes.filter { $0.windowID == workspace.id }
+        let workspacePanes = panes.filter { $0.workspaceID == workspace.workspaceID }
         let contextsByPaneID = Dictionary(uniqueKeysWithValues: workspacePanes.compactMap { pane in
             projectContext(for: pane).map { (pane.id, $0) }
         })
@@ -1212,7 +1384,7 @@ final class AppModel: ObservableObject {
         }
 
         commands += panes.map { pane in
-            let workspace = workspaces.first(where: { $0.id == pane.windowID })?.name
+            let workspace = workspaces.first(where: { $0.workspaceID == pane.workspaceID })?.name
                 ?? pane.workspaceName
                 ?? pane.windowID
             let context = projectContext(for: pane)
@@ -1230,7 +1402,7 @@ final class AppModel: ObservableObject {
         }
 
         commands += askTargets.map { pane in
-            let workspace = workspaces.first(where: { $0.id == pane.windowID })?.name
+            let workspace = workspaces.first(where: { $0.workspaceID == pane.workspaceID })?.name
                 ?? pane.workspaceName
                 ?? pane.windowID
             return PaletteCommand(
@@ -1470,19 +1642,19 @@ final class AppModel: ObservableObject {
     }
 
     var localAskTargets: [TmuxPane] {
-        guard let workspaceID = activeWorkspace?.id else { return [] }
-        return askTargets.filter { $0.windowID == workspaceID }
+        guard let workspaceID = activeWorkspace?.workspaceID else { return [] }
+        return askTargets.filter { $0.workspaceID == workspaceID }
     }
 
     var workspaceLead: TmuxPane? {
-        guard let workspaceID = activeWorkspace?.id else { return nil }
-        return panes.first { $0.windowID == workspaceID && $0.isWorkspaceLead }
+        guard let workspaceID = activeWorkspace?.workspaceID else { return nil }
+        return panes.first { $0.workspaceID == workspaceID && $0.isWorkspaceLead }
     }
 
     var recipeTargets: [TmuxPane] {
         guard let lead = workspaceLead else { return [] }
         return panes.filter {
-            $0.windowID == lead.windowID
+            $0.workspaceID == lead.workspaceID
                 && $0.id != lead.id
                 && $0.kind.isAgent
                 && $0.isStarted
@@ -1549,7 +1721,7 @@ final class AppModel: ObservableObject {
     var otherWorkspaceAskGroups: [WorkspaceAskGroup] {
         workspaces.compactMap { workspace in
             guard !workspace.isActive else { return nil }
-            let targets = askTargets.filter { $0.windowID == workspace.id }
+            let targets = askTargets.filter { $0.workspaceID == workspace.workspaceID }
             return targets.isEmpty ? nil : WorkspaceAskGroup(workspace: workspace, panes: targets)
         }
     }
@@ -1684,6 +1856,30 @@ final class AppModel: ObservableObject {
                 if refreshedWorkspaces != workspaces { workspaces = refreshedWorkspaces }
                 let refreshedPanes = try controller.listPanes()
                 if refreshedPanes != panes { panes = refreshedPanes }
+                if let restoreID = copyModeZoomRestorePaneID,
+                   refreshedPanes.first(where: { $0.id == restoreID })?.isInCopyMode != true {
+                    // tmux ends Copy Mode itself on selection release or
+                    // Escape; undo only the zoom that Copy Mode entry added.
+                    copyModeZoomRestorePaneID = nil
+                    try? controller.restoreZoomAfterCopyMode(restoreID)
+                }
+                var selectedPaneIDs: [String: String] = [:]
+                if let active = refreshedPanes.first(where: \.isActive) {
+                    selectedPaneIDs[active.workspaceID] = active.id
+                }
+                // The registry keeps records for workspaces a stopped server
+                // no longer lists; a write failure must not break refresh.
+                _ = try? workspaceRegistry.synchronize(
+                    workspaces: refreshedWorkspaces,
+                    selectedPaneIDs: selectedPaneIDs
+                )
+                if windowsAsPanesPreview {
+                    ensurePreviewViewSessions(for: refreshedPanes)
+                    ensureControlConnection()
+                    viewerHandles = viewerHandles.filter { windowID, _ in
+                        refreshedPanes.contains { $0.windowID == windowID }
+                    }
+                }
                 tmuxAvailable = true
                 tmuxError = nil
             } catch {
@@ -2508,7 +2704,8 @@ final class AppModel: ObservableObject {
                 kind: kind,
                 cwd: standardized,
                 direction: direction,
-                permissionProfile: permissionProfile
+                permissionProfile: permissionProfile,
+                inOwnWindow: windowsAsPanesPreview
             )
             rememberFolder(standardized)
             try refresh()
@@ -2591,7 +2788,8 @@ final class AppModel: ObservableObject {
                     kind: request.kind,
                     cwd: request.folder,
                     direction: direction,
-                    permissionProfile: effective
+                    permissionProfile: effective,
+                    inOwnWindow: windowsAsPanesPreview
                 )
                 rememberFolder(request.folder)
             case let .restart(paneID):
@@ -2644,7 +2842,8 @@ final class AppModel: ObservableObject {
 
     func select(_ pane: TmuxPane) {
         perform {
-            try controller?.selectPane(pane.id)
+            let preserveZoom = workspaces.first(where: { $0.workspaceID == pane.workspaceID })?.isZoomed == true
+            try controller?.selectPane(pane.id, preservingWindowZoom: preserveZoom)
             try refresh()
             terminalHandle.focus()
         }
@@ -3792,7 +3991,7 @@ final class AppModel: ObservableObject {
 
     func interruptActiveRecipeRun() {
         guard let run = activeRecipeRun,
-              let workspace = workspaces.first(where: { $0.id == panes.first(where: { $0.id == run.leadPaneID })?.windowID }) else {
+              let workspace = workspaces.first(where: { $0.workspaceID == panes.first(where: { $0.id == run.leadPaneID })?.workspaceID }) else {
             activeRecipeRun = nil
             return
         }
@@ -4316,7 +4515,7 @@ final class AppModel: ObservableObject {
     }
 
     func mobilityDestinations(for pane: TmuxPane) -> [TmuxWorkspace] {
-        workspaces.filter { $0.id != pane.windowID }
+        workspaces.filter { $0.workspaceID != pane.workspaceID }
     }
 
     func movePane(_ pane: TmuxPane, to targetWorkspace: TmuxWorkspace) {
@@ -4361,7 +4560,7 @@ final class AppModel: ObservableObject {
             alert.informativeText = "Parley will transfer the exact tmux pane. \(preservedState) Its pane id, terminal state and folder (\(currentPane.cwd)) are unchanged. The target workspace’s \(currentTarget.automationPolicy.label) automation policy applies after the move. The source workspace remains open."
             alert.alertStyle = .warning
             let affectedWorkspaces = [
-                workspaces.first(where: { $0.id == currentPane.windowID }),
+                workspaces.first(where: { $0.workspaceID == currentPane.workspaceID }),
                 currentTarget,
             ].compactMap { $0 }
             attachWorkspaceSafetySummaries(
@@ -4536,6 +4735,26 @@ final class AppModel: ObservableObject {
     func zoom() {
         perform {
             try controller?.zoomActivePane()
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    // The one pane whose Copy Mode entry zoomed its window; leaving the mode
+    // restores that zoom, while a zoom the person chose themselves is kept.
+    private var copyModeZoomRestorePaneID: String?
+
+    func toggleCopyMode() {
+        guard let pane = activePane else { return }
+        perform {
+            if pane.isInCopyMode {
+                let restoreZoom = copyModeZoomRestorePaneID == pane.id
+                copyModeZoomRestorePaneID = nil
+                try controller?.cancelCopyMode(pane.id, restoreZoom: restoreZoom)
+            } else if try controller?.enterCopyMode(pane.id) == true {
+                copyModeZoomRestorePaneID = pane.id
+            }
+            try refresh()
             terminalHandle.focus()
         }
     }
@@ -4719,7 +4938,7 @@ final class AppModel: ObservableObject {
             )
             let workspace = try openWorkspace(folder: imported.folder)
             let candidates = panes.filter {
-                $0.windowID == workspace.id
+                $0.workspaceID == workspace.workspaceID
                     && $0.kind.isAgent
                     && $0.isStarted
                     && !$0.isDead
@@ -4906,7 +5125,7 @@ final class AppModel: ObservableObject {
     }
 
     func close(_ workspace: TmuxWorkspace) {
-        let paneCount = panes.filter { $0.windowID == workspace.id }.count
+        let paneCount = panes.filter { $0.workspaceID == workspace.workspaceID }.count
         let alert = NSAlert()
         alert.messageText = "Close \(workspace.name)?"
         alert.informativeText = "This removes \(paneCount) pane\(paneCount == 1 ? "" : "s") and ends every process still running in them. The workspace cannot be recovered from Parley."
@@ -4918,6 +5137,9 @@ final class AppModel: ObservableObject {
         perform {
             guard let controller else { return }
             try controller.closeWorkspace(workspace.id)
+            if workspace.workspaceID != workspace.id {
+                try? workspaceRegistry.remove(workspaceID: workspace.workspaceID)
+            }
             try recordSuccessfulActivity(RelayActivityEventRequest(
                 kind: .workspaceClosed,
                 workspaceID: workspace.id,
@@ -5050,7 +5272,7 @@ final class AppModel: ObservableObject {
 
     func open(_ layout: SavedWorkspaceLayout) {
         let workspace = activeWorkspace
-        let paneCount = workspace.map { selected in panes.count { $0.windowID == selected.id } } ?? 0
+        let paneCount = workspace.map { selected in panes.count { $0.workspaceID == selected.workspaceID } } ?? 0
         if let workspace, paneCount > 0 {
             let alert = NSAlert()
             alert.messageText = "Open \(layout.name) over \(workspace.name)?"

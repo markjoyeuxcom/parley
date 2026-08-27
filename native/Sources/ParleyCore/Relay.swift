@@ -2883,7 +2883,7 @@ public final class RelayBroker: @unchecked Sendable {
             }
         }
 
-        let local = available.filter { $0.windowID == sender.windowID && paneMatches(requested, pane: $0) }
+        let local = available.filter { $0.workspaceID == sender.workspaceID && paneMatches(requested, pane: $0) }
         if !local.isEmpty { return local }
         return available.filter { paneMatches(requested, pane: $0) }
     }

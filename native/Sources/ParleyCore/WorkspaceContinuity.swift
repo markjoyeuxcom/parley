@@ -50,20 +50,34 @@ public enum WorkspaceFolderRouting {
 }
 
 /// A process-independent identity for workspace presentation preferences.
-/// tmux ids are deliberately excluded because they do not survive a new tmux
-/// server; Parley updates the name stamp when a unique folder match reveals a
-/// rename.
+/// Live tmux ids are deliberately excluded because they do not survive a new
+/// tmux server; the durable @parley-ws-id is preferred when present, and the
+/// name/folder pair remains the legacy fallback.
 public struct WorkspaceBookmark: Codable, Equatable, Hashable, Sendable {
     public let name: String
     public let folder: String
+    /// The workspace's durable @parley-ws-id. A live window id is never
+    /// stored here: a new tmux server reuses "@N", which would forge
+    /// identity across unrelated workspaces.
+    public let workspaceID: String?
 
-    public init(name: String, folder: String) {
+    public init(name: String, folder: String, workspaceID: String? = nil) {
         self.name = name
         self.folder = Self.standardized(folder)
+        self.workspaceID = workspaceID.flatMap { $0.isEmpty || $0.hasPrefix("@") ? nil : $0 }
     }
 
     public init(workspace: TmuxWorkspace) {
-        self.init(name: workspace.name, folder: workspace.homeFolder)
+        self.init(
+            name: workspace.name,
+            folder: workspace.homeFolder,
+            workspaceID: workspace.workspaceID == workspace.id ? nil : workspace.workspaceID
+        )
+    }
+
+    fileprivate func identityMatches(_ workspace: TmuxWorkspace) -> Bool {
+        guard let workspaceID else { return false }
+        return workspaceID == workspace.workspaceID
     }
 
     fileprivate func exactlyMatches(_ workspace: TmuxWorkspace) -> Bool {
@@ -135,10 +149,14 @@ public struct WorkspaceContinuityState: Codable, Equatable, Sendable {
     public mutating func updateWorkspace(from previous: TmuxWorkspace, to updated: TmuxWorkspace) {
         let previousBookmark = WorkspaceBookmark(workspace: previous)
         let updatedBookmark = WorkspaceBookmark(workspace: updated)
-        if let index = workspaceOrder.firstIndex(of: previousBookmark) {
+        // A stored bookmark may predate identity stamping, so identity match
+        // is accepted alongside strict equality.
+        if let index = workspaceOrder.firstIndex(where: {
+            $0 == previousBookmark || $0.identityMatches(previous)
+        }) {
             workspaceOrder[index] = updatedBookmark
         }
-        if lastSelected == previousBookmark {
+        if lastSelected == previousBookmark || lastSelected?.identityMatches(previous) == true {
             lastSelected = updatedBookmark
         }
     }
@@ -191,6 +209,7 @@ public struct WorkspaceContinuityState: Codable, Equatable, Sendable {
     }
 
     private static func match(_ bookmark: WorkspaceBookmark, in workspaces: [TmuxWorkspace]) -> Int? {
+        if let identity = workspaces.firstIndex(where: bookmark.identityMatches) { return identity }
         if let exact = workspaces.firstIndex(where: bookmark.exactlyMatches) { return exact }
         let folderMatches = workspaces.indices.filter { bookmark.folderMatches(workspaces[$0]) }
         return folderMatches.count == 1 ? folderMatches[0] : nil

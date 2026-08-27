@@ -72,7 +72,12 @@ public struct TmuxWorkspace: Identifiable, Equatable, Sendable {
     public let homeFolder: String
     public let defaultFolder: String
     public let isActive: Bool
+    public let isZoomed: Bool
     public let automationPolicy: WorkspaceAutomationPolicy
+    /// Durable workspace identity (@parley-ws-id). Distinct from the live
+    /// tmux window id in `id`, which does not survive a new tmux server.
+    /// Falls back to `id` for windows created before identity stamping.
+    public let workspaceID: String
 
     public init(
         id: String,
@@ -80,14 +85,18 @@ public struct TmuxWorkspace: Identifiable, Equatable, Sendable {
         homeFolder: String? = nil,
         defaultFolder: String,
         isActive: Bool,
-        automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate
+        isZoomed: Bool = false,
+        automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate,
+        workspaceID: String? = nil
     ) {
         self.id = id
         self.name = name
         self.homeFolder = homeFolder ?? defaultFolder
         self.defaultFolder = defaultFolder
         self.isActive = isActive
+        self.isZoomed = isZoomed
         self.automationPolicy = automationPolicy
+        self.workspaceID = workspaceID ?? id
     }
 }
 
@@ -113,6 +122,11 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
     public let automationPolicy: WorkspaceAutomationPolicy
     public let permissionSelection: PermissionProfileSelection?
     public let permissionEnforcement: PermissionEnforcementLevel?
+    public let isInCopyMode: Bool
+    /// The durable identity of the workspace containing this pane, from the
+    /// window's @parley-ws-id. Falls back to the live window id for windows
+    /// created before identity stamping.
+    public let workspaceID: String
 
     public init(
         id: String,
@@ -135,7 +149,9 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
         role: String? = nil,
         automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate,
         permissionSelection: PermissionProfileSelection? = nil,
-        permissionEnforcement: PermissionEnforcementLevel? = nil
+        permissionEnforcement: PermissionEnforcementLevel? = nil,
+        isInCopyMode: Bool = false,
+        workspaceID: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -158,6 +174,8 @@ public struct TmuxPane: Identifiable, Equatable, Sendable {
         self.automationPolicy = automationPolicy
         self.permissionSelection = permissionSelection
         self.permissionEnforcement = permissionEnforcement
+        self.isInCopyMode = isInCopyMode
+        self.workspaceID = workspaceID ?? windowID
     }
 
     public var displayName: String {

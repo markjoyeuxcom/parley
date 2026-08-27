@@ -121,6 +121,27 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "workspaces-pane-focus-copy",
+                    title: "Pane focus, zoom and copy mode",
+                    paragraphs: [
+                        "The left sidebar is Parley's rich pane navigator: it keeps status, permissions, recovery actions and context menus visible. When you hide the sidebar, a compact pane focus strip appears above the terminal in both grid and zoom views. It names every pane, marks the selected one and shows only Parley-owned states such as Copy, Return, Result, stopped, failed or attention required. Clicking another pane focuses it; while zoomed, Parley keeps the workspace zoomed and shows the chosen pane.",
+                        "The compact title at the top of each tmux pane identifies the pane inside the grid. It is deliberately not a second session or hidden surface: every item in the focus strip is one visible tmux pane and one real interactive process.",
+                        "Pane history belongs to tmux, so long selections use Copy Mode rather than SwiftTerm's outer screen buffer. Enter Copy Mode from the toolbar, Actions menu or Pane menu, drag across text, scroll beyond the visible screen, and release to send the selection to the macOS clipboard.",
+                    ],
+                    items: [
+                        "Normal dragging can enter tmux selection automatically when the CLI is not using mouse input.",
+                        "A mouse-aware CLI may capture normal dragging. Enter Copy Mode first so tmux owns the gesture.",
+                        "In a split workspace, entering Copy Mode temporarily zooms the pane so a drag can keep auto-scrolling at the window edges; leaving Copy Mode restores the split layout. A zoom you chose yourself is kept.",
+                        "Releasing a selection copies it through /usr/bin/pbcopy and exits Copy Mode. Escape or the Exit Copy Mode control cancels without sending terminal input.",
+                        "The COPY badge is authoritative tmux state. Parley does not infer selection state from terminal text.",
+                        "The pane focus strip is navigation, not hidden tabs: the full grid remains the normal workspace view.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand("Control-Command-C", "Enter or exit Copy Mode for the active pane."),
+                        ParleyHelpCommand("Command-Shift-Z", "Toggle the active workspace between its grid and one zoomed pane."),
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "workspaces-worktrees",
                     title: "Existing Git worktrees",
                     paragraphs: [

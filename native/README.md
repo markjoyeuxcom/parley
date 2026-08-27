@@ -181,14 +181,25 @@ upgrades a Production tmux/core, and remains visibly marked
   explicit VoiceOver labels, values, hints, headings and native text summaries;
   prompt-derived subjects are bounded rather than reading an entire handoff.
 - The main workbench adapts down to 720 points wide. At compact widths New and
-  Ask remain direct controls while Review, Return, waiting work, zoom and
-  balance move into Actions; the complete toolbar returns automatically when
-  room permits. Workspace, pane, activity and context names truncate in the
-  middle without changing the full names used by menus, help or routing.
-- tmux contributes terminal layout rather than duplicate application chrome:
-  its status row and pane-title bars are disabled whenever Parley attaches,
-  while single-line inactive and active pane borders remain visible for spatial
-  focus. Workspace, path and collaboration context stay in the native controls.
+  Ask remain direct controls while Review, Return, waiting work, Copy Mode,
+  zoom and balance move into Actions; the complete toolbar returns
+  automatically when room permits. Workspace, pane, activity and context names
+  truncate in the middle without changing the full names used by menus, help
+  or routing.
+- tmux contributes terminal layout, pane history and restrained per-pane
+  identity. Its duplicate status row remains disabled, while compact title
+  borders show pane name, vendor and authoritative COPY state. The sidebar
+  remains the rich pane navigator; when it is hidden, a compact native focus
+  strip keeps every pane directly selectable in grid and zoom views. Selecting
+  another pane while zoomed preserves zoom.
+- Long mouse selections use tmux Copy Mode because tmux owns the pane
+  scrollback. Enter it from the toolbar, Actions or Pane menu when a mouse-aware
+  CLI captures dragging; drag and scroll through history, then release to copy
+  through `/usr/bin/pbcopy` and exit. Escape or Exit Copy Mode cancels. In a
+  split workspace Copy Mode temporarily zooms the pane — tmux freezes a drag's
+  edge auto-scroll once the pointer crosses into a neighbouring pane, so the
+  pane's edges must be the window's edges for the drag to keep scrolling.
+  Leaving Copy Mode restores the split; a zoom you chose yourself is kept.
 - Saved layouts live in the owner-only `workspace-layouts.json`, never in tmux.
   They contain no pane/window ids. Restored shells start; restored agent slots
   remain stopped until a person chooses Start.

@@ -358,11 +358,18 @@ effortless without becoming task boards.
   distinct precedence and recovery actions. A relay-core failure is now
   non-blocking when tmux is healthy, while actual tmux loss replaces the
   terminal with an explicit reconnect state.
-- [x] Remove redundant tmux chrome once the native controls cover it reliably.
-  The embedded tmux status row and pane-title bars are explicitly disabled on
-  both new and existing sessions; native tabs, context and activity own that
-  information, while restrained inactive/active pane borders remain for spatial
-  focus.
+- [x] Keep tmux chrome subordinate to native navigation. The duplicate tmux
+  status row remains disabled, while restrained top pane borders now identify
+  each pane by Parley name and vendor and expose authoritative COPY state.
+- [x] Keep the left sidebar as the rich pane navigator for status, permissions,
+  recovery and context menus. When the sidebar is hidden, show a compact native
+  pane focus strip so every pane remains directly selectable in grid and zoom
+  views. Selecting another pane while zoomed preserves zoom; this is navigation
+  over visible tmux panes, not a hidden surface/session stack.
+- [x] Make long mouse selection use tmux-owned history. Explicit Copy Mode handles
+  mouse-aware CLIs, supports drag plus scroll beyond the visible screen, copies
+  through the fixed macOS `/usr/bin/pbcopy` executable on release, and can be
+  cancelled without injecting input into the vendor TUI.
 
 ### Cross-vendor CLI permission profiles
 

@@ -108,6 +108,10 @@ public final class TmuxController {
                     folder: workspace.defaultFolder,
                     automationPolicy: workspace.automationPolicy
                 )
+                try ensureWorkspaceIdentity(windowID: workspace.id)
+            }
+            for windowID in Set(try listPanes().map(\.windowID)) {
+                try reconcileBorderChrome(windowID: windowID)
             }
             return
         }
@@ -138,6 +142,8 @@ public final class TmuxController {
                 folder: cwd,
                 automationPolicy: .askAndDelegate
             )
+            try ensureWorkspaceIdentity(windowID: identifiers.windowID)
+            try reconcileBorderChrome(windowID: identifiers.windowID)
         } catch {
             if let createdWindowID {
                 _ = try? runTmux(["kill-window", "-t", createdWindowID], allowFailure: true)
@@ -154,6 +160,68 @@ public final class TmuxController {
 
     public func attachArguments() -> [String] {
         ["-S", socketPath.path, "-f", configPath.path, "attach-session", "-t", exactSession]
+    }
+
+    // MARK: Per-pane view sessions (windows-as-panes)
+    //
+    // A view session is an independent tmux session holding exactly one
+    // link-window of the pane's base window. One attached client renders one
+    // pane, so each window is sized by its own terminal view, the view's
+    // edges are the pane's edges, and prefix navigation inside the viewer
+    // cannot reach another pane's window. A grouped session would share the
+    // complete window set and provide none of that confinement.
+
+    public func viewSessionName(forPane paneID: String) -> String {
+        "\(sessionName)-view-\(paneID.hasPrefix("%") ? String(paneID.dropFirst()) : paneID)"
+    }
+
+    /// Creates or repairs the pane's one-window view session. Idempotent;
+    /// safe to call before every attach. Cleanup is explicit through
+    /// releaseViewSession — killing a viewer only unlinks, the base session
+    /// keeps the window and its process.
+    public func ensureViewSession(paneID: String) throws {
+        guard let pane = try listPanes().first(where: { $0.id == paneID }) else {
+            throw ParleyTmuxError.paneNotFound(paneID)
+        }
+        let name = viewSessionName(forPane: paneID)
+        let exact = "=\(name)"
+        if try runTmux(["has-session", "-t", exact], allowFailure: true).status == 0 {
+            let shown = try runTmux([
+                "display-message", "-p", "-t", "\(exact):", "#{window_id}\(Self.outputFieldSeparator)#{session_windows}",
+            ]).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if shown == "\(pane.windowID)\(Self.outputFieldSeparator)1" { return }
+            // A stale viewer (the pane's window moved, or a crash left a
+            // partial link) is rebuilt rather than repaired in place.
+            _ = try runTmux(["kill-session", "-t", exact], allowFailure: true)
+        }
+        let dummy = try runTmux([
+            "new-session", "-d", "-P", "-F", "#{window_id}", "-s", name, "/bin/sleep", "60",
+        ]).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            guard dummy.hasPrefix("@") else {
+                throw ParleyTmuxError.commandFailed("view session for \(paneID) reported no placeholder window")
+            }
+            _ = try runTmux(["link-window", "-s", pane.windowID, "-t", "\(exact):"])
+            _ = try runTmux(["kill-window", "-t", dummy])
+        } catch {
+            _ = try? runTmux(["kill-session", "-t", exact], allowFailure: true)
+            throw error
+        }
+    }
+
+    /// Ends one pane's view session. Never touches the shared windows.
+    public func releaseViewSession(paneID: String) throws {
+        _ = try runTmux(
+            ["kill-session", "-t", "=\(viewSessionName(forPane: paneID))"],
+            allowFailure: true
+        )
+    }
+
+    public func attachArguments(viewingPane paneID: String) -> [String] {
+        [
+            "-S", socketPath.path, "-f", configPath.path,
+            "attach-session", "-t", "=\(viewSessionName(forPane: paneID))",
+        ]
     }
 
     public func listPanes() throws -> [TmuxPane] {
@@ -181,6 +249,8 @@ public final class TmuxController {
             "#{@parley-permission-selection}",
             "#{@parley-permission-enforcement}",
             "#{@parley-role}",
+            "#{pane_in_mode}",
+            "#{@parley-ws-id}",
         ].joined(separator: separator)
         let output = try runTmux(["list-panes", "-s", "-t", exactSession, "-F", format]).stdoutText
 
@@ -214,7 +284,9 @@ public final class TmuxController {
                     : nil,
                 permissionEnforcement: fields.count > 20
                     ? PermissionEnforcementLevel(rawValue: fields[20])
-                    : nil
+                    : nil,
+                isInCopyMode: fields.count > 22 && fields[22] == "1",
+                workspaceID: fields.count > 23 && !fields[23].isEmpty ? fields[23] : nil
             )
         }
     }
@@ -290,6 +362,7 @@ public final class TmuxController {
                     try? relayRuntime?.credentials.forget(paneID)
                 }
             }
+            try reconcileBorderChrome(windowID: created.id)
             return TmuxWorkspace(
                 id: created.id,
                 name: layout.name,
@@ -337,6 +410,8 @@ public final class TmuxController {
                 folder: folder,
                 automationPolicy: .askAndDelegate
             )
+            let identity = try ensureWorkspaceIdentity(windowID: identifiers.windowID)
+            try reconcileBorderChrome(windowID: identifiers.windowID)
             try selectWorkspace(identifiers.windowID)
             return TmuxWorkspace(
                 id: identifiers.windowID,
@@ -344,7 +419,8 @@ public final class TmuxController {
                 homeFolder: resolvedHomeFolder,
                 defaultFolder: folder,
                 isActive: true,
-                automationPolicy: .askAndDelegate
+                automationPolicy: .askAndDelegate,
+                workspaceID: identity
             )
         } catch {
             if let createdWindowID {
@@ -480,6 +556,8 @@ public final class TmuxController {
         guard let moved = try listPanes().first(where: { $0.id == paneID && $0.windowID == targetWorkspaceID }) else {
             throw ParleyTmuxError.commandFailed("tmux moved the pane but Parley could not confirm its destination.")
         }
+        try reconcileBorderChrome(windowID: pane.windowID)
+        try reconcileBorderChrome(windowID: moved.windowID)
         return moved
     }
 
@@ -538,6 +616,7 @@ public final class TmuxController {
             }) else {
                 throw ParleyTmuxError.commandFailed("tmux created the clone but Parley could not confirm its destination.")
             }
+            try reconcileBorderChrome(windowID: clone.windowID)
             return clone
         } catch {
             _ = try? runTmux(["kill-pane", "-t", cloneID], allowFailure: true)
@@ -548,13 +627,23 @@ public final class TmuxController {
 
     public func closeWorkspace(_ windowID: String) throws {
         let workspaces = try listWorkspaces()
-        guard workspaces.contains(where: { $0.id == windowID }) else {
+        guard let workspace = workspaces.first(where: { $0.id == windowID }) else {
             throw ParleyTmuxError.workspaceNotFound(windowID)
         }
         guard workspaces.count > 1 else { throw ParleyTmuxError.cannotCloseLastWorkspace }
-        let paneIDs = try listPanes().filter { $0.windowID == windowID }.map(\.id)
-        _ = try runTmux(["kill-window", "-t", windowID])
-        for paneID in paneIDs {
+        // The exact member set: every window sharing the workspace's durable
+        // identity, and every credential of every pane inside them.
+        let panes = try listPanes()
+        let memberPaneIDs = panes.filter { $0.workspaceID == workspace.workspaceID }.map(\.id)
+        var memberWindowIDs: [String] = []
+        for pane in panes where pane.workspaceID == workspace.workspaceID {
+            if !memberWindowIDs.contains(pane.windowID) { memberWindowIDs.append(pane.windowID) }
+        }
+        if memberWindowIDs.isEmpty { memberWindowIDs = [windowID] }
+        for member in memberWindowIDs {
+            _ = try runTmux(["kill-window", "-t", member])
+        }
+        for paneID in memberPaneIDs {
             try relayRuntime?.credentials.forget(paneID)
         }
     }
@@ -568,18 +657,41 @@ public final class TmuxController {
         kind: PaneKind,
         cwd: String,
         direction: SplitDirection,
-        permissionProfile: EffectivePermissionProfile? = nil
+        permissionProfile: EffectivePermissionProfile? = nil,
+        inOwnWindow: Bool = false
     ) throws -> TmuxPane {
         try requireDirectory(cwd)
         guard let target = try activePane() else { throw ParleyTmuxError.paneNotFound("active") }
 
-        let arguments = [
-            "split-window", "-d", "-P", "-F", "#{pane_id}",
-            direction == .horizontal ? "-h" : "-v", "-t", target.id,
-            "-c", cwd, "/bin/sleep", "30",
-        ]
-
-        let paneID = try runTmux(arguments).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let paneID: String
+        if inOwnWindow {
+            // Windows-as-panes: the pane gets its own member window of the
+            // active workspace, so its viewer's edges are its own edges.
+            let identity = try ensureWorkspaceIdentity(windowID: target.windowID)
+            let created = try runTmux([
+                "new-window", "-d", "-P", "-F", "#{window_id}\(Self.outputFieldSeparator)#{pane_id}",
+                "-t", "\(exactSession):", "-c", cwd, "/bin/sleep", "30",
+            ]).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let identifiers = created.components(separatedBy: Self.outputFieldSeparator)
+            guard identifiers.count == 2,
+                  identifiers[0].hasPrefix("@"), identifiers[1].hasPrefix("%") else {
+                throw ParleyTmuxError.commandFailed("tmux did not return the new member window identifiers")
+            }
+            do {
+                try mirrorWorkspaceOptions(from: target.windowID, to: identifiers[0], identity: identity)
+            } catch {
+                _ = try? runTmux(["kill-window", "-t", identifiers[0]], allowFailure: true)
+                throw error
+            }
+            paneID = identifiers[1]
+        } else {
+            let arguments = [
+                "split-window", "-d", "-P", "-F", "#{pane_id}",
+                direction == .horizontal ? "-h" : "-v", "-t", target.id,
+                "-c", cwd, "/bin/sleep", "30",
+            ]
+            paneID = try runTmux(arguments).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard !paneID.isEmpty else { throw ParleyTmuxError.commandFailed("tmux did not return the new pane id") }
         do {
             try setMetadata(paneID: paneID, kind: kind, name: kind.label)
@@ -608,15 +720,79 @@ public final class TmuxController {
         guard let pane = try listPanes().first(where: { $0.id == paneID }) else {
             throw ParleyTmuxError.paneNotFound(paneID)
         }
+        try reconcileBorderChrome(windowID: pane.windowID)
         return pane
     }
 
-    public func selectPane(_ paneID: String) throws {
+    public func selectPane(_ paneID: String, preservingWindowZoom: Bool = false) throws {
         guard let pane = try listPanes().first(where: { $0.id == paneID }) else {
             throw ParleyTmuxError.paneNotFound(paneID)
         }
         _ = try runTmux(["select-window", "-t", pane.windowID])
         _ = try runTmux(["select-pane", "-t", paneID])
+        if preservingWindowZoom {
+            let zoomed = try runTmux([
+                "display-message", "-p", "-t", paneID, "#{window_zoomed_flag}",
+            ]).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if zoomed != "1" {
+                _ = try runTmux(["resize-pane", "-Z", "-t", paneID])
+            }
+        }
+    }
+
+    /// Returns true when entry zoomed the pane. tmux stops a drag-selection's
+    /// edge auto-scroll once the pointer crosses into a neighbouring pane, so
+    /// in a split window Copy Mode zooms first: the pane's edges become the
+    /// window's edges, where the outer terminal clamps the drag and tmux's own
+    /// edge repeat keeps scrolling. A window the person zoomed themselves is
+    /// left exactly as it was.
+    @discardableResult
+    public func enterCopyMode(_ paneID: String) throws -> Bool {
+        let panes = try listPanes()
+        guard let pane = panes.first(where: { $0.id == paneID }) else {
+            throw ParleyTmuxError.paneNotFound(paneID)
+        }
+        var zoomedForCopyMode = false
+        if panes.filter({ $0.windowID == pane.windowID }).count > 1,
+           try windowZoomedFlag(paneID) != "1" {
+            // resize-pane -Z zooms the window's active pane, so make the
+            // target pane active first rather than zooming a neighbour.
+            _ = try runTmux(["select-pane", "-t", paneID])
+            _ = try runTmux(["resize-pane", "-Z", "-t", paneID])
+            zoomedForCopyMode = true
+        }
+        // No -e: exit-at-bottom would end the mode while a downward
+        // drag-selection is still auto-scrolling. Exit stays explicit.
+        _ = try runTmux(["copy-mode", "-t", paneID])
+        return zoomedForCopyMode
+    }
+
+    public func cancelCopyMode(_ paneID: String, restoreZoom: Bool = false) throws {
+        guard let pane = try listPanes().first(where: { $0.id == paneID }) else {
+            throw ParleyTmuxError.paneNotFound(paneID)
+        }
+        if pane.isInCopyMode {
+            _ = try runTmux(["send-keys", "-X", "-t", paneID, "cancel"])
+        }
+        if restoreZoom {
+            try restoreZoomAfterCopyMode(paneID)
+        }
+    }
+
+    /// Undoes a zoom that enterCopyMode itself introduced, once the pane has
+    /// left copy mode. tmux ends the mode on its own when a mouse selection is
+    /// released or Escape is pressed, so this also runs from refresh
+    /// reconciliation, not only from the explicit exit control.
+    public func restoreZoomAfterCopyMode(_ paneID: String) throws {
+        guard let pane = try listPanes().first(where: { $0.id == paneID }),
+              pane.isActive, !pane.isInCopyMode,
+              try windowZoomedFlag(paneID) == "1" else { return }
+        _ = try runTmux(["resize-pane", "-Z", "-t", paneID])
+    }
+
+    private func windowZoomedFlag(_ paneID: String) throws -> String {
+        try runTmux(["display-message", "-p", "-t", paneID, "#{window_zoomed_flag}"])
+            .stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     public func renamePane(_ paneID: String, name: String) throws {
@@ -686,8 +862,10 @@ public final class TmuxController {
         let panes = try listPanes()
         guard panes.contains(where: { $0.id == paneID }) else { throw ParleyTmuxError.paneNotFound(paneID) }
         guard panes.count > 1 else { throw ParleyTmuxError.cannotCloseLastPane }
+        let windowID = panes.first(where: { $0.id == paneID })?.windowID
         _ = try runTmux(["kill-pane", "-t", paneID])
         try relayRuntime?.credentials.forget(paneID)
+        if let windowID { try reconcileBorderChrome(windowID: windowID) }
     }
 
     public func zoomActivePane() throws {
@@ -778,6 +956,34 @@ public final class TmuxController {
             _ = try runTmux(["set-option", "-p", "-u", "-t", paneID, "@parley-protocol"], allowFailure: true)
             try setStartedMetadata(paneID: paneID, started: false)
         }
+    }
+
+    /// Seeds a native terminal view: pane history plus visible screen with
+    /// colour escapes preserved, as terminal bytes (newlines become CR LF so
+    /// feeding them redraws correctly).
+    public func capturePaneSeed(_ paneID: String, historyLines: Int = 2000) throws -> Data {
+        guard try listPanes().contains(where: { $0.id == paneID }) else {
+            throw ParleyTmuxError.paneNotFound(paneID)
+        }
+        let output = try runTmux([
+            "capture-pane", "-p", "-e", "-t", paneID, "-S", "-\(max(0, historyLines))",
+        ]).stdout
+        var seeded = Data(capacity: output.count + output.count / 16)
+        for byte in output {
+            if byte == 0x0A { seeded.append(0x0D) }
+            seeded.append(byte)
+        }
+        return seeded
+    }
+
+    /// Sets an explicit grid size for a single-pane member window so the
+    /// window always matches its one native view. resize-window switches the
+    /// window to manual sizing, which is exactly the contract here.
+    public func resizeWindow(_ windowID: String, columns: Int, rows: Int) throws {
+        _ = try runTmux([
+            "resize-window", "-t", windowID,
+            "-x", String(max(2, columns)), "-y", String(max(2, rows)),
+        ])
     }
 
     public func capturePane(_ paneID: String) throws -> String {
@@ -1059,11 +1265,13 @@ public final class TmuxController {
             "#{@parley-workspace-folder}",
             "#{pane_current_path}",
             "#{@parley-automation-policy}",
+            "#{window_zoomed_flag}",
+            "#{@parley-ws-id}",
         ].joined(separator: separator)
         let output = try runTmux(["list-windows", "-t", exactSession, "-F", format]).stdoutText
-        return output.split(separator: "\n").compactMap { row in
+        let windows: [TmuxWorkspace] = output.split(separator: "\n").compactMap { row in
             let fields = String(row).components(separatedBy: separator)
-            guard fields.count == 8 else { return nil }
+            guard fields.count >= 8 else { return nil }
             let folder = !fields[5].isEmpty
                 ? fields[5]
                 : (!fields[6].isEmpty ? fields[6] : (fallbackFolder ?? "/"))
@@ -1080,7 +1288,32 @@ public final class TmuxController {
                 homeFolder: homeFolder,
                 defaultFolder: folder,
                 isActive: fields[2] == "1",
-                automationPolicy: WorkspaceAutomationPolicy(rawValue: fields[7]) ?? .askAndDelegate
+                isZoomed: fields.count > 8 && fields[8] == "1",
+                automationPolicy: WorkspaceAutomationPolicy(rawValue: fields[7]) ?? .askAndDelegate,
+                workspaceID: fields.count > 9 && !fields[9].isEmpty ? fields[9] : nil
+            )
+        }
+        // Windows-as-panes: several member windows may share one durable
+        // identity; each such set is one workspace. The first window listed is
+        // the representative whose live id addresses the workspace.
+        var members: [String: [TmuxWorkspace]] = [:]
+        var order: [String] = []
+        for window in windows {
+            if members[window.workspaceID] == nil { order.append(window.workspaceID) }
+            members[window.workspaceID, default: []].append(window)
+        }
+        return order.compactMap { key in
+            guard let group = members[key], let representative = group.first else { return nil }
+            guard group.count > 1 else { return representative }
+            return TmuxWorkspace(
+                id: representative.id,
+                name: representative.name,
+                homeFolder: representative.homeFolder,
+                defaultFolder: representative.defaultFolder,
+                isActive: group.contains(where: \.isActive),
+                isZoomed: group.contains(where: \.isZoomed),
+                automationPolicy: representative.automationPolicy,
+                workspaceID: representative.workspaceID
             )
         }
     }
@@ -1104,6 +1337,57 @@ public final class TmuxController {
             }
         }
         throw ParleyTmuxError.commandFailed("Too many workspaces share the name \(proposed).")
+    }
+
+    /// A single-pane window gets no pane-border title row: the row is
+    /// redundant chrome there, sits outside every pane, and freezes an upward
+    /// drag-selection the moment the pointer is clamped onto it. Real grids
+    /// keep the title row for in-grid identification.
+    private func reconcileBorderChrome(windowID: String) throws {
+        let paneCount = try runTmux(["list-panes", "-t", windowID, "-F", "#{pane_id}"])
+            .stdoutText.split(separator: "\n").count
+        guard paneCount > 0 else { return }
+        _ = try runTmux([
+            "set-option", "-w", "-t", windowID,
+            "pane-border-status", paneCount > 1 ? "top" : "off",
+        ])
+    }
+
+    /// Copies the workspace-scoped window options onto a new member window so
+    /// grouping, names, folders and policy agree across the whole member set.
+    private func mirrorWorkspaceOptions(
+        from sourceWindowID: String,
+        to windowID: String,
+        identity: String
+    ) throws {
+        _ = try runTmux(["set-option", "-w", "-t", windowID, "@parley-ws-id", identity])
+        for option in [
+            "@parley-workspace-name",
+            "@parley-workspace-home-folder",
+            "@parley-workspace-folder",
+            "@parley-automation-policy",
+        ] {
+            let value = try runTmux([
+                "show-options", "-w", "-q", "-v", "-t", sourceWindowID, option,
+            ]).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            _ = try runTmux(["set-option", "-w", "-t", windowID, option, value])
+        }
+    }
+
+    /// Stamps a durable workspace identity on a window that has none and
+    /// returns the identity either way. The UUID never changes once set:
+    /// renames, folder changes and tmux server restarts (via saved bookmarks)
+    /// all keep it, so durable records can outlive live window ids.
+    @discardableResult
+    private func ensureWorkspaceIdentity(windowID: String) throws -> String {
+        let existing = try runTmux([
+            "show-options", "-w", "-q", "-v", "-t", windowID, "@parley-ws-id",
+        ]).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !existing.isEmpty { return existing }
+        let identity = UUID().uuidString.lowercased()
+        _ = try runTmux(["set-option", "-w", "-t", windowID, "@parley-ws-id", identity])
+        return identity
     }
 
     private func setWorkspaceMetadata(
@@ -1287,7 +1571,33 @@ public final class TmuxController {
 
     private func configureEmbeddedPresentation() throws {
         _ = try runTmux(["set-option", "-g", "status", "off"])
-        _ = try runTmux(["set-window-option", "-g", "pane-border-status", "off"])
+        _ = try runTmux(["set-window-option", "-g", "pane-border-status", "top"])
+        _ = try runTmux([
+            "set-window-option", "-g", "pane-border-format", Self.paneBorderFormat,
+        ])
+        _ = try runTmux([
+            "bind-key", "-T", "copy-mode-vi", "MouseDrag1Pane",
+            "send-keys", "-X", "begin-selection",
+        ])
+        _ = try runTmux([
+            "bind-key", "-T", "copy-mode-vi", "MouseDragEnd1Pane",
+            "send-keys", "-X", "copy-pipe-and-cancel", "/usr/bin/pbcopy",
+        ])
+        // Explicit copies of tmux's default implicit entries, so a server that
+        // ran during the drag-scroll diagnosis (which unbound them) recovers
+        // on attach, and the behaviour stays stable across tmux versions.
+        // Wheel entry keeps -e: a casual scroll back to the bottom returns to
+        // the live view. The explicit Copy Mode control enters without -e.
+        _ = try runTmux([
+            "bind-key", "-T", "root", "MouseDrag1Pane",
+            "if-shell", "-F", "#{||:#{pane_in_mode},#{mouse_any_flag}}",
+            "send-keys -M", "copy-mode -M",
+        ])
+        _ = try runTmux([
+            "bind-key", "-T", "root", "WheelUpPane",
+            "if-shell", "-F", "#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag}}",
+            "send-keys -M", "copy-mode -e",
+        ])
     }
 
     private func requireDirectory(_ path: String) throws {
@@ -1381,6 +1691,8 @@ public final class TmuxController {
         return environment.filter { !sensitive.contains($0.key) }
     }
 
+    private static let paneBorderFormat = " #{?pane_active,#[bold],}#{@parley-name} #[dim]#{@parley-kind}#{?pane_in_mode, | COPY,} "
+
     private func writeConfiguration() throws {
         let configuration = """
         set-option -g mouse on
@@ -1392,8 +1704,13 @@ public final class TmuxController {
         set-option -g status off
         set-option -g pane-border-style 'fg=#3b3d42'
         set-option -g pane-active-border-style 'fg=#5e8cff'
-        set-window-option -g pane-border-status off
+        set-window-option -g pane-border-status top
+        set-window-option -g pane-border-format '\(Self.paneBorderFormat)'
         set-window-option -g mode-keys vi
+        bind-key -T copy-mode-vi MouseDrag1Pane send-keys -X begin-selection
+        bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel '/usr/bin/pbcopy'
+        bind-key -T root MouseDrag1Pane if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'copy-mode -M'
+        bind-key -T root WheelUpPane if-shell -F '#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'copy-mode -e'
         set-window-option -g remain-on-exit on
         set-window-option -g automatic-rename off
         set-window-option -g allow-rename off

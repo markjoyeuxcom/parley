@@ -929,7 +929,7 @@ private func output(_ text: String = "", status: Int32 = 0) -> CommandOutput {
 private func command(_ arguments: [String]) -> String {
     let known = [
         "has-session", "new-session", "new-window", "set-option", "select-pane", "select-window", "list-panes", "list-windows",
-        "split-window", "join-pane", "capture-pane", "load-buffer", "paste-buffer", "send-keys",
+        "split-window", "join-pane", "capture-pane", "copy-mode", "bind-key", "load-buffer", "paste-buffer", "send-keys",
         "respawn-pane", "kill-pane", "kill-window", "rename-window", "resize-pane", "select-layout", "delete-buffer", "display-message",
     ]
     return arguments.first(where: known.contains) ?? ""
@@ -1035,6 +1035,7 @@ private func checkInAppHelpGuideCoverage() throws {
         "stable selects published non-prereleases", "sha256sums", "download and verify",
         "does not install", "review beta feedback", "nothing is uploaded automatically",
         "live conformance check names/outcomes", "excluded by structure",
+        "pane focus strip", "copy mode", "macos clipboard", "mouse-aware",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -1278,8 +1279,12 @@ private func checkEmbeddedTmuxPresentation() throws {
 
     let configuration = try String(contentsOf: directory.appendingPathComponent("tmux.conf"), encoding: .utf8)
     try expect(configuration.contains("set-option -g status off"), "embedded tmux configuration retained its duplicate status bar")
-    try expect(configuration.contains("set-window-option -g pane-border-status off"), "embedded tmux configuration did not suppress duplicate pane titles")
+    try expect(configuration.contains("set-window-option -g pane-border-status top"), "embedded tmux configuration did not expose compact pane titles")
+    try expect(configuration.contains("set-window-option -g pane-border-format"), "embedded tmux configuration did not define pane title content")
+    try expect(configuration.contains("@parley-name") && configuration.contains("@parley-kind"), "pane titles do not expose Parley identity metadata")
     try expect(configuration.contains("pane-border-style") && configuration.contains("pane-active-border-style"), "embedded tmux configuration removed spatial pane boundaries")
+    try expect(configuration.contains("copy-pipe-and-cancel '/usr/bin/pbcopy'"), "tmux copy mode does not deliver selections to the macOS clipboard")
+    try expect(configuration.contains("MouseDrag1Pane") && configuration.contains("begin-selection"), "tmux copy mode does not support mouse selection")
     for redundantOption in ["status-position", "status-style", "status-left", "status-right"] {
         try expect(!configuration.contains(redundantOption), "embedded tmux configuration retained redundant \(redundantOption) chrome")
     }
@@ -1295,9 +1300,66 @@ private func checkEmbeddedTmuxPresentation() throws {
         runner.calls.contains {
             $0.arguments.contains("set-window-option")
                 && $0.arguments.contains("pane-border-status")
-                && $0.arguments.contains("off")
+                && $0.arguments.contains("top")
         },
-        "reattaching the native UI did not suppress live tmux pane titles"
+        "reattaching the native UI did not restore live compact pane titles"
+    )
+    try expect(
+        runner.calls.contains {
+            command($0.arguments) == "bind-key"
+                && $0.arguments.contains("MouseDragEnd1Pane")
+                && $0.arguments.contains("/usr/bin/pbcopy")
+        },
+        "reattaching the native UI did not restore the macOS copy binding"
+    )
+}
+
+private func checkPaneFocusAndCopyMetadata() throws {
+    let runner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "list-panes":
+            output(paneRow(id: "%4", kind: .codex, active: true, inCopyMode: true) + "\n")
+        case "list-windows":
+            output(workspaceRow(id: "@2", windowName: "parley", active: true, zoomed: true) + "\n")
+        default:
+            output()
+        }
+    }
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: try temporaryDirectory(),
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner
+    )
+
+    let pane = try require(controller.listPanes().first, "copy-mode pane metadata was not parsed")
+    let workspace = try require(controller.listWorkspaces().first, "zoomed workspace metadata was not parsed")
+    try expect(pane.isInCopyMode, "pane_in_mode was not projected into pane state")
+    try expect(workspace.isZoomed, "window_zoomed_flag was not projected into workspace state")
+
+    try controller.enterCopyMode(pane.id)
+    try controller.cancelCopyMode(pane.id)
+    try expect(
+        runner.calls.contains {
+            command($0.arguments) == "copy-mode"
+                && !$0.arguments.contains("-e")
+                && $0.arguments.contains(pane.id)
+        },
+        "entering Copy Mode did not target the exact active pane without the exit-at-bottom flag"
+    )
+    try expect(
+        runner.calls.contains {
+            command($0.arguments) == "send-keys"
+                && $0.arguments.contains("-X")
+                && $0.arguments.contains("cancel")
+        },
+        "exiting Copy Mode did not cancel tmux selection without terminal input"
+    )
+
+    try controller.selectPane(pane.id, preservingWindowZoom: true)
+    try expect(
+        runner.calls.contains { command($0.arguments) == "resize-pane" && $0.arguments.contains("-Z") },
+        "focus-strip pane selection did not restore the zoomed window"
     )
 }
 
@@ -1322,9 +1384,10 @@ private func paneRow(
     automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate,
     permissionSelection: PermissionProfileSelection? = nil,
     permissionEnforcement: PermissionEnforcementLevel? = nil,
-    role: String? = nil
+    role: String? = nil,
+    inCopyMode: Bool = false
 ) -> String {
-    [id, kind.rawValue, name ?? kind.label, name ?? kind.label, cwd, currentCommand ?? kind.rawValue, active ? "1" : "0", windowID, returnTo, relayEnabled ? "1" : "", protocolVersion, workspaceActive ? "1" : "0", workspaceName, bracketedPasteActive ? "1" : "0", started ? "1" : "0", isDead ? "1" : "", exitStatus.map(String.init) ?? "", isLead ? "1" : "", automationPolicy.rawValue, permissionSelection?.tmuxMetadataValue ?? "", permissionEnforcement?.rawValue ?? "", role ?? ""]
+    [id, kind.rawValue, name ?? kind.label, name ?? kind.label, cwd, currentCommand ?? kind.rawValue, active ? "1" : "0", windowID, returnTo, relayEnabled ? "1" : "", protocolVersion, workspaceActive ? "1" : "0", workspaceName, bracketedPasteActive ? "1" : "0", started ? "1" : "0", isDead ? "1" : "", exitStatus.map(String.init) ?? "", isLead ? "1" : "", automationPolicy.rawValue, permissionSelection?.tmuxMetadataValue ?? "", permissionEnforcement?.rawValue ?? "", role ?? "", inCopyMode ? "1" : ""]
         .joined(separator: TmuxController.outputFieldSeparator)
 }
 
@@ -1336,9 +1399,10 @@ private func workspaceRow(
     homeFolder: String = "",
     folder: String = "",
     paneFolder: String = "/tmp",
-    automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate
+    automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate,
+    zoomed: Bool = false
 ) -> String {
-    [id, windowName, active ? "1" : "0", name, homeFolder, folder, paneFolder, automationPolicy.rawValue]
+    [id, windowName, active ? "1" : "0", name, homeFolder, folder, paneFolder, automationPolicy.rawValue, zoomed ? "1" : ""]
         .joined(separator: TmuxController.outputFieldSeparator)
 }
 
@@ -1781,6 +1845,124 @@ private func checkWorkspaceContinuityState() throws {
     let encoded = try JSONEncoder().encode(state)
     let decoded = try JSONDecoder().decode(WorkspaceContinuityState.self, from: encoded)
     try expect(decoded == state, "workspace continuity state did not round-trip losslessly")
+
+    // Durable identity: a bookmark carrying the workspace's @parley-ws-id must
+    // follow the workspace through a simultaneous rename and folder retarget,
+    // and must disambiguate two workspaces sharing one folder.
+    let alphaID = "11111111-1111-1111-1111-111111111111"
+    let betaID = "22222222-2222-2222-2222-222222222222"
+    let alpha = TmuxWorkspace(
+        id: "@7", name: "alpha", defaultFolder: "/tmp/shared", isActive: false, workspaceID: alphaID
+    )
+    let beta = TmuxWorkspace(
+        id: "@8", name: "beta", defaultFolder: "/tmp/shared", isActive: false, workspaceID: betaID
+    )
+    var identityState = WorkspaceContinuityState(
+        workspaceOrder: [WorkspaceBookmark(workspace: beta), WorkspaceBookmark(workspace: alpha)],
+        lastSelected: WorkspaceBookmark(workspace: beta)
+    )
+    let relocatedBeta = TmuxWorkspace(
+        id: "@9", name: "renamed-beta", defaultFolder: "/tmp/elsewhere", isActive: false, workspaceID: betaID
+    )
+    let identityOrdered = identityState.reconcile([alpha, relocatedBeta])
+    try expect(
+        identityOrdered.map(\.id) == ["@9", "@7"],
+        "identity bookmarks did not keep tab order through a rename plus folder retarget"
+    )
+    try expect(
+        identityState.selectedWorkspace(in: identityOrdered)?.id == "@9",
+        "identity selection did not follow the workspace through rename and retarget"
+    )
+    let identityEncoded = try JSONEncoder().encode(identityState)
+    let identityDecoded = try JSONDecoder().decode(WorkspaceContinuityState.self, from: identityEncoded)
+    try expect(identityDecoded == identityState, "identity bookmarks did not round-trip losslessly")
+    let unstamped = TmuxWorkspace(id: "@3", name: "plain", defaultFolder: "/tmp/plain", isActive: false)
+    try expect(
+        WorkspaceBookmark(workspace: unstamped).workspaceID == nil,
+        "a live window id leaked into a durable bookmark identity"
+    )
+    let legacyPayload = Data(#"{"name":"web","folder":"/tmp/web"}"#.utf8)
+    let legacyBookmark = try JSONDecoder().decode(WorkspaceBookmark.self, from: legacyPayload)
+    try expect(
+        legacyBookmark.workspaceID == nil && legacyBookmark.name == "web",
+        "a pre-identity bookmark payload did not decode as a legacy fallback"
+    )
+}
+
+private func checkWorkspaceRegistryDurability() throws {
+    let directory = try temporaryDirectory()
+    let file = directory.appendingPathComponent("workspace-registry.json")
+    let registry = WorkspaceRegistry(file: file)
+    let empty = try registry.records()
+    try expect(empty.isEmpty, "a missing registry file did not read as empty")
+
+    let stamped = TmuxWorkspace(
+        id: "@1", name: "api", homeFolder: "/tmp/api", defaultFolder: "/tmp/api/feature",
+        isActive: true, workspaceID: "aaaaaaaa-1111-1111-1111-111111111111"
+    )
+    let unstamped = TmuxWorkspace(id: "@2", name: "legacy", defaultFolder: "/tmp/legacy", isActive: false)
+    let recorded = try registry.synchronize(
+        workspaces: [stamped, unstamped],
+        selectedPaneIDs: [stamped.workspaceID: "%4"]
+    )
+    try expect(recorded, "recording a stamped workspace reported no change")
+    let records = try registry.records()
+    try expect(records.count == 1, "a live-window-id fallback workspace was recorded")
+    let record = try require(records.first, "registry lost its only record")
+    try expect(
+        record.workspaceID == stamped.workspaceID && record.name == "api"
+            && record.homeFolder == "/tmp/api" && record.defaultFolder == "/tmp/api/feature"
+            && record.selectedPaneID == "%4" && record.layoutRevision == 0,
+        "registry record did not capture the workspace's durable facts"
+    )
+    let unchanged = try registry.synchronize(
+        workspaces: [stamped],
+        selectedPaneIDs: [stamped.workspaceID: "%4"]
+    )
+    try expect(!unchanged, "an unchanged workspace rewrote the registry")
+    let absentSet = try registry.synchronize(workspaces: [])
+    let afterAbsent = try registry.records()
+    try expect(
+        !absentSet && afterAbsent.count == 1,
+        "an absent workspace changed or lost its record; a stopped tmux server is not a close"
+    )
+
+    let renamed = TmuxWorkspace(
+        id: "@9", name: "api-renamed", homeFolder: "/tmp/api", defaultFolder: "/tmp/api",
+        isActive: true, workspaceID: stamped.workspaceID
+    )
+    let renameChanged = try registry.synchronize(workspaces: [renamed])
+    let renamedRecord = try registry.record(workspaceID: stamped.workspaceID)
+    try expect(
+        renameChanged && renamedRecord?.name == "api-renamed"
+            && renamedRecord?.defaultFolder == "/tmp/api"
+            && renamedRecord?.selectedPaneID == "%4",
+        "a renamed workspace did not update its record while keeping the selected pane"
+    )
+    let revision = try registry.bumpLayoutRevision(workspaceID: stamped.workspaceID)
+    try expect(revision == 1, "layout revision did not advance")
+
+    let reloaded = try WorkspaceRegistry(file: file).record(workspaceID: stamped.workspaceID)
+    try expect(
+        reloaded?.layoutRevision == 1 && reloaded?.name == "api-renamed",
+        "registry records did not persist across instances"
+    )
+
+    try registry.remove(workspaceID: stamped.workspaceID)
+    let afterRemove = try registry.records()
+    try expect(afterRemove.isEmpty, "an explicit remove kept the record")
+
+    _ = try registry.synchronize(workspaces: [renamed])
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+    do {
+        _ = try registry.records()
+        throw CheckFailure(description: "a group-readable registry file was accepted")
+    } catch let error as WorkspaceRegistryError {
+        try expect(
+            error.errorDescription?.contains("owner-only") == true,
+            "registry permission failure lacked a useful explanation"
+        )
+    }
 }
 
 private func checkWorkspaceHomeAndNewPaneFolderModel() throws {
@@ -3873,6 +4055,567 @@ private func checkRealTmuxPaneMobility() throws {
         panesAfterClone.contains(where: { $0.id == stoppedSource.id }),
         "configuration cloning changed or removed its source pane"
     )
+}
+
+private func checkRealTmuxCopyModeSurvivesScrollingToBottom() throws {
+    // A downward drag-selection auto-scrolls only while tmux stays in copy
+    // mode. Entering with copy-mode -e exits the mode the moment the viewport
+    // returns to the bottom of history, which kills the drag mid-gesture.
+    let environment = EnvironmentResolver.resolved()
+    let tmux = try require(
+        TmuxController.findTmux(environment: environment),
+        "copy-mode integration check could not find tmux"
+    )
+    let directory = try temporaryDirectory()
+    let controller = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: directory,
+        sessionName: "parley-copy-mode-check",
+        environment: environment
+    )
+    let runner = ProcessCommandRunner(timeout: 2)
+    defer {
+        _ = try? runner.run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "kill-server"],
+            environment: controller.environment,
+            input: nil
+        )
+    }
+
+    try controller.bootstrap(cwd: directory.path)
+    let pane = try require(try controller.listPanes().first, "copy-mode check created no pane")
+    func tmuxCommand(_ arguments: [String]) throws -> String {
+        try runner.run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "-f", controller.configPath.path] + arguments,
+            environment: controller.environment,
+            input: nil
+        ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    func paneValue(_ format: String) throws -> String {
+        try tmuxCommand(["display-message", "-p", "-t", pane.id, format])
+    }
+
+    _ = try tmuxCommand([
+        "respawn-pane", "-k", "-t", pane.id,
+        "/bin/sh", "-c", "/usr/bin/seq 1 200; /bin/sleep 30",
+    ])
+    try expect(
+        eventually(timeout: 5) { ((try? paneValue("#{history_size}")).flatMap(Int.init) ?? 0) > 0 },
+        "copy-mode check pane accumulated no scrollback history"
+    )
+
+    try controller.enterCopyMode(pane.id)
+    let modeAfterEntry = try paneValue("#{pane_in_mode}")
+    try expect(modeAfterEntry == "1", "explicit Copy Mode entry did not engage tmux copy mode")
+    _ = try tmuxCommand(["send-keys", "-X", "-t", pane.id, "scroll-up"])
+    let scrolledPosition = try paneValue("#{scroll_position}")
+    try expect(scrolledPosition == "1", "copy-mode check did not scroll into history")
+    _ = try tmuxCommand(["send-keys", "-X", "-t", pane.id, "scroll-down"])
+    let modeAtBottom = try paneValue("#{pane_in_mode}")
+    try expect(
+        modeAtBottom == "1",
+        "scrolling back to the bottom of history exited Copy Mode, so a downward drag-selection dies mid-gesture"
+    )
+    try controller.cancelCopyMode(pane.id)
+    let modeAfterCancel = try paneValue("#{pane_in_mode}")
+    try expect(modeAfterCancel == "0", "explicit Copy Mode exit left the pane in copy mode")
+}
+
+private func checkRealTmuxCopyModeZoomsMultiPaneWindows() throws {
+    // tmux stops a drag-selection's edge auto-scroll the moment the pointer
+    // crosses into a neighbouring pane, so in a split window "drag past the
+    // pane's bottom edge" freezes. Zooming for the duration of Copy Mode makes
+    // the pane's edges the window's edges, where the outer terminal clamps the
+    // drag and tmux's own edge repeat keeps scrolling.
+    let environment = EnvironmentResolver.resolved()
+    let tmux = try require(
+        TmuxController.findTmux(environment: environment),
+        "copy-mode zoom check could not find tmux"
+    )
+    let directory = try temporaryDirectory()
+    let controller = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: directory,
+        sessionName: "parley-copy-zoom-check",
+        environment: environment
+    )
+    let runner = ProcessCommandRunner(timeout: 2)
+    defer {
+        _ = try? runner.run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "kill-server"],
+            environment: controller.environment,
+            input: nil
+        )
+    }
+
+    try controller.bootstrap(cwd: directory.path)
+    let top = try require(try controller.listPanes().first, "copy-mode zoom check created no pane")
+    _ = try controller.createPane(kind: .shell, cwd: directory.path, direction: .vertical)
+    func paneValue(_ format: String) throws -> String {
+        try runner.run(
+            executable: tmux,
+            arguments: [
+                "-S", controller.socketPath.path, "-f", controller.configPath.path,
+                "display-message", "-p", "-t", top.id, format,
+            ],
+            environment: controller.environment,
+            input: nil
+        ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    _ = try controller.selectPane(top.id)
+    let zoomedByEntry = try controller.enterCopyMode(top.id)
+    try expect(zoomedByEntry, "Copy Mode entry did not report the zoom it introduced")
+    let modeAfterEntry = try paneValue("#{pane_in_mode}")
+    try expect(modeAfterEntry == "1", "explicit Copy Mode entry did not engage tmux copy mode in a split window")
+    let zoomAfterEntry = try paneValue("#{window_zoomed_flag}")
+    try expect(
+        zoomAfterEntry == "1",
+        "Copy Mode in a split window did not zoom the pane, so a drag-selection freezes at the pane border instead of auto-scrolling"
+    )
+
+    try controller.cancelCopyMode(top.id, restoreZoom: true)
+    let modeAfterExit = try paneValue("#{pane_in_mode}")
+    try expect(modeAfterExit == "0", "explicit Copy Mode exit left the split pane in copy mode")
+    let zoomAfterExit = try paneValue("#{window_zoomed_flag}")
+    try expect(zoomAfterExit == "0", "leaving Copy Mode did not restore the split layout it zoomed")
+
+    _ = try runner.run(
+        executable: tmux,
+        arguments: [
+            "-S", controller.socketPath.path, "-f", controller.configPath.path,
+            "resize-pane", "-Z", "-t", top.id,
+        ],
+        environment: controller.environment,
+        input: nil
+    )
+    let zoomedByPerson = try controller.enterCopyMode(top.id)
+    try expect(!zoomedByPerson, "Copy Mode entry claimed a zoom the person already owned")
+    try controller.cancelCopyMode(top.id, restoreZoom: false)
+    let zoomKept = try paneValue("#{window_zoomed_flag}")
+    try expect(zoomKept == "1", "leaving Copy Mode removed a zoom the person chose themselves")
+}
+
+private func checkRealTmuxPerPaneViewSessions() throws {
+    // Windows-as-panes: every visible pane renders through its own grouped
+    // view session, so each window is sized by exactly one client and a
+    // drag-selection's edge is always the view's edge.
+    let environment = EnvironmentResolver.resolved()
+    let tmux = try require(
+        TmuxController.findTmux(environment: environment),
+        "view-session check could not find tmux"
+    )
+    let directory = try temporaryDirectory()
+    let controller = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: directory,
+        sessionName: "parley-view-check",
+        environment: environment
+    )
+    let runner = ProcessCommandRunner(timeout: 2)
+    defer {
+        _ = try? runner.run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "kill-server"],
+            environment: controller.environment,
+            input: nil
+        )
+    }
+
+    try controller.bootstrap(cwd: directory.path)
+    let first = try require(try controller.listPanes().first, "view-session check created no pane")
+    let secondWorkspace = try controller.createWorkspace(folder: directory.path, name: "Second")
+    let second = try require(
+        try controller.listPanes().first(where: { $0.windowID == secondWorkspace.id }),
+        "view-session check created no second workspace pane"
+    )
+
+    try controller.ensureViewSession(paneID: first.id)
+    try controller.ensureViewSession(paneID: second.id)
+    try controller.ensureViewSession(paneID: second.id)
+
+    func sessionValue(_ session: String, _ format: String) throws -> String {
+        try runner.run(
+            executable: tmux,
+            arguments: [
+                "-S", controller.socketPath.path, "-f", controller.configPath.path,
+                "display-message", "-p", "-t", "=\(session):", format,
+            ],
+            environment: controller.environment,
+            input: nil
+        ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    let firstView = controller.viewSessionName(forPane: first.id)
+    let secondView = controller.viewSessionName(forPane: second.id)
+    let firstCurrent = try sessionValue(firstView, "#{window_id}")
+    try expect(
+        firstCurrent == first.windowID,
+        "first view session shows \(firstCurrent), expected its pane's window \(first.windowID)"
+    )
+    let secondCurrent = try sessionValue(secondView, "#{window_id}")
+    try expect(
+        secondCurrent == second.windowID,
+        "second view session shows \(secondCurrent), expected its pane's window \(second.windowID)"
+    )
+    let firstWindowCount = try sessionValue(firstView, "#{session_windows}")
+    try expect(
+        firstWindowCount == "1",
+        "view session holds \(firstWindowCount) windows; one linked window is the confinement contract"
+    )
+    let firstGroup = try sessionValue(firstView, "#{session_group}")
+    try expect(
+        firstGroup.isEmpty,
+        "view session joined a session group, so its client could be steered to another pane's window"
+    )
+    let attach = controller.attachArguments(viewingPane: second.id)
+    try expect(
+        attach.contains("=\(secondView)"),
+        "per-pane attach arguments do not target the pane's view session"
+    )
+
+    try controller.releaseViewSession(paneID: second.id)
+    let secondViewGone = try runner.run(
+        executable: tmux,
+        arguments: [
+            "-S", controller.socketPath.path, "-f", controller.configPath.path,
+            "has-session", "-t", "=\(secondView)",
+        ],
+        environment: controller.environment,
+        input: nil
+    ).status != 0
+    try expect(secondViewGone, "released view session is still running")
+    let survivingPanes = try controller.listPanes()
+    try expect(
+        survivingPanes.contains(where: { $0.id == second.id }),
+        "releasing a view session destroyed the pane's shared window"
+    )
+}
+
+private func checkRealTmuxControlModeStreamsPaneOutput() throws {
+    // The control-mode connection is a notifications-only client: per-pane
+    // output bytes (octal escapes decoded back to raw bytes) and window
+    // lifecycle events, over plain pipes with no pty.
+    final class Collector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var outputs: [String: Data] = [:]
+        private var events: [TmuxControlModeConnection.Event] = []
+        func append(paneID: String, bytes: Data) {
+            lock.withLock { outputs[paneID, default: Data()].append(bytes) }
+        }
+        func append(event: TmuxControlModeConnection.Event) {
+            lock.withLock { events.append(event) }
+        }
+        func output(for paneID: String) -> Data {
+            lock.withLock { outputs[paneID] ?? Data() }
+        }
+        func hasEvent(_ event: TmuxControlModeConnection.Event) -> Bool {
+            lock.withLock { events.contains(event) }
+        }
+    }
+
+    let environment = EnvironmentResolver.resolved()
+    let tmux = try require(
+        TmuxController.findTmux(environment: environment),
+        "control-mode check could not find tmux"
+    )
+    let directory = try temporaryDirectory()
+    let controller = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: directory,
+        sessionName: "parley-control-check",
+        environment: environment
+    )
+    let runner = ProcessCommandRunner(timeout: 2)
+    defer {
+        _ = try? runner.run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "kill-server"],
+            environment: controller.environment,
+            input: nil
+        )
+    }
+
+    try controller.bootstrap(cwd: directory.path)
+    let pane = try require(try controller.listPanes().first, "control-mode check created no pane")
+
+    let collector = Collector()
+    let connection = TmuxControlModeConnection(
+        tmuxExecutable: tmux,
+        socketPath: controller.socketPath,
+        configPath: controller.configPath,
+        sessionName: controller.sessionName,
+        environment: controller.environment,
+        onPaneOutput: { collector.append(paneID: $0, bytes: $1) },
+        onEvent: { collector.append(event: $0) }
+    )
+    defer { connection.stop() }
+    try connection.start()
+    try expect(connection.isRunning, "control-mode client did not stay attached")
+
+    _ = try runner.run(
+        executable: tmux,
+        arguments: [
+            "-S", controller.socketPath.path, "-f", controller.configPath.path,
+            "respawn-pane", "-k", "-t", pane.id,
+            "/bin/sh", "-c", "printf 'hello-control\\033[31mred\\n'; /bin/sleep 30",
+        ],
+        environment: controller.environment,
+        input: nil
+    )
+    let streamed = eventually(timeout: 5) {
+        let bytes = collector.output(for: pane.id)
+        return bytes.range(of: Data("hello-control".utf8)) != nil && bytes.contains(0x1B)
+    }
+    try expect(
+        streamed,
+        "control mode did not stream the pane's output with escape bytes decoded"
+    )
+
+    let second = try controller.createWorkspace(folder: directory.path, name: "Second")
+    let added = eventually(timeout: 5) { collector.hasEvent(.windowAdded(second.id)) }
+    try expect(added, "control mode did not report the added window")
+    try controller.closeWorkspace(second.id)
+    let closed = eventually(timeout: 5) { collector.hasEvent(.windowClosed(second.id)) }
+    try expect(closed, "control mode did not report the closed window")
+
+    // Input round trip through the control client's own stdin: the command
+    // writes keystrokes without a process spawn, its reply block is skipped,
+    // and the echoed bytes come back on the same stream.
+    connection.sendCommand("send-keys -t \(pane.id) -l roundtrip-input")
+    let roundTripped = eventually(timeout: 5) {
+        collector.output(for: pane.id).range(of: Data("roundtrip-input".utf8)) != nil
+    }
+    try expect(roundTripped, "stdin-forwarded input did not reach the pane and stream back")
+
+    connection.stop()
+    try expect(!connection.isRunning, "control-mode client survived stop")
+}
+
+private func checkRealTmuxWindowPerPaneCreationAndClose() throws {
+    // Windows-as-panes creation: a new pane becomes its own member window of
+    // the active workspace, the workspace list still shows one workspace, and
+    // closing the workspace removes the exact member set.
+    let environment = EnvironmentResolver.resolved()
+    let tmux = try require(
+        TmuxController.findTmux(environment: environment),
+        "window-per-pane check could not find tmux"
+    )
+    let directory = try temporaryDirectory()
+    let controller = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: directory,
+        sessionName: "parley-member-check",
+        environment: environment
+    )
+    let runner = ProcessCommandRunner(timeout: 2)
+    defer {
+        _ = try? runner.run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "kill-server"],
+            environment: controller.environment,
+            input: nil
+        )
+    }
+    func borderStatus(_ windowID: String) throws -> String {
+        try runner.run(
+            executable: tmux,
+            arguments: [
+                "-S", controller.socketPath.path, "-f", controller.configPath.path,
+                "show-options", "-w", "-q", "-v", "-t", windowID, "pane-border-status",
+            ],
+            environment: controller.environment,
+            input: nil
+        ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    try controller.bootstrap(cwd: directory.path)
+    let workspace = try require(try controller.listWorkspaces().first, "member check created no workspace")
+    let original = try require(try controller.listPanes().first, "member check created no pane")
+
+    let member = try controller.createPane(
+        kind: .shell,
+        cwd: directory.path,
+        direction: .horizontal,
+        inOwnWindow: true
+    )
+    try expect(member.windowID != original.windowID, "an own-window pane landed in the existing window")
+    try expect(
+        member.workspaceID == workspace.workspaceID,
+        "a member window did not inherit the workspace's durable identity"
+    )
+    let second = try controller.createWorkspace(folder: directory.path, name: "Second")
+    let grouped = try controller.listWorkspaces()
+    try expect(
+        grouped.count == 2,
+        "member windows were listed as workspaces of their own (\(grouped.count) rows)"
+    )
+    let first = try require(
+        grouped.first(where: { $0.workspaceID == workspace.workspaceID }),
+        "the grouped workspace disappeared"
+    )
+    let memberPanes = try controller.listPanes().filter { $0.workspaceID == first.workspaceID }
+    try expect(memberPanes.count == 2, "the workspace does not contain both member panes")
+
+    // A single-pane window carries no border title row (it would freeze an
+    // upward drag-selection at the top edge); a real grid keeps it.
+    let bootstrapChrome = try borderStatus(original.windowID)
+    try expect(bootstrapChrome == "off", "a single-pane bootstrap window kept its border title row")
+    let memberChrome = try borderStatus(member.windowID)
+    try expect(memberChrome == "off", "a single-pane member window kept its border title row")
+    let splitPane = try controller.createPane(kind: .shell, cwd: directory.path, direction: .vertical)
+    let gridChrome = try borderStatus(splitPane.windowID)
+    try expect(gridChrome == "top", "a real grid window lost its border title row")
+
+    try controller.closeWorkspace(first.id)
+    let remainingWorkspaces = try controller.listWorkspaces()
+    let remainingPanes = try controller.listPanes()
+    try expect(
+        remainingWorkspaces.map(\.workspaceID) == [second.workspaceID],
+        "closing a workspace did not remove its exact member window set"
+    )
+    try expect(
+        !remainingPanes.contains(where: { $0.id == original.id || $0.id == member.id }),
+        "closing a workspace left a member pane alive"
+    )
+}
+
+private func checkRealTmuxDeliveryNeedsNoViewer() throws {
+    // Relay delivery is server-side: bytes must reach a pane that has no
+    // viewer session, one whose viewer exists but has no client (the shape a
+    // closed UI leaves), and one whose viewer was just released. Vendor
+    // focus-sensitivity with a live client attached elsewhere (Copilot) is
+    // conformance territory, not reproducible here without a pty.
+    let environment = EnvironmentResolver.resolved()
+    let tmux = try require(
+        TmuxController.findTmux(environment: environment),
+        "delivery check could not find tmux"
+    )
+    let directory = try temporaryDirectory()
+    let controller = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: directory,
+        sessionName: "parley-delivery-check",
+        environment: environment
+    )
+    let runner = ProcessCommandRunner(timeout: 2)
+    defer {
+        _ = try? runner.run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "kill-server"],
+            environment: controller.environment,
+            input: nil
+        )
+    }
+
+    try controller.bootstrap(cwd: directory.path)
+    let first = try require(try controller.listPanes().first, "delivery check created no pane")
+    let secondWorkspace = try controller.createWorkspace(folder: directory.path, name: "Hidden")
+    let second = try require(
+        try controller.listPanes().first(where: { $0.windowID == secondWorkspace.id }),
+        "delivery check created no second pane"
+    )
+    func tmuxCommand(_ arguments: [String], input: Data? = nil) throws {
+        _ = try runner.run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "-f", controller.configPath.path] + arguments,
+            environment: controller.environment,
+            input: input
+        )
+    }
+    for pane in [first, second] {
+        try tmuxCommand(["respawn-pane", "-k", "-t", pane.id, "/bin/cat"])
+    }
+    func delivered(_ sentinel: String, to paneID: String) throws -> Bool {
+        try tmuxCommand(["send-keys", "-t", paneID, "-l", sentinel])
+        try tmuxCommand(["send-keys", "-t", paneID, "Enter"])
+        return eventually(timeout: 3) {
+            (try? controller.capturePane(paneID))?.contains(sentinel) == true
+        }
+    }
+
+    let noViewer = try delivered("parley-delivery-none", to: first.id)
+    try expect(noViewer, "a pane with no viewer session did not receive input")
+
+    try controller.ensureViewSession(paneID: first.id)
+    let hidden = try delivered("parley-delivery-hidden", to: second.id)
+    try expect(hidden, "a pane outside every viewer did not receive input")
+    let clientless = try delivered("parley-delivery-clientless", to: first.id)
+    try expect(clientless, "a pane whose viewer has no attached client did not receive input")
+
+    try controller.releaseViewSession(paneID: first.id)
+    let released = try delivered("parley-delivery-released", to: first.id)
+    try expect(released, "a pane did not receive input after its viewer was released")
+
+    // The exact buffer mechanism the relay paste path uses.
+    let pasted = "parley-delivery-buffer"
+    try tmuxCommand(["load-buffer", "-b", "parley-check-buffer", "-"], input: Data(pasted.utf8))
+    try tmuxCommand(["paste-buffer", "-d", "-p", "-r", "-b", "parley-check-buffer", "-t", first.id])
+    let bufferDelivered = eventually(timeout: 3) {
+        (try? controller.capturePane(first.id))?.contains(pasted) == true
+    }
+    try expect(bufferDelivered, "a paste-buffer delivery did not reach a viewer-less pane")
+}
+
+private func checkRealTmuxWorkspaceIdentityIsDurable() throws {
+    // Durable workspace identity (@parley-ws-id) must be minted once and then
+    // survive renames and repeated bootstraps, so durable records can outlive
+    // live tmux window ids.
+    let environment = EnvironmentResolver.resolved()
+    let tmux = try require(
+        TmuxController.findTmux(environment: environment),
+        "workspace identity check could not find tmux"
+    )
+    let directory = try temporaryDirectory()
+    let controller = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: directory,
+        sessionName: "parley-ws-id-check",
+        environment: environment
+    )
+    defer {
+        _ = try? ProcessCommandRunner(timeout: 2).run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "kill-server"],
+            environment: controller.environment,
+            input: nil
+        )
+    }
+
+    try controller.bootstrap(cwd: directory.path)
+    let first = try require(try controller.listWorkspaces().first, "identity check created no workspace")
+    try expect(
+        first.workspaceID != first.id && first.workspaceID.count == 36,
+        "bootstrap did not mint a durable workspace identity distinct from the window id"
+    )
+    let second = try controller.createWorkspace(folder: directory.path, name: "Second")
+    try expect(
+        second.workspaceID.count == 36 && second.workspaceID != first.workspaceID,
+        "created workspace did not receive its own durable identity"
+    )
+    try controller.renameWorkspace(second.id, name: "Renamed")
+    try controller.bootstrap(cwd: directory.path)
+    let after = try controller.listWorkspaces()
+    try expect(
+        after.first(where: { $0.id == first.id })?.workspaceID == first.workspaceID,
+        "repeated bootstrap re-minted the first workspace's identity"
+    )
+    try expect(
+        after.first(where: { $0.id == second.id })?.workspaceID == second.workspaceID,
+        "rename or repeated bootstrap changed the renamed workspace's identity"
+    )
+    let panes = try controller.listPanes()
+    for workspace in after {
+        for pane in panes.filter({ $0.windowID == workspace.id }) {
+            try expect(
+                pane.workspaceID == workspace.workspaceID,
+                "pane \(pane.id) does not carry its workspace's durable identity"
+            )
+        }
+    }
 }
 
 private func checkRealAgentProcessBoundary() throws {
@@ -10536,6 +11279,7 @@ let checks: [(String, () throws -> Void)] = [
     ("workspace creation cleans an uncaptured exact target", checkWorkspaceCreationCleansPendingTargetWithoutCapturedIDs),
     ("existing sessions adopt only unclassified shells", checkExistingSessionAdoptsOnlyUnclassifiedShells),
     ("workspace continuity state", checkWorkspaceContinuityState),
+    ("durable workspace registry", checkWorkspaceRegistryDurability),
     ("workspace home and New Pane Folder model", checkWorkspaceHomeAndNewPaneFolderModel),
     ("legacy packaged-app preferences migration", checkLegacyPreferencesMigration),
     ("quota-free runtime readiness probes", checkRuntimeReadinessProbesAreQuotaFree),
@@ -10556,6 +11300,7 @@ let checks: [(String, () throws -> Void)] = [
     ("workbench state projection", checkWorkbenchStateProjection),
     ("exited pane retention", checkExitedPaneRetention),
     ("embedded tmux presentation", checkEmbeddedTmuxPresentation),
+    ("pane focus and copy metadata", checkPaneFocusAndCopyMetadata),
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
     ("portable team template persistence and application", checkPortableTeamTemplatePersistenceAndApplication),
     ("deliberate pane mobility safety contract", checkPaneMobilitySafetyContract),
@@ -10571,6 +11316,13 @@ let checks: [(String, () throws -> Void)] = [
     ("shell pane login shell", checkShellPaneStartsLoginShell),
     ("real tmux shell lifecycle", checkRealTmuxShellLifecycle),
     ("real tmux pane mobility", checkRealTmuxPaneMobility),
+    ("real tmux Copy Mode survives scrolling to bottom", checkRealTmuxCopyModeSurvivesScrollingToBottom),
+    ("real tmux Copy Mode zooms multi-pane windows", checkRealTmuxCopyModeZoomsMultiPaneWindows),
+    ("real tmux per-pane view sessions", checkRealTmuxPerPaneViewSessions),
+    ("real tmux durable workspace identity", checkRealTmuxWorkspaceIdentityIsDurable),
+    ("real tmux delivery needs no viewer", checkRealTmuxDeliveryNeedsNoViewer),
+    ("real tmux window-per-pane creation and close", checkRealTmuxWindowPerPaneCreationAndClose),
+    ("real tmux control mode streams pane output", checkRealTmuxControlModeStreamsPaneOutput),
     ("real macOS agent process boundary", checkRealAgentProcessBoundary),
     ("real tmux saved-layout restoration policy", checkRealTmuxSavedLayoutRestorationPolicy),
     ("inherited Parley capability scrub", checkInheritedParleyCapabilitiesAreScrubbed),
