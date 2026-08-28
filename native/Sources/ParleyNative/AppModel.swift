@@ -786,6 +786,13 @@ final class AppModel: ObservableObject {
         if !seed.isEmpty { view.feed(byteArray: ArraySlice(seed)) }
         let modes = (try? controller?.capturePaneModeSeed(paneID)) ?? Data()
         if !modes.isEmpty { view.feed(byteArray: ArraySlice(modes)) }
+        if modes.range(of: Data("\u{1b}[?1049h".utf8)) != nil {
+            // The mode seed just switched the view to an empty alternate
+            // buffer; repaint the pane's actual picture into it, cursor and
+            // all, or an idle TUI attaches black.
+            let picture = (try? controller?.capturePaneAlternateScreen(paneID)) ?? Data()
+            if !picture.isEmpty { view.feed(byteArray: ArraySlice(picture)) }
+        }
         if let pending = controlPending.removeValue(forKey: paneID), !pending.isEmpty {
             view.feed(byteArray: ArraySlice(pending))
         }

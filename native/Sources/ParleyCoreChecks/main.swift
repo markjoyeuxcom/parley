@@ -4652,6 +4652,31 @@ private func checkRealTmuxPaneModeSeeding() throws {
         (try? controller.capturePaneModeSeed(pane.id))?.isEmpty == true
     }
     try expect(quiet, "a plain pane produced spurious mode sequences")
+
+    // An idle full-screen TUI must attach with its picture and cursor, not as
+    // an empty alternate buffer.
+    _ = try runner.run(
+        executable: tmux,
+        arguments: [
+            "-S", controller.socketPath.path, "-f", controller.configPath.path,
+            "respawn-pane", "-k", "-t", pane.id,
+            "/bin/sh", "-c",
+            "printf '\\033[?1049h\\033[2J\\033[Halt-screen-picture\\033[5;9H'; /bin/sleep 30",
+        ],
+        environment: controller.environment,
+        input: nil
+    )
+    let repainted = eventually(timeout: 5) {
+        guard let picture = try? controller.capturePaneAlternateScreen(pane.id),
+              let text = String(data: picture, encoding: .utf8) else { return false }
+        return text.contains("alt-screen-picture")
+            && text.hasPrefix("\u{1b}[2J\u{1b}[H")
+            && text.hasSuffix("\u{1b}[5;9H")
+    }
+    try expect(
+        repainted,
+        "the alternate-screen repaint did not carry the pane's picture and cursor position"
+    )
 }
 
 private func checkRealTmuxWindowPerPaneCreationAndClose() throws {

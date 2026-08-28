@@ -1061,6 +1061,37 @@ public final class TmuxController {
         return Data(sequences.utf8)
     }
 
+    /// The pane's visible screen as bytes that repaint an alternate buffer a
+    /// native view just switched to: clear, home, the picture, and the real
+    /// cursor position. Without this, an idle full-screen TUI attaches as an
+    /// empty black pane until it happens to draw something.
+    public func capturePaneAlternateScreen(_ paneID: String) throws -> Data {
+        let picture = try runTmux(["capture-pane", "-p", "-e", "-t", paneID]).stdout
+        let cursor = try runTmux([
+            "display-message", "-p", "-t", paneID, "#{cursor_y} #{cursor_x}",
+        ]).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ")
+        var lines: [Data] = []
+        var current = Data()
+        for byte in picture {
+            if byte == 0x0A {
+                lines.append(current)
+                current = Data()
+            } else {
+                current.append(byte)
+            }
+        }
+        if !current.isEmpty { lines.append(current) }
+        var redraw = Data("\u{1b}[2J\u{1b}[H".utf8)
+        for (index, line) in lines.enumerated() {
+            if index > 0 { redraw.append(contentsOf: [0x0D, 0x0A]) }
+            redraw.append(line)
+        }
+        if cursor.count == 2, let row = Int(cursor[0]), let column = Int(cursor[1]) {
+            redraw.append(Data("\u{1b}[\(row + 1);\(column + 1)H".utf8))
+        }
+        return redraw
+    }
+
     /// Sets an explicit grid size for a single-pane member window so the
     /// window always matches its one native view. resize-window switches the
     /// window to manual sizing, which is exactly the contract here.
