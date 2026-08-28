@@ -204,9 +204,16 @@ public enum StatusCenterProjection {
         dismissedHandoffIDs: Set<String> = [],
         includeDismissed: Bool = false
     ) -> StatusCenterSnapshot {
+        let workspaceAliases: Set<String> = if let workspaceID {
+            Set(panes.lazy.filter {
+                $0.workspaceID == workspaceID || $0.windowID == workspaceID
+            }.flatMap { [$0.workspaceID, $0.windowID] }).union([workspaceID])
+        } else {
+            []
+        }
         let scopedAgents = panes
             .filter { pane in
-                pane.kind.isAgent && (workspaceID == nil || pane.windowID == workspaceID)
+                pane.kind.isAgent && (workspaceID == nil || workspaceAliases.contains(pane.workspaceID))
             }
             .sorted { left, right in
                 if left.displayName.caseInsensitiveCompare(right.displayName) == .orderedSame {
@@ -216,8 +223,9 @@ public enum StatusCenterProjection {
             }
         let scopedHandoffs = handoffs
             .filter { handoff in
-                guard let workspaceID else { return true }
-                return handoff.sourceWorkspaceID == workspaceID || handoff.targetWorkspaceID == workspaceID
+                guard workspaceID != nil else { return true }
+                return workspaceAliases.contains(handoff.sourceWorkspaceID)
+                    || workspaceAliases.contains(handoff.targetWorkspaceID)
             }
             .filter { handoff in
                 includeDismissed
@@ -232,7 +240,7 @@ public enum StatusCenterProjection {
         let failures = scopedHandoffs.filter { failureStates.contains($0.state) }
         let unreadResults = scopedHandoffs.count { handoff in
             handoff.hasUnreadResult
-                && (workspaceID == nil || handoff.sourceWorkspaceID == workspaceID)
+                && (workspaceID == nil || workspaceAliases.contains(handoff.sourceWorkspaceID))
         }
 
         let condition: StatusCenterCondition
@@ -265,7 +273,7 @@ public enum StatusCenterProjection {
             }
         }
         let activityTimeline = activityEvents
-            .filter { event in workspaceID == nil || event.workspaceID == workspaceID }
+            .filter { event in workspaceID == nil || workspaceAliases.contains(event.workspaceID) }
             .map { event in
                 let isPane = event.kind == .paneRestarted
                     || event.kind == .paneReaped

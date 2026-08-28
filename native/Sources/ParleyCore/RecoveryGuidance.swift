@@ -155,8 +155,17 @@ public enum RecoveryGuidanceProjection {
             ))
         }
 
+        let workspaceAliases: Set<String> = if let workspaceID {
+            Set(panes.lazy.filter {
+                $0.workspaceID == workspaceID || $0.windowID == workspaceID
+            }.flatMap { [$0.workspaceID, $0.windowID] }).union([workspaceID])
+        } else {
+            []
+        }
         let scopedPanes = panes
-            .filter { pane in pane.kind.isAgent && (workspaceID == nil || pane.windowID == workspaceID) }
+            .filter { pane in
+                pane.kind.isAgent && (workspaceID == nil || workspaceAliases.contains(pane.workspaceID))
+            }
             .sorted { left, right in
                 if left.displayName.caseInsensitiveCompare(right.displayName) == .orderedSame {
                     return left.id < right.id
@@ -190,8 +199,9 @@ public enum RecoveryGuidanceProjection {
         let interrupted = handoffs
             .filter { handoff in
                 guard handoff.kind == .ask, handoff.state == .interrupted else { return false }
-                guard let workspaceID else { return true }
-                return handoff.sourceWorkspaceID == workspaceID || handoff.targetWorkspaceID == workspaceID
+                guard workspaceID != nil else { return true }
+                return workspaceAliases.contains(handoff.sourceWorkspaceID)
+                    || workspaceAliases.contains(handoff.targetWorkspaceID)
             }
             .sorted { left, right in
                 if left.updatedAt == right.updatedAt { return left.id < right.id }

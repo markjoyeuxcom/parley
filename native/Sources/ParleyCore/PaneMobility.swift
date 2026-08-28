@@ -61,7 +61,7 @@ public enum PaneMobilityPolicy {
         panes: [TmuxPane],
         activeHandoffCount: Int
     ) -> PaneMobilityAssessment {
-        guard pane.windowID != targetWorkspaceID else {
+        guard pane.workspaceID != targetWorkspaceID else {
             return PaneMobilityAssessment(
                 action: action,
                 activeHandoffCount: activeHandoffCount,
@@ -71,7 +71,7 @@ public enum PaneMobilityPolicy {
 
         var blockers: [PaneMobilityBlocker] = []
         if action == .move {
-            if panes.filter({ $0.windowID == pane.windowID }).count <= 1 {
+            if panes.filter({ $0.workspaceID == pane.workspaceID }).count <= 1 {
                 blockers.append(.lastSourcePane)
             }
             if activeHandoffCount > 0 {
@@ -79,7 +79,7 @@ public enum PaneMobilityPolicy {
             }
         }
 
-        let targetPanes = panes.filter { $0.windowID == targetWorkspaceID }
+        let targetPanes = panes.filter { $0.workspaceID == targetWorkspaceID }
         if let role = pane.role,
            targetPanes.contains(where: {
                $0.role?.caseInsensitiveCompare(role) == .orderedSame

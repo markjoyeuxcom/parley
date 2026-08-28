@@ -1,5 +1,16 @@
 import Foundation
 
+/// Natural ordering for ephemeral tmux ids: `%2` precedes `%10`. This is
+/// presentation ordering only; durable state never uses a live id as identity.
+public enum TmuxIdentifierOrder {
+    public static func sorted<S: Sequence>(_ identifiers: S) -> [String]
+    where S.Element == String {
+        identifiers.sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+    }
+}
+
 /// The native split structure of one workspace's viewers: pane-id leaves (a
 /// legacy grid window is represented by its representative pane) combined by
 /// split direction. Divider positions stay with AppKit; the tree records only
@@ -74,6 +85,34 @@ public indirect enum NativeLayoutNode: Codable, Equatable, Sendable {
             }
         }
         return result
+    }
+
+    /// Rebinds an ID-free saved split tree to freshly created pane ids in
+    /// leaf order. A count mismatch is refused instead of silently inventing
+    /// or dropping a pane.
+    public static func mirroring(
+        _ saved: SavedLayoutNode,
+        paneIDs: [String]
+    ) -> NativeLayoutNode? {
+        guard saved.leaves.count == paneIDs.count else { return nil }
+        var iterator = paneIDs.makeIterator()
+        func convert(_ node: SavedLayoutNode) -> NativeLayoutNode? {
+            switch node {
+            case .leaf:
+                guard let paneID = iterator.next() else { return nil }
+                return .leaf(paneID)
+            case let .split(direction, _, first, second):
+                guard let convertedFirst = convert(first),
+                      let convertedSecond = convert(second) else { return nil }
+                return .split(
+                    direction: direction,
+                    first: convertedFirst,
+                    second: convertedSecond
+                )
+            }
+        }
+        guard let converted = convert(saved), iterator.next() == nil else { return nil }
+        return converted
     }
 
     /// A balanced arrangement of the given leaves with alternating split

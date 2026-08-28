@@ -136,7 +136,7 @@ public enum DiagnosticsReportBuilder {
                 DiagnosticsPane(
                     id: pane.id,
                     kind: pane.kind.rawValue,
-                    workspaceID: pane.windowID,
+                    workspaceID: pane.workspaceID,
                     isActive: pane.isActive,
                     isStarted: pane.isStarted,
                     isDead: pane.isDead,

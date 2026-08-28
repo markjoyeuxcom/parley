@@ -62,8 +62,8 @@ public enum WorkspaceAutomationPolicy: String, CaseIterable, Codable, Equatable,
     }
 }
 
-/// A Parley workspace is a durable tmux window. The id belongs only to the
-/// live tmux server. Its home folder is the stable folder-opening association;
+/// A Parley workspace is a durable collaboration identity whose panes may
+/// occupy one or more tmux member windows. `id` is one live representative. Its home folder is the stable folder-opening association;
 /// its default folder is only the mutable starting point for future panes.
 /// Both are stored as window options so reattaching the UI does not lose them.
 public struct TmuxWorkspace: Identifiable, Equatable, Sendable {

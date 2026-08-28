@@ -192,20 +192,31 @@ upgrades a Production tmux/core, and remains visibly marked
   automatically when room permits. Workspace, pane, activity and context names
   truncate in the middle without changing the full names used by menus, help
   or routing.
-- tmux contributes terminal layout, pane history and restrained per-pane
-  identity. Its duplicate status row remains disabled, while compact title
-  borders show pane name, vendor and authoritative COPY state. The sidebar
-  remains the rich pane navigator; when it is hidden, a compact native focus
-  strip keeps every pane directly selectable in grid and zoom views. Selecting
-  another pane while zoomed preserves zoom.
-- Long mouse selections use tmux Copy Mode because tmux owns the pane
-  scrollback. Enter it from the toolbar, Actions or Pane menu when a mouse-aware
-  CLI captures dragging; drag and scroll through history, then release to copy
-  through `/usr/bin/pbcopy` and exit. Escape or Exit Copy Mode cancels. In a
-  split workspace Copy Mode temporarily zooms the pane — tmux freezes a drag's
-  edge auto-scroll once the pointer crosses into a neighbouring pane, so the
-  pane's edges must be the window's edges for the drag to keep scrolling.
-  Leaving Copy Mode restores the split; a zoom you chose yourself is kept.
+- In the established renderer, tmux contributes terminal layout, pane history
+  and restrained per-pane identity. Its duplicate status row remains disabled,
+  while compact title borders show pane name, vendor and authoritative COPY
+  state. The sidebar remains the rich pane navigator; when it is hidden, a
+  compact native focus strip keeps every pane directly selectable in grid and
+  zoom views. Selecting another pane while zoomed preserves zoom.
+- Long mouse selections in a legacy grid use tmux Copy Mode because tmux owns
+  that pane's scrollback. Enter it from the toolbar, Actions or Pane menu when a
+  mouse-aware CLI captures dragging; drag and scroll through history, then
+  release to copy through `/usr/bin/pbcopy` and exit. Escape or Exit Copy Mode
+  cancels. Copy Mode temporarily zooms a split legacy pane so its edges are the
+  window edges; leaving restores the split while preserving a zoom the person
+  chose.
+- The opt-in **Windows-as-Panes Preview** in Tools gives every newly created
+  pane its own tmux member window and renders each visible one-pane window as a
+  native SwiftTerm surface fed by tmux control mode. tmux still owns the real
+  process; native split state, selection and local scrollback are presentation.
+  Legacy multi-pane windows keep the confined viewer and Copy Mode fallback.
+  The preview never breaks apart an existing grid automatically.
+- Preview limitations are explicit: an actively printing pane can repeat a line
+  during attach because the snapshot and live stream overlap; native divider
+  ratios are not yet durable and reopen balanced; recovery after destruction of
+  the tmux server cannot rebind a registry record until Parley can prove one
+  unambiguous target. Parley does not drop uncertain output or guess by folder
+  to hide these gaps.
 - Saved layouts live in the owner-only `workspace-layouts.json`, never in tmux.
   They contain no pane/window ids. Restored shells start; restored agent slots
   remain stopped until a person chooses Start.

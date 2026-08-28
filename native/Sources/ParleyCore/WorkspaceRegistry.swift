@@ -1,9 +1,11 @@
 import Darwin
 import Foundation
 
-/// One workspace's durable facts, keyed by @parley-ws-id. The registry is what
-/// lets durable records — and eventually native split trees — outlive both the
-/// UI process and the tmux server, so live tmux ids never appear in it.
+/// One workspace's durable facts, keyed by @parley-ws-id. Records and native
+/// split trees survive UI/core reattachment and temporary absence of the tmux
+/// server. Rebinding them to a newly created tmux workspace after server loss
+/// requires an explicit, unambiguous recovery transaction; live tmux ids never
+/// become registry keys.
 public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
     public let workspaceID: String
     public var name: String
@@ -36,6 +38,33 @@ public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
         self.layout = layout
         self.updatedAt = updatedAt
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case workspaceID
+        case name
+        case homeFolder
+        case defaultFolder
+        case automationPolicy
+        case selectedPaneID
+        case layoutRevision
+        case layout
+        case updatedAt
+    }
+
+    /// Schema 1 predates native layout persistence. Missing presentation
+    /// fields therefore mean "no recorded layout", not a corrupt registry.
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        workspaceID = try values.decode(String.self, forKey: .workspaceID)
+        name = try values.decode(String.self, forKey: .name)
+        homeFolder = try values.decode(String.self, forKey: .homeFolder)
+        defaultFolder = try values.decode(String.self, forKey: .defaultFolder)
+        automationPolicy = try values.decode(WorkspaceAutomationPolicy.self, forKey: .automationPolicy)
+        selectedPaneID = try values.decodeIfPresent(String.self, forKey: .selectedPaneID)
+        layoutRevision = try values.decodeIfPresent(Int.self, forKey: .layoutRevision) ?? 0
+        layout = try values.decodeIfPresent(NativeLayoutNode.self, forKey: .layout)
+        updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .distantPast
+    }
 }
 
 public enum WorkspaceRegistryError: LocalizedError, Equatable {
@@ -53,8 +82,9 @@ public enum WorkspaceRegistryError: LocalizedError, Equatable {
 }
 
 /// Owner-only JSON store for workspace registry records. Records survive a
-/// missing workspace (a stopped tmux server is not a close); only an explicit
-/// remove forgets one.
+/// temporarily missing workspace; only an explicit close removes one. A future
+/// recovery flow may rebind a record after tmux server loss, but synchronization
+/// never guesses between folders or workspace names.
 public final class WorkspaceRegistry {
     private struct Document: Codable {
         let version: Int
@@ -132,6 +162,25 @@ public final class WorkspaceRegistry {
         }
     }
 
+    /// Records focus independently for each durable workspace. Repeating the
+    /// same selection is a no-op so periodic refresh does not churn the file.
+    @discardableResult
+    public func updateSelectedPane(workspaceID: String, paneID: String?) throws -> Bool {
+        try lock.withLock {
+            var document = try readDocument()
+            guard let index = document.records.firstIndex(where: {
+                $0.workspaceID == workspaceID
+            }) else {
+                throw WorkspaceRegistryError.invalid("no registry record for workspace \(workspaceID)")
+            }
+            guard document.records[index].selectedPaneID != paneID else { return false }
+            document.records[index].selectedPaneID = paneID
+            document.records[index].updatedAt = Date()
+            try write(document)
+            return true
+        }
+    }
+
     public func remove(workspaceID: String) throws {
         try lock.withLock {
             var document = try readDocument()
@@ -156,24 +205,6 @@ public final class WorkspaceRegistry {
             document.records[index].layoutRevision += 1
             document.records[index].updatedAt = Date()
             try write(document)
-        }
-    }
-
-    /// Marks that the workspace's native layout changed. The revision lets a
-    /// later reader distinguish a stale tree from a settled one.
-    @discardableResult
-    public func bumpLayoutRevision(workspaceID: String) throws -> Int {
-        try lock.withLock {
-            var document = try readDocument()
-            guard let index = document.records.firstIndex(where: {
-                $0.workspaceID == workspaceID
-            }) else {
-                throw WorkspaceRegistryError.invalid("no registry record for workspace \(workspaceID)")
-            }
-            document.records[index].layoutRevision += 1
-            document.records[index].updatedAt = Date()
-            try write(document)
-            return document.records[index].layoutRevision
         }
     }
 

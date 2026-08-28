@@ -1400,9 +1400,10 @@ private func workspaceRow(
     folder: String = "",
     paneFolder: String = "/tmp",
     automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate,
-    zoomed: Bool = false
+    zoomed: Bool = false,
+    workspaceID: String = ""
 ) -> String {
-    [id, windowName, active ? "1" : "0", name, homeFolder, folder, paneFolder, automationPolicy.rawValue, zoomed ? "1" : ""]
+    [id, windowName, active ? "1" : "0", name, homeFolder, folder, paneFolder, automationPolicy.rawValue, zoomed ? "1" : "", workspaceID]
         .joined(separator: TmuxController.outputFieldSeparator)
 }
 
@@ -1896,6 +1897,21 @@ private func checkWorkspaceRegistryDurability() throws {
     let empty = try registry.records()
     try expect(empty.isEmpty, "a missing registry file did not read as empty")
 
+    // The first registry schema shipped before native split fields existed.
+    // Adding presentation state must not make those durable records unreadable.
+    let legacyFile = directory.appendingPathComponent("legacy-workspace-registry.json")
+    let legacyJSON = #"{"version":1,"records":[{"workspaceID":"legacy-durable-id","name":"Legacy","homeFolder":"/tmp/legacy","defaultFolder":"/tmp/legacy","automationPolicy":"askAndDelegate","selectedPaneID":"%7","updatedAt":0}]}"#
+    try Data(legacyJSON.utf8).write(to: legacyFile)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: legacyFile.path)
+    let migratedLegacy = try require(
+        try WorkspaceRegistry(file: legacyFile).record(workspaceID: "legacy-durable-id"),
+        "a pre-layout registry record did not decode"
+    )
+    try expect(
+        migratedLegacy.layout == nil && migratedLegacy.layoutRevision == 0,
+        "a pre-layout registry record did not receive honest layout defaults"
+    )
+
     let stamped = TmuxWorkspace(
         id: "@1", name: "api", homeFolder: "/tmp/api", defaultFolder: "/tmp/api/feature",
         isActive: true, workspaceID: "aaaaaaaa-1111-1111-1111-111111111111"
@@ -1920,6 +1936,25 @@ private func checkWorkspaceRegistryDurability() throws {
         selectedPaneIDs: [stamped.workspaceID: "%4"]
     )
     try expect(!unchanged, "an unchanged workspace rewrote the registry")
+    let changedSelectedPane = try registry.updateSelectedPane(
+        workspaceID: stamped.workspaceID, paneID: "%8"
+    )
+    try expect(
+        changedSelectedPane,
+        "changing the workspace's selected pane reported no durable change"
+    )
+    let selectedRecord = try registry.record(workspaceID: stamped.workspaceID)
+    try expect(
+        selectedRecord?.selectedPaneID == "%8",
+        "the selected pane was not recorded per durable workspace"
+    )
+    let unchangedSelectedPane = try registry.updateSelectedPane(
+        workspaceID: stamped.workspaceID, paneID: "%8"
+    )
+    try expect(
+        !unchangedSelectedPane,
+        "recording the same selected pane rewrote the registry"
+    )
     let absentSet = try registry.synchronize(workspaces: [])
     let afterAbsent = try registry.records()
     try expect(
@@ -1936,30 +1971,28 @@ private func checkWorkspaceRegistryDurability() throws {
     try expect(
         renameChanged && renamedRecord?.name == "api-renamed"
             && renamedRecord?.defaultFolder == "/tmp/api"
-            && renamedRecord?.selectedPaneID == "%4",
+            && renamedRecord?.selectedPaneID == "%8",
         "a renamed workspace did not update its record while keeping the selected pane"
     )
-    let revision = try registry.bumpLayoutRevision(workspaceID: stamped.workspaceID)
-    try expect(revision == 1, "layout revision did not advance")
     let tree = NativeLayoutNode.split(
         direction: .vertical, first: .leaf("%1"), second: .leaf("%2")
     )
     try registry.updateLayout(workspaceID: stamped.workspaceID, layout: tree)
     let storedLayout = try registry.record(workspaceID: stamped.workspaceID)
     try expect(
-        storedLayout?.layout == tree && storedLayout?.layoutRevision == 2,
+        storedLayout?.layout == tree && storedLayout?.layoutRevision == 1,
         "the native layout tree was not stored with an advanced revision"
     )
     try registry.updateLayout(workspaceID: stamped.workspaceID, layout: tree)
     let unchangedLayout = try registry.record(workspaceID: stamped.workspaceID)
     try expect(
-        unchangedLayout?.layoutRevision == 2,
+        unchangedLayout?.layoutRevision == 1,
         "an identical layout rewrite advanced the revision"
     )
 
     let reloaded = try WorkspaceRegistry(file: file).record(workspaceID: stamped.workspaceID)
     try expect(
-        reloaded?.layoutRevision == 2 && reloaded?.name == "api-renamed"
+        reloaded?.layoutRevision == 1 && reloaded?.name == "api-renamed"
             && reloaded?.layout != nil,
         "registry records did not persist across instances"
     )
@@ -2661,29 +2694,33 @@ private func checkWorkspaceSafetySummaryUsesOnlyAuthoritativeFacts() throws {
         TmuxPane(
             id: "%1", kind: .claude, customName: "Planner", terminalTitle: "", cwd: "/repo",
             currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
-            isStarted: true, permissionSelection: flexible, permissionEnforcement: .partiallyEnforced
+            isStarted: true, permissionSelection: flexible, permissionEnforcement: .partiallyEnforced,
+            workspaceID: "durable-project"
         ),
         TmuxPane(
             id: "%2", kind: .codex, customName: "Stopped reviewer", terminalTitle: "", cwd: "/repo/subdir",
-            currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil,
-            isStarted: false, permissionSelection: flexible, permissionEnforcement: .enforced
+            currentCommand: "codex", isActive: false, windowID: "@2", returnToPaneID: nil,
+            isStarted: false, permissionSelection: flexible, permissionEnforcement: .enforced,
+            workspaceID: "durable-project"
         ),
         TmuxPane(
             id: "%3", kind: .shell, customName: "Tests", terminalTitle: "", cwd: "/other",
-            currentCommand: "zsh", isActive: false, windowID: "@0", returnToPaneID: nil
+            currentCommand: "zsh", isActive: false, windowID: "@0", returnToPaneID: nil,
+            workspaceID: "durable-project"
         ),
         TmuxPane(
             id: "%4", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/repo",
             currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
-            isStarted: true, permissionSelection: flexible, permissionEnforcement: .enforced
+            isStarted: true, permissionSelection: flexible, permissionEnforcement: .enforced,
+            workspaceID: "durable-consumer"
         ),
     ]
     let active = try statusHandoff(
         id: "active",
         kind: .ask,
         state: .waiting,
-        sourceWorkspaceID: "@0",
-        targetWorkspaceID: "@1",
+        sourceWorkspaceID: "@2",
+        targetWorkspaceID: "durable-consumer",
         occurredAt: 100,
         text: "PROMPT_MUST_NOT_APPEAR",
         resultText: "RESULT_MUST_NOT_APPEAR",
@@ -2694,7 +2731,7 @@ private func checkWorkspaceSafetySummaryUsesOnlyAuthoritativeFacts() throws {
         id: "complete",
         kind: .delegate,
         state: .completed,
-        sourceWorkspaceID: "@0",
+        sourceWorkspaceID: "durable-project",
         targetWorkspaceID: "@1",
         occurredAt: 90,
         text: "COMPLETED_PROMPT_MUST_NOT_APPEAR"
@@ -2718,7 +2755,8 @@ private func checkWorkspaceSafetySummaryUsesOnlyAuthoritativeFacts() throws {
         id: "@0",
         name: "project",
         defaultFolder: "/repo",
-        isActive: true
+        isActive: true,
+        workspaceID: "durable-project"
     )
     let summary = WorkspaceSafetyProjection.summary(
         workspace: workspace,
@@ -2733,6 +2771,7 @@ private func checkWorkspaceSafetySummaryUsesOnlyAuthoritativeFacts() throws {
         coreAvailable: true
     )
 
+    try expect(summary.workspaceID == "durable-project", "workspace safety published a transient member-window id")
     try expect(summary.totalPaneCount == 3, "workspace safety lost a pane")
     try expect(summary.runningAgents.map(\.name) == ["Planner"], "stopped agents or shells were called running agents")
     try expect(summary.activeHandoffs.count == 1 && summary.activeHandoffs[0].id == "active", "terminal handoffs entered the active safety list")
@@ -3095,24 +3134,26 @@ private func checkPaneMobilitySafetyContract() throws {
         id: "%1", kind: .claude, customName: "Planner", terminalTitle: "", cwd: "/tmp/project",
         currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
         relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "project",
-        bracketedPasteActive: true, isStarted: true, isWorkspaceLead: true, role: "planner"
+        bracketedPasteActive: true, isStarted: true, isWorkspaceLead: true, role: "planner",
+        workspaceID: "source-workspace"
     )
     let sourcePeer = TmuxPane(
         id: "%2", kind: .shell, customName: "Tests", terminalTitle: "", cwd: "/tmp/project",
-        currentCommand: "zsh", isActive: false, windowID: "@0", returnToPaneID: nil,
-        workspaceName: "project"
+        currentCommand: "zsh", isActive: false, windowID: "@2", returnToPaneID: nil,
+        workspaceName: "project", workspaceID: "source-workspace"
     )
     let targetPane = TmuxPane(
         id: "%3", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp/consumer",
         currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
         relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "consumer",
-        bracketedPasteActive: true, isStarted: true, role: "builder"
+        bracketedPasteActive: true, isStarted: true, role: "builder",
+        workspaceID: "target-workspace"
     )
 
     let safeMove = PaneMobilityPolicy.assess(
         action: .move,
         pane: source,
-        targetWorkspaceID: "@1",
+        targetWorkspaceID: "target-workspace",
         panes: [source, sourcePeer, targetPane],
         activeHandoffCount: 0
     )
@@ -3121,7 +3162,7 @@ private func checkPaneMobilitySafetyContract() throws {
     let sameWorkspace = PaneMobilityPolicy.assess(
         action: .move,
         pane: source,
-        targetWorkspaceID: "@0",
+        targetWorkspaceID: "source-workspace",
         panes: [source, sourcePeer, targetPane],
         activeHandoffCount: 0
     )
@@ -3130,7 +3171,7 @@ private func checkPaneMobilitySafetyContract() throws {
     let lastSourcePane = PaneMobilityPolicy.assess(
         action: .move,
         pane: source,
-        targetWorkspaceID: "@1",
+        targetWorkspaceID: "target-workspace",
         panes: [source, targetPane],
         activeHandoffCount: 0
     )
@@ -3139,7 +3180,7 @@ private func checkPaneMobilitySafetyContract() throws {
     let activeMove = PaneMobilityPolicy.assess(
         action: .move,
         pane: source,
-        targetWorkspaceID: "@1",
+        targetWorkspaceID: "target-workspace",
         panes: [source, sourcePeer, targetPane],
         activeHandoffCount: 2
     )
@@ -3148,7 +3189,7 @@ private func checkPaneMobilitySafetyContract() throws {
     let cloneWithHandoffs = PaneMobilityPolicy.assess(
         action: .clone,
         pane: source,
-        targetWorkspaceID: "@1",
+        targetWorkspaceID: "target-workspace",
         panes: [source, sourcePeer, targetPane],
         activeHandoffCount: 2
     )
@@ -3158,12 +3199,12 @@ private func checkPaneMobilitySafetyContract() throws {
     let conflictingRole = TmuxPane(
         id: "%4", kind: .agy, customName: "Other planner", terminalTitle: "", cwd: "/tmp/consumer",
         currentCommand: "agy", isActive: false, windowID: "@1", returnToPaneID: nil,
-        workspaceName: "consumer", role: "PLANNER"
+        workspaceName: "consumer", role: "PLANNER", workspaceID: "target-workspace"
     )
     let roleConflict = PaneMobilityPolicy.assess(
         action: .clone,
         pane: source,
-        targetWorkspaceID: "@1",
+        targetWorkspaceID: "target-workspace",
         panes: [source, sourcePeer, targetPane, conflictingRole],
         activeHandoffCount: 0
     )
@@ -3172,12 +3213,12 @@ private func checkPaneMobilitySafetyContract() throws {
     let targetLead = TmuxPane(
         id: "%5", kind: .codex, customName: "Lead", terminalTitle: "", cwd: "/tmp/consumer",
         currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
-        workspaceName: "consumer", isWorkspaceLead: true
+        workspaceName: "consumer", isWorkspaceLead: true, workspaceID: "target-workspace"
     )
     let leadConflict = PaneMobilityPolicy.assess(
         action: .move,
         pane: source,
-        targetWorkspaceID: "@1",
+        targetWorkspaceID: "target-workspace",
         panes: [source, sourcePeer, targetPane, targetLead],
         activeHandoffCount: 0
     )
@@ -3207,6 +3248,11 @@ private func checkPaneMobilitySafetyContract() throws {
     let moveRunner = RecordingRunner { arguments, _ in
         switch command(arguments) {
         case "list-panes": return output(moved ? afterMoveRows : beforeMoveRows)
+        case "list-windows":
+            return output([
+                workspaceRow(id: "@0", windowName: "project", active: !moved, name: "project"),
+                workspaceRow(id: "@1", windowName: "consumer", active: moved, name: "consumer"),
+            ].joined(separator: "\n") + "\n")
         case "join-pane":
             moved = true
             return output()
@@ -3285,6 +3331,11 @@ private func checkPaneMobilitySafetyContract() throws {
     let cloneRunner = RecordingRunner { arguments, _ in
         switch command(arguments) {
         case "list-panes": return output(cloned ? cloneResultRows : cloneSourceRows)
+        case "list-windows":
+            return output([
+                workspaceRow(id: "@0", windowName: "project", active: true, name: "project"),
+                workspaceRow(id: "@1", windowName: "consumer", active: false, name: "consumer"),
+            ].joined(separator: "\n") + "\n")
         case "split-window":
             cloned = true
             return output("%4\n")
@@ -3521,13 +3572,13 @@ private func checkExternalEditorContextImportContract() throws {
 
 private func checkExternalAttentionAndNavigationContract() throws {
     let workspaces = [
-        TmuxWorkspace(id: "@0", name: "Library", defaultFolder: "/tmp/library", isActive: true),
-        TmuxWorkspace(id: "@1", name: "Consumer", defaultFolder: "/tmp/consumer", isActive: false),
+        TmuxWorkspace(id: "@0", name: "Library", defaultFolder: "/tmp/library", isActive: true, workspaceID: "library"),
+        TmuxWorkspace(id: "@1", name: "Consumer", defaultFolder: "/tmp/consumer", isActive: false, workspaceID: "consumer"),
     ]
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Reviewer", terminalTitle: "SECRET TITLE", cwd: "/tmp/library", currentCommand: "SECRET COMMAND", isActive: true, windowID: "@0", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Library", isStarted: true),
-        TmuxPane(id: "%2", kind: .claude, customName: "Builder", terminalTitle: "", cwd: "/tmp/consumer", currentCommand: "claude", isActive: false, windowID: "@1", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Consumer", isStarted: true),
-        TmuxPane(id: "%3", kind: .shell, customName: "Server", terminalTitle: "", cwd: "/tmp/consumer", currentCommand: "zsh", isActive: false, windowID: "@1", returnToPaneID: nil),
+        TmuxPane(id: "%1", kind: .codex, customName: "Reviewer", terminalTitle: "SECRET TITLE", cwd: "/tmp/library", currentCommand: "SECRET COMMAND", isActive: true, windowID: "@0", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Library", isStarted: true, workspaceID: "library"),
+        TmuxPane(id: "%2", kind: .claude, customName: "Builder", terminalTitle: "", cwd: "/tmp/consumer", currentCommand: "claude", isActive: false, windowID: "@2", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Consumer", isStarted: true, workspaceID: "consumer"),
+        TmuxPane(id: "%3", kind: .shell, customName: "Server", terminalTitle: "", cwd: "/tmp/consumer", currentCommand: "zsh", isActive: false, windowID: "@2", returnToPaneID: nil, workspaceID: "consumer"),
     ]
     let resultID = "11111111-1111-4111-8111-111111111111"
     let permissionID = "22222222-2222-4222-8222-222222222222"
@@ -3535,11 +3586,11 @@ private func checkExternalAttentionAndNavigationContract() throws {
     let delegationID = "44444444-4444-4444-8444-444444444444"
     let failedID = "55555555-5555-4555-8555-555555555555"
     let handoffs = [
-        try statusHandoff(id: resultID, kind: .ask, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 20, text: "PROMPT SECRET", resultText: "ANSWER SECRET", sourceName: "Reviewer", targetName: "Builder"),
-        try statusHandoff(id: permissionID, kind: .relay, state: .failed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 30, text: "SECOND SECRET", attention: .permissionRequired, sourceName: "Reviewer", targetName: "Builder"),
-        try statusHandoff(id: viewedID, kind: .ask, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 10, resultText: "VIEWED SECRET", readAt: 11),
-        try statusHandoff(id: delegationID, kind: .delegate, state: .completed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 40, text: "DELEGATION SECRET", resultText: "COMPLETION SECRET", sourceName: "Reviewer", targetName: "Builder"),
-        try statusHandoff(id: failedID, kind: .ask, state: .failed, sourceWorkspaceID: "@0", targetWorkspaceID: "@1", occurredAt: 50, text: "FAILURE SECRET", sourceName: "Reviewer", targetName: "Builder"),
+        try statusHandoff(id: resultID, kind: .ask, state: .completed, sourceWorkspaceID: "library", targetWorkspaceID: "consumer", occurredAt: 20, text: "PROMPT SECRET", resultText: "ANSWER SECRET", sourceName: "Reviewer", targetName: "Builder"),
+        try statusHandoff(id: permissionID, kind: .relay, state: .failed, sourceWorkspaceID: "library", targetWorkspaceID: "@2", occurredAt: 30, text: "SECOND SECRET", attention: .permissionRequired, sourceName: "Reviewer", targetName: "Builder"),
+        try statusHandoff(id: viewedID, kind: .ask, state: .completed, sourceWorkspaceID: "library", targetWorkspaceID: "consumer", occurredAt: 10, resultText: "VIEWED SECRET", readAt: 11),
+        try statusHandoff(id: delegationID, kind: .delegate, state: .completed, sourceWorkspaceID: "library", targetWorkspaceID: "consumer", occurredAt: 40, text: "DELEGATION SECRET", resultText: "COMPLETION SECRET", sourceName: "Reviewer", targetName: "Builder"),
+        try statusHandoff(id: failedID, kind: .ask, state: .failed, sourceWorkspaceID: "library", targetWorkspaceID: "consumer", occurredAt: 50, text: "FAILURE SECRET", sourceName: "Reviewer", targetName: "Builder"),
     ]
     let generatedAt = Date(timeIntervalSince1970: 100)
     let snapshot = ExternalAttentionProjection.snapshot(
@@ -3553,6 +3604,7 @@ private func checkExternalAttentionAndNavigationContract() throws {
     try expect(snapshot.attentionCount == 4, "external attention count included viewed or routine work")
     try expect(snapshot.workspaces.map(\.attentionCount) == [3, 1], "external attention was attributed to the wrong workspace")
     try expect(snapshot.panes.map(\.id) == ["%1", "%2"], "external pane focus exposed a shell or lost a live agent")
+    try expect(snapshot.panes.map(\.workspaceID) == ["library", "consumer"], "external pane focus published transient member-window ids")
     try expect(snapshot.items.map(\.handoffID) == [failedID, delegationID, permissionID, resultID], "external attention items were not newest-first")
     try expect(snapshot.items.map(\.reason) == [.interrupted, .returnedResult, .humanInputRequired, .returnedResult], "external attention reasons were inferred incorrectly")
     try expect(snapshot.items[0].label == "Reviewer → Builder failed", "failed work lost its specific content-free label")
@@ -4312,9 +4364,9 @@ private func checkRealTmuxPerPaneViewSessions() throws {
 }
 
 private func checkRealTmuxControlModeStreamsPaneOutput() throws {
-    // The control-mode connection is a notifications-only client: per-pane
-    // output bytes (octal escapes decoded back to raw bytes) and window
-    // lifecycle events, over plain pipes with no pty.
+    // The control-mode connection streams pane output and lifecycle events,
+    // and carries only validated high-frequency input/resize commands over
+    // its held-open stdin. All other mutations stay on the argv runner.
     final class Collector: @unchecked Sendable {
         private let lock = NSLock()
         private var outputs: [String: Data] = [:]
@@ -4398,17 +4450,52 @@ private func checkRealTmuxControlModeStreamsPaneOutput() throws {
     let closed = eventually(timeout: 5) { collector.hasEvent(.windowClosed(second.id)) }
     try expect(closed, "control mode did not report the closed window")
 
-    // Input round trip through the control client's own stdin: the command
-    // writes keystrokes without a process spawn, its reply block is skipped,
-    // and the echoed bytes come back on the same stream.
-    connection.sendCommand("send-keys -t \(pane.id) -l roundtrip-input")
+    // Input round trip through the control client's own stdin: only typed,
+    // validated pane input and resize operations may reach this held-open
+    // channel. Agent-authored ids cannot append a second control command.
+    let rejectedInjection = connection.sendInput(
+        toPaneID: "\(pane.id)\nnew-window -d -n injected",
+        bytes: ArraySlice("not-sent".utf8)
+    )
+    try expect(!rejectedInjection, "control mode accepted a command-injecting pane id")
+    let sent = connection.sendInput(
+        toPaneID: pane.id,
+        bytes: ArraySlice("roundtrip-input".utf8)
+    )
+    try expect(sent, "control mode rejected valid pane input")
     let roundTripped = eventually(timeout: 5) {
         collector.output(for: pane.id).range(of: Data("roundtrip-input".utf8)) != nil
     }
     try expect(roundTripped, "stdin-forwarded input did not reach the pane and stream back")
 
+    try expect(
+        connection.resizeWindow(pane.windowID, columns: 91, rows: 27),
+        "control mode rejected a valid member-window resize"
+    )
+    let resized = eventually(timeout: 5) {
+        (try? runner.run(
+            executable: tmux,
+            arguments: [
+                "-S", controller.socketPath.path, "-f", controller.configPath.path,
+                "display-message", "-p", "-t", pane.id, "#{window_width}x#{window_height}",
+            ],
+            environment: controller.environment,
+            input: nil
+        ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)) == "91x27"
+    }
+    try expect(resized, "control-mode resize did not set the exact member-window size")
+
     connection.stop()
     try expect(!connection.isRunning, "control-mode client survived stop")
+    Thread.sleep(forTimeInterval: 0.1)
+    try expect(
+        !collector.hasEvent(.exited(nil)),
+        "an intentional control-mode stop was reported as an unexpected stream exit"
+    )
+    try connection.start()
+    try expect(connection.isRunning, "a stopped control-mode connection could not restart")
+    connection.stop()
+    try expect(!connection.isRunning, "a restarted control-mode client survived its second stop")
 }
 
 private func checkNativeWorkspaceLayoutTree() throws {
@@ -4453,6 +4540,38 @@ private func checkNativeWorkspaceLayoutTree() throws {
     try expect(
         NativeLayoutNode.reconciled(nil, with: ["%7"]) == .leaf("%7"),
         "reconciliation did not seed a tree from live leaves"
+    )
+    let saved = SavedLayoutNode.split(
+        direction: .vertical,
+        ratio: 0.7,
+        first: .leaf(SavedLayoutLeaf(kind: .shell, name: "One", folder: "/tmp")),
+        second: .split(
+            direction: .horizontal,
+            ratio: 0.4,
+            first: .leaf(SavedLayoutLeaf(kind: .codex, name: "Two", folder: "/tmp")),
+            second: .leaf(SavedLayoutLeaf(kind: .claude, name: "Three", folder: "/tmp"))
+        )
+    )
+    try expect(
+        NativeLayoutNode.mirroring(saved, paneIDs: ["%1", "%2", "%3"])
+            == .split(
+                direction: .vertical,
+                first: .leaf("%1"),
+                second: .split(
+                    direction: .horizontal,
+                    first: .leaf("%2"),
+                    second: .leaf("%3")
+                )
+            ),
+        "a saved split tree did not rebind to fresh pane ids without changing structure"
+    )
+    try expect(
+        NativeLayoutNode.mirroring(saved, paneIDs: ["%1", "%2"]) == nil,
+        "saved split rebinding silently accepted a pane-count mismatch"
+    )
+    try expect(
+        TmuxIdentifierOrder.sorted(["%10", "%2", "%1"]) == ["%1", "%2", "%10"],
+        "live tmux ids were ordered lexicographically instead of naturally"
     )
     try expect(
         NativeLayoutNode.reconciled(right, with: []) == nil,
@@ -4704,16 +4823,19 @@ private func checkRealTmuxWindowPerPaneCreationAndClose() throws {
             input: nil
         )
     }
-    func borderStatus(_ windowID: String) throws -> String {
+    func windowOption(_ name: String, windowID: String) throws -> String {
         try runner.run(
             executable: tmux,
             arguments: [
                 "-S", controller.socketPath.path, "-f", controller.configPath.path,
-                "show-options", "-w", "-q", "-v", "-t", windowID, "pane-border-status",
+                "show-options", "-w", "-q", "-v", "-t", windowID, name,
             ],
             environment: controller.environment,
             input: nil
         ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    func borderStatus(_ windowID: String) throws -> String {
+        try windowOption("pane-border-status", windowID: windowID)
     }
 
     try controller.bootstrap(cwd: directory.path)
@@ -4744,6 +4866,53 @@ private func checkRealTmuxWindowPerPaneCreationAndClose() throws {
     let memberPanes = try controller.listPanes().filter { $0.workspaceID == first.workspaceID }
     try expect(memberPanes.count == 2, "the workspace does not contain both member panes")
 
+    try controller.renameWorkspace(member.windowID, name: "Renamed Members")
+    try controller.setWorkspaceAutomationPolicy(member.windowID, policy: .askAnswer)
+    for windowID in [original.windowID, member.windowID] {
+        let memberName = try windowOption("@parley-workspace-name", windowID: windowID)
+        try expect(
+            memberName == "Renamed Members",
+            "workspace rename did not reach every member window"
+        )
+        let memberPolicy = try windowOption("@parley-automation-policy", windowID: windowID)
+        try expect(
+            memberPolicy == WorkspaceAutomationPolicy.askAnswer.rawValue,
+            "workspace automation policy did not reach every member window"
+        )
+    }
+
+    let memberPIDBeforeMove = try runner.run(
+        executable: tmux,
+        arguments: [
+            "-S", controller.socketPath.path, "-f", controller.configPath.path,
+            "display-message", "-p", "-t", member.id, "#{pane_pid}",
+        ],
+        environment: controller.environment,
+        input: nil
+    ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+    let movedMember = try controller.movePane(
+        member.id,
+        toWorkspaceID: second.id,
+        direction: .horizontal,
+        activeHandoffCount: 0,
+        preserveOwnWindowTopology: true
+    )
+    let memberPIDAfterMove = try runner.run(
+        executable: tmux,
+        arguments: [
+            "-S", controller.socketPath.path, "-f", controller.configPath.path,
+            "display-message", "-p", "-t", member.id, "#{pane_pid}",
+        ],
+        environment: controller.environment,
+        input: nil
+    ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+    try expect(
+        movedMember.windowID == member.windowID
+            && movedMember.workspaceID == second.workspaceID
+            && memberPIDAfterMove == memberPIDBeforeMove,
+        "own-window move changed the pane window, process, or durable destination"
+    )
+
     // A single-pane window carries no border title row (it would freeze an
     // upward drag-selection at the top edge); a real grid keeps it.
     let bootstrapChrome = try borderStatus(original.windowID)
@@ -4769,7 +4938,7 @@ private func checkRealTmuxWindowPerPaneCreationAndClose() throws {
         "closing an own-window pane left it behind"
     )
 
-    try controller.closeWorkspace(first.id)
+    try controller.closeWorkspace(original.windowID)
     let remainingWorkspaces = try controller.listWorkspaces()
     let remainingPanes = try controller.listPanes()
     try expect(
@@ -4777,8 +4946,9 @@ private func checkRealTmuxWindowPerPaneCreationAndClose() throws {
         "closing a workspace did not remove its exact member window set"
     )
     try expect(
-        !remainingPanes.contains(where: { $0.id == original.id || $0.id == member.id }),
-        "closing a workspace left a member pane alive"
+        !remainingPanes.contains(where: { $0.id == original.id })
+            && remainingPanes.contains(where: { $0.id == member.id }),
+        "closing a workspace removed a pane already moved away or left a source member alive"
     )
 }
 
@@ -5110,6 +5280,28 @@ private func checkRealTmuxSavedLayoutRestorationPolicy() throws {
         throw CheckFailure(description: "recaptured workspace lost its root split")
     }
     try expect(direction == .horizontal && abs(ratio - 0.58) < 0.03, "recaptured workspace lost its root direction or ratio")
+
+    let nativeRestored = try controller.restoreWorkspaceLayout(
+        layout,
+        replacing: restored.id,
+        inOwnWindows: true
+    )
+    let nativePanes = try controller.listPanes().filter {
+        $0.workspaceID == nativeRestored.workspaceID
+    }
+    try expect(nativePanes.count == 3, "native layout restoration created the wrong pane count")
+    try expect(
+        Set(nativePanes.map { $0.windowID }).count == nativePanes.count,
+        "native layout restoration put more than one pane in a member window"
+    )
+    try expect(
+        nativePanes.allSatisfy { $0.workspaceID == nativeRestored.workspaceID },
+        "native layout restoration did not stamp one durable workspace identity"
+    )
+    try expect(
+        nativePanes.filter { $0.kind.isAgent }.allSatisfy { !$0.isStarted },
+        "native layout restoration started an agent session"
+    )
 }
 
 private func checkInheritedParleyCapabilitiesAreScrubbed() throws {

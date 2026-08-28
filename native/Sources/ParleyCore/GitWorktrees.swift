@@ -285,7 +285,7 @@ public enum WorktreeWriterCollisionProjection {
                 paneID: pane.id,
                 paneName: pane.displayName,
                 paneKind: pane.kind,
-                workspaceID: pane.windowID,
+                workspaceID: pane.workspaceID,
                 permissionProfileName: profile.name,
                 enforcement: pane.permissionEnforcement
             ))

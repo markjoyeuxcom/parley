@@ -270,7 +270,7 @@ struct StatusCenterView: View {
             Picker("Scope", selection: $workspaceID) {
                 Text("All Workspaces").tag("")
                 ForEach(model.workspaces) { workspace in
-                    Text(workspace.name).tag(workspace.id)
+                    Text(workspace.name).tag(workspace.workspaceID)
                 }
             }
             .labelsHidden()
@@ -444,10 +444,7 @@ struct StatusCenterView: View {
     }
 
     private var returnedResults: some View {
-        let unread = snapshot.handoffs.filter { handoff in
-            handoff.hasUnreadResult
-                && (workspaceID.isEmpty || handoff.sourceWorkspaceID == workspaceID)
-        }
+        let unread = snapshot.handoffs.filter(\.hasUnreadResult)
         return statusGroup("RETURNED RESULTS") {
             if unread.isEmpty {
                 emptyRow("No unread returned results in this scope")

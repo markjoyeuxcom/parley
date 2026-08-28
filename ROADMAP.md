@@ -370,6 +370,21 @@ effortless without becoming task boards.
   mouse-aware CLIs, supports drag plus scroll beyond the visible screen, copies
   through the fixed macOS `/usr/bin/pbcopy` executable on release, and can be
   cancelled without injecting input into the vendor TUI.
+- [x] Add an opt-in Windows-as-Panes Preview behind the Tools toggle. Newly
+  created panes use one tmux member window each, single-pane windows stream
+  through bounded tmux control mode into native SwiftTerm surfaces, native split
+  trees and per-workspace selection persist in the owner-only registry, saved
+  layouts restore as member windows, and legacy grids retain the confined
+  viewer without automatic mutation.
+- [ ] Make control-mode attach snapshots sequence-aware so an actively printing
+  pane cannot repeat snapshot/live overlap without dropping uncertain output.
+- [ ] Persist native divider ratios and restore them. The current durable tree
+  records split direction and ordering; restored splits deliberately balance.
+- [ ] Add a marked, rollback-capable `break-pane` migration for legacy grids.
+  Until that transaction exists, reattachment never rewrites live topology.
+- [ ] Define an explicit post-tmux-server recovery transaction for durable
+  workspace identity and native layout. It must refuse ambiguous name/folder
+  matches rather than silently rebinding a different workspace.
 
 ### Cross-vendor CLI permission profiles
 

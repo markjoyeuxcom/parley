@@ -296,12 +296,16 @@ public final class TmuxController {
     }
 
     public func captureWorkspaceLayout(workspaceID: String) throws -> SavedWorkspaceLayout {
-        guard let workspace = try listWorkspaces().first(where: { $0.id == workspaceID }) else {
-            throw ParleyTmuxError.workspaceNotFound(workspaceID)
+        let workspace = try requireWorkspace(workspaceID)
+        let workspacePanes = try listPanes().filter { $0.workspaceID == workspace.workspaceID }
+        let memberWindows = TmuxIdentifierOrder.sorted(Set(workspacePanes.map(\.windowID)))
+        guard memberWindows.count == 1, let windowID = memberWindows.first else {
+            throw ParleyTmuxError.commandFailed(
+                "This workspace uses native member-window layout. Capture it through Parley's native layout registry."
+            )
         }
-        let workspacePanes = try listPanes().filter { $0.windowID == workspaceID }
         let layout = try runTmux([
-            "display-message", "-p", "-t", workspaceID, "#{window_layout}",
+            "display-message", "-p", "-t", windowID, "#{window_layout}",
         ]).stdoutText
         return SavedWorkspaceLayout(
             name: workspace.name,
@@ -317,65 +321,89 @@ public final class TmuxController {
     @discardableResult
     public func restoreWorkspaceLayout(
         _ layout: SavedWorkspaceLayout,
-        replacing replacedWorkspaceID: String? = nil
+        replacing replacedWorkspaceID: String? = nil,
+        inOwnWindows: Bool = false
     ) throws -> TmuxWorkspace {
         try requireDirectory(layout.defaultFolder)
         for leaf in layout.root.leaves { try requireDirectory(leaf.folder) }
-        if let replacedWorkspaceID,
-           !(try listWorkspaces().contains(where: { $0.id == replacedWorkspaceID })) {
-            throw ParleyTmuxError.workspaceNotFound(replacedWorkspaceID)
-        }
-        if try listWorkspaces().contains(where: {
-            $0.id != replacedWorkspaceID
+
+        let replacedWorkspace = try replacedWorkspaceID.map { try requireWorkspace($0) }
+        let currentWorkspaces = try listWorkspaces()
+        if currentWorkspaces.contains(where: {
+            $0.workspaceID != replacedWorkspace?.workspaceID
                 && $0.name.caseInsensitiveCompare(layout.name) == .orderedSame
         }) {
             throw ParleyTmuxError.commandFailed("A workspace named \(layout.name) already exists.")
         }
-        let replacedPaneIDs: [String] = if let replacedWorkspaceID {
-            try listPanes().filter { $0.windowID == replacedWorkspaceID }.map(\.id)
-        } else {
-            []
-        }
 
+        let livePanes = try listPanes()
+        let replacedPanes = replacedWorkspace.map { workspace in
+            livePanes.filter { $0.workspaceID == workspace.workspaceID }
+        } ?? []
+        let replacedPaneIDs = replacedPanes.map(\.id)
+        let replacedWindowIDs = TmuxIdentifierOrder.sorted(Set(replacedPanes.map(\.windowID)))
         let temporaryName = "Restoring-\(UUID().uuidString.prefix(8))"
-        let replacementHome = if let replacedWorkspaceID {
-            try listWorkspaces().first(where: { $0.id == replacedWorkspaceID })?.homeFolder ?? layout.defaultFolder
-        } else {
-            layout.defaultFolder
-        }
-        let created = try createWorkspace(folder: layout.defaultFolder, name: temporaryName, homeFolder: replacementHome)
+        let replacementHome = replacedWorkspace?.homeFolder ?? layout.defaultFolder
+        let created = try createWorkspace(
+            folder: layout.defaultFolder,
+            name: temporaryName,
+            homeFolder: replacementHome
+        )
         do {
             let initialPane = try requirePane(in: created.id)
-            try configureRestoredNode(layout.root, in: initialPane.id)
-            try setWorkspaceMetadata(
-                windowID: created.id,
-                name: layout.name,
-                homeFolder: created.homeFolder,
-                folder: layout.defaultFolder,
-                automationPolicy: layout.automationPolicy
-            )
-            if let replacedWorkspaceID, replacedWorkspaceID != created.id {
-                // This kill is the commit point. Everything that can fail has
-                // already succeeded, and everything after it is best-effort.
-                _ = try runTmux(["kill-window", "-t", replacedWorkspaceID])
-                for paneID in replacedPaneIDs {
-                    try? relayRuntime?.credentials.forget(paneID)
-                }
+            if inOwnWindows {
+                try configureRestoredMemberWindows(
+                    layout.root,
+                    firstPaneID: initialPane.id,
+                    firstWindowID: created.id,
+                    workspaceID: created.workspaceID
+                )
+            } else {
+                try configureRestoredNode(layout.root, in: initialPane.id)
             }
-            try reconcileBorderChrome(windowID: created.id)
+            let createdWindowIDs = TmuxIdentifierOrder.sorted(Set(try listPanes()
+                .filter { $0.workspaceID == created.workspaceID }
+                .map(\.windowID)))
+            for windowID in createdWindowIDs {
+                try setWorkspaceMetadata(
+                    windowID: windowID,
+                    name: layout.name,
+                    homeFolder: created.homeFolder,
+                    folder: layout.defaultFolder,
+                    automationPolicy: layout.automationPolicy
+                )
+            }
+            for windowID in replacedWindowIDs where windowID != created.id {
+                _ = try runTmux(["kill-window", "-t", windowID])
+            }
+            for paneID in replacedPaneIDs {
+                try? relayRuntime?.credentials.forget(paneID)
+            }
+            for windowID in createdWindowIDs {
+                try reconcileBorderChrome(windowID: windowID)
+            }
             return TmuxWorkspace(
                 id: created.id,
                 name: layout.name,
                 homeFolder: created.homeFolder,
                 defaultFolder: layout.defaultFolder,
                 isActive: true,
-                automationPolicy: layout.automationPolicy
+                automationPolicy: layout.automationPolicy,
+                workspaceID: created.workspaceID
             )
         } catch {
-            let paneIDs = (try? listPanes().filter { $0.windowID == created.id }.map(\.id)) ?? []
-            _ = try? runTmux(["kill-window", "-t", created.id], allowFailure: true)
+            let currentPanes = (try? listPanes()) ?? []
+            let paneIDs = currentPanes.filter {
+                $0.workspaceID == created.workspaceID
+            }.map(\.id)
+            let windowIDs = TmuxIdentifierOrder.sorted(Set(currentPanes.filter {
+                $0.workspaceID == created.workspaceID
+            }.map(\.windowID)))
+            for windowID in windowIDs {
+                _ = try? runTmux(["kill-window", "-t", windowID], allowFailure: true)
+            }
             for paneID in paneIDs { try? relayRuntime?.credentials.forget(paneID) }
-            if let replacedWorkspaceID { try? selectWorkspace(replacedWorkspaceID) }
+            if let replacedWorkspace { try? selectWorkspace(replacedWorkspace.id) }
             throw error
         }
     }
@@ -439,49 +467,53 @@ public final class TmuxController {
     }
 
     public func renameWorkspace(_ windowID: String, name: String) throws {
+        let workspace = try requireWorkspace(windowID)
         let workspaces = try listWorkspaces()
-        guard workspaces.contains(where: { $0.id == windowID }) else {
-            throw ParleyTmuxError.workspaceNotFound(windowID)
-        }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw ParleyTmuxError.commandFailed("Workspace names cannot be empty.")
         }
         guard !workspaces.contains(where: {
-            $0.id != windowID && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame
+            $0.workspaceID != workspace.workspaceID
+                && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame
         }) else {
             throw ParleyTmuxError.commandFailed("A workspace named \(trimmed) already exists.")
         }
-        _ = try runTmux(["rename-window", "-t", windowID, trimmed])
-        _ = try runTmux(["set-option", "-w", "-t", windowID, "@parley-workspace-name", trimmed])
+        for member in try memberWindowIDs(of: workspace) {
+            _ = try runTmux(["rename-window", "-t", member, trimmed])
+            _ = try runTmux(["set-option", "-w", "-t", member, "@parley-workspace-name", trimmed])
+        }
     }
 
     public func setWorkspaceFolder(_ windowID: String, folder: String) throws {
         try requireDirectory(folder)
-        guard try listWorkspaces().contains(where: { $0.id == windowID }) else {
-            throw ParleyTmuxError.workspaceNotFound(windowID)
+        let workspace = try requireWorkspace(windowID)
+        for member in try memberWindowIDs(of: workspace) {
+            _ = try runTmux(["set-option", "-w", "-t", member, "@parley-workspace-folder", folder])
         }
-        _ = try runTmux(["set-option", "-w", "-t", windowID, "@parley-workspace-folder", folder])
     }
 
     public func setWorkspaceAutomationPolicy(
         _ windowID: String,
         policy: WorkspaceAutomationPolicy
     ) throws {
-        guard try listWorkspaces().contains(where: { $0.id == windowID }) else {
-            throw ParleyTmuxError.workspaceNotFound(windowID)
+        let workspace = try requireWorkspace(windowID)
+        for member in try memberWindowIDs(of: workspace) {
+            _ = try runTmux([
+                "set-option", "-w", "-t", member, "@parley-automation-policy", policy.rawValue,
+            ])
         }
-        _ = try runTmux([
-            "set-option", "-w", "-t", windowID, "@parley-automation-policy", policy.rawValue,
-        ])
     }
 
     /// Exactly one agent pane may be the workspace lead. Clearing or replacing
     /// the stamp changes routing metadata only; it grants no additional process
     /// or filesystem capability.
     public func setWorkspaceLead(_ paneID: String?, workspaceID: String) throws {
-        let workspacePanes = try listPanes().filter { $0.windowID == workspaceID }
-        guard !workspacePanes.isEmpty else { throw ParleyTmuxError.workspaceNotFound(workspaceID) }
+        let workspace = try requireWorkspace(workspaceID)
+        let workspacePanes = try listPanes().filter { $0.workspaceID == workspace.workspaceID }
+        guard !workspacePanes.isEmpty else {
+            throw ParleyTmuxError.workspaceNotFound(workspaceID)
+        }
         if let paneID {
             guard let pane = workspacePanes.first(where: { $0.id == paneID }) else {
                 throw ParleyTmuxError.paneNotFound(paneID)
@@ -500,7 +532,8 @@ public final class TmuxController {
     /// A role is workspace-scoped routing metadata. It remains independent of
     /// the pane's display name and grants no process or filesystem capability.
     public func setPaneRole(_ role: String?, paneID: String, workspaceID: String) throws {
-        let workspacePanes = try listPanes().filter { $0.windowID == workspaceID }
+        let workspace = try requireWorkspace(workspaceID)
+        let workspacePanes = try listPanes().filter { $0.workspaceID == workspace.workspaceID }
         guard let pane = workspacePanes.first(where: { $0.id == paneID }) else {
             throw ParleyTmuxError.paneNotFound(paneID)
         }
@@ -528,19 +561,23 @@ public final class TmuxController {
         _ paneID: String,
         toWorkspaceID targetWorkspaceID: String,
         direction: SplitDirection,
-        activeHandoffCount: Int
+        activeHandoffCount: Int,
+        preserveOwnWindowTopology: Bool = false
     ) throws -> TmuxPane {
         let panes = try listPanes()
         guard let pane = panes.first(where: { $0.id == paneID }) else {
             throw ParleyTmuxError.paneNotFound(paneID)
         }
-        guard let target = panes.first(where: { $0.windowID == targetWorkspaceID }) else {
+        let targetWorkspace = try requireWorkspace(targetWorkspaceID)
+        guard let target = panes.first(where: {
+            $0.workspaceID == targetWorkspace.workspaceID
+        }) else {
             throw ParleyTmuxError.workspaceNotFound(targetWorkspaceID)
         }
         let assessment = PaneMobilityPolicy.assess(
             action: .move,
             pane: pane,
-            targetWorkspaceID: targetWorkspaceID,
+            targetWorkspaceID: targetWorkspace.workspaceID,
             panes: panes,
             activeHandoffCount: activeHandoffCount
         )
@@ -548,13 +585,26 @@ public final class TmuxController {
             throw ParleyTmuxError.commandFailed(assessment.refusalText)
         }
 
-        _ = try runTmux([
-            "join-pane", "-d", direction == .horizontal ? "-h" : "-v",
-            "-s", paneID, "-t", target.id,
-        ])
+        let sourceWindowPaneCount = panes.count { $0.windowID == pane.windowID }
+        if preserveOwnWindowTopology && sourceWindowPaneCount == 1 {
+            try mirrorWorkspaceOptions(
+                from: target.windowID,
+                to: pane.windowID,
+                identity: targetWorkspace.workspaceID
+            )
+        } else {
+            _ = try runTmux([
+                "join-pane", "-d", direction == .horizontal ? "-h" : "-v",
+                "-s", paneID, "-t", target.id,
+            ])
+        }
         try selectPane(paneID)
-        guard let moved = try listPanes().first(where: { $0.id == paneID && $0.windowID == targetWorkspaceID }) else {
-            throw ParleyTmuxError.commandFailed("tmux moved the pane but Parley could not confirm its destination.")
+        guard let moved = try listPanes().first(where: {
+            $0.id == paneID && $0.workspaceID == targetWorkspace.workspaceID
+        }) else {
+            throw ParleyTmuxError.commandFailed(
+                "tmux moved the pane but Parley could not confirm its destination."
+            )
         }
         try reconcileBorderChrome(windowID: pane.windowID)
         try reconcileBorderChrome(windowID: moved.windowID)
@@ -569,19 +619,23 @@ public final class TmuxController {
         _ paneID: String,
         toWorkspaceID targetWorkspaceID: String,
         direction: SplitDirection,
-        activeHandoffCount: Int
+        activeHandoffCount: Int,
+        inOwnWindow: Bool = false
     ) throws -> TmuxPane {
         let panes = try listPanes()
         guard let pane = panes.first(where: { $0.id == paneID }) else {
             throw ParleyTmuxError.paneNotFound(paneID)
         }
-        guard let target = panes.first(where: { $0.windowID == targetWorkspaceID }) else {
+        let targetWorkspace = try requireWorkspace(targetWorkspaceID)
+        guard let target = panes.first(where: {
+            $0.workspaceID == targetWorkspace.workspaceID
+        }) else {
             throw ParleyTmuxError.workspaceNotFound(targetWorkspaceID)
         }
         let assessment = PaneMobilityPolicy.assess(
             action: .clone,
             pane: pane,
-            targetWorkspaceID: targetWorkspaceID,
+            targetWorkspaceID: targetWorkspace.workspaceID,
             panes: panes,
             activeHandoffCount: activeHandoffCount
         )
@@ -589,13 +643,41 @@ public final class TmuxController {
             throw ParleyTmuxError.commandFailed(assessment.refusalText)
         }
 
-        let arguments = [
-            "split-window", "-d", "-P", "-F", "#{pane_id}",
-            direction == .horizontal ? "-h" : "-v", "-t", target.id,
-            "-c", pane.cwd, "/bin/sleep", "2147483647",
-        ]
-        let cloneID = try runTmux(arguments).stdoutText
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let cloneID: String
+        var cloneWindowID: String?
+        if inOwnWindow {
+            let created = try runTmux([
+                "new-window", "-d", "-P", "-F",
+                "#{window_id}\(Self.outputFieldSeparator)#{pane_id}",
+                "-t", "\(exactSession):", "-c", pane.cwd,
+                "/bin/sleep", "2147483647",
+            ]).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let identifiers = created.components(separatedBy: Self.outputFieldSeparator)
+            guard identifiers.count == 2,
+                  identifiers[0].hasPrefix("@"), identifiers[1].hasPrefix("%") else {
+                throw ParleyTmuxError.commandFailed(
+                    "tmux did not return the cloned member-window identifiers"
+                )
+            }
+            cloneWindowID = identifiers[0]
+            cloneID = identifiers[1]
+            do {
+                try mirrorWorkspaceOptions(
+                    from: target.windowID,
+                    to: identifiers[0],
+                    identity: targetWorkspace.workspaceID
+                )
+            } catch {
+                _ = try? runTmux(["kill-window", "-t", identifiers[0]], allowFailure: true)
+                throw error
+            }
+        } else {
+            cloneID = try runTmux([
+                "split-window", "-d", "-P", "-F", "#{pane_id}",
+                direction == .horizontal ? "-h" : "-v", "-t", target.id,
+                "-c", pane.cwd, "/bin/sleep", "2147483647",
+            ]).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard !cloneID.isEmpty else {
             throw ParleyTmuxError.commandFailed("tmux did not return the cloned pane id")
         }
@@ -612,14 +694,20 @@ public final class TmuxController {
             try configureRestoredLeaf(leaf, paneID: cloneID)
             try selectPane(cloneID)
             guard let clone = try listPanes().first(where: {
-                $0.id == cloneID && $0.windowID == targetWorkspaceID
+                $0.id == cloneID && $0.workspaceID == targetWorkspace.workspaceID
             }) else {
-                throw ParleyTmuxError.commandFailed("tmux created the clone but Parley could not confirm its destination.")
+                throw ParleyTmuxError.commandFailed(
+                    "tmux created the clone but Parley could not confirm its destination."
+                )
             }
             try reconcileBorderChrome(windowID: clone.windowID)
             return clone
         } catch {
-            _ = try? runTmux(["kill-pane", "-t", cloneID], allowFailure: true)
+            if let cloneWindowID {
+                _ = try? runTmux(["kill-window", "-t", cloneWindowID], allowFailure: true)
+            } else {
+                _ = try? runTmux(["kill-pane", "-t", cloneID], allowFailure: true)
+            }
             try? relayRuntime?.credentials.forget(cloneID)
             throw error
         }
@@ -627,9 +715,7 @@ public final class TmuxController {
 
     public func closeWorkspace(_ windowID: String) throws {
         let workspaces = try listWorkspaces()
-        guard let workspace = workspaces.first(where: { $0.id == windowID }) else {
-            throw ParleyTmuxError.workspaceNotFound(windowID)
-        }
+        let workspace = try requireWorkspace(windowID)
         guard workspaces.count > 1 else { throw ParleyTmuxError.cannotCloseLastWorkspace }
         // The exact member set: every window sharing the workspace's durable
         // identity, and every credential of every pane inside them.
@@ -939,11 +1025,80 @@ public final class TmuxController {
         _ = try runTmux(["send-keys", "-t", paneID, "C-c"])
     }
 
+    private func requireWorkspace(_ reference: String) throws -> TmuxWorkspace {
+        let workspaces = try listWorkspaces()
+        if let direct = workspaces.first(where: {
+            $0.id == reference || $0.workspaceID == reference
+        }) {
+            return direct
+        }
+        if let pane = try listPanes().first(where: { $0.windowID == reference }),
+           let member = workspaces.first(where: { $0.workspaceID == pane.workspaceID }) {
+            return member
+        }
+        throw ParleyTmuxError.workspaceNotFound(reference)
+    }
+
+    private func memberWindowIDs(of workspace: TmuxWorkspace) throws -> [String] {
+        let ids = Set(try listPanes().lazy
+            .filter { $0.workspaceID == workspace.workspaceID }
+            .map(\.windowID))
+        guard !ids.isEmpty else {
+            throw ParleyTmuxError.workspaceNotFound(workspace.id)
+        }
+        return TmuxIdentifierOrder.sorted(ids)
+    }
+
     private func requirePane(in workspaceID: String) throws -> TmuxPane {
         guard let pane = try listPanes().first(where: { $0.windowID == workspaceID }) else {
             throw ParleyTmuxError.paneNotFound("workspace \(workspaceID)")
         }
         return pane
+    }
+
+    private func configureRestoredMemberWindows(
+        _ root: SavedLayoutNode,
+        firstPaneID: String,
+        firstWindowID: String,
+        workspaceID: String
+    ) throws {
+        let leaves = root.leaves
+        guard let first = leaves.first else {
+            throw ParleyTmuxError.commandFailed("A saved layout must contain at least one pane.")
+        }
+        try configureRestoredLeaf(first, paneID: firstPaneID)
+        for leaf in leaves.dropFirst() {
+            let pendingName = "Parley-Pending-Member-\(UUID().uuidString)"
+            var createdWindowID: String?
+            do {
+                let result = try runTmux([
+                    "new-window", "-d", "-P", "-F",
+                    "#{window_id}\(Self.outputFieldSeparator)#{pane_id}",
+                    "-t", "\(exactSession):", "-c", leaf.folder, "-n", pendingName,
+                    "/bin/sleep", "2147483647",
+                ])
+                let identifiers = try resolveCreatedWorkspace(
+                    from: result.stdoutText,
+                    pendingName: pendingName,
+                    createdWindowID: &createdWindowID
+                )
+                try mirrorWorkspaceOptions(
+                    from: firstWindowID,
+                    to: identifiers.windowID,
+                    identity: workspaceID
+                )
+                try configureRestoredLeaf(leaf, paneID: identifiers.paneID)
+            } catch {
+                if let createdWindowID {
+                    _ = try? runTmux(["kill-window", "-t", createdWindowID], allowFailure: true)
+                } else {
+                    _ = try? runTmux([
+                        "kill-window", "-t", pendingWindowTarget(named: pendingName),
+                    ], allowFailure: true)
+                }
+                throw error
+            }
+        }
     }
 
     private func configureRestoredNode(_ node: SavedLayoutNode, in paneID: String) throws {
@@ -1419,7 +1574,11 @@ public final class TmuxController {
             members[window.workspaceID, default: []].append(window)
         }
         return order.compactMap { key in
-            guard let group = members[key], let representative = group.first else { return nil }
+            guard let group = members[key] else { return nil }
+            let representative = group.first(where: \.isActive) ?? group.sorted {
+                $0.id.localizedStandardCompare($1.id) == .orderedAscending
+            }.first
+            guard let representative else { return nil }
             guard group.count > 1 else { return representative }
             return TmuxWorkspace(
                 id: representative.id,

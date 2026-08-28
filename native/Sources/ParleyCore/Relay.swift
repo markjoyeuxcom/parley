@@ -2246,12 +2246,12 @@ public final class RelayBroker: @unchecked Sendable {
             sourcePaneID: source.id,
             sourceName: source.displayName,
             sourceKind: source.kind,
-            sourceWorkspaceID: source.windowID,
+            sourceWorkspaceID: source.workspaceID,
             sourceWorkspaceName: source.workspaceName,
             targetPaneID: target.id,
             targetName: target.displayName,
             targetKind: target.kind,
-            targetWorkspaceID: target.windowID,
+            targetWorkspaceID: target.workspaceID,
             targetWorkspaceName: target.workspaceName,
             text: normalized,
             preserveFormatting: request.preserveFormatting,
@@ -2880,6 +2880,7 @@ public final class RelayBroker: @unchecked Sendable {
             return available.filter { pane in
                 let workspaceMatches = requestedWorkspace.caseInsensitiveCompare(pane.workspaceName ?? "") == .orderedSame
                     || requestedWorkspace.caseInsensitiveCompare(pane.windowID) == .orderedSame
+                    || requestedWorkspace.caseInsensitiveCompare(pane.workspaceID) == .orderedSame
                 return workspaceMatches && paneMatches(requestedPane, pane: pane)
             }
         }
@@ -3329,12 +3330,12 @@ public final class RelayBroker: @unchecked Sendable {
             sourcePaneID: sender.id,
             sourceName: sender.displayName,
             sourceKind: sender.kind,
-            sourceWorkspaceID: sender.windowID,
+            sourceWorkspaceID: sender.workspaceID,
             sourceWorkspaceName: sender.workspaceName,
             targetPaneID: target.id,
             targetName: target.displayName,
             targetKind: target.kind,
-            targetWorkspaceID: target.windowID,
+            targetWorkspaceID: target.workspaceID,
             targetWorkspaceName: target.workspaceName,
             text: text,
             submitted: submitted,
