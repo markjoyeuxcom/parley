@@ -311,6 +311,8 @@ final class AppModel: ObservableObject {
         workspaceRegistry = WorkspaceRegistry(
             file: applicationDirectory.appendingPathComponent("workspace-registry.json")
         )
+        nativeLayouts = ((try? workspaceRegistry.records()) ?? [])
+            .reduce(into: [:]) { $0[$1.workspaceID] = $1.layout }
         teamTemplateStore = TeamTemplateStore(
             file: applicationDirectory.appendingPathComponent("team-templates.json")
         )
@@ -564,6 +566,52 @@ final class AppModel: ObservableObject {
                 isSinglePane: members.count == 1
             )
         }
+    }
+
+    /// Native split trees per durable workspace id, loaded from the registry
+    /// and persisted through it whenever the structure changes.
+    private var nativeLayouts: [String: NativeLayoutNode] = [:]
+
+    var previewLayoutTree: NativeLayoutNode? {
+        guard let workspace = activeWorkspace else { return nil }
+        let leaves = previewWindowViewers.map(\.representativePaneID)
+        return NativeLayoutNode.reconciled(nativeLayouts[workspace.workspaceID], with: leaves)
+    }
+
+    private func representativeLeaves(workspaceID: String, in allPanes: [TmuxPane]) -> [String] {
+        let grouped = Dictionary(
+            grouping: allPanes.filter { $0.workspaceID == workspaceID },
+            by: \.windowID
+        )
+        return grouped.keys.sorted().compactMap { grouped[$0]?.map(\.id).min() }
+    }
+
+    private func reconcileNativeLayouts(workspaces: [TmuxWorkspace], panes allPanes: [TmuxPane]) {
+        for workspace in workspaces {
+            let leaves = representativeLeaves(workspaceID: workspace.workspaceID, in: allPanes)
+            let reconciled = NativeLayoutNode.reconciled(nativeLayouts[workspace.workspaceID], with: leaves)
+            guard reconciled != nativeLayouts[workspace.workspaceID] else { continue }
+            nativeLayouts[workspace.workspaceID] = reconciled
+            try? workspaceRegistry.updateLayout(workspaceID: workspace.workspaceID, layout: reconciled)
+        }
+    }
+
+    /// Records where a new own-window pane sits: split from its target in the
+    /// requested direction. A pane joining an existing grid window changes no
+    /// native structure, and a failed insert falls back to reconciliation.
+    private func recordNativeSplit(created: TmuxPane, target: TmuxPane?, direction: SplitDirection) {
+        guard windowsAsPanesPreview, let target, created.windowID != target.windowID else { return }
+        let workspaceID = created.workspaceID
+        let targetLeaf = panes.filter { $0.windowID == target.windowID }.map(\.id).min() ?? target.id
+        let updated: NativeLayoutNode?
+        if let current = nativeLayouts[workspaceID] {
+            updated = current.inserting(created.id, after: targetLeaf, direction: direction)
+        } else {
+            updated = .split(direction: direction, first: .leaf(targetLeaf), second: .leaf(created.id))
+        }
+        guard let updated else { return }
+        nativeLayouts[workspaceID] = updated
+        try? workspaceRegistry.updateLayout(workspaceID: workspaceID, layout: updated)
     }
 
     func viewerHandle(forWindow windowID: String) -> TerminalHandle {
@@ -1950,6 +1998,7 @@ final class AppModel: ObservableObject {
                 if windowsAsPanesPreview {
                     ensurePreviewViewSessions(for: refreshedPanes)
                     ensureControlConnection()
+                    reconcileNativeLayouts(workspaces: refreshedWorkspaces, panes: refreshedPanes)
                     viewerHandles = viewerHandles.filter { windowID, _ in
                         refreshedPanes.contains { $0.windowID == windowID }
                     }
@@ -2775,13 +2824,15 @@ final class AppModel: ObservableObject {
         perform {
             guard let controller else { return }
             let standardized = WorkspaceFolderIdentity.normalized(folder)
-            _ = try controller.createPane(
+            let splitTarget = activePane
+            let created = try controller.createPane(
                 kind: kind,
                 cwd: standardized,
                 direction: direction,
                 permissionProfile: permissionProfile,
                 inOwnWindow: windowsAsPanesPreview
             )
+            recordNativeSplit(created: created, target: splitTarget, direction: direction)
             rememberFolder(standardized)
             try refresh()
             terminalHandle.focus()
@@ -2859,13 +2910,15 @@ final class AppModel: ObservableObject {
             guard let controller else { return }
             switch request.action {
             case let .create(direction):
-                _ = try controller.createPane(
+                let splitTarget = activePane
+                let created = try controller.createPane(
                     kind: request.kind,
                     cwd: request.folder,
                     direction: direction,
                     permissionProfile: effective,
                     inOwnWindow: windowsAsPanesPreview
                 )
+                recordNativeSplit(created: created, target: splitTarget, direction: direction)
                 rememberFolder(request.folder)
             case let .restart(paneID):
                 try controller.restartPane(paneID, permissionProfile: effective)
@@ -4835,6 +4888,15 @@ final class AppModel: ObservableObject {
     }
 
     func balance() {
+        if windowsAsPanesPreview, let workspace = activeWorkspace {
+            let leaves = representativeLeaves(workspaceID: workspace.workspaceID, in: panes)
+            guard let tiled = NativeLayoutNode.tiled(leaves) else { return }
+            nativeLayouts[workspace.workspaceID] = tiled
+            try? workspaceRegistry.updateLayout(workspaceID: workspace.workspaceID, layout: tiled)
+            objectWillChange.send()
+            terminalHandle.focus()
+            return
+        }
         perform {
             try controller?.balancePanes()
             terminalHandle.focus()

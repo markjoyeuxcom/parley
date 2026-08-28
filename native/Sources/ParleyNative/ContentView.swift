@@ -1487,12 +1487,22 @@ struct ContentView: View {
     /// Windows-as-panes preview: one confined viewer client per member window,
     /// split natively. The active pane's viewer shares the legacy terminal
     /// handle so focus and selection call sites keep working.
+    @ViewBuilder
     private var previewViewerSplit: some View {
-        HSplitView {
-            ForEach(model.previewWindowViewers) { viewer in
-                previewViewerLeaf(viewer)
-                    .background(Color(nsColor: NSColor(white: 0.085, alpha: 1)))
+        if let tree = model.previewLayoutTree {
+            NativeLayoutSplitView(node: tree) { paneID in
+                previewLeaf(representativePaneID: paneID)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func previewLeaf(representativePaneID: String) -> some View {
+        if let viewer = model.previewWindowViewers.first(where: {
+            $0.representativePaneID == representativePaneID
+        }) {
+            previewViewerLeaf(viewer)
+                .background(Color(nsColor: NSColor(white: 0.085, alpha: 1)))
         }
     }
 
@@ -1570,6 +1580,32 @@ struct ContentView: View {
             Menu(group.workspace.name) {
                 ForEach(group.panes) { target in
                     Button(target.displayName) { action(target) }
+                }
+            }
+        }
+    }
+}
+
+/// Renders a native layout tree: horizontal splits sit side by side,
+/// vertical splits stack, and dividers stay AppKit-draggable.
+private struct NativeLayoutSplitView<Leaf: View>: View {
+    let node: NativeLayoutNode
+    let leaf: (String) -> Leaf
+
+    var body: some View {
+        switch node {
+        case let .leaf(paneID):
+            leaf(paneID)
+        case let .split(direction, first, second):
+            if direction == .horizontal {
+                HSplitView {
+                    NativeLayoutSplitView(node: first, leaf: leaf)
+                    NativeLayoutSplitView(node: second, leaf: leaf)
+                }
+            } else {
+                VSplitView {
+                    NativeLayoutSplitView(node: first, leaf: leaf)
+                    NativeLayoutSplitView(node: second, leaf: leaf)
                 }
             }
         }

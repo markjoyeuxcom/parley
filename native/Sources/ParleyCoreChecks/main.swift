@@ -1941,10 +1941,26 @@ private func checkWorkspaceRegistryDurability() throws {
     )
     let revision = try registry.bumpLayoutRevision(workspaceID: stamped.workspaceID)
     try expect(revision == 1, "layout revision did not advance")
+    let tree = NativeLayoutNode.split(
+        direction: .vertical, first: .leaf("%1"), second: .leaf("%2")
+    )
+    try registry.updateLayout(workspaceID: stamped.workspaceID, layout: tree)
+    let storedLayout = try registry.record(workspaceID: stamped.workspaceID)
+    try expect(
+        storedLayout?.layout == tree && storedLayout?.layoutRevision == 2,
+        "the native layout tree was not stored with an advanced revision"
+    )
+    try registry.updateLayout(workspaceID: stamped.workspaceID, layout: tree)
+    let unchangedLayout = try registry.record(workspaceID: stamped.workspaceID)
+    try expect(
+        unchangedLayout?.layoutRevision == 2,
+        "an identical layout rewrite advanced the revision"
+    )
 
     let reloaded = try WorkspaceRegistry(file: file).record(workspaceID: stamped.workspaceID)
     try expect(
-        reloaded?.layoutRevision == 1 && reloaded?.name == "api-renamed",
+        reloaded?.layoutRevision == 2 && reloaded?.name == "api-renamed"
+            && reloaded?.layout != nil,
         "registry records did not persist across instances"
     )
 
@@ -4393,6 +4409,74 @@ private func checkRealTmuxControlModeStreamsPaneOutput() throws {
 
     connection.stop()
     try expect(!connection.isRunning, "control-mode client survived stop")
+}
+
+private func checkNativeWorkspaceLayoutTree() throws {
+    // Split Below must stack; Split Right must sit beside; Balance retiles.
+    let single = NativeLayoutNode.leaf("%1")
+    let below = try require(
+        single.inserting("%2", after: "%1", direction: .vertical),
+        "splitting below the only leaf failed"
+    )
+    try expect(
+        below == .split(direction: .vertical, first: .leaf("%1"), second: .leaf("%2")),
+        "Split Below did not stack the new leaf under its target"
+    )
+    let right = try require(
+        below.inserting("%3", after: "%2", direction: .horizontal),
+        "splitting right of a nested leaf failed"
+    )
+    try expect(
+        right.leaves == ["%1", "%2", "%3"],
+        "insertion changed the leaf order"
+    )
+    try expect(
+        right.inserting("%9", after: "%404", direction: .horizontal) == nil,
+        "insertion invented a target leaf"
+    )
+
+    let collapsed = try require(right.removing("%2"), "removing a nested leaf failed")
+    try expect(
+        collapsed == .split(direction: .vertical, first: .leaf("%1"), second: .leaf("%3")),
+        "removing a leaf did not collapse its parent split into the sibling"
+    )
+    try expect(NativeLayoutNode.leaf("%1").removing("%1") == nil, "removing the only leaf did not empty the tree")
+
+    let reconciled = try require(
+        NativeLayoutNode.reconciled(right, with: ["%1", "%3", "%5"]),
+        "reconciliation emptied a live tree"
+    )
+    try expect(
+        reconciled.leaves == ["%1", "%3", "%5"],
+        "reconciliation did not drop the dead leaf and append the new one"
+    )
+    try expect(
+        NativeLayoutNode.reconciled(nil, with: ["%7"]) == .leaf("%7"),
+        "reconciliation did not seed a tree from live leaves"
+    )
+    try expect(
+        NativeLayoutNode.reconciled(right, with: []) == nil,
+        "reconciliation kept leaves no live pane backs"
+    )
+
+    let tiled = try require(
+        NativeLayoutNode.tiled(["%1", "%2", "%3", "%4"]),
+        "tiling four leaves failed"
+    )
+    try expect(
+        tiled.leaves == ["%1", "%2", "%3", "%4"],
+        "tiling lost or reordered leaves"
+    )
+    guard case let .split(direction, first, second) = tiled,
+          direction == .horizontal,
+          case .split(direction: .vertical, _, _) = first,
+          case .split(direction: .vertical, _, _) = second else {
+        throw CheckFailure(description: "Balance did not produce an alternating tiled arrangement")
+    }
+
+    let encoded = try JSONEncoder().encode(tiled)
+    let decoded = try JSONDecoder().decode(NativeLayoutNode.self, from: encoded)
+    try expect(decoded == tiled, "the native layout tree did not round-trip losslessly")
 }
 
 private func checkIdleAgentReaperGates() throws {
@@ -11514,6 +11598,7 @@ let checks: [(String, () throws -> Void)] = [
     ("real tmux window-per-pane creation and close", checkRealTmuxWindowPerPaneCreationAndClose),
     ("real tmux control mode streams pane output", checkRealTmuxControlModeStreamsPaneOutput),
     ("real tmux pane mode seeding", checkRealTmuxPaneModeSeeding),
+    ("native workspace layout tree", checkNativeWorkspaceLayoutTree),
     ("idle agent reaper gates", checkIdleAgentReaperGates),
     ("stopped pane process keeps its seat", checkStopPaneProcessKeepsSeat),
     ("real tmux stop-everything shutdown", checkRealTmuxServerShutdown),

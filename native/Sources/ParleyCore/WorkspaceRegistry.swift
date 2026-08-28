@@ -12,6 +12,7 @@ public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
     public var automationPolicy: WorkspaceAutomationPolicy
     public var selectedPaneID: String?
     public var layoutRevision: Int
+    public var layout: NativeLayoutNode?
     public var updatedAt: Date
 
     public init(
@@ -22,6 +23,7 @@ public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
         automationPolicy: WorkspaceAutomationPolicy,
         selectedPaneID: String? = nil,
         layoutRevision: Int = 0,
+        layout: NativeLayoutNode? = nil,
         updatedAt: Date = Date()
     ) {
         self.workspaceID = workspaceID
@@ -31,6 +33,7 @@ public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
         self.automationPolicy = automationPolicy
         self.selectedPaneID = selectedPaneID
         self.layoutRevision = layoutRevision
+        self.layout = layout
         self.updatedAt = updatedAt
     }
 }
@@ -139,6 +142,23 @@ public final class WorkspaceRegistry {
         }
     }
 
+    /// Stores the workspace's native split tree and advances its revision.
+    /// A missing record means the workspace never earned durable identity;
+    /// the layout is presentation state, so that is a quiet no-op.
+    public func updateLayout(workspaceID: String, layout: NativeLayoutNode?) throws {
+        try lock.withLock {
+            var document = try readDocument()
+            guard let index = document.records.firstIndex(where: {
+                $0.workspaceID == workspaceID
+            }) else { return }
+            guard document.records[index].layout != layout else { return }
+            document.records[index].layout = layout
+            document.records[index].layoutRevision += 1
+            document.records[index].updatedAt = Date()
+            try write(document)
+        }
+    }
+
     /// Marks that the workspace's native layout changed. The revision lets a
     /// later reader distinguish a stale tree from a settled one.
     @discardableResult
@@ -171,6 +191,7 @@ public final class WorkspaceRegistry {
             && left.automationPolicy == right.automationPolicy
             && left.selectedPaneID == right.selectedPaneID
             && left.layoutRevision == right.layoutRevision
+            && left.layout == right.layout
     }
 
     private func readDocument() throws -> Document {
