@@ -154,6 +154,12 @@ upgrades a Production tmux/core, and remains visibly marked
 
 - A tmux window is a Parley workspace.
 - A tmux pane is a live shell or agent pane.
+- Quitting with started agents asks whether to keep everything running (the
+  default — tmux keeps every process alive, including agents mid-task) or to
+  Stop Everything, which ends every pane process and the tmux session. An
+  opt-in Tools toggle reaps agents idle for 30 minutes into visible stopped
+  seats that Start revives; the active pane, workspace leads and panes in any
+  live consultation or delegation are never touched.
 - Workspace names, stable home folders and mutable New Pane Folders are tmux
   window options. The home is used for folder opening; the New Pane Folder
   affects only future toolbar-created panes.

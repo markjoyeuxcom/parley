@@ -304,6 +304,7 @@ final class AppModel: ObservableObject {
         applicationDirectory = runtime.applicationDirectory
         preferences = UserDefaults(suiteName: runtime.preferenceSuiteName) ?? .standard
         windowsAsPanesPreview = preferences.bool(forKey: Self.windowsAsPanesPreviewKey)
+        idleAgentReaperEnabled = preferences.bool(forKey: Self.idleAgentReaperKey)
         layoutStore = SavedWorkspaceLayoutStore(
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
         )
@@ -597,6 +598,77 @@ final class AppModel: ObservableObject {
             && windowPaneCounts[pane.windowID, default: 0] > 1
             && seenWindows.insert(pane.windowID).inserted {
             try? controller.ensureViewSession(paneID: pane.id)
+        }
+    }
+
+    // MARK: Idle agent reaper (opt-in)
+
+    @Published var idleAgentReaperEnabled = false {
+        didSet {
+            guard oldValue != idleAgentReaperEnabled else { return }
+            preferences.set(idleAgentReaperEnabled, forKey: Self.idleAgentReaperKey)
+        }
+    }
+    private static let idleAgentReaperKey = "ParleyIdleAgentReaper"
+    private var lastReapSweep = Date.distantPast
+
+    private func reapIdleAgentsIfEnabled(controller: TmuxController, panes: [TmuxPane]) {
+        guard idleAgentReaperEnabled else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastReapSweep) >= 60 else { return }
+        lastReapSweep = now
+        guard let stamps = try? controller.paneActivityTimestamps() else { return }
+        for pane in panes {
+            let collaborating = consultations.contains {
+                $0.sourcePaneID == pane.id || $0.targetPaneID == pane.id
+            } || activeDelegations.contains {
+                $0.sourcePaneID == pane.id || $0.targetPaneID == pane.id
+            } || awaitingAnswerCount(for: pane.id) > 0
+            guard IdleAgentReaper.shouldReap(
+                pane: pane,
+                lastActivity: stamps[pane.id],
+                now: now,
+                hasLiveCollaboration: collaborating
+            ) else { continue }
+            do {
+                try controller.stopPaneProcess(pane.id)
+                try recordSuccessfulActivity(RelayActivityEventRequest(
+                    kind: .paneReaped,
+                    workspaceID: pane.workspaceID,
+                    workspaceName: pane.workspaceName ?? pane.workspaceID,
+                    paneID: pane.id,
+                    paneName: pane.displayName,
+                    paneKind: pane.kind,
+                    detail: "Stopped after \(Int(IdleAgentReaper.defaultIdleInterval / 60)) idle minutes. Start revives the seat."
+                ))
+            } catch {
+                // The seat is untouched on failure; the next sweep retries.
+            }
+        }
+    }
+
+    // MARK: Quit-time choice
+
+    /// Returns true when quitting may proceed. With started agents alive, the
+    /// person chooses between the babysitter default (everything keeps
+    /// running in tmux) and an explicit full stop.
+    func resolveTermination() -> Bool {
+        let runningAgents = panes.filter { $0.kind.isAgent && $0.isStarted && !$0.isDead }
+        guard !runningAgents.isEmpty, controller != nil else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Keep \(runningAgents.count) agent\(runningAgents.count == 1 ? "" : "s") running?"
+        alert.informativeText = "Parley's tmux session keeps every pane and agent process alive after the app quits — an agent mid-task keeps working. Stop Everything ends every pane process and the tmux session; the coordination core follows its login-item setting."
+        alert.addButton(withTitle: "Keep Running")
+        alert.addButton(withTitle: "Stop Everything")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return true
+        case .alertSecondButtonReturn:
+            try? controller?.shutdownServer()
+            return true
+        default:
+            return false
         }
     }
 
@@ -1882,6 +1954,7 @@ final class AppModel: ObservableObject {
                         refreshedPanes.contains { $0.windowID == windowID }
                     }
                 }
+                reapIdleAgentsIfEnabled(controller: controller, panes: refreshedPanes)
                 tmuxAvailable = true
                 tmuxError = nil
             } catch {

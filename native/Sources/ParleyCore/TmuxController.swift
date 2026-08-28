@@ -858,6 +858,54 @@ public final class TmuxController {
         try setStartedMetadata(paneID: paneID, started: true)
     }
 
+    /// Stops one agent pane's process while keeping its seat: the pane stays
+    /// visible as a stopped slot with its name, role and permission identity,
+    /// and Start revives it exactly like a restored layout slot. The relay
+    /// credential is forgotten because the process it identified is gone.
+    public func stopPaneProcess(_ paneID: String) throws {
+        guard let pane = try listPanes().first(where: { $0.id == paneID }) else {
+            throw ParleyTmuxError.paneNotFound(paneID)
+        }
+        guard pane.kind.isAgent, pane.isStarted, !pane.isDead else { return }
+        _ = try runTmux([
+            "respawn-pane", "-k", "-t", paneID, "-c", pane.cwd,
+            "/bin/sleep", "2147483647",
+        ])
+        try setRelayMetadata(paneID: paneID, enabled: false)
+        _ = try runTmux(["set-option", "-p", "-u", "-t", paneID, "@parley-protocol"], allowFailure: true)
+        try setStartedMetadata(paneID: paneID, started: false)
+        try relayRuntime?.credentials.forget(paneID)
+    }
+
+    /// Last activity per pane, from the member window's activity stamp. Under
+    /// windows-as-panes this is per pane; a legacy grid shares one stamp.
+    public func paneActivityTimestamps() throws -> [String: Date] {
+        let separator = Self.outputFieldSeparator
+        let output = try runTmux([
+            "list-panes", "-s", "-t", exactSession,
+            "-F", "#{pane_id}\(separator)#{window_activity}",
+        ]).stdoutText
+        var stamps: [String: Date] = [:]
+        for row in output.split(separator: "\n") {
+            let fields = String(row).components(separatedBy: separator)
+            guard fields.count == 2, fields[0].hasPrefix("%"),
+                  let epoch = TimeInterval(fields[1]) else { continue }
+            stamps[fields[0]] = Date(timeIntervalSince1970: epoch)
+        }
+        return stamps
+    }
+
+    /// Ends every pane process and the tmux server itself — the explicit
+    /// "stop everything" a person chooses at quit. Credentials are forgotten
+    /// first; the coordination core follows its own login-item setting.
+    public func shutdownServer() throws {
+        let paneIDs = try listPanes().map(\.id)
+        for paneID in paneIDs {
+            try relayRuntime?.credentials.forget(paneID)
+        }
+        _ = try runTmux(["kill-server"], allowFailure: true)
+    }
+
     public func closePane(_ paneID: String) throws {
         let panes = try listPanes()
         guard panes.contains(where: { $0.id == paneID }) else { throw ParleyTmuxError.paneNotFound(paneID) }

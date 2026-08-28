@@ -4395,6 +4395,119 @@ private func checkRealTmuxControlModeStreamsPaneOutput() throws {
     try expect(!connection.isRunning, "control-mode client survived stop")
 }
 
+private func checkIdleAgentReaperGates() throws {
+    let now = Date()
+    let idle = now.addingTimeInterval(-IdleAgentReaper.defaultIdleInterval - 1)
+    let recent = now.addingTimeInterval(-60)
+    func pane(
+        kind: PaneKind = .claude,
+        active: Bool = false,
+        started: Bool = true,
+        dead: Bool = false,
+        lead: Bool = false,
+        copyMode: Bool = false
+    ) -> TmuxPane {
+        TmuxPane(
+            id: "%9", kind: kind, customName: nil, terminalTitle: "", cwd: "/tmp",
+            currentCommand: "claude", isActive: active, windowID: "@1", returnToPaneID: nil,
+            isDead: dead, isStarted: started, isWorkspaceLead: lead, isInCopyMode: copyMode
+        )
+    }
+    try expect(
+        IdleAgentReaper.shouldReap(pane: pane(), lastActivity: idle, now: now, hasLiveCollaboration: false),
+        "an idle background agent was not considered reapable"
+    )
+    let kept: [(String, Bool)] = [
+        ("shell pane", IdleAgentReaper.shouldReap(pane: pane(kind: .shell), lastActivity: idle, now: now, hasLiveCollaboration: false)),
+        ("active pane", IdleAgentReaper.shouldReap(pane: pane(active: true), lastActivity: idle, now: now, hasLiveCollaboration: false)),
+        ("stopped pane", IdleAgentReaper.shouldReap(pane: pane(started: false), lastActivity: idle, now: now, hasLiveCollaboration: false)),
+        ("dead pane", IdleAgentReaper.shouldReap(pane: pane(dead: true), lastActivity: idle, now: now, hasLiveCollaboration: false)),
+        ("workspace lead", IdleAgentReaper.shouldReap(pane: pane(lead: true), lastActivity: idle, now: now, hasLiveCollaboration: false)),
+        ("copy-mode pane", IdleAgentReaper.shouldReap(pane: pane(copyMode: true), lastActivity: idle, now: now, hasLiveCollaboration: false)),
+        ("collaborating pane", IdleAgentReaper.shouldReap(pane: pane(), lastActivity: idle, now: now, hasLiveCollaboration: true)),
+        ("recently active pane", IdleAgentReaper.shouldReap(pane: pane(), lastActivity: recent, now: now, hasLiveCollaboration: false)),
+        ("unknown activity", IdleAgentReaper.shouldReap(pane: pane(), lastActivity: nil, now: now, hasLiveCollaboration: false)),
+    ]
+    for (label, reaped) in kept {
+        try expect(!reaped, "the reaper would stop a protected pane: \(label)")
+    }
+}
+
+private func checkStopPaneProcessKeepsSeat() throws {
+    let started = paneRow(id: "%4", kind: .claude, active: false, relayEnabled: true, protocolVersion: AgentProtocol.version)
+    let runner = RecordingRunner { arguments, _ in
+        command(arguments) == "list-panes" ? output(started + "\n") : output()
+    }
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: try temporaryDirectory(),
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner
+    )
+    try controller.stopPaneProcess("%4")
+    try expect(
+        runner.calls.contains { call in
+            command(call.arguments) == "respawn-pane"
+                && call.arguments.contains("/bin/sleep")
+                && call.arguments.contains("2147483647")
+                && call.arguments.contains("%4")
+        },
+        "stopping a pane process did not park the seat on the inert placeholder"
+    )
+    try expect(
+        runner.calls.contains { call in
+            command(call.arguments) == "set-option"
+                && call.arguments.contains("@parley-started")
+                && call.arguments.contains("0")
+        },
+        "a stopped seat still claims a started session"
+    )
+    try expect(
+        runner.calls.contains { call in
+            command(call.arguments) == "set-option"
+                && call.arguments.contains("-u")
+                && call.arguments.contains("@parley-relay")
+        },
+        "a stopped seat kept its relay flag"
+    )
+}
+
+private func checkRealTmuxServerShutdown() throws {
+    let environment = EnvironmentResolver.resolved()
+    let tmux = try require(
+        TmuxController.findTmux(environment: environment),
+        "shutdown check could not find tmux"
+    )
+    let directory = try temporaryDirectory()
+    let controller = try TmuxController(
+        tmuxExecutable: tmux,
+        applicationDirectory: directory,
+        sessionName: "parley-shutdown-check",
+        environment: environment
+    )
+    let runner = ProcessCommandRunner(timeout: 2)
+    defer {
+        _ = try? runner.run(
+            executable: tmux,
+            arguments: ["-S", controller.socketPath.path, "kill-server"],
+            environment: controller.environment,
+            input: nil
+        )
+    }
+    try controller.bootstrap(cwd: directory.path)
+    try controller.shutdownServer()
+    let gone = try runner.run(
+        executable: tmux,
+        arguments: [
+            "-S", controller.socketPath.path, "-f", controller.configPath.path,
+            "has-session", "-t", "=parley-shutdown-check",
+        ],
+        environment: controller.environment,
+        input: nil
+    ).status != 0
+    try expect(gone, "stop-everything left the tmux server running")
+}
+
 private func checkRealTmuxPaneModeSeeding() throws {
     // A native view attaching to a pane must learn the modes the program
     // enabled before attach — mouse reporting above all — or a mouse-aware
@@ -11386,6 +11499,9 @@ let checks: [(String, () throws -> Void)] = [
     ("real tmux window-per-pane creation and close", checkRealTmuxWindowPerPaneCreationAndClose),
     ("real tmux control mode streams pane output", checkRealTmuxControlModeStreamsPaneOutput),
     ("real tmux pane mode seeding", checkRealTmuxPaneModeSeeding),
+    ("idle agent reaper gates", checkIdleAgentReaperGates),
+    ("stopped pane process keeps its seat", checkStopPaneProcessKeepsSeat),
+    ("real tmux stop-everything shutdown", checkRealTmuxServerShutdown),
     ("real macOS agent process boundary", checkRealAgentProcessBoundary),
     ("real tmux saved-layout restoration policy", checkRealTmuxSavedLayoutRestorationPolicy),
     ("inherited Parley capability scrub", checkInheritedParleyCapabilitiesAreScrubbed),

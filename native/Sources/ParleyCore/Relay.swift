@@ -325,6 +325,7 @@ public enum RelayTransitionOrigin: String, Codable, Equatable, Sendable {
 
 public enum RelayActivityEventKind: String, Codable, Equatable, Sendable {
     case paneRestarted
+    case paneReaped
     case workspaceCreated
     case workspaceClosed
     case workspaceRestored

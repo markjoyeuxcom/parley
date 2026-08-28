@@ -13,6 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var externalRequestHandler: ((ExternalApplicationRequest) -> Void)?
     private var pendingExternalRequests: [ExternalApplicationRequest] = []
     private var titlebarZoomRecognizer: NSClickGestureRecognizer?
+    var terminationHandler: (() -> Bool)?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        (terminationHandler?() ?? true) ? .terminateNow : .terminateCancel
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A SwiftPM executable has no app bundle to declare a foreground
@@ -204,6 +209,7 @@ struct ParleyNativeApp: App {
         Window("Parley", id: "main") {
             ContentView(model: model)
                 .onAppear {
+                    appDelegate.terminationHandler = { model.resolveTermination() }
                     appDelegate.bindExternalRequestHandler { request in
                         switch request {
                         case let .workspace(workspace): model.openExternalWorkspace(workspace)
@@ -263,6 +269,13 @@ struct ParleyNativeApp: App {
                     isOn: Binding(
                         get: { model.windowsAsPanesPreview },
                         set: { model.windowsAsPanesPreview = $0 }
+                    )
+                )
+                Toggle(
+                    "Reap Idle Agents After 30 Minutes",
+                    isOn: Binding(
+                        get: { model.idleAgentReaperEnabled },
+                        set: { model.idleAgentReaperEnabled = $0 }
                     )
                 )
                 Divider()

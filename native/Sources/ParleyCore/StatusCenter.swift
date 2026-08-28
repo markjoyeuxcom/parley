@@ -268,12 +268,14 @@ public enum StatusCenterProjection {
             .filter { event in workspaceID == nil || event.workspaceID == workspaceID }
             .map { event in
                 let isPane = event.kind == .paneRestarted
+                    || event.kind == .paneReaped
                     || event.kind == .recipeSubmitted
                     || event.kind == .recipeInterrupted
                     || event.kind == .comparisonForwarded
                 let action: String
                 switch event.kind {
                 case .paneRestarted: action = "RESTARTED"
+                case .paneReaped: action = "REAPED IDLE"
                 case .workspaceCreated: action = "CREATED"
                 case .workspaceClosed: action = "CLOSED"
                 case .workspaceRestored: action = "RESTORED"
