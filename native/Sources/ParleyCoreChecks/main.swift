@@ -4645,6 +4645,21 @@ private func checkRealTmuxWindowPerPaneCreationAndClose() throws {
     let gridChrome = try borderStatus(splitPane.windowID)
     try expect(gridChrome == "top", "a real grid window lost its border title row")
 
+    // Closing an own-window pane removes its window; the border-chrome
+    // reconcile must tolerate the window already being gone.
+    let closable = try controller.createPane(
+        kind: .shell,
+        cwd: directory.path,
+        direction: .horizontal,
+        inOwnWindow: true
+    )
+    try controller.closePane(closable.id)
+    let afterPaneClose = try controller.listPanes()
+    try expect(
+        !afterPaneClose.contains(where: { $0.id == closable.id }),
+        "closing an own-window pane left it behind"
+    )
+
     try controller.closeWorkspace(first.id)
     let remainingWorkspaces = try controller.listWorkspaces()
     let remainingPanes = try controller.listPanes()

@@ -1429,8 +1429,14 @@ public final class TmuxController {
     /// drag-selection the moment the pointer is clamped onto it. Real grids
     /// keep the title row for in-grid identification.
     private func reconcileBorderChrome(windowID: String) throws {
-        let paneCount = try runTmux(["list-panes", "-t", windowID, "-F", "#{pane_id}"])
-            .stdoutText.split(separator: "\n").count
+        // Closing a window's last pane removes the window before this runs;
+        // a vanished window simply has no chrome left to reconcile.
+        let listing = try runTmux(
+            ["list-panes", "-t", windowID, "-F", "#{pane_id}"],
+            allowFailure: true
+        )
+        guard listing.status == 0 else { return }
+        let paneCount = listing.stdoutText.split(separator: "\n").count
         guard paneCount > 0 else { return }
         _ = try runTmux([
             "set-option", "-w", "-t", windowID,
