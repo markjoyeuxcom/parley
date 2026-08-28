@@ -126,16 +126,17 @@ public enum ParleyHelpGuide {
                     paragraphs: [
                         "The left sidebar is Parley's rich pane navigator: it keeps status, permissions, recovery actions and context menus visible. When you hide the sidebar, a compact pane focus strip appears above the terminal in both grid and zoom views. It names every pane, marks the selected one and shows only Parley-owned states such as Copy, Return, Result, stopped, failed or attention required. Clicking another pane focuses it; while zoomed, Parley keeps the workspace zoomed and shows the chosen pane.",
                         "The compact title at the top of each legacy tmux pane identifies the pane inside the grid. It is deliberately not a second session or hidden surface: every item in the focus strip is one visible tmux pane and one real interactive process.",
-                        "With Windows-as-Panes Preview disabled, or for a legacy multi-pane grid, pane history belongs to tmux: use Copy Mode for long selections. The opt-in preview renders each one-pane member window as a native SwiftTerm surface with local scrollback and selection while tmux continues to own the real process.",
+                        "Pane history belongs to tmux in both renderers. The opt-in Windows-as-Panes Preview renders each member window through one ordinary, confined tmux client while SwiftUI owns the visible split. tmux continues to own terminal modes, the real process and its scrollback.",
                     ],
                     items: [
-                        "Normal dragging can enter tmux selection automatically when the CLI is not using mouse input.",
-                        "A mouse-aware CLI may capture normal dragging. In a legacy grid, enter Copy Mode first so tmux owns the gesture.",
+                        "Normal dragging is selection-first: it enters tmux Copy Mode even when a mouse-aware CLI would otherwise capture the drag.",
+                        "In the preview, each native leaf has its own tmux client and its bottom edge is the pane edge, so dragging below it can continue through tmux-owned history.",
                         "In a legacy split workspace, entering Copy Mode temporarily zooms the pane so a drag can keep auto-scrolling at the window edges; leaving Copy Mode restores the split layout. A zoom you chose yourself is kept.",
-                        "Releasing a legacy Copy Mode selection copies it to the macOS clipboard through /usr/bin/pbcopy and exits Copy Mode. Escape or the Exit Copy Mode control cancels without sending terminal input.",
+                        "Releasing a Copy Mode selection copies it to the macOS clipboard through /usr/bin/pbcopy and exits Copy Mode. Escape or the Exit Copy Mode control cancels without sending terminal input.",
                         "The COPY badge is authoritative tmux state. Parley does not infer selection state from terminal text.",
                         "Windows-as-Panes Preview is experimental and must be enabled explicitly in Tools. Existing legacy grids are not broken apart automatically.",
-                        "Native divider positions reopen balanced. On a pane producing output during first attach, the seed overlap can repeat a line; Parley does not discard uncertain live bytes to hide it.",
+                        "Native divider positions reopen balanced. The preview uses ordinary tmux PTY attachment, so live terminal modes and screen state follow the same path as the established renderer.",
+                        "Each independent viewer keeps terminal focus-out separate from native keyboard focus. Background agent prompts remain eligible for safe relay input, while only the clicked leaf receives typing.",
                         "The pane focus strip is navigation, not hidden tabs: every leaf remains a real interactive process.",
                     ],
                     commands: [
@@ -937,6 +938,16 @@ public enum ParleyHelpGuide {
                         "If a CLI works in Terminal but not Parley, its install directory may be absent from the GUI login PATH. Environment Check reports the resolved path.",
                         "After a shared protocol upgrade, restart existing agent panes once so they receive the current instructions.",
                         "If the coordination core is unavailable, use the recovery action shown by Parley instead of launching a second app instance.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "troubleshooting-shutdown",
+                    title: "Quit, detach, or reset the runtime",
+                    items: [
+                        "Press Command-Q to quit the app. Closing the last window with its red button leaves Parley running.",
+                        "An owned Production or Development runtime always offers Keep Running, Stop Everything, or Cancel, even when every agent is stopped or dead.",
+                        "Keep Running detaches the UI while the isolated tmux session survives. Stop Everything ends every pane process and the isolated tmux session.",
+                        "If Parley cannot verify that the session stopped, it reports the failure and keeps the app open. Read-only Development attached to Production never offers a destructive stop.",
                     ]
                 ),
                 ParleyHelpSection(

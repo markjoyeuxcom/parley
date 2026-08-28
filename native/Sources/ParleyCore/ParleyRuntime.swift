@@ -111,6 +111,15 @@ public struct ParleyRuntime: Equatable, Sendable {
     }
 }
 
+public enum RuntimeTerminationPolicy {
+    public static func shouldOfferChoice(
+        runtime: ParleyRuntime,
+        controllerAvailable: Bool
+    ) -> Bool {
+        controllerAvailable && runtime.mode != .attachedProduction
+    }
+}
+
 public enum RuntimeUILeaseError: LocalizedError, Equatable {
     case alreadyRunning(ParleyRuntimeMode)
     case runtimeUnavailable(ParleyRuntimeMode)

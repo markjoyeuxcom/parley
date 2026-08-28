@@ -3,6 +3,8 @@ import Darwin
 import Dispatch
 import Foundation
 import ParleyCore
+import ParleyTerminal
+import SwiftTerm
 
 private struct Invocation {
     let executable: URL
@@ -261,6 +263,68 @@ private func checkRuntimeNamespacesAreExplicitAndDisjoint() throws {
     try expect(!attached.preparesRuntimeFiles && !attached.launchesCore && !attached.upgradesCore, "production attach can mutate the production runtime lifecycle")
     try expect(production.installsStableCommand && !development.installsStableCommand && !attached.installsStableCommand, "a development runtime can replace the stable relay command")
     try expect(production.managesLoginItem && !development.managesLoginItem && !attached.managesLoginItem, "a development runtime can mutate the production login item")
+}
+
+private func checkRuntimeTerminationChoiceSurvivesDeadAgents() throws {
+    let home = URL(fileURLWithPath: "/Users/runtime-termination-test", isDirectory: true)
+    let production = ParleyRuntime.make(mode: .production, homeDirectory: home)
+    let development = ParleyRuntime.make(mode: .development, homeDirectory: home)
+    let attached = ParleyRuntime.make(mode: .attachedProduction, homeDirectory: home)
+
+    try expect(
+        RuntimeTerminationPolicy.shouldOfferChoice(
+            runtime: production,
+            controllerAvailable: true
+        ),
+        "Production hid Stop Everything when no live agent remained"
+    )
+    try expect(
+        RuntimeTerminationPolicy.shouldOfferChoice(
+            runtime: development,
+            controllerAvailable: true
+        ),
+        "Development hid Stop Everything when every agent was dead"
+    )
+    try expect(
+        !RuntimeTerminationPolicy.shouldOfferChoice(
+            runtime: development,
+            controllerAvailable: false
+        ),
+        "Development offered a runtime action without a controller"
+    )
+    try expect(
+        !RuntimeTerminationPolicy.shouldOfferChoice(
+            runtime: attached,
+            controllerAvailable: true
+        ),
+        "read-only Development attachment could stop Production"
+    )
+}
+
+private func checkStopEverythingRefusesSilentFailure() throws {
+    let runner = RecordingRunner { arguments, _ in
+        switch command(arguments) {
+        case "kill-server":
+            CommandOutput(status: 9)
+        case "has-session":
+            CommandOutput(status: 0)
+        default:
+            CommandOutput()
+        }
+    }
+    let controller = try TmuxController(
+        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+        applicationDirectory: temporaryDirectory(),
+        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
+        runner: runner
+    )
+
+    do {
+        try controller.shutdownServer()
+        throw CheckFailure(description: "Stop Everything silently accepted a surviving tmux server")
+    } catch is ParleyTmuxError {
+        // Expected: the UI must remain open and surface the shutdown failure.
+    }
 }
 
 private func checkBuildInformationIsUsefulAndCopyable() throws {
@@ -1285,6 +1349,18 @@ private func checkEmbeddedTmuxPresentation() throws {
     try expect(configuration.contains("pane-border-style") && configuration.contains("pane-active-border-style"), "embedded tmux configuration removed spatial pane boundaries")
     try expect(configuration.contains("copy-pipe-and-cancel '/usr/bin/pbcopy'"), "tmux copy mode does not deliver selections to the macOS clipboard")
     try expect(configuration.contains("MouseDrag1Pane") && configuration.contains("begin-selection"), "tmux copy mode does not support mouse selection")
+    let rootDragBinding = try require(
+        configuration.split(separator: "\n").first {
+            $0.contains("bind-key -T root MouseDrag1Pane")
+        },
+        "tmux configuration has no root mouse-drag binding"
+    )
+    try expect(
+        rootDragBinding.contains("copy-mode -M")
+            && !rootDragBinding.contains("mouse_any_flag")
+            && !rootDragBinding.contains("send-keys -M"),
+        "normal mouse dragging is not selection-first"
+    )
     for redundantOption in ["status-position", "status-style", "status-left", "status-right"] {
         try expect(!configuration.contains(redundantOption), "embedded tmux configuration retained redundant \(redundantOption) chrome")
     }
@@ -1311,6 +1387,21 @@ private func checkEmbeddedTmuxPresentation() throws {
                 && $0.arguments.contains("/usr/bin/pbcopy")
         },
         "reattaching the native UI did not restore the macOS copy binding"
+    )
+    let liveRootDragBinding = try require(
+        runner.calls.first {
+            command($0.arguments) == "bind-key"
+                && $0.arguments.contains("MouseDrag1Pane")
+                && $0.arguments.contains("root")
+        },
+        "reattaching the native UI did not restore the root drag binding"
+    )
+    try expect(
+        liveRootDragBinding.arguments.contains("copy-mode")
+            && liveRootDragBinding.arguments.contains("-M")
+            && !liveRootDragBinding.arguments.contains("if-shell")
+            && !liveRootDragBinding.arguments.contains("send-keys -M"),
+        "the live tmux server did not receive the selection-first drag binding"
     )
 }
 
@@ -1357,6 +1448,14 @@ private func checkPaneFocusAndCopyMetadata() throws {
     )
 
     try controller.selectPane(pane.id, preservingWindowZoom: true)
+    let selectWindow = try require(
+        runner.calls.last { command($0.arguments) == "select-window" },
+        "pane focus did not select its member window"
+    )
+    try expect(
+        selectWindow.arguments.contains("=parley:@0"),
+        "pane focus did not qualify its window to the authoritative base session"
+    )
     try expect(
         runner.calls.contains { command($0.arguments) == "resize-pane" && $0.arguments.contains("-Z") },
         "focus-strip pane selection did not restore the zoomed window"
@@ -1570,7 +1669,13 @@ private func checkWorkspaceLifecycle() throws {
         command(call.arguments) == "new-window" && call.arguments.contains("/tmp")
             && call.arguments.contains(where: { $0.hasPrefix("Parley-Pending-") })
     }, "workspace creation did not create a recoverable tmux window in its folder")
-    try expect(runner.calls.contains { command($0.arguments) == "select-window" && $0.arguments.contains("@2") }, "new workspace was not selected")
+    try expect(
+        runner.calls.contains {
+            command($0.arguments) == "select-window"
+                && $0.arguments.contains("=parley:@2")
+        },
+        "new workspace was not selected in the authoritative base session"
+    )
 
     let qualified = try controller.createWorkspace(folder: "/tmp", name: "CLIENT")
     try expect(qualified.name == "CLIENT (2)", "duplicate workspace name was not visibly qualified")
@@ -4267,8 +4372,51 @@ private func checkRealTmuxCopyModeZoomsMultiPaneWindows() throws {
     try expect(zoomKept == "1", "leaving Copy Mode removed a zoom the person chose themselves")
 }
 
+@MainActor
+private final class FocusReportProbeTerminalView: ParleyLocalProcessTerminalView {
+    var sentBytes: [[UInt8]] = []
+
+    override func forwardTerminalInput(
+        source: TerminalView,
+        data: ArraySlice<UInt8>
+    ) {
+        sentBytes.append(Array(data))
+    }
+}
+
+@MainActor
+private func checkPreviewTerminalFocusIsolation() throws {
+    let terminal = FocusReportProbeTerminalView(
+        frame: NSRect(x: 0, y: 0, width: 640, height: 480)
+    )
+    terminal.terminal.feed(text: "\u{1b}[?1004h")
+    terminal.sentBytes.removeAll()
+
+    terminal.preservesTerminalFocusOnResign = true
+    terminal.terminal.setTerminalFocus(false)
+    try expect(
+        terminal.sentBytes.isEmpty,
+        "preview terminal emitted DEC focus-out when native keyboard focus moved"
+    )
+
+    terminal.send(source: terminal, data: ArraySlice([0x61]))
+    try expect(
+        terminal.sentBytes == [[0x61]],
+        "preview focus filtering swallowed ordinary terminal input"
+    )
+
+    terminal.preservesTerminalFocusOnResign = false
+    terminal.terminal.setTerminalFocus(true)
+    terminal.sentBytes.removeAll()
+    terminal.terminal.setTerminalFocus(false)
+    try expect(
+        terminal.sentBytes.contains([0x1b, 0x5b, 0x4f]),
+        "ordinary terminal no longer emits DEC focus-out"
+    )
+}
+
 private func checkRealTmuxPerPaneViewSessions() throws {
-    // Windows-as-panes: every visible pane renders through its own grouped
+    // Windows-as-panes: every visible pane renders through its own independent
     // view session, so each window is sized by exactly one client and a
     // drag-selection's edge is always the view's edge.
     let environment = EnvironmentResolver.resolved()
@@ -4301,9 +4449,46 @@ private func checkRealTmuxPerPaneViewSessions() throws {
         "view-session check created no second workspace pane"
     )
 
+    _ = try runner.run(
+        executable: tmux,
+        arguments: [
+            "-S", controller.socketPath.path, "-f", controller.configPath.path,
+            "respawn-pane", "-k", "-t", first.id,
+            "/bin/sh", "-c", "printf '\\033[?2004h'; exec /bin/sleep 30",
+        ],
+        environment: controller.environment,
+        input: nil
+    )
+    Thread.sleep(forTimeInterval: 0.05)
+    let basePaneReady = try controller.listPanes()
+        .first(where: { $0.id == first.id })?.bracketedPasteActive == true
+    try expect(basePaneReady, "real pane fixture did not enable bracketed-paste readiness")
+
     try controller.ensureViewSession(paneID: first.id)
     try controller.ensureViewSession(paneID: second.id)
     try controller.ensureViewSession(paneID: second.id)
+
+    let linkedPaneReady = try controller.listPanes()
+        .first(where: { $0.id == first.id })?.bracketedPasteActive == true
+    try expect(
+        linkedPaneReady,
+        "linking a pane into its viewer session lost the pane's bracketed-paste readiness"
+    )
+
+    try controller.selectPane(first.id)
+    let firstSelected = try controller.listPanes()
+        .first(where: { $0.id == first.id })?.isActive == true
+    try expect(
+        firstSelected,
+        "linked viewer sessions prevented selecting the first pane in the base session"
+    )
+    try controller.selectPane(second.id)
+    let secondSelected = try controller.listPanes()
+        .first(where: { $0.id == second.id })?.isActive == true
+    try expect(
+        secondSelected,
+        "linked viewer sessions prevented selecting the second pane in the base session"
+    )
 
     func sessionValue(_ session: String, _ format: String) throws -> String {
         try runner.run(
@@ -4319,6 +4504,19 @@ private func checkRealTmuxPerPaneViewSessions() throws {
 
     let firstView = controller.viewSessionName(forPane: first.id)
     let secondView = controller.viewSessionName(forPane: second.id)
+    let baseFocusEvents = try runner.run(
+        executable: tmux,
+        arguments: [
+            "-S", controller.socketPath.path, "-f", controller.configPath.path,
+            "show-options", "-v", "-t", "=\(controller.sessionName)", "focus-events",
+        ],
+        environment: controller.environment,
+        input: nil
+    ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+    try expect(
+        baseFocusEvents == "on",
+        "per-pane viewer setup changed the server-wide focus-events setting"
+    )
     let firstCurrent = try sessionValue(firstView, "#{window_id}")
     try expect(
         firstCurrent == first.windowID,
@@ -5318,11 +5516,13 @@ private func checkInheritedParleyCapabilitiesAreScrubbed() throws {
             "PARLEY_PROTOCOL_VERSION": "foreign-version",
             "PARLEY_CORE_SERVICE": "/tmp/parley-core-service",
             "PARLEY_TMUX": "/opt/homebrew/bin/tmux",
+            "TMUX": "/tmp/outer-tmux.sock,123,0",
+            "TMUX_PANE": "%99",
         ],
         runner: RecordingRunner()
     )
 
-    for key in ["PARLEY_PANE", "PARLEY_PANE_ID", "PARLEY_RELAY_INFO", "PARLEY_RELAY_TOKEN", "PARLEY_IDEMPOTENCY_KEY", "PARLEY_PROTOCOL_VERSION"] {
+    for key in ["PARLEY_PANE", "PARLEY_PANE_ID", "PARLEY_RELAY_INFO", "PARLEY_RELAY_TOKEN", "PARLEY_IDEMPOTENCY_KEY", "PARLEY_PROTOCOL_VERSION", "TMUX", "TMUX_PANE"] {
         try expect(controller.environment[key] == nil, "controller inherited the foreign capability \(key)")
     }
     try expect(controller.environment["PARLEY_CORE_SERVICE"] == "/tmp/parley-core-service", "dev core executable override was scrubbed")
@@ -11751,6 +11951,8 @@ private func checkContextReviewShimRoundTrip() throws {
 
 let checks: [(String, () throws -> Void)] = [
     ("runtime namespaces are explicit and disjoint", checkRuntimeNamespacesAreExplicitAndDisjoint),
+    ("runtime termination choice survives dead agents", checkRuntimeTerminationChoiceSurvivesDeadAgents),
+    ("Stop Everything refuses silent failure", checkStopEverythingRefusesSilentFailure),
     ("useful copyable build information", checkBuildInformationIsUsefulAndCopyable),
     ("vendor-neutral local permission profiles", checkPermissionProfilesAreVendorNeutralAndLocal),
     ("safe permission profiles reach pane lifecycle", checkPermissionProfilesReachPaneLifecycleWithoutUnsafeFlags),
@@ -11809,6 +12011,7 @@ let checks: [(String, () throws -> Void)] = [
     ("real tmux pane mobility", checkRealTmuxPaneMobility),
     ("real tmux Copy Mode survives scrolling to bottom", checkRealTmuxCopyModeSurvivesScrollingToBottom),
     ("real tmux Copy Mode zooms multi-pane windows", checkRealTmuxCopyModeZoomsMultiPaneWindows),
+    ("preview terminal focus isolation", checkPreviewTerminalFocusIsolation),
     ("real tmux per-pane view sessions", checkRealTmuxPerPaneViewSessions),
     ("real tmux durable workspace identity", checkRealTmuxWorkspaceIdentityIsDurable),
     ("real tmux delivery needs no viewer", checkRealTmuxDeliveryNeedsNoViewer),

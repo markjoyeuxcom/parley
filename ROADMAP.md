@@ -366,18 +366,24 @@ effortless without becoming task boards.
   pane focus strip so every pane remains directly selectable in grid and zoom
   views. Selecting another pane while zoomed preserves zoom; this is navigation
   over visible tmux panes, not a hidden surface/session stack.
-- [x] Make long mouse selection use tmux-owned history. Explicit Copy Mode handles
-  mouse-aware CLIs, supports drag plus scroll beyond the visible screen, copies
-  through the fixed macOS `/usr/bin/pbcopy` executable on release, and can be
-  cancelled without injecting input into the vendor TUI.
+- [x] Make long mouse selection use tmux-owned history. Normal dragging is
+  selection-first even for mouse-aware CLIs, supports drag plus scroll beyond
+  the visible screen, copies through the fixed macOS `/usr/bin/pbcopy`
+  executable on release, and can be cancelled without injecting input into the
+  vendor TUI.
 - [x] Add an opt-in Windows-as-Panes Preview behind the Tools toggle. Newly
-  created panes use one tmux member window each, single-pane windows stream
-  through bounded tmux control mode into native SwiftTerm surfaces, native split
-  trees and per-workspace selection persist in the owner-only registry, saved
-  layouts restore as member windows, and legacy grids retain the confined
-  viewer without automatic mutation.
-- [ ] Make control-mode attach snapshots sequence-aware so an actively printing
-  pane cannot repeat snapshot/live overlap without dropping uncertain output.
+  created panes use one tmux member window each; every visible member window
+  has one ordinary, confined tmux PTY viewer; native split trees and
+  per-workspace selection persist in the owner-only registry; saved layouts
+  restore as member windows; and legacy grids retain one confined viewer
+  without automatic mutation.
+- [x] Keep native keyboard focus separate from terminal focus-out in the
+  independent preview viewers. Switching leaves no longer clears a background
+  agent's bracketed-paste readiness; safe attributed relay remains available.
+- [ ] Complete live mouse validation of the per-pane PTY preview. If drag-below-
+  edge scrolling is reliable, remove the dormant control-mode prototype. If it
+  is not, replace the renderer with a full cmux-style native PTY lifecycle and
+  rely on vendor resume rather than keeping agent processes alive on app quit.
 - [ ] Persist native divider ratios and restore them. The current durable tree
   records split direction and ordering; restored splits deliberately balance.
 - [ ] Add a marked, rollback-capable `break-pane` migration for legacy grids.

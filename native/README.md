@@ -154,12 +154,15 @@ upgrades a Production tmux/core, and remains visibly marked
 
 - A tmux window is a Parley workspace.
 - A tmux pane is a live shell or agent pane.
-- Quitting with started agents asks whether to keep everything running (the
-  default — tmux keeps every process alive, including agents mid-task) or to
-  Stop Everything, which ends every pane process and the tmux session. An
-  opt-in Tools toggle reaps agents idle for 30 minutes into visible stopped
-  seats that Start revives; the active pane, workspace leads and panes in any
-  live consultation or delegation are never touched.
+- Command-Q on an owned Production or Development runtime always asks whether
+  to Keep Running (detach the UI while tmux preserves every pane process), Stop
+  Everything (end every pane process and the isolated tmux session), or Cancel.
+  The choice remains available when agents are stopped or dead, and Parley
+  stays open if it cannot verify shutdown. Closing the red window button does
+  not quit the app. Read-only Development attached to Production cannot stop
+  Production. An opt-in Tools toggle reaps agents idle for 30 minutes into
+  visible stopped seats that Start revives; the active pane, workspace leads
+  and panes in any live consultation or delegation are never touched.
 - Workspace names, stable home folders and mutable New Pane Folders are tmux
   window options. The home is used for folder opening; the New Pane Folder
   affects only future toolbar-created panes.
@@ -198,25 +201,25 @@ upgrades a Production tmux/core, and remains visibly marked
   state. The sidebar remains the rich pane navigator; when it is hidden, a
   compact native focus strip keeps every pane directly selectable in grid and
   zoom views. Selecting another pane while zoomed preserves zoom.
-- Long mouse selections in a legacy grid use tmux Copy Mode because tmux owns
-  that pane's scrollback. Enter it from the toolbar, Actions or Pane menu when a
-  mouse-aware CLI captures dragging; drag and scroll through history, then
-  release to copy through `/usr/bin/pbcopy` and exit. Escape or Exit Copy Mode
-  cancels. Copy Mode temporarily zooms a split legacy pane so its edges are the
-  window edges; leaving restores the split while preserving a zoom the person
-  chose.
+- Long mouse selection is selection-first: a normal drag enters tmux Copy
+  Mode even when a vendor TUI has enabled mouse input. Drag beyond the visible
+  edge to scroll through tmux-owned history, then release to copy through
+  `/usr/bin/pbcopy` and exit. Escape or Exit Copy Mode cancels. In a legacy
+  tmux grid, Copy Mode temporarily zooms the pane so its edge is the window
+  edge; leaving restores the split while preserving a zoom the person chose.
 - The opt-in **Windows-as-Panes Preview** in Tools gives every newly created
-  pane its own tmux member window and renders each visible one-pane window as a
-  native SwiftTerm surface fed by tmux control mode. tmux still owns the real
-  process; native split state, selection and local scrollback are presentation.
-  Legacy multi-pane windows keep the confined viewer and Copy Mode fallback.
-  The preview never breaks apart an existing grid automatically.
-- Preview limitations are explicit: an actively printing pane can repeat a line
-  during attach because the snapshot and live stream overlap; native divider
-  ratios are not yet durable and reopen balanced; recovery after destruction of
-  the tmux server cannot rebind a registry record until Parley can prove one
-  unambiguous target. Parley does not drop uncertain output or guess by folder
-  to hide these gaps.
+  pane its own tmux member window and renders every visible member window
+  through one ordinary, confined tmux PTY client. SwiftUI owns the split tree;
+  tmux continues to own the process, terminal modes and scrollback. Legacy
+  multi-pane windows keep one confined viewer and are never broken apart
+  automatically.
+  Each confined viewer suppresses terminal focus-out when keyboard focus moves
+  to another native leaf, so background agent prompts remain safe relay
+  targets without receiving the person's typing.
+- Preview limitations are explicit: native divider ratios are not yet durable
+  and reopen balanced; recovery after destruction of the tmux server cannot
+  rebind a registry record until Parley can prove one unambiguous target.
+  Parley does not guess by folder to hide these gaps.
 - Saved layouts live in the owner-only `workspace-layouts.json`, never in tmux.
   They contain no pane/window ids. Restored shells start; restored agent slots
   remain stopped until a person chooses Start.

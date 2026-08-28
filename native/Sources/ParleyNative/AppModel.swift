@@ -218,15 +218,20 @@ final class AppModel: ObservableObject {
             guard oldValue != windowsAsPanesPreview else { return }
             preferences.set(windowsAsPanesPreview, forKey: Self.windowsAsPanesPreviewKey)
             if windowsAsPanesPreview {
+                // A previous build may still own a control-mode stream. The
+                // PTY-viewer experiment uses one ordinary tmux client per
+                // visible member window and must have only one renderer.
+                stopControlConnection()
                 ensurePreviewViewSessions(for: panes)
-                ensureControlConnection()
             } else {
                 stopControlConnection()
+                releasePreviewViewSessions()
             }
         }
     }
     private static let windowsAsPanesPreviewKey = "ParleyWindowsAsPanesPreview"
     private var viewerHandles: [String: TerminalHandle] = [:]
+    @Published private(set) var previewReadyPaneIDs: Set<String> = []
     private let fallbackFolder: String
     private let applicationDirectory: URL
     private let preferences: UserDefaults
@@ -508,8 +513,14 @@ final class AppModel: ObservableObject {
             tmuxError = nil
             reviewDraftBuilder = ReviewDraftBuilder(environment: controller.environment)
             contextPackBuilder = ContextPackBuilder(environment: controller.environment)
-            panes = livePanes
             workspaces = liveWorkspaces
+            panes = livePanes
+            if windowsAsPanesPreview {
+                // The preview preference is restored before the controller
+                // exists. Prove every helper session now, before SwiftUI can
+                // start a terminal process that targets it.
+                ensurePreviewViewSessions(for: livePanes)
+            }
             savedLayouts = try layoutStore.layouts()
             rememberFolder(defaultFolder)
             scheduleProjectContextRefresh(force: true)
@@ -634,7 +645,8 @@ final class AppModel: ObservableObject {
     }
 
     func viewerAttachConfiguration(representativePaneID: String) -> AttachConfiguration? {
-        guard let controller else { return nil }
+        guard let controller,
+              previewReadyPaneIDs.contains(representativePaneID) else { return nil }
         var environment = controller.environment
         environment["TERM"] = "xterm-256color"
         environment["COLORTERM"] = "truecolor"
@@ -647,18 +659,47 @@ final class AppModel: ObservableObject {
     }
 
     private func ensurePreviewViewSessions(for allPanes: [TmuxPane]) {
-        guard let controller, let workspaceID = activeWorkspace?.workspaceID else { return }
-        var seenWindows: Set<String> = []
-        // pty viewers remain only for legacy multi-pane grid windows; a
-        // single-pane window renders through the control-mode native host.
-        var windowPaneCounts: [String: Int] = [:]
-        for pane in allPanes { windowPaneCounts[pane.windowID, default: 0] += 1 }
-        for pane in allPanes.sorted(by: { $0.id < $1.id })
-        where pane.workspaceID == workspaceID
-            && windowPaneCounts[pane.windowID, default: 0] > 1
-            && seenWindows.insert(pane.windowID).inserted {
-            try? controller.ensureViewSession(paneID: pane.id)
+        guard let controller, let workspaceID = activeWorkspace?.workspaceID else {
+            releasePreviewViewSessions()
+            return
         }
+        var seenWindows: Set<String> = []
+        let members = allPanes.filter { $0.workspaceID == workspaceID }
+        let byID = Dictionary(uniqueKeysWithValues: members.map { ($0.id, $0) })
+        let desired: Set<String> = Set(
+            TmuxIdentifierOrder.sorted(members.map(\.id)).compactMap { paneID in
+                guard let pane = byID[paneID],
+                      seenWindows.insert(pane.windowID).inserted else { return nil }
+                return paneID
+            }
+        )
+        var ready: Set<String> = []
+        for paneID in desired {
+            do {
+                try controller.ensureViewSession(paneID: paneID)
+                ready.insert(paneID)
+            } catch {
+                // Do not launch a terminal against a session that was not
+                // proven ready. The periodic refresh retries this exact pane.
+            }
+        }
+        for paneID in previewReadyPaneIDs.subtracting(desired) {
+            try? controller.releaseViewSession(paneID: paneID)
+        }
+        if previewReadyPaneIDs != ready {
+            previewReadyPaneIDs = ready
+        }
+    }
+
+    private func releasePreviewViewSessions() {
+        guard let controller else {
+            previewReadyPaneIDs.removeAll()
+            return
+        }
+        for paneID in previewReadyPaneIDs {
+            try? controller.releaseViewSession(paneID: paneID)
+        }
+        previewReadyPaneIDs.removeAll()
     }
 
     // MARK: Idle agent reaper (opt-in)
@@ -709,15 +750,28 @@ final class AppModel: ObservableObject {
 
     // MARK: Quit-time choice
 
-    /// Returns true when quitting may proceed. With started agents alive, the
-    /// person chooses between the babysitter default (everything keeps
-    /// running in tmux) and an explicit full stop.
+    /// Returns true when quitting may proceed. An owned runtime always offers
+    /// an explicit choice to detach or stop, even when every agent is dead.
+    /// Read-only Development attachment can never stop Production.
     func resolveTermination() -> Bool {
+        guard RuntimeTerminationPolicy.shouldOfferChoice(
+            runtime: runtime,
+            controllerAvailable: controller != nil
+        ), let controller else {
+            return true
+        }
+
         let runningAgents = panes.filter { $0.kind.isAgent && $0.isStarted && !$0.isDead }
-        guard !runningAgents.isEmpty, controller != nil else { return true }
+        let livePanes = panes.filter { !$0.isDead }
         let alert = NSAlert()
-        alert.messageText = "Keep \(runningAgents.count) agent\(runningAgents.count == 1 ? "" : "s") running?"
-        alert.informativeText = "Parley's tmux session keeps every pane and agent process alive after the app quits — an agent mid-task keeps working. Stop Everything ends every pane process and the tmux session; the coordination core follows its login-item setting."
+        if !runningAgents.isEmpty {
+            alert.messageText = "Keep \(runningAgents.count) agent\(runningAgents.count == 1 ? "" : "s") running?"
+        } else if !livePanes.isEmpty {
+            alert.messageText = "Keep \(livePanes.count) pane\(livePanes.count == 1 ? "" : "s") running?"
+        } else {
+            alert.messageText = "Keep Parley's runtime running?"
+        }
+        alert.informativeText = "Parley's isolated tmux session can keep every pane process alive after the app quits. Stop Everything ends every pane process and the tmux session; the coordination core follows its login-item setting."
         alert.addButton(withTitle: "Keep Running")
         alert.addButton(withTitle: "Stop Everything")
         alert.addButton(withTitle: "Cancel")
@@ -725,8 +779,18 @@ final class AppModel: ObservableObject {
         case .alertFirstButtonReturn:
             return true
         case .alertSecondButtonReturn:
-            try? controller?.shutdownServer()
-            return true
+            do {
+                try controller.shutdownServer()
+                return true
+            } catch {
+                let failure = NSAlert()
+                failure.alertStyle = .critical
+                failure.messageText = "Parley could not stop everything"
+                failure.informativeText = "\(error.localizedDescription)\n\nThe app will stay open so the runtime is not silently left behind."
+                failure.addButton(withTitle: "OK")
+                failure.runModal()
+                return false
+            }
         default:
             return false
         }
@@ -1942,9 +2006,11 @@ final class AppModel: ObservableObject {
     }
 
     func latestFailure(for paneID: String) -> RelayHandoff? {
-        handoffs.first {
-            $0.targetPaneID == paneID && ($0.state == .failed || $0.state == .interrupted)
+        guard let latest = handoffs.first(where: { $0.targetPaneID == paneID }),
+              latest.state == .failed || latest.state == .interrupted else {
+            return nil
         }
+        return latest
     }
 
     func unreadResultCount(forPane paneID: String) -> Int {
@@ -2060,7 +2126,6 @@ final class AppModel: ObservableObject {
                 )
                 if windowsAsPanesPreview {
                     ensurePreviewViewSessions(for: refreshedPanes)
-                    ensureControlConnection()
                     reconcileNativeLayouts(workspaces: refreshedWorkspaces, panes: refreshedPanes)
                     viewerHandles = viewerHandles.filter { windowID, _ in
                         refreshedPanes.contains { $0.windowID == windowID }
@@ -3049,6 +3114,24 @@ final class AppModel: ObservableObject {
             )
             try refresh()
             terminalHandle.focus()
+        }
+    }
+
+    /// Mouse focus in a native split also updates the authoritative base
+    /// session selection. The clicked terminal already becomes first
+    /// responder, so this path deliberately avoids refocusing a stale handle
+    /// while SwiftUI publishes the newly active leaf.
+    func selectPreviewPane(_ paneID: String) {
+        guard windowsAsPanesPreview,
+              activePane?.id != paneID,
+              let pane = panes.first(where: { $0.id == paneID }) else { return }
+        perform {
+            try controller?.selectPane(pane.id)
+            _ = try? workspaceRegistry.updateSelectedPane(
+                workspaceID: pane.workspaceID,
+                paneID: pane.id
+            )
+            try refresh()
         }
     }
 

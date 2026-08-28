@@ -1484,9 +1484,9 @@ struct ContentView: View {
         }
     }
 
-    /// Windows-as-panes preview: one confined viewer client per member window,
-    /// split natively. The active pane's viewer shares the legacy terminal
-    /// handle so focus and selection call sites keep working.
+    /// Windows-as-panes preview: one ordinary, confined tmux PTY client
+    /// per member window, split natively. tmux remains authoritative for TUI
+    /// modes and scrollback while native view edges match pane edges.
     @ViewBuilder
     private var previewViewerSplit: some View {
         if let tree = model.previewLayoutTree {
@@ -1511,20 +1511,24 @@ struct ContentView: View {
         let handle = viewer.containsActivePane
             ? model.terminalHandle
             : model.viewerHandle(forWindow: viewer.windowID)
-        if viewer.isSinglePane {
-            // Native scrollback and selection; no pty client, no copy mode.
-            ControlTerminalHost(
-                paneID: viewer.representativePaneID,
-                windowID: viewer.windowID,
-                model: model,
-                handle: handle
-            )
-        } else if let configuration = model.viewerAttachConfiguration(
+        if let configuration = model.viewerAttachConfiguration(
             representativePaneID: viewer.representativePaneID
         ) {
-            // Legacy multi-pane grids keep the confined pty viewer until the
-            // marked break-pane migration retires them.
-            TerminalHost(configuration: configuration, handle: handle)
+            TerminalHost(
+                configuration: configuration,
+                handle: handle,
+                focusOnAttach: viewer.containsActivePane,
+                preservesTerminalFocusOnResign: true,
+                onFocus: {
+                    model.selectPreviewPane(viewer.representativePaneID)
+                }
+            )
+            // A viewer process is permanently pinned to this member window.
+            // Never let SwiftUI recycle it for a different pane identity.
+            .id("preview-pty-\(viewer.representativePaneID)")
+        } else {
+            ProgressView("Preparing terminal...")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 

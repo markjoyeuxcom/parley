@@ -33,3 +33,28 @@ public enum ParleyTerminalConfiguration {
         try terminal.setUseMetal(true)
     }
 }
+
+/// SwiftTerm maps AppKit responder changes to DEC focus reports. Independent
+/// preview leaves remain visibly attached while keyboard focus moves between
+/// siblings, so they may opt out of terminal focus-out without changing the
+/// server-wide tmux focus-events setting.
+@MainActor
+open class ParleyLocalProcessTerminalView: LocalProcessTerminalView {
+    public var preservesTerminalFocusOnResign = false
+
+    public override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if preservesTerminalFocusOnResign,
+           data.elementsEqual([0x1b, 0x5b, 0x4f]) {
+            return
+        }
+        forwardTerminalInput(source: source, data: data)
+    }
+
+    /// Separated for deterministic verification without starting a child PTY.
+    open func forwardTerminalInput(
+        source: TerminalView,
+        data: ArraySlice<UInt8>
+    ) {
+        super.send(source: source, data: data)
+    }
+}

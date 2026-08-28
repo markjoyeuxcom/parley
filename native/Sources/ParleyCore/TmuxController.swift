@@ -209,6 +209,7 @@ public final class TmuxController {
         }
     }
 
+
     /// Ends one pane's view session. Never touches the shared windows.
     public func releaseViewSession(paneID: String) throws {
         _ = try runTmux(
@@ -463,7 +464,7 @@ public final class TmuxController {
     }
 
     public func selectWorkspace(_ windowID: String) throws {
-        _ = try runTmux(["select-window", "-t", windowID])
+        _ = try runTmux(["select-window", "-t", "\(exactSession):\(windowID)"])
     }
 
     public func renameWorkspace(_ windowID: String, name: String) throws {
@@ -814,7 +815,9 @@ public final class TmuxController {
         guard let pane = try listPanes().first(where: { $0.id == paneID }) else {
             throw ParleyTmuxError.paneNotFound(paneID)
         }
-        _ = try runTmux(["select-window", "-t", pane.windowID])
+        _ = try runTmux([
+            "select-window", "-t", "\(exactSession):\(pane.windowID)",
+        ])
         _ = try runTmux(["select-pane", "-t", paneID])
         if preservingWindowZoom {
             let zoomed = try runTmux([
@@ -985,11 +988,19 @@ public final class TmuxController {
     /// "stop everything" a person chooses at quit. Credentials are forgotten
     /// first; the coordination core follows its own login-item setting.
     public func shutdownServer() throws {
-        let paneIDs = try listPanes().map(\.id)
+        let paneIDs = (try? listPanes().map(\.id)) ?? []
         for paneID in paneIDs {
             try relayRuntime?.credentials.forget(paneID)
         }
         _ = try runTmux(["kill-server"], allowFailure: true)
+        let sessionSurvived = try runTmux([
+            "has-session", "-t", exactSession,
+        ], allowFailure: true).status == 0
+        guard !sessionSurvived else {
+            throw ParleyTmuxError.commandFailed(
+                "Parley could not stop its isolated tmux session."
+            )
+        }
     }
 
     public func closePane(_ paneID: String) throws {
@@ -1871,8 +1882,7 @@ public final class TmuxController {
         // the live view. The explicit Copy Mode control enters without -e.
         _ = try runTmux([
             "bind-key", "-T", "root", "MouseDrag1Pane",
-            "if-shell", "-F", "#{||:#{pane_in_mode},#{mouse_any_flag}}",
-            "send-keys -M", "copy-mode -M",
+            "copy-mode", "-M",
         ])
         _ = try runTmux([
             "bind-key", "-T", "root", "WheelUpPane",
@@ -1968,6 +1978,8 @@ public final class TmuxController {
             "PARLEY_RELAY_TOKEN",
             "PARLEY_IDEMPOTENCY_KEY",
             "PARLEY_PROTOCOL_VERSION",
+            "TMUX",
+            "TMUX_PANE",
         ])
         return environment.filter { !sensitive.contains($0.key) }
     }
@@ -1990,7 +2002,7 @@ public final class TmuxController {
         set-window-option -g mode-keys vi
         bind-key -T copy-mode-vi MouseDrag1Pane send-keys -X begin-selection
         bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel '/usr/bin/pbcopy'
-        bind-key -T root MouseDrag1Pane if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'copy-mode -M'
+        bind-key -T root MouseDrag1Pane copy-mode -M
         bind-key -T root WheelUpPane if-shell -F '#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'copy-mode -e'
         set-window-option -g remain-on-exit on
         set-window-option -g automatic-rename off

@@ -35,7 +35,14 @@ let package = Package(
             ]
         ),
         .executableTarget(name: "ParleyCoreService", dependencies: ["ParleyCore"]),
-        .executableTarget(name: "ParleyCoreChecks", dependencies: ["ParleyCore"]),
+        .executableTarget(
+            name: "ParleyCoreChecks",
+            dependencies: [
+                "ParleyCore",
+                "ParleyTerminal",
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ]
+        ),
         .executableTarget(name: "ParleyConformance", dependencies: ["ParleyCore"]),
         .executableTarget(
             name: "ParleySoak",
