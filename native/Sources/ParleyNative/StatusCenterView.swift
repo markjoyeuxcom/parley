@@ -75,6 +75,16 @@ struct StatusCenterView: View {
         )
     }
 
+    private var runtimeLifecycle: RuntimeLifecycleSnapshot {
+        RuntimeLifecycleProjection.snapshot(
+            coreAvailable: model.coreAvailable,
+            coreMessage: model.coreAvailable
+                ? "The authenticated broker is running inside this Parley process."
+                : nil,
+            panes: model.panes
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             RuntimeBanner(runtime: model.runtime)
@@ -270,7 +280,7 @@ struct StatusCenterView: View {
             Picker("Scope", selection: $workspaceID) {
                 Text("All Workspaces").tag("")
                 ForEach(model.workspaces) { workspace in
-                    Text(workspace.name).tag(workspace.id)
+                    Text(workspace.name).tag(workspace.workspaceID)
                 }
             }
             .labelsHidden()
@@ -444,10 +454,7 @@ struct StatusCenterView: View {
     }
 
     private var returnedResults: some View {
-        let unread = snapshot.handoffs.filter { handoff in
-            handoff.hasUnreadResult
-                && (workspaceID.isEmpty || handoff.sourceWorkspaceID == workspaceID)
-        }
+        let unread = snapshot.handoffs.filter(\.hasUnreadResult)
         return statusGroup("RETURNED RESULTS") {
             if unread.isEmpty {
                 emptyRow("No unread returned results in this scope")
@@ -646,7 +653,7 @@ struct StatusCenterView: View {
         }
     }
 
-    private func agentRow(_ pane: TmuxPane) -> some View {
+    private func agentRow(_ pane: WorkbenchPane) -> some View {
         let work = snapshot.activeHandoffs.first(where: { $0.targetPaneID == pane.id })
         let attention = snapshot.handoffs.first(where: { $0.targetPaneID == pane.id && $0.attention != nil })
         return HStack(alignment: .top, spacing: 10) {
@@ -682,7 +689,7 @@ struct StatusCenterView: View {
                 VStack(alignment: .trailing, spacing: 3) {
                     Text(processState(pane))
                         .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                    Text(pane.workspaceName ?? pane.windowID)
+                    Text(pane.workspaceName ?? pane.workspaceID)
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
                     Text(protocolLabel(pane))
@@ -864,35 +871,26 @@ struct StatusCenterView: View {
     }
 
     private var coreHealth: some View {
-        statusGroup("CORE HEALTH") {
+        statusGroup("RUNTIME LIFECYCLE") {
             VStack(spacing: 7) {
-                healthRow("Coordination core", model.coreAvailable ? "CONNECTED" : "UNAVAILABLE", healthy: model.coreAvailable)
-                if model.coreUpgradePending {
-                    HStack {
-                        Text("Core upgrade").font(.system(size: 10))
-                        Spacer()
-                        Circle()
-                            .fill(Color.orange)
-                            .frame(width: 6, height: 6)
-                        Text("PENDING")
-                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    .accessibilityRepresentation { Text("Core upgrade, pending") }
-                }
-                healthRow("tmux workspace server", model.tmuxAvailable ? "CONNECTED" : "UNAVAILABLE", healthy: model.tmuxAvailable)
-                healthRow("Shared pane protocol", "V\(AgentProtocol.version)", healthy: true)
+                lifecycleRow(
+                    name: "App UI",
+                    value: "CURRENT",
+                    color: .green,
+                    detail: "Closing the window keeps app-resident panes and coordination running. Quitting Parley ends both."
+                )
+                coreLifecycleRow
+                protocolLifecycleRow
+                Divider()
+                healthRow("Embedded Ghostty panes", model.terminalAvailable ? "CONNECTED" : "UNAVAILABLE", healthy: model.terminalAvailable)
                 healthRow("Handoffs in scope", snapshot.handoffs.count.formatted(), healthy: true)
                 Divider()
-                coreLoginItemControl
                 DisclosureGroup("Technical details") {
                     VStack(alignment: .leading, spacing: 4) {
-                        if let controller = model.controller {
-                            Text("tmux socket: \(controller.socketPath.path)")
+                        if model.controller != nil {
+                            Text("Terminal backend: embedded Ghostty · app-resident sessions")
                         }
-                        if let message = model.coreUpgradeMessage {
-                            Text("core upgrade: \(message)")
-                        }
+                        Text("Coordination backend: authenticated broker in this Parley process")
                         Text("Only local, owner-authenticated state is shown. Prompt bodies and credentials are never exported from this window.")
                     }
                     .font(.system(size: 9, design: .monospaced))
@@ -906,73 +904,80 @@ struct StatusCenterView: View {
         }
     }
 
-    private var coreLoginItemControl: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 8) {
-                Toggle(
-                    "Keep coordination core available at login",
-                    isOn: Binding(
-                        get: { model.coreLoginItemRequested },
-                        set: { requested in model.setCoreLoginItemRequested(requested) }
-                    )
-                )
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .disabled(!model.canChangeCoreLoginItem)
+    @ViewBuilder
+    private var coreLifecycleRow: some View {
+        switch runtimeLifecycle.core {
+        case .unavailable:
+            lifecycleRow(
+                name: "Coordination core",
+                value: "UNAVAILABLE",
+                color: .red,
+                detail: "Coordination is paused. Use Reconnect in Recovery; terminal panes remain running."
+            )
+        case .checking:
+            lifecycleRow(
+                name: "Coordination core",
+                value: "APP-RESIDENT",
+                color: .green,
+                detail: "The authenticated broker is part of this running Parley build and shares its lifetime."
+            )
+        case let .current(detail):
+            lifecycleRow(
+                name: "Coordination core",
+                value: "CURRENT",
+                color: .green,
+                detail: detail ?? "The running core matches this Parley build."
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var protocolLifecycleRow: some View {
+        switch runtimeLifecycle.protocol {
+        case let .current(version, runningPaneCount):
+            lifecycleRow(
+                name: "Agent pane protocol",
+                value: "V\(version) CURRENT",
+                color: .green,
+                detail: runningPaneCount == 0
+                    ? "No agent process currently carries the protocol. New starts receive v\(version)."
+                    : "All \(runningPaneCount) running agent pane\(runningPaneCount == 1 ? "" : "s") carry the current launch stamp."
+            )
+        case let .restartRequired(version, paneIDs):
+            lifecycleRow(
+                name: "Agent pane protocol",
+                value: "\(paneIDs.count) RESTART REQUIRED",
+                color: .orange,
+                detail: "Protocol v\(version) is installed for new starts. Restart only the marked panes from Recovery when you are ready to end those conversations."
+            )
+        }
+    }
+
+    private func lifecycleRow(
+        name: String,
+        value: String,
+        color: Color,
+        detail: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 7) {
+                Text(name)
+                    .font(.system(size: 10))
                 Spacer()
-                if model.coreLoginItemChanging {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Changing launch at login")
-                }
-                Text(coreLoginItemLabel)
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(coreLoginItemColor)
+                Circle()
+                    .fill(color)
+                    .frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
+                Text(value)
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(color)
             }
-            Text(coreLoginItemDetail)
+            Text(detail)
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if model.coreLoginItemState == .requiresApproval {
-                Button("Open Login Items Settings…") {
-                    model.openCoreLoginItemSettings()
-                }
-                .controlSize(.small)
-                .accessibilityHint("Open macOS System Settings to approve or disable Parley's background core")
-            }
         }
-        .accessibilityElement(children: .contain)
-    }
-
-    private var coreLoginItemLabel: String {
-        if model.coreLoginItemChanging { return "CHANGING" }
-        return switch model.coreLoginItemState {
-        case .disabled: "OFF"
-        case .enabled: "ENABLED"
-        case .requiresApproval: "APPROVAL REQUIRED"
-        case .unavailable: "PACKAGED APP ONLY"
-        }
-    }
-
-    private var coreLoginItemDetail: String {
-        switch model.coreLoginItemState {
-        case .disabled:
-            "Off by default. Enabling starts only Parley's local coordination core at login; the window, tmux workspace and vendor CLIs remain closed."
-        case .enabled:
-            "macOS may start the bundled coordination core at login. It waits without creating a workspace until you open Parley."
-        case .requiresApproval:
-            "The service is registered, but macOS requires approval in Login Items before it may run."
-        case .unavailable:
-            "Install and open the packaged Parley.app to manage its bundled core LaunchAgent."
-        }
-    }
-
-    private var coreLoginItemColor: Color {
-        switch model.coreLoginItemState {
-        case .enabled: .green
-        case .requiresApproval: .orange
-        case .disabled, .unavailable: .secondary
-        }
+        .accessibilityElement(children: .combine)
     }
 
     private func healthRow(_ name: String, _ value: String, healthy: Bool) -> some View {
@@ -1522,7 +1527,7 @@ struct StatusCenterView: View {
     }
 
     private var conditionDetail: String {
-        switch snapshot.condition {
+        let status = switch snapshot.condition {
         case .allClear: "No active or failed cross-vendor work in this scope."
         case .resultsAvailable: "One or more Ask or Delegate results have not been viewed."
         case .agentsWaiting: "One or more tracked handoffs are still active."
@@ -1530,6 +1535,14 @@ struct StatusCenterView: View {
         case .interruptedWork: "A handoff failed or was interrupted; inspect its recorded reason."
         case .coreUnavailable: "The last authoritative collaboration state remains visible while Parley reconnects."
         }
+        guard !workspaceID.isEmpty,
+              let workspace = model.workspaces.first(where: {
+                  $0.id == workspaceID || $0.workspaceID == workspaceID
+              }) else { return status }
+        let folders = workspace.isFolderless
+            ? "No folders attached."
+            : "\(workspace.attachedFolders.count) folder\(workspace.attachedFolders.count == 1 ? "" : "s") attached."
+        return "\(status) \(folders)"
     }
 
     private var conditionIcon: String {
@@ -1562,7 +1575,7 @@ struct StatusCenterView: View {
         }
     }
 
-    private func readiness(_ pane: TmuxPane) -> String {
+    private func readiness(_ pane: WorkbenchPane) -> String {
         switch WorkbenchStateProjection.pane(pane) {
         case .empty: return "NO PANE"
         case .stopped: return "NOT STARTED"
@@ -1570,17 +1583,17 @@ struct StatusCenterView: View {
         case .protocolStale: return "PROTOCOL STALE"
         case .relayUnavailable: return "RELAY OFF"
         case .running:
-            return pane.bracketedPasteActive ? "RELAY READY" : "NOT AT PROMPT"
+            return pane.inputAvailable ? "INPUT AVAILABLE" : "INPUT UNAVAILABLE"
         }
     }
 
-    private func readinessColor(_ pane: TmuxPane) -> Color {
+    private func readinessColor(_ pane: WorkbenchPane) -> Color {
         if pane.isDead { return .red }
-        return WorkbenchStateProjection.pane(pane) == .running && pane.bracketedPasteActive
+        return WorkbenchStateProjection.pane(pane) == .running && pane.inputAvailable
             ? .green : .orange
     }
 
-    private func protocolLabel(_ pane: TmuxPane) -> String {
+    private func protocolLabel(_ pane: WorkbenchPane) -> String {
         switch WorkbenchStateProjection.protocolStatus(pane) {
         case .notAttached:
             return "PROTOCOL — · NOT ATTACHED"
@@ -1592,19 +1605,19 @@ struct StatusCenterView: View {
         }
     }
 
-    private func protocolColor(_ pane: TmuxPane) -> Color {
+    private func protocolColor(_ pane: WorkbenchPane) -> Color {
         switch WorkbenchStateProjection.protocolStatus(pane) {
         case .notAttached, .current: .secondary
         case .restartRequired: .orange
         }
     }
 
-    private func processState(_ pane: TmuxPane) -> String {
+    private func processState(_ pane: WorkbenchPane) -> String {
         if pane.isDead { return "EXITED" }
         return pane.isStarted ? "RUNNING" : "STOPPED"
     }
 
-    private func processColor(_ pane: TmuxPane) -> Color {
+    private func processColor(_ pane: WorkbenchPane) -> Color {
         if pane.isDead { return .red }
         return pane.isStarted ? .green : .secondary
     }

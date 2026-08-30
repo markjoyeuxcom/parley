@@ -12,7 +12,7 @@ public enum RelayText {
             let value = scalar.value
             if scalar == "\n" || scalar == "\t" { return true }
             if value < 0x20 || value == 0x7f || (0x80...0x9f).contains(value) { return false }
-            // tmux borders are a picture of the layout, not part of an answer.
+            // Box-drawing chrome is a picture of a layout, not part of an answer.
             if (0x2500...0x257f).contains(value) { return false }
             return true
         }

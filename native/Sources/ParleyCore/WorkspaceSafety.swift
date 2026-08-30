@@ -94,8 +94,8 @@ public enum WorkspaceSafetyProjection {
     ]
 
     public static func summary(
-        workspace: TmuxWorkspace,
-        panes: [TmuxPane],
+        workspace: WorkbenchWorkspace,
+        panes: [WorkbenchPane],
         handoffs: [RelayHandoff],
         projectContextsByPaneID: [String: GitProjectContext],
         paneWorktreePaths: [String: String],
@@ -103,8 +103,10 @@ public enum WorkspaceSafetyProjection {
         coreAvailable: Bool
     ) -> WorkspaceSafetySummary {
         let workspacePanes = panes
-            .filter { $0.windowID == workspace.id }
+            .filter { $0.workspaceID == workspace.workspaceID }
             .sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+        let workspaceAliases = Set(workspacePanes.map(\.workspaceID))
+            .union([workspace.id, workspace.workspaceID])
         let runningAgents = workspacePanes.compactMap { pane -> WorkspaceSafetyAgent? in
             guard pane.kind.isAgent, pane.isStarted, !pane.isDead else { return nil }
             return WorkspaceSafetyAgent(paneID: pane.id, name: pane.displayName, kind: pane.kind)
@@ -112,7 +114,8 @@ public enum WorkspaceSafetyProjection {
         let activeHandoffs: [WorkspaceSafetyHandoff] = if coreAvailable {
             handoffs.compactMap { handoff in
                 guard activeHandoffStates.contains(handoff.state),
-                      handoff.sourceWorkspaceID == workspace.id || handoff.targetWorkspaceID == workspace.id else {
+                      workspaceAliases.contains(handoff.sourceWorkspaceID)
+                        || workspaceAliases.contains(handoff.targetWorkspaceID) else {
                     return nil
                 }
                 return WorkspaceSafetyHandoff(
@@ -144,11 +147,11 @@ public enum WorkspaceSafetyProjection {
         }
 
         let sharedWriterWorktrees = writerCollisions.filter { collision in
-            collision.writers.contains(where: { $0.workspaceID == workspace.id })
+            collision.writers.contains(where: { workspaceAliases.contains($0.workspaceID) })
         }.sorted { $0.worktree.path.localizedStandardCompare($1.worktree.path) == .orderedAscending }
 
         return WorkspaceSafetySummary(
-            workspaceID: workspace.id,
+            workspaceID: workspace.workspaceID,
             workspaceName: workspace.name,
             totalPaneCount: workspacePanes.count,
             runningAgents: runningAgents,

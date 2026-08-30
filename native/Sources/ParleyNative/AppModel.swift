@@ -1,25 +1,36 @@
 import AppKit
 import Foundation
+import GhosttyTerminal
 import ParleyCore
-import SwiftTerm
 import UniformTypeIdentifiers
 import UserNotifications
 
 @MainActor
 final class TerminalHandle: ObservableObject {
-    weak var terminal: LocalProcessTerminalView?
+    private let selectedTextResolver: () -> String?
+    private let focusAction: () -> Void
+    private let clearSelectionAction: () -> Void
+
+    init(
+        selectedText: @escaping () -> String?,
+        focus: @escaping () -> Void,
+        clearSelection: @escaping () -> Void
+    ) {
+        selectedTextResolver = selectedText
+        focusAction = focus
+        clearSelectionAction = clearSelection
+    }
 
     var selectedText: String? {
-        guard let selected = terminal?.getSelection(), !selected.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty else {
+        guard let selected = selectedTextResolver(),
+              !selected.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty else {
             return nil
         }
         return selected
     }
 
-    func focus() {
-        guard let terminal else { return }
-        terminal.window?.makeFirstResponder(terminal)
-    }
+    func focus() { focusAction() }
+    func clearSelection() { clearSelectionAction() }
 }
 
 private enum WorkspaceOpenChoice {
@@ -28,8 +39,8 @@ private enum WorkspaceOpenChoice {
 }
 
 struct WorkspaceAskGroup: Identifiable {
-    let workspace: TmuxWorkspace
-    let panes: [TmuxPane]
+    let workspace: WorkbenchWorkspace
+    let panes: [WorkbenchPane]
 
     var id: String { workspace.id }
 }
@@ -114,13 +125,41 @@ struct PanePermissionRequest: Identifiable, Equatable {
     }
 }
 
+struct HandoffComposerDraft: Identifiable, Equatable {
+    let id: UUID
+    let sourcePaneID: String
+    let sourceName: String
+    let targetPaneID: String
+    let targetName: String
+    var text: String
+    var includesTerminalSelection: Bool
+
+    init(
+        sourcePaneID: String,
+        sourceName: String,
+        targetPaneID: String,
+        targetName: String,
+        text: String,
+        includesTerminalSelection: Bool
+    ) {
+        id = UUID()
+        self.sourcePaneID = sourcePaneID
+        self.sourceName = sourceName
+        self.targetPaneID = targetPaneID
+        self.targetName = targetName
+        self.text = text
+        self.includesTerminalSelection = includesTerminalSelection
+    }
+}
+
 struct PaletteCommand: Identifiable, Sendable {
     enum Action: Sendable {
+        case newWorkspace
         case openWorkspace
         case openStatusCenter
-        case selectWorkspace(TmuxWorkspace)
-        case selectPane(TmuxPane)
-        case ask(TmuxPane)
+        case selectWorkspace(WorkbenchWorkspace)
+        case selectPane(WorkbenchPane)
+        case ask(WorkbenchPane)
         case activity(RelayHandoff)
     }
 
@@ -132,15 +171,15 @@ struct PaletteCommand: Identifiable, Sendable {
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published private(set) var panes: [TmuxPane] = []
-    @Published private(set) var workspaces: [TmuxWorkspace] = []
+    @Published private(set) var panes: [WorkbenchPane] = []
+    @Published private(set) var workspaces: [WorkbenchWorkspace] = []
     @Published private(set) var consultations: [RelayConsultation] = []
     @Published private(set) var handoffs: [RelayHandoff] = []
     @Published private(set) var unreadHandoffs: [RelayHandoff] = []
     @Published private(set) var statusHandoffs: [RelayHandoff] = []
     @Published private(set) var statusActivityEvents: [RelayActivityEvent] = []
     @Published private(set) var reviewedBusyDrafts: [ReviewedBusyDraft] = []
-    @Published private(set) var controller: TmuxController?
+    @Published private(set) var controller: WorkbenchController?
     @Published private(set) var recentFolders: [String] = []
     @Published private(set) var favouriteFolders: [String] = []
     @Published private(set) var projectContexts: [String: GitProjectContext] = [:]
@@ -163,19 +202,15 @@ final class AppModel: ObservableObject {
     @Published private(set) var contextReviews: [AgentContextReview] = []
     @Published private(set) var contextCommandCapturing = false
     @Published private(set) var coreAvailable = false
-    @Published private(set) var tmuxAvailable = false
+    @Published private(set) var terminalAvailable = false
     @Published private(set) var coreError: String?
-    @Published private(set) var tmuxError: String?
-    @Published private(set) var coreUpgradePending = false
-    @Published private(set) var coreUpgradeMessage: String?
+    @Published private(set) var terminalError: String?
     @Published private(set) var notificationWorkspaceNames: Set<String> = []
     @Published private(set) var dismissedHandoffIDs: Set<String> = []
     @Published private(set) var runtimeReadiness: RuntimeReadinessSnapshot?
     @Published private(set) var runtimeReadinessChecking = false
     @Published private(set) var vendorCompatibility: VendorCompatibilitySnapshot?
     @Published private(set) var vendorCompatibilityChecking = false
-    @Published private(set) var liveConformanceReport: VendorConformanceReport?
-    @Published private(set) var liveConformanceRunning = false
     @Published private(set) var releaseChannel: UpdateChannel = .stable
     @Published private(set) var releaseCheck: ReleaseCheckResult?
     @Published private(set) var releaseChecking = false
@@ -187,8 +222,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var repeatingAskHandoffID: String?
     @Published private(set) var sendingReviewedBusyDraftID: String?
     @Published private(set) var historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy
-    @Published private(set) var coreLoginItemState: CoreLoginItemState = .unavailable
-    @Published private(set) var coreLoginItemChanging = false
+    @Published private(set) var terminalFontPreference = TerminalFontPreference.ghosttyDefault
     @Published private(set) var preparingToUninstall = false
     @Published var commandPalettePresented = false
     @Published var setupPresented = false
@@ -200,7 +234,11 @@ final class AppModel: ObservableObject {
     @Published var supervisedWorkflowPresented = false
     @Published var worktreeBrowserPresented = false
     @Published var releaseLifecyclePresented = false
+    @Published var terminalFontSettingsPresented = false
     @Published var betaFeedbackPresented = false
+    @Published var focusCanvasPaneID: String?
+    @Published var collaborationDockVisible = true
+    @Published var handoffComposerDraft: HandoffComposerDraft?
     @Published private(set) var selectedSupervisedWorkflowID: String?
     @Published private(set) var requestedHelpTopicID: String?
     @Published private(set) var requestedStatusHandoffID: String?
@@ -208,12 +246,20 @@ final class AppModel: ObservableObject {
     @Published private(set) var startupRequiresQuit = false
 
     let runtime: ParleyRuntime
-    let terminalHandle = TerminalHandle()
+    let ghosttyRegistry = GhosttyPaneRegistry()
+    lazy var terminalHandle = TerminalHandle(
+        selectedText: { [weak self] in self?.ghosttyRegistry.selectedText() },
+        focus: { [weak self] in _ = self?.ghosttyRegistry.focusSelected() },
+        clearSelection: { [weak self] in
+            _ = self?.ghosttyRegistry.selectedView?.performBindingAction("clear_selection")
+        }
+    )
     private let fallbackFolder: String
     private let applicationDirectory: URL
     private let preferences: UserDefaults
     private let runtimeLease: RuntimeUILease?
     private let layoutStore: SavedWorkspaceLayoutStore
+    private let workspaceRegistry: WorkspaceRegistry
     private let teamTemplateStore: TeamTemplateStore
     private let recipeStore: HandoffRecipeStore
     private let supervisedWorkflowStore: SupervisedWorkflowStore
@@ -233,20 +279,19 @@ final class AppModel: ObservableObject {
     private var worktreeDiscoveryTask: Task<Void, Never>?
     private var worktreeDiscoveryID: UUID?
     private var relayClient: RelayCoreClient?
+    private var residentCore: AppResidentCoordinationCore?
     private var reviewDraftBuilder: ReviewDraftBuilder?
     private var contextPackBuilder: ContextPackBuilder?
     private let notificationEpoch = Date()
     private var observedNotificationEventIDs: Set<String> = []
     private var runtimeReadinessTask: Task<Void, Never>?
     private var releaseTask: Task<Void, Never>?
-    private var coreUpgradeTask: Task<Void, Never>?
-    private var coreUpgradeSettled = false
-    private var lastCoreUpgradeAttempt = Date.distantPast
+    private var preparedForUninstall = false
     private var lastExternalAttentionSnapshot: ExternalAttentionSnapshot?
     private var lastExternalAttentionPublishedAt = Date.distantPast
     private var periodicRefreshTimer: Timer?
-    private let coreLoginItemController = CoreLoginItemController()
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
+    private static let workspaceIdentityRecentResetKey = "parley.workspaceIdentityRecentResetV1"
     private static let workspaceContinuityKey = "parley.workspaceContinuity"
     private static let notificationWorkspacesKey = "parley.notificationWorkspaces"
     private static let dismissedHandoffsKey = "parley.dismissedStatusHandoffs"
@@ -254,6 +299,8 @@ final class AppModel: ObservableObject {
     private static let vendorCompatibilityKey = "parley.vendorCompatibility"
     private static let releaseChannelKey = "parley.releaseChannel"
     private static let permissionProfileKeyPrefix = "parley.permissionProfile"
+    private static let collaborationDockVisibleKey = "parley.collaborationDockVisible"
+    private static let terminalFontPreferenceKey = "parley.terminalFontPreference"
     private static let projectContextRefreshInterval: TimeInterval = 5
     private static let worktreeRefreshInterval: TimeInterval = 15
     private static let externalAttentionHeartbeatInterval: TimeInterval = 10
@@ -284,9 +331,28 @@ final class AppModel: ObservableObject {
         runtime = resolvedRuntime
         applicationDirectory = runtime.applicationDirectory
         preferences = UserDefaults(suiteName: runtime.preferenceSuiteName) ?? .standard
+        if let data = preferences.data(forKey: Self.terminalFontPreferenceKey) {
+            if let stored = try? JSONDecoder().decode(TerminalFontPreference.self, from: data) {
+                terminalFontPreference = stored
+            } else {
+                preferences.removeObject(forKey: Self.terminalFontPreferenceKey)
+            }
+        }
+        if preferences.object(forKey: Self.collaborationDockVisibleKey) != nil {
+            collaborationDockVisible = preferences.bool(forKey: Self.collaborationDockVisibleKey)
+        }
+        idleAgentReaperEnabled = preferences.bool(forKey: Self.idleAgentReaperKey)
         layoutStore = SavedWorkspaceLayoutStore(
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
         )
+        workspaceRegistry = WorkspaceRegistry(
+            file: applicationDirectory.appendingPathComponent("workspace-registry.json")
+        )
+        let workspaceRecords = (try? workspaceRegistry.records()) ?? []
+        nativeLayouts = workspaceRecords.reduce(into: [:]) { $0[$1.workspaceID] = $1.layout }
+        nativeSplitFractions = workspaceRecords.reduce(into: [:]) {
+            $0[$1.workspaceID] = $1.splitFractions
+        }
         teamTemplateStore = TeamTemplateStore(
             file: applicationDirectory.appendingPathComponent("team-templates.json")
         )
@@ -329,6 +395,13 @@ final class AppModel: ObservableObject {
         pinnedContextSnippets = (try? pinnedContextSnippetStore.snippets()) ?? []
         permissionProfiles = (try? permissionProfileStore.profiles())
             ?? PermissionProfileDefinition.builtIns
+        do {
+            try ghosttyRegistry.applyTerminalFont(terminalFontPreference)
+        } catch {
+            terminalFontPreference = .ghosttyDefault
+            preferences.removeObject(forKey: Self.terminalFontPreferenceKey)
+            try? ghosttyRegistry.applyTerminalFont(.ghosttyDefault)
+        }
         if runtime.mode == .production {
             UserDefaultsDomainMigration.copyMissing(
                 keys: [
@@ -342,6 +415,10 @@ final class AppModel: ObservableObject {
                 from: "parley-native",
                 to: preferences
             )
+        }
+        if !preferences.bool(forKey: Self.workspaceIdentityRecentResetKey) {
+            preferences.removeObject(forKey: Self.recentFoldersKey)
+            preferences.set(true, forKey: Self.workspaceIdentityRecentResetKey)
         }
         recentFolders = preferences.stringArray(forKey: Self.recentFoldersKey) ?? []
         if let data = preferences.data(forKey: Self.workspaceContinuityKey),
@@ -367,53 +444,34 @@ final class AppModel: ObservableObject {
 
         guard runtimeLease != nil, startupError == nil else {
             coreAvailable = false
-            tmuxAvailable = false
-            tmuxError = startupError
+            terminalAvailable = false
+            terminalError = startupError
             return
         }
 
         do {
-            let controller = try TmuxController(
-                applicationDirectory: runtime.applicationDirectory,
-                sessionName: runtime.tmuxSessionName,
-                prepareRuntimeFiles: runtime.preparesRuntimeFiles
-            )
+            let controller = try WorkbenchController(applicationDirectory: runtime.applicationDirectory)
             try controller.bootstrap(
                 cwd: defaultFolder,
-                createIfMissing: !runtime.requiresExistingTmuxSession
+                createIfMissing: true
             )
             var livePanes = try controller.listPanes()
             var liveWorkspaces = try controller.listWorkspaces()
             let credentials = try RelayCredentials(
                 file: controller.applicationDirectory.appendingPathComponent("relay-tokens.json")
             )
-            if runtime.preparesRuntimeFiles {
-                try credentials.retain(paneIDs: Set(livePanes.map(\.id)))
-            }
+            try credentials.retain(paneIDs: Set(livePanes.map(\.id)))
             let agentTransportDirectory = RelayFileTransport.runtimeDirectory(
                 applicationDirectory: controller.applicationDirectory
             )
-            let shimDirectory: URL
-            if runtime.preparesRuntimeFiles {
-                shimDirectory = try RelayShim.install(
-                    in: controller.applicationDirectory,
-                    transportDirectory: agentTransportDirectory,
-                    runtimeMarker: runtime.visibleMarker
-                )
-            } else {
-                shimDirectory = controller.applicationDirectory.appendingPathComponent("bin", isDirectory: true)
-                guard FileManager.default.isExecutableFile(
-                    atPath: shimDirectory.appendingPathComponent("parley").path
-                ) else {
-                    throw RelayUIError.message(
-                        "The Production relay command is not prepared. Start the installed Parley app before attaching Development."
-                    )
-                }
-            }
-            // Persistent tmux panes retain the PATH they were born with. Put a
-            // managed copy in the user's existing stable command directory so
-            // reattaching the UI upgrades relay access without killing those
-            // agent conversations. The stable command is a runtime-neutral
+            let shimDirectory = try RelayShim.install(
+                in: controller.applicationDirectory,
+                transportDirectory: agentTransportDirectory,
+                runtimeMarker: runtime.visibleMarker
+            )
+            // Vendor CLIs may rebuild PATH after launch. Put a managed copy in
+            // the user's existing stable command directory so an app-resident
+            // pane can still reach the relay. The stable command is a runtime-neutral
             // router because vendor CLIs may rebuild PATH after launch. A
             // foreign `parley` command is never replaced.
             if runtime.installsStableCommand {
@@ -436,19 +494,14 @@ final class AppModel: ObservableObject {
             ))
             let relayClient: RelayCoreClient?
             do {
-                if runtime.launchesCore {
-                    relayClient = try RelayCoreLauncher.ensureRunning(
-                        applicationDirectory: controller.applicationDirectory,
-                        cwd: defaultFolder,
-                        environment: controller.environment,
-                        tmuxSessionName: runtime.tmuxSessionName,
-                        runtimeMarker: runtime.visibleMarker
-                    )
-                } else {
-                    relayClient = try RelayCoreLauncher.attachExisting(
-                        applicationDirectory: controller.applicationDirectory
-                    )
-                }
+                let core = try AppResidentCoordinationCore(
+                    controller: controller,
+                    credentials: credentials,
+                    applicationDirectory: controller.applicationDirectory,
+                    transportDirectory: agentTransportDirectory
+                )
+                residentCore = core
+                relayClient = core.client
                 coreAvailable = true
                 coreError = nil
             } catch {
@@ -459,7 +512,7 @@ final class AppModel: ObservableObject {
             }
             // This migration is destructive and therefore opt-in at process
             // launch. Normal UI reattachment always preserves conversations.
-            if runtime.preparesRuntimeFiles, Self.hasArgument("--restart-stale-protocol") {
+            if Self.hasArgument("--restart-stale-protocol") {
                 for paneID in AgentProtocol.stalePaneIDs(in: livePanes) {
                     try controller.restartPane(paneID)
                 }
@@ -478,12 +531,24 @@ final class AppModel: ObservableObject {
             saveWorkspaceContinuity()
             self.controller = controller
             self.relayClient = relayClient
-            tmuxAvailable = true
-            tmuxError = nil
+            terminalAvailable = true
+            terminalError = nil
             reviewDraftBuilder = ReviewDraftBuilder(environment: controller.environment)
             contextPackBuilder = ContextPackBuilder(environment: controller.environment)
-            panes = livePanes
             workspaces = liveWorkspaces
+            panes = livePanes
+            ghosttyRegistry.bind(controller)
+            ghosttyRegistry.select(paneID: livePanes.first(where: \.isActive)?.id)
+            ghosttyRegistry.onPaneFocused = { [weak self] paneID in
+                guard let self,
+                      panes.first(where: { $0.id == paneID })?.isActive != true else { return }
+                selectNativePane(paneID)
+            }
+            ghosttyRegistry.onPaneStateChanged = { [weak self] in
+                try? self?.refresh()
+            }
+            controller.configureTerminalTransport(makeGhosttyTerminalTransport())
+            reconcileNativeLayouts(workspaces: liveWorkspaces, panes: livePanes)
             savedLayouts = try layoutStore.layouts()
             rememberFolder(defaultFolder)
             scheduleProjectContextRefresh(force: true)
@@ -491,133 +556,351 @@ final class AppModel: ObservableObject {
             publishExternalAttentionSnapshot(force: true)
         } catch {
             coreAvailable = false
-            tmuxAvailable = false
-            tmuxError = error.localizedDescription
+            terminalAvailable = false
+            terminalError = error.localizedDescription
             startupError = error.localizedDescription
         }
-        refreshCoreLoginItemState()
         refreshRuntimeReadiness()
-        if runtime.upgradesCore { scheduleCoreUpgradeCheck(force: true) }
         startPeriodicRefresh()
     }
 
-    var activeWorkspace: TmuxWorkspace? { workspaces.first(where: \.isActive) }
+    var activeWorkspace: WorkbenchWorkspace? { workspaces.first(where: \.isActive) }
 
     func dismissStartupError() {
         startupError = nil
         if startupRequiresQuit { NSApp.terminate(nil) }
     }
 
-    var defaultFolder: String { activeWorkspace?.defaultFolder ?? fallbackFolder }
-
-    var visiblePanes: [TmuxPane] {
-        guard let workspaceID = activeWorkspace?.id else { return panes }
-        return panes.filter { $0.windowID == workspaceID }
+    var defaultFolder: String {
+        activeWorkspace?.newPaneFolder
+            ?? activePane?.cwd
+            ?? activeWorkspace?.primaryAttachedFolder
+            ?? fallbackFolder
     }
 
-    var activePane: TmuxPane? { visiblePanes.first(where: \.isActive) }
+    var visiblePanes: [WorkbenchPane] {
+        guard let workspaceID = activeWorkspace?.workspaceID else { return panes }
+        return panes.filter { $0.workspaceID == workspaceID }
+    }
+
+    var activePane: WorkbenchPane? { visiblePanes.first(where: \.isActive) }
+
+    /// One native leaf per retained Ghostty exec surface.
+    struct NativePaneSurface: Identifiable, Equatable {
+        let representativePaneID: String
+        let containsActivePane: Bool
+        var id: String { representativePaneID }
+    }
+
+    var nativePaneSurfaces: [NativePaneSurface] {
+        let byID = Dictionary(uniqueKeysWithValues: visiblePanes.map { ($0.id, $0) })
+        return WorkbenchIdentifierOrder.sorted(Array(byID.keys)).compactMap { paneID in
+            guard let pane = byID[paneID] else { return nil }
+            return NativePaneSurface(
+                representativePaneID: pane.id,
+                containsActivePane: pane.isActive
+            )
+        }
+    }
+
+    /// Native split trees per durable workspace id, loaded from the registry
+    /// and persisted through it whenever the structure changes.
+    @Published private var nativeLayouts: [String: NativeLayoutNode] = [:]
+    @Published private var nativeSplitFractions: [String: [String: Double]] = [:]
+
+    var nativeLayoutTree: NativeLayoutNode? {
+        guard let workspace = activeWorkspace else { return nil }
+        let leaves = nativePaneSurfaces.map(\.representativePaneID)
+        return NativeLayoutNode.reconciled(nativeLayouts[workspace.workspaceID], with: leaves)
+    }
+
+    var layoutOrderedVisiblePanes: [WorkbenchPane] {
+        let paneByID = Dictionary(uniqueKeysWithValues: visiblePanes.map { ($0.id, $0) })
+        var ordered = (nativeLayoutTree?.leaves ?? []).compactMap { paneByID[$0] }
+        let orderedIDs = Set(ordered.map(\.id))
+        ordered.append(contentsOf: visiblePanes.filter { !orderedIDs.contains($0.id) })
+        return ordered
+    }
+
+    func nativeSplitFraction(path: String) -> Double? {
+        guard let workspaceID = activeWorkspace?.workspaceID else {
+            return nil
+        }
+        return nativeSplitFractions[workspaceID]?[path]
+    }
+
+    func persistNativeSplitFraction(_ fraction: Double, path: String) {
+        guard let workspaceID = activeWorkspace?.workspaceID,
+              NativeSplitGeometry.isValidPath(path),
+              fraction.isFinite else { return }
+        var fractions = nativeSplitFractions[workspaceID] ?? [:]
+        fractions[path] = min(max(fraction, 0.05), 0.95)
+        nativeSplitFractions[workspaceID] = fractions
+        try? workspaceRegistry.updateSplitFractions(
+            workspaceID: workspaceID,
+            fractions: fractions
+        )
+    }
+
+    private func resetNativeSplitFractions(workspaceID: String) {
+        guard nativeSplitFractions[workspaceID]?.isEmpty != true else { return }
+        nativeSplitFractions[workspaceID] = [:]
+        try? workspaceRegistry.updateSplitFractions(workspaceID: workspaceID, fractions: [:])
+    }
+
+    private func representativeLeaves(workspaceID: String, in allPanes: [WorkbenchPane]) -> [String] {
+        WorkbenchIdentifierOrder.sorted(
+            allPanes.filter { $0.workspaceID == workspaceID }.map(\.id)
+        )
+    }
+
+    private func reconcileNativeLayouts(workspaces: [WorkbenchWorkspace], panes allPanes: [WorkbenchPane]) {
+        for workspace in workspaces {
+            let leaves = representativeLeaves(workspaceID: workspace.workspaceID, in: allPanes)
+            let reconciled = NativeLayoutNode.reconciled(nativeLayouts[workspace.workspaceID], with: leaves)
+            guard reconciled != nativeLayouts[workspace.workspaceID] else { continue }
+            nativeLayouts[workspace.workspaceID] = reconciled
+            try? workspaceRegistry.updateLayout(workspaceID: workspace.workspaceID, layout: reconciled)
+            resetNativeSplitFractions(workspaceID: workspace.workspaceID)
+        }
+    }
+
+    /// Records where a new own-window pane sits: split from its target in the
+    /// requested direction. A failed insert falls back to reconciliation.
+    private func recordNativeSplit(created: WorkbenchPane, target: WorkbenchPane?, direction: SplitDirection) {
+        guard let target, created.id != target.id else { return }
+        let workspaceID = created.workspaceID
+        let targetLeaf = target.id
+        let liveBefore = representativeLeaves(workspaceID: workspaceID, in: panes)
+        let current = NativeLayoutNode.reconciled(nativeLayouts[workspaceID], with: liveBefore)
+        let updated: NativeLayoutNode?
+        if let current {
+            updated = current.inserting(created.id, after: targetLeaf, direction: direction)
+        } else {
+            updated = .split(
+                direction: direction,
+                first: .leaf(targetLeaf),
+                second: .leaf(created.id)
+            )
+        }
+        guard let updated else { return }
+        nativeLayouts[workspaceID] = updated
+        try? workspaceRegistry.updateLayout(workspaceID: workspaceID, layout: updated)
+        resetNativeSplitFractions(workspaceID: workspaceID)
+    }
+
+    func ghosttyView(paneID: String) throws -> AppTerminalView {
+        try ghosttyRegistry.view(for: paneID)
+    }
+
+    func setGhosttyPaneVisible(_ visible: Bool, paneID: String) {
+        ghosttyRegistry.setVisible(visible, paneID: paneID)
+    }
+
+    func focusNativeTerminalIfSelected(_ paneID: String, in window: NSWindow?) {
+        guard activePane?.id == paneID else { return }
+        _ = ghosttyRegistry.focusSelected(in: window)
+    }
+
+    func repairNativeTerminalFocus(for event: NSEvent) {
+        guard event.type == .keyDown, let window = event.window else { return }
+        _ = ghosttyRegistry.repairFocusIfNeeded(
+            in: window,
+            modifierFlags: event.modifierFlags
+        )
+    }
+
+    private func makeGhosttyTerminalTransport() -> PaneTerminalTransport {
+        PaneTerminalTransport(
+            paste: { [weak self] paneID, text, submit in
+                try Self.onMainActorSync {
+                    guard let self else {
+                        throw ParleyWorkbenchError.commandFailed("Parley is shutting down.")
+                    }
+                    try self.ghosttyRegistry.paste(text, into: paneID, submit: submit)
+                }
+            },
+            interrupt: { [weak self] paneID in
+                try Self.onMainActorSync {
+                    guard let self else {
+                        throw ParleyWorkbenchError.commandFailed("Parley is shutting down.")
+                    }
+                    try self.ghosttyRegistry.interrupt(paneID: paneID)
+                }
+            },
+            captureSelectedText: { [weak self] paneID in
+                try Self.onMainActorSync {
+                    guard let self else {
+                        throw ParleyWorkbenchError.commandFailed("Parley is shutting down.")
+                    }
+                    return try self.ghosttyRegistry.captureSelectedText(paneID: paneID)
+                }
+            },
+            terminate: { [weak self] paneID in
+                Self.onMainActorSync { self?.ghosttyRegistry.stop(paneID: paneID) }
+            },
+            terminateAll: { [weak self] in
+                Self.onMainActorSync { self?.ghosttyRegistry.stopAll() }
+            }
+        )
+    }
+
+    private nonisolated static func onMainActorSync<T: Sendable>(
+        _ operation: @escaping @MainActor () throws -> T
+    ) rethrows -> T {
+        if Thread.isMainThread {
+            return try MainActor.assumeIsolated { try operation() }
+        }
+        return try DispatchQueue.main.sync {
+            try MainActor.assumeIsolated { try operation() }
+        }
+    }
+
+    // MARK: Idle agent reaper (opt-in)
+
+    func showTerminalFontSettings() {
+        terminalFontSettingsPresented = true
+    }
+
+    func updateTerminalFont(family: String?, size: Double?) throws {
+        let preference = try TerminalFontPreference(family: family, size: size)
+        try ghosttyRegistry.applyTerminalFont(preference)
+        if preference == .ghosttyDefault {
+            preferences.removeObject(forKey: Self.terminalFontPreferenceKey)
+        } else {
+            preferences.set(
+                try JSONEncoder().encode(preference),
+                forKey: Self.terminalFontPreferenceKey
+            )
+        }
+        terminalFontPreference = preference
+    }
+
+    func resetTerminalFont() throws {
+        try updateTerminalFont(family: nil, size: nil)
+    }
+
+    @Published var idleAgentReaperEnabled = false {
+        didSet {
+            guard oldValue != idleAgentReaperEnabled else { return }
+            preferences.set(idleAgentReaperEnabled, forKey: Self.idleAgentReaperKey)
+        }
+    }
+    private static let idleAgentReaperKey = "ParleyIdleAgentReaper"
+    private var lastReapSweep = Date.distantPast
+
+    private func reapIdleAgentsIfEnabled(controller: WorkbenchController, panes: [WorkbenchPane]) {
+        guard idleAgentReaperEnabled else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastReapSweep) >= 60 else { return }
+        lastReapSweep = now
+        guard let stamps = try? controller.paneActivityTimestamps() else { return }
+        for pane in panes {
+            let collaborating = consultations.contains {
+                $0.sourcePaneID == pane.id || $0.targetPaneID == pane.id
+            } || activeDelegations.contains {
+                $0.sourcePaneID == pane.id || $0.targetPaneID == pane.id
+            } || awaitingAnswerCount(for: pane.id) > 0
+            guard IdleAgentReaper.shouldReap(
+                pane: pane,
+                lastActivity: stamps[pane.id],
+                now: now,
+                hasLiveCollaboration: collaborating
+            ) else { continue }
+            do {
+                try controller.stopPaneProcess(pane.id)
+                try recordSuccessfulActivity(RelayActivityEventRequest(
+                    kind: .paneReaped,
+                    workspaceID: pane.workspaceID,
+                    workspaceName: pane.workspaceName ?? pane.workspaceID,
+                    paneID: pane.id,
+                    paneName: pane.displayName,
+                    paneKind: pane.kind,
+                    detail: "Stopped after \(Int(IdleAgentReaper.defaultIdleInterval / 60)) idle minutes. Start revives the seat."
+                ))
+            } catch {
+                // The seat is untouched on failure; the next sweep retries.
+            }
+        }
+    }
+
+    // MARK: Quit-time choice
+
+    /// Returns true when quitting may proceed. An owned runtime always offers
+    /// an explicit choice to detach or stop, even when every agent is dead.
+    /// Closing the main window is handled by AppDelegate and only hides it.
+    /// Full application termination is the deliberate lifetime boundary for
+    /// every retained Ghostty exec surface.
+    func resolveTermination() -> Bool {
+        if preparedForUninstall { return true }
+        guard RuntimeTerminationPolicy.shouldOfferChoice(
+            runtime: runtime,
+            controllerAvailable: controller != nil
+        ), let controller else {
+            residentCore?.stop()
+            ghosttyRegistry.stopAll()
+            return true
+        }
+
+        let runningAgents = panes.filter { $0.kind.isAgent && $0.isStarted && !$0.isDead }
+        let livePanes = panes.filter { !$0.isDead }
+        let alert = NSAlert()
+        if !runningAgents.isEmpty {
+            alert.messageText = "Quit and end \(runningAgents.count) agent\(runningAgents.count == 1 ? "" : "s")?"
+        } else if !livePanes.isEmpty {
+            alert.messageText = "Quit and end \(livePanes.count) pane\(livePanes.count == 1 ? "" : "s")?"
+        } else {
+            alert.messageText = "Quit Parley?"
+        }
+        alert.informativeText = "Closing the Parley window keeps these app-resident Ghostty panes running. Quitting the application ends their processes and the local coordination broker."
+        alert.addButton(withTitle: "Quit Parley")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            do {
+                residentCore?.stop()
+                try controller.shutdown()
+                return true
+            } catch {
+                let failure = NSAlert()
+                failure.alertStyle = .critical
+                failure.messageText = "Parley could not stop everything"
+                failure.informativeText = "\(error.localizedDescription)\n\nThe app will stay open so the runtime is not silently left behind."
+                failure.addButton(withTitle: "OK")
+                failure.runModal()
+                return false
+            }
+        case .alertSecondButtonReturn:
+            return false
+        default:
+            return false
+        }
+    }
 
     func showEnvironmentCheck() {
         setupPresented = true
         refreshRuntimeReadiness()
     }
 
-    var coreLoginItemRequested: Bool { coreLoginItemState.isRegistered }
-
-    var canChangeCoreLoginItem: Bool {
-        runtime.managesLoginItem
-            && coreLoginItemState != .unavailable
-            && !coreLoginItemChanging
-            && !preparingToUninstall
-    }
-
     var canPrepareToUninstall: Bool {
-        runtime.managesLoginItem
+        runtime.mode == .production
             && coreAvailable
             && relayClient != nil
-            && coreUpgradeTask == nil
             && !preparingToUninstall
-    }
-
-    func refreshCoreLoginItemState() {
-        guard runtime.managesLoginItem else {
-            coreLoginItemState = .unavailable
-            return
-        }
-        let refreshed = coreLoginItemController.state
-        if refreshed != coreLoginItemState { coreLoginItemState = refreshed }
-    }
-
-    func setCoreLoginItemRequested(_ requested: Bool) {
-        guard runtime.managesLoginItem, !coreLoginItemChanging, !preparingToUninstall else { return }
-        if requested == coreLoginItemRequested { return }
-
-        do {
-            if !requested {
-                guard coreAvailable, let relayClient else {
-                    throw RelayUIError.message(
-                        "Reconnect Parley's coordination core before turning off launch at login, so active work can be checked safely."
-                    )
-                }
-                let activeConsultationCount = try relayClient.consultations().count
-                let history = try relayClient.handoffs(limit: 500)
-                guard CoreLoginItemChangePolicy.canDisable(
-                    activeConsultationCount: activeConsultationCount,
-                    handoffs: history
-                ) else {
-                    throw RelayUIError.message(
-                        "Launch at login cannot be turned off while an Ask or tracked delegation is active. Finish or cancel that work first."
-                    )
-                }
-            }
-        } catch {
-            NSAlert(error: error).runModal()
-            refreshCoreLoginItemState()
-            return
-        }
-
-        coreLoginItemChanging = true
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                if requested {
-                    try self.coreLoginItemController.register()
-                } else {
-                    try await self.coreLoginItemController.unregister()
-                    self.relayClient = nil
-                    self.coreAvailable = false
-                    try self.reconnectConnections()
-                }
-                self.refreshCoreLoginItemState()
-                self.coreLoginItemChanging = false
-            } catch {
-                self.refreshCoreLoginItemState()
-                self.coreLoginItemChanging = false
-                NSAlert(error: error).runModal()
-            }
-        }
-    }
-
-    func openCoreLoginItemSettings() {
-        coreLoginItemController.openSystemSettings()
     }
 
     func prepareToUninstall() {
-        guard runtime.managesLoginItem, canPrepareToUninstall, let relayClient else { return }
+        guard canPrepareToUninstall, let relayClient, let controller else { return }
 
         let confirmation = NSAlert()
         confirmation.messageText = "Prepare Parley for Uninstallation?"
-        confirmation.informativeText = "Parley will refuse if Ask or delegated work is active, turn off launch at login, stop only the coordination core, and quit. Your tmux panes, workspace layouts, and local collaboration history will not be deleted."
+        confirmation.informativeText = "Parley will refuse while Ask or delegated work is active. It will end every app-resident Ghostty pane, stop coordination, and quit. Workspace layouts and local collaboration history remain on disk."
         confirmation.alertStyle = .warning
         confirmation.addButton(withTitle: "Prepare and Quit")
         confirmation.addButton(withTitle: "Cancel")
         guard confirmation.runModal() == .alertFirstButtonReturn else { return }
 
         preparingToUninstall = true
-        coreUpgradeSettled = true
-        var transaction = RelayCoreUninstallTransaction(
-            loginItemWasRegistered: coreLoginItemRequested
-        )
 
         Task { [weak self] in
             guard let self else { return }
@@ -625,7 +908,7 @@ final class AppModel: ObservableObject {
                 let eligible = try await Task.detached(priority: .utility) {
                     let consultations = try relayClient.consultations()
                     let handoffs = try relayClient.handoffs(limit: 500)
-                    return CoreLoginItemChangePolicy.canDisable(
+                    return CoordinationShutdownPolicy.canStop(
                         activeConsultationCount: consultations.count,
                         handoffs: handoffs
                     )
@@ -635,69 +918,30 @@ final class AppModel: ObservableObject {
                         "Parley cannot prepare for uninstallation while an Ask or tracked delegation is active. Finish or cancel that work first."
                     )
                 }
-
-                let response = try await Task.detached(priority: .utility) {
-                    try relayClient.stopIfIdle()
-                }.value
-                guard response.status == 202 else {
-                    throw RelayUIError.message(Self.uninstallBlockedMessage(response.readiness))
-                }
-                transaction.recordCoreStopAccepted()
-
-                if transaction.loginItemWasRegistered {
-                    try await self.coreLoginItemController.unregister()
-                    transaction.recordLoginItemDisabled()
-                    self.refreshCoreLoginItemState()
-                }
-                transaction.recordPreparationCompleted()
+                self.residentCore?.stop()
+                try controller.shutdown()
                 self.relayClient = nil
                 self.coreAvailable = false
                 self.coreError = nil
+                self.preparedForUninstall = true
 
                 let ready = NSAlert()
                 ready.messageText = "Parley Is Ready to Remove"
-                ready.informativeText = "The launch item and coordination core are stopped. After Parley quits, move Parley.app to Trash. Your running tmux panes and local data remain untouched."
+                ready.informativeText = "The app-resident panes and coordination broker are stopped. After Parley quits, move Parley.app to Trash. Local layouts and history remain available for a reinstall."
                 ready.addButton(withTitle: "Quit Parley")
                 ready.runModal()
                 NSApp.terminate(nil)
             } catch {
-                self.refreshCoreLoginItemState()
-                if transaction.loginItemWasRegistered && !self.coreLoginItemRequested {
-                    transaction.recordLoginItemDisabled()
-                }
-                var rollbackFailure: Error?
-                if transaction.requiresLoginItemRollback {
-                    do {
-                        try self.coreLoginItemController.register()
-                        self.refreshCoreLoginItemState()
-                    } catch {
-                        rollbackFailure = error
-                    }
-                }
                 self.preparingToUninstall = false
-                self.coreUpgradeSettled = false
-                self.scheduleCoreUpgradeCheck(force: true)
 
                 let alert = NSAlert()
                 alert.messageText = "Parley Was Not Prepared for Uninstallation"
-                if let rollbackFailure {
-                    alert.informativeText = "\(error.localizedDescription)\n\nLaunch at login could not be restored automatically: \(rollbackFailure.localizedDescription). Check System Settings → General → Login Items before removing Parley."
-                } else {
-                    alert.informativeText = error.localizedDescription
-                }
+                alert.informativeText = error.localizedDescription
                 alert.alertStyle = .warning
                 alert.addButton(withTitle: "OK")
                 alert.runModal()
             }
         }
-    }
-
-    private static func uninstallBlockedMessage(_ readiness: RelayUpgradeReadiness) -> String {
-        let active = readiness.activeConsultations + readiness.activeDelegations
-        if active > 0 {
-            return "Parley cannot stop its coordination core while \(active) Ask or delegated item\(active == 1 ? " is" : "s are") active. Finish or cancel that work first."
-        }
-        return "Parley could not stop its coordination core because a handoff began during the uninstall check. Launch at login has been restored; try again when the handoff finishes."
     }
 
     func refreshRuntimeReadiness() {
@@ -816,62 +1060,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var canRunLiveConformance: Bool {
-        guard !liveConformanceRunning,
-              coreAvailable,
-              Self.conformanceExecutable() != nil else { return false }
-        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
-        return consultations.isEmpty && !handoffs.contains { activeStates.contains($0.state) }
-    }
-
-    func runLiveConformance() {
-        guard canRunLiveConformance, let executable = Self.conformanceExecutable() else {
-            releaseLifecycleMessage = "Live conformance needs the bundled runner, a healthy core, and no active Ask or delegated work."
-            return
-        }
-        let alert = NSAlert()
-        alert.messageText = "Run Live Vendor Conformance?"
-        alert.informativeText = "This opt-in check types a small, attributed probe into eligible existing vendor panes and spends subscription quota. It never starts, restarts or closes a pane, and it stops at visible trust or permission prompts."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Run Live Check")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        liveConformanceRunning = true
-        releaseLifecycleMessage = nil
-        var preparedEnvironment = controller?.environment ?? EnvironmentResolver.resolved()
-        preparedEnvironment["PARLEY_LIVE"] = "1"
-        let environment = preparedEnvironment
-        let arguments = [
-            "--application-directory", applicationDirectory.path,
-            "--timeout", "90",
-            "--json",
-        ]
-        Task { [weak self] in
-            do {
-                let output = try await Task.detached(priority: .utility) {
-                    try ProcessCommandRunner(timeout: 600).run(
-                        executable: executable,
-                        arguments: arguments,
-                        environment: environment,
-                        input: nil
-                    )
-                }.value
-                let report = try JSONDecoder().decode(VendorConformanceReport.self, from: output.stdout)
-                guard let self else { return }
-                self.liveConformanceReport = report
-                self.liveConformanceRunning = false
-                self.releaseLifecycleMessage = report.hasFailures || report.hasBlockedChecks
-                    ? "Live conformance completed with failures or blocked checks. Review the result below."
-                    : "Live conformance completed."
-            } catch {
-                guard let self else { return }
-                self.liveConformanceRunning = false
-                self.releaseLifecycleMessage = "Live conformance failed: \(error.localizedDescription)"
-            }
-        }
-    }
-
     func prepareBetaFeedbackReview() {
         guard let compatibility = vendorCompatibility else {
             releaseLifecycleMessage = "Run the quota-free compatibility check before reviewing a feedback bundle."
@@ -892,7 +1080,6 @@ final class AppModel: ObservableObject {
             ),
             updateChannel: releaseChannel,
             compatibility: compatibility,
-            conformance: liveConformanceReport,
             diagnostics: makeDiagnosticsReport(handoffs: history)
         )
         betaFeedbackPresented = true
@@ -993,7 +1180,7 @@ final class AppModel: ObservableObject {
                 pid: ProcessInfo.processInfo.processIdentifier
             ),
             coreResidentBytes: corePID.flatMap(DiagnosticsProcessMemory.residentBytes),
-            tmuxAvailable: tmuxAvailable,
+            terminalAvailable: terminalAvailable,
             coreAvailable: coreAvailable,
             workspaceCount: workspaces.count,
             panes: panes,
@@ -1017,16 +1204,6 @@ final class AppModel: ObservableObject {
         if let data = try? encoder.encode(vendorCompatibility) {
             preferences.set(data, forKey: Self.vendorCompatibilityKey)
         }
-    }
-
-    private static func conformanceExecutable() -> URL? {
-        let candidates = [
-            Bundle.main.executableURL?.deletingLastPathComponent()
-                .appendingPathComponent("parley-conformance"),
-            URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
-                .deletingLastPathComponent().appendingPathComponent("parley-conformance"),
-        ].compactMap { $0 }
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
 
     private static func betaFeedbackFilename(at date: Date = Date()) -> String {
@@ -1057,7 +1234,7 @@ final class AppModel: ObservableObject {
 
     var connectionState: WorkbenchConnectionState {
         WorkbenchStateProjection.connection(
-            tmuxAvailable: tmuxAvailable,
+            terminalAvailable: terminalAvailable,
             coreAvailable: coreAvailable
         )
     }
@@ -1077,13 +1254,13 @@ final class AppModel: ObservableObject {
 
     var canNavigatePanes: Bool { visiblePanes.count > 1 }
 
-    func projectContext(for pane: TmuxPane) -> GitProjectContext? {
+    func projectContext(for pane: WorkbenchPane) -> GitProjectContext? {
         let folder = URL(fileURLWithPath: pane.cwd).standardizedFileURL.path
         return projectContexts[folder]
     }
 
-    func workspaceSafetySummary(for workspace: TmuxWorkspace) -> WorkspaceSafetySummary {
-        let workspacePanes = panes.filter { $0.windowID == workspace.id }
+    func workspaceSafetySummary(for workspace: WorkbenchWorkspace) -> WorkspaceSafetySummary {
+        let workspacePanes = panes.filter { $0.workspaceID == workspace.workspaceID }
         let contextsByPaneID = Dictionary(uniqueKeysWithValues: workspacePanes.compactMap { pane in
             projectContext(for: pane).map { (pane.id, $0) }
         })
@@ -1108,9 +1285,10 @@ final class AppModel: ObservableObject {
     }
 
     var activeWorktreeWriterCollisions: [WorktreeWriterCollision] {
-        guard let workspaceID = activeWorkspace?.id else { return [] }
+        guard let workspaceID = activeWorkspace?.workspaceID else { return [] }
+        let aliases = workspaceAliases(for: workspaceID)
         return worktreeWriterCollisions.filter { collision in
-            collision.writers.contains(where: { $0.workspaceID == workspaceID })
+            collision.writers.contains(where: { aliases.contains($0.workspaceID) })
         }
     }
 
@@ -1120,8 +1298,9 @@ final class AppModel: ObservableObject {
     }
 
     func hasWorktreeWriterCollision(workspaceID: String) -> Bool {
-        worktreeWriterCollisions.contains { collision in
-            collision.writers.contains(where: { $0.workspaceID == workspaceID })
+        let aliases = workspaceAliases(for: workspaceID)
+        return worktreeWriterCollisions.contains { collision in
+            collision.writers.contains(where: { aliases.contains($0.workspaceID) })
         }
     }
 
@@ -1178,9 +1357,19 @@ final class AppModel: ObservableObject {
         var commands = [
             PaletteCommand(
                 item: CommandPaletteItem(
+                    id: "action:new-workspace",
+                    category: .action,
+                    title: "New Workspace",
+                    detail: "Create a folderless collaboration workspace",
+                    keywords: ["new", "folderless", "collaboration"]
+                ),
+                action: .newWorkspace
+            ),
+            PaletteCommand(
+                item: CommandPaletteItem(
                     id: "action:open-workspace",
                     category: .action,
-                    title: "Open Workspace…",
+                    title: "Open Folder…",
                     detail: "Choose a folder and open or select its workspace",
                     keywords: ["folder", "project", "new"]
                 ),
@@ -1204,7 +1393,9 @@ final class AppModel: ObservableObject {
                     id: "workspace:\(workspace.id)",
                     category: .workspace,
                     title: workspace.name,
-                    detail: workspace.defaultFolder,
+                    detail: workspace.newPaneFolder
+                        ?? workspace.primaryAttachedFolder
+                        ?? "No folders attached",
                     keywords: [workspace.isActive ? "current selected" : "open"]
                 ),
                 action: .selectWorkspace(workspace)
@@ -1212,9 +1403,9 @@ final class AppModel: ObservableObject {
         }
 
         commands += panes.map { pane in
-            let workspace = workspaces.first(where: { $0.id == pane.windowID })?.name
+            let workspace = workspaces.first(where: { $0.workspaceID == pane.workspaceID })?.name
                 ?? pane.workspaceName
-                ?? pane.windowID
+                ?? pane.workspaceID
             let context = projectContext(for: pane)
             let git = context.map { "\($0.branch) \($0.isDirty ? "dirty" : "clean")" } ?? ""
             return PaletteCommand(
@@ -1230,9 +1421,9 @@ final class AppModel: ObservableObject {
         }
 
         commands += askTargets.map { pane in
-            let workspace = workspaces.first(where: { $0.id == pane.windowID })?.name
+            let workspace = workspaces.first(where: { $0.workspaceID == pane.workspaceID })?.name
                 ?? pane.workspaceName
-                ?? pane.windowID
+                ?? pane.workspaceID
             return PaletteCommand(
                 item: CommandPaletteItem(
                     id: "ask:\(pane.id)",
@@ -1272,8 +1463,10 @@ final class AppModel: ObservableObject {
 
     func performPaletteCommand(_ command: PaletteCommand) {
         switch command.action {
-        case .openWorkspace:
+        case .newWorkspace:
             createWorkspace()
+        case .openWorkspace:
+            openWorkspacePicker()
         case .openStatusCenter:
             break
         case let .selectWorkspace(workspace):
@@ -1293,13 +1486,14 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var askTargets: [TmuxPane] {
+    var askTargets: [WorkbenchPane] {
         guard let source = activePane,
               source.kind.isAgent,
               source.isStarted,
               !source.isDead,
               source.relayEnabled,
-              source.hasCurrentProtocol else { return [] }
+              source.hasCurrentProtocol,
+              source.inputAvailable else { return [] }
         return panes.filter {
             $0.kind.isAgent
                 && $0.id != source.id
@@ -1307,7 +1501,7 @@ final class AppModel: ObservableObject {
                 && !$0.isDead
                 && $0.relayEnabled
                 && $0.hasCurrentProtocol
-                && $0.bracketedPasteActive
+                && $0.inputAvailable
         }
     }
 
@@ -1317,10 +1511,10 @@ final class AppModel: ObservableObject {
             && relayClient != nil
     }
 
-    var askManyComparisonLead: TmuxPane? {
+    var askManyComparisonLead: WorkbenchPane? {
         guard let run = askManyComparisonRun else { return nil }
         return panes.first {
-            $0.windowID == run.sourceWorkspaceID
+            $0.workspaceID == run.sourceWorkspaceID
                 && $0.isWorkspaceLead
                 && $0.kind.isAgent
                 && $0.isStarted
@@ -1361,13 +1555,15 @@ final class AppModel: ObservableObject {
     }
 
     var activeWorkspaceBrief: WorkspaceBrief? {
-        guard let workspaceID = activeWorkspace?.id else { return nil }
-        return workspaceBriefs.first(where: { $0.workspaceID == workspaceID })
+        guard let workspaceID = activeWorkspace?.workspaceID else { return nil }
+        let aliases = workspaceAliases(for: workspaceID)
+        return workspaceBriefs.first(where: { aliases.contains($0.workspaceID) })
     }
 
     var contextPackWorkspaceBrief: WorkspaceBrief? {
-        guard let workspaceID = contextPackSourcePane?.windowID else { return nil }
-        return workspaceBriefs.first(where: { $0.workspaceID == workspaceID })
+        guard let workspaceID = contextPackSourcePane?.workspaceID else { return nil }
+        let aliases = workspaceAliases(for: workspaceID)
+        return workspaceBriefs.first(where: { aliases.contains($0.workspaceID) })
     }
 
     var canAddWorkspaceBriefToContextPack: Bool {
@@ -1386,7 +1582,7 @@ final class AppModel: ObservableObject {
         return pinnedContextSnippets.filter { !attached.contains($0.id) }
     }
 
-    var contextPackSourcePane: TmuxPane? {
+    var contextPackSourcePane: WorkbenchPane? {
         guard let draft = contextPackDraft else { return nil }
         return panes.first {
             $0.id == draft.sourcePaneID
@@ -1398,7 +1594,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var contextPackAskTargets: [TmuxPane] {
+    var contextPackAskTargets: [WorkbenchPane] {
         guard let source = contextPackSourcePane else { return [] }
         return panes.filter {
             $0.kind.isAgent
@@ -1410,7 +1606,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var vendorToolEvidencePanes: [TmuxPane] {
+    var vendorToolEvidencePanes: [WorkbenchPane] {
         panes.filter {
             $0.kind.isAgent && $0.isStarted && !$0.isDead
         }.sorted {
@@ -1420,11 +1616,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func paneToolCapabilitySummary(for pane: TmuxPane) -> PaneToolCapabilitySummary {
+    func paneToolCapabilitySummary(for pane: WorkbenchPane) -> PaneToolCapabilitySummary {
         PaneToolCapabilityProjection.summary(for: pane, profiles: permissionProfiles)
     }
 
-    func showPaneToolCapabilitySummary(_ pane: TmuxPane) {
+    func showPaneToolCapabilitySummary(_ pane: WorkbenchPane) {
         let summary = paneToolCapabilitySummary(for: pane)
         let alert = NSAlert()
         alert.messageText = "Browser & Tool Access · \(pane.displayName)"
@@ -1469,34 +1665,35 @@ final class AppModel: ObservableObject {
         return draft.isValid
     }
 
-    var localAskTargets: [TmuxPane] {
-        guard let workspaceID = activeWorkspace?.id else { return [] }
-        return askTargets.filter { $0.windowID == workspaceID }
+    var localAskTargets: [WorkbenchPane] {
+        guard let workspaceID = activeWorkspace?.workspaceID else { return [] }
+        return askTargets.filter { $0.workspaceID == workspaceID }
     }
 
-    var workspaceLead: TmuxPane? {
-        guard let workspaceID = activeWorkspace?.id else { return nil }
-        return panes.first { $0.windowID == workspaceID && $0.isWorkspaceLead }
+    var workspaceLead: WorkbenchPane? {
+        guard let workspaceID = activeWorkspace?.workspaceID else { return nil }
+        return panes.first { $0.workspaceID == workspaceID && $0.isWorkspaceLead }
     }
 
-    var recipeTargets: [TmuxPane] {
+    var recipeTargets: [WorkbenchPane] {
         guard let lead = workspaceLead else { return [] }
         return panes.filter {
-            $0.windowID == lead.windowID
+            $0.workspaceID == lead.workspaceID
                 && $0.id != lead.id
                 && $0.kind.isAgent
                 && $0.isStarted
                 && !$0.isDead
                 && $0.relayEnabled
                 && $0.hasCurrentProtocol
-                && $0.bracketedPasteActive
+                && $0.inputAvailable
         }
     }
 
     var activeSupervisedWorkflow: SupervisedWorkflowRun? {
-        guard let workspaceID = activeWorkspace?.id else { return nil }
+        guard let workspaceID = activeWorkspace?.workspaceID else { return nil }
+        let aliases = workspaceAliases(for: workspaceID)
         return supervisedWorkflowRuns.first {
-            $0.workspaceID == workspaceID && !$0.phase.isTerminal
+            aliases.contains($0.workspaceID) && !$0.phase.isTerminal
         }
     }
 
@@ -1509,9 +1706,10 @@ final class AppModel: ObservableObject {
     }
 
     var recentSupervisedWorkflows: [SupervisedWorkflowRun] {
-        guard let workspaceID = activeWorkspace?.id else { return [] }
+        guard let workspaceID = activeWorkspace?.workspaceID else { return [] }
+        let aliases = workspaceAliases(for: workspaceID)
         return supervisedWorkflowRuns.filter {
-            $0.workspaceID == workspaceID && $0.phase.isTerminal
+            aliases.contains($0.workspaceID) && $0.phase.isTerminal
         }
     }
 
@@ -1525,12 +1723,15 @@ final class AppModel: ObservableObject {
               !lead.isDead,
               lead.relayEnabled,
               lead.hasCurrentProtocol,
-              lead.bracketedPasteActive else { return false }
+              lead.inputAvailable else { return false }
         return !recipeTargets.isEmpty
     }
 
-    func pane(for participant: SupervisedWorkflowParticipant) -> TmuxPane? {
-        panes.first { $0.id == participant.paneID && $0.windowID == participant.workspaceID }
+    func pane(for participant: SupervisedWorkflowParticipant) -> WorkbenchPane? {
+        panes.first {
+            $0.id == participant.paneID
+                && $0.workspaceID == participant.workspaceID
+        }
     }
 
     func canRun(_ recipe: HandoffRecipe) -> Bool {
@@ -1541,7 +1742,7 @@ final class AppModel: ObservableObject {
               !lead.isDead,
               lead.relayEnabled,
               lead.hasCurrentProtocol,
-              lead.bracketedPasteActive,
+              lead.inputAvailable,
               recipe.kind.isAllowed(by: workspace.automationPolicy) else { return false }
         return recipeTargets.count >= (recipe.kind == .askMany ? 2 : 1)
     }
@@ -1549,7 +1750,7 @@ final class AppModel: ObservableObject {
     var otherWorkspaceAskGroups: [WorkspaceAskGroup] {
         workspaces.compactMap { workspace in
             guard !workspace.isActive else { return nil }
-            let targets = askTargets.filter { $0.windowID == workspace.id }
+            let targets = askTargets.filter { $0.workspaceID == workspace.workspaceID }
             return targets.isEmpty ? nil : WorkspaceAskGroup(workspace: workspace, panes: targets)
         }
     }
@@ -1561,17 +1762,25 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var legacyReturnTarget: TmuxPane? {
-        guard let requesterID = activePane?.returnToPaneID else { return nil }
-        return panes.first(where: { $0.id == requesterID })
+    var canReturn: Bool { !activePaneConsultations.isEmpty }
+
+    private func workspaceAliases(for reference: String) -> Set<String> {
+        let durableID = workspaces.first(where: {
+            $0.id == reference || $0.workspaceID == reference
+        })?.workspaceID ?? panes.first(where: {
+            $0.workspaceID == reference
+        })?.workspaceID
+        guard let durableID else { return [reference] }
+        return Set(panes.lazy.filter { $0.workspaceID == durableID }
+            .map(\.workspaceID))
+            .union([reference, durableID])
     }
 
-    var canReturn: Bool { !activePaneConsultations.isEmpty || legacyReturnTarget != nil }
-
     var workspaceHandoffs: [RelayHandoff] {
-        guard let workspaceID = activeWorkspace?.id else { return handoffs }
+        guard let workspaceID = activeWorkspace?.workspaceID else { return handoffs }
+        let aliases = workspaceAliases(for: workspaceID)
         return handoffs.filter {
-            $0.sourceWorkspaceID == workspaceID || $0.targetWorkspaceID == workspaceID
+            aliases.contains($0.sourceWorkspaceID) || aliases.contains($0.targetWorkspaceID)
         }
     }
 
@@ -1592,9 +1801,11 @@ final class AppModel: ObservableObject {
     }
 
     func latestFailure(for paneID: String) -> RelayHandoff? {
-        handoffs.first {
-            $0.targetPaneID == paneID && ($0.state == .failed || $0.state == .interrupted)
+        guard let latest = handoffs.first(where: { $0.targetPaneID == paneID }),
+              latest.state == .failed || latest.state == .interrupted else {
+            return nil
         }
+        return latest
     }
 
     func unreadResultCount(forPane paneID: String) -> Int {
@@ -1602,37 +1813,44 @@ final class AppModel: ObservableObject {
     }
 
     func unreadResultCount(forWorkspace workspaceID: String) -> Int {
-        unreadHandoffs.count { $0.sourceWorkspaceID == workspaceID }
+        let aliases = workspaceAliases(for: workspaceID)
+        return unreadHandoffs.count { aliases.contains($0.sourceWorkspaceID) }
     }
 
     func waitingCount(for workspaceID: String) -> Int {
+        let aliases = workspaceAliases(for: workspaceID)
         let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
         return handoffs.count {
             activeStates.contains($0.state)
-                && ($0.sourceWorkspaceID == workspaceID || $0.targetWorkspaceID == workspaceID)
+                && (aliases.contains($0.sourceWorkspaceID)
+                    || aliases.contains($0.targetWorkspaceID))
         }
     }
 
     func failureCount(for workspaceID: String) -> Int {
-        handoffs.count {
-            ($0.sourceWorkspaceID == workspaceID || $0.targetWorkspaceID == workspaceID)
+        let aliases = workspaceAliases(for: workspaceID)
+        return handoffs.count {
+            (aliases.contains($0.sourceWorkspaceID)
+                || aliases.contains($0.targetWorkspaceID))
                 && ($0.state == .failed || $0.state == .interrupted)
         }
     }
 
     func requiresHumanAttention(_ workspaceID: String) -> Bool {
-        handoffs.contains {
-            ($0.sourceWorkspaceID == workspaceID || $0.targetWorkspaceID == workspaceID)
+        let aliases = workspaceAliases(for: workspaceID)
+        return handoffs.contains {
+            (aliases.contains($0.sourceWorkspaceID)
+                || aliases.contains($0.targetWorkspaceID))
                 && $0.state == .failed
                 && $0.attention != nil
         }
     }
 
-    func notificationsEnabled(for workspace: TmuxWorkspace) -> Bool {
+    func notificationsEnabled(for workspace: WorkbenchWorkspace) -> Bool {
         notificationWorkspaceNames.contains(workspace.name)
     }
 
-    func setNotificationsEnabled(_ enabled: Bool, for workspace: TmuxWorkspace) {
+    func setNotificationsEnabled(_ enabled: Bool, for workspace: WorkbenchWorkspace) {
         if !enabled {
             notificationWorkspaceNames.remove(workspace.name)
             saveNotificationWorkspaces()
@@ -1654,19 +1872,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var attachConfiguration: AttachConfiguration? {
-        guard let controller else { return nil }
-        var environment = controller.environment
-        environment["TERM"] = "xterm-256color"
-        environment["COLORTERM"] = "truecolor"
-        return AttachConfiguration(
-            executable: controller.tmuxExecutable.path,
-            arguments: controller.attachArguments(),
-            environment: environment.map { "\($0.key)=\($0.value)" },
-            cwd: defaultFolder
-        )
-    }
-
     func refresh() throws {
         var firstError: Error?
         if let controller {
@@ -1684,15 +1889,29 @@ final class AppModel: ObservableObject {
                 if refreshedWorkspaces != workspaces { workspaces = refreshedWorkspaces }
                 let refreshedPanes = try controller.listPanes()
                 if refreshedPanes != panes { panes = refreshedPanes }
-                tmuxAvailable = true
-                tmuxError = nil
+                ghosttyRegistry.retainOnly(paneIDs: Set(refreshedPanes.map(\.id)))
+                ghosttyRegistry.select(paneID: refreshedPanes.first(where: \.isActive)?.id)
+                var selectedPaneIDs: [String: String] = [:]
+                if let active = refreshedPanes.first(where: \.isActive) {
+                    selectedPaneIDs[active.workspaceID] = active.id
+                }
+                // The registry keeps records for workspaces a stopped server
+                // no longer lists; a write failure must not break refresh.
+                _ = try? workspaceRegistry.synchronize(
+                    workspaces: refreshedWorkspaces,
+                    selectedPaneIDs: selectedPaneIDs
+                )
+                reconcileNativeLayouts(workspaces: refreshedWorkspaces, panes: refreshedPanes)
+                reapIdleAgentsIfEnabled(controller: controller, panes: refreshedPanes)
+                terminalAvailable = true
+                terminalError = nil
             } catch {
-                tmuxAvailable = false
-                tmuxError = error.localizedDescription
+                terminalAvailable = false
+                terminalError = error.localizedDescription
                 firstError = error
             }
         } else {
-            tmuxAvailable = false
+            terminalAvailable = false
         }
         if let relayClient {
             do {
@@ -1733,7 +1952,7 @@ final class AppModel: ObservableObject {
         } else {
             coreAvailable = false
         }
-        if tmuxAvailable {
+        if terminalAvailable {
             scheduleProjectContextRefresh()
             scheduleWorktreeRefresh()
         }
@@ -1751,38 +1970,39 @@ final class AppModel: ObservableObject {
 
     private func reconnectConnections() throws {
         guard let controller else {
-            throw RelayUIError.message("Parley could not initialise tmux. Quit and reopen the app after resolving the startup error.")
+            throw RelayUIError.message("Parley could not initialise its Ghostty workbench. Quit and reopen the app after resolving the startup error.")
         }
-        if !tmuxAvailable {
+        if !terminalAvailable {
             try controller.bootstrap(
                 cwd: defaultFolder,
-                createIfMissing: !runtime.requiresExistingTmuxSession
+                createIfMissing: true
             )
         }
         if !coreAvailable {
-            if runtime.launchesCore {
-                relayClient = try RelayCoreLauncher.ensureRunning(
-                    applicationDirectory: controller.applicationDirectory,
-                    cwd: defaultFolder,
-                    environment: controller.environment,
-                    tmuxSessionName: runtime.tmuxSessionName,
-                    runtimeMarker: runtime.visibleMarker
-                )
+            if let residentCore, residentCore.client.isHealthy() {
+                relayClient = residentCore.client
             } else {
-                relayClient = try RelayCoreLauncher.attachExisting(
-                    applicationDirectory: controller.applicationDirectory
+                let credentials = try RelayCredentials(
+                    file: controller.applicationDirectory.appendingPathComponent("relay-tokens.json")
                 )
+                let core = try AppResidentCoordinationCore(
+                    controller: controller,
+                    credentials: credentials,
+                    applicationDirectory: controller.applicationDirectory,
+                    transportDirectory: RelayFileTransport.runtimeDirectory(
+                        applicationDirectory: controller.applicationDirectory
+                    )
+                )
+                residentCore = core
+                relayClient = core.client
             }
         }
-        coreUpgradeSettled = false
-        if runtime.upgradesCore { scheduleCoreUpgradeCheck(force: true) }
         try refresh()
         startupError = nil
     }
 
     func refreshQuietly() {
-        do { try refresh() } catch { /* the attached client may be between tmux redraws */ }
-        scheduleCoreUpgradeCheck()
+        do { try refresh() } catch { /* a retained surface or broker may be between lifecycle events */ }
     }
 
     private func startPeriodicRefresh() {
@@ -1831,94 +2051,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func scheduleCoreUpgradeCheck(force: Bool = false) {
-        guard runtime.upgradesCore,
-              coreUpgradeTask == nil,
-              !coreUpgradeSettled,
-              !preparingToUninstall,
-              let controller else { return }
-        let now = Date()
-        guard force || now.timeIntervalSince(lastCoreUpgradeAttempt) >= 2 else { return }
-        lastCoreUpgradeAttempt = now
-
-        let client = relayClient
-        let expectedIdentity = CoreServiceIdentity.resolve(infoDictionary: Bundle.main.infoDictionary)
-        let applicationDirectory = applicationDirectory
-        let cwd = defaultFolder
-        let environment = controller.environment
-        let tmuxSessionName = runtime.tmuxSessionName
-        let runtimeMarker = runtime.visibleMarker
-        coreUpgradeTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let result = try await Task.detached(priority: .utility) {
-                    let attached: RelayCoreClient
-                    if let client, client.isHealthy() {
-                        attached = client
-                    } else {
-                        attached = try RelayCoreLauncher.ensureRunning(
-                            applicationDirectory: applicationDirectory,
-                            cwd: cwd,
-                            environment: environment,
-                            tmuxSessionName: tmuxSessionName,
-                            runtimeMarker: runtimeMarker
-                        )
-                    }
-                    return try RelayCoreHandover.reconcile(
-                        client: attached,
-                        expectedIdentity: expectedIdentity,
-                        applicationDirectory: applicationDirectory,
-                        cwd: cwd,
-                        environment: environment,
-                        tmuxSessionName: tmuxSessionName,
-                        runtimeMarker: runtimeMarker
-                    )
-                }.value
-                self.relayClient = result.client
-                self.coreAvailable = true
-                self.coreError = nil
-                switch result.outcome {
-                case .current:
-                    self.coreUpgradePending = false
-                    self.coreUpgradeMessage = "The coordination core matches this Parley build."
-                    self.coreUpgradeSettled = true
-                case .replaced:
-                    self.coreUpgradePending = false
-                    self.coreUpgradeMessage = "The coordination core was upgraded without restarting any panes."
-                    self.coreUpgradeSettled = true
-                    if self.startupError?.hasPrefix("The Parley relay is unavailable") == true {
-                        self.startupError = nil
-                    }
-                case let .deferred(readiness):
-                    self.coreUpgradePending = true
-                    self.coreUpgradeMessage = Self.coreUpgradePendingMessage(readiness)
-                }
-            } catch {
-                self.coreUpgradePending = true
-                self.coreUpgradeMessage = "Automatic core upgrade will retry: \(error.localizedDescription)"
-                self.coreError = error.localizedDescription
-            }
-            self.coreUpgradeTask = nil
-        }
-    }
-
-    private static func coreUpgradePendingMessage(_ readiness: RelayUpgradeReadiness) -> String {
-        var work: [String] = []
-        if readiness.activeConsultations > 0 {
-            work.append("\(readiness.activeConsultations) active Ask")
-        }
-        if readiness.activeDelegations > 0 {
-            work.append("\(readiness.activeDelegations) active delegation")
-        }
-        if readiness.activeDispatches > 0 {
-            work.append("a handoff currently being delivered")
-        }
-        let detail = work.isEmpty ? "coordination work" : work.joined(separator: ", ")
-        return "Upgrade pending until \(detail) finishes. Agent panes and tmux sessions remain running."
-    }
-
     func refreshStatusCenterQuietly() {
-        refreshCoreLoginItemState()
         do {
             try refresh()
             guard let relayClient else { return }
@@ -2031,14 +2164,20 @@ final class AppModel: ObservableObject {
     }
 
     func statusHandoffChains(workspaceID: String?) -> [HandoffChain] {
-        HandoffChainProjection.chains(reloaded: handoffChains, workspaceID: workspaceID)
+        let aliases = workspaceID.map(workspaceAliases(for:)) ?? []
+        return handoffChains.filter { workspaceID == nil || aliases.contains($0.workspaceID) }
+            .sorted {
+                if $0.updatedAt == $1.updatedAt { return $0.id < $1.id }
+                return $0.updatedAt > $1.updatedAt
+            }
     }
 
     func statusReviewedBusyDrafts(workspaceID: String?) -> [ReviewedBusyDraft] {
-        reviewedBusyDrafts.filter { draft in
+        let aliases = workspaceID.map(workspaceAliases(for:)) ?? []
+        return reviewedBusyDrafts.filter { draft in
             workspaceID == nil
-                || draft.sourceWorkspaceID == workspaceID
-                || draft.targetWorkspaceID == workspaceID
+                || aliases.contains(draft.sourceWorkspaceID)
+                || aliases.contains(draft.targetWorkspaceID)
         }
     }
 
@@ -2120,7 +2259,7 @@ final class AppModel: ObservableObject {
         guard alert.runModal() == .alertFirstButtonReturn else { return false }
         do {
             guard let relayClient else {
-                throw RelayUIError.message("The persistent core is unavailable.")
+                throw RelayUIError.message("The app-resident coordination core is unavailable.")
             }
             let response = try relayClient.cancelReviewedBusyDraft(draft.id)
             guard response.status == 200 else { throw RelayUIError.message(response.text) }
@@ -2274,7 +2413,7 @@ final class AppModel: ObservableObject {
         saveDismissedHandoffs()
     }
 
-    func deleteStatusHistory(for workspace: TmuxWorkspace) -> Bool {
+    func deleteStatusHistory(for workspace: WorkbenchWorkspace) -> Bool {
         let alert = NSAlert()
         alert.messageText = "Delete collaboration history for \(workspace.name)?"
         alert.informativeText = "This permanently deletes completed, cancelled, failed, and interrupted Ask, Delegate, Relay, and Paste records involving this workspace, plus its recorded pane and workspace lifecycle events. Active work is preserved. Returned answers are included, and this cannot be undone."
@@ -2288,7 +2427,7 @@ final class AppModel: ObservableObject {
                 throw RelayUIError.message("The Parley coordination core is unavailable.")
             }
             let response = try relayClient.deleteWorkspaceHistory(
-                workspaceID: workspace.id,
+                workspaceID: workspace.workspaceID,
                 workspaceName: workspace.name
             )
             guard response.status == 200 else { throw RelayUIError.message(response.text) }
@@ -2333,11 +2472,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func exportWorkspaceHistory(for workspace: TmuxWorkspace) {
+    func exportWorkspaceHistory(for workspace: WorkbenchWorkspace) {
         let source = statusHandoffs.isEmpty ? handoffs : statusHandoffs
         let records = CollaborationHistoryProjection.records(
             source,
-            involvingWorkspaceID: workspace.id
+            involvingWorkspaceID: workspace.workspaceID
         )
         guard !records.isEmpty else {
             let alert = NSAlert()
@@ -2453,7 +2592,7 @@ final class AppModel: ObservableObject {
             guard response.status == 200 else { return }
             refreshStatusCenterQuietly()
         } catch {
-            // The regular refresh owns connection health. A persistent core
+            // The regular refresh owns connection health. The app-resident core
             // from the previous UI build may not know this control route yet;
             // leave the result unread instead of misreporting the core as down.
             refreshQuietly()
@@ -2461,6 +2600,12 @@ final class AppModel: ObservableObject {
     }
 
     func create(_ kind: PaneKind, direction: SplitDirection) {
+        if kind.isAgent,
+           activeWorkspace?.isFolderless == true,
+           activeWorkspace?.newPaneFolder == nil {
+            createInChosenFolder(kind, direction: direction)
+            return
+        }
         preparePane(kind, direction: direction, folder: defaultFolder)
     }
 
@@ -2504,12 +2649,13 @@ final class AppModel: ObservableObject {
         perform {
             guard let controller else { return }
             let standardized = WorkspaceFolderIdentity.normalized(folder)
-            _ = try controller.createPane(
+            let splitTarget = activePane
+            let created = try controller.createPane(
                 kind: kind,
                 cwd: standardized,
-                direction: direction,
                 permissionProfile: permissionProfile
             )
+            recordNativeSplit(created: created, target: splitTarget, direction: direction)
             rememberFolder(standardized)
             try refresh()
             terminalHandle.focus()
@@ -2530,7 +2676,7 @@ final class AppModel: ObservableObject {
         return "default"
     }
 
-    func permissionProfileName(for pane: TmuxPane) -> String? {
+    func permissionProfileName(for pane: WorkbenchPane) -> String? {
         guard let id = pane.permissionSelection?.profileID else { return nil }
         return permissionProfiles.first(where: { $0.id == id })?.name ?? id
     }
@@ -2587,20 +2733,21 @@ final class AppModel: ObservableObject {
             guard let controller else { return }
             switch request.action {
             case let .create(direction):
-                _ = try controller.createPane(
+                let splitTarget = activePane
+                let created = try controller.createPane(
                     kind: request.kind,
                     cwd: request.folder,
-                    direction: direction,
                     permissionProfile: effective
                 )
+                recordNativeSplit(created: created, target: splitTarget, direction: direction)
                 rememberFolder(request.folder)
             case let .restart(paneID):
                 try controller.restartPane(paneID, permissionProfile: effective)
                 if let pane = panes.first(where: { $0.id == paneID }) {
                     try recordSuccessfulActivity(RelayActivityEventRequest(
                         kind: .paneRestarted,
-                        workspaceID: pane.windowID,
-                        workspaceName: pane.workspaceName ?? pane.windowID,
+                        workspaceID: pane.workspaceID,
+                        workspaceName: pane.workspaceName ?? pane.workspaceID,
                         paneID: pane.id,
                         paneName: pane.displayName,
                         paneKind: pane.kind,
@@ -2642,17 +2789,51 @@ final class AppModel: ObservableObject {
         URL(fileURLWithPath: folder).resolvingSymlinksInPath().standardizedFileURL.path
     }
 
-    func select(_ pane: TmuxPane) {
+    func select(_ pane: WorkbenchPane) {
+        if focusCanvasPaneID != nil { focusCanvasPaneID = pane.id }
         perform {
             try controller?.selectPane(pane.id)
+            _ = try? workspaceRegistry.updateSelectedPane(
+                workspaceID: pane.workspaceID,
+                paneID: pane.id
+            )
             try refresh()
             terminalHandle.focus()
         }
     }
 
-    func select(_ workspace: TmuxWorkspace) {
+    /// Mouse focus in a native split also updates the authoritative base
+    /// session selection. The clicked terminal already becomes first
+    /// responder, so this path deliberately avoids refocusing a stale handle
+    /// while SwiftUI publishes the newly active leaf.
+    func selectNativePane(_ paneID: String) {
+        guard activePane?.id != paneID,
+              let pane = panes.first(where: { $0.id == paneID }) else { return }
+        if focusCanvasPaneID != nil { focusCanvasPaneID = paneID }
         perform {
-            try controller?.selectWorkspace(workspace.id)
+            try controller?.selectPane(pane.id)
+            _ = try? workspaceRegistry.updateSelectedPane(
+                workspaceID: pane.workspaceID,
+                paneID: pane.id
+            )
+            try refresh()
+        }
+    }
+
+    func select(_ workspace: WorkbenchWorkspace) {
+        focusCanvasPaneID = nil
+        perform {
+            let recordedPaneID = try? workspaceRegistry.record(
+                workspaceID: workspace.workspaceID
+            )?.selectedPaneID
+            if let recordedPaneID,
+               panes.contains(where: {
+                   $0.id == recordedPaneID && $0.workspaceID == workspace.workspaceID
+               }) {
+                try controller?.selectPane(recordedPaneID)
+            } else {
+                try controller?.selectWorkspace(workspace.id)
+            }
             try refresh()
             terminalHandle.focus()
         }
@@ -2668,41 +2849,119 @@ final class AppModel: ObservableObject {
     }
 
     func selectAdjacentPane(by offset: Int) {
+        let orderedPanes = layoutOrderedVisiblePanes
         guard let targetID = NavigationOrder.adjacentID(
             currentID: activePane?.id,
             offset: offset,
-            orderedIDs: visiblePanes.map(\.id)
-        ), let target = visiblePanes.first(where: { $0.id == targetID }) else { return }
+            orderedIDs: orderedPanes.map(\.id)
+        ), let target = orderedPanes.first(where: { $0.id == targetID }) else { return }
         select(target)
     }
 
-    func ask(_ target: TmuxPane) {
+    func selectPane(at index: Int) {
+        let orderedPanes = layoutOrderedVisiblePanes
+        guard orderedPanes.indices.contains(index) else { return }
+        select(orderedPanes[index])
+    }
+
+    func toggleFocusCanvas(paneID: String? = nil) {
+        let target = paneID ?? activePane?.id
+        guard let target, visiblePanes.contains(where: { $0.id == target }) else {
+            focusCanvasPaneID = nil
+            return
+        }
+        focusCanvasPaneID = focusCanvasPaneID == target ? nil : target
+        if activePane?.id != target, let pane = visiblePanes.first(where: { $0.id == target }) {
+            select(pane)
+        } else {
+            terminalHandle.focus()
+        }
+    }
+
+    func exitFocusCanvas() {
+        focusCanvasPaneID = nil
+        terminalHandle.focus()
+    }
+
+    func focusActiveTerminal() {
+        terminalHandle.focus()
+    }
+
+    func toggleCollaborationDock() {
+        collaborationDockVisible.toggle()
+        preferences.set(collaborationDockVisible, forKey: Self.collaborationDockVisibleKey)
+    }
+
+    func ask(_ target: WorkbenchPane) {
+        guard let source = activePane else { return }
+        let selection = terminalHandle.selectedText
+        handoffComposerDraft = HandoffComposerDraft(
+            sourcePaneID: source.id,
+            sourceName: source.displayName,
+            targetPaneID: target.id,
+            targetName: target.displayName,
+            text: RelayDraft.initialText(selection: selection),
+            includesTerminalSelection: selection != nil
+        )
+    }
+
+    func updateHandoffComposerText(_ text: String) {
+        handoffComposerDraft?.text = text
+    }
+
+    func insertSelectionInHandoffComposer() {
+        guard var draft = handoffComposerDraft else { return }
         perform {
-            guard let controller, let source = activePane else { return }
-            guard let edited = editRelay(
-                title: "Ask \(target.displayName)",
-                message: "Only this text will be submitted to \(target.displayName). Select terminal text first, type here, or explicitly insert the visible pane.",
-                text: RelayDraft.initialText(selection: terminalHandle.selectedText),
-                action: "Ask",
-                insertVisible: { try controller.capturePane(source.id) }
-            ) else { return }
+            guard let controller else {
+                throw RelayUIError.message("The embedded terminal workbench is unavailable.")
+            }
+            let selection = RelayText.clean(try controller.capturePane(draft.sourcePaneID))
+            guard !selection.isEmpty else {
+                throw RelayUIError.message("Select text in \(draft.sourceName) first; Parley never captures scrollback implicitly.")
+            }
+            if !draft.text.isEmpty { draft.text += "\n\n" }
+            draft.text += selection
+            draft.includesTerminalSelection = true
+            handoffComposerDraft = draft
+        }
+    }
+
+    func cancelHandoffComposer() {
+        handoffComposerDraft = nil
+        terminalHandle.focus()
+    }
+
+    func submitHandoffComposer() {
+        guard let draft = handoffComposerDraft else { return }
+        let edited = RelayText.clean(draft.text)
+        guard !edited.isEmpty else { return }
+        perform {
+            guard let source = panes.first(where: {
+                $0.id == draft.sourcePaneID && $0.kind.isAgent && $0.isStarted && !$0.isDead
+            }), let target = panes.first(where: {
+                $0.id == draft.targetPaneID && $0.kind.isAgent && $0.isStarted && !$0.isDead
+            }) else {
+                throw RelayUIError.message("The reviewed source or target pane is no longer available. Nothing was sent.")
+            }
             try submitOrOfferBusyQueue(
                 edited,
                 from: source,
                 to: target,
                 preserveFormatting: false
             )
+            handoffComposerDraft = nil
             try refresh()
-            terminalHandle.terminal?.selectNone()
+            terminalHandle.clearSelection()
             terminalHandle.focus()
         }
     }
 
     func editWorkspaceBrief() {
         guard let workspace = activeWorkspace else { return }
-        let existing = workspaceBriefs.first(where: { $0.workspaceID == workspace.id })
+        let aliases = workspaceAliases(for: workspace.workspaceID)
+        let existing = workspaceBriefs.first(where: { aliases.contains($0.workspaceID) })
         workspaceBriefDraft = ActiveWorkspaceBriefDraft(
-            workspaceID: workspace.id,
+            workspaceID: workspace.workspaceID,
             workspaceName: workspace.name,
             existingBriefID: existing?.id,
             goal: existing?.goal ?? "",
@@ -2985,14 +3244,14 @@ final class AppModel: ObservableObject {
             } else {
                 guard let controller, let contextPackBuilder else { return }
                 let visible = try controller.capturePane(pane.id)
-                let part = try contextPackBuilder.visibleTerminal(
+                let part = try contextPackBuilder.terminalSelection(
                     paneID: pane.id,
                     paneName: pane.displayName,
                     text: visible
                 )
                 try appendContextPackParts([part], draftID: draft.id)
             }
-            terminalHandle.terminal?.selectNone()
+            terminalHandle.clearSelection()
         }
     }
 
@@ -3124,7 +3383,7 @@ final class AppModel: ObservableObject {
         defer { contextCommandCapturing = false }
         if let reviewID = draft.reviewID {
             guard let relayClient else {
-                throw RelayUIError.message("The persistent core is unavailable, so Parley cannot establish trusted capture provenance.")
+                throw RelayUIError.message("The app-resident core is unavailable, so Parley cannot establish trusted capture provenance.")
             }
             let request = AgentContextTrustedCaptureRequest(
                 reviewID: reviewID,
@@ -3174,7 +3433,7 @@ final class AppModel: ObservableObject {
             ) else { return }
             if let reviewID = draft.reviewID, draft.reviewState == .awaitingReview {
                 guard let relayClient else {
-                    throw RelayUIError.message("The persistent core is unavailable, so this agent request cannot be approved.")
+                    throw RelayUIError.message("The app-resident core is unavailable, so this agent request cannot be approved.")
                 }
                 guard let expectedUpdatedAt = draft.reviewUpdatedAt else {
                     throw RelayUIError.message("Reopen this agent review before approving its latest sources.")
@@ -3190,7 +3449,7 @@ final class AppModel: ObservableObject {
                 }
             } else if let reviewID = draft.reviewID {
                 guard let relayClient else {
-                    throw RelayUIError.message("The persistent core is unavailable, so this agent draft cannot be sent safely.")
+                    throw RelayUIError.message("The app-resident core is unavailable, so this agent draft cannot be sent safely.")
                 }
                 guard let expectedUpdatedAt = draft.reviewUpdatedAt else {
                     throw RelayUIError.message("Reopen this agent review before sending its latest sources.")
@@ -3272,8 +3531,8 @@ final class AppModel: ObservableObject {
     }
 
     private func launchAskMany(
-        source: TmuxPane,
-        targets: [TmuxPane],
+        source: WorkbenchPane,
+        targets: [WorkbenchPane],
         question: String,
         preserveFormatting: Bool = false
     ) {
@@ -3282,7 +3541,7 @@ final class AppModel: ObservableObject {
             id: UUID().uuidString.lowercased(),
             sourcePaneID: source.id,
             sourceName: source.displayName,
-            sourceWorkspaceID: source.windowID,
+            sourceWorkspaceID: source.workspaceID,
             question: question,
             targets: targets.map {
                 AskManyComparisonTarget(
@@ -3298,7 +3557,7 @@ final class AppModel: ObservableObject {
         )
         askManyComparisonRun = run
         askManyComparisonPresented = true
-        terminalHandle.terminal?.selectNone()
+        terminalHandle.clearSelection()
 
         let targetPaneIDs = targets.map(\.id)
         Task { [weak self] in
@@ -3397,7 +3656,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func reviewChanges(with target: TmuxPane) {
+    func reviewChanges(with target: WorkbenchPane) {
         perform {
             guard let source = activePane, let reviewDraftBuilder else { return }
             let draft = try reviewDraftBuilder.changes(in: source.cwd)
@@ -3405,7 +3664,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func reviewFile(with target: TmuxPane) {
+    func reviewFile(with target: WorkbenchPane) {
         guard let source = activePane else { return }
         let panel = NSOpenPanel()
         panel.title = "Choose a plan or text file for \(target.displayName) to review"
@@ -3454,7 +3713,7 @@ final class AppModel: ObservableObject {
             let reviewerStamp = workflowParticipant(participants.reviewer)
             let verifierStamp = workflowParticipant(participants.verifier)
             let run = try supervisedWorkflowStore.start(
-                workspaceID: workspace.id,
+                workspaceID: workspace.workspaceID,
                 workspaceName: workspace.name,
                 lead: leadStamp,
                 reviewer: reviewerStamp,
@@ -3476,7 +3735,7 @@ final class AppModel: ObservableObject {
             supervisedWorkflowPresented = true
             try controller.selectPane(lead.id)
             try refresh()
-            terminalHandle.terminal?.selectNone()
+            terminalHandle.clearSelection()
             terminalHandle.focus()
         }
     }
@@ -3524,7 +3783,7 @@ final class AppModel: ObservableObject {
             try reloadSupervisedWorkflows()
             try controller.selectPane(reviewer.id)
             try refresh()
-            terminalHandle.terminal?.selectNone()
+            terminalHandle.clearSelection()
             terminalHandle.focus()
         }
     }
@@ -3550,7 +3809,7 @@ final class AppModel: ObservableObject {
             )
             try reloadSupervisedWorkflows()
             supervisedWorkflowPresented = true
-            terminalHandle.terminal?.selectNone()
+            terminalHandle.clearSelection()
             terminalHandle.focus()
         }
     }
@@ -3627,7 +3886,7 @@ final class AppModel: ObservableObject {
             try reloadSupervisedWorkflows()
             try controller.selectPane(verifier.id)
             try refresh()
-            terminalHandle.terminal?.selectNone()
+            terminalHandle.clearSelection()
             terminalHandle.focus()
         }
     }
@@ -3653,7 +3912,7 @@ final class AppModel: ObservableObject {
             )
             try reloadSupervisedWorkflows()
             supervisedWorkflowPresented = true
-            terminalHandle.terminal?.selectNone()
+            terminalHandle.clearSelection()
             terminalHandle.focus()
         }
     }
@@ -3736,7 +3995,7 @@ final class AppModel: ObservableObject {
             activeRecipeRun = run
             try recordSuccessfulActivity(RelayActivityEventRequest(
                 kind: .recipeSubmitted,
-                workspaceID: workspace.id,
+                workspaceID: workspace.workspaceID,
                 workspaceName: workspace.name,
                 paneID: lead.id,
                 paneName: lead.displayName,
@@ -3792,7 +4051,7 @@ final class AppModel: ObservableObject {
 
     func interruptActiveRecipeRun() {
         guard let run = activeRecipeRun,
-              let workspace = workspaces.first(where: { $0.id == panes.first(where: { $0.id == run.leadPaneID })?.windowID }) else {
+              let workspace = workspaces.first(where: { $0.workspaceID == panes.first(where: { $0.id == run.leadPaneID })?.workspaceID }) else {
             activeRecipeRun = nil
             return
         }
@@ -3809,7 +4068,7 @@ final class AppModel: ObservableObject {
             activeRecipeRun = nil
             try recordSuccessfulActivity(RelayActivityEventRequest(
                 kind: .recipeInterrupted,
-                workspaceID: workspace.id,
+                workspaceID: workspace.workspaceID,
                 workspaceName: workspace.name,
                 paneID: run.leadPaneID,
                 paneName: run.leadName,
@@ -3822,8 +4081,8 @@ final class AppModel: ObservableObject {
 
     private func chooseRecipeTargets(
         for recipe: HandoffRecipe,
-        candidates: [TmuxPane]
-    ) throws -> [TmuxPane] {
+        candidates: [WorkbenchPane]
+    ) throws -> [WorkbenchPane] {
         let required = recipe.kind == .askMany ? 2 : 1
         guard candidates.count >= required else {
             throw RelayUIError.message(
@@ -3878,8 +4137,8 @@ final class AppModel: ObservableObject {
     }
 
     private func chooseSupervisedWorkflowParticipants(
-        candidates: [TmuxPane]
-    ) -> (reviewer: TmuxPane, verifier: TmuxPane)? {
+        candidates: [WorkbenchPane]
+    ) -> (reviewer: WorkbenchPane, verifier: WorkbenchPane)? {
         guard !candidates.isEmpty else { return nil }
         let titles = candidates.map { "\($0.displayName) · \($0.kind.label) (\($0.id))" }
         let reviewerPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
@@ -3910,12 +4169,12 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private func workflowParticipant(_ pane: TmuxPane) -> SupervisedWorkflowParticipant {
+    private func workflowParticipant(_ pane: WorkbenchPane) -> SupervisedWorkflowParticipant {
         SupervisedWorkflowParticipant(
             paneID: pane.id,
             name: pane.displayName,
             kind: pane.kind,
-            workspaceID: pane.windowID
+            workspaceID: pane.workspaceID
         )
     }
 
@@ -3936,7 +4195,7 @@ final class AppModel: ObservableObject {
     private func requireWorkflowPane(
         _ participant: SupervisedWorkflowParticipant,
         role: String
-    ) throws -> TmuxPane {
+    ) throws -> WorkbenchPane {
         guard let pane = pane(for: participant),
               pane.kind == participant.kind,
               pane.kind.isAgent,
@@ -3944,7 +4203,7 @@ final class AppModel: ObservableObject {
               !pane.isDead,
               pane.relayEnabled,
               pane.hasCurrentProtocol,
-              pane.bracketedPasteActive else {
+              pane.inputAvailable else {
             throw RelayUIError.message(
                 "The workflow \(role) \(participant.name) is not currently ready. Restart or replace that pane, or end the workflow explicitly."
             )
@@ -3968,7 +4227,7 @@ final class AppModel: ObservableObject {
         pinnedContextSnippets = try pinnedContextSnippetStore.snippets()
     }
 
-    private func chooseAskManyTargets(candidates: [TmuxPane]) -> [TmuxPane]? {
+    private func chooseAskManyTargets(candidates: [WorkbenchPane]) -> [WorkbenchPane]? {
         let alert = NSAlert()
         alert.messageText = "Compare with which panes?"
         alert.informativeText = "Choose at least two distinct panes. Every selected pane receives the same question independently."
@@ -4024,7 +4283,7 @@ final class AppModel: ObservableObject {
     ) throws {
         guard let relayClient else {
             throw RelayUIError.message(
-                "The persistent core is unavailable, so Parley cannot establish trusted capture provenance."
+                "The app-resident core is unavailable, so Parley cannot establish trusted capture provenance."
             )
         }
         try appendTrustedContextResponse(
@@ -4045,7 +4304,7 @@ final class AppModel: ObservableObject {
             from: Data(response.text.utf8)
         )
         guard !captured.parts.isEmpty else {
-            throw RelayUIError.message("The persistent core captured no context sources.")
+            throw RelayUIError.message("The app-resident core captured no context sources.")
         }
         guard var draft = contextPackDraft, draft.id == draftID else {
             throw RelayUIError.message("That context pack was replaced while its source was being captured.")
@@ -4070,15 +4329,15 @@ final class AppModel: ObservableObject {
         draft.isValid = measurement.isValid
     }
 
-    private func chooseContextPane(candidates: [TmuxPane]) -> TmuxPane? {
+    private func chooseContextPane(candidates: [WorkbenchPane]) -> WorkbenchPane? {
         guard !candidates.isEmpty else {
-            NSAlert(error: RelayUIError.message("There is no running pane whose visible screen can be captured.")).runModal()
+            NSAlert(error: RelayUIError.message("There is no running pane from which selected text can be added.")).runModal()
             return nil
         }
         let alert = NSAlert()
-        alert.messageText = "Capture which visible pane?"
-        alert.informativeText = "Parley captures only the pane's current visible screen. Hidden scrollback and other panes are not included."
-        alert.addButton(withTitle: "Capture Visible Screen")
+        alert.messageText = "Use selection from which pane?"
+        alert.informativeText = "Select terminal text first. Parley reads only that pane's current selection; it never captures scrollback or a whole conversation implicitly."
+        alert.addButton(withTitle: "Add Selection")
         alert.addButton(withTitle: "Cancel")
         let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 460, height: 28))
         picker.addItems(withTitles: candidates.map {
@@ -4090,7 +4349,7 @@ final class AppModel: ObservableObject {
         return candidates[max(0, picker.indexOfSelectedItem)]
     }
 
-    private func chooseContextTarget(candidates: [TmuxPane], preferredPaneID: String? = nil) -> TmuxPane? {
+    private func chooseContextTarget(candidates: [WorkbenchPane], preferredPaneID: String? = nil) -> WorkbenchPane? {
         guard !candidates.isEmpty else {
             NSAlert(error: RelayUIError.message("Open a ready pane from another vendor before sending this context pack.")).runModal()
             return nil
@@ -4140,21 +4399,8 @@ final class AppModel: ObservableObject {
     }
 
     func returnAnswer() {
-        perform {
-            guard let controller, let source = activePane, let requesterID = source.returnToPaneID else { return }
-            let requester = panes.first(where: { $0.id == requesterID })
-            guard let edited = editRelay(
-                title: "Return answer",
-                message: "Only this text will be submitted to \(requester?.displayName ?? "the requester"). Select the answer first, type here, or explicitly insert the visible pane.",
-                text: RelayDraft.initialText(selection: terminalHandle.selectedText),
-                action: "Return",
-                insertVisible: { try controller.capturePane(source.id) }
-            ) else { return }
-            try controller.returnAnswer(from: source.id, text: edited)
-            try refresh()
-            terminalHandle.terminal?.selectNone()
-            terminalHandle.focus()
-        }
+        guard let consultation = activePaneConsultations.first else { return }
+        returnConsultation(consultation)
     }
 
     func returnConsultation(_ consultation: RelayConsultation) {
@@ -4171,7 +4417,7 @@ final class AppModel: ObservableObject {
             guard response.status == 200 else { throw RelayUIError.message(response.text) }
             try controller.selectPane(consultation.sourcePaneID)
             try refresh()
-            terminalHandle.terminal?.selectNone()
+            terminalHandle.clearSelection()
             terminalHandle.focus()
         }
     }
@@ -4250,8 +4496,8 @@ final class AppModel: ObservableObject {
             guard let pane = panes.first(where: { $0.id == paneID }) else {
                 throw RelayUIError.message("That pane is no longer open.")
             }
-            if activeWorkspace?.id != pane.windowID {
-                try controller.selectWorkspace(pane.windowID)
+            if activeWorkspace?.workspaceID != pane.workspaceID {
+                try controller.selectWorkspace(pane.workspaceID)
             }
             try controller.selectPane(pane.id)
             try refresh()
@@ -4267,7 +4513,7 @@ final class AppModel: ObservableObject {
         consultations.first(where: { $0.id == handoff.id })
     }
 
-    func rename(_ pane: TmuxPane) {
+    func rename(_ pane: WorkbenchPane) {
         let alert = NSAlert()
         alert.messageText = "Rename pane"
         alert.informativeText = "This is Parley metadata; it does not change the agent or its session."
@@ -4283,7 +4529,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func setRole(_ pane: TmuxPane) {
+    func setRole(_ pane: WorkbenchPane) {
         guard pane.kind.isAgent else { return }
         let alert = NSAlert()
         alert.messageText = "Set routing role"
@@ -4300,40 +4546,40 @@ final class AppModel: ObservableObject {
         guard !role.isEmpty else { return }
         perform {
             guard let controller else { return }
-            try controller.setPaneRole(role, paneID: pane.id, workspaceID: pane.windowID)
+            try controller.setPaneRole(role, paneID: pane.id, workspaceID: pane.workspaceID)
             try refresh()
             terminalHandle.focus()
         }
     }
 
-    func clearRole(_ pane: TmuxPane) {
+    func clearRole(_ pane: WorkbenchPane) {
         perform {
             guard let controller else { return }
-            try controller.setPaneRole(nil, paneID: pane.id, workspaceID: pane.windowID)
+            try controller.setPaneRole(nil, paneID: pane.id, workspaceID: pane.workspaceID)
             try refresh()
             terminalHandle.focus()
         }
     }
 
-    func mobilityDestinations(for pane: TmuxPane) -> [TmuxWorkspace] {
-        workspaces.filter { $0.id != pane.windowID }
+    func mobilityDestinations(for pane: WorkbenchPane) -> [WorkbenchWorkspace] {
+        workspaces.filter { $0.workspaceID != pane.workspaceID }
     }
 
-    func movePane(_ pane: TmuxPane, to targetWorkspace: TmuxWorkspace) {
+    func movePane(_ pane: WorkbenchPane, to targetWorkspace: WorkbenchWorkspace) {
         perform {
             guard let controller else { return }
             try refresh()
             guard let currentPane = panes.first(where: { $0.id == pane.id }) else {
-                throw ParleyTmuxError.paneNotFound(pane.id)
+                throw ParleyWorkbenchError.paneNotFound(pane.id)
             }
             guard let currentTarget = workspaces.first(where: { $0.id == targetWorkspace.id }) else {
-                throw ParleyTmuxError.workspaceNotFound(targetWorkspace.id)
+                throw ParleyWorkbenchError.workspaceNotFound(targetWorkspace.id)
             }
             let activeCount = try verifiedActiveHandoffCount(for: currentPane, required: true)
             let assessment = PaneMobilityPolicy.assess(
                 action: .move,
                 pane: currentPane,
-                targetWorkspaceID: currentTarget.id,
+                targetWorkspaceID: currentTarget.workspaceID,
                 panes: panes,
                 activeHandoffCount: activeCount
             )
@@ -4358,10 +4604,10 @@ final class AppModel: ObservableObject {
             }
             let alert = NSAlert()
             alert.messageText = "Move \(currentPane.displayName) to \(currentTarget.name)?"
-            alert.informativeText = "Parley will transfer the exact tmux pane. \(preservedState) Its pane id, terminal state and folder (\(currentPane.cwd)) are unchanged. The target workspace’s \(currentTarget.automationPolicy.label) automation policy applies after the move. The source workspace remains open."
+            alert.informativeText = "Parley will transfer the exact live Ghostty pane. \(preservedState) Its pane id, terminal state and folder (\(currentPane.cwd)) are unchanged. The target workspace’s \(currentTarget.automationPolicy.label) automation policy applies after the move. The source workspace remains open."
             alert.alertStyle = .warning
             let affectedWorkspaces = [
-                workspaces.first(where: { $0.id == currentPane.windowID }),
+                workspaces.first(where: { $0.workspaceID == currentPane.workspaceID }),
                 currentTarget,
             ].compactMap { $0 }
             attachWorkspaceSafetySummaries(
@@ -4373,13 +4619,12 @@ final class AppModel: ObservableObject {
             guard alert.runModal() == .alertFirstButtonReturn else { return }
 
             // The modal may have been open while relay state changed. Query the
-            // core again and let TmuxController repeat every structural check
+            // core again and let WorkbenchController repeat every structural check
             // against a fresh pane list immediately before join-pane.
             let finalActiveCount = try verifiedActiveHandoffCount(for: currentPane, required: true)
             _ = try controller.movePane(
                 currentPane.id,
                 toWorkspaceID: currentTarget.id,
-                direction: .horizontal,
                 activeHandoffCount: finalActiveCount
             )
             try refresh()
@@ -4387,21 +4632,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func clonePaneConfiguration(_ pane: TmuxPane, to targetWorkspace: TmuxWorkspace) {
+    func clonePaneConfiguration(_ pane: WorkbenchPane, to targetWorkspace: WorkbenchWorkspace) {
         perform {
             guard let controller else { return }
             try refresh()
             guard let currentPane = panes.first(where: { $0.id == pane.id }) else {
-                throw ParleyTmuxError.paneNotFound(pane.id)
+                throw ParleyWorkbenchError.paneNotFound(pane.id)
             }
             guard let currentTarget = workspaces.first(where: { $0.id == targetWorkspace.id }) else {
-                throw ParleyTmuxError.workspaceNotFound(targetWorkspace.id)
+                throw ParleyWorkbenchError.workspaceNotFound(targetWorkspace.id)
             }
             let activeCount = try verifiedActiveHandoffCount(for: currentPane, required: true)
             let assessment = PaneMobilityPolicy.assess(
                 action: .clone,
                 pane: currentPane,
-                targetWorkspaceID: currentTarget.id,
+                targetWorkspaceID: currentTarget.workspaceID,
                 panes: panes,
                 activeHandoffCount: activeCount
             )
@@ -4431,7 +4676,6 @@ final class AppModel: ObservableObject {
             _ = try controller.clonePaneConfiguration(
                 currentPane.id,
                 toWorkspaceID: currentTarget.id,
-                direction: .horizontal,
                 activeHandoffCount: finalActiveCount
             )
             try refresh()
@@ -4439,7 +4683,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func verifiedActiveHandoffCount(for pane: TmuxPane, required: Bool) throws -> Int {
+    private func verifiedActiveHandoffCount(for pane: WorkbenchPane, required: Bool) throws -> Int {
         let history: [RelayHandoff]
         if let relayClient {
             history = try relayClient.handoffs(limit: 500)
@@ -4464,7 +4708,7 @@ final class AppModel: ObservableObject {
     }
 
     private func showPaneMobilityRefusal(
-        pane: TmuxPane,
+        pane: WorkbenchPane,
         action: PaneMobilityAction,
         assessment: PaneMobilityAssessment
     ) {
@@ -4476,7 +4720,7 @@ final class AppModel: ObservableObject {
         alert.runModal()
     }
 
-    func restart(_ pane: TmuxPane) {
+    func restart(_ pane: WorkbenchPane) {
         let alert = NSAlert()
         alert.messageText = "Restart \(pane.displayName)?"
         alert.informativeText = "The current process in this pane will be stopped and relaunched."
@@ -4498,8 +4742,8 @@ final class AppModel: ObservableObject {
             try controller.restartPane(pane.id)
             try recordSuccessfulActivity(RelayActivityEventRequest(
                 kind: .paneRestarted,
-                workspaceID: pane.windowID,
-                workspaceName: pane.workspaceName ?? pane.windowID,
+                workspaceID: pane.workspaceID,
+                workspaceName: pane.workspaceName ?? pane.workspaceID,
                 paneID: pane.id,
                 paneName: pane.displayName,
                 paneKind: pane.kind,
@@ -4509,8 +4753,35 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func start(_ pane: TmuxPane) {
+    func start(_ pane: WorkbenchPane) {
         guard pane.kind.isAgent else { return }
+        let workspace = workspaces.first { $0.workspaceID == pane.workspaceID }
+        if workspace?.isFolderless == true, workspace?.newPaneFolder == nil {
+            let panel = NSOpenPanel()
+            panel.title = "Choose a working folder for \(pane.displayName)"
+            panel.message = "This sets the stopped pane's working directory only. The permission review follows; the folder is not attached to the workspace."
+            panel.prompt = "Continue"
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.directoryURL = URL(fileURLWithPath: pane.cwd)
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            let folder = url.standardizedFileURL.path
+            do {
+                try controller?.setStoppedPaneFolder(pane.id, folder: folder)
+                try refresh()
+                rememberFolder(folder)
+                panePermissionRequest = PanePermissionRequest(
+                    kind: pane.kind,
+                    folder: folder,
+                    action: .start(pane.id),
+                    existingSelection: nil
+                )
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+            return
+        }
         panePermissionRequest = PanePermissionRequest(
             kind: pane.kind,
             folder: pane.cwd,
@@ -4519,32 +4790,38 @@ final class AppModel: ObservableObject {
         )
     }
 
-    func close(_ pane: TmuxPane) {
+    func close(_ pane: WorkbenchPane) {
         let alert = NSAlert()
         alert.messageText = "Close \(pane.displayName)?"
-        alert.informativeText = "This ends the process in tmux. It cannot be recovered from Parley."
+        alert.informativeText = "This ends the app-resident pane process. It cannot be recovered from Parley."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Close Pane")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let closesWorkspace = panes.filter { $0.workspaceID == pane.workspaceID }.count == 1
         perform {
             try controller?.closePane(pane.id)
+            if focusCanvasPaneID == pane.id { focusCanvasPaneID = nil }
+            if handoffComposerDraft?.sourcePaneID == pane.id || handoffComposerDraft?.targetPaneID == pane.id {
+                handoffComposerDraft = nil
+            }
+            if closesWorkspace {
+                try? workspaceRegistry.remove(workspaceID: pane.workspaceID)
+                nativeLayouts.removeValue(forKey: pane.workspaceID)
+                nativeSplitFractions.removeValue(forKey: pane.workspaceID)
+            }
             try refresh()
         }
     }
 
-    func zoom() {
-        perform {
-            try controller?.zoomActivePane()
-            terminalHandle.focus()
-        }
-    }
-
     func balance() {
-        perform {
-            try controller?.balancePanes()
-            terminalHandle.focus()
-        }
+        guard let workspace = activeWorkspace else { return }
+        let leaves = representativeLeaves(workspaceID: workspace.workspaceID, in: panes)
+        guard let tiled = NativeLayoutNode.tiled(leaves) else { return }
+        nativeLayouts[workspace.workspaceID] = tiled
+        try? workspaceRegistry.updateLayout(workspaceID: workspace.workspaceID, layout: tiled)
+        resetNativeSplitFractions(workspaceID: workspace.workspaceID)
+        terminalHandle.focus()
     }
 
     func chooseFolder() {
@@ -4565,20 +4842,64 @@ final class AppModel: ObservableObject {
         perform {
             guard let controller, let workspace = activeWorkspace else { return }
             let standardized = WorkspaceFolderIdentity.normalized(folder)
-            try controller.setWorkspaceFolder(workspace.id, folder: standardized)
+            try controller.setWorkspaceNewPaneFolder(workspace.id, folder: standardized)
             workspaceContinuity.updateWorkspace(
                 from: workspace,
-                to: TmuxWorkspace(
+                to: WorkbenchWorkspace(
                     id: workspace.id,
                     name: workspace.name,
-                    homeFolder: workspace.homeFolder,
-                    defaultFolder: standardized,
+                    attachedFolders: workspace.attachedFolders,
+                    newPaneFolder: standardized,
                     isActive: workspace.isActive,
-                    automationPolicy: workspace.automationPolicy
+                    automationPolicy: workspace.automationPolicy,
+                    workspaceID: workspace.workspaceID
                 )
             )
             saveWorkspaceContinuity()
             rememberFolder(standardized)
+            try refresh()
+        }
+    }
+
+    func clearWorkspaceNewPaneFolder() {
+        perform {
+            guard let controller, let workspace = activeWorkspace else { return }
+            try controller.setWorkspaceNewPaneFolder(workspace.id, folder: nil)
+            try refresh()
+        }
+    }
+
+    func attachFolder(to workspace: WorkbenchWorkspace) {
+        let panel = NSOpenPanel()
+        panel.title = "Attach a folder to \(workspace.name)"
+        panel.message = "Attached folders make this workspace discoverable from folder-opening routes. Existing panes and permissions are unchanged."
+        panel.prompt = "Attach"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.directoryURL = URL(fileURLWithPath: workspace.newPaneFolder ?? activePane?.cwd ?? fallbackFolder)
+        guard panel.runModal() == .OK else { return }
+        perform {
+            guard let controller else { return }
+            for url in panel.urls {
+                let folder = url.standardizedFileURL.path
+                try controller.attachFolder(folder, toWorkspace: workspace.id)
+                rememberFolder(folder)
+            }
+            try refresh()
+        }
+    }
+
+    func detachFolder(_ folder: String, from workspace: WorkbenchWorkspace) {
+        perform {
+            try controller?.detachFolder(folder, fromWorkspace: workspace.id)
+            try refresh()
+        }
+    }
+
+    func moveAttachedFolder(_ folder: String, in workspace: WorkbenchWorkspace, by offset: Int) {
+        perform {
+            try controller?.moveAttachedFolder(folder, inWorkspace: workspace.id, by: offset)
             try refresh()
         }
     }
@@ -4617,19 +4938,43 @@ final class AppModel: ObservableObject {
         rememberFolder(standardized)
     }
 
-    func canMove(_ workspace: TmuxWorkspace, by offset: Int) -> Bool {
+    func canMove(_ workspace: WorkbenchWorkspace, by offset: Int) -> Bool {
         guard let index = workspaces.firstIndex(where: { $0.id == workspace.id }) else { return false }
         return workspaces.indices.contains(index + offset)
     }
 
-    func move(_ workspace: TmuxWorkspace, by offset: Int) {
+    func move(_ workspace: WorkbenchWorkspace, by offset: Int) {
         let moved = workspaceContinuity.moveWorkspace(id: workspace.id, by: offset, in: workspaces)
         guard moved != workspaces else { return }
         workspaces = moved
         saveWorkspaceContinuity()
     }
 
+    func moveWorkspaces(fromOffsets offsets: IndexSet, toOffset destination: Int) {
+        guard offsets.count == 1, let source = offsets.first,
+              workspaces.indices.contains(source) else { return }
+        let adjustedDestination = source < destination ? destination - 1 : destination
+        guard workspaces.indices.contains(adjustedDestination), source != adjustedDestination else { return }
+        move(workspaces[source], by: adjustedDestination - source)
+    }
+
     func createWorkspace() {
+        perform {
+            guard let controller else { return }
+            let launchFolder = activePane?.cwd ?? fallbackFolder
+            let created = try controller.createFolderlessWorkspace(launchFolder: launchFolder)
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .workspaceCreated,
+                workspaceID: created.workspaceID,
+                workspaceName: created.name,
+                detail: "Created without folder attachments."
+            ))
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    func openWorkspacePicker() {
         let panel = NSOpenPanel()
         panel.title = "Open a folder as a workspace"
         panel.message = "Choose a folder to focus its workspace, choose among matching workspaces, or open a new shell workspace."
@@ -4640,19 +4985,6 @@ final class AppModel: ObservableObject {
         panel.directoryURL = URL(fileURLWithPath: defaultFolder)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         createWorkspace(folder: url.standardizedFileURL.path)
-    }
-
-    func createAdditionalWorkspace() {
-        let panel = NSOpenPanel()
-        panel.title = "Open another workspace from a folder"
-        panel.message = "Choose a workspace home. Parley will create another task workspace even when that folder is already open."
-        panel.prompt = "Open New"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: activeWorkspace?.homeFolder ?? defaultFolder)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        createNewWorkspace(folder: url.standardizedFileURL.path)
     }
 
     func createWorkspace(folder: String) {
@@ -4669,7 +5001,7 @@ final class AppModel: ObservableObject {
 
     func openExternalWorkspace(_ request: ExternalWorkspaceOpenRequest) {
         // External authority ends at one validated local folder. The ordinary
-        // workspace path may focus an existing tmux window or create its shell;
+        // workspace path may focus an existing workspace or create its shell;
         // it never starts an agent pane or submits terminal input.
         perform { _ = try openWorkspace(folder: request.folder) }
     }
@@ -4683,8 +5015,8 @@ final class AppModel: ObservableObject {
                       let pane = panes.first(where: { $0.id == paneID }) else {
                     throw RelayUIError.message("That Parley pane is no longer open.")
                 }
-                if activeWorkspace?.id != pane.windowID {
-                    try controller.selectWorkspace(pane.windowID)
+                if activeWorkspace?.workspaceID != pane.workspaceID {
+                    try controller.selectWorkspace(pane.workspaceID)
                 }
                 try controller.selectPane(pane.id)
                 try refresh()
@@ -4719,7 +5051,7 @@ final class AppModel: ObservableObject {
             )
             let workspace = try openWorkspace(folder: imported.folder)
             let candidates = panes.filter {
-                $0.windowID == workspace.id
+                $0.workspaceID == workspace.workspaceID
                     && $0.kind.isAgent
                     && $0.isStarted
                     && !$0.isDead
@@ -4762,9 +5094,9 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    private func openWorkspace(folder: String, forceNew: Bool = false) throws -> TmuxWorkspace {
+    private func openWorkspace(folder: String, forceNew: Bool = false) throws -> WorkbenchWorkspace {
         guard let controller else {
-            throw RelayUIError.message("Parley cannot open a workspace while its tmux connection is unavailable.")
+            throw RelayUIError.message("Parley cannot open a workspace while its embedded terminal workbench is unavailable.")
         }
         let standardized = WorkspaceFolderIdentity.normalized(folder)
         let choice: WorkspaceOpenChoice
@@ -4790,16 +5122,16 @@ final class AppModel: ObservableObject {
             selectedID = created.id
             try recordSuccessfulActivity(RelayActivityEventRequest(
                 kind: .workspaceCreated,
-                workspaceID: created.id,
+                workspaceID: created.workspaceID,
                 workspaceName: created.name,
-                detail: "Opened \(created.homeFolder)"
+                detail: "Opened \(standardized)"
             ))
         }
         rememberFolder(standardized)
         try refresh()
         terminalHandle.focus()
         guard let selected = workspaces.first(where: { $0.id == selectedID }) else {
-            throw RelayUIError.message("Parley opened the workspace but could not reconcile its live tmux window.")
+            throw RelayUIError.message("Parley opened the workspace but could not reconcile its live pane layout.")
         }
         return selected
     }
@@ -4843,7 +5175,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func rename(_ workspace: TmuxWorkspace) {
+    func rename(_ workspace: WorkbenchWorkspace) {
         let alert = NSAlert()
         alert.messageText = "Rename workspace"
         alert.informativeText = "The folder and running panes are unchanged."
@@ -4859,13 +5191,14 @@ final class AppModel: ObservableObject {
             try controller.renameWorkspace(workspace.id, name: renamed)
             workspaceContinuity.updateWorkspace(
                 from: workspace,
-                to: TmuxWorkspace(
+                to: WorkbenchWorkspace(
                     id: workspace.id,
                     name: renamed,
-                    homeFolder: workspace.homeFolder,
-                    defaultFolder: workspace.defaultFolder,
+                    attachedFolders: workspace.attachedFolders,
+                    newPaneFolder: workspace.newPaneFolder,
                     isActive: workspace.isActive,
-                    automationPolicy: workspace.automationPolicy
+                    automationPolicy: workspace.automationPolicy,
+                    workspaceID: workspace.workspaceID
                 )
             )
             saveWorkspaceContinuity()
@@ -4877,7 +5210,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func setAutomationPolicy(_ policy: WorkspaceAutomationPolicy, for workspace: TmuxWorkspace) {
+    func setAutomationPolicy(_ policy: WorkspaceAutomationPolicy, for workspace: WorkbenchWorkspace) {
         guard policy != workspace.automationPolicy else { return }
         perform {
             guard let controller else { return }
@@ -4887,26 +5220,26 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func setWorkspaceLead(_ pane: TmuxPane) {
+    func setWorkspaceLead(_ pane: WorkbenchPane) {
         perform {
             guard let controller else { return }
-            try controller.setWorkspaceLead(pane.id, workspaceID: pane.windowID)
+            try controller.setWorkspaceLead(pane.id, workspaceID: pane.workspaceID)
             try refresh()
             terminalHandle.focus()
         }
     }
 
-    func clearWorkspaceLead(_ workspace: TmuxWorkspace) {
+    func clearWorkspaceLead(_ workspace: WorkbenchWorkspace) {
         perform {
             guard let controller else { return }
-            try controller.setWorkspaceLead(nil, workspaceID: workspace.id)
+            try controller.setWorkspaceLead(nil, workspaceID: workspace.workspaceID)
             try refresh()
             terminalHandle.focus()
         }
     }
 
-    func close(_ workspace: TmuxWorkspace) {
-        let paneCount = panes.filter { $0.windowID == workspace.id }.count
+    func close(_ workspace: WorkbenchWorkspace) {
+        let paneCount = panes.filter { $0.workspaceID == workspace.workspaceID }.count
         let alert = NSAlert()
         alert.messageText = "Close \(workspace.name)?"
         alert.informativeText = "This removes \(paneCount) pane\(paneCount == 1 ? "" : "s") and ends every process still running in them. The workspace cannot be recovered from Parley."
@@ -4918,15 +5251,83 @@ final class AppModel: ObservableObject {
         perform {
             guard let controller else { return }
             try controller.closeWorkspace(workspace.id)
+            try? workspaceRegistry.remove(workspaceID: workspace.workspaceID)
+            nativeLayouts.removeValue(forKey: workspace.workspaceID)
+            nativeSplitFractions.removeValue(forKey: workspace.workspaceID)
             try recordSuccessfulActivity(RelayActivityEventRequest(
                 kind: .workspaceClosed,
-                workspaceID: workspace.id,
+                workspaceID: workspace.workspaceID,
                 workspaceName: workspace.name,
                 detail: "Closed \(paneCount) pane\(paneCount == 1 ? "" : "s")."
             ))
             try refresh()
             terminalHandle.focus()
         }
+    }
+
+    private func recordRestoredNativeLayout(
+        _ saved: SavedLayoutNode,
+        workspace: WorkbenchWorkspace
+    ) {
+        guard let controller else { return }
+        guard let restoredPanes = try? controller.listPanes().filter({
+            $0.workspaceID == workspace.workspaceID
+        }) else { return }
+        let paneIDs = WorkbenchIdentifierOrder.sorted(restoredPanes.map(\.id))
+        guard let native = NativeLayoutNode.mirroring(saved, paneIDs: paneIDs) else { return }
+        nativeLayouts[workspace.workspaceID] = native
+        if let liveWorkspaces = try? controller.listWorkspaces() {
+            _ = try? workspaceRegistry.synchronize(workspaces: liveWorkspaces)
+        }
+        try? workspaceRegistry.updateLayout(workspaceID: workspace.workspaceID, layout: native)
+        resetNativeSplitFractions(workspaceID: workspace.workspaceID)
+    }
+
+    private func captureWorkspaceLayout(_ workspace: WorkbenchWorkspace) throws -> SavedWorkspaceLayout {
+        guard controller != nil else {
+            throw ParleyWorkbenchError.commandFailed("The embedded terminal workbench is unavailable.")
+        }
+        let workspacePanes = panes.filter { $0.workspaceID == workspace.workspaceID }
+        let leaves = representativeLeaves(workspaceID: workspace.workspaceID, in: workspacePanes)
+        guard let native = NativeLayoutNode.reconciled(
+            nativeLayouts[workspace.workspaceID],
+            with: leaves
+        ) else {
+            throw ParleyWorkbenchError.commandFailed("The workspace has no layout to save.")
+        }
+        let paneByID = Dictionary(uniqueKeysWithValues: workspacePanes.map { ($0.id, $0) })
+        func saved(_ node: NativeLayoutNode) throws -> SavedLayoutNode {
+            switch node {
+            case let .leaf(paneID):
+                guard let pane = paneByID[paneID] else {
+                    throw ParleyWorkbenchError.paneNotFound(paneID)
+                }
+                return .leaf(SavedLayoutLeaf(
+                    kind: pane.kind,
+                    name: pane.displayName,
+                    folder: pane.cwd,
+                    role: pane.role,
+                    isWorkspaceLead: pane.isWorkspaceLead,
+                    permissionSelection: pane.permissionSelection
+                ))
+            case let .split(direction, first, second):
+                return .split(
+                    direction: direction,
+                    ratio: 0.5,
+                    first: try saved(first),
+                    second: try saved(second)
+                )
+            }
+        }
+        return SavedWorkspaceLayout(
+            name: workspace.name,
+            defaultFolder: workspace.newPaneFolder
+                ?? workspacePanes.first(where: \.isActive)?.cwd
+                ?? workspacePanes.first?.cwd
+                ?? fallbackFolder,
+            root: try saved(native),
+            automationPolicy: workspace.automationPolicy
+        )
     }
 
     func saveActiveWorkspaceLayout() {
@@ -4959,38 +5360,79 @@ final class AppModel: ObservableObject {
         }
 
         perform {
-            guard let controller else { return }
-            let captured = try controller.captureWorkspaceLayout(workspaceID: workspace.id)
+            let captured = try captureWorkspaceLayout(workspace)
             try teamTemplateStore.save(try TeamTemplate.capturing(captured, name: name))
             teamTemplates = try teamTemplateStore.templates()
             terminalHandle.focus()
         }
     }
 
+    func createWorkspace(from layout: SavedWorkspaceLayout) {
+        perform {
+            guard let controller else { return }
+            let restored = try controller.restoreWorkspaceLayout(layout)
+            recordRestoredNativeLayout(layout.root, workspace: restored)
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .workspaceRestored,
+                workspaceID: restored.workspaceID,
+                workspaceName: restored.name,
+                detail: "Created from saved layout \(layout.name); shells started and agent panes left stopped."
+            ))
+            rememberFolder(layout.defaultFolder)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
     func apply(_ template: TeamTemplate) {
-        let panel = NSOpenPanel()
-        panel.title = "Apply \(template.name) to a folder"
-        panel.prompt = "Create Team Workspace"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: defaultFolder)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let folder = url.standardizedFileURL.path
-        let baseName = url.lastPathComponent.isEmpty ? template.name : url.lastPathComponent
-        let workspaceName = availableWorkspaceName(baseName)
+        let choice = NSAlert()
+        choice.messageText = "Create \(template.name) workspace"
+        choice.informativeText = "A folderless team keeps every agent stopped and unbound until you explicitly choose its working folder and permissions. Choosing a folder binds every template pane to that folder."
+        choice.addButton(withTitle: "Create Folderless")
+        choice.addButton(withTitle: "Choose Folder…")
+        choice.addButton(withTitle: "Cancel")
+        let response = choice.runModal()
+        guard response != .alertThirdButtonReturn else { return }
+
+        let folderless = response == .alertFirstButtonReturn
+        let launchFolder: String
+        let workspaceName: String
+        if folderless {
+            launchFolder = activePane?.cwd ?? fallbackFolder
+            workspaceName = availableWorkspaceName(template.name)
+        } else {
+            let panel = NSOpenPanel()
+            panel.title = "Apply \(template.name) to a folder"
+            panel.prompt = "Create Team Workspace"
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.directoryURL = URL(fileURLWithPath: defaultFolder)
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            launchFolder = url.standardizedFileURL.path
+            let baseName = url.lastPathComponent.isEmpty ? template.name : url.lastPathComponent
+            workspaceName = availableWorkspaceName(baseName)
+        }
 
         perform {
             guard let controller else { return }
-            let layout = try template.workspaceLayout(folder: folder, workspaceName: workspaceName)
-            let restored = try controller.restoreWorkspaceLayout(layout)
+            let layout = try folderless
+                ? template.folderlessWorkspaceLayout(
+                    launchFolder: launchFolder,
+                    workspaceName: workspaceName
+                )
+                : template.workspaceLayout(folder: launchFolder, workspaceName: workspaceName)
+            let restored = try controller.restoreWorkspaceLayout(layout, folderless: folderless)
+            recordRestoredNativeLayout(layout.root, workspace: restored)
             try recordSuccessfulActivity(RelayActivityEventRequest(
                 kind: .workspaceRestored,
-                workspaceID: restored.id,
+                workspaceID: restored.workspaceID,
                 workspaceName: restored.name,
-                detail: "Applied team template \(template.name); agent panes left stopped."
+                detail: folderless
+                    ? "Applied team template \(template.name) without folder attachments; agent panes left stopped and unbound."
+                    : "Applied team template \(template.name); agent panes left stopped."
             ))
-            rememberFolder(folder)
+            if !folderless { rememberFolder(launchFolder) }
             try refresh()
             terminalHandle.focus()
         }
@@ -5011,10 +5453,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func saveLayout(of workspace: TmuxWorkspace) {
+    func saveLayout(of workspace: WorkbenchWorkspace) {
         let alert = NSAlert()
         alert.messageText = "Save workspace layout"
-        alert.informativeText = "Saves pane kinds, names, folders, split directions and ratios. Running sessions and tmux ids are never stored."
+        alert.informativeText = "Saves pane kinds, names, folders and split structure. Native divider positions reopen balanced until divider persistence lands. Running processes, terminal contents and credentials are never stored."
         let field = NSTextField(string: workspace.name)
         field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
         alert.accessoryView = field
@@ -5035,8 +5477,7 @@ final class AppModel: ObservableObject {
         }
 
         perform {
-            guard let controller else { return }
-            let captured = try controller.captureWorkspaceLayout(workspaceID: workspace.id)
+            let captured = try captureWorkspaceLayout(workspace)
             try layoutStore.save(SavedWorkspaceLayout(
                 name: name,
                 defaultFolder: captured.defaultFolder,
@@ -5048,9 +5489,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func open(_ layout: SavedWorkspaceLayout) {
-        let workspace = activeWorkspace
-        let paneCount = workspace.map { selected in panes.count { $0.windowID == selected.id } } ?? 0
+    func open(
+        _ layout: SavedWorkspaceLayout,
+        replacing requestedWorkspace: WorkbenchWorkspace? = nil
+    ) {
+        let workspace = requestedWorkspace ?? activeWorkspace
+        let paneCount = workspace.map { selected in panes.count { $0.workspaceID == selected.workspaceID } } ?? 0
         if let workspace, paneCount > 0 {
             let alert = NSAlert()
             alert.messageText = "Open \(layout.name) over \(workspace.name)?"
@@ -5064,10 +5508,14 @@ final class AppModel: ObservableObject {
 
         perform {
             guard let controller else { return }
-            let restored = try controller.restoreWorkspaceLayout(layout, replacing: workspace?.id)
+            let restored = try controller.restoreWorkspaceLayout(
+                layout,
+                replacing: workspace?.id
+            )
+            recordRestoredNativeLayout(layout.root, workspace: restored)
             try recordSuccessfulActivity(RelayActivityEventRequest(
                 kind: .workspaceRestored,
-                workspaceID: restored.id,
+                workspaceID: restored.workspaceID,
                 workspaceName: restored.name,
                 detail: "Opened saved layout \(layout.name); shells started and agent panes left stopped."
             ))
@@ -5240,7 +5688,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func sendReview(_ draft: ReviewDraft, from source: TmuxPane, to target: TmuxPane) throws {
+    private func sendReview(_ draft: ReviewDraft, from source: WorkbenchPane, to target: WorkbenchPane) throws {
         guard let controller else { return }
         guard let edited = editRelay(
             title: "\(draft.title) with \(target.displayName)",
@@ -5256,30 +5704,28 @@ final class AppModel: ObservableObject {
             preserveFormatting: false
         )
         try refresh()
-        terminalHandle.terminal?.selectNone()
+        terminalHandle.clearSelection()
         terminalHandle.focus()
     }
 
     private func submitOrOfferBusyQueue(
         _ text: String,
-        from source: TmuxPane,
-        to target: TmuxPane,
+        from source: WorkbenchPane,
+        to target: WorkbenchPane,
         preserveFormatting: Bool
     ) throws {
-        guard let controller else {
-            throw RelayUIError.message("The tmux workspace is unavailable, so this reviewed Ask was not sent or queued.")
-        }
         let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
         let knownHistory = statusHandoffs.isEmpty ? handoffs : statusHandoffs
         let targetIsBusy = knownHistory.contains {
             $0.targetPaneID == target.id && activeStates.contains($0.state)
         }
         guard targetIsBusy else {
-            if preserveFormatting {
-                try controller.askWithExplicitContext(from: source.id, to: target.id, text: text)
-            } else {
-                try controller.ask(from: source.id, to: target.id, text: text)
-            }
+            try launchTrackedAsk(
+                text,
+                from: source,
+                to: target,
+                preserveFormatting: preserveFormatting
+            )
             return
         }
 
@@ -5291,7 +5737,7 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         guard let relayClient else {
-            throw RelayUIError.message("The persistent core is unavailable, so Parley cannot keep this draft safely.")
+            throw RelayUIError.message("The app-resident core is unavailable, so Parley cannot keep this draft safely.")
         }
         _ = try relayClient.enqueueReviewedBusyDraft(ReviewedBusyDraftCreateRequest(
             sourcePaneID: source.id,
@@ -5299,6 +5745,38 @@ final class AppModel: ObservableObject {
             text: text,
             preserveFormatting: preserveFormatting
         ))
+    }
+
+    private func launchTrackedAsk(
+        _ text: String,
+        from source: WorkbenchPane,
+        to target: WorkbenchPane,
+        preserveFormatting: Bool
+    ) throws {
+        guard let relayClient else {
+            throw RelayUIError.message("The app-resident core is unavailable, so this reviewed Ask was not sent.")
+        }
+        let idempotencyKey = UUID().uuidString.lowercased()
+        Task { [weak self] in
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.askFromUI(
+                        sourcePaneID: source.id,
+                        targetPaneID: target.id,
+                        text: text,
+                        idempotencyKey: idempotencyKey,
+                        preserveFormatting: preserveFormatting
+                    )
+                }.value
+                self?.refreshStatusCenterQuietly()
+                guard response.status == 200 else {
+                    throw RelayUIError.message(response.text)
+                }
+            } catch {
+                self?.refreshStatusCenterQuietly()
+                NSAlert(error: error).runModal()
+            }
+        }
     }
 
     private static func paletteSubject(_ text: String) -> String {
@@ -5413,11 +5891,11 @@ private final class RelayEditorAccessory: NSView {
         super.init(frame: frame)
         addSubview(scroll)
 
-        let insert = NSButton(title: "Insert Visible Pane", target: self, action: #selector(insertVisiblePane))
+        let insert = NSButton(title: "Insert Selection", target: self, action: #selector(insertVisiblePane))
         insert.bezelStyle = .rounded
         insert.controlSize = .small
         insert.frame = NSRect(x: 0, y: 0, width: 145, height: 28)
-        insert.toolTip = "Insert only what tmux is currently displaying, not its scrollback history."
+        insert.toolTip = "Insert the text currently selected in this Ghostty pane. Terminal scrollback is never captured implicitly."
         addSubview(insert)
     }
 
@@ -5434,11 +5912,4 @@ private final class RelayEditorAccessory: NSView {
             NSAlert(error: error).runModal()
         }
     }
-}
-
-struct AttachConfiguration: Equatable {
-    let executable: String
-    let arguments: [String]
-    let environment: [String]
-    let cwd: String
 }

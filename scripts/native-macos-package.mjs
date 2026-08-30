@@ -20,16 +20,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 export const BUNDLE_IDENTIFIER = 'com.markjoyeux.parley'
-export const CORE_LAUNCH_AGENT_LABEL = `${BUNDLE_IDENTIFIER}.core`
-export const CORE_LAUNCH_AGENT_PLIST = `${CORE_LAUNCH_AGENT_LABEL}.plist`
 export const MINIMUM_SYSTEM_VERSION = '14.0'
 export const UTF8_FALLBACK_LOCALE = 'C.UTF-8'
 export const requiredBundlePaths = [
   'Contents/Info.plist',
   'Contents/MacOS/parley-native',
-  'Contents/MacOS/parley-core-service',
-  'Contents/MacOS/parley-conformance',
-  `Contents/Library/LaunchAgents/${CORE_LAUNCH_AGENT_PLIST}`,
   'Contents/Resources/Parley.icns',
   'Contents/Resources/runtime-components.json',
   'Contents/Resources/LICENSE',
@@ -186,38 +181,6 @@ export function renderInfoPlist({
 `
 }
 
-export function renderCoreLaunchAgentPlist() {
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${CORE_LAUNCH_AGENT_LABEL}</string>
-  <key>BundleProgram</key>
-  <string>Contents/MacOS/parley-core-service</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>parley-core-service</string>
-    <string>--login-agent</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>LANG</key>
-    <string>${UTF8_FALLBACK_LOCALE}</string>
-  </dict>
-  <key>ProcessType</key>
-  <string>Background</string>
-  <key>AssociatedBundleIdentifiers</key>
-  <array>
-    <string>${BUNDLE_IDENTIFIER}</string>
-  </array>
-</dict>
-</plist>
-`
-}
-
 export function validateBundleStructure(bundle) {
   const errors = []
   for (const relativePath of requiredBundlePaths) {
@@ -279,18 +242,16 @@ function sourceMetadata() {
 }
 
 function swiftReleaseBinPath() {
-  for (const product of ['parley-native', 'parley-core-service', 'parley-conformance']) {
-    run('node', [
-      'scripts/run-native-swift.mjs',
-      'build',
-      '--configuration',
-      'release',
-      '--product',
-      product,
-      '--package-path',
-      'native',
-    ])
-  }
+  run('node', [
+    'scripts/run-native-swift.mjs',
+    'build',
+    '--configuration',
+    'release',
+    '--product',
+    'parley-native',
+    '--package-path',
+    'native',
+  ])
   return run('node', [
     'scripts/run-native-swift.mjs',
     'build',
@@ -320,24 +281,14 @@ function runtimeComponentsManifest() {
   return `${JSON.stringify({
     schemaVersion: 1,
     terminal: {
-      implementation: 'SwiftTerm',
-      linkage: 'linked into parley-native',
+      implementation: 'GhosttyKit',
+      linkage: 'embedded in parley-native through GhosttyTerminal',
+      lifetime: 'window close keeps panes; application quit ends pane processes',
     },
     core: {
-      implementation: 'parley-core-service',
-      location: 'Contents/MacOS/parley-core-service',
-      optionalLaunchAtLogin: {
-        mechanism: 'SMAppService LaunchAgent',
-        plist: `Contents/Library/LaunchAgents/${CORE_LAUNCH_AGENT_PLIST}`,
-        foregroundApplication: false,
-      },
-    },
-    conformance: {
-      implementation: 'parley-conformance',
-      location: 'Contents/MacOS/parley-conformance',
-      invocation: 'explicit human action only',
-      quotaFreePlanning: true,
-      liveProbeRequiresConfirmation: true,
+      implementation: 'ParleyNative.AppResidentCoordinationCore',
+      location: 'parley-native process',
+      lifetime: 'same as the application and retained Ghostty panes',
     },
     relay: {
       implementation: 'ParleyCore.RelayShim',
@@ -345,10 +296,6 @@ function runtimeComponentsManifest() {
       applicationInstall: '~/Library/Application Support/Parley Native/bin/parley',
       stableInstall: '~/.local/bin/parley',
       transport: 'owner-only local filesystem relay',
-    },
-    tmux: {
-      integration: 'dedicated socket and configuration',
-      delivery: 'detected external executable; never uses the user tmux server',
     },
   }, null, 2)}\n`
 }
@@ -378,21 +325,13 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
   const bundle = join(stagingRoot, 'Parley.app')
   const contents = join(bundle, 'Contents')
   const macOS = join(contents, 'MacOS')
-  const launchAgents = join(contents, 'Library', 'LaunchAgents')
   const resources = join(contents, 'Resources')
   mkdirSync(macOS, { recursive: true })
-  mkdirSync(launchAgents, { recursive: true })
   mkdirSync(resources, { recursive: true })
 
   const appExecutable = join(macOS, 'parley-native')
-  const coreExecutable = join(macOS, 'parley-core-service')
-  const conformanceExecutable = join(macOS, 'parley-conformance')
   copyFileSync(join(bin, 'parley-native'), appExecutable)
-  copyFileSync(join(bin, 'parley-core-service'), coreExecutable)
-  copyFileSync(join(bin, 'parley-conformance'), conformanceExecutable)
   chmodSync(appExecutable, 0o755)
-  chmodSync(coreExecutable, 0o755)
-  chmodSync(conformanceExecutable, 0o755)
   copyFileSync(join(repositoryRoot, 'resources/icon.icns'), join(resources, 'Parley.icns'))
   copyFileSync(join(repositoryRoot, 'LICENSE'), join(resources, 'LICENSE'))
   copyFileSync(join(repositoryRoot, 'NOTICE'), join(resources, 'NOTICE'))
@@ -401,7 +340,6 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
     join(resources, 'THIRD_PARTY_NOTICES.md'),
   )
   writeFileSync(join(resources, 'runtime-components.json'), runtimeComponentsManifest(), { mode: 0o644 })
-  writeFileSync(join(launchAgents, CORE_LAUNCH_AGENT_PLIST), renderCoreLaunchAgentPlist(), { mode: 0o644 })
   writeFileSync(
     join(contents, 'Info.plist'),
     renderInfoPlist({
@@ -418,13 +356,9 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
   const structureErrors = validateBundleStructure(bundle)
   if (structureErrors.length > 0) throw new Error(structureErrors.join('\n'))
   verifyArchitecture(appExecutable)
-  verifyArchitecture(coreExecutable)
-  verifyArchitecture(conformanceExecutable)
 
   run('xattr', ['-cr', bundle])
   const identity = process.env.PARLEY_CODESIGN_IDENTITY || '-'
-  sign(coreExecutable, identity)
-  sign(conformanceExecutable, identity)
   sign(appExecutable, identity)
   sign(bundle, identity)
   run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', bundle])

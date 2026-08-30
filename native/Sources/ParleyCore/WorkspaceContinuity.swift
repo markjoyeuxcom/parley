@@ -31,15 +31,17 @@ public enum WorkspaceFolderOpenResolution: Equatable, Sendable {
     case choose([String])
 }
 
-/// Folder opening is a query over stable workspace homes. A directory may
-/// intentionally anchor several task workspaces, so ambiguity is surfaced
-/// instead of selecting whichever tmux window happens to be first.
+/// Folder opening is a query over explicit workspace attachments. A directory
+/// may intentionally be attached to several task workspaces, so ambiguity is
+/// surfaced instead of selecting whichever workspace happens to be first.
 public enum WorkspaceFolderRouting {
-    public static func matches(folder: String, in workspaces: [TmuxWorkspace]) -> [TmuxWorkspace] {
-        workspaces.filter { WorkspaceFolderIdentity.matches($0.homeFolder, folder) }
+    public static func matches(folder: String, in workspaces: [WorkbenchWorkspace]) -> [WorkbenchWorkspace] {
+        workspaces.filter { workspace in
+            workspace.attachedFolders.contains { WorkspaceFolderIdentity.matches($0, folder) }
+        }
     }
 
-    public static func resolve(folder: String, in workspaces: [TmuxWorkspace]) -> WorkspaceFolderOpenResolution {
+    public static func resolve(folder: String, in workspaces: [WorkbenchWorkspace]) -> WorkspaceFolderOpenResolution {
         let ids = matches(folder: folder, in: workspaces).map(\.id)
         return switch ids.count {
         case 0: .create
@@ -50,29 +52,44 @@ public enum WorkspaceFolderRouting {
 }
 
 /// A process-independent identity for workspace presentation preferences.
-/// tmux ids are deliberately excluded because they do not survive a new tmux
-/// server; Parley updates the name stamp when a unique folder match reveals a
-/// rename.
+/// Live surface ids are deliberately excluded because they do not survive an
+/// application restart; the durable workspace id is authoritative, with the
+/// name/folder pair retained only as a legacy fallback.
 public struct WorkspaceBookmark: Codable, Equatable, Hashable, Sendable {
     public let name: String
-    public let folder: String
+    public let folder: String?
+    /// The workspace's durable id. A live surface id is never stored here
+    /// because reuse could forge identity across unrelated workspaces.
+    public let workspaceID: String?
 
-    public init(name: String, folder: String) {
+    public init(name: String, folder: String? = nil, workspaceID: String? = nil) {
         self.name = name
-        self.folder = Self.standardized(folder)
+        self.folder = folder.map(Self.standardized)
+        self.workspaceID = workspaceID.flatMap { $0.isEmpty || $0.hasPrefix("@") ? nil : $0 }
     }
 
-    public init(workspace: TmuxWorkspace) {
-        self.init(name: workspace.name, folder: workspace.homeFolder)
+    public init(workspace: WorkbenchWorkspace) {
+        self.init(
+            name: workspace.name,
+            folder: workspace.primaryAttachedFolder,
+            workspaceID: workspace.workspaceID
+        )
     }
 
-    fileprivate func exactlyMatches(_ workspace: TmuxWorkspace) -> Bool {
-        name.caseInsensitiveCompare(workspace.name) == .orderedSame
-            && WorkspaceFolderIdentity.matches(folder, workspace.homeFolder)
+    fileprivate func identityMatches(_ workspace: WorkbenchWorkspace) -> Bool {
+        guard let workspaceID else { return false }
+        return workspaceID == workspace.workspaceID
     }
 
-    fileprivate func folderMatches(_ workspace: TmuxWorkspace) -> Bool {
-        WorkspaceFolderIdentity.matches(folder, workspace.homeFolder)
+    fileprivate func exactlyMatches(_ workspace: WorkbenchWorkspace) -> Bool {
+        guard name.caseInsensitiveCompare(workspace.name) == .orderedSame else { return false }
+        guard let folder else { return workspace.isFolderless }
+        return workspace.attachedFolders.contains { WorkspaceFolderIdentity.matches(folder, $0) }
+    }
+
+    fileprivate func folderMatches(_ workspace: WorkbenchWorkspace) -> Bool {
+        guard let folder else { return false }
+        return workspace.attachedFolders.contains { WorkspaceFolderIdentity.matches(folder, $0) }
     }
 
     fileprivate static func standardized(_ folder: String) -> String {
@@ -80,7 +97,7 @@ public struct WorkspaceBookmark: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-/// The small durable preference layer over live tmux workspaces. Reconciliation
+/// The small durable preference layer over live workspaces. Reconciliation
 /// never creates, closes, or selects a process; it only orders live values and
 /// resolves a previously selected bookmark.
 public struct WorkspaceContinuityState: Codable, Equatable, Sendable {
@@ -99,12 +116,12 @@ public struct WorkspaceContinuityState: Codable, Equatable, Sendable {
     }
 
     /// Applies the saved order to the live set, prunes closed workspaces, and
-    /// appends newly discovered workspaces in tmux's own order.
+    /// appends newly discovered workspaces in workbench order.
     @discardableResult
-    public mutating func reconcile(_ workspaces: [TmuxWorkspace]) -> [TmuxWorkspace] {
+    public mutating func reconcile(_ workspaces: [WorkbenchWorkspace]) -> [WorkbenchWorkspace] {
         favouriteFolders = Self.normalizedFolders(favouriteFolders)
         var remaining = workspaces
-        var ordered: [TmuxWorkspace] = []
+        var ordered: [WorkbenchWorkspace] = []
         for bookmark in workspaceOrder {
             guard let index = Self.match(bookmark, in: remaining) else { continue }
             ordered.append(remaining.remove(at: index))
@@ -120,25 +137,29 @@ public struct WorkspaceContinuityState: Codable, Equatable, Sendable {
         return ordered
     }
 
-    public func selectedWorkspace(in workspaces: [TmuxWorkspace]) -> TmuxWorkspace? {
+    public func selectedWorkspace(in workspaces: [WorkbenchWorkspace]) -> WorkbenchWorkspace? {
         guard let lastSelected,
               let index = Self.match(lastSelected, in: workspaces) else { return nil }
         return workspaces[index]
     }
 
-    public mutating func markSelected(_ workspace: TmuxWorkspace) {
+    public mutating func markSelected(_ workspace: WorkbenchWorkspace) {
         lastSelected = WorkspaceBookmark(workspace: workspace)
     }
 
     /// Carries presentation identity through a successful native rename or
     /// default-folder change without moving the tab or forgetting selection.
-    public mutating func updateWorkspace(from previous: TmuxWorkspace, to updated: TmuxWorkspace) {
+    public mutating func updateWorkspace(from previous: WorkbenchWorkspace, to updated: WorkbenchWorkspace) {
         let previousBookmark = WorkspaceBookmark(workspace: previous)
         let updatedBookmark = WorkspaceBookmark(workspace: updated)
-        if let index = workspaceOrder.firstIndex(of: previousBookmark) {
+        // A stored bookmark may predate identity stamping, so identity match
+        // is accepted alongside strict equality.
+        if let index = workspaceOrder.firstIndex(where: {
+            $0 == previousBookmark || $0.identityMatches(previous)
+        }) {
             workspaceOrder[index] = updatedBookmark
         }
-        if lastSelected == previousBookmark {
+        if lastSelected == previousBookmark || lastSelected?.identityMatches(previous) == true {
             lastSelected = updatedBookmark
         }
     }
@@ -148,8 +169,8 @@ public struct WorkspaceContinuityState: Codable, Equatable, Sendable {
     public mutating func moveWorkspace(
         id: String,
         by offset: Int,
-        in workspaces: [TmuxWorkspace]
-    ) -> [TmuxWorkspace] {
+        in workspaces: [WorkbenchWorkspace]
+    ) -> [WorkbenchWorkspace] {
         guard let source = workspaces.firstIndex(where: { $0.id == id }) else { return workspaces }
         let destination = source + offset
         guard workspaces.indices.contains(destination) else { return workspaces }
@@ -190,7 +211,8 @@ public struct WorkspaceContinuityState: Codable, Equatable, Sendable {
         return true
     }
 
-    private static func match(_ bookmark: WorkspaceBookmark, in workspaces: [TmuxWorkspace]) -> Int? {
+    private static func match(_ bookmark: WorkspaceBookmark, in workspaces: [WorkbenchWorkspace]) -> Int? {
+        if let identity = workspaces.firstIndex(where: bookmark.identityMatches) { return identity }
         if let exact = workspaces.firstIndex(where: bookmark.exactlyMatches) { return exact }
         let folderMatches = workspaces.indices.filter { bookmark.folderMatches(workspaces[$0]) }
         return folderMatches.count == 1 ? folderMatches[0] : nil

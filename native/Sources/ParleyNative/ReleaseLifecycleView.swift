@@ -91,10 +91,6 @@ struct ReleaseLifecycleView: View {
                 if model.vendorCompatibilityChecking {
                     ProgressView().controlSize(.small)
                 }
-                Spacer()
-                Button("Run Live Conformance…") { model.runLiveConformance() }
-                    .disabled(!model.canRunLiveConformance)
-                    .help("Opt-in: sends attributed probes to existing panes and spends vendor subscription quota")
             }
 
             if let snapshot = model.vendorCompatibility {
@@ -103,7 +99,7 @@ struct ReleaseLifecycleView: View {
                         vendorRow(result)
                     }
                 }
-                Text("Checked \(snapshot.checkedAt.formatted(date: .abbreviated, time: .standard)). A version-change badge means the installed CLI changed since the previous recorded check; it does not claim live conformance passed.")
+                Text("Checked \(snapshot.checkedAt.formatted(date: .abbreviated, time: .standard)). A version-change badge means the installed CLI changed since the previous recorded check; it does not claim runtime behavior passed.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
 
@@ -124,26 +120,6 @@ struct ReleaseLifecycleView: View {
                     .frame(maxWidth: .infinity, minHeight: 180)
             }
 
-            if model.liveConformanceRunning {
-                Divider()
-                ProgressView("Running opt-in live conformance…")
-            } else if let report = model.liveConformanceReport {
-                Divider()
-                lifecycleHeading(
-                    "Latest live conformance",
-                    detail: "This in-memory report came from the explicit quota-spending run. It is not inferred from a version check."
-                )
-                Text(report.rendered())
-                    .font(.system(size: 10, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
-                    }
-            }
         }
     }
 
@@ -201,7 +177,6 @@ struct ReleaseLifecycleView: View {
                 bulletList([
                     "Application version, build number, source commit, runtime and selected update channel",
                     "Installed vendor semantic versions and quota-free compatibility outcomes",
-                    "Check names and outcomes from the latest explicit live conformance run, if one exists",
                     "The existing privacy-bounded diagnostics report",
                 ])
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -217,9 +192,6 @@ struct ReleaseLifecycleView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 6)
             }
-            Text("Live conformance details are deliberately reduced to vendor, check name and outcome. Failure text can contain returned model output, so it never enters the bundle.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Review Exact Bundle…") { model.prepareBetaFeedbackReview() }
@@ -338,7 +310,7 @@ struct ReleaseLifecycleView: View {
                 Button("Download and Verify DMG…") { model.downloadCheckedRelease() }
                     .disabled(model.releaseDownloading)
             }
-            Text("The download-only action cannot install the app or replace the core. After a person installs an update, Parley's existing core handover gate still defers replacement while tracked Ask or delegated work is active.")
+            Text("The download-only action cannot install the app or stop coordination. Finish tracked work and quit Parley before replacing the application.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
@@ -423,21 +395,6 @@ private struct BetaFeedbackReviewView: View {
                                         .font(.system(size: 10, design: .monospaced))
                                 }
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 6)
-                        }
-                        GroupBox("Live conformance outcomes") {
-                            VStack(alignment: .leading, spacing: 6) {
-                                if bundle.manifest.conformance.isEmpty {
-                                    Text("No live conformance run is included.")
-                                        .foregroundStyle(.secondary)
-                                } else {
-                                    ForEach(Array(bundle.manifest.conformance.enumerated()), id: \.offset) { _, item in
-                                        Text("\(item.vendor.label) · \(item.check) · \(item.outcome.rawValue)")
-                                    }
-                                }
-                            }
-                            .font(.system(size: 10, design: .monospaced))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.vertical, 6)
                         }

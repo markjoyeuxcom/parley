@@ -169,18 +169,18 @@ public struct PermissionProfileSelection: Codable, Equatable, Sendable {
         self.lifetime = lifetime
     }
 
-    /// tmux user options are strings. Base64 keeps paths and JSON punctuation
-    /// out of tmux's format language while retaining a portable durable value.
-    public var tmuxMetadataValue: String {
+    /// Base64 keeps paths and JSON punctuation out of the durable metadata
+    /// envelope while retaining a portable value.
+    public var metadataValue: String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(self) else { return "" }
         return data.base64EncodedString()
     }
 
-    public init?(tmuxMetadataValue: String) {
-        guard !tmuxMetadataValue.isEmpty,
-              let data = Data(base64Encoded: tmuxMetadataValue),
+    public init?(metadataValue: String) {
+        guard !metadataValue.isEmpty,
+              let data = Data(base64Encoded: metadataValue),
               let decoded = try? JSONDecoder().decode(Self.self, from: data) else {
             return nil
         }

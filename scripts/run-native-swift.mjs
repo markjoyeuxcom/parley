@@ -44,7 +44,11 @@ function compilerAccepts(sdk) {
   const result = spawnSync(
     'swiftc',
     ['-typecheck', '-sdk', sdk, '-module-cache-path', environment.CLANG_MODULE_CACHE_PATH, '-'],
-    { input: 'import Foundation\n', stdio: ['pipe', 'ignore', 'ignore'], env: environment },
+    {
+      input: 'import Foundation\n#if compiler(>=6.2)\nprotocol ParleySDKProbe: SendableMetatype {}\n#endif\n',
+      stdio: ['pipe', 'ignore', 'ignore'],
+      env: environment,
+    },
   )
   return result.status === 0
 }
@@ -85,6 +89,7 @@ function selectSDK() {
   const current = output('xcrun', ['--sdk', 'macosx', '--show-sdk-path'])
   const installed = installedSDKs()
   const fingerprint = createHash('sha256')
+    .update('sendable-metatype-sdk-probe-v1')
     .update(output('swiftc', ['--version']))
     .update(current)
     .update(
@@ -151,7 +156,6 @@ if (requested[0] === 'dev') {
     process.exit(1)
   }
   const executable = join(binPath, 'parley-native')
-  environment.PARLEY_CORE_SERVICE = join(binPath, 'parley-core-service')
   applyDevelopmentBuildMetadata()
   result = spawnSync(executable, appArguments, { stdio: 'inherit', env: environment })
 } else {

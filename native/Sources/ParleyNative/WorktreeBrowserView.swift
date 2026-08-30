@@ -56,7 +56,7 @@ struct WorktreeBrowserView: View {
             } actions: {
                 Button("Choose an Ordinary Folder…") {
                     model.worktreeBrowserPresented = false
-                    model.createWorkspace()
+                    model.openWorkspacePicker()
                 }
             }
         } else if let repository = model.discoveredWorktreeRepository {

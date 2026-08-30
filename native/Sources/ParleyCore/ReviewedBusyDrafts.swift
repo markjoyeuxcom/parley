@@ -127,7 +127,7 @@ public enum ReviewedBusyDraftStoreError: LocalizedError, Equatable {
     }
 }
 
-/// The persistent core owns this bounded, owner-only queue. No method observes
+/// The app-resident core owns this bounded, owner-only queue. No method observes
 /// target idleness and no method dispatches without an explicit send request.
 public final class ReviewedBusyDraftStore: @unchecked Sendable {
     private struct Document: Codable {

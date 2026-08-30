@@ -1,467 +1,211 @@
 # Parley
 
-Parley is a native macOS workbench for working with AI coding CLIs from
-different vendors in one visible, supervised environment.
+Parley is a native macOS workbench for visible, supervised collaboration
+between AI coding CLIs from different vendors. Claude Code, Codex, Agy and
+GitHub Copilot CLI keep their own models, subscriptions, authentication,
+permission prompts and terminal interfaces. Parley supplies the shared
+workspaces, panes and local coordination around them.
 
-It runs the user's existing Claude Code, Codex, Agy and GitHub Copilot CLI
-sessions. Authentication, models, tools and permission prompts remain owned by
-those CLIs. Parley adds the missing cross-vendor layer: persistent terminal
-workspaces, attributed handoffs and questions whose answers return to the agent
-that asked.
-
-There is no API-key mode, hosted Parley service, telemetry or remote sync.
-
-Parley is open source under the [Apache License 2.0](LICENSE). See
-[SECURITY.md](SECURITY.md), [PRIVACY.md](PRIVACY.md) and
-[CONTRIBUTING.md](CONTRIBUTING.md). Third-party licence text shipped with the
-app is recorded in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Parley uses subscription CLIs already installed and signed in on the Mac. It
+does not contain API-key fields, call model APIs directly, hide vendor activity
+or bypass a vendor's approval flow.
 
 ## What works
 
-- A SwiftUI app with a native SwiftTerm terminal surface.
-- An isolated tmux server that owns panes, splits, scrollback and process
-  lifetime without touching the user's normal tmux server.
-- Real shell, Claude Code, Codex, Agy and Copilot panes.
-- Folder-backed workspace tabs. Every workspace is a tmux window and every pane
-  retains its own working directory.
-- Pane creation, horizontal and vertical splits, selection, rename, restart,
-  close, zoom and balance.
-- Reattachment after closing and reopening the app; tmux keeps the pane
-  processes alive.
-- Human Ask and Return editors with an editable preview.
-- Review shortcuts for the active pane's Git changes or a selected plan/text
-  file, using that same editable attributed Ask path.
-- A shared, versioned protocol supplied automatically to every new agent pane.
-- Authenticated agent-to-agent `relay`, `paste`, `ask` and `answer`
-  commands.
-- A marked workspace lead, visible per-workspace automation policy, and four
-  editable supervised-workflow recipes.
-- Portable team templates and stable workspace roles for recreating a named
-  cross-vendor grid in another folder without starting any agent automatically.
-- Previewed pane mobility: preserve one exact live tmux pane across workspaces,
-  or clone only its visible configuration as a fresh stopped agent placeholder.
-- Installed-app entry points through `parley open <folder>`, `parley://open`,
-  Finder's **Open With** menu and an **Open in Parley** Finder Service.
-- A thin local VS Code companion for opening the current workspace, placing
-  explicit editor sources into Parley's editable context-pack preview, showing
-  content-free attention counts and focusing an authoritative pane or record.
-- Cross-workspace Ask targets and recent-folder shortcuts.
-- Owner-only durable handoff history and a compact workspace activity strip.
-- A separate native Status Center with workspace filters, live handoffs, agent
-  readiness, delivery receipts, returned-result acknowledgement, recovery
-  actions, core health and activity.
-- A searchable native Help window covering workflows, commands, safety,
-  shortcuts and troubleshooting without leaving the app.
-- A permanent in-app recovery playbook for coordination-socket failure, missing
-  vendor CLIs, stale pane protocols, exited panes and interrupted consultations;
-  active cases surface the safe Reconnect, Check Again, Restart or Inspect
-  action without requiring repository commands.
-- Optional macOS launch-at-login for the local coordination core. It is off by
-  default and starts neither the Parley window, tmux workspace nor a vendor CLI.
-- Durable RESULT badges for requesting panes/workspaces and opt-in local
-  notifications per workspace; notification text never includes the prompt or
-  returned answer.
+- Native SwiftUI workspaces with embedded Ghostty terminal surfaces.
+- Independent shell, Claude Code, Codex, Agy and Copilot panes.
+- Clear selected-pane borders and direct Ghostty mouse selection, copy and
+  scroll behavior.
+- Explicit cross-vendor Relay, Paste, Ask, Answer, Delegate, Done, Fail, Status
+  and Wait commands.
+- Human Ask and Return previews, correlated answers and tracked delegation
+  receipts.
+- Durable local handoff history and Status Center recovery actions.
+- Folder-backed workspaces, favourites, saved layouts, portable team
+  templates, stable roles, workspace leads, pane move and configuration clone.
+- Reviewed context packs, workspace briefs, pinned snippets, Git diff/file
+  capture and VS Code context import.
+- Production and Development runtime isolation.
+- Pane-scoped relay capabilities and a macOS Seatbelt boundary around every
+  vendor process tree.
 
-No agent starts automatically on a new session. Parley creates a shell first;
-opening an agent pane is an explicit action against a CLI the user has already
-installed and signed into.
+## Lifetime contract
+
+Ghostty owns the real PTY, process, vendor TUI, terminal modes, selection and
+scrollback for each pane. Parley retains those Ghostty surfaces at the
+application level rather than tying them to one SwiftUI view mount.
+
+- Closing or hiding Parley's main window keeps every pane and the coordination
+  core running while the Parley application remains open.
+- Reopening the window shows the same retained panes and processes.
+- Closing a pane or workspace explicitly ends the processes it contains.
+- **Stop Everything**, **Prepare to Uninstall** and a confirmed full application
+  quit end every pane process and the app-resident coordination core.
+- After a full quit, workspace definitions and local history remain. Shell
+  surfaces can be recreated on the next launch; agent panes return as stopped
+  placeholders because Parley never pretends a vendor conversation survived.
+
+There is no separate background coordination executable and no external
+terminal multiplexer. The application is the process-lifetime boundary.
 
 ## Cross-vendor collaboration
 
-An agent running inside Parley has the `parley` command on its PATH:
+Each agent pane receives one durable random credential for its real sender
+identity and the shared `parley` command. A caller cannot claim to be another
+pane.
 
-```bash
-parley relay codex "Review this implementation and report concrete defects."
-parley paste agy "Draft question for a person to inspect"
-parley ask copilot "What edge cases are missing from this plan?"
-parley ask-many codex,agy "Independently name the largest risk in this plan."
-parley delegate claude "Implement the reviewed change and report verification."
+```text
+parley relay <target> <text>
+parley paste <target> <text>
+parley ask <target> <question>
+parley answer <id> <answer>
+parley delegate <target> <task>
+parley done <id|current> <report>
+parley fail <id|current> <report>
 parley status
-parley wait current
-parley cancel current
+parley wait <id|current>
 ```
 
-- `relay` attributes the text, sends it to one named cross-vendor pane and
-  submits it.
-- `paste` performs the same attributed delivery but leaves the text
-  unsubmitted.
-- `ask` submits one correlated question and blocks. The target receives an
-  exact `parley answer current` command; its answer becomes stdout from the
-  original `ask`, allowing the requesting agent to continue the same turn.
-- `ask-many` submits the same question concurrently to an explicit comma-
-  separated target list and returns one ordered JSON bundle. Respondents never
-  receive one another's answers; partial failures stay visible and exit non-zero.
-- `answer` completes that waiting consultation. The Return control is a human
-  fallback when an agent printed an answer but did not run the command.
-- `delegate` submits one asynchronous tracked task and immediately returns its
-  handoff id. The exact target closes it with `parley done current` or
-  `parley fail current`.
-- `status` returns machine-readable JSON for work initiated by that pane.
-  `wait <id|current>` blocks for one exact completion or failure report without
-  scraping terminal output.
-- `cancel <id|current>` ends tracking only for work initiated by that exact
-  pane. It never interrupts the target; only a person can choose that stronger
-  action from the native UI.
+Targets are explicit pane ids, unique vendors or stable roles such as
+`@reviewer` and `workspace/@reviewer`. Parley refuses missing, ambiguous,
+same-pane, shell and busy targets. Same-vendor routing is allowed only between
+distinct panes.
 
-Targets may be a unique vendor name, pane id, explicit stable role such as
-`@reviewer` (or `workspace/@reviewer`), or the marked local `lead`.
-Parley refuses ambiguous, self, shell and missing targets instead of guessing.
-Same-vendor routing is supported between distinct panes, including two Copilot
-panes using different models. Only one unanswered consultation or active
-delegation may target a pane at a time.
+`relay` submits immediately because that is the capability the person selected.
+`paste` is the explicit review-before-send route. Multiline content is passed
+through Ghostty paste as one payload; submission is a separate Enter event, so
+the first newline cannot submit a truncated prompt.
 
-The workspace tab always shows its automation level: Off, Ask/Answer, or Ask +
-Delegation. The broker enforces that policy before model-initiated dispatch.
-Plan review, implementation review, adversarial bug hunt and comparison recipes
-send one editable instruction to the marked lead; the Activity record retains
-the submitted instruction and the workbench offers an immediate confirmed Stop.
+Parley never infers thinking, token use, cost, context limits, permission state
+or completion from terminal text. Status contains only facts Parley owns or
+structured values a vendor exposes authoritatively.
 
-Every relay, paste and Ask receives a stable local handoff id and a generated
-sender-scoped idempotency key. Retrying the same command request returns the
-original result without submitting its text twice. The core records the exact
-state trail, vendor/workspace identities and returned answer for the latest 500
-handoffs in an owner-only local journal. The activity strip reads that record
-rather than inferring state from terminal output.
+## Workspaces and panes
 
-A failed one-way delivery exposes **Retry Original Delivery** only when Parley
-recorded a pre-input failure, such as a target that was not relay-ready. The
-retry reuses the original handoff id and text, and concurrent retries collapse
-to one attempt. If paste may already have begun, retry remains unavailable so
-Parley cannot duplicate a partial prompt. Failed Ask operations are not retried
-from activity because their requesting command has already returned.
+A workspace is a named collaboration container with:
 
-Waiting and failed activity appears on pane and workspace badges. A known trust
-or permission refusal is labelled as human attention and offers a direct focus
-action for the target pane; Parley does not infer attention from a quiet screen.
+- zero or more explicit folder attachments used for folder opening and search;
+- a separately optional New Pane Folder;
+- a native split tree containing retained Ghostty panes;
+- one automation policy and optional workspace lead;
+- durable owner-controlled pane roles.
 
-**Status** opens a separate operational window that can remain beside the
-terminal grid or on another display. Its banner, counts, live collaboration,
-agent readiness, selected-item inspector and transition timeline come only from
-tmux and the durable coordination record. It does not guess whether an agent is
-thinking or estimate vendor context, quota, token cost, or compaction distance.
+**New Workspace** creates a normal folderless container. **Open or Focus
+Folder** is the folder-first fast path. Existing panes keep their own live
+working directories when attachments or the New Pane Folder change, and those
+metadata changes never grant filesystem permission. Several workspaces may
+intentionally attach the same folder. Opening a folder focuses one match, asks
+when several match, or creates a normal folder-backed shell workspace when none
+exists.
 
-The toolbar's Ask and Return actions provide the same workflow for a person.
-A real terminal selection prefills the editor; otherwise it starts empty.
-**Insert Visible Pane** adds the current screen explicitly and never silently
-includes scrollback. While an Ask is outstanding, a **Waiting** menu lets the
-person cancel its tracking relationship. Cancellation releases the blocked
-requester and records the reason without interrupting or typing into either
-agent pane.
+Move transfers the exact retained pane, process, terminal state, credential and
+folder. Clone copies visible configuration only and never copies a process,
+vendor session, terminal history or credential. Agent clones remain stopped
+until a person starts them.
 
-The core also watches both ends of a waiting Ask. Closing or restarting either
-pane releases the requester with an explicit failure or interruption instead
-of leaving a dead long-poll behind.
-
-The toolbar's **Review** menu removes the copy/paste step without adding a
-source-control client. **Current Changes** previews bounded Git status plus the
-staged and working-tree diffs; **Plan or File** opens a native file picker and
-previews one bounded UTF-8 text file. Both previews are editable and require an
-explicit **Ask for Review** before the normal cross-vendor submission occurs.
-Git is invoked directly with argv, no pager or external diff, a five-second
-ceiling and optional index locks disabled. Untracked paths are shown by status,
-but their contents are never silently read.
-
-Copilot must complete its own folder-trust prompt before Parley submits a
-handoff to it. Parley fails closed while that prompt is present.
-
-All vendors must also be at a current relay-aware prompt with bracketed paste
-active. Parley refuses the handoff before loading any terminal input when that
-state is absent; focusing the pane, completing its startup prompt, or explicitly
-restarting a stale pane restores the normal workflow.
-
-## Workspaces and folders
-
-Each workspace tab represents one live tmux window:
-
-- A workspace is a named collaboration container with a stable home folder.
-- Opening a folder creates a workspace, focuses its one match, or offers a
-  chooser when several task workspaces share that home.
-- **Open New Workspace** deliberately creates another workspace even when its
-  home folder is already open.
-- Changing the independent **New Pane Folder** affects newly created panes only.
-- Running panes keep the working directory with which they were created.
-- Pane menus can explicitly split from the New Pane Folder, the active pane's
-  live folder, or another chosen folder.
-- Workspaces can contain different pane arrangements and agent vendors.
-- An Ask target can live in the current workspace or another open workspace.
-- Closing a workspace explicitly ends all processes inside it.
-
-**Save Current Layout** writes an owner-only, ID-free definition outside tmux:
-workspace name and default folder, each pane's kind/name/folder, and the split
-tree with its ratios. Opening one builds a fresh window before replacing the
-current workspace. Shells start automatically; agent panes appear as stopped
-slots with an explicit **Start** button, so restoration never spends a vendor
-subscription session. Duplicate live workspace names are visibly qualified.
-
-**Save Current as Team Template** creates a portable blueprint containing pane
-vendors, names, `@roles`, permission-profile choices, lead, automation policy
-and split layout. It stores no repository paths, approved roots, live ids,
-credentials or sessions. Applying it asks for a folder, binds the complete team
-to that folder and creates stopped agent placeholders; a person starts each
-vendor deliberately.
-
-Right-click a pane to **Move to Workspace** or **Clone Configuration to
-Workspace**. Move transfers the exact tmux pane, preserving its id, process,
-vendor session, scrollback, terminal state and pane-local folder; it is refused
-for the source workspace's last pane, active handoffs, or conflicting target
-roles/leads. Clone leaves the source and its handoffs untouched, copies only the
-visible pane setup, and leaves an agent clone stopped with no session or relay
-credential until **Start**. A cloned shell starts normally. Both paths preview
-the destination, folder and process consequences before changing anything.
-
-The installed app can be brought to one workspace from Terminal or Finder:
-
-```bash
-parley open /absolute/path/to/repository
-open 'parley://open?folder=%2Fabsolute%2Fpath%2Fto%2Frepository'
-```
-
-Finder exposes Parley as an alternate folder handler under **Open With**, plus
-**Services → Open in Parley** for a selected folder. Every route validates one
-existing absolute directory and either focuses one matching workspace, asks
-which workspace to use when several share that canonical home, or creates a
-workspace with its normal shell. It cannot carry a prompt, select or start an
-agent, attach context, or submit terminal input.
-`parley open` is refused inside authenticated agent panes. These system entry
-points intentionally target the installed Production app; Development does not
-claim the machine-wide URL scheme.
-
-The companion under [`vscode-extension/`](vscode-extension/) adds Command
-Palette and editor/explorer context-menu actions for the current selection,
-saved file, current-file diagnostics, Git diff, or selection plus Git diff.
-It runs only in the local macOS desktop extension host and refuses web or
-remote workspaces. Parley recaptures files and diffs itself; selections and
-diagnostics remain visibly attributed to VS Code. Every action opens the normal
-editable preview, requires a ready source pane, starts no agent and sends
-nothing. Build its local VSIX with:
-
-Its status-bar item reads a current owner-only Production snapshot containing
-counts, human labels and opaque ids only. Choose it to open one durable handoff
-in Status Center or focus one exact live agent pane. It refuses a stale or
-unsafe snapshot, and the focus URLs cannot carry prompts, context, startup or
-submission instructions.
-
-```bash
-npm install --prefix vscode-extension
-npm run package:vscode
-```
-
-Closing only the Parley window detaches from tmux and leaves workspaces running.
-A separate per-user core process owns the authenticated relay socket and active
-consultations. Closing and reopening the SwiftUI app does not interrupt a
-blocking `parley ask`; the new UI attaches to the same core state.
-
-**Tools → Keep Coordination Core Available at Login** registers the bundled
-user LaunchAgent through macOS Service Management. Its status and approval door
-also appear under **Status Center → Core Health**. Turning it off is refused
-while tracked work is active; after macOS unregisters a login-owned core, the
-open app reconnects its own core before returning.
+Saved layouts and team templates contain portable configuration, not live ids,
+paths from another machine, credentials or terminal content. A team can be
+applied folderless; its agents remain stopped and unbound until their working
+folders and permissions are reviewed explicitly.
 
 ## Local architecture
 
 ```text
-native/
-  Package.swift
-  Sources/
-    ParleyCore/          tmux control, relay client, protocol and domain models
-    ParleyCoreService/   persistent local broker process
-    ParleyNative/        SwiftUI application and SwiftTerm host
-    ParleyTerminal/      production terminal configuration shared with soak
-    ParleyCoreChecks/    deterministic native verification executable
-    ParleySoak/          quota-free output, reattachment and relay stress gate
-scripts/
-  run-native-swift.mjs  macOS Swift/SDK compatibility runner
-resources/
-  icon.icns
-  icon.png
-THIRD_PARTY_NOTICES.md   linked dependency attribution bundled with the app
+SwiftUI workspace tree
+  └─ GhosttyPaneRegistry
+       └─ one AppTerminalView + real PTY/process per pane
+
+AppResidentCoordinationCore
+  ├─ authenticated control socket for the native UI
+  ├─ pane-capability filesystem relay endpoints
+  ├─ RelayBroker consultations and delegations
+  └─ durable local collaboration records
 ```
 
-Production runtime files live under:
+Product source lives under `native/`:
 
 ```text
-~/Library/Application Support/Parley Native/
+native/Sources/
+  ParleyCore/        protocol, relay, workbench state and domain services
+  ParleyNative/      SwiftUI app, Ghostty host and app-resident core
+  ParleyCoreChecks/  deterministic contract and real Ghostty lifecycle checks
+  ParleySoak/        eight-pane Ghostty input/lifetime soak
 ```
 
-The exact DMG contents, first-launch files, preferences, managed relay command,
-temporary transport and uninstall leftovers are listed in
-[INSTALL.md](INSTALL.md).
+The package links `GhosttyTerminal` through `libghostty-spm`. `Package.swift`
+and `Package.resolved` are the authoritative dependency pins.
 
-Source-tree development is deliberately separate:
+## Security boundary
 
-```text
-~/Library/Application Support/Parley Native Development/
-```
+- Vendor processes receive only their pane credential, managed relay command
+  and canonical shared protocol.
+- `AgentProcessBoundary` denies the broad Parley Application Support tree and
+  relay transport root, then reopens only generated protocol files, the managed
+  shim and that pane's capability-named endpoint.
+- The endpoint authenticates both its token and exact filesystem location.
+- Shell panes are deliberately unsandboxed human shells and are the explicit
+  trusted side of this boundary.
+- Agent-authored content is never interpolated into a shell command.
+- Parley has no hosted service, sync, telemetry or remote-control backend.
 
-`npm run dev` uses the Development directory, the `parley-development` tmux
-session, its own tmux socket, core, relay transport, credentials, generated
-protocol, layouts, recipes, history and preference suite. Development windows
-and agent environments are permanently marked **DEV**, and Development never
-replaces Production's stable `~/.local/bin/parley` command or login item.
-
-That directory contains the isolated tmux socket and configuration, relay and
-UI-control credentials, core discovery state, logs and the generated shared
-agent protocol. Pane credentials identify the exact agent making a request.
-Agent processes receive only their own broker capability. Every vendor CLI and
-its descendants run inside a mandatory macOS process profile that denies the
-UI capability, Parley's private runtime files, the tmux control socket and
-every other pane's relay endpoint. Repository files, vendor authentication,
-ordinary tools and network access remain available. Shell panes are normal,
-unsandboxed user shells and are explicitly trusted. The relay locator accepts
-only Parley's local Unix socket; remote HTTP endpoints are never valid relay
-destinations.
+The stable `~/.local/bin/parley` command is a runtime-neutral router for vendor
+CLIs that rebuild `PATH`. Production is the default route; exact
+`PARLEY_RUNTIME=DEV` selects the isolated Development runtime. The router has no
+credential and no transport authority of its own.
 
 ## Requirements
 
-- macOS with a working Swift toolchain
-- tmux
-- Node only as the dependency-free task runner for the Swift/SDK helper
-- At least one supported AI CLI installed and signed in
-
-The app resolves the user's login-shell PATH at startup, so CLIs installed
-outside the minimal PATH supplied to GUI applications remain discoverable.
-Finder and other Launch Services entry points may also omit a character
-locale. Packaged UI and core launches therefore receive `LANG=C.UTF-8`, while
-direct and Development launches add that fallback only when `LANG`, `LC_ALL`
-and `LC_CTYPE` are all absent. An explicit user locale is preserved.
-`PARLEY_TMUX` may point to an explicit absolute tmux executable.
+- macOS 14 or later.
+- At least one supported vendor CLI installed and signed in with its normal
+  subscription flow.
+- Xcode command-line tools and a compatible macOS SDK for development.
+- Node from the machine's mise toolchain for the dependency-free task runner.
 
 ## Develop
 
-No JavaScript dependency installation is required.
+No JavaScript dependencies are used at the repository root. Do not run
+`npm install` there.
 
 ```bash
-npm run scan:public
+npm run dev
+npm run dev:restart-protocol
 npm test
 npm run build
-npm run dev
-npm run dev:attach-production
+npm run test:soak -- --rounds 25
+```
+
+`npm run dev` uses `~/Library/Application Support/Parley Native Development/`
+and a separate preference suite. The packaged app always uses Production under
+`~/Library/Application Support/Parley Native/`. Development cannot install the
+machine-wide stable router or publish Production attention state.
+
+`dev:restart-protocol` deliberately restarts only stale agent panes. Normal
+launch never restarts a surviving in-app pane.
+
+The deterministic checks do not launch a vendor CLI or spend subscription
+quota. The Ghostty checks and soak use real local shells, exercise more than
+four panes, verify per-pane input isolation, hide the UI while input continues,
+then verify every exact child PID ends at teardown.
+
+## Package and release
+
+```bash
 npm run package:mac
 npm run verify:package:mac
 npm run release:mac
-npm run test:conformance:plan
-npm run test:soak
 ```
 
-`npm run test:soak` opens a temporary accessory window for about 36 seconds and
-uses a completely separate tmux socket and runtime directory. Seven fixture
-panes generate sustained scrolling and full-screen redraw output across four
-workspaces while the harness switches workspaces, tears down and reattaches the
-terminal client, and drives thousands of authenticated four-vendor fixture
-handoffs through the bounded broker journal. It invokes no AI CLI and spends no
-subscription quota. Each pane first writes beyond tmux's 10,000-line history
-cap, then switches to full-screen redraws. The command fails unless Metal is
-active, fixture process ids survive reattachment, both handoff stores remain
-capped at 500, and robust app/broker and tmux RSS medians each stay within the
-larger of 16 MB or 10%. Set
-`PARLEY_SOAK_SECONDS` to a larger value for an extended run.
+The app bundle contains one executable: `parley-native`. Ghostty and the
+app-resident coordination core are linked into it. Packaging emits an app, ZIP
+and DMG, validates the one-executable contract, signs the bundle and includes
+the project and third-party licences.
 
-The default conformance commands explicitly target Development. Add
-`:production` only when you deliberately intend to inspect or exercise the
-installed runtime:
+`Prepare to Uninstall…` refuses active Ask or delegated work, ends every pane
+and coordination endpoint, and quits. It leaves workspace definitions and
+local collaboration history for a safe reinstall unless the person explicitly
+chooses a separate data purge.
 
-```bash
-npm run test:conformance:plan
-npm run test:conformance:plan:production
-PARLEY_LIVE=1 npm run test:conformance
-PARLEY_LIVE=1 npm run test:conformance:production
-```
+## Licence
 
-The conformance plan inspects existing panes and spends no subscription quota.
-When its routes look right, the explicitly opt-in live harness tests the loaded
-protocol, exact multiline paste, automatic submission, correlated
-`answer current`, inactive panes and cross-workspace routing:
-
-```bash
-PARLEY_LIVE=1 npm run test:conformance
-PARLEY_LIVE=1 npm run test:conformance -- --vendor codex --timeout 120
-```
-
-Live conformance sends clearly labelled probe messages to existing ready agent
-panes and records normal Ask handoffs. It refuses to run while another Ask is
-waiting, never creates, restarts or closes a pane, cancels its own timed-out
-wait, and does not type through a visible trust or permission prompt.
-
-To deliberately restart only agent panes carrying an old protocol stamp:
-
-```bash
-npm run dev:restart-protocol
-```
-
-That operation ends those agent conversations. A normal launch never restarts
-surviving panes.
-
-### Running installed and Development Parley together
-
-Keep the installed `Parley.app` open as the daily driver and use `npm run dev`
-for ordinary development. They can run at the same time because their data,
-tmux servers, coordination cores and preferences are disjoint. Closing either
-UI leaves only that runtime's tmux panes and core intact.
-
-Use `npm run dev:attach-production` only for a deliberate integration check
-against the installed app's real panes. It never starts or upgrades Production's
-tmux server or core, refuses if the installed UI owns the Production lease, and
-shows **DEV ATTACHED TO PRODUCTION** throughout the session. Quit the installed
-UI first, run the check, then close the attached development UI before reopening
-the installed app.
-
-`npm run package:mac` produces `dist/Parley.app` plus Apple Silicon ZIP and DMG
-artifacts. Local builds use an ad-hoc hardened-runtime signature and are meant
-for verification on the building Mac; they are not notarized releases. Set
-`PARLEY_CODESIGN_IDENTITY` to a Developer ID Application identity when preparing
-a release candidate, then complete notarization and stapling before distribution.
-The bundle includes an `SMAppService` LaunchAgent plist whose relocatable
-`BundleProgram` points only to `parley-core-service --login-agent`.
-
-`npm run verify:package:mac` runs the complete no-account package gate in an
-isolated temporary Applications and Application Support tree. It validates the
-ZIP and DMG, mounts the disk image, installs and atomically replaces the app,
-starts the packaged core against a private tmux socket, uninstalls the app while
-preserving its local record, and finally verifies the deliberately confirmed
-data-purge path. It never installs over `/Applications/Parley.app`, touches the
-normal Parley core or starts a vendor CLI.
-
-`npm run release:mac` is stricter: it refuses a dirty Git tree, records the full
-source commit, writes a deterministic release manifest, SHA-256 checksums and an
-install guide, verifies those checksums, then runs the same archive and lifecycle
-gate. Ad-hoc releases say **UNNOTARIZED LOCAL BETA** both in the DMG and release
-metadata. They never claim Gatekeeper readiness and never tell a user to disable
-Gatekeeper. An optional `--tag v0.1.0` must match `package.json` and point at HEAD.
-
-The GitHub **Prepare macOS draft release** workflow is manual-only. It checks out
-one existing version tag, runs the native and release gates on a macOS runner and
-creates an unpublished draft containing the DMG, ZIP, manifest, checksums and
-install guide. Nothing is published merely by pushing a tag. Until Developer ID
-and notarization are added, the draft title and instructions remain explicitly
-unnotarized.
-
-The normal GitHub CI checkout includes complete repository history because
-`npm test` runs the publication scan over both current tracked files and every
-reachable patch. Reducing it to a shallow checkout would weaken that gate.
-
-Upgrades preserve the live workbench: quit Parley, replace the app, and reopen
-it. The new UI compares its versioned coordination contract with the persistent
-core. An idle old core is drained and replaced automatically; an active Ask or
-delegation stays alive and the Status Center shows **Core upgrade: pending**
-until it finishes. tmux, workspace tabs and vendor pane processes are never part
-of the core handover. Layouts and handoff history remain under
-`~/Library/Application Support/Parley Native`.
-
-For uninstallation, choose **Parley → Prepare to Uninstall…**. It refuses while
-Ask or Delegate work is active, disables launch-at-login, stops the coordination
-core, and quits without touching tmux panes or local records. Then move
-Parley.app to Trash; no Mac restart is required. Remove
-`~/Library/Application Support/Parley Native` separately only when deliberately
-erasing layouts and collaboration history.
-
-The ordered path from this locally packaged beta foundation to a dependable
-distributed tool is in [ROADMAP.md](ROADMAP.md).
-
-On first launch, Parley opens a readiness sheet for its private tmux server,
-local coordination core, relay command, shared agent protocol and supported
-vendor CLIs. Claude, Codex and Agy authentication use their own status-only
-commands; no prompt is submitted and no model quota is spent. Copilot is
-labelled "check on start" because it exposes an interactive login command but
-no read-only authentication status command. Repeat the checks at any time from
-**Tools → Environment Check…** without restarting a pane.
+Parley is licensed under Apache-2.0. Embedded third-party notices are in
+`THIRD_PARTY_NOTICES.md`.

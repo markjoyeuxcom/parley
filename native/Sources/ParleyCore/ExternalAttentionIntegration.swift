@@ -103,30 +103,51 @@ public enum ExternalAttentionProjection {
     public static let maximumItems = 512
 
     public static func snapshot(
-        workspaces: [TmuxWorkspace],
-        panes: [TmuxPane],
+        workspaces: [WorkbenchWorkspace],
+        panes: [WorkbenchPane],
         handoffs: [RelayHandoff],
         generatedAt: Date = Date()
     ) -> ExternalAttentionSnapshot {
-        let actionable = handoffs.compactMap(actionableItem)
-            .sorted { left, right in
-                if left.updatedAt == right.updatedAt { return left.item.handoffID < right.item.handoffID }
-                return left.updatedAt > right.updatedAt
+        var canonicalWorkspaceByAlias: [String: String] = [:]
+        var workspaceNames: [String: String] = [:]
+        for workspace in workspaces {
+            canonicalWorkspaceByAlias[workspace.id] = workspace.workspaceID
+            canonicalWorkspaceByAlias[workspace.workspaceID] = workspace.workspaceID
+            workspaceNames[workspace.workspaceID] = workspace.name
+        }
+        for pane in panes {
+            canonicalWorkspaceByAlias[pane.workspaceID] = pane.workspaceID
+            if workspaceNames[pane.workspaceID] == nil, let name = pane.workspaceName {
+                workspaceNames[pane.workspaceID] = name
             }
+        }
+        let actionable = handoffs.compactMap(actionableItem).map { original in
+            let canonicalID = canonicalWorkspaceByAlias[original.item.workspaceID]
+                ?? original.item.workspaceID
+            let item = ExternalAttentionItem(
+                handoffID: original.item.handoffID,
+                workspaceID: canonicalID,
+                workspaceName: workspaceNames[canonicalID] ?? original.item.workspaceName,
+                label: original.item.label,
+                reason: original.item.reason
+            )
+            return (item: item, updatedAt: original.updatedAt)
+        }.sorted { left, right in
+            if left.updatedAt == right.updatedAt { return left.item.handoffID < right.item.handoffID }
+            return left.updatedAt > right.updatedAt
+        }
         let items = actionable.prefix(maximumItems).map(\.item)
         let counts = Dictionary(grouping: actionable.map(\.item), by: \.workspaceID)
             .mapValues(\.count)
-        var workspaceNames: [String: String] = [:]
-        for workspace in workspaces { workspaceNames[workspace.id] = workspace.name }
 
         return ExternalAttentionSnapshot(
             generatedAt: generatedAt,
             attentionCount: actionable.count,
             workspaces: workspaces.prefix(maximumWorkspaces).map {
                 ExternalAttentionWorkspace(
-                    id: $0.id,
+                    id: $0.workspaceID,
                     name: $0.name,
-                    attentionCount: counts[$0.id, default: 0]
+                    attentionCount: counts[$0.workspaceID, default: 0]
                 )
             },
             panes: panes.lazy
@@ -137,8 +158,9 @@ public enum ExternalAttentionProjection {
                         id: $0.id,
                         name: $0.displayName,
                         kind: $0.kind,
-                        workspaceID: $0.windowID,
-                        workspaceName: workspaceNames[$0.windowID] ?? $0.workspaceName ?? $0.windowID
+                        workspaceID: $0.workspaceID,
+                        workspaceName: workspaceNames[$0.workspaceID]
+                            ?? $0.workspaceName ?? $0.workspaceID
                     )
                 },
             items: items

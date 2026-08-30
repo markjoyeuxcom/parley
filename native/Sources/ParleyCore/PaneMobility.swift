@@ -1,8 +1,8 @@
 import Foundation
 
-/// Moving transfers one live tmux pane without restarting it. Cloning copies
-/// only the visible Parley configuration and never copies an agent session or
-/// pane-scoped relay credential.
+/// Moving transfers one retained Ghostty pane without restarting it. Cloning
+/// copies only visible Parley configuration and never copies an agent session
+/// or pane-scoped relay credential.
 public enum PaneMobilityAction: String, Equatable, Sendable {
     case move
     case clone
@@ -56,12 +56,12 @@ public struct PaneMobilityAssessment: Equatable, Sendable {
 public enum PaneMobilityPolicy {
     public static func assess(
         action: PaneMobilityAction,
-        pane: TmuxPane,
+        pane: WorkbenchPane,
         targetWorkspaceID: String,
-        panes: [TmuxPane],
+        panes: [WorkbenchPane],
         activeHandoffCount: Int
     ) -> PaneMobilityAssessment {
-        guard pane.windowID != targetWorkspaceID else {
+        guard pane.workspaceID != targetWorkspaceID else {
             return PaneMobilityAssessment(
                 action: action,
                 activeHandoffCount: activeHandoffCount,
@@ -71,7 +71,7 @@ public enum PaneMobilityPolicy {
 
         var blockers: [PaneMobilityBlocker] = []
         if action == .move {
-            if panes.filter({ $0.windowID == pane.windowID }).count <= 1 {
+            if panes.filter({ $0.workspaceID == pane.workspaceID }).count <= 1 {
                 blockers.append(.lastSourcePane)
             }
             if activeHandoffCount > 0 {
@@ -79,7 +79,7 @@ public enum PaneMobilityPolicy {
             }
         }
 
-        let targetPanes = panes.filter { $0.windowID == targetWorkspaceID }
+        let targetPanes = panes.filter { $0.workspaceID == targetWorkspaceID }
         if let role = pane.role,
            targetPanes.contains(where: {
                $0.role?.caseInsensitiveCompare(role) == .orderedSame

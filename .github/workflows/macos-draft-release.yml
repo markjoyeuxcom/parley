@@ -22,9 +22,6 @@ jobs:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
 
-      - name: Install the declared runtime dependency
-        run: brew install tmux
-
       - name: Install the locked VS Code companion toolchain
         run: npm ci --prefix vscode-extension
 

@@ -64,7 +64,7 @@ public struct PaneToolCapabilitySummary: Equatable, Sendable {
 /// configuration, credential store, terminal transcript or website is read.
 public enum PaneToolCapabilityProjection {
     public static func summary(
-        for pane: TmuxPane,
+        for pane: WorkbenchPane,
         profiles: [PermissionProfileDefinition]
     ) -> PaneToolCapabilitySummary {
         let selectedProfile = pane.permissionSelection.flatMap { selection in

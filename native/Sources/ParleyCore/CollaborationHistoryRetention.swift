@@ -67,7 +67,7 @@ public struct CollaborationHistoryRetentionChange: Codable, Equatable, Sendable 
     }
 }
 
-/// The persistent core owns this preference because it can outlive every UI.
+/// The app-resident core owns this preference across window hiding and remounts.
 /// The file is runtime-local, owner-only and deliberately contains no content
 /// beyond the bounded record-count policy.
 public final class CollaborationHistoryRetentionStore: @unchecked Sendable {

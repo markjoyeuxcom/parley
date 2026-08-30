@@ -149,7 +149,7 @@ public enum StatusNotificationProjection {
 public struct StatusCenterSnapshot: Equatable, Sendable {
     public let condition: StatusCenterCondition
     public let counts: StatusCenterCounts
-    public let agents: [TmuxPane]
+    public let agents: [WorkbenchPane]
     public let activeHandoffs: [RelayHandoff]
     public let handoffs: [RelayHandoff]
     public let timeline: [StatusTimelineEvent]
@@ -157,7 +157,7 @@ public struct StatusCenterSnapshot: Equatable, Sendable {
     public init(
         condition: StatusCenterCondition,
         counts: StatusCenterCounts,
-        agents: [TmuxPane],
+        agents: [WorkbenchPane],
         activeHandoffs: [RelayHandoff],
         handoffs: [RelayHandoff],
         timeline: [StatusTimelineEvent]
@@ -196,7 +196,7 @@ public enum StatusCenterProjection {
     private static let failureStates: Set<RelayHandoffState> = [.failed, .interrupted]
 
     public static func snapshot(
-        panes: [TmuxPane],
+        panes: [WorkbenchPane],
         handoffs: [RelayHandoff],
         activityEvents: [RelayActivityEvent] = [],
         workspaceID: String?,
@@ -204,9 +204,15 @@ public enum StatusCenterProjection {
         dismissedHandoffIDs: Set<String> = [],
         includeDismissed: Bool = false
     ) -> StatusCenterSnapshot {
+        let workspaceAliases: Set<String> = if let workspaceID {
+            Set(panes.lazy.filter { $0.workspaceID == workspaceID }.map(\.workspaceID))
+                .union([workspaceID])
+        } else {
+            []
+        }
         let scopedAgents = panes
             .filter { pane in
-                pane.kind.isAgent && (workspaceID == nil || pane.windowID == workspaceID)
+                pane.kind.isAgent && (workspaceID == nil || workspaceAliases.contains(pane.workspaceID))
             }
             .sorted { left, right in
                 if left.displayName.caseInsensitiveCompare(right.displayName) == .orderedSame {
@@ -216,8 +222,9 @@ public enum StatusCenterProjection {
             }
         let scopedHandoffs = handoffs
             .filter { handoff in
-                guard let workspaceID else { return true }
-                return handoff.sourceWorkspaceID == workspaceID || handoff.targetWorkspaceID == workspaceID
+                guard workspaceID != nil else { return true }
+                return workspaceAliases.contains(handoff.sourceWorkspaceID)
+                    || workspaceAliases.contains(handoff.targetWorkspaceID)
             }
             .filter { handoff in
                 includeDismissed
@@ -232,7 +239,7 @@ public enum StatusCenterProjection {
         let failures = scopedHandoffs.filter { failureStates.contains($0.state) }
         let unreadResults = scopedHandoffs.count { handoff in
             handoff.hasUnreadResult
-                && (workspaceID == nil || handoff.sourceWorkspaceID == workspaceID)
+                && (workspaceID == nil || workspaceAliases.contains(handoff.sourceWorkspaceID))
         }
 
         let condition: StatusCenterCondition
@@ -265,15 +272,17 @@ public enum StatusCenterProjection {
             }
         }
         let activityTimeline = activityEvents
-            .filter { event in workspaceID == nil || event.workspaceID == workspaceID }
+            .filter { event in workspaceID == nil || workspaceAliases.contains(event.workspaceID) }
             .map { event in
                 let isPane = event.kind == .paneRestarted
+                    || event.kind == .paneReaped
                     || event.kind == .recipeSubmitted
                     || event.kind == .recipeInterrupted
                     || event.kind == .comparisonForwarded
                 let action: String
                 switch event.kind {
                 case .paneRestarted: action = "RESTARTED"
+                case .paneReaped: action = "REAPED IDLE"
                 case .workspaceCreated: action = "CREATED"
                 case .workspaceClosed: action = "CLOSED"
                 case .workspaceRestored: action = "RESTORED"

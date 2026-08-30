@@ -84,7 +84,7 @@ struct ContextPackView: View {
         HStack(spacing: 10) {
             Button("Add Files…", systemImage: "doc.badge.plus") { model.addContextFiles() }
             Button("Add Git Diff", systemImage: "arrow.triangle.branch") { model.addContextGitDiff() }
-            Button("Add Visible Screen…", systemImage: "rectangle.inset.filled") {
+            Button("Add Terminal Selection…", systemImage: "selection.pin.in.out") {
                 model.addVisibleTerminalContext()
             }
             Button("Capture Command…", systemImage: "terminal") {
@@ -126,7 +126,7 @@ struct ContextPackView: View {
                         ContentUnavailableView(
                             "No Explicit Sources",
                             systemImage: "shippingbox",
-                            description: Text("Add files, a Git diff, one visible screen, a command result, browser/tool evidence, the workspace brief or pinned context.")
+                            description: Text("Add files, a Git diff, selected terminal text, a command result, browser/tool evidence, the workspace brief or pinned context.")
                         )
                     } else {
                         List(draft.pack.parts, selection: $selectedPartID) { part in
@@ -347,7 +347,7 @@ struct ContextPackView: View {
         switch kind {
         case .file: "doc.text"
         case .gitDiff: "arrow.triangle.branch"
-        case .visibleTerminal: "rectangle.inset.filled"
+        case .visibleTerminal: "selection.pin.in.out"
         case .commandResult: "terminal"
         case .agentFileDraft: "person.crop.circle.badge.questionmark"
         case .workspaceBrief: "doc.text"
@@ -391,7 +391,7 @@ private struct VendorToolEvidenceCaptureView: View {
             Form {
                 Picker("Evidence from", selection: $selectedPaneID) {
                     ForEach(model.vendorToolEvidencePanes) { pane in
-                        Text("\(pane.displayName) · \(pane.kind.label) · \(pane.workspaceName ?? pane.windowID)")
+                        Text("\(pane.displayName) · \(pane.kind.label) · \(pane.workspaceName ?? pane.workspaceID)")
                             .tag(pane.id)
                     }
                 }

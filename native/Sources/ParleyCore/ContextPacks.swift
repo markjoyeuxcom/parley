@@ -39,7 +39,7 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
         switch self {
         case .file: "Selected file"
         case .gitDiff: "Git diff"
-        case .visibleTerminal: "Visible terminal"
+        case .visibleTerminal: "Terminal selection"
         case .commandResult: "Command result"
         case .agentFileDraft: "Agent-provided file draft"
         case .workspaceBrief: "Workspace brief"
@@ -406,12 +406,12 @@ public final class ContextPackBuilder: @unchecked Sendable {
         )
     }
 
-    public func visibleTerminal(paneID: String, paneName: String, text: String) throws -> ContextPackPart {
+    public func terminalSelection(paneID: String, paneName: String, text: String) throws -> ContextPackPart {
         try part(
             source: ContextPackSource(
                 kind: .visibleTerminal,
                 label: paneName,
-                detail: "Visible screen from \(paneName) (\(paneID))"
+                detail: "Selected terminal text from \(paneName) (\(paneID))"
             ),
             text: text
         )
@@ -446,7 +446,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
     }
 
     public func browserURLEvidence(
-        from pane: TmuxPane,
+        from pane: WorkbenchPane,
         url: String,
         capturedAt: Date = Date()
     ) throws -> ContextPackPart {
@@ -472,7 +472,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
     }
 
     public func browserSelectionEvidence(
-        from pane: TmuxPane,
+        from pane: WorkbenchPane,
         url: String,
         text: String,
         capturedAt: Date = Date()
@@ -504,7 +504,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
 
     public func vendorArtifactEvidence(
         kind: VendorToolEvidenceKind,
-        from pane: TmuxPane,
+        from pane: WorkbenchPane,
         file: URL,
         sourceURL: String?,
         capturedAt: Date = Date()
@@ -707,7 +707,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
         return ContextPackText.normalize(sections.joined(separator: "\n\n"))
     }
 
-    private func evidenceCapability(for pane: TmuxPane) throws -> PaneToolCapabilitySummary {
+    private func evidenceCapability(for pane: WorkbenchPane) throws -> PaneToolCapabilitySummary {
         let capability = PaneToolCapabilityProjection.summary(for: pane, profiles: [])
         guard capability.canCaptureEvidence else {
             throw ContextPackError.invalidEvidence(capability.detail)
@@ -717,7 +717,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
 
     private func evidenceProvenance(
         kind: VendorToolEvidenceKind,
-        pane: TmuxPane,
+        pane: WorkbenchPane,
         capability: PaneToolCapabilitySummary,
         sourceURL: String?,
         artifactPath: String? = nil,
