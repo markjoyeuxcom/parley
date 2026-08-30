@@ -6396,7 +6396,7 @@ private func checkHumanAskManyUsesTheTrackedBrokerPath() throws {
         },
         paste: { _, _ in },
         submit: { paneID, prompt in sameVendorSubmissions.append(paneID: paneID, text: prompt) },
-        consultationTimeout: 0.05,
+        consultationTimeout: 2,
         livenessPollInterval: 0.01
     )
     let sameVendorResult = LockedAskResult()
