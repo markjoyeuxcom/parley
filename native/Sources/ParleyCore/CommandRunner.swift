@@ -195,8 +195,8 @@ public final class ProcessCommandRunner: CommandRunning {
     }
 }
 
-/// Captures one child stream without relying on pipe EOF. Commands such as
-/// tmux may fork a long-lived server that inherits stdout or stderr after the
+/// Captures one child stream without relying on pipe EOF. A tool may fork a
+/// long-lived child that inherits stdout or stderr after the
 /// short-lived client exits. An unlinked owner-only file can be read as soon
 /// as that client is reaped, even while a descendant still holds its duplicate.
 private final class CommandCaptureFile {
@@ -433,8 +433,8 @@ public enum EnvironmentResolver {
     ///
     /// This is a narrow exception to argv-only process execution: a fixed
     /// command with no interpolated content, sentinel-delimited output and an
-    /// absolute shell path. Agent commands still reach tmux as argv arrays and
-    /// never through a shell.
+    /// absolute shell path. Agent commands still reach the terminal as argv
+    /// arrays and never through a shell.
     public static func resolved() -> [String: String] {
         var environment = applyingUTF8LocaleFallback(to: ProcessInfo.processInfo.environment)
         let runner = ProcessCommandRunner(timeout: 5)

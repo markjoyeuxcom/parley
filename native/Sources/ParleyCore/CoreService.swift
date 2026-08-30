@@ -24,8 +24,6 @@ public enum RelayCoreError: LocalizedError {
     case invalidLocator
     case malformedResponse
     case response(Int, String)
-    case serviceExecutableNotFound
-    case serviceFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -41,10 +39,6 @@ public enum RelayCoreError: LocalizedError {
             "Parley's core returned a malformed response."
         case let .response(status, detail):
             "Parley's core returned \(status): \(detail)"
-        case .serviceExecutableNotFound:
-            "The Parley core service executable is missing. Run `npm run build` and try again."
-        case let .serviceFailed(detail):
-            "The Parley core service did not start: \(detail)"
         }
     }
 }
@@ -108,30 +102,12 @@ public struct RelayCoreClient: Sendable {
         return response.status == 200 && response.body == Data("ok".utf8)
     }
 
-    /// Returns nil only for a legacy core that predates the identity route.
-    public func coreIdentity() throws -> CoreServiceIdentity? {
-        let response = try request(
-            method: "GET",
-            path: "/identity",
-            headers: ["X-Parley-Control": controlToken],
-            body: Data()
-        )
-        if response.status == 404 { return nil }
-        guard response.status == 200 else {
-            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
-        }
-        return try JSONDecoder().decode(CoreServiceIdentity.self, from: response.body)
+    /// Used only to retire the pre-app-resident core during the first upgrade.
+    public func shutdownLegacyCoreIfIdle() throws -> LegacyCoreShutdownResponse {
+        try legacyCoreShutdownRequest(path: "/ui/shutdown-if-idle")
     }
 
-    public func shutdownIfIdle() throws -> RelayCoreUpgradeResponse {
-        try idleShutdownRequest(path: "/ui/shutdown-if-idle")
-    }
-
-    public func stopIfIdle() throws -> RelayCoreUpgradeResponse {
-        try idleShutdownRequest(path: "/ui/stop-if-idle")
-    }
-
-    private func idleShutdownRequest(path: String) throws -> RelayCoreUpgradeResponse {
+    private func legacyCoreShutdownRequest(path: String) throws -> LegacyCoreShutdownResponse {
         let response = try request(
             method: "POST",
             path: path,
@@ -141,9 +117,9 @@ public struct RelayCoreClient: Sendable {
         guard response.status == 202 || response.status == 409 else {
             throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
         }
-        return RelayCoreUpgradeResponse(
+        return LegacyCoreShutdownResponse(
             status: response.status,
-            readiness: try JSONDecoder().decode(RelayUpgradeReadiness.self, from: response.body)
+            readiness: try JSONDecoder().decode(LegacyCoreShutdownReadiness.self, from: response.body)
         )
     }
 
@@ -167,7 +143,6 @@ public struct RelayCoreClient: Sendable {
             headers: ["X-Parley-Control": controlToken],
             body: Data()
         )
-        if response.status == 404 { return [] }
         guard response.status == 200 else {
             throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
         }
@@ -317,12 +292,6 @@ public struct RelayCoreClient: Sendable {
             headers: ["X-Parley-Control": controlToken],
             body: Data()
         )
-        if response.status == 404 {
-            // A newly attached UI can briefly outpace a persistent core from
-            // the previous build. Preserve workflow until that core is safely
-            // restarted; the bounded history remains authoritative.
-            return try handoffs(limit: 500).filter(\.hasUnreadResult)
-        }
         guard response.status == 200 else {
             throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
         }
@@ -346,13 +315,15 @@ public struct RelayCoreClient: Sendable {
         sourcePaneID: String,
         targetPaneID: String,
         text: String,
-        idempotencyKey: String
+        idempotencyKey: String,
+        preserveFormatting: Bool = false
     ) throws -> RelayTextResponse {
         let body = try JSONEncoder().encode(RelayUIAskRequest(
             sourcePaneID: sourcePaneID,
             targetPaneID: targetPaneID,
             text: text,
-            idempotencyKey: idempotencyKey
+            idempotencyKey: idempotencyKey,
+            preserveFormatting: preserveFormatting
         ))
         let response = try request(
             method: "POST",
@@ -404,11 +375,6 @@ public struct RelayCoreClient: Sendable {
             headers: ["X-Parley-Control": controlToken],
             body: Data()
         )
-        if response.status == 404 {
-            // A new UI may remain attached to the previous core contract while
-            // an active Ask prevents handover. That core cannot own drafts yet.
-            return []
-        }
         guard response.status == 200 else {
             throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
         }
@@ -645,11 +611,11 @@ public struct RelayCoreClient: Sendable {
     }
 }
 
-public struct RelayCoreUpgradeResponse: Equatable, Sendable {
+public struct LegacyCoreShutdownResponse: Equatable, Sendable {
     public let status: Int
-    public let readiness: RelayUpgradeReadiness
+    public let readiness: LegacyCoreShutdownReadiness
 
-    public init(status: Int, readiness: RelayUpgradeReadiness) {
+    public init(status: Int, readiness: LegacyCoreShutdownReadiness) {
         self.status = status
         self.readiness = readiness
     }
@@ -658,126 +624,4 @@ public struct RelayCoreUpgradeResponse: Equatable, Sendable {
 private struct CoreHTTPResponse {
     let status: Int
     let body: Data
-}
-
-/// Handles explicit termination on the main dispatch queue. Top-level Swift
-/// state is main-actor isolated; running this handler on a global queue causes
-/// a runtime isolation trap during shutdown.
-public enum RelayServiceProcess {
-    @MainActor
-    public static func waitForTermination(
-        _ shutdown: @escaping @MainActor @Sendable (_ signalNumber: Int32) -> Void
-    ) -> Never {
-        let sources = [SIGTERM, SIGINT].map { number -> DispatchSourceSignal in
-            signal(number, SIG_IGN)
-            let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
-            source.setEventHandler {
-                shutdown(number)
-                exit(0)
-            }
-            source.resume()
-            return source
-        }
-        withExtendedLifetime(sources) {
-            dispatchMain()
-        }
-    }
-}
-
-public enum RelayCoreLauncher {
-    public static func attachExisting(applicationDirectory: URL) throws -> RelayCoreClient {
-        let controlToken = try RelayCoreControlToken.load(
-            at: applicationDirectory.appendingPathComponent("core-control-token")
-        )
-        let client = RelayCoreClient(
-            infoFile: applicationDirectory.appendingPathComponent("relay-url"),
-            controlToken: controlToken
-        )
-        guard client.isHealthy() else {
-            throw RelayCoreError.serviceFailed(
-                "the Production core is not running. Start the installed Parley app before attaching Development"
-            )
-        }
-        return client
-    }
-
-    public static func ensureRunning(
-        applicationDirectory: URL,
-        cwd: String,
-        environment: [String: String],
-        tmuxSessionName: String = "parley",
-        runtimeMarker: String? = nil,
-        executable suppliedExecutable: URL? = nil,
-        timeout: TimeInterval = 10
-    ) throws -> RelayCoreClient {
-        let controlToken = try RelayCoreControlToken.loadOrCreate(
-            at: applicationDirectory.appendingPathComponent("core-control-token")
-        )
-        let infoFile = applicationDirectory.appendingPathComponent("relay-url")
-        let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
-        if client.isHealthy() { return client }
-
-        let executable = suppliedExecutable ?? resolveExecutable(environment: environment)
-        guard let executable else { throw RelayCoreError.serviceExecutableNotFound }
-
-        let logFile = applicationDirectory.appendingPathComponent("core.log")
-        if !FileManager.default.fileExists(atPath: logFile.path) {
-            _ = FileManager.default.createFile(atPath: logFile.path, contents: nil)
-        }
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logFile.path)
-        let log = try FileHandle(forWritingTo: logFile)
-        try log.seekToEnd()
-
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = [
-            "--application-directory", applicationDirectory.path,
-            "--cwd", cwd,
-            "--tmux-session", tmuxSessionName,
-        ]
-        if let runtimeMarker {
-            process.arguments?.append(contentsOf: ["--runtime-marker", runtimeMarker])
-        }
-        process.environment = environment
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = log
-        process.standardError = log
-        try process.run()
-
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if client.isHealthy() { return client }
-            if !process.isRunning { break }
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-
-        let timedOut = process.isRunning
-        let lastOutput = (try? Data(contentsOf: logFile)).flatMap { data -> String? in
-            guard !data.isEmpty else { return nil }
-            return String(decoding: data.suffix(2_000), as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        let reason = timedOut ? "startup timed out" : "service exited with status \(process.terminationStatus)"
-        let detail = lastOutput.map { "\(reason). Last service output:\n\($0)" } ?? reason
-        if timedOut { process.terminate() }
-        throw RelayCoreError.serviceFailed(detail)
-    }
-
-    public static func resolveExecutable(
-        environment: [String: String],
-        bundleExecutable: URL? = Bundle.main.executableURL,
-        argument0: String = CommandLine.arguments[0]
-    ) -> URL? {
-        if let override = environment["PARLEY_CORE_SERVICE"], override.hasPrefix("/") {
-            let url = URL(fileURLWithPath: override)
-            if FileManager.default.isExecutableFile(atPath: url.path) { return url }
-        }
-
-        let candidates = [
-            bundleExecutable?.deletingLastPathComponent().appendingPathComponent("parley-core-service"),
-            URL(fileURLWithPath: argument0).standardizedFileURL
-                .deletingLastPathComponent().appendingPathComponent("parley-core-service"),
-        ].compactMap { $0 }
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
-    }
 }

@@ -1,53 +1,58 @@
 import Darwin
 import Foundation
 
-/// One workspace's durable facts, keyed by @parley-ws-id. Records and native
-/// split trees survive UI/core reattachment and temporary absence of the tmux
-/// server. Rebinding them to a newly created tmux workspace after server loss
-/// requires an explicit, unambiguous recovery transaction; live tmux ids never
+/// One workspace's durable facts. Records and native split trees survive
+/// window hiding and application restart; live process and surface ids never
 /// become registry keys.
 public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
     public let workspaceID: String
     public var name: String
-    public var homeFolder: String
-    public var defaultFolder: String
+    public var attachedFolders: [String]
+    public var newPaneFolder: String?
     public var automationPolicy: WorkspaceAutomationPolicy
     public var selectedPaneID: String?
     public var layoutRevision: Int
     public var layout: NativeLayoutNode?
+    public var splitFractions: [String: Double]
     public var updatedAt: Date
 
     public init(
         workspaceID: String,
         name: String,
-        homeFolder: String,
-        defaultFolder: String,
+        attachedFolders: [String],
+        newPaneFolder: String?,
         automationPolicy: WorkspaceAutomationPolicy,
         selectedPaneID: String? = nil,
         layoutRevision: Int = 0,
         layout: NativeLayoutNode? = nil,
+        splitFractions: [String: Double] = [:],
         updatedAt: Date = Date()
     ) {
         self.workspaceID = workspaceID
         self.name = name
-        self.homeFolder = homeFolder
-        self.defaultFolder = defaultFolder
+        self.attachedFolders = attachedFolders
+        self.newPaneFolder = newPaneFolder
         self.automationPolicy = automationPolicy
         self.selectedPaneID = selectedPaneID
         self.layoutRevision = layoutRevision
         self.layout = layout
+        self.splitFractions = splitFractions
         self.updatedAt = updatedAt
     }
 
     private enum CodingKeys: String, CodingKey {
         case workspaceID
         case name
+        case attachedFolders
+        case newPaneFolder
+        // Legacy schema fields. Decode only; new records never write them.
         case homeFolder
         case defaultFolder
         case automationPolicy
         case selectedPaneID
         case layoutRevision
         case layout
+        case splitFractions
         case updatedAt
     }
 
@@ -57,13 +62,40 @@ public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         workspaceID = try values.decode(String.self, forKey: .workspaceID)
         name = try values.decode(String.self, forKey: .name)
-        homeFolder = try values.decode(String.self, forKey: .homeFolder)
-        defaultFolder = try values.decode(String.self, forKey: .defaultFolder)
+        if values.contains(.attachedFolders) {
+            attachedFolders = try values.decode([String].self, forKey: .attachedFolders)
+        } else if let legacyHome = try values.decodeIfPresent(String.self, forKey: .homeFolder) {
+            attachedFolders = [legacyHome]
+        } else if let legacyDefault = try values.decodeIfPresent(String.self, forKey: .defaultFolder) {
+            attachedFolders = [legacyDefault]
+        } else {
+            attachedFolders = []
+        }
+        if values.contains(.newPaneFolder) {
+            newPaneFolder = try values.decodeIfPresent(String.self, forKey: .newPaneFolder)
+        } else {
+            newPaneFolder = try values.decodeIfPresent(String.self, forKey: .defaultFolder)
+        }
         automationPolicy = try values.decode(WorkspaceAutomationPolicy.self, forKey: .automationPolicy)
         selectedPaneID = try values.decodeIfPresent(String.self, forKey: .selectedPaneID)
         layoutRevision = try values.decodeIfPresent(Int.self, forKey: .layoutRevision) ?? 0
         layout = try values.decodeIfPresent(NativeLayoutNode.self, forKey: .layout)
+        splitFractions = try values.decodeIfPresent([String: Double].self, forKey: .splitFractions) ?? [:]
         updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .distantPast
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(workspaceID, forKey: .workspaceID)
+        try values.encode(name, forKey: .name)
+        try values.encode(attachedFolders, forKey: .attachedFolders)
+        try values.encodeIfPresent(newPaneFolder, forKey: .newPaneFolder)
+        try values.encode(automationPolicy, forKey: .automationPolicy)
+        try values.encodeIfPresent(selectedPaneID, forKey: .selectedPaneID)
+        try values.encode(layoutRevision, forKey: .layoutRevision)
+        try values.encodeIfPresent(layout, forKey: .layout)
+        try values.encode(splitFractions, forKey: .splitFractions)
+        try values.encode(updatedAt, forKey: .updatedAt)
     }
 }
 
@@ -83,7 +115,7 @@ public enum WorkspaceRegistryError: LocalizedError, Equatable {
 
 /// Owner-only JSON store for workspace registry records. Records survive a
 /// temporarily missing workspace; only an explicit close removes one. A future
-/// recovery flow may rebind a record after tmux server loss, but synchronization
+/// recovery flow may rebind a record after process loss, but synchronization
 /// never guesses between folders or workspace names.
 public final class WorkspaceRegistry {
     private struct Document: Codable {
@@ -118,21 +150,21 @@ public final class WorkspaceRegistry {
     /// workspace is absent are kept. Returns true when the file changed.
     @discardableResult
     public func synchronize(
-        workspaces: [TmuxWorkspace],
+        workspaces: [WorkbenchWorkspace],
         selectedPaneIDs: [String: String] = [:]
     ) throws -> Bool {
         try lock.withLock {
             var document = try readDocument()
             var changed = false
-            for workspace in workspaces where isDurable(workspace.workspaceID, liveID: workspace.id) {
+            for workspace in workspaces where isDurable(workspace.workspaceID) {
                 let selected = selectedPaneIDs[workspace.workspaceID]
                 if let index = document.records.firstIndex(where: {
                     $0.workspaceID == workspace.workspaceID
                 }) {
                     var updated = document.records[index]
                     updated.name = workspace.name
-                    updated.homeFolder = workspace.homeFolder
-                    updated.defaultFolder = workspace.defaultFolder
+                    updated.attachedFolders = workspace.attachedFolders
+                    updated.newPaneFolder = workspace.newPaneFolder
                     updated.automationPolicy = workspace.automationPolicy
                     updated.selectedPaneID = selected ?? updated.selectedPaneID
                     if !equivalent(updated, document.records[index]) {
@@ -149,8 +181,8 @@ public final class WorkspaceRegistry {
                     document.records.append(WorkspaceRegistryRecord(
                         workspaceID: workspace.workspaceID,
                         name: workspace.name,
-                        homeFolder: workspace.homeFolder,
-                        defaultFolder: workspace.defaultFolder,
+                        attachedFolders: workspace.attachedFolders,
+                        newPaneFolder: workspace.newPaneFolder,
                         automationPolicy: workspace.automationPolicy,
                         selectedPaneID: selected
                     ))
@@ -208,8 +240,36 @@ public final class WorkspaceRegistry {
         }
     }
 
-    private func isDurable(_ workspaceID: String, liveID: String) -> Bool {
-        !workspaceID.isEmpty && !workspaceID.hasPrefix("@") && workspaceID != liveID
+    /// Stores bounded divider fractions by stable tree path. Invalid or
+    /// non-finite values are refused so corrupt UI geometry cannot hide panes.
+    public func updateSplitFractions(
+        workspaceID: String,
+        fractions: [String: Double]
+    ) throws {
+        guard fractions.count <= NativeSplitGeometry.maximumRecordedSplits,
+              fractions.allSatisfy({ path, fraction in
+                  NativeSplitGeometry.isValidPath(path)
+                      && fraction.isFinite
+                      && fraction >= 0.05
+                      && fraction <= 0.95
+              }) else {
+            throw WorkspaceRegistryError.invalid("split geometry is outside its safe bounds")
+        }
+        try lock.withLock {
+            var document = try readDocument()
+            guard let index = document.records.firstIndex(where: {
+                $0.workspaceID == workspaceID
+            }) else { return }
+            guard document.records[index].splitFractions != fractions else { return }
+            document.records[index].splitFractions = fractions
+            document.records[index].layoutRevision += 1
+            document.records[index].updatedAt = Date()
+            try write(document)
+        }
+    }
+
+    private func isDurable(_ workspaceID: String) -> Bool {
+        !workspaceID.isEmpty && !workspaceID.hasPrefix("@")
     }
 
     private func equivalent(
@@ -217,12 +277,13 @@ public final class WorkspaceRegistry {
         _ right: WorkspaceRegistryRecord
     ) -> Bool {
         left.name == right.name
-            && left.homeFolder == right.homeFolder
-            && left.defaultFolder == right.defaultFolder
+            && left.attachedFolders == right.attachedFolders
+            && left.newPaneFolder == right.newPaneFolder
             && left.automationPolicy == right.automationPolicy
             && left.selectedPaneID == right.selectedPaneID
             && left.layoutRevision == right.layoutRevision
             && left.layout == right.layout
+            && left.splitFractions == right.splitFractions
     }
 
     private func readDocument() throws -> Document {

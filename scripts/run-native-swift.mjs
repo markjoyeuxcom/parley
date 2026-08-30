@@ -156,7 +156,6 @@ if (requested[0] === 'dev') {
     process.exit(1)
   }
   const executable = join(binPath, 'parley-native')
-  environment.PARLEY_CORE_SERVICE = join(binPath, 'parley-core-service')
   applyDevelopmentBuildMetadata()
   result = spawnSync(executable, appArguments, { stdio: 'inherit', env: environment })
 } else {

@@ -4,13 +4,11 @@ import Foundation
 public enum ParleyRuntimeMode: String, Codable, CaseIterable, Sendable {
     case production
     case development
-    case attachedProduction = "attached-production"
 
     public var label: String {
         switch self {
         case .production: "Production"
         case .development: "Development"
-        case .attachedProduction: "Development attached to Production"
         }
     }
 }
@@ -22,38 +20,31 @@ public enum ParleyRuntimeResolutionError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .missingValue:
-            "--runtime requires development or attached-production."
+            "--runtime requires development."
         case let .invalidValue(value):
-            "Unknown Parley runtime '\(value)'. Use development or attached-production."
+            "Unknown Parley runtime '\(value)'. Use development."
         }
     }
 }
 
 /// Every path and lifecycle permission used by a Parley UI is derived from
 /// this one value. A development process therefore cannot accidentally mix a
-/// production directory with a development tmux session or core.
+/// production and development Application Support or preferences.
 public struct ParleyRuntime: Equatable, Sendable {
     public static let productionBundleIdentifier = "com.markjoyeux.parley"
 
     public let mode: ParleyRuntimeMode
     public let applicationDirectory: URL
-    public let tmuxSessionName: String
     public let preferenceSuiteName: String
 
     public var visibleMarker: String? {
         switch mode {
         case .production: nil
         case .development: "DEV"
-        case .attachedProduction: "DEV ATTACHED TO PRODUCTION"
         }
     }
 
-    public var preparesRuntimeFiles: Bool { mode != .attachedProduction }
-    public var launchesCore: Bool { mode != .attachedProduction }
-    public var upgradesCore: Bool { mode != .attachedProduction }
     public var installsStableCommand: Bool { mode == .production }
-    public var managesLoginItem: Bool { mode == .production }
-    public var requiresExistingTmuxSession: Bool { mode == .attachedProduction }
     public var uiLeaseFile: URL { applicationDirectory.appendingPathComponent("ui.lock") }
 
     public static func resolve(
@@ -76,7 +67,7 @@ public struct ParleyRuntime: Equatable, Sendable {
             throw ParleyRuntimeResolutionError.missingValue
         }
         let value = arguments[runtimeIndex + 1]
-        guard let mode = ParleyRuntimeMode(rawValue: value), mode != .production else {
+        guard let mode = ParleyRuntimeMode(rawValue: value), mode == .development else {
             throw ParleyRuntimeResolutionError.invalidValue(value)
         }
         return make(mode: mode, homeDirectory: homeDirectory)
@@ -90,22 +81,13 @@ public struct ParleyRuntime: Equatable, Sendable {
             return ParleyRuntime(
                 mode: mode,
                 applicationDirectory: support.appendingPathComponent("Parley Native", isDirectory: true),
-                tmuxSessionName: "parley",
                 preferenceSuiteName: productionBundleIdentifier
             )
         case .development:
             return ParleyRuntime(
                 mode: mode,
                 applicationDirectory: support.appendingPathComponent("Parley Native Development", isDirectory: true),
-                tmuxSessionName: "parley-development",
                 preferenceSuiteName: "\(productionBundleIdentifier).development"
-            )
-        case .attachedProduction:
-            return ParleyRuntime(
-                mode: mode,
-                applicationDirectory: support.appendingPathComponent("Parley Native", isDirectory: true),
-                tmuxSessionName: "parley",
-                preferenceSuiteName: "\(productionBundleIdentifier).development.attached-production"
             )
         }
     }
@@ -116,24 +98,18 @@ public enum RuntimeTerminationPolicy {
         runtime: ParleyRuntime,
         controllerAvailable: Bool
     ) -> Bool {
-        controllerAvailable && runtime.mode != .attachedProduction
+        controllerAvailable
     }
 }
 
 public enum RuntimeUILeaseError: LocalizedError, Equatable {
     case alreadyRunning(ParleyRuntimeMode)
-    case runtimeUnavailable(ParleyRuntimeMode)
     case io(ParleyRuntimeMode, String)
 
     public var errorDescription: String? {
         switch self {
         case let .alreadyRunning(mode):
-            if mode == .attachedProduction {
-                return "The Production Parley UI is already open. Development cannot attach while it owns the Production runtime."
-            }
             return "A \(mode.label) Parley UI is already open. Use that window instead."
-        case let .runtimeUnavailable(mode):
-            return "The \(mode.label) Parley runtime is not prepared. Start the installed Production app first."
         case let .io(mode, detail):
             return "Parley could not acquire the \(mode.label) UI lease: \(detail)"
         }
@@ -163,10 +139,6 @@ public final class RuntimeUILease: @unchecked Sendable {
         fileManager: FileManager = .default
     ) throws -> RuntimeUILease {
         let directory = runtime.applicationDirectory
-        if runtime.mode == .attachedProduction,
-           !fileManager.fileExists(atPath: directory.path) {
-            throw RuntimeUILeaseError.runtimeUnavailable(runtime.mode)
-        }
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)

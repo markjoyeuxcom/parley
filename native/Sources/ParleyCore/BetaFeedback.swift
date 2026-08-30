@@ -28,22 +28,6 @@ public struct BetaFeedbackVendor: Codable, Equatable, Sendable {
     public let capabilities: [VendorCompatibilityCapabilityResult]
 }
 
-public struct BetaFeedbackConformanceResult: Codable, Equatable, Sendable {
-    public let vendor: PaneKind
-    public let check: String
-    public let outcome: VendorConformanceOutcome
-    /// Deliberately always nil. Live detail may contain a returned answer,
-    /// stderr or other vendor-authored text and never enters feedback.
-    public let detail: String?
-
-    public init(vendor: PaneKind, check: String, outcome: VendorConformanceOutcome) {
-        self.vendor = vendor
-        self.check = check
-        self.outcome = outcome
-        detail = nil
-    }
-}
-
 public struct BetaFeedbackManifest: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let generatedAt: Date
@@ -51,7 +35,6 @@ public struct BetaFeedbackManifest: Codable, Equatable, Sendable {
     public let updateChannel: UpdateChannel
     public let compatibilityCheckedAt: Date
     public let vendors: [BetaFeedbackVendor]
-    public let conformance: [BetaFeedbackConformanceResult]
     public let includedFiles: [String]
     public let excludedByDesign: [String]
 }
@@ -61,7 +44,6 @@ public struct BetaFeedbackBundle: Equatable, Sendable {
     public let diagnostics: DiagnosticsReport
 
     public var requiresExplicitReview: Bool { true }
-    public var conformance: [BetaFeedbackConformanceResult] { manifest.conformance }
 }
 
 public enum BetaFeedbackBundleBuilder {
@@ -72,7 +54,6 @@ public enum BetaFeedbackBundleBuilder {
         build: BetaFeedbackBuild,
         updateChannel: UpdateChannel,
         compatibility: VendorCompatibilitySnapshot,
-        conformance: VendorConformanceReport?,
         diagnostics: DiagnosticsReport
     ) -> BetaFeedbackBundle {
         let safeBuild = BetaFeedbackBuild(
@@ -81,7 +62,7 @@ public enum BetaFeedbackBundleBuilder {
             sourceCommit: build.sourceCommit.flatMap { commit in
                 commit.range(of: #"^[0-9a-f]{40}$"#, options: .regularExpression) == nil ? nil : commit
             },
-            runtime: ["production", "development", "attached-production"].contains(build.runtime)
+            runtime: ["production", "development"].contains(build.runtime)
                 ? build.runtime
                 : "unknown"
         )
@@ -95,9 +76,6 @@ public enum BetaFeedbackBundleBuilder {
                 capabilities: result.capabilities
             )
         }
-        let safeConformance = (conformance?.results ?? []).map {
-            BetaFeedbackConformanceResult(vendor: $0.vendor, check: safeCheck($0.check), outcome: $0.outcome)
-        }
         let manifest = BetaFeedbackManifest(
             schemaVersion: schemaVersion,
             generatedAt: generatedAt,
@@ -105,7 +83,6 @@ public enum BetaFeedbackBundleBuilder {
             updateChannel: updateChannel,
             compatibilityCheckedAt: compatibility.checkedAt,
             vendors: vendors,
-            conformance: safeConformance,
             includedFiles: ["feedback.json", "diagnostics.json", "README.txt"],
             excludedByDesign: [
                 "prompts, questions, delegated instructions, answers and result bodies",
@@ -128,19 +105,6 @@ public enum BetaFeedbackBundleBuilder {
         return trimmed
     }
 
-    private static func safeCheck(_ value: String) -> String {
-        let known = [
-            "protocol injection",
-            "multiline bracketed paste",
-            "automatic submission",
-            "answer current routing",
-            "inactive target",
-            "cross-workspace target",
-            "trust and permission gate",
-            "Ask/Answer",
-        ]
-        return known.contains(value) ? value : "other compatibility check"
-    }
 }
 
 public enum BetaFeedbackBundleEncoder {
@@ -244,7 +208,6 @@ public final class BetaFeedbackArchiveWriter: @unchecked Sendable {
     Included:
     - build number, application version, source commit and selected update channel
     - installed vendor semantic versions and quota-free compatibility outcomes
-    - check names and pass/fail/blocked/skip outcomes from the latest live conformance run
     - Parley's structurally redacted diagnostics report
 
     Excluded by design:

@@ -6,8 +6,6 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
-  closeSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -18,8 +16,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { spawn, spawnSync } from 'node:child_process'
-import http from 'node:http'
+import { spawnSync } from 'node:child_process'
 
 import {
   BUNDLE_IDENTIFIER,
@@ -151,16 +148,16 @@ export function renderInstallGuide({ version, notarized }) {
 Install
 1. Open the DMG and drag Parley.app to Applications. This copies the application to /Applications/Parley.app; the DMG runs no installer script.
 2. ${firstLaunch}
-3. Parley's first-run check reports tmux and supported CLI readiness without spending model quota.
+3. Parley's first-run check reports embedded terminal, coordination and supported CLI readiness without spending model quota.
 
 Installed footprint
-- The app and its bundled coordination core, LaunchAgent definition and icon live inside /Applications/Parley.app.
-- Runtime state, private tmux and relay files, saved layouts and local collaboration history live under ~/Library/Application Support/Parley Native.
+- The app, embedded Ghostty terminal, app-resident coordination core and icon live inside /Applications/Parley.app.
+- Runtime state, private relay files, saved layouts and local collaboration history live under ~/Library/Application Support/Parley Native.
 - Parley installs its managed pane command at ~/.local/bin/parley without overwriting a foreign command.
 - Presentation settings use the normal macOS domain at ~/Library/Preferences/com.markjoyeux.parley.plist.
 - Agent-issued relay exchanges use an owner-only transient directory named /private/tmp/parley-native-<uid>-<runtime-hash>/.
-- Launch at login is off by default. Enabling it registers the LaunchAgent embedded in Parley.app through macOS Service Management; Parley does not copy a plist into ~/Library/LaunchAgents.
-- Parley does not modify shell startup files, the user's normal tmux server, vendor credentials or repositories.
+- Closing Parley's window keeps its Ghostty panes alive while the application remains running. Quitting Parley ends every pane and the coordination core.
+- Parley does not install a background service or modify shell startup files, vendor credentials or repositories.
 
 Verify
 Compare every downloaded artifact with its matching entry in SHA256SUMS before opening or installing it.
@@ -171,12 +168,11 @@ open Extensions, choose Install from VSIX, and select that file. It is a thin
 local remote control for the installed Production app and cannot replace it.
 
 Upgrade
-1. Quit Parley and replace Parley.app in Applications.
-2. Reopen Parley. It replaces an idle older coordination core automatically without restarting tmux, workspaces or agent panes.
-3. If Ask or delegated work is active, Status Center reports Core upgrade: pending and Parley completes the handover when that work finishes. Workspace layouts and local handoff history remain under ~/Library/Application Support/Parley Native.
+1. Finish or stop active Ask and delegated work, then quit Parley. Quitting ends the app-resident panes and coordination core.
+2. Replace Parley.app in Applications and reopen it. Workspace definitions and local handoff history remain under ~/Library/Application Support/Parley Native.
 
 Uninstall
-Choose Parley → Prepare to Uninstall…. It refuses active Ask or delegated work, disables launch at login, stops the coordination core, and quits without deleting tmux panes or local records. Then move /Applications/Parley.app to Trash. No Mac restart is required. The Application Support tree, preferences and managed ~/.local/bin/parley command remain for a safe reinstall; remove them separately only when you deliberately want to erase all Parley state.
+Choose Parley → Prepare to Uninstall…. It refuses active Ask or delegated work, ends every pane and the coordination core, and quits without deleting local records. Then move /Applications/Parley.app to Trash. No Mac restart is required. The Application Support tree, preferences and managed ~/.local/bin/parley command remain for a safe reinstall; remove them separately only when you deliberately want to erase all Parley state.
 
 Never disable Gatekeeper globally to install Parley.
 `
@@ -239,132 +235,6 @@ function verifyReleaseTag(tag, commit) {
   if (taggedCommit !== commit) throw new Error(`release tag ${tag} does not point at HEAD`)
 }
 
-function findTmux() {
-  const candidates = [
-    process.env.PARLEY_TMUX,
-    ...(process.env.PATH ?? '').split(':').filter(Boolean).map((directory) => join(directory, 'tmux')),
-    '/opt/homebrew/bin/tmux',
-    '/usr/local/bin/tmux',
-    '/usr/bin/tmux',
-  ].filter(Boolean)
-  return candidates.find((candidate) => {
-    try {
-      return !lstatSync(candidate).isDirectory() && (statSync(candidate).mode & 0o111) !== 0
-    } catch {
-      return false
-    }
-  })
-}
-
-function unixHealth(socketPath) {
-  return new Promise((resolvePromise, reject) => {
-    const request = http.request({
-      socketPath,
-      path: '/health',
-      method: 'GET',
-      headers: { 'Content-Length': '0' },
-    }, (response) => {
-      const chunks = []
-      response.on('data', (chunk) => chunks.push(chunk))
-      response.on('end', () => {
-        const body = Buffer.concat(chunks).toString('utf8')
-        if (response.statusCode === 200 && body === 'ok') resolvePromise()
-        else reject(new Error(`packaged core health returned ${response.statusCode}: ${body}`))
-      })
-    })
-    request.on('error', reject)
-    request.end()
-  })
-}
-
-function delay(milliseconds) {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))
-}
-
-async function waitForPackagedCore({ child, infoFile, logFile }) {
-  const deadline = Date.now() + 10_000
-  let lastError
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`packaged core exited during smoke test:\n${readFileSync(logFile, 'utf8')}`)
-    }
-    if (existsSync(infoFile)) {
-      const locator = readFileSync(infoFile, 'utf8').trim()
-      if (locator.startsWith('unix:')) {
-        try {
-          await unixHealth(locator.slice('unix:'.length))
-          return
-        } catch (error) {
-          lastError = error
-        }
-      }
-    }
-    await delay(50)
-  }
-  throw new Error(`packaged core did not become healthy${lastError ? `: ${lastError.message}` : ''}`)
-}
-
-async function terminateChild(child) {
-  if (child.exitCode !== null) return
-  child.kill('SIGTERM')
-  const deadline = Date.now() + 5_000
-  while (Date.now() < deadline && child.exitCode === null) await delay(50)
-  if (child.exitCode === null) {
-    child.kill('SIGKILL')
-    throw new Error('packaged core did not stop after SIGTERM')
-  }
-}
-
-async function smokeTestPackagedCore(bundle, root) {
-  const tmux = findTmux()
-  if (!tmux) throw new Error('tmux is required for the isolated packaged-core release check')
-  const applicationDirectory = join(root, 'Library', 'Application Support', 'Parley Native')
-  const project = join(root, 'project')
-  const logFile = join(root, 'packaged-core.log')
-  mkdirSync(applicationDirectory, { recursive: true })
-  mkdirSync(project, { recursive: true })
-  writeFileSync(logFile, '')
-  const output = openSync(logFile, 'a')
-  const child = spawn(join(bundle, 'Contents', 'MacOS', 'parley-core-service'), [
-    '--application-directory', applicationDirectory,
-    '--cwd', project,
-  ], {
-    cwd: project,
-    env: { ...process.env, PARLEY_TMUX: tmux },
-    stdio: ['ignore', output, output],
-  })
-  let failure
-  try {
-    await waitForPackagedCore({
-      child,
-      infoFile: join(applicationDirectory, 'relay-url'),
-      logFile,
-    })
-  } catch (error) {
-    failure = error
-  }
-  try {
-    await terminateChild(child)
-  } catch (error) {
-    failure ??= error
-  } finally {
-    closeSync(output)
-  }
-  const tmuxSocket = join(applicationDirectory, 'tmux.sock')
-  if (existsSync(tmuxSocket)) {
-    const stopped = spawnSync(tmux, ['-S', tmuxSocket, 'kill-server'], {
-      cwd: repositoryRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    if (stopped.error) failure ??= stopped.error
-    else if (stopped.status !== 0) {
-      failure ??= new Error(`isolated tmux did not stop: ${(stopped.stderr || stopped.stdout).trim()}`)
-    }
-  }
-  if (failure) throw failure
-}
-
 async function verifyDevelopmentPackage() {
   if (process.platform !== 'darwin') throw new Error('macOS packages must be verified on macOS')
   const version = packageVersion()
@@ -377,7 +247,7 @@ async function verifyDevelopmentPackage() {
     rmSync(verificationRoot, { recursive: true, force: true })
   }
   await verifyDMGAndLifecycle({ dmg: packaged.dmg, installGuide })
-  process.stdout.write('Development package gate: ZIP, DMG, isolated install, upgrade, core launch, uninstall and explicit data purge passed\n')
+  process.stdout.write('Development package gate: ZIP, DMG, isolated install, upgrade, uninstall and explicit data purge passed\n')
 }
 
 function verifyZip(zip, root) {
@@ -388,9 +258,6 @@ function verifyZip(zip, root) {
 }
 
 async function verifyDMGAndLifecycle({ dmg, installGuide }) {
-  // tmux passes its socket path through sockaddr_un, whose macOS ceiling is
-  // 104 bytes. $TMPDIR is already long enough to make a realistic nested
-  // Application Support path overflow, so the isolated gate needs /tmp.
   const root = mkdtempSync('/tmp/parley-release-')
   const mount = join(root, 'mount')
   mkdirSync(mount)
@@ -421,7 +288,6 @@ async function verifyDMGAndLifecycle({ dmg, installGuide }) {
     if (readFileSync(join(dataDirectory, 'workspace-layouts.json'), 'utf8') !== 'release-gate-preserve') {
       throw new Error('upgrade did not preserve local application data')
     }
-    await smokeTestPackagedCore(destination, root)
     uninstallApplicationBundle({ destination, dataDirectory })
     if (existsSync(destination) || !existsSync(dataDirectory)) {
       throw new Error('default uninstall did not remove only the application')
@@ -488,7 +354,7 @@ async function prepareRelease({ tag }) {
   for (const path of [packaged.dmg, packaged.zip, manifestPath, checksumsPath, guidePath]) {
     process.stdout.write(`${path}\n`)
   }
-  process.stdout.write('Release gate: ZIP, DMG, isolated install, upgrade, core launch, uninstall and explicit data purge passed\n')
+  process.stdout.write('Release gate: ZIP, DMG, isolated install, upgrade, uninstall and explicit data purge passed\n')
 }
 
 export function installApplicationBundle({

@@ -102,6 +102,32 @@ public struct TeamTemplate: Identifiable, Codable, Equatable, Sendable {
     /// local folder. No source path, process id or permission root travels in
     /// the template itself.
     public func workspaceLayout(folder: String, workspaceName: String) throws -> SavedWorkspaceLayout {
+        try materializedWorkspaceLayout(
+            launchFolder: folder,
+            workspaceName: workspaceName,
+            bindPermissionRoots: true
+        )
+    }
+
+    /// Materializes a portable team without attaching or granting its safe
+    /// launch fallback. Agent leaves remain stopped and carry no permission
+    /// selection, so Start must collect an explicit pane folder and scope.
+    public func folderlessWorkspaceLayout(
+        launchFolder: String,
+        workspaceName: String
+    ) throws -> SavedWorkspaceLayout {
+        try materializedWorkspaceLayout(
+            launchFolder: launchFolder,
+            workspaceName: workspaceName,
+            bindPermissionRoots: false
+        )
+    }
+
+    private func materializedWorkspaceLayout(
+        launchFolder folder: String,
+        workspaceName: String,
+        bindPermissionRoots: Bool
+    ) throws -> SavedWorkspaceLayout {
         try TeamTemplateValidation.validate(self)
         guard folder.hasPrefix("/") else {
             throw TeamTemplateStoreError.invalid("the selected folder must be absolute")
@@ -114,13 +140,13 @@ public struct TeamTemplate: Identifiable, Codable, Equatable, Sendable {
         func materialize(_ node: TeamTemplateNode) -> SavedLayoutNode {
             switch node {
             case let .leaf(leaf):
-                let selection = leaf.permissionProfile.map {
+                let selection = bindPermissionRoots ? leaf.permissionProfile.map {
                     PermissionProfileSelection(
                         profileID: $0.profileID,
                         approvedRoots: [folder],
                         lifetime: $0.lifetime
                     )
-                }
+                } : nil
                 return .leaf(SavedLayoutLeaf(
                     kind: leaf.kind,
                     name: leaf.name,

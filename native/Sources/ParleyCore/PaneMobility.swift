@@ -1,8 +1,8 @@
 import Foundation
 
-/// Moving transfers one live tmux pane without restarting it. Cloning copies
-/// only the visible Parley configuration and never copies an agent session or
-/// pane-scoped relay credential.
+/// Moving transfers one retained Ghostty pane without restarting it. Cloning
+/// copies only visible Parley configuration and never copies an agent session
+/// or pane-scoped relay credential.
 public enum PaneMobilityAction: String, Equatable, Sendable {
     case move
     case clone
@@ -56,9 +56,9 @@ public struct PaneMobilityAssessment: Equatable, Sendable {
 public enum PaneMobilityPolicy {
     public static func assess(
         action: PaneMobilityAction,
-        pane: TmuxPane,
+        pane: WorkbenchPane,
         targetWorkspaceID: String,
-        panes: [TmuxPane],
+        panes: [WorkbenchPane],
         activeHandoffCount: Int
     ) -> PaneMobilityAssessment {
         guard pane.workspaceID != targetWorkspaceID else {

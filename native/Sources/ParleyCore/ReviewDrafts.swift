@@ -37,7 +37,7 @@ public enum ReviewDraftError: LocalizedError, Equatable {
 }
 
 /// Produces editable review prompts without a shell, hooks, pagers or optional
-/// index locks. The resulting handoff is bounded before it reaches tmux.
+/// index locks. The resulting handoff is bounded before it reaches a terminal.
 public final class ReviewDraftBuilder {
     public static let defaultMaximumBytes = 160_000
 

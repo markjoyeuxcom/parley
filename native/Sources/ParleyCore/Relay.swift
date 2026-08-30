@@ -29,7 +29,7 @@ public enum RelayCredentialError: LocalizedError {
     }
 }
 
-/// One durable credential per persistent tmux pane. The credential is the
+/// One durable credential per retained agent pane. The credential is the
 /// sender identity; a caller never gets to claim which pane it came from.
 public final class RelayCredentials: @unchecked Sendable {
     private let file: URL
@@ -375,7 +375,7 @@ public struct RelayActivityEvent: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// The UI supplies only facts it learned from a successful native operation.
-/// Identity, time and human origin are stamped by the persistent core.
+/// Identity, time and human origin are stamped by the app-resident core.
 public struct RelayActivityEventRequest: Codable, Equatable, Sendable {
     public let kind: RelayActivityEventKind
     public let workspaceID: String
@@ -479,7 +479,7 @@ public enum RelayConsultationState: String, Codable, Equatable, Sendable {
 }
 
 /// A single correlated question from one live agent pane to another. It is
-/// intentionally owned by the persistent core's memory: a UI may detach, but
+/// intentionally owned by the app-resident core's memory: a window may hide, but
 /// the waiting shell command and socket cannot survive a core restart. A
 /// restart interrupts the caller explicitly instead of reviving half a route.
 public struct RelayConsultation: Identifiable, Codable, Equatable, Sendable {
@@ -494,7 +494,7 @@ public struct RelayConsultation: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// The machine-readable projection returned by `parley status`. It contains
-/// only work initiated by the authenticated pane; credentials and tmux control
+/// only work initiated by the authenticated pane; credentials and terminal control
 /// details never cross the broker boundary.
 public struct RelayDelegationStatus: Identifiable, Codable, Equatable, Sendable {
     public let id: String
@@ -523,11 +523,11 @@ public struct RelayDelegationStatus: Identifiable, Codable, Equatable, Sendable 
 }
 
 public final class RelayBroker: @unchecked Sendable {
-    public typealias Panes = () throws -> [TmuxPane]
+    public typealias Panes = () throws -> [WorkbenchPane]
     public typealias Paste = (_ paneID: String, _ text: String) throws -> Void
     public typealias Submit = (_ paneID: String, _ text: String) throws -> Void
     public typealias DirectContextSubmit = (_ sourcePaneID: String, _ targetPaneID: String, _ text: String) throws -> Void
-    public typealias VisibleText = (_ paneID: String) throws -> String
+    public typealias SelectedText = (_ paneID: String) throws -> String
 
     private static let abandonedContextDraftLifetime: TimeInterval = 7 * 24 * 60 * 60
 
@@ -537,7 +537,7 @@ public final class RelayBroker: @unchecked Sendable {
     private let submit: Submit
     private let contextSubmit: Submit
     private let directContextSubmit: DirectContextSubmit
-    private let visibleText: VisibleText?
+    private let selectedText: SelectedText?
     private let consultationTimeout: TimeInterval
     private let livenessPollInterval: TimeInterval
     private let handoffJournal: RelayHandoffJournal?
@@ -560,8 +560,6 @@ public final class RelayBroker: @unchecked Sendable {
     private var historyRetentionPolicy: CollaborationHistoryRetentionPolicy
     private var contextReviewRecords: [String: AgentContextReview] = [:]
     private var idempotencyRecords: [IdempotencyScope: IdempotencyRecord] = [:]
-    private var acceptingHandoffs = true
-    private var activeDispatches = 0
 
     public init(
         credentials: RelayCredentials,
@@ -570,7 +568,7 @@ public final class RelayBroker: @unchecked Sendable {
         submit: @escaping Submit,
         contextSubmit: Submit? = nil,
         directContextSubmit: DirectContextSubmit? = nil,
-        visibleText: VisibleText? = nil,
+        selectedText: SelectedText? = nil,
         consultationTimeout: TimeInterval = 30 * 60,
         livenessPollInterval: TimeInterval = 0.5,
         handoffJournal: RelayHandoffJournal? = nil,
@@ -588,7 +586,7 @@ public final class RelayBroker: @unchecked Sendable {
         self.directContextSubmit = directContextSubmit ?? { _, targetPaneID, text in
             try (contextSubmit ?? submit)(targetPaneID, text)
         }
-        self.visibleText = visibleText
+        self.selectedText = selectedText
         self.consultationTimeout = consultationTimeout
         self.livenessPollInterval = max(0.01, livenessPollInterval)
         self.handoffJournal = handoffJournal
@@ -641,10 +639,6 @@ public final class RelayBroker: @unchecked Sendable {
         path suppliedPath: String,
         text: String
     ) -> RelayTextResponse {
-        guard beginDispatch() else {
-            return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
-        }
-        defer { endDispatch() }
         do {
             guard contextReviewStore != nil else {
                 throw BrokerFailure(status: 503, message: "context review storage is unavailable")
@@ -693,10 +687,6 @@ public final class RelayBroker: @unchecked Sendable {
         path suppliedPath: String,
         text: String
     ) -> RelayTextResponse {
-        guard beginDispatch() else {
-            return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
-        }
-        defer { endDispatch() }
         do {
             let sender = try authenticatedSender(token: token)
             let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.cwd)
@@ -826,7 +816,7 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.unlock()
 
             let captured: [ContextPackPart]
-            func evidencePane() throws -> TmuxPane {
+            func evidencePane() throws -> WorkbenchPane {
                 guard let paneID = request.evidencePaneID,
                       let pane = try panes().first(where: {
                           $0.id == paneID && $0.kind.isAgent && $0.isStarted && !$0.isDead
@@ -869,18 +859,18 @@ public final class RelayBroker: @unchecked Sendable {
                       request.evidencePaneID == nil,
                       request.sourceURL == nil,
                       request.selectedText == nil,
-                      let visibleText else {
-                    throw BrokerFailure(status: 400, message: "invalid trusted visible-screen capture request")
+                      let selectedText else {
+                    throw BrokerFailure(status: 400, message: "invalid trusted terminal-selection capture request")
                 }
                 guard let pane = try panes().first(where: {
                     $0.id == paneID && $0.isStarted && !$0.isDead
                 }) else {
-                    throw BrokerFailure(status: 409, message: "that pane is no longer available for visible-screen capture")
+                    throw BrokerFailure(status: 409, message: "that pane is no longer available for terminal-selection capture")
                 }
-                captured = [try contextPackBuilder.visibleTerminal(
+                captured = [try contextPackBuilder.terminalSelection(
                     paneID: pane.id,
                     paneName: pane.displayName,
-                    text: try visibleText(pane.id)
+                    text: try selectedText(pane.id)
                 )]
             case .commandResult:
                 guard request.paths.isEmpty,
@@ -988,13 +978,9 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey suppliedIdempotencyKey: String? = nil
     ) -> RelayTextResponse {
-        guard beginDispatch() else {
-            return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
-        }
-        defer { endDispatch() }
 
-        let sender: TmuxPane
-        let target: TmuxPane
+        let sender: WorkbenchPane
+        let target: WorkbenchPane
         let idempotencyKey: String
         do {
             (sender, target) = try route(token: token, requestedTarget: requestedTarget)
@@ -1174,7 +1160,7 @@ public final class RelayBroker: @unchecked Sendable {
     public func completeContextDraft(_ approval: AgentContextReviewApproval) -> RelayTextResponse {
         do {
             let livePanes = try panes()
-            let prepared: (source: TmuxPane, target: TmuxPane, rendered: String)
+            let prepared: (source: WorkbenchPane, target: WorkbenchPane, rendered: String)
             consultationCondition.lock()
             guard var review = contextReviewRecords[approval.reviewID], review.state == .draft else {
                 consultationCondition.unlock()
@@ -1349,7 +1335,7 @@ public final class RelayBroker: @unchecked Sendable {
         return RelayTextResponse(status: status, text: String(decoding: data, as: UTF8.self))
     }
 
-    private func authenticatedSender(token: String) throws -> TmuxPane {
+    private func authenticatedSender(token: String) throws -> WorkbenchPane {
         guard let senderID = credentials.paneID(for: token) else {
             throw BrokerFailure(status: 401, message: "bad token")
         }
@@ -1382,56 +1368,12 @@ public final class RelayBroker: @unchecked Sendable {
         return candidate.path
     }
 
-    /// Atomically closes the admission gate only when no work can still be
-    /// creating durable coordination state. A caller that receives `accepted`
-    /// may stop this core without interrupting Ask or Delegate.
-    public func prepareForUpgrade() -> RelayUpgradeReadiness {
-        reconcileDelegations()
-        consultationCondition.lock()
-        let activeConsultations = consultationRecords.values.filter { $0.completion == nil }.count
-        let activeDelegations = delegationRecords.count
-        let activeDispatches = activeDispatches
-        let accepted = activeConsultations == 0 && activeDelegations == 0 && activeDispatches == 0
-        if accepted { acceptingHandoffs = false }
-        consultationCondition.unlock()
-        return RelayUpgradeReadiness(
-            accepted: accepted,
-            activeConsultations: activeConsultations,
-            activeDelegations: activeDelegations,
-            activeDispatches: activeDispatches
-        )
-    }
-
-    private func beginDispatch() -> Bool {
-        consultationCondition.lock()
-        guard acceptingHandoffs else {
-            consultationCondition.unlock()
-            return false
-        }
-        activeDispatches += 1
-        consultationCondition.unlock()
-        return true
-    }
-
-    private func endDispatch() {
-        consultationCondition.lock()
-        activeDispatches = max(0, activeDispatches - 1)
-        consultationCondition.broadcast()
-        consultationCondition.unlock()
-    }
-
-    private func upgradeDrainFailure() -> RelayResponse {
-        failure(409, "Parley is completing a coordination-core upgrade; retry after it reconnects.")
-    }
-
     public func handle(
         token: String,
         target requestedTarget: String,
         text: String,
         idempotencyKey: String? = nil
     ) -> RelayResponse {
-        guard beginDispatch() else { return upgradeDrainFailure() }
-        defer { endDispatch() }
         return deliver(
             token: token,
             target: requestedTarget,
@@ -1449,8 +1391,6 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey: String? = nil
     ) -> RelayResponse {
-        guard beginDispatch() else { return upgradeDrainFailure() }
-        defer { endDispatch() }
         return deliver(
             token: token,
             target: requestedTarget,
@@ -1578,10 +1518,8 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey suppliedIdempotencyKey: String? = nil
     ) -> RelayResponse {
-        guard beginDispatch() else { return upgradeDrainFailure() }
-        defer { endDispatch() }
-        let sender: TmuxPane
-        let target: TmuxPane
+        let sender: WorkbenchPane
+        let target: WorkbenchPane
         let idempotencyKey: String
         let targetCredential: String
         do {
@@ -1861,12 +1799,8 @@ public final class RelayBroker: @unchecked Sendable {
         preserveFormatting: Bool,
         onSubmitted: (() -> Void)? = nil
     ) -> RelayTextResponse {
-        guard beginDispatch() else {
-            return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
-        }
-        defer { endDispatch() }
-        let sender: TmuxPane
-        let target: TmuxPane
+        let sender: WorkbenchPane
+        let target: WorkbenchPane
         let idempotencyKey: String
         let targetCredential: String
         do {
@@ -2018,10 +1952,6 @@ public final class RelayBroker: @unchecked Sendable {
         humanInitiated: Bool,
         preserveFormatting: Bool
     ) -> RelayTextResponse {
-        guard beginDispatch() else {
-            return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
-        }
-        defer { endDispatch() }
         let cleaned = preserveFormatting
             ? ContextPackText.normalize(text)
             : RelayText.clean(text)
@@ -2044,7 +1974,7 @@ public final class RelayBroker: @unchecked Sendable {
         }
 
         let rootKey: String
-        var routes: [(requested: String, pane: TmuxPane)] = []
+        var routes: [(requested: String, pane: WorkbenchPane)] = []
         var sourcePaneID: String?
         do {
             rootKey = try normalizeIdempotencyKey(suppliedIdempotencyKey)
@@ -2133,7 +2063,7 @@ public final class RelayBroker: @unchecked Sendable {
         idempotencyKey: String? = nil,
         preserveFormatting: Bool = false
     ) -> RelayTextResponse {
-        let livePanes: [TmuxPane]
+        let livePanes: [WorkbenchPane]
         do {
             livePanes = try panes()
         } catch {
@@ -2169,9 +2099,10 @@ public final class RelayBroker: @unchecked Sendable {
         sourcePaneID: String,
         targetPaneID: String,
         text: String,
-        idempotencyKey: String
+        idempotencyKey: String,
+        preserveFormatting: Bool = false
     ) -> RelayTextResponse {
-        let livePanes: [TmuxPane]
+        let livePanes: [WorkbenchPane]
         do {
             livePanes = try panes()
         } catch {
@@ -2192,7 +2123,7 @@ public final class RelayBroker: @unchecked Sendable {
             text: text,
             idempotencyKey: idempotencyKey,
             humanInitiated: true,
-            preserveFormatting: false
+            preserveFormatting: preserveFormatting
         )
     }
 
@@ -2210,8 +2141,8 @@ public final class RelayBroker: @unchecked Sendable {
         guard let busyDraftStore else {
             return RelayTextResponse(status: 503, text: "reviewed busy-queue storage is unavailable")
         }
-        let source: TmuxPane
-        let target: TmuxPane
+        let source: WorkbenchPane
+        let target: WorkbenchPane
         do {
             let sourceToken = try credentials.token(for: request.sourcePaneID)
             (source, target) = try route(token: sourceToken, requestedTarget: request.targetPaneID)
@@ -2728,11 +2659,7 @@ public final class RelayBroker: @unchecked Sendable {
     /// only when the recorded writer error proves no terminal input began.
     /// Unknown and post-paste failures are deliberately not retryable.
     public func retryHandoff(_ handoffID: String) -> RelayTextResponse {
-        guard beginDispatch() else {
-            return RelayTextResponse(status: 409, text: "Parley is completing a coordination-core upgrade; retry after it reconnects.")
-        }
-        defer { endDispatch() }
-        let livePanes: [TmuxPane]
+        let livePanes: [WorkbenchPane]
         do {
             livePanes = try panes()
         } catch {
@@ -2868,7 +2795,7 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
-    private func resolve(_ requested: String, panes: [TmuxPane], sender: TmuxPane) -> [TmuxPane] {
+    private func resolve(_ requested: String, panes: [WorkbenchPane], sender: WorkbenchPane) -> [WorkbenchPane] {
         let available = panes.filter { $0.id != sender.id }
         if let exact = available.first(where: { $0.id == requested }) { return [exact] }
 
@@ -2879,7 +2806,6 @@ public final class RelayBroker: @unchecked Sendable {
             guard !requestedWorkspace.isEmpty, !requestedPane.isEmpty else { return [] }
             return available.filter { pane in
                 let workspaceMatches = requestedWorkspace.caseInsensitiveCompare(pane.workspaceName ?? "") == .orderedSame
-                    || requestedWorkspace.caseInsensitiveCompare(pane.windowID) == .orderedSame
                     || requestedWorkspace.caseInsensitiveCompare(pane.workspaceID) == .orderedSame
                 return workspaceMatches && paneMatches(requestedPane, pane: pane)
             }
@@ -2890,7 +2816,7 @@ public final class RelayBroker: @unchecked Sendable {
         return available.filter { paneMatches(requested, pane: $0) }
     }
 
-    private func paneMatches(_ requested: String, pane: TmuxPane) -> Bool {
+    private func paneMatches(_ requested: String, pane: WorkbenchPane) -> Bool {
         if requested.hasPrefix("@") {
             let role = String(requested.dropFirst())
             guard PaneRoleRules.validationError(role) == nil else { return false }
@@ -2902,7 +2828,7 @@ public final class RelayBroker: @unchecked Sendable {
             || (requested.caseInsensitiveCompare("lead") == .orderedSame && pane.isWorkspaceLead)
     }
 
-    private func authorize(_ kind: RelayHandoffKind, for sender: TmuxPane) throws {
+    private func authorize(_ kind: RelayHandoffKind, for sender: WorkbenchPane) throws {
         guard sender.automationPolicy.allows(kind) else {
             let operation = switch kind {
             case .relay: "automatic relay"
@@ -2917,7 +2843,7 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
-    private func route(token: String, requestedTarget: String) throws -> (TmuxPane, TmuxPane) {
+    private func route(token: String, requestedTarget: String) throws -> (WorkbenchPane, WorkbenchPane) {
         guard let senderID = credentials.paneID(for: token) else {
             throw BrokerFailure(status: 401, message: "bad token")
         }
@@ -3033,10 +2959,7 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 return response
             }
-            guard let failure = livenessFailure(for: record) else {
-                observeTargetAttention(handoffID)
-                continue
-            }
+            guard let failure = livenessFailure(for: record) else { continue }
 
             consultationCondition.lock()
             if askResponseLocked(for: scope) == nil, consultationRecords[handoffID] != nil {
@@ -3055,7 +2978,7 @@ public final class RelayBroker: @unchecked Sendable {
 
     private func livenessFailure(for record: ConsultationRecord) -> AskLivenessFailure? {
         guard let livePanes = try? panes() else {
-            // A transient tmux inspection failure is not evidence that a pane
+            // A transient workbench inspection failure is not evidence that a pane
             // died. The next bounded poll gets another chance.
             return nil
         }
@@ -3153,7 +3076,7 @@ public final class RelayBroker: @unchecked Sendable {
         reconcileDelegation(handoffID, livePanes: livePanes)
     }
 
-    private func reconcileDelegation(_ handoffID: String, livePanes: [TmuxPane]) {
+    private func reconcileDelegation(_ handoffID: String, livePanes: [WorkbenchPane]) {
         consultationCondition.lock()
         let record = delegationRecords[handoffID]
         let handoff = handoffRecords[handoffID]
@@ -3163,10 +3086,7 @@ public final class RelayBroker: @unchecked Sendable {
             for: record,
             handoff: handoff,
             livePanes: livePanes
-        ) else {
-            observeTargetAttention(handoffID)
-            return
-        }
+        ) else { return }
 
         consultationCondition.lock()
         if delegationRecords[handoffID] != nil {
@@ -3180,52 +3100,10 @@ public final class RelayBroker: @unchecked Sendable {
         consultationCondition.unlock()
     }
 
-    /// Reads only the target's current visible screen after delivery. It never
-    /// writes terminal input, never changes tracking state and records at most
-    /// one attention transition for a waiting handoff.
-    private func observeTargetAttention(_ handoffID: String) {
-        guard let visibleText else { return }
-        consultationCondition.lock()
-        guard let handoff = handoffRecords[handoffID],
-              handoff.attention == nil,
-              [.delivered, .waiting].contains(handoff.state),
-              let targetKind = handoff.targetKind else {
-            consultationCondition.unlock()
-            return
-        }
-        let targetPaneID = handoff.targetPaneID
-        consultationCondition.unlock()
-
-        guard let visible = try? visibleText(targetPaneID),
-              let reason = VendorPromptAttention.detect(kind: targetKind, visibleText: visible) else {
-            return
-        }
-
-        consultationCondition.lock()
-        guard var current = handoffRecords[handoffID],
-              current.attention == nil,
-              [.delivered, .waiting].contains(current.state) else {
-            consultationCondition.unlock()
-            return
-        }
-        let now = Date()
-        current.attention = .permissionRequired
-        current.updatedAt = now
-        current.transitions.append(RelayHandoffTransition(
-            state: current.state,
-            occurredAt: now,
-            detail: reason.detail
-        ))
-        handoffRecords[handoffID] = current
-        handoffJournal?.record(current)
-        consultationCondition.broadcast()
-        consultationCondition.unlock()
-    }
-
     private func delegationLivenessFailure(
         for record: DelegationRecord,
         handoff: RelayHandoff,
-        livePanes: [TmuxPane]
+        livePanes: [WorkbenchPane]
     ) -> AskLivenessFailure? {
         guard livePanes.contains(where: { $0.id == handoff.sourcePaneID }) else {
             return AskLivenessFailure(
@@ -3316,8 +3194,8 @@ public final class RelayBroker: @unchecked Sendable {
     private func makeHandoff(
         idempotencyKey: String,
         kind: RelayHandoffKind,
-        sender: TmuxPane,
-        target: TmuxPane,
+        sender: WorkbenchPane,
+        target: WorkbenchPane,
         text: String,
         submitted: Bool,
         origin: RelayTransitionOrigin? = nil
@@ -3377,7 +3255,7 @@ public final class RelayBroker: @unchecked Sendable {
     private func failureAssessment(kind: RelayHandoffKind, error: Error) -> RelayFailureAssessment {
         let attention: RelayAttention?
         let deliveryWasNotStarted: Bool
-        switch error as? ParleyTmuxError {
+        switch error as? ParleyWorkbenchError {
         case .copilotTrustRequired:
             attention = .permissionRequired
             deliveryWasNotStarted = true

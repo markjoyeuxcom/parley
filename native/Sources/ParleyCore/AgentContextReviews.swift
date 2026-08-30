@@ -132,7 +132,7 @@ public enum AgentContextTrustedCaptureKind: String, Codable, Equatable, Sendable
     case toolArtifact
 }
 
-/// A control-token-authorized request for the persistent core to capture a
+/// A control-token-authorized request for the app-resident core to capture a
 /// local source itself. The UI supplies only capture inputs; source identity,
 /// captured bytes and the resulting part id are established by the core.
 public struct AgentContextTrustedCaptureRequest: Codable, Equatable, Sendable {

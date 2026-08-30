@@ -30,12 +30,11 @@ public struct ParleyBuildInformation: Equatable, Sendable {
             "Source: \(sourceSummary)",
             "Runtime: \(runtime.mode.label)",
             "Runtime data: \(runtime.applicationDirectory.path)",
-            "tmux session: \(runtime.tmuxSessionName)",
+            "Terminal: Embedded Ghostty (app-resident)",
             "Preferences: \(runtime.preferenceSuiteName)",
             "Architecture: \(architecture)",
             "macOS: \(operatingSystem)",
             "Agent protocol: v\(AgentProtocol.version)",
-            "Core contract: v\(CoreServiceIdentity.currentContractVersion)",
             "Executable: \(executablePath)",
         ].joined(separator: "\n")
     }

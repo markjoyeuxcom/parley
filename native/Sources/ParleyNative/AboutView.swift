@@ -42,11 +42,10 @@ struct AboutView: View {
                     buildRow("Source", information.sourceSummary)
                     buildRow("Runtime", runtime.mode.label)
                     buildRow("Data", runtime.applicationDirectory.path)
-                    buildRow("tmux", runtime.tmuxSessionName)
+                    buildRow("Terminal", "Embedded Ghostty")
                     buildRow("Architecture", information.architecture)
                     buildRow("macOS", information.operatingSystem)
                     buildRow("Agent protocol", "v\(AgentProtocol.version)")
-                    buildRow("Core contract", "v\(CoreServiceIdentity.currentContractVersion)")
                     buildRow("Update channel", updateChannel.label)
                     buildRow("Executable", information.executablePath)
                 }

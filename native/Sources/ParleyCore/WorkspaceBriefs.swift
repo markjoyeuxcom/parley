@@ -58,7 +58,7 @@ public enum WorkspaceBriefError: LocalizedError, Equatable {
     }
 }
 
-/// Owner-only durable workspace reference. A brief is keyed by the tmux
+/// Owner-only durable workspace reference. A brief is keyed by Parley's
 /// workspace identity and never follows a deleted workspace into a new one.
 public final class WorkspaceBriefStore: @unchecked Sendable {
     private struct Document: Codable {

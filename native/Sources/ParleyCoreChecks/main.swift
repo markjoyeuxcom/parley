@@ -2,9 +2,8 @@ import AppKit
 import Darwin
 import Dispatch
 import Foundation
+import GhosttyTerminal
 import ParleyCore
-import ParleyTerminal
-import SwiftTerm
 
 private struct Invocation {
     let executable: URL
@@ -132,19 +131,6 @@ private final class LockedCounter: @unchecked Sendable {
     }
 }
 
-private final class LockedShutdownReasons: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [RelayCoreShutdownReason] = []
-
-    var values: [RelayCoreShutdownReason] {
-        lock.withLock { storage }
-    }
-
-    func append(_ reason: RelayCoreShutdownReason) {
-        lock.withLock { storage.append(reason) }
-    }
-}
-
 private struct RecordedSubmission: Sendable {
     let paneID: String
     let text: String
@@ -165,17 +151,17 @@ private final class LockedSubmissions: @unchecked Sendable {
 
 private final class LockedPanes: @unchecked Sendable {
     private let lock = NSLock()
-    private var storage: [TmuxPane]
+    private var storage: [WorkbenchPane]
 
-    init(_ panes: [TmuxPane]) {
+    init(_ panes: [WorkbenchPane]) {
         storage = panes
     }
 
-    var value: [TmuxPane] {
+    var value: [WorkbenchPane] {
         lock.withLock { storage }
     }
 
-    func set(_ panes: [TmuxPane]) {
+    func set(_ panes: [WorkbenchPane]) {
         lock.withLock { storage = panes }
     }
 }
@@ -186,6 +172,107 @@ private struct CheckFailure: Error, CustomStringConvertible {
 
 private func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
     guard condition() else { throw CheckFailure(description: message) }
+}
+
+private func checkTerminalFontPreferenceIsBoundedAndSafe() throws {
+    let preference = try TerminalFontPreference(family: "  SF Mono  ", size: 15.5)
+    try expect(preference.family == "SF Mono", "terminal font family whitespace was not normalized")
+    try expect(preference.size == 15.5, "terminal font size was not preserved")
+
+    let defaults = try TerminalFontPreference()
+    try expect(defaults.family == nil && defaults.size == nil, "Ghostty defaults were not representable")
+    let encoded = try JSONEncoder().encode(preference)
+    let decoded = try JSONDecoder().decode(TerminalFontPreference.self, from: encoded)
+    try expect(
+        decoded == preference,
+        "terminal font preference did not round trip"
+    )
+
+    for invalidFamily in ["Line\nBreak", "Control\u{0000}Character"] {
+        do {
+            _ = try TerminalFontPreference(family: invalidFamily, size: 14)
+            throw CheckFailure(description: "an unsafe terminal font family was accepted")
+        } catch let error as TerminalFontPreferenceError {
+            try expect(error == .invalidFamily, "an unsafe family failed for the wrong reason")
+        }
+    }
+    for invalidSize in [7.9, 72.1, Double.infinity, Double.nan] {
+        do {
+            _ = try TerminalFontPreference(family: nil, size: invalidSize)
+            throw CheckFailure(description: "an unsafe terminal font size was accepted")
+        } catch let error as TerminalFontPreferenceError {
+            try expect(error == .invalidSize, "an unsafe size failed for the wrong reason")
+        }
+    }
+}
+
+private func checkPaneStateUsesDurableWorkspaceAndGhosttyInputIdentity() throws {
+    let pane = WorkbenchPane(
+        id: "pane-current",
+        kind: .codex,
+        customName: "Reviewer",
+        terminalTitle: "Codex",
+        cwd: "/tmp",
+        currentCommand: "codex",
+        isActive: true,
+        workspaceID: "workspace-current",
+        relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        inputAvailable: true,
+        isStarted: true
+    )
+    let encoded = try JSONEncoder().encode(pane)
+    let encodedText = String(decoding: encoded, as: UTF8.self)
+    try expect(encodedText.contains("workspaceID"), "pane state omitted durable workspace identity")
+    try expect(encodedText.contains("inputAvailable"), "pane state omitted Ghostty input availability")
+    try expect(!encodedText.contains("windowID"), "new pane state still writes the tmux window alias")
+    try expect(!encodedText.contains("returnToPaneID"), "new pane state still writes the pre-broker return route")
+    try expect(!encodedText.contains("bracketedPasteActive"), "new pane state still writes tmux paste readiness")
+
+    let legacy = Data(#"""
+    {
+        "id":"pane-legacy",
+        "kind":"codex",
+        "customName":null,
+        "terminalTitle":"Codex",
+        "cwd":"/tmp",
+        "currentCommand":"codex",
+        "isActive":true,
+        "windowID":"workspace-legacy",
+        "returnToPaneID":"pane-source",
+        "relayEnabled":true,
+        "protocolVersion":"old",
+        "workspaceName":"Legacy",
+        "bracketedPasteActive":true,
+        "isDead":false,
+        "exitStatus":null,
+        "isStarted":true,
+        "isWorkspaceLead":false,
+        "role":null,
+        "automationPolicy":"askAndDelegate",
+        "permissionSelection":null,
+        "permissionEnforcement":null,
+        "launchGeneration":0
+    }
+    """#.utf8)
+    let migrated = try JSONDecoder().decode(WorkbenchPane.self, from: legacy)
+    try expect(migrated.workspaceID == "workspace-legacy", "legacy window identity was not migrated once")
+    try expect(!migrated.inputAvailable, "persisted tmux paste state was trusted as live Ghostty input state")
+}
+
+private func checkNativeAskRequestCarriesFormattingIntent() throws {
+    let request = RelayUIAskRequest(
+        sourcePaneID: "pane-source",
+        targetPaneID: "pane-target",
+        text: "line one\n  line two",
+        idempotencyKey: "ask-key",
+        preserveFormatting: true
+    )
+    let decoded = try JSONDecoder().decode(
+        RelayUIAskRequest.self,
+        from: JSONEncoder().encode(request)
+    )
+    try expect(decoded.preserveFormatting == true, "native tracked Ask lost reviewed formatting intent")
 }
 
 private func require<T>(_ value: T?, _ message: String) throws -> T {
@@ -229,11 +316,6 @@ private func checkRuntimeNamespacesAreExplicitAndDisjoint() throws {
         homeDirectory: home,
         isBundledApplication: false
     )
-    let attached = try ParleyRuntime.resolve(
-        arguments: ["--runtime", "attached-production"],
-        homeDirectory: home,
-        isBundledApplication: false
-    )
     let failSafeDevelopment = try ParleyRuntime.resolve(
         arguments: [],
         homeDirectory: home,
@@ -247,29 +329,19 @@ private func checkRuntimeNamespacesAreExplicitAndDisjoint() throws {
 
     try expect(production.mode == .production, "the installed app did not resolve to production")
     try expect(development.mode == .development, "the development command did not resolve to development")
-    try expect(attached.mode == .attachedProduction, "the explicit attach command did not resolve to attached production")
     try expect(failSafeDevelopment.mode == .development, "an unbundled executable silently fell into production")
     try expect(bundledIgnoresDevelopmentOverride.mode == .production, "an argument moved the installed app out of production")
     try expect(production.applicationDirectory != development.applicationDirectory, "production and development share Application Support")
-    try expect(production.tmuxSessionName != development.tmuxSessionName, "production and development share a tmux session")
     try expect(production.preferenceSuiteName != development.preferenceSuiteName, "production and development share preferences")
-    try expect(attached.applicationDirectory == production.applicationDirectory, "production attach does not address production data")
-    try expect(attached.tmuxSessionName == production.tmuxSessionName, "production attach does not address the production tmux session")
     try expect(production.visibleMarker == nil, "production displays a development marker")
     try expect(development.visibleMarker == "DEV", "development is not permanently marked")
-    try expect(attached.visibleMarker == "DEV ATTACHED TO PRODUCTION", "production attach is not permanently marked")
-    try expect(production.preparesRuntimeFiles && production.launchesCore && production.upgradesCore, "production lost runtime ownership")
-    try expect(development.preparesRuntimeFiles && development.launchesCore && development.upgradesCore, "development cannot own its isolated runtime")
-    try expect(!attached.preparesRuntimeFiles && !attached.launchesCore && !attached.upgradesCore, "production attach can mutate the production runtime lifecycle")
-    try expect(production.installsStableCommand && !development.installsStableCommand && !attached.installsStableCommand, "a development runtime can replace the stable relay command")
-    try expect(production.managesLoginItem && !development.managesLoginItem && !attached.managesLoginItem, "a development runtime can mutate the production login item")
+    try expect(production.installsStableCommand && !development.installsStableCommand, "a development runtime can replace the stable relay command")
 }
 
 private func checkRuntimeTerminationChoiceSurvivesDeadAgents() throws {
     let home = URL(fileURLWithPath: "/Users/runtime-termination-test", isDirectory: true)
     let production = ParleyRuntime.make(mode: .production, homeDirectory: home)
     let development = ParleyRuntime.make(mode: .development, homeDirectory: home)
-    let attached = ParleyRuntime.make(mode: .attachedProduction, homeDirectory: home)
 
     try expect(
         RuntimeTerminationPolicy.shouldOfferChoice(
@@ -292,39 +364,6 @@ private func checkRuntimeTerminationChoiceSurvivesDeadAgents() throws {
         ),
         "Development offered a runtime action without a controller"
     )
-    try expect(
-        !RuntimeTerminationPolicy.shouldOfferChoice(
-            runtime: attached,
-            controllerAvailable: true
-        ),
-        "read-only Development attachment could stop Production"
-    )
-}
-
-private func checkStopEverythingRefusesSilentFailure() throws {
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "kill-server":
-            CommandOutput(status: 9)
-        case "has-session":
-            CommandOutput(status: 0)
-        default:
-            CommandOutput()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    do {
-        try controller.shutdownServer()
-        throw CheckFailure(description: "Stop Everything silently accepted a surviving tmux server")
-    } catch is ParleyTmuxError {
-        // Expected: the UI must remain open and surface the shutdown failure.
-    }
 }
 
 private func checkBuildInformationIsUsefulAndCopyable() throws {
@@ -359,7 +398,6 @@ private func checkBuildInformationIsUsefulAndCopyable() throws {
     try expect(packaged.copyableText.contains("Parley 1.2.3 (45)"), "copied build information omitted the version")
     try expect(packaged.copyableText.contains("Runtime: Development"), "copied build information omitted the runtime")
     try expect(packaged.copyableText.contains("Agent protocol: v\(AgentProtocol.version)"), "copied build information omitted the agent protocol")
-    try expect(packaged.copyableText.contains("Core contract: v\(CoreServiceIdentity.currentContractVersion)"), "copied build information omitted the core contract")
     try expect(packaged.copyableText.contains(runtime.applicationDirectory.path), "copied build information omitted the isolated data path")
 
     let development = ParleyBuildInformation.resolve(
@@ -484,163 +522,29 @@ private func checkPermissionProfilesAreVendorNeutralAndLocal() throws {
     }
 }
 
-private func checkPermissionProfilesReachPaneLifecycleWithoutUnsafeFlags() throws {
-    let root = try temporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let project = root.appendingPathComponent("project", isDirectory: true)
-    let consumer = root.appendingPathComponent("consumer", isDirectory: true)
-    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: false)
-    try FileManager.default.createDirectory(at: consumer, withIntermediateDirectories: false)
-
-    let flexibleDefinition = try require(
-        PermissionProfileDefinition.builtIns.first(where: { $0.id == "flexible" }),
-        "Flexible profile is missing"
-    )
-    let broadDefinition = try require(
-        PermissionProfileDefinition.builtIns.first(where: { $0.id == "broad-workspace" }),
-        "Broad Workspace profile is missing"
-    )
-    let flexible = try PermissionProfileResolver.resolve(
-        definition: flexibleDefinition,
-        paneFolder: project.path
-    )
-    let broad = try PermissionProfileResolver.resolve(
-        definition: broadDefinition,
-        paneFolder: project.path,
-        approvedRoots: [project.path, consumer.path]
-    )
-
-    for kind in PaneKind.allCases.filter(\.isAgent) {
-        let plan = PermissionProfileAdapter.launchPlan(for: kind, profile: broad)
-        try expect(plan.enforcement != .enforced, "\(kind.label) overclaimed complete permission enforcement")
-        for forbidden in [
-            "--dangerously-skip-permissions",
-            "--allow-dangerously-skip-permissions",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "danger-full-access",
-            "--allow-all",
-            "--yolo",
-        ] {
-            try expect(!plan.arguments.contains(forbidden), "\(kind.label) permission translation used \(forbidden)")
-        }
-        try expect(
-            plan.arguments.contains(canonicalPath(consumer.path)),
-            "\(kind.label) Broad Workspace translation omitted an exact approved root"
-        )
-        let translatedRoots = plan.arguments.indices.compactMap { index -> String? in
-            guard plan.arguments[index] == "--add-dir",
-                  plan.arguments.indices.contains(index + 1) else { return nil }
-            return plan.arguments[index + 1]
-        }
-        try expect(
-            translatedRoots == broad.approvedRoots,
-            "\(kind.label) permission translation granted an unapproved root"
-        )
-    }
-
-    let source = paneRow(id: "%1", kind: .shell, active: true)
-    let created = paneRow(
-        id: "%2",
-        kind: .claude,
-        active: true,
-        relayEnabled: true,
-        protocolVersion: AgentProtocol.version,
-        permissionSelection: flexible.selection,
-        permissionEnforcement: .partiallyEnforced
-    )
-    var lists = 0
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-panes":
-            lists += 1
-            return output(lists == 1 ? "\(source)\n" : "\(source)\n\(created)\n")
-        case "split-window":
-            return output("%2\n")
-        default:
-            return output()
-        }
-    }
-    let applicationDirectory = root.appendingPathComponent("application", isDirectory: true)
-    let credentials = try RelayCredentials(file: applicationDirectory.appendingPathComponent("relay-tokens.json"))
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: applicationDirectory,
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-    controller.configureRelay(RelayRuntime(
-        infoFile: applicationDirectory.appendingPathComponent("relay-url"),
-        shimDirectory: applicationDirectory.appendingPathComponent("bin"),
-        transportDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: applicationDirectory),
-        credentials: credentials
-    ))
-
-    let pane = try controller.createPane(
-        kind: .claude,
-        cwd: project.path,
-        direction: .horizontal,
-        permissionProfile: flexible
-    )
-    try expect(pane.permissionSelection == flexible.selection, "new pane lost its effective permission selection")
-    try expect(pane.permissionEnforcement == .partiallyEnforced, "new pane lost its honest enforcement state")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option"
-            && call.arguments.contains("@parley-permission-selection")
-            && call.arguments.contains(flexible.selection.tmuxMetadataValue)
-    }, "new pane did not persist permission selection in tmux")
-    let respawn = try require(
-        runner.calls.first(where: { command($0.arguments) == "respawn-pane" }),
-        "permission-profile pane was not spawned"
-    )
-    try expect(
-        respawn.arguments.contains("--permission-mode") && respawn.arguments.contains("acceptEdits"),
-        "Flexible Claude profile did not use Claude's supported edit mode"
-    )
-}
-
-private func checkVendorPermissionStopsBecomeAttentionWithoutAction() throws {
-    let decisions: [(PaneKind, String)] = [
-        (.claude, "Bash command\nDo you want to proceed?\n1. Yes\n2. No\nEsc to cancel"),
-        (.codex, "Would you like to run the following command?\n1. Yes, proceed\n2. No, and tell Codex what to do differently"),
-        (.agy, "Allow execution of: cat src/main.swift\n1. Allow once\n2. Deny"),
-        (.copilot, "Confirm folder trust\nDo you trust the files in this folder?\nYes\nNo, cancel"),
-    ]
-    for (kind, visible) in decisions {
-        let reason = VendorPromptAttention.detect(kind: kind, visibleText: visible)
-        try expect(reason != nil, "\(kind.label) permission/trust stop was not recognised")
-    }
-    for ordinaryOutput in [
-        "The deployment guide says permission required before production changes.",
-        "I asked whether you would like to proceed, then continued with the review.",
-        "cat: private.txt: Permission denied",
-    ] {
-        try expect(
-            VendorPromptAttention.detect(kind: .claude, visibleText: ordinaryOutput) == nil,
-            "ordinary terminal prose was mistaken for a live permission prompt"
-        )
-    }
-
+private func checkVendorPermissionStateIsNotInferredFromTerminalText() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
-    let source = TmuxPane(
+    let source = WorkbenchPane(
         id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp",
-        currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil
+        currentCommand: "claude", isActive: true, workspaceID: "@0"
     )
-    let target = TmuxPane(
+    let target = WorkbenchPane(
         id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp",
-        currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil
+        currentCommand: "codex", isActive: false, workspaceID: "@0"
     )
     let submissions = LockedCounter()
+    let terminalReads = LockedCounter()
     let broker = RelayBroker(
         credentials: credentials,
         panes: { [source, target] },
         paste: { _, _ in },
         submit: { _, _ in submissions.increment() },
-        visibleText: { paneID in
-            guard paneID == target.id else { return "" }
-            return decisions[1].1
+        selectedText: { _ in
+            terminalReads.increment()
+            return "Would you like to run the following command?\nAllow once"
         },
         consultationTimeout: 2,
         livenessPollInterval: 0.01
@@ -650,23 +554,21 @@ private func checkVendorPermissionStopsBecomeAttentionWithoutAction() throws {
         result.set(broker.handleAsk(token: sourceToken, target: "codex", text: "Review this change."))
     }
 
-    try expect(eventually {
-        broker.handoffs().first?.attention == .permissionRequired
-    }, "a visible vendor permission stop did not become durable handoff attention")
-    let waiting = try require(broker.handoffs().first, "permission-stop handoff disappeared")
-    try expect(waiting.state == .waiting, "permission recognition ended the waiting consultation")
-    try expect(submissions.value == 1, "permission recognition typed into or resubmitted the target pane")
-    try expect(result.value == nil, "permission recognition released the blocked requester")
+    try expect(eventually { submissions.value == 1 }, "the Ask was not submitted")
+    Thread.sleep(forTimeInterval: 0.05)
+    let waiting = try require(broker.handoffs().first, "waiting handoff disappeared")
+    try expect(waiting.state == .waiting, "terminal prose ended the waiting consultation")
+    try expect(waiting.attention == nil, "terminal prose was presented as authoritative permission state")
+    try expect(terminalReads.value == 0, "the broker scraped terminal text to infer permission state")
+    try expect(result.value == nil, "terminal prose released the blocked requester")
 
     let answered = broker.handleAnswer(
         token: targetToken,
         consultationID: "current",
         text: "The review is complete."
     )
-    try expect(answered.status == 200, "permission-attention consultation could not answer normally")
-    try expect(eventually { result.value?.status == 200 }, "answer did not release the permission-attention Ask")
-    let completed = try require(broker.handoffs().first, "completed permission-stop handoff disappeared")
-    try expect(completed.state == .completed && completed.attention == nil, "completed answer retained stale permission attention")
+    try expect(answered.status == 200, "consultation could not answer normally")
+    try expect(eventually { result.value?.status == 200 }, "answer did not release the Ask")
 }
 
 private func checkRuntimeUILeaseRefusesDuplicateOwners() throws {
@@ -682,11 +584,6 @@ private func checkRuntimeUILeaseRefusesDuplicateOwners() throws {
         homeDirectory: home,
         isBundledApplication: false
     )
-    let attached = try ParleyRuntime.resolve(
-        arguments: ["--runtime", "attached-production"],
-        homeDirectory: home,
-        isBundledApplication: false
-    )
 
     var developmentLease: RuntimeUILease? = try RuntimeUILease.acquire(runtime: development)
     let productionLease = try RuntimeUILease.acquire(runtime: production)
@@ -699,13 +596,6 @@ private func checkRuntimeUILeaseRefusesDuplicateOwners() throws {
     } catch let error as RuntimeUILeaseError {
         try expect(error == .alreadyRunning(.development), "duplicate development refusal was not specific")
     }
-    do {
-        _ = try RuntimeUILease.acquire(runtime: attached)
-        throw CheckFailure(description: "production attach bypassed the production UI lease")
-    } catch let error as RuntimeUILeaseError {
-        try expect(error == .alreadyRunning(.attachedProduction), "production attach refusal was not specific")
-    }
-
     developmentLease = nil
     developmentLease = try RuntimeUILease.acquire(runtime: development)
     try expect(developmentLease != nil, "a released development UI lease stayed stale")
@@ -748,212 +638,6 @@ private func checkChildProcessCannotRetainRuntimeUILease() throws {
     lease = nil
     lease = try RuntimeUILease.acquire(runtime: runtime)
     try expect(lease != nil, "a spawned child retained the UI lease after Parley released it")
-}
-
-private func checkReadOnlyRuntimeAttachmentRequiresPreparedFiles() throws {
-    let directory = try temporaryDirectory()
-    let runner = RecordingRunner()
-    do {
-        _ = try TmuxController(
-            tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-            applicationDirectory: directory.appendingPathComponent("missing", isDirectory: true),
-            sessionName: "parley",
-            environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-            runner: runner,
-            prepareRuntimeFiles: false
-        )
-        throw CheckFailure(description: "read-only production attach created an unprepared runtime")
-    } catch let error as ParleyTmuxError {
-        try expect(error.errorDescription?.contains("not prepared") == true, "unprepared attach failed without a useful explanation")
-    }
-
-    let owner = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: directory,
-        sessionName: "parley",
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-    let configurationBefore = try Data(contentsOf: owner.configPath)
-    let protocolBefore = try Data(contentsOf: owner.protocolDirectory.appendingPathComponent("AGENTS.md"))
-    _ = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: directory,
-        sessionName: "parley",
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner,
-        prepareRuntimeFiles: false
-    )
-    let configurationAfter = try Data(contentsOf: owner.configPath)
-    let protocolAfter = try Data(contentsOf: owner.protocolDirectory.appendingPathComponent("AGENTS.md"))
-    try expect(configurationAfter == configurationBefore, "read-only attach rewrote tmux configuration")
-    try expect(protocolAfter == protocolBefore, "read-only attach rewrote the agent protocol")
-
-    let absentSessionRunner = RecordingRunner { arguments, _ in
-        command(arguments) == "has-session" ? output(status: 1) : output()
-    }
-    let attachment = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: directory,
-        sessionName: "parley",
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: absentSessionRunner,
-        prepareRuntimeFiles: false
-    )
-    do {
-        try attachment.bootstrap(cwd: "/tmp", createIfMissing: false)
-        throw CheckFailure(description: "production attach started a missing tmux session")
-    } catch let error as ParleyTmuxError {
-        try expect(error.errorDescription?.contains("not running") == true, "missing production tmux failed without a useful explanation")
-    }
-    try expect(
-        !absentSessionRunner.calls.contains(where: { command($0.arguments) == "new-session" }),
-        "production attach issued tmux new-session"
-    )
-
-    let absentCore = directory.appendingPathComponent("absent-core", isDirectory: true)
-    try FileManager.default.createDirectory(at: absentCore, withIntermediateDirectories: false)
-    do {
-        _ = try RelayCoreLauncher.attachExisting(applicationDirectory: absentCore)
-        throw CheckFailure(description: "production attach started a missing coordination core")
-    } catch {
-        try expect(!FileManager.default.fileExists(atPath: absentCore.appendingPathComponent("core-control-token").path), "production attach created a control credential")
-        try expect(!FileManager.default.fileExists(atPath: absentCore.appendingPathComponent("core.log").path), "production attach created a core log")
-    }
-}
-
-private func checkRealProductionAndDevelopmentTmuxIsolation() throws {
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "runtime isolation check could not find tmux"
-    )
-    let home = URL(
-        fileURLWithPath: "/private/tmp/pri-\(UUID().uuidString.lowercased().prefix(6))",
-        isDirectory: true
-    )
-    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: false)
-    defer { try? FileManager.default.removeItem(at: home) }
-    let production = ParleyRuntime.make(mode: .production, homeDirectory: home)
-    let development = ParleyRuntime.make(mode: .development, homeDirectory: home)
-    let productionController = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: production.applicationDirectory,
-        sessionName: production.tmuxSessionName,
-        environment: environment
-    )
-    let developmentController = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: development.applicationDirectory,
-        sessionName: development.tmuxSessionName,
-        environment: environment
-    )
-    let runner = ProcessCommandRunner(timeout: 3)
-    defer {
-        for controller in [productionController, developmentController] {
-            _ = try? runner.run(
-                executable: tmux,
-                arguments: ["-S", controller.socketPath.path, "kill-server"],
-                environment: controller.environment,
-                input: nil
-            )
-        }
-    }
-
-    try productionController.bootstrap(cwd: home.path)
-    try developmentController.bootstrap(cwd: home.path)
-    try expect(productionController.socketPath != developmentController.socketPath, "live runtimes share a tmux socket")
-    try expect(productionController.sessionName != developmentController.sessionName, "live runtimes share a tmux session name")
-    try expect(FileManager.default.fileExists(atPath: productionController.socketPath.path), "production tmux socket was not created")
-    try expect(FileManager.default.fileExists(atPath: developmentController.socketPath.path), "development tmux socket was not created")
-    func paneProcessID(_ controller: TmuxController) throws -> Int32? {
-        let result = try runner.run(
-            executable: tmux,
-            arguments: [
-                "-S", controller.socketPath.path,
-                "-f", controller.configPath.path,
-                "list-panes", "-t", controller.sessionName,
-                "-F", "#{pane_pid}",
-            ],
-            environment: controller.environment,
-            input: nil
-        )
-        return Int32(result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-    let productionPanePID = try require(paneProcessID(productionController), "production tmux exposed no pane process")
-    let developmentPanePID = try require(paneProcessID(developmentController), "development tmux exposed no pane process")
-    try expect(productionPanePID != developmentPanePID, "live runtimes share a pane process")
-
-    let productionShim = try RelayShim.install(in: production.applicationDirectory)
-    let developmentShim = try RelayShim.install(
-        in: development.applicationDirectory,
-        runtimeMarker: development.visibleMarker
-    )
-    try expect(productionShim != developmentShim, "live runtimes share a relay shim directory")
-    let developmentCommand = try String(
-        contentsOf: developmentShim.appendingPathComponent("parley"),
-        encoding: .utf8
-    )
-    try expect(developmentCommand.contains("runtime_marker='DEV'"), "development relay command is not marked DEV")
-    let productionRecord = production.applicationDirectory.appendingPathComponent("workspace-layouts.json")
-    let developmentRecord = development.applicationDirectory.appendingPathComponent("workspace-layouts.json")
-    try Data("production-record".utf8).write(to: productionRecord, options: .atomic)
-    try Data("development-record".utf8).write(to: developmentRecord, options: .atomic)
-    let productionRecordData = try Data(contentsOf: productionRecord)
-    let developmentRecordData = try Data(contentsOf: developmentRecord)
-    try expect(productionRecordData != developmentRecordData, "live runtimes share durable records")
-
-    var coreEnvironment = environment
-    coreEnvironment["PARLEY_CORE_FIXTURE"] = "1"
-    let fixtureExecutable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
-    let productionClient = try RelayCoreLauncher.ensureRunning(
-        applicationDirectory: production.applicationDirectory,
-        cwd: home.path,
-        environment: coreEnvironment,
-        tmuxSessionName: production.tmuxSessionName,
-        executable: fixtureExecutable,
-        timeout: 3
-    )
-    let developmentClient = try RelayCoreLauncher.ensureRunning(
-        applicationDirectory: development.applicationDirectory,
-        cwd: home.path,
-        environment: coreEnvironment,
-        tmuxSessionName: development.tmuxSessionName,
-        runtimeMarker: development.visibleMarker,
-        executable: fixtureExecutable,
-        timeout: 3
-    )
-    let productionPID = try require(
-        Int32(try String(contentsOf: production.applicationDirectory.appendingPathComponent("core.pid"), encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)),
-        "production fixture core wrote no PID"
-    )
-    let developmentPID = try require(
-        Int32(try String(contentsOf: development.applicationDirectory.appendingPathComponent("core.pid"), encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)),
-        "development fixture core wrote no PID"
-    )
-    defer {
-        _ = Darwin.kill(productionPID, SIGTERM)
-        _ = Darwin.kill(developmentPID, SIGTERM)
-    }
-    try expect(productionPID != developmentPID, "live runtimes share a coordination core process")
-    try expect(productionClient.infoFile != developmentClient.infoFile, "live runtimes share core discovery")
-    try expect(productionClient.isHealthy() && developmentClient.isHealthy(), "an isolated fixture core was unhealthy")
-
-    try expect(Darwin.kill(developmentPID, SIGTERM) == 0, "development fixture core could not be stopped independently")
-    try expect(eventually(timeout: 3) { !developmentClient.isHealthy() }, "development fixture core did not stop")
-    try expect(productionClient.isHealthy(), "stopping the development core also stopped production")
-
-    let stoppedDevelopment = try runner.run(
-        executable: tmux,
-        arguments: ["-S", developmentController.socketPath.path, "kill-server"],
-        environment: developmentController.environment,
-        input: nil
-    )
-    try expect(stoppedDevelopment.status == 0, "development tmux could not be stopped independently")
-    let survivingProductionPanes = try productionController.listPanes()
-    try expect(survivingProductionPanes.count == 1, "stopping development also stopped production panes")
 }
 
 private func checkUTF8LocaleFallbackPreservesExplicitConfiguration() throws {
@@ -1084,7 +768,7 @@ private func checkInAppHelpGuideCoverage() throws {
         "menu-bar attention inbox", "completed delegations", "permission requests",
         "main window is closed", "prompt and answer bodies", "coordination unavailable",
         "collaboration history", "case-insensitive and terms", "select results",
-        "workspace home", "new pane folder", "split right here", "open new workspace here",
+        "folderless workspaces", "attached folders", "new pane folder", "split right here", "open new workspace here",
         "owner-only markdown", "ask this again", "fresh tracked handoff identity",
         "never silently replays", "100, 250 or 500", "increasing it later",
         "including dismissed records", "lifecycle activity",
@@ -1095,11 +779,11 @@ private func checkInAppHelpGuideCoverage() throws {
         "credential-free http", "25 mb", "sha-256", "binary bytes are not embedded",
         "cookies or website credentials", "person-provided selected text",
         "compatibility & releases", "exactly one --version", "cli changed",
-        "runtime state stays unknown", "terminal prose, silence", "run live conformance",
+        "runtime state stays unknown", "terminal prose, silence", "vendor's release notes",
         "stable selects published non-prereleases", "sha256sums", "download and verify",
         "does not install", "review beta feedback", "nothing is uploaded automatically",
-        "live conformance check names/outcomes", "excluded by structure",
-        "pane focus strip", "copy mode", "macos clipboard", "mouse-aware",
+        "app-resident panes", "excluded by structure",
+        "pane focus strip", "native terminal", "macos clipboard", "mouse-aware", "shift",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
     }
@@ -1132,7 +816,7 @@ private func checkInAppHelpGuideCoverage() throws {
 }
 
 private func checkWorkbenchStateProjection() throws {
-    let readyAgent = TmuxPane(
+    let readyAgent = WorkbenchPane(
         id: "%1",
         kind: .codex,
         customName: "Builder",
@@ -1140,23 +824,22 @@ private func checkWorkbenchStateProjection() throws {
         cwd: "/tmp",
         currentCommand: "codex",
         isActive: true,
-        windowID: "@0",
-        returnToPaneID: nil,
-        relayEnabled: true,
+        workspaceID: "@0",
+                relayEnabled: true,
         protocolVersion: AgentProtocol.version,
         isStarted: true
     )
 
     try expect(
-        WorkbenchStateProjection.connection(tmuxAvailable: false, coreAvailable: false) == .tmuxDisconnected,
-        "tmux loss did not take precedence over core loss"
+        WorkbenchStateProjection.connection(terminalAvailable: false, coreAvailable: false) == .terminalDisconnected,
+        "terminal loss did not take precedence over core loss"
     )
     try expect(
-        WorkbenchStateProjection.connection(tmuxAvailable: true, coreAvailable: false) == .coreDisconnected,
+        WorkbenchStateProjection.connection(terminalAvailable: true, coreAvailable: false) == .coreDisconnected,
         "core loss was not distinguished from terminal loss"
     )
     try expect(
-        WorkbenchStateProjection.connection(tmuxAvailable: true, coreAvailable: true) == .connected,
+        WorkbenchStateProjection.connection(terminalAvailable: true, coreAvailable: true) == .connected,
         "healthy services did not project as connected"
     )
     try expect(
@@ -1164,7 +847,7 @@ private func checkWorkbenchStateProjection() throws {
         "an empty workspace projected a running pane"
     )
 
-    let stopped = TmuxPane(
+    let stopped = WorkbenchPane(
         id: "%2",
         kind: .claude,
         customName: nil,
@@ -1172,9 +855,8 @@ private func checkWorkbenchStateProjection() throws {
         cwd: "/tmp",
         currentCommand: "sleep",
         isActive: true,
-        windowID: "@0",
-        returnToPaneID: nil,
-        isDead: true,
+        workspaceID: "@0",
+                isDead: true,
         exitStatus: 7,
         isStarted: false
     )
@@ -1187,7 +869,7 @@ private func checkWorkbenchStateProjection() throws {
         "a stopped agent placeholder claimed to have an injected protocol"
     )
 
-    let exited = TmuxPane(
+    let exited = WorkbenchPane(
         id: "%3",
         kind: .codex,
         customName: nil,
@@ -1195,9 +877,8 @@ private func checkWorkbenchStateProjection() throws {
         cwd: "/tmp",
         currentCommand: "codex",
         isActive: true,
-        windowID: "@0",
-        returnToPaneID: nil,
-        relayEnabled: true,
+        workspaceID: "@0",
+                relayEnabled: true,
         protocolVersion: AgentProtocol.version,
         isDead: true,
         exitStatus: 7,
@@ -1218,7 +899,7 @@ private func checkWorkbenchStateProjection() throws {
         "Status Center counted an exited agent as running"
     )
 
-    let stale = TmuxPane(
+    let stale = WorkbenchPane(
         id: "%4",
         kind: .agy,
         customName: nil,
@@ -1226,9 +907,8 @@ private func checkWorkbenchStateProjection() throws {
         cwd: "/tmp",
         currentCommand: "agy",
         isActive: true,
-        windowID: "@0",
-        returnToPaneID: nil,
-        relayEnabled: false,
+        workspaceID: "@0",
+                relayEnabled: false,
         protocolVersion: "1",
         isStarted: true
     )
@@ -1241,7 +921,7 @@ private func checkWorkbenchStateProjection() throws {
         "a stale pane did not expose its injected protocol version"
     )
 
-    let unknownProtocol = TmuxPane(
+    let unknownProtocol = WorkbenchPane(
         id: "%6",
         kind: .claude,
         customName: nil,
@@ -1249,9 +929,8 @@ private func checkWorkbenchStateProjection() throws {
         cwd: "/tmp",
         currentCommand: "claude",
         isActive: false,
-        windowID: "@0",
-        returnToPaneID: nil,
-        relayEnabled: false,
+        workspaceID: "@0",
+                relayEnabled: false,
         protocolVersion: nil,
         isStarted: true
     )
@@ -1260,7 +939,7 @@ private func checkWorkbenchStateProjection() throws {
         "a running legacy pane without a protocol stamp was not marked for restart"
     )
 
-    let relayUnavailable = TmuxPane(
+    let relayUnavailable = WorkbenchPane(
         id: "%5",
         kind: .copilot,
         customName: nil,
@@ -1268,9 +947,8 @@ private func checkWorkbenchStateProjection() throws {
         cwd: "/tmp",
         currentCommand: "copilot",
         isActive: true,
-        windowID: "@0",
-        returnToPaneID: nil,
-        relayEnabled: false,
+        workspaceID: "@0",
+                relayEnabled: false,
         protocolVersion: AgentProtocol.version,
         isStarted: true
     )
@@ -1286,612 +964,101 @@ private func checkWorkbenchStateProjection() throws {
         WorkbenchStateProjection.protocolStatus(readyAgent) == .current(version: AgentProtocol.version),
         "a current pane did not expose its injected protocol version"
     )
-}
 
-private func checkExitedPaneRetention() throws {
-    let retainedRow = paneRow(id: "%9", kind: .shell, active: true, isDead: true, exitStatus: 7)
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "has-session": output()
-        case "list-windows": output(workspaceRow(id: "@0", windowName: "tmp", active: true) + "\n")
-        case "list-panes": output(retainedRow + "\n")
-        default: output()
-        }
-    }
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: directory,
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    try controller.bootstrap(cwd: "/tmp")
-
-    let configuration = try String(contentsOf: directory.appendingPathComponent("tmux.conf"), encoding: .utf8)
-    try expect(configuration.contains("remain-on-exit on"), "tmux configuration did not retain exited panes")
-    try expect(
-        runner.calls.contains {
-            $0.arguments.contains("set-window-option")
-                && $0.arguments.contains("remain-on-exit")
-                && $0.arguments.contains("on")
-        },
-        "reattaching to an existing tmux server did not enable exited-pane retention"
-    )
-    let pane = try require(controller.listPanes().first, "retained dead pane was not parsed")
-    try expect(pane.isDead, "retained pane was not marked dead")
-    try expect(pane.exitStatus == 7, "retained pane lost its exit status")
-}
-
-private func checkEmbeddedTmuxPresentation() throws {
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "has-session": output()
-        case "list-windows": output(workspaceRow(id: "@0", windowName: "parley", active: true) + "\n")
-        default: output()
-        }
-    }
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: directory,
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    try controller.bootstrap(cwd: "/tmp")
-
-    let configuration = try String(contentsOf: directory.appendingPathComponent("tmux.conf"), encoding: .utf8)
-    try expect(configuration.contains("set-option -g status off"), "embedded tmux configuration retained its duplicate status bar")
-    try expect(configuration.contains("set-window-option -g pane-border-status top"), "embedded tmux configuration did not expose compact pane titles")
-    try expect(configuration.contains("set-window-option -g pane-border-format"), "embedded tmux configuration did not define pane title content")
-    try expect(configuration.contains("@parley-name") && configuration.contains("@parley-kind"), "pane titles do not expose Parley identity metadata")
-    try expect(configuration.contains("pane-border-style") && configuration.contains("pane-active-border-style"), "embedded tmux configuration removed spatial pane boundaries")
-    try expect(configuration.contains("copy-pipe-and-cancel '/usr/bin/pbcopy'"), "tmux copy mode does not deliver selections to the macOS clipboard")
-    try expect(configuration.contains("MouseDrag1Pane") && configuration.contains("begin-selection"), "tmux copy mode does not support mouse selection")
-    let rootDragBinding = try require(
-        configuration.split(separator: "\n").first {
-            $0.contains("bind-key -T root MouseDrag1Pane")
-        },
-        "tmux configuration has no root mouse-drag binding"
+    let currentLifecycle = RuntimeLifecycleProjection.snapshot(
+        coreAvailable: true,
+        coreMessage: "The coordination core matches this Parley build.",
+        panes: [readyAgent, stopped]
     )
     try expect(
-        rootDragBinding.contains("copy-mode -M")
-            && !rootDragBinding.contains("mouse_any_flag")
-            && !rootDragBinding.contains("send-keys -M"),
-        "normal mouse dragging is not selection-first"
-    )
-    for redundantOption in ["status-position", "status-style", "status-left", "status-right"] {
-        try expect(!configuration.contains(redundantOption), "embedded tmux configuration retained redundant \(redundantOption) chrome")
-    }
-    try expect(
-        runner.calls.contains {
-            command($0.arguments) == "set-option"
-                && $0.arguments.contains("status")
-                && $0.arguments.contains("off")
-        },
-        "reattaching the native UI did not remove the live tmux status bar"
+        currentLifecycle.core == .current(detail: "The coordination core matches this Parley build."),
+        "a matching coordination core was not projected as current"
     )
     try expect(
-        runner.calls.contains {
-            $0.arguments.contains("set-window-option")
-                && $0.arguments.contains("pane-border-status")
-                && $0.arguments.contains("top")
-        },
-        "reattaching the native UI did not restore live compact pane titles"
+        currentLifecycle.protocol == .current(version: AgentProtocol.version, runningPaneCount: 1),
+        "current protocol coverage included a stopped placeholder or lost a running pane"
+    )
+
+    let staleLifecycle = RuntimeLifecycleProjection.snapshot(
+        coreAvailable: true,
+        coreMessage: "The app-resident coordination core is current.",
+        panes: [stale, unknownProtocol, stopped]
     )
     try expect(
-        runner.calls.contains {
-            command($0.arguments) == "bind-key"
-                && $0.arguments.contains("MouseDragEnd1Pane")
-                && $0.arguments.contains("/usr/bin/pbcopy")
-        },
-        "reattaching the native UI did not restore the macOS copy binding"
-    )
-    let liveRootDragBinding = try require(
-        runner.calls.first {
-            command($0.arguments) == "bind-key"
-                && $0.arguments.contains("MouseDrag1Pane")
-                && $0.arguments.contains("root")
-        },
-        "reattaching the native UI did not restore the root drag binding"
+        staleLifecycle.core == .current(detail: "The app-resident coordination core is current."),
+        "a current app-resident core was not projected honestly"
     )
     try expect(
-        liveRootDragBinding.arguments.contains("copy-mode")
-            && liveRootDragBinding.arguments.contains("-M")
-            && !liveRootDragBinding.arguments.contains("if-shell")
-            && !liveRootDragBinding.arguments.contains("send-keys -M"),
-        "the live tmux server did not receive the selection-first drag binding"
-    )
-}
-
-private func checkPaneFocusAndCopyMetadata() throws {
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-panes":
-            output(paneRow(id: "%4", kind: .codex, active: true, inCopyMode: true) + "\n")
-        case "list-windows":
-            output(workspaceRow(id: "@2", windowName: "parley", active: true, zoomed: true) + "\n")
-        default:
-            output()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: try temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
+        staleLifecycle.protocol == .restartRequired(
+            version: AgentProtocol.version,
+            paneIDs: ["%4", "%6"]
+        ),
+        "the lifecycle summary did not identify exactly the running stale panes"
     )
 
-    let pane = try require(controller.listPanes().first, "copy-mode pane metadata was not parsed")
-    let workspace = try require(controller.listWorkspaces().first, "zoomed workspace metadata was not parsed")
-    try expect(pane.isInCopyMode, "pane_in_mode was not projected into pane state")
-    try expect(workspace.isZoomed, "window_zoomed_flag was not projected into workspace state")
-
-    try controller.enterCopyMode(pane.id)
-    try controller.cancelCopyMode(pane.id)
-    try expect(
-        runner.calls.contains {
-            command($0.arguments) == "copy-mode"
-                && !$0.arguments.contains("-e")
-                && $0.arguments.contains(pane.id)
-        },
-        "entering Copy Mode did not target the exact active pane without the exit-at-bottom flag"
+    let disconnectedLifecycle = RuntimeLifecycleProjection.snapshot(
+        coreAvailable: false,
+        coreMessage: "stale detail",
+        panes: []
     )
     try expect(
-        runner.calls.contains {
-            command($0.arguments) == "send-keys"
-                && $0.arguments.contains("-X")
-                && $0.arguments.contains("cancel")
-        },
-        "exiting Copy Mode did not cancel tmux selection without terminal input"
+        disconnectedLifecycle.core == .unavailable,
+        "a disconnected core displayed stale upgrade state"
     )
 
-    try controller.selectPane(pane.id, preservingWindowZoom: true)
-    let selectWindow = try require(
-        runner.calls.last { command($0.arguments) == "select-window" },
-        "pane focus did not select its member window"
+}
+
+private func checkPrecisionGridChromeUsesOwnedState() throws {
+    let running = WorkbenchPane(
+        id: "pane-running",
+        kind: .codex,
+        customName: "Builder",
+        terminalTitle: "",
+        cwd: "/tmp/parley",
+        currentCommand: "codex",
+        isActive: true,
+        workspaceID: "window-running",
+                relayEnabled: true,
+        protocolVersion: AgentProtocol.version,
+        isStarted: true
+    )
+    let stopped = WorkbenchPane(
+        id: "pane-stopped",
+        kind: .claude,
+        customName: "Reviewer",
+        terminalTitle: "",
+        cwd: "/tmp/parley",
+        currentCommand: "claude",
+        isActive: false,
+        workspaceID: "window-stopped",
+                isDead: true,
+        isStarted: false
+    )
+
+    try expect(
+        WorkbenchChromeProjection.selectionLabel(running) == "SELECTED",
+        "the active Precision Grid pane was not labelled as the owned selection"
     )
     try expect(
-        selectWindow.arguments.contains("=parley:@0"),
-        "pane focus did not qualify its window to the authoritative base session"
+        WorkbenchChromeProjection.processLabel(running) == "RUNNING",
+        "the Precision Grid inferred readiness instead of reporting a live process"
     )
     try expect(
-        runner.calls.contains { command($0.arguments) == "resize-pane" && $0.arguments.contains("-Z") },
-        "focus-strip pane selection did not restore the zoomed window"
+        WorkbenchChromeProjection.processLabel(stopped) == "STOPPED",
+        "the Precision Grid hid a stopped placeholder"
     )
-}
-
-private func paneRow(
-    id: String,
-    kind: PaneKind,
-    active: Bool,
-    name: String? = nil,
-    cwd: String = "/tmp",
-    currentCommand: String? = nil,
-    returnTo: String = "",
-    relayEnabled: Bool = false,
-    protocolVersion: String = "",
-    windowID: String = "@0",
-    workspaceActive: Bool = true,
-    workspaceName: String = "parley",
-    bracketedPasteActive: Bool = true,
-    started: Bool = true,
-    isDead: Bool = false,
-    exitStatus: Int? = nil,
-    isLead: Bool = false,
-    automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate,
-    permissionSelection: PermissionProfileSelection? = nil,
-    permissionEnforcement: PermissionEnforcementLevel? = nil,
-    role: String? = nil,
-    inCopyMode: Bool = false
-) -> String {
-    [id, kind.rawValue, name ?? kind.label, name ?? kind.label, cwd, currentCommand ?? kind.rawValue, active ? "1" : "0", windowID, returnTo, relayEnabled ? "1" : "", protocolVersion, workspaceActive ? "1" : "0", workspaceName, bracketedPasteActive ? "1" : "0", started ? "1" : "0", isDead ? "1" : "", exitStatus.map(String.init) ?? "", isLead ? "1" : "", automationPolicy.rawValue, permissionSelection?.tmuxMetadataValue ?? "", permissionEnforcement?.rawValue ?? "", role ?? "", inCopyMode ? "1" : ""]
-        .joined(separator: TmuxController.outputFieldSeparator)
-}
-
-private func workspaceRow(
-    id: String,
-    windowName: String,
-    active: Bool,
-    name: String = "",
-    homeFolder: String = "",
-    folder: String = "",
-    paneFolder: String = "/tmp",
-    automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate,
-    zoomed: Bool = false,
-    workspaceID: String = ""
-) -> String {
-    [id, windowName, active ? "1" : "0", name, homeFolder, folder, paneFolder, automationPolicy.rawValue, zoomed ? "1" : "", workspaceID]
-        .joined(separator: TmuxController.outputFieldSeparator)
-}
-
-private func unclassifiedPaneRow(
-    id: String,
-    windowID: String,
-    windowName: String,
-    cwd: String,
-    currentCommand: String,
-    isDead: Bool = false,
-    kind: String = ""
-) -> String {
-    [id, windowID, windowName, cwd, currentCommand, isDead ? "1" : "", kind]
-        .joined(separator: TmuxController.outputFieldSeparator)
-}
-
-private func checkBootstrap() throws {
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "has-session": output(status: 1)
-        case "new-session": output("@0\(TmuxController.outputFieldSeparator)%0\n")
-        default: output()
-        }
-    }
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: directory,
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    try controller.bootstrap(cwd: "/tmp")
-
-    try expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("tmux.conf").path), "tmux.conf was not written")
-    let newSession = try require(runner.calls.first(where: { command($0.arguments) == "new-session" }), "new-session was not invoked")
-    try expect(newSession.arguments.contains("-d"), "new-session was not detached")
-    try expect(newSession.arguments.contains("/tmp"), "new-session lost its cwd")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("@parley-kind") && call.arguments.contains("shell")
-    }, "initial pane was not stamped as a shell")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("@parley-workspace-name") && call.arguments.contains("tmp")
-    }, "initial tmux window was not stamped with a workspace name")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("@parley-workspace-folder") && call.arguments.contains("/tmp")
-    }, "initial tmux window was not stamped with its workspace folder")
-}
-
-private func checkBootstrapRecoversMissingIdentifiers() throws {
-    var pendingName = ""
-    var sessionExists = false
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "has-session":
-            return output(status: sessionExists ? 0 : 1)
-        case "new-session":
-            pendingName = arguments.drop(while: { $0 != "-n" }).dropFirst().first ?? ""
-            sessionExists = true
-            return output()
-        case "list-panes" where sessionExists:
-            return output(unclassifiedPaneRow(
-                id: "%0",
-                windowID: "@0",
-                windowName: pendingName,
-                cwd: "/tmp",
-                currentCommand: "zsh"
-            ) + "\n")
-        default:
-            return output()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    try controller.bootstrap(cwd: "/tmp")
-
-    try expect(pendingName.hasPrefix("Parley-Pending-"), "first-run bootstrap did not create a recoverable provisional window")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("%0")
-            && call.arguments.contains("@parley-kind") && call.arguments.contains("shell")
-    }, "first-run bootstrap did not recover its shell after tmux omitted the ids")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "rename-window" && call.arguments.contains("@0") && call.arguments.contains("tmp")
-    }, "first-run bootstrap did not commit the recovered workspace name")
-    try expect(!runner.calls.contains { command($0.arguments) == "kill-window" }, "successful first-run recovery removed its live window")
-}
-
-private func checkExistingSessionAdoptsWorkspaceWithoutRestart() throws {
-    let existing = workspaceRow(id: "@0", windowName: "agents", active: true)
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "has-session": output()
-        case "list-windows": output("\(existing)\n")
-        default: output()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    try controller.bootstrap(cwd: "/tmp")
-
-    try expect(!runner.calls.contains { command($0.arguments) == "new-session" }, "adoption replaced the existing tmux session")
-    try expect(!runner.calls.contains { command($0.arguments) == "respawn-pane" }, "adoption restarted a live pane")
-    try expect(!runner.calls.contains { command($0.arguments) == "kill-pane" }, "adoption killed a live pane")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("@0")
-            && call.arguments.contains("@parley-workspace-name") && call.arguments.contains("tmp")
-    }, "adoption did not derive the workspace name from the live pane folder")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("@0")
-            && call.arguments.contains("@parley-workspace-folder") && call.arguments.contains("/tmp")
-    }, "adoption did not persist the live pane folder")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("@0")
-            && call.arguments.contains("@parley-workspace-home-folder") && call.arguments.contains("/tmp")
-    }, "adoption did not migrate the live pane folder into a workspace home")
-}
-
-private func checkWorkspaceLifecycle() throws {
-    let existing = [
-        workspaceRow(id: "@0", windowName: "parley", active: true, name: "parley", folder: "/tmp"),
-        workspaceRow(id: "@1", windowName: "client", active: false, name: "client", folder: "/private/tmp"),
-    ].joined(separator: "\n") + "\n"
-    let panes = [
-        paneRow(id: "%1", kind: .shell, active: true, windowID: "@0", workspaceName: "parley"),
-        paneRow(id: "%2", kind: .codex, active: true, windowID: "@1", workspaceActive: false, workspaceName: "client"),
-    ].joined(separator: "\n") + "\n"
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-windows": output(existing)
-        case "list-panes": output(panes)
-        case "new-window": output("@2\(TmuxController.outputFieldSeparator)%9\n")
-        default: output()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    let created = try controller.createWorkspace(folder: "/tmp", name: "Server")
     try expect(
-        created.id == "@2" && created.name == "Server"
-            && created.homeFolder == "/tmp" && created.defaultFolder == "/tmp",
-        "new workspace lost its tmux id, name, home or New Pane Folder"
+        WorkbenchChromeProjection.connectionLabel(.connected) == "Core healthy",
+        "the healthy footer label did not come from authoritative connection state"
     )
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option"
-            && call.arguments.contains("@parley-workspace-home-folder")
-            && call.arguments.contains("/tmp")
-    }, "new workspace home was not persisted")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "new-window" && call.arguments.contains("/tmp")
-            && call.arguments.contains(where: { $0.hasPrefix("Parley-Pending-") })
-    }, "workspace creation did not create a recoverable tmux window in its folder")
     try expect(
-        runner.calls.contains {
-            command($0.arguments) == "select-window"
-                && $0.arguments.contains("=parley:@2")
-        },
-        "new workspace was not selected in the authoritative base session"
+        WorkbenchChromeProjection.connectionLabel(.coreDisconnected) == "Core disconnected",
+        "the footer hid a disconnected coordination core"
     )
-
-    let qualified = try controller.createWorkspace(folder: "/tmp", name: "CLIENT")
-    try expect(qualified.name == "CLIENT (2)", "duplicate workspace name was not visibly qualified")
-
-    do {
-        try controller.renameWorkspace("@1", name: "PARLEY")
-        throw CheckFailure(description: "workspace rename accepted a duplicate name")
-    } catch let error as ParleyTmuxError {
-        try expect(error.errorDescription?.localizedCaseInsensitiveContains("already exists") == true, "duplicate workspace rename failed without an explanation")
-    }
-
-    try controller.renameWorkspace("@1", name: "Website")
-    try expect(runner.calls.contains { command($0.arguments) == "rename-window" && $0.arguments.contains("Website") }, "workspace rename did not update the tmux window")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("@parley-workspace-name") && call.arguments.contains("Website")
-    }, "workspace rename did not update durable metadata")
-
-    try controller.setWorkspaceFolder("@1", folder: "/tmp")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("@parley-workspace-folder") && call.arguments.contains("/tmp")
-    }, "workspace folder change was not persisted")
-
-    try controller.closeWorkspace("@1")
-    try expect(runner.calls.contains { command($0.arguments) == "kill-window" && $0.arguments.contains("@1") }, "workspace close did not close its tmux window")
-}
-
-private func checkWorkspaceCreationRecoversMissingIdentifiers() throws {
-    var pendingName = ""
-    var windowExists = false
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-windows":
-            return output(workspaceRow(id: "@0", windowName: "parley", active: true, name: "parley", folder: "/tmp") + "\n")
-        case "new-window":
-            pendingName = arguments.drop(while: { $0 != "-n" }).dropFirst().first ?? ""
-            windowExists = true
-            return output()
-        case "list-panes" where windowExists:
-            return output(unclassifiedPaneRow(
-                id: "%9",
-                windowID: "@2",
-                windowName: pendingName,
-                cwd: "/tmp",
-                currentCommand: "zsh"
-            ) + "\n")
-        default:
-            return output()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
+    try expect(
+        WorkbenchChromeProjection.connectionLabel(.terminalDisconnected) == "Terminal unavailable",
+        "the footer hid a terminal stack failure"
     )
-
-    let created = try controller.createWorkspace(folder: "/tmp", name: "Recovered")
-
-    try expect(created.id == "@2" && created.name == "Recovered", "workspace creation did not recover the ids from live tmux state")
-    try expect(pendingName.hasPrefix("Parley-Pending-"), "workspace creation did not use a uniquely recoverable temporary name")
-    try expect(!runner.calls.contains { command($0.arguments) == "kill-window" }, "successful workspace recovery killed the created window")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "rename-window" && call.arguments.contains("@2") && call.arguments.contains("Recovered")
-    }, "recovered workspace was not committed under its requested name")
-}
-
-private func checkWorkspaceCreationCleansAmbiguousPendingWindow() throws {
-    var pendingName = ""
-    var windowExists = false
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-windows":
-            return output(workspaceRow(id: "@0", windowName: "parley", active: true, name: "parley", folder: "/tmp") + "\n")
-        case "new-window":
-            pendingName = arguments.drop(while: { $0 != "-n" }).dropFirst().first ?? ""
-            windowExists = true
-            return output()
-        case "list-panes" where windowExists:
-            return output([
-                unclassifiedPaneRow(id: "%9", windowID: "@2", windowName: pendingName, cwd: "/tmp", currentCommand: "zsh"),
-                unclassifiedPaneRow(id: "%10", windowID: "@2", windowName: pendingName, cwd: "/tmp", currentCommand: "zsh"),
-            ].joined(separator: "\n") + "\n")
-        default:
-            return output()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    do {
-        _ = try controller.createWorkspace(folder: "/tmp", name: "Ambiguous")
-        throw CheckFailure(description: "workspace creation accepted an ambiguous pending window")
-    } catch let error as ParleyTmuxError {
-        try expect(
-            error.errorDescription?.localizedCaseInsensitiveContains("safely identify") == true,
-            "ambiguous workspace recovery failed without a useful explanation"
-        )
-    }
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "kill-window" && call.arguments.contains("@2")
-    }, "failed workspace recovery leaked the exact pending window it created")
-}
-
-private func checkWorkspaceCreationRetriesExactPendingTarget() throws {
-    var pendingName = ""
-    var displayAttempts = 0
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-windows":
-            return output(workspaceRow(id: "@0", windowName: "parley", active: true, name: "parley", folder: "/tmp") + "\n")
-        case "new-window":
-            pendingName = arguments.drop(while: { $0 != "-n" }).dropFirst().first ?? ""
-            return output()
-        case "display-message":
-            displayAttempts += 1
-            return displayAttempts == 3 ? output("@2\(TmuxController.outputFieldSeparator)%9\n") : output()
-        case "list-panes":
-            return output()
-        default:
-            return output()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner,
-        pause: { _ in }
-    )
-
-    let created = try controller.createWorkspace(folder: "/tmp", name: "Delayed")
-
-    try expect(created.id == "@2", "delayed exact-name reconciliation returned the wrong workspace")
-    try expect(displayAttempts == 3, "workspace creation did not retry the exact provisional target")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "display-message"
-            && call.arguments.contains(where: { $0.contains(pendingName) })
-    }, "workspace recovery enumerated state instead of targeting its unique provisional window")
-}
-
-private func checkWorkspaceCreationCleansPendingTargetWithoutCapturedIDs() throws {
-    var pendingName = ""
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-windows":
-            return output(workspaceRow(id: "@0", windowName: "parley", active: true, name: "parley", folder: "/tmp") + "\n")
-        case "new-window":
-            pendingName = arguments.drop(while: { $0 != "-n" }).dropFirst().first ?? ""
-            return output()
-        case "display-message", "list-panes":
-            return output()
-        default:
-            return output()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner,
-        pause: { _ in }
-    )
-
-    do {
-        _ = try controller.createWorkspace(folder: "/tmp", name: "Uncaptured")
-        throw CheckFailure(description: "workspace creation succeeded without recovering any identifiers")
-    } catch is ParleyTmuxError {
-        // The exact cleanup assertion below is the contract under test.
-    }
-
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "kill-window"
-            && call.arguments.contains("=parley:=\(pendingName)")
-    }, "workspace recovery could not clean its unique provisional target without captured ids")
-}
-
-private func checkExistingSessionAdoptsOnlyUnclassifiedShells() throws {
-    let workspaces = [
-        workspaceRow(id: "@6", windowName: "demo", active: true, paneFolder: "/tmp/demo"),
-        workspaceRow(id: "@7", windowName: "agent", active: false, paneFolder: "/tmp/agent"),
-    ].joined(separator: "\n") + "\n"
-    let unclassified = [
-        unclassifiedPaneRow(id: "%27", windowID: "@6", windowName: "demo", cwd: "/tmp/demo", currentCommand: "zsh"),
-        unclassifiedPaneRow(id: "%28", windowID: "@7", windowName: "agent", cwd: "/tmp/agent", currentCommand: "codex"),
-    ].joined(separator: "\n") + "\n"
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "has-session": output()
-        case "list-windows": output(workspaces)
-        case "list-panes": output(unclassified)
-        default: output()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    try controller.bootstrap(cwd: "/tmp")
-
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("%27")
-            && call.arguments.contains("@parley-kind") && call.arguments.contains("shell")
-    }, "existing single-shell workspace was not recovered with metadata only")
-    try expect(!runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("%28")
-            && call.arguments.contains("@parley-kind")
-    }, "an unclassified agent-looking process was incorrectly adopted as a shell")
-    try expect(!runner.calls.contains { command($0.arguments) == "respawn-pane" }, "legacy shell adoption restarted a live process")
-    try expect(!runner.calls.contains { command($0.arguments) == "kill-pane" || command($0.arguments) == "kill-window" }, "legacy shell adoption killed live state")
 }
 
 private func checkWorkspaceContinuityState() throws {
@@ -1905,9 +1072,9 @@ private func checkWorkspaceContinuityState() throws {
         "equivalent workspace folders did not match"
     )
 
-    let api = TmuxWorkspace(id: "@0", name: "api", defaultFolder: "/tmp/api", isActive: false)
-    let renamedWeb = TmuxWorkspace(id: "@1", name: "website", defaultFolder: "/tmp/web", isActive: true)
-    let worker = TmuxWorkspace(id: "@2", name: "worker", defaultFolder: "/tmp/worker", isActive: false)
+    let api = WorkbenchWorkspace(id: "@0", name: "api", defaultFolder: "/tmp/api", isActive: false)
+    let renamedWeb = WorkbenchWorkspace(id: "@1", name: "website", defaultFolder: "/tmp/web", isActive: true)
+    let worker = WorkbenchWorkspace(id: "@2", name: "worker", defaultFolder: "/tmp/worker", isActive: false)
     var state = WorkspaceContinuityState(
         favouriteFolders: ["/tmp/api/", "/tmp/api", "/tmp/web"],
         workspaceOrder: [
@@ -1931,10 +1098,10 @@ private func checkWorkspaceContinuityState() throws {
     try expect(unchanged.map(\.id) == moved.map(\.id), "workspace move crossed the first-tab boundary")
     try expect(state.workspaceOrder.map(\.name) == ["website", "worker", "api"], "moved tab order was not retained in continuity state")
 
-    let movedAPI = TmuxWorkspace(id: "@0", name: "backend", defaultFolder: "/tmp/backend", isActive: false)
+    let movedAPI = WorkbenchWorkspace(id: "@0", name: "backend", defaultFolder: "/tmp/backend", isActive: false)
     state.updateWorkspace(from: api, to: movedAPI)
     try expect(state.workspaceOrder.last == WorkspaceBookmark(workspace: movedAPI), "rename/folder update lost the workspace's tab position")
-    let movedWeb = TmuxWorkspace(id: "@1", name: "frontend", defaultFolder: "/tmp/frontend", isActive: true)
+    let movedWeb = WorkbenchWorkspace(id: "@1", name: "frontend", defaultFolder: "/tmp/frontend", isActive: true)
     state.updateWorkspace(from: renamedWeb, to: movedWeb)
     try expect(state.lastSelected == WorkspaceBookmark(workspace: movedWeb), "rename/folder update lost the last-selected workspace")
 
@@ -1957,17 +1124,17 @@ private func checkWorkspaceContinuityState() throws {
     // and must disambiguate two workspaces sharing one folder.
     let alphaID = "11111111-1111-1111-1111-111111111111"
     let betaID = "22222222-2222-2222-2222-222222222222"
-    let alpha = TmuxWorkspace(
+    let alpha = WorkbenchWorkspace(
         id: "@7", name: "alpha", defaultFolder: "/tmp/shared", isActive: false, workspaceID: alphaID
     )
-    let beta = TmuxWorkspace(
+    let beta = WorkbenchWorkspace(
         id: "@8", name: "beta", defaultFolder: "/tmp/shared", isActive: false, workspaceID: betaID
     )
     var identityState = WorkspaceContinuityState(
         workspaceOrder: [WorkspaceBookmark(workspace: beta), WorkspaceBookmark(workspace: alpha)],
         lastSelected: WorkspaceBookmark(workspace: beta)
     )
-    let relocatedBeta = TmuxWorkspace(
+    let relocatedBeta = WorkbenchWorkspace(
         id: "@9", name: "renamed-beta", defaultFolder: "/tmp/elsewhere", isActive: false, workspaceID: betaID
     )
     let identityOrdered = identityState.reconcile([alpha, relocatedBeta])
@@ -1982,7 +1149,7 @@ private func checkWorkspaceContinuityState() throws {
     let identityEncoded = try JSONEncoder().encode(identityState)
     let identityDecoded = try JSONDecoder().decode(WorkspaceContinuityState.self, from: identityEncoded)
     try expect(identityDecoded == identityState, "identity bookmarks did not round-trip losslessly")
-    let unstamped = TmuxWorkspace(id: "@3", name: "plain", defaultFolder: "/tmp/plain", isActive: false)
+    let unstamped = WorkbenchWorkspace(id: "@3", name: "plain", defaultFolder: "/tmp/plain", isActive: false)
     try expect(
         WorkspaceBookmark(workspace: unstamped).workspaceID == nil,
         "a live window id leaked into a durable bookmark identity"
@@ -2013,15 +1180,17 @@ private func checkWorkspaceRegistryDurability() throws {
         "a pre-layout registry record did not decode"
     )
     try expect(
-        migratedLegacy.layout == nil && migratedLegacy.layoutRevision == 0,
+        migratedLegacy.layout == nil && migratedLegacy.layoutRevision == 0
+            && migratedLegacy.attachedFolders == ["/tmp/legacy"]
+            && migratedLegacy.newPaneFolder == "/tmp/legacy",
         "a pre-layout registry record did not receive honest layout defaults"
     )
 
-    let stamped = TmuxWorkspace(
+    let stamped = WorkbenchWorkspace(
         id: "@1", name: "api", homeFolder: "/tmp/api", defaultFolder: "/tmp/api/feature",
         isActive: true, workspaceID: "aaaaaaaa-1111-1111-1111-111111111111"
     )
-    let unstamped = TmuxWorkspace(id: "@2", name: "legacy", defaultFolder: "/tmp/legacy", isActive: false)
+    let unstamped = WorkbenchWorkspace(id: "@2", name: "legacy", defaultFolder: "/tmp/legacy", isActive: false)
     let recorded = try registry.synchronize(
         workspaces: [stamped, unstamped],
         selectedPaneIDs: [stamped.workspaceID: "%4"]
@@ -2032,7 +1201,7 @@ private func checkWorkspaceRegistryDurability() throws {
     let record = try require(records.first, "registry lost its only record")
     try expect(
         record.workspaceID == stamped.workspaceID && record.name == "api"
-            && record.homeFolder == "/tmp/api" && record.defaultFolder == "/tmp/api/feature"
+            && record.attachedFolders == ["/tmp/api"] && record.newPaneFolder == "/tmp/api/feature"
             && record.selectedPaneID == "%4" && record.layoutRevision == 0,
         "registry record did not capture the workspace's durable facts"
     )
@@ -2064,10 +1233,10 @@ private func checkWorkspaceRegistryDurability() throws {
     let afterAbsent = try registry.records()
     try expect(
         !absentSet && afterAbsent.count == 1,
-        "an absent workspace changed or lost its record; a stopped tmux server is not a close"
+        "an absent workspace changed or lost its record; transient process loss is not a close"
     )
 
-    let renamed = TmuxWorkspace(
+    let renamed = WorkbenchWorkspace(
         id: "@9", name: "api-renamed", homeFolder: "/tmp/api", defaultFolder: "/tmp/api",
         isActive: true, workspaceID: stamped.workspaceID
     )
@@ -2075,7 +1244,7 @@ private func checkWorkspaceRegistryDurability() throws {
     let renamedRecord = try registry.record(workspaceID: stamped.workspaceID)
     try expect(
         renameChanged && renamedRecord?.name == "api-renamed"
-            && renamedRecord?.defaultFolder == "/tmp/api"
+            && renamedRecord?.newPaneFolder == "/tmp/api"
             && renamedRecord?.selectedPaneID == "%8",
         "a renamed workspace did not update its record while keeping the selected pane"
     )
@@ -2119,19 +1288,125 @@ private func checkWorkspaceRegistryDurability() throws {
     }
 }
 
-private func checkWorkspaceHomeAndNewPaneFolderModel() throws {
-    let legacy = TmuxWorkspace(
+private func checkWorkspaceFolderAttachmentModel() throws {
+    let folderless = WorkbenchWorkspace(
+        id: "@folderless",
+        name: "Unbound review",
+        attachedFolders: [],
+        newPaneFolder: nil,
+        isActive: false,
+        workspaceID: "folderless-durable-id"
+    )
+    try expect(folderless.isFolderless, "a workspace with no attachments was not represented explicitly")
+    try expect(folderless.primaryAttachedFolder == nil, "a folderless workspace invented a primary folder")
+    try expect(folderless.newPaneFolder == nil, "a folderless workspace invented a New Pane Folder")
+    try expect(
+        WorkspaceBookmark(workspace: folderless).workspaceID == folderless.workspaceID,
+        "a folderless workspace did not keep its durable continuity identity"
+    )
+
+    let multiRepository = WorkbenchWorkspace(
+        id: "@multi",
+        name: "Release train",
+        attachedFolders: ["/tmp/api", "/tmp/web", "/tmp/api/"],
+        newPaneFolder: "/tmp/scratch",
+        isActive: true,
+        workspaceID: "multi-durable-id"
+    )
+    try expect(
+        multiRepository.attachedFolders == ["/tmp/api", "/tmp/web"],
+        "workspace attachments were not normalized and de-duplicated"
+    )
+    try expect(
+        multiRepository.newPaneFolder == "/tmp/scratch",
+        "the New Pane Folder was not independent of attached folders"
+    )
+    try expect(
+        WorkspaceFolderRouting.resolve(folder: "/tmp/web", in: [folderless, multiRepository]) == .focus("@multi"),
+        "folder opening did not match every explicit workspace attachment"
+    )
+    try expect(
+        WorkspaceFolderRouting.resolve(folder: "/tmp/scratch", in: [folderless, multiRepository]) == .create,
+        "the New Pane Folder was incorrectly treated as a workspace attachment"
+    )
+
+    let folderlessRoundTrip = try JSONDecoder().decode(
+        WorkbenchWorkspace.self,
+        from: JSONEncoder().encode(folderless)
+    )
+    try expect(folderlessRoundTrip == folderless, "a folderless workspace did not round-trip losslessly")
+
+    let legacyWorkspaceJSON = Data(
+        #"{"id":"@migrated","name":"Migrated","homeFolder":"/tmp/project","defaultFolder":"/tmp/project/feature","isActive":false,"automationPolicy":"askAndDelegate","workspaceID":"migrated-durable-id"}"#.utf8
+    )
+    let migratedWorkspace = try JSONDecoder().decode(WorkbenchWorkspace.self, from: legacyWorkspaceJSON)
+    try expect(
+        migratedWorkspace.attachedFolders == ["/tmp/project"]
+            && migratedWorkspace.newPaneFolder == "/tmp/project/feature",
+        "a legacy workspace did not migrate its home and New Pane Folder losslessly"
+    )
+
+    let controllerDirectory = try temporaryDirectory()
+    let controller = try WorkbenchController(
+        applicationDirectory: controllerDirectory,
+        environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"]
+    )
+    try controller.bootstrap(cwd: controllerDirectory.path)
+    let initialWorkspace = try require(
+        try controller.listWorkspaces().first,
+        "folderless bootstrap did not create a workspace"
+    )
+    let initialPane = try require(
+        try controller.listPanes().first,
+        "folderless bootstrap did not create its safe shell"
+    )
+    try expect(
+        initialWorkspace.isFolderless && initialWorkspace.newPaneFolder == nil,
+        "bootstrap silently attached its safe shell working directory"
+    )
+    try expect(
+        initialPane.kind == .shell && initialPane.cwd == controllerDirectory.path,
+        "a folderless workspace did not retain a usable shell working directory"
+    )
+    let secondAttachment = controllerDirectory.appendingPathComponent("second", isDirectory: true)
+    try FileManager.default.createDirectory(at: secondAttachment, withIntermediateDirectories: true)
+    try controller.attachFolder(controllerDirectory.path, toWorkspace: initialWorkspace.id)
+    try controller.attachFolder(secondAttachment.path, toWorkspace: initialWorkspace.id)
+    try controller.moveAttachedFolder(
+        secondAttachment.path,
+        inWorkspace: initialWorkspace.id,
+        by: -1
+    )
+    let attachedWorkspace = try controller.listWorkspaces().first
+    try expect(
+        attachedWorkspace?.attachedFolders == [secondAttachment.path, controllerDirectory.path],
+        "attaching and reordering folders did not update workspace metadata"
+    )
+    try controller.detachFolder(secondAttachment.path, fromWorkspace: initialWorkspace.id)
+    try controller.detachFolder(controllerDirectory.path, fromWorkspace: initialWorkspace.id)
+    let detachedWorkspace = try controller.listWorkspaces().first
+    let unchangedPane = try controller.listPanes().first
+    try expect(
+        detachedWorkspace?.isFolderless == true,
+        "removing the final attachment did not restore a normal folderless state"
+    )
+    try expect(
+        unchangedPane?.cwd == initialPane.cwd,
+        "attachment removal changed a running pane's working directory"
+    )
+
+    let legacy = WorkbenchWorkspace(
         id: "@legacy",
         name: "Legacy",
         defaultFolder: "/tmp/legacy",
         isActive: false
     )
     try expect(
-        legacy.homeFolder == "/tmp/legacy",
-        "legacy workspace did not migrate its New Pane Folder into a home folder"
+        legacy.attachedFolders == ["/tmp/legacy"] && legacy.newPaneFolder == "/tmp/legacy",
+        "legacy workspace did not migrate its New Pane Folder into an attachment"
     )
 
-    let implementation = TmuxWorkspace(
+    let implementation = WorkbenchWorkspace(
         id: "@implementation",
         name: "Implementation",
         homeFolder: "/tmp/project",
@@ -2139,12 +1414,12 @@ private func checkWorkspaceHomeAndNewPaneFolderModel() throws {
         isActive: true
     )
     try expect(
-        implementation.homeFolder == "/tmp/project"
-            && implementation.defaultFolder == "/tmp/project/feature",
-        "workspace home and New Pane Folder were not independent"
+        implementation.attachedFolders == ["/tmp/project"]
+            && implementation.newPaneFolder == "/tmp/project/feature",
+        "workspace attachments and New Pane Folder were not independent"
     )
 
-    let review = TmuxWorkspace(
+    let review = WorkbenchWorkspace(
         id: "@review",
         name: "Security Review",
         homeFolder: "/tmp/project",
@@ -2154,12 +1429,12 @@ private func checkWorkspaceHomeAndNewPaneFolderModel() throws {
     try expect(
         WorkspaceFolderRouting.resolve(folder: "/tmp/project", in: [implementation, review])
             == .choose(["@implementation", "@review"]),
-        "two task workspaces sharing one home folder were not presented as an explicit choice"
+        "two task workspaces sharing one attachment were not presented as an explicit choice"
     )
     try expect(
         WorkspaceFolderRouting.resolve(folder: "/tmp/legacy", in: [legacy, implementation])
             == .focus("@legacy"),
-        "one workspace home did not resolve directly"
+        "one workspace attachment did not resolve directly"
     )
     try expect(
         WorkspaceFolderRouting.resolve(folder: "/tmp/new", in: [legacy, implementation]) == .create,
@@ -2170,11 +1445,11 @@ private func checkWorkspaceHomeAndNewPaneFolderModel() throws {
         workspaceOrder: [WorkspaceBookmark(workspace: implementation)],
         lastSelected: WorkspaceBookmark(workspace: implementation)
     )
-    let retargeted = TmuxWorkspace(
+    let retargeted = WorkbenchWorkspace(
         id: implementation.id,
         name: implementation.name,
-        homeFolder: implementation.homeFolder,
-        defaultFolder: "/tmp/project/docs",
+        attachedFolders: implementation.attachedFolders,
+        newPaneFolder: "/tmp/project/docs",
         isActive: true
     )
     continuity.updateWorkspace(from: implementation, to: retargeted)
@@ -2241,7 +1516,7 @@ private func checkRuntimeReadinessProbesAreQuotaFree() throws {
     try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    for command in ["tmux", "claude", "codex", "agy", "copilot"] {
+    for command in ["claude", "codex", "agy", "copilot"] {
         let executable = bin.appendingPathComponent(command)
         try Data().write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
@@ -2254,8 +1529,6 @@ private func checkRuntimeReadinessProbesAreQuotaFree() throws {
 
     let runner = RecordingRunner { arguments, _ in
         switch arguments {
-        case ["-V"]:
-            CommandOutput(stdout: Data("tmux ready\n".utf8))
         case ["auth", "status", "--json"]:
             CommandOutput(stdout: Data(#"{"loggedIn":true}"#.utf8))
         case ["login", "status"]:
@@ -2273,7 +1546,7 @@ private func checkRuntimeReadinessProbesAreQuotaFree() throws {
         panes: []
     )
 
-    try expect(snapshot.item(.tmux)?.state == .ready, "tmux readiness was not confirmed")
+    try expect(snapshot.item(.terminal)?.state == .ready, "embedded terminal readiness was not confirmed")
     try expect(snapshot.item(.core)?.state == .ready, "healthy core was not projected")
     try expect(snapshot.item(.relay)?.state == .ready, "managed relay shim was not recognized")
     try expect(snapshot.item(.protocolRules)?.state == .ready, "current protocol rules were not recognized")
@@ -2301,7 +1574,6 @@ private func checkRuntimeReadinessProbesAreQuotaFree() throws {
     )
 
     let calls = runner.calls.map(\.arguments)
-    try expect(calls.contains(["-V"]), "tmux executable was not probed")
     try expect(calls.contains(["auth", "status", "--json"]), "Claude auth status was not probed")
     try expect(calls.contains(["login", "status"]), "Codex login status was not probed")
     try expect(calls.contains(["models"]), "Agy models status was not probed")
@@ -2314,12 +1586,9 @@ private func checkRuntimeReadinessProbesAreQuotaFree() throws {
         },
         "readiness used a model prompt or interactive login command"
     )
-    try expect(runner.calls.count == 4, "Copilot was invoked despite lacking a status-only auth command")
+    try expect(runner.calls.count == 3, "Copilot was invoked despite lacking a status-only auth command")
 
-    let tmuxOverride = root.appendingPathComponent("custom-tmux")
-    try Data().write(to: tmuxOverride)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmuxOverride.path)
-    let stalePane = TmuxPane(
+    let stalePane = WorkbenchPane(
         id: "%9",
         kind: .claude,
         customName: nil,
@@ -2327,20 +1596,15 @@ private func checkRuntimeReadinessProbesAreQuotaFree() throws {
         cwd: "/tmp",
         currentCommand: "claude",
         isActive: true,
-        windowID: "@0",
-        returnToPaneID: nil,
-        protocolVersion: "older",
+        workspaceID: "@0",
+                protocolVersion: "older",
         isStarted: true
     )
     let overrideSnapshot = RuntimeReadinessChecker(runner: runner).check(
-        environment: ["PATH": bin.path, "PARLEY_TMUX": tmuxOverride.path],
+        environment: ["PATH": bin.path],
         applicationDirectory: applicationDirectory,
         coreHealthy: true,
         panes: [stalePane]
-    )
-    try expect(
-        runner.calls[4].executable == tmuxOverride,
-        "readiness ignored the same explicit tmux override used by the workbench"
     )
     try expect(
         overrideSnapshot.item(.protocolRules)?.detail.hasPrefix("1 running agent pane") == true,
@@ -2377,7 +1641,7 @@ private func checkVendorCompatibilityAndRuntimeSignalsAreTruthful() throws {
             required: false
         )
     })
-    let misleadingPane = TmuxPane(
+    let misleadingPane = WorkbenchPane(
         id: "%1",
         kind: .claude,
         customName: "Claude",
@@ -2385,14 +1649,13 @@ private func checkVendorCompatibilityAndRuntimeSignalsAreTruthful() throws {
         cwd: "/private/project",
         currentCommand: "claude",
         isActive: true,
-        windowID: "@0",
-        returnToPaneID: nil,
-        relayEnabled: true,
+        workspaceID: "@0",
+                relayEnabled: true,
         protocolVersion: AgentProtocol.version,
-        bracketedPasteActive: true,
+        inputAvailable: true,
         isStarted: true
     )
-    let exitedPane = TmuxPane(
+    let exitedPane = WorkbenchPane(
         id: "%2",
         kind: .codex,
         customName: "Codex",
@@ -2400,9 +1663,8 @@ private func checkVendorCompatibilityAndRuntimeSignalsAreTruthful() throws {
         cwd: "/private/project",
         currentCommand: "codex",
         isActive: false,
-        windowID: "@0",
-        returnToPaneID: nil,
-        isDead: true,
+        workspaceID: "@0",
+                isDead: true,
         exitStatus: 7,
         isStarted: true
     )
@@ -2592,9 +1854,6 @@ private func checkBetaFeedbackBundleIsReviewedAndPrivacyBounded() throws {
         )],
         runtimeSignals: []
     )
-    let conformance = VendorConformanceReport(results: [
-        VendorConformanceResult(vendor: .claude, check: "Ask/Answer", outcome: .failed, detail: secrets[2]),
-    ])
     let diagnostics = DiagnosticsReportBuilder.build(
         generatedAt: Date(timeIntervalSince1970: 710),
         application: DiagnosticsApplication(
@@ -2607,7 +1866,7 @@ private func checkBetaFeedbackBundleIsReviewedAndPrivacyBounded() throws {
         architecture: "arm64",
         uiResidentBytes: nil,
         coreResidentBytes: nil,
-        tmuxAvailable: true,
+        terminalAvailable: true,
         coreAvailable: true,
         workspaceCount: 0,
         panes: [],
@@ -2624,17 +1883,15 @@ private func checkBetaFeedbackBundleIsReviewedAndPrivacyBounded() throws {
         ),
         updateChannel: .beta,
         compatibility: compatibility,
-        conformance: conformance,
         diagnostics: diagnostics
     )
     try expect(bundle.requiresExplicitReview, "feedback could be exported without an explicit review contract")
-    try expect(bundle.conformance.first?.detail == nil, "feedback retained a live conformance answer or failure body")
     let encoded = try BetaFeedbackBundleEncoder.encode(bundle)
     let text = String(decoding: encoded, as: UTF8.self)
     for secret in secrets {
         try expect(!text.contains(secret), "beta feedback leaked private value \(secret)")
     }
-    try expect(text.contains("4.5.6") && text.contains("failed"), "beta feedback omitted useful compatibility facts")
+    try expect(text.contains("4.5.6") && text.contains("compatible"), "beta feedback omitted useful compatibility facts")
 
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -2731,8 +1988,8 @@ private func checkSharedWorktreeWriterCollisionProjection() throws {
         profileID: String,
         started: Bool = true,
         dead: Bool = false
-    ) -> TmuxPane {
-        TmuxPane(
+    ) -> WorkbenchPane {
+        WorkbenchPane(
             id: id,
             kind: kind,
             customName: "Pane \(id)",
@@ -2740,9 +1997,8 @@ private func checkSharedWorktreeWriterCollisionProjection() throws {
             cwd: "/Users/example/project",
             currentCommand: kind.rawValue,
             isActive: false,
-            windowID: "@0",
-            returnToPaneID: nil,
-            isDead: dead,
+            workspaceID: "@0",
+                        isDead: dead,
             isStarted: started,
             permissionSelection: PermissionProfileSelection(
                 profileID: profileID,
@@ -2796,35 +2052,31 @@ private func checkWorkspaceSafetySummaryUsesOnlyAuthoritativeFacts() throws {
         lifetime: .remembered
     )
     let panes = [
-        TmuxPane(
+        WorkbenchPane(
             id: "%1", kind: .claude, customName: "Planner", terminalTitle: "", cwd: "/repo",
-            currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
-            isStarted: true, permissionSelection: flexible, permissionEnforcement: .partiallyEnforced,
-            workspaceID: "durable-project"
+            currentCommand: "claude", isActive: true, workspaceID: "durable-project",
+            isStarted: true, permissionSelection: flexible, permissionEnforcement: .partiallyEnforced
         ),
-        TmuxPane(
+        WorkbenchPane(
             id: "%2", kind: .codex, customName: "Stopped reviewer", terminalTitle: "", cwd: "/repo/subdir",
-            currentCommand: "codex", isActive: false, windowID: "@2", returnToPaneID: nil,
-            isStarted: false, permissionSelection: flexible, permissionEnforcement: .enforced,
-            workspaceID: "durable-project"
+            currentCommand: "codex", isActive: false, workspaceID: "durable-project",
+            isStarted: false, permissionSelection: flexible, permissionEnforcement: .enforced
         ),
-        TmuxPane(
+        WorkbenchPane(
             id: "%3", kind: .shell, customName: "Tests", terminalTitle: "", cwd: "/other",
-            currentCommand: "zsh", isActive: false, windowID: "@0", returnToPaneID: nil,
-            workspaceID: "durable-project"
+            currentCommand: "zsh", isActive: false, workspaceID: "durable-project"
         ),
-        TmuxPane(
+        WorkbenchPane(
             id: "%4", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/repo",
-            currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
-            isStarted: true, permissionSelection: flexible, permissionEnforcement: .enforced,
-            workspaceID: "durable-consumer"
+            currentCommand: "codex", isActive: false, workspaceID: "durable-consumer",
+            isStarted: true, permissionSelection: flexible, permissionEnforcement: .enforced
         ),
     ]
     let active = try statusHandoff(
         id: "active",
         kind: .ask,
         state: .waiting,
-        sourceWorkspaceID: "@2",
+        sourceWorkspaceID: "durable-project",
         targetWorkspaceID: "durable-consumer",
         occurredAt: 100,
         text: "PROMPT_MUST_NOT_APPEAR",
@@ -2837,7 +2089,7 @@ private func checkWorkspaceSafetySummaryUsesOnlyAuthoritativeFacts() throws {
         kind: .delegate,
         state: .completed,
         sourceWorkspaceID: "durable-project",
-        targetWorkspaceID: "@1",
+        targetWorkspaceID: "durable-consumer",
         occurredAt: 90,
         text: "COMPLETED_PROMPT_MUST_NOT_APPEAR"
     )
@@ -2856,7 +2108,7 @@ private func checkWorkspaceSafetySummaryUsesOnlyAuthoritativeFacts() throws {
         worktrees: [worktree],
         paneWorktreePaths: ["%1": "/repo", "%2": "/repo", "%4": "/repo"]
     )
-    let workspace = TmuxWorkspace(
+    let workspace = WorkbenchWorkspace(
         id: "@0",
         name: "project",
         defaultFolder: "/repo",
@@ -3011,11 +2263,10 @@ private func checkAccessibilityDescriptions() throws {
         "Status Center count description was incomplete or grammatically ambiguous"
     )
 
-    let exited = TmuxPane(
+    let exited = WorkbenchPane(
         id: "%7", kind: .codex, customName: "Audit", terminalTitle: "", cwd: "/tmp/library",
-        currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
-        relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "library",
-        bracketedPasteActive: true, isDead: true, exitStatus: 7, role: "reviewer"
+        currentCommand: "codex", isActive: false, workspaceID: "@1",         relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "library",
+        inputAvailable: true, isDead: true, exitStatus: 7, role: "reviewer"
     )
     try expect(
         WorkbenchAccessibility.agent(exited)
@@ -3183,6 +2434,36 @@ private func checkPortableTeamTemplatePersistenceAndApplication() throws {
         "applying a team template started an agent or reused a live pane id"
     )
 
+    let folderlessLayout = try template.folderlessWorkspaceLayout(
+        launchFolder: directory.path,
+        workspaceName: "Unbound Team"
+    )
+    try expect(
+        folderlessLayout.root.leaves.allSatisfy {
+            $0.folder == directory.path && $0.permissionSelection == nil
+        },
+        "a folderless team silently retained permission roots or lost its safe launch fallback"
+    )
+    let controllerDirectory = directory.appendingPathComponent("workbench", isDirectory: true)
+    try FileManager.default.createDirectory(at: controllerDirectory, withIntermediateDirectories: true)
+    let controller = try WorkbenchController(
+        applicationDirectory: controllerDirectory,
+        environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"]
+    )
+    try controller.bootstrap(cwd: directory.path)
+    let restoredFolderless = try controller.restoreWorkspaceLayout(folderlessLayout, folderless: true)
+    let restoredAgents = try controller.listPanes().filter {
+        $0.workspaceID == restoredFolderless.workspaceID
+    }
+    try expect(
+        restoredFolderless.isFolderless && restoredFolderless.newPaneFolder == nil,
+        "a folderless team application attached its launch fallback"
+    )
+    try expect(
+        restoredAgents.allSatisfy { !$0.isStarted && $0.permissionSelection == nil },
+        "a folderless team application started or pre-authorized an agent"
+    )
+
     let encoded = try JSONEncoder().encode(template)
     let json = try require(String(data: encoded, encoding: .utf8), "team template JSON was not UTF-8")
     for forbidden in ["/tmp/project", "approvedRoots", "paneID", "windowID", "credential"] {
@@ -3232,264 +2513,6 @@ private func checkPortableTeamTemplatePersistenceAndApplication() throws {
     } catch let error as TeamTemplateStoreError {
         try expect(error.localizedDescription.contains("reserved"), "reserved-role refusal was unclear")
     }
-}
-
-private func checkPaneMobilitySafetyContract() throws {
-    let source = TmuxPane(
-        id: "%1", kind: .claude, customName: "Planner", terminalTitle: "", cwd: "/tmp/project",
-        currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
-        relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "project",
-        bracketedPasteActive: true, isStarted: true, isWorkspaceLead: true, role: "planner",
-        workspaceID: "source-workspace"
-    )
-    let sourcePeer = TmuxPane(
-        id: "%2", kind: .shell, customName: "Tests", terminalTitle: "", cwd: "/tmp/project",
-        currentCommand: "zsh", isActive: false, windowID: "@2", returnToPaneID: nil,
-        workspaceName: "project", workspaceID: "source-workspace"
-    )
-    let targetPane = TmuxPane(
-        id: "%3", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp/consumer",
-        currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
-        relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "consumer",
-        bracketedPasteActive: true, isStarted: true, role: "builder",
-        workspaceID: "target-workspace"
-    )
-
-    let safeMove = PaneMobilityPolicy.assess(
-        action: .move,
-        pane: source,
-        targetWorkspaceID: "target-workspace",
-        panes: [source, sourcePeer, targetPane],
-        activeHandoffCount: 0
-    )
-    try expect(safeMove.isAllowed, "a safe cross-workspace pane move was refused")
-
-    let sameWorkspace = PaneMobilityPolicy.assess(
-        action: .move,
-        pane: source,
-        targetWorkspaceID: "source-workspace",
-        panes: [source, sourcePeer, targetPane],
-        activeHandoffCount: 0
-    )
-    try expect(sameWorkspace.blockers == [.sameWorkspace], "same-workspace mobility was not refused explicitly")
-
-    let lastSourcePane = PaneMobilityPolicy.assess(
-        action: .move,
-        pane: source,
-        targetWorkspaceID: "target-workspace",
-        panes: [source, targetPane],
-        activeHandoffCount: 0
-    )
-    try expect(lastSourcePane.blockers == [.lastSourcePane], "moving the last source pane was not refused")
-
-    let activeMove = PaneMobilityPolicy.assess(
-        action: .move,
-        pane: source,
-        targetWorkspaceID: "target-workspace",
-        panes: [source, sourcePeer, targetPane],
-        activeHandoffCount: 2
-    )
-    try expect(activeMove.blockers == [.activeHandoffs(2)], "a move with active handoffs was not refused")
-
-    let cloneWithHandoffs = PaneMobilityPolicy.assess(
-        action: .clone,
-        pane: source,
-        targetWorkspaceID: "target-workspace",
-        panes: [source, sourcePeer, targetPane],
-        activeHandoffCount: 2
-    )
-    try expect(cloneWithHandoffs.isAllowed, "configuration cloning was coupled to source handoff lifecycle")
-    try expect(cloneWithHandoffs.activeHandoffCount == 2, "clone preview lost the source handoff count")
-
-    let conflictingRole = TmuxPane(
-        id: "%4", kind: .agy, customName: "Other planner", terminalTitle: "", cwd: "/tmp/consumer",
-        currentCommand: "agy", isActive: false, windowID: "@1", returnToPaneID: nil,
-        workspaceName: "consumer", role: "PLANNER", workspaceID: "target-workspace"
-    )
-    let roleConflict = PaneMobilityPolicy.assess(
-        action: .clone,
-        pane: source,
-        targetWorkspaceID: "target-workspace",
-        panes: [source, sourcePeer, targetPane, conflictingRole],
-        activeHandoffCount: 0
-    )
-    try expect(roleConflict.blockers == [.roleConflict("planner")], "duplicate target routing role was not refused")
-
-    let targetLead = TmuxPane(
-        id: "%5", kind: .codex, customName: "Lead", terminalTitle: "", cwd: "/tmp/consumer",
-        currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
-        workspaceName: "consumer", isWorkspaceLead: true, workspaceID: "target-workspace"
-    )
-    let leadConflict = PaneMobilityPolicy.assess(
-        action: .move,
-        pane: source,
-        targetWorkspaceID: "target-workspace",
-        panes: [source, sourcePeer, targetPane, targetLead],
-        activeHandoffCount: 0
-    )
-    try expect(leadConflict.blockers == [.leadConflict], "duplicate target workspace leads were not refused")
-
-    var moved = false
-    let beforeMoveRows = [
-        paneRow(
-            id: "%1", kind: .claude, active: true, name: "Planner",
-            relayEnabled: true, protocolVersion: AgentProtocol.version,
-            windowID: "@0", workspaceActive: true, workspaceName: "project",
-            isLead: true, role: "planner"
-        ),
-        paneRow(id: "%2", kind: .shell, active: false, windowID: "@0", workspaceActive: true, workspaceName: "project"),
-        paneRow(id: "%3", kind: .codex, active: false, windowID: "@1", workspaceActive: false, workspaceName: "consumer"),
-    ].joined(separator: "\n") + "\n"
-    let afterMoveRows = [
-        paneRow(id: "%2", kind: .shell, active: false, windowID: "@0", workspaceActive: false, workspaceName: "project"),
-        paneRow(
-            id: "%1", kind: .claude, active: true, name: "Planner",
-            relayEnabled: true, protocolVersion: AgentProtocol.version,
-            windowID: "@1", workspaceActive: true, workspaceName: "consumer",
-            isLead: true, role: "planner"
-        ),
-        paneRow(id: "%3", kind: .codex, active: false, windowID: "@1", workspaceActive: true, workspaceName: "consumer"),
-    ].joined(separator: "\n") + "\n"
-    let moveRunner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-panes": return output(moved ? afterMoveRows : beforeMoveRows)
-        case "list-windows":
-            return output([
-                workspaceRow(id: "@0", windowName: "project", active: !moved, name: "project"),
-                workspaceRow(id: "@1", windowName: "consumer", active: moved, name: "consumer"),
-            ].joined(separator: "\n") + "\n")
-        case "join-pane":
-            moved = true
-            return output()
-        default: return output()
-        }
-    }
-    let moveController = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: moveRunner
-    )
-    let movedPane = try moveController.movePane(
-        "%1", toWorkspaceID: "@1", direction: .horizontal, activeHandoffCount: 0
-    )
-    try expect(movedPane.id == "%1" && movedPane.windowID == "@1", "live pane move changed identity or missed its destination")
-    try expect(
-        moveRunner.calls.contains {
-            command($0.arguments) == "join-pane"
-                && $0.arguments.contains("-s") && $0.arguments.contains("%1")
-                && $0.arguments.contains("-t") && $0.arguments.contains("%3")
-                && $0.arguments.contains("-h")
-        },
-        "live pane move did not use tmux join-pane with explicit source and target ids"
-    )
-    try expect(
-        !moveRunner.calls.contains { command($0.arguments) == "respawn-pane" },
-        "live pane move restarted a process instead of preserving it"
-    )
-
-    let blockedJoinCount = moveRunner.calls.filter { command($0.arguments) == "join-pane" }.count
-    do {
-        _ = try moveController.movePane(
-            "%1", toWorkspaceID: "@0", direction: .horizontal, activeHandoffCount: 1
-        )
-        throw CheckFailure(description: "controller moved a pane with an active handoff")
-    } catch let error as ParleyTmuxError {
-        try expect(error.localizedDescription.contains("handoff"), "controller handoff refusal was unclear")
-    }
-    try expect(
-        moveRunner.calls.filter { command($0.arguments) == "join-pane" }.count == blockedJoinCount,
-        "blocked mobility still reached tmux join-pane"
-    )
-
-    var cloned = false
-    let clonedPermission = PermissionProfileSelection(
-        profileID: "flexible",
-        approvedRoots: ["/tmp"],
-        lifetime: .remembered
-    )
-    let flexibleDefinition = try require(
-        PermissionProfileDefinition.builtIns.first(where: { $0.id == "flexible" }),
-        "the Flexible permission profile was unavailable"
-    )
-    let reboundPermission = try PermissionProfileResolver.resolve(
-        definition: flexibleDefinition,
-        paneFolder: "/tmp"
-    ).selection
-    let cloneSourceRows = [
-        paneRow(
-            id: "%1", kind: .claude, active: true, name: "Planner",
-            relayEnabled: true, protocolVersion: AgentProtocol.version,
-            windowID: "@0", workspaceActive: true, workspaceName: "project",
-            isLead: true, permissionSelection: clonedPermission,
-            permissionEnforcement: .partiallyEnforced, role: "planner"
-        ),
-        paneRow(id: "%2", kind: .shell, active: false, windowID: "@0", workspaceActive: true, workspaceName: "project"),
-        paneRow(id: "%3", kind: .codex, active: false, windowID: "@1", workspaceActive: false, workspaceName: "consumer"),
-    ].joined(separator: "\n") + "\n"
-    let cloneResultRows = cloneSourceRows + paneRow(
-        id: "%4", kind: .claude, active: false, name: "Planner", currentCommand: "sleep",
-        windowID: "@1", workspaceActive: false, workspaceName: "consumer",
-        started: false, isLead: true, permissionSelection: reboundPermission,
-        permissionEnforcement: .partiallyEnforced, role: "planner"
-    ) + "\n"
-    let cloneRunner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-panes": return output(cloned ? cloneResultRows : cloneSourceRows)
-        case "list-windows":
-            return output([
-                workspaceRow(id: "@0", windowName: "project", active: true, name: "project"),
-                workspaceRow(id: "@1", windowName: "consumer", active: false, name: "consumer"),
-            ].joined(separator: "\n") + "\n")
-        case "split-window":
-            cloned = true
-            return output("%4\n")
-        default: return output()
-        }
-    }
-    let cloneController = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: cloneRunner
-    )
-    let clone = try cloneController.clonePaneConfiguration(
-        "%1", toWorkspaceID: "@1", direction: .vertical, activeHandoffCount: 2
-    )
-    try expect(clone.id == "%4" && !clone.isStarted, "agent configuration clone started a vendor session")
-    try expect(
-        cloneRunner.calls.contains {
-            command($0.arguments) == "split-window"
-                && $0.arguments.contains("-t") && $0.arguments.contains("%3")
-                && $0.arguments.contains("-v")
-        },
-        "configuration clone did not split the chosen destination workspace"
-    )
-    try expect(
-        cloneRunner.calls.contains {
-            command($0.arguments) == "respawn-pane"
-                && $0.arguments.contains("%4")
-                && $0.arguments.contains("/bin/sleep")
-                && $0.arguments.contains("2147483647")
-        },
-        "agent configuration clone did not become an inert stopped placeholder"
-    )
-    try expect(
-        !cloneRunner.calls.contains {
-            command($0.arguments) == "respawn-pane"
-                && $0.arguments.contains(where: { $0 == "claude" })
-        },
-        "configuration clone launched the source vendor CLI"
-    )
-    try expect(
-        cloneRunner.calls.contains { $0.arguments.contains("@parley-role") && $0.arguments.contains("planner") }
-            && cloneRunner.calls.contains { $0.arguments.contains("@parley-lead") && $0.arguments.contains("1") }
-            && cloneRunner.calls.contains {
-                $0.arguments.contains("@parley-permission-selection")
-                    && $0.arguments.contains(reboundPermission.tmuxMetadataValue)
-            },
-        "configuration clone lost its permission profile, stable role or Workspace Lead stamp"
-    )
 }
 
 private func checkExternalWorkspaceOpenContract() throws {
@@ -3677,13 +2700,13 @@ private func checkExternalEditorContextImportContract() throws {
 
 private func checkExternalAttentionAndNavigationContract() throws {
     let workspaces = [
-        TmuxWorkspace(id: "@0", name: "Library", defaultFolder: "/tmp/library", isActive: true, workspaceID: "library"),
-        TmuxWorkspace(id: "@1", name: "Consumer", defaultFolder: "/tmp/consumer", isActive: false, workspaceID: "consumer"),
+        WorkbenchWorkspace(id: "@0", name: "Library", defaultFolder: "/tmp/library", isActive: true, workspaceID: "library"),
+        WorkbenchWorkspace(id: "@1", name: "Consumer", defaultFolder: "/tmp/consumer", isActive: false, workspaceID: "consumer"),
     ]
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Reviewer", terminalTitle: "SECRET TITLE", cwd: "/tmp/library", currentCommand: "SECRET COMMAND", isActive: true, windowID: "@0", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Library", isStarted: true, workspaceID: "library"),
-        TmuxPane(id: "%2", kind: .claude, customName: "Builder", terminalTitle: "", cwd: "/tmp/consumer", currentCommand: "claude", isActive: false, windowID: "@2", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Consumer", isStarted: true, workspaceID: "consumer"),
-        TmuxPane(id: "%3", kind: .shell, customName: "Server", terminalTitle: "", cwd: "/tmp/consumer", currentCommand: "zsh", isActive: false, windowID: "@2", returnToPaneID: nil, workspaceID: "consumer"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Reviewer", terminalTitle: "SECRET TITLE", cwd: "/tmp/library", currentCommand: "SECRET COMMAND", isActive: true, workspaceID: "library", relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Library", isStarted: true),
+        WorkbenchPane(id: "%2", kind: .claude, customName: "Builder", terminalTitle: "", cwd: "/tmp/consumer", currentCommand: "claude", isActive: false, workspaceID: "consumer", relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Consumer", isStarted: true),
+        WorkbenchPane(id: "%3", kind: .shell, customName: "Server", terminalTitle: "", cwd: "/tmp/consumer", currentCommand: "zsh", isActive: false, workspaceID: "consumer"),
     ]
     let resultID = "11111111-1111-4111-8111-111111111111"
     let permissionID = "22222222-2222-4222-8222-222222222222"
@@ -3692,7 +2715,7 @@ private func checkExternalAttentionAndNavigationContract() throws {
     let failedID = "55555555-5555-4555-8555-555555555555"
     let handoffs = [
         try statusHandoff(id: resultID, kind: .ask, state: .completed, sourceWorkspaceID: "library", targetWorkspaceID: "consumer", occurredAt: 20, text: "PROMPT SECRET", resultText: "ANSWER SECRET", sourceName: "Reviewer", targetName: "Builder"),
-        try statusHandoff(id: permissionID, kind: .relay, state: .failed, sourceWorkspaceID: "library", targetWorkspaceID: "@2", occurredAt: 30, text: "SECOND SECRET", attention: .permissionRequired, sourceName: "Reviewer", targetName: "Builder"),
+        try statusHandoff(id: permissionID, kind: .relay, state: .failed, sourceWorkspaceID: "library", targetWorkspaceID: "consumer", occurredAt: 30, text: "SECOND SECRET", attention: .permissionRequired, sourceName: "Reviewer", targetName: "Builder"),
         try statusHandoff(id: viewedID, kind: .ask, state: .completed, sourceWorkspaceID: "library", targetWorkspaceID: "consumer", occurredAt: 10, resultText: "VIEWED SECRET", readAt: 11),
         try statusHandoff(id: delegationID, kind: .delegate, state: .completed, sourceWorkspaceID: "library", targetWorkspaceID: "consumer", occurredAt: 40, text: "DELEGATION SECRET", resultText: "COMPLETION SECRET", sourceName: "Reviewer", targetName: "Builder"),
         try statusHandoff(id: failedID, kind: .ask, state: .failed, sourceWorkspaceID: "library", targetWorkspaceID: "consumer", occurredAt: 50, text: "FAILURE SECRET", sourceName: "Reviewer", targetName: "Builder"),
@@ -3809,122 +2832,6 @@ private func checkMenuBarAttentionInboxProjection() throws {
     try expect(empty.headline == "No items need attention", "empty menu bar inbox did not state the all-clear")
 }
 
-private func checkTmuxLayoutBecomesAnIDFreeSavedTree() throws {
-    let panes = [
-        TmuxPane(id: "%2", kind: .shell, customName: "Tests", terminalTitle: "", cwd: "/tmp/project", currentCommand: "zsh", isActive: false, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%3", kind: .codex, customName: "Reviewer", terminalTitle: "", cwd: "/tmp/project", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp/consumer", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%4", kind: .agy, customName: "Second", terminalTitle: "", cwd: "/tmp/consumer", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
-    ]
-    let tmux = "8d64,367x99,0,0{201x99,0,0[201x49,0,0,2,201x49,0,50,3],165x99,202,0[165x49,202,0,1,165x49,202,50,4]}"
-    let root = try TmuxLayoutParser.savedNode(layout: tmux, panes: panes)
-
-    guard case let .split(direction, ratio, first, second) = root else {
-        throw CheckFailure(description: "tmux root did not become a saved split")
-    }
-    try expect(direction == .horizontal, "tmux braces did not become a horizontal split")
-    try expect(abs(ratio - (201.0 / 366.0)) < 0.001, "tmux root ratio was not preserved")
-    guard case let .split(firstDirection, firstRatio, _, _) = first else {
-        throw CheckFailure(description: "first tmux branch did not remain split")
-    }
-    try expect(firstDirection == .vertical && abs(firstRatio - 0.5) < 0.001, "tmux brackets did not become a vertical split")
-    guard case let .split(secondDirection, _, _, _) = second else {
-        throw CheckFailure(description: "second tmux branch did not remain split")
-    }
-    try expect(secondDirection == .vertical, "second tmux branch changed direction")
-    try expect(root.leaves.map(\.kind) == [.shell, .codex, .claude, .agy], "tmux leaf ordering or kinds changed")
-    try expect(root.leaves.map(\.name) == ["Tests", "Reviewer", "Lead", "Second"], "tmux pane names were not captured")
-    try expect(root.leaves.map(\.folder) == ["/tmp/project", "/tmp/project", "/tmp/consumer", "/tmp/consumer"], "tmux pane folders were not captured independently")
-
-    let encoded = try require(String(data: JSONEncoder().encode(root), encoding: .utf8), "captured tree was not UTF-8")
-    try expect(!encoded.contains("%1") && !encoded.contains("paneID"), "captured tree persisted live tmux identity")
-}
-
-private func checkActivePaneIsScopedToSelectedWorkspace() throws {
-    let panes = [
-        paneRow(id: "%1", kind: .claude, active: true, windowID: "@0", workspaceActive: false, workspaceName: "api"),
-        paneRow(id: "%2", kind: .codex, active: true, windowID: "@1", workspaceActive: true, workspaceName: "web"),
-    ].joined(separator: "\n") + "\n"
-    let runner = RecordingRunner { arguments, _ in
-        command(arguments) == "list-panes" ? output(panes) : output()
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    let listed = try controller.listPanes()
-    try expect(listed.first(where: { $0.id == "%1" })?.isActive == false, "inactive workspace exposed its selected pane as globally active")
-    try expect(listed.first(where: { $0.id == "%2" })?.isActive == true, "selected workspace lost its active pane")
-    let active = try controller.activePane()
-    try expect(active?.id == "%2", "controller targeted a pane in the wrong workspace")
-}
-
-private func checkDirectAgentSpawn() throws {
-    let source = paneRow(id: "%1", kind: .shell, active: true)
-    let created = paneRow(
-        id: "%2",
-        kind: .claude,
-        active: true,
-        relayEnabled: true,
-        protocolVersion: AgentProtocol.version
-    )
-    var lists = 0
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-panes":
-            lists += 1
-            return output(lists == 1 ? "\(source)\n" : "\(source)\n\(created)\n")
-        case "split-window": return output("%2\n")
-        default: return output()
-        }
-    }
-    let directory = try temporaryDirectory()
-    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: directory,
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-    controller.configureRelay(RelayRuntime(
-        infoFile: directory.appendingPathComponent("relay-url"),
-        shimDirectory: directory.appendingPathComponent("bin"),
-        transportDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: directory),
-        credentials: credentials,
-        runtimeMarker: "DEV"
-    ))
-
-    let pane = try controller.createPane(kind: .claude, cwd: "/tmp", direction: .horizontal)
-
-    let split = try require(runner.calls.first(where: { command($0.arguments) == "split-window" }), "split-window was not invoked")
-    try expect(split.arguments.suffix(2) == ["/bin/sleep", "30"], "split did not use the bounded holding process")
-    let respawn = try require(runner.calls.first(where: { command($0.arguments) == "respawn-pane" }), "agent pane was not respawned")
-    try expect(respawn.arguments.contains("claude"), "Claude was not passed as a direct executable argument")
-    try expect(respawn.arguments.contains("--append-system-prompt"), "Claude did not receive Parley's system-prompt adapter")
-    try expect(respawn.arguments.contains(AgentProtocol.text), "Claude did not receive the canonical protocol text")
-    try expect(respawn.arguments.contains("/usr/bin/env"), "agent environment was not scrubbed directly")
-    try expect(respawn.arguments.contains("TMUX"), "agent retained tmux control discovery")
-    try expect(respawn.arguments.contains("PARLEY_PANE_ID=%2"), "agent did not receive its pane identity")
-    try expect(respawn.arguments.contains(where: { $0.hasPrefix("PARLEY_RELAY_TOKEN=") }), "agent did not receive a relay credential")
-    try expect(!respawn.arguments.contains(where: { $0.hasPrefix("PARLEY_RELAY_INFO=") }), "agent retained the UI relay locator")
-    try expect(respawn.arguments.contains("/usr/bin/sandbox-exec"), "agent did not receive the mandatory process boundary")
-    try expect(respawn.arguments.contains("PARLEY_PROTOCOL_VERSION=\(AgentProtocol.version)"), "agent did not receive the protocol version")
-    try expect(respawn.arguments.contains("PARLEY_RUNTIME=DEV"), "development agent did not receive its runtime marker")
-    let sandboxIndex = try require(respawn.arguments.firstIndex(of: "/usr/bin/sandbox-exec"), "agent boundary position disappeared")
-    let protocolIndex = try require(
-        respawn.arguments.firstIndex(of: "PARLEY_PROTOCOL_VERSION=\(AgentProtocol.version)"),
-        "protocol environment position disappeared"
-    )
-    try expect(protocolIndex < sandboxIndex, "tmux environment options were placed inside the sandbox command argv")
-    try expect(!respawn.arguments.contains("/bin/sh"), "agent spawn invoked /bin/sh")
-    try expect(!respawn.arguments.contains(where: { $0.contains("sh -c") }), "agent spawn built a shell command string")
-    try expect(pane.relayEnabled, "new agent pane was not stamped relay-ready")
-    try expect(pane.protocolVersion == AgentProtocol.version, "new agent pane was not stamped with its injected protocol version")
-}
-
 private func checkAgentProcessBoundaryIsMandatoryAndPaneScoped() throws {
     let root = URL(
         fileURLWithPath: "/private/tmp/parley-boundary-\(UUID().uuidString.prefix(8))",
@@ -3944,7 +2851,6 @@ private func checkAgentProcessBoundaryIsMandatoryAndPaneScoped() throws {
         applicationDirectory: applicationDirectory,
         protocolDirectory: protocolDirectory,
         shimDirectory: shimDirectory,
-        tmuxSocket: applicationDirectory.appendingPathComponent("tmux.sock"),
         transportDirectory: transportDirectory,
         paneToken: token
     )
@@ -3955,11 +2861,6 @@ private func checkAgentProcessBoundaryIsMandatoryAndPaneScoped() throws {
     try expect(
         profile.contains(applicationDirectory.resolvingSymlinksInPath().path),
         "agent boundary did not protect the application directory"
-    )
-    try expect(profile.contains("deny network-outbound"), "agent boundary did not protect the tmux control socket")
-    try expect(
-        profile.contains(applicationDirectory.appendingPathComponent("tmux.sock").resolvingSymlinksInPath().path),
-        "agent boundary omitted the exact tmux socket"
     )
     try expect(
         profile.contains(transportDirectory.resolvingSymlinksInPath().path),
@@ -3993,7 +2894,6 @@ private func checkAgentProcessBoundaryIsMandatoryAndPaneScoped() throws {
             applicationDirectory: applicationDirectory,
             protocolDirectory: protocolDirectory,
             shimDirectory: shimDirectory,
-            tmuxSocket: applicationDirectory.appendingPathComponent("tmux.sock"),
             transportDirectory: transportDirectory,
             paneToken: "not-a-capability"
         )
@@ -4001,699 +2901,6 @@ private func checkAgentProcessBoundaryIsMandatoryAndPaneScoped() throws {
     } catch is AgentProcessBoundaryError {
         // Expected: a path component must never be derived from untrusted text.
     }
-}
-
-private func checkStoppedAgentStartsOnlyThroughExplicitAction() throws {
-    let placeholder = paneRow(
-        id: "%2",
-        kind: .codex,
-        active: true,
-        relayEnabled: false,
-        protocolVersion: "",
-        started: false
-    )
-    let runner = RecordingRunner { arguments, _ in
-        command(arguments) == "list-panes" ? output("\(placeholder)\n") : output()
-    }
-    let directory = try temporaryDirectory()
-    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: directory,
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-    controller.configureRelay(RelayRuntime(
-        infoFile: directory.appendingPathComponent("relay-url"),
-        shimDirectory: directory.appendingPathComponent("bin"),
-        transportDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: directory),
-        credentials: credentials
-    ))
-
-    try expect(!runner.calls.contains { command($0.arguments) == "respawn-pane" }, "constructing a stopped placeholder started an agent")
-    try controller.startPane("%2")
-    let respawn = try require(runner.calls.first(where: { command($0.arguments) == "respawn-pane" }), "explicit Start did not launch the stopped agent")
-    try expect(respawn.arguments.contains("codex"), "explicit Start launched the wrong vendor")
-    try expect(respawn.arguments.contains(where: { $0.hasPrefix("PARLEY_RELAY_TOKEN=") }), "explicit Start omitted the pane credential")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("@parley-started") && call.arguments.contains("1")
-    }, "explicit Start did not mark the pane running")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("@parley-protocol") && call.arguments.contains(AgentProtocol.version)
-    }, "explicit Start did not stamp the injected protocol")
-}
-
-private func checkShellPaneStartsLoginShell() throws {
-    let source = paneRow(id: "%1", kind: .codex, active: true)
-    let created = paneRow(id: "%2", kind: .shell, active: true)
-    var lists = 0
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-panes":
-            lists += 1
-            return output(lists == 1 ? "\(source)\n" : "\(source)\n\(created)\n")
-        case "split-window": return output("%2\n")
-        default: return output()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: [
-            "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
-            "SHELL": "/bin/zsh",
-        ],
-        runner: runner
-    )
-
-    _ = try controller.createPane(kind: .shell, cwd: "/tmp", direction: .horizontal)
-
-    let respawn = try require(runner.calls.first(where: { command($0.arguments) == "respawn-pane" }), "shell pane was not respawned")
-    try expect(respawn.arguments.suffix(2) == ["/bin/zsh", "-l"], "shell pane did not start the configured login shell")
-}
-
-private func checkRealTmuxShellLifecycle() throws {
-    var environment = EnvironmentResolver.resolved()
-    for key in environment.keys where key == "LANG" || key.hasPrefix("LC_") {
-        environment.removeValue(forKey: key)
-    }
-    environment["LANG"] = "C"
-    environment["LC_ALL"] = "C"
-    try expect(
-        TmuxController.outputFieldSeparator.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value <= 0x7e },
-        "tmux field separator is not printable ASCII"
-    )
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "real tmux integration check could not find tmux"
-    )
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: directory,
-        sessionName: "parley-check",
-        environment: environment
-    )
-    defer {
-        _ = try? ProcessCommandRunner(timeout: 2).run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-
-    try controller.bootstrap(cwd: directory.path)
-    let workspaces = try controller.listWorkspaces()
-    try expect(workspaces.count == 1, "real tmux bootstrap did not create exactly one workspace")
-    try expect(workspaces[0].defaultFolder == directory.path, "real tmux bootstrap lost its workspace folder")
-
-    let shell = try controller.createPane(kind: .shell, cwd: directory.path, direction: .horizontal)
-    let configuredShell = controller.environment["SHELL"].flatMap { candidate in
-        candidate.hasPrefix("/") && FileManager.default.isExecutableFile(atPath: candidate) ? candidate : nil
-    } ?? "/bin/zsh"
-    let expectedCommand = URL(fileURLWithPath: configuredShell).lastPathComponent
-    try expect(shell.currentCommand == expectedCommand, "real shell pane is running \(shell.currentCommand), expected \(expectedCommand)")
-    try expect(shell.currentCommand != "sleep", "real shell pane retained the temporary holding process")
-
-    try controller.restartPane(shell.id)
-    try expect(
-        eventually(timeout: 2) {
-            (try? controller.listPanes().first(where: { $0.id == shell.id })?.currentCommand) == expectedCommand
-        },
-        "restarted real shell pane did not return to its login shell"
-    )
-
-    try controller.closePane(shell.id)
-    let remainingPanes = try controller.listPanes()
-    try expect(
-        !remainingPanes.contains(where: { $0.id == shell.id }),
-        "closed real shell pane remained in tmux"
-    )
-}
-
-private func checkRealTmuxPaneMobility() throws {
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "pane-mobility integration check could not find tmux"
-    )
-    let directory = try temporaryDirectory()
-    let folder = canonicalPath(directory.path)
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: directory,
-        sessionName: "parley-mobility-check",
-        environment: environment
-    )
-    defer {
-        _ = try? ProcessCommandRunner(timeout: 2).run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-
-    try controller.bootstrap(cwd: folder)
-    let sourceWorkspace = try require(
-        try controller.listWorkspaces().first,
-        "pane-mobility check created no source workspace"
-    )
-    let movableShell = try controller.createPane(kind: .shell, cwd: folder, direction: .horizontal)
-    let runner = ProcessCommandRunner(timeout: 2)
-    func panePID(_ paneID: String) throws -> String {
-        try runner.run(
-            executable: tmux,
-            arguments: [
-                "-S", controller.socketPath.path, "-f", controller.configPath.path,
-                "display-message", "-p", "-t", paneID, "#{pane_pid}",
-            ],
-            environment: controller.environment,
-            input: nil
-        ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    let processBeforeMove = try panePID(movableShell.id)
-    let destination = try controller.createWorkspace(folder: folder, name: "Destination")
-    let moved = try controller.movePane(
-        movableShell.id,
-        toWorkspaceID: destination.id,
-        direction: .horizontal,
-        activeHandoffCount: 0
-    )
-    let processAfterMove = try panePID(movableShell.id)
-    try expect(
-        moved.id == movableShell.id
-            && moved.windowID == destination.id
-            && processAfterMove == processBeforeMove
-            && !processAfterMove.isEmpty,
-        "real tmux move changed pane identity, destination or process id"
-    )
-    try expect(moved.cwd == folder, "real tmux move changed the pane-local folder")
-
-    let agentWorkspace = try controller.restoreWorkspaceLayout(SavedWorkspaceLayout(
-        name: "Stopped Agent Source",
-        defaultFolder: folder,
-        root: .leaf(SavedLayoutLeaf(
-            kind: .codex,
-            name: "Reviewer",
-            folder: folder,
-            role: "reviewer"
-        ))
-    ))
-    let stoppedSource = try require(
-        try controller.listPanes().first(where: { $0.windowID == agentWorkspace.id }),
-        "real mobility fixture created no stopped agent"
-    )
-    let clone = try controller.clonePaneConfiguration(
-        stoppedSource.id,
-        toWorkspaceID: sourceWorkspace.id,
-        direction: .vertical,
-        activeHandoffCount: 0
-    )
-    try expect(
-        clone.id != stoppedSource.id
-            && clone.windowID == sourceWorkspace.id
-            && clone.kind == .codex
-            && clone.displayName == "Reviewer"
-            && clone.role == "reviewer",
-        "real agent clone lost its fresh identity, destination or visible configuration"
-    )
-    try expect(
-        !clone.isStarted && !clone.relayEnabled && clone.protocolVersion == nil && clone.currentCommand == "sleep",
-        "real agent clone acquired a session, relay credential or protocol context before Start"
-    )
-    let panesAfterClone = try controller.listPanes()
-    try expect(
-        panesAfterClone.contains(where: { $0.id == stoppedSource.id }),
-        "configuration cloning changed or removed its source pane"
-    )
-}
-
-private func checkRealTmuxCopyModeSurvivesScrollingToBottom() throws {
-    // A downward drag-selection auto-scrolls only while tmux stays in copy
-    // mode. Entering with copy-mode -e exits the mode the moment the viewport
-    // returns to the bottom of history, which kills the drag mid-gesture.
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "copy-mode integration check could not find tmux"
-    )
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: directory,
-        sessionName: "parley-copy-mode-check",
-        environment: environment
-    )
-    let runner = ProcessCommandRunner(timeout: 2)
-    defer {
-        _ = try? runner.run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-
-    try controller.bootstrap(cwd: directory.path)
-    let pane = try require(try controller.listPanes().first, "copy-mode check created no pane")
-    func tmuxCommand(_ arguments: [String]) throws -> String {
-        try runner.run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "-f", controller.configPath.path] + arguments,
-            environment: controller.environment,
-            input: nil
-        ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    func paneValue(_ format: String) throws -> String {
-        try tmuxCommand(["display-message", "-p", "-t", pane.id, format])
-    }
-
-    _ = try tmuxCommand([
-        "respawn-pane", "-k", "-t", pane.id,
-        "/bin/sh", "-c", "/usr/bin/seq 1 200; /bin/sleep 30",
-    ])
-    try expect(
-        eventually(timeout: 5) { ((try? paneValue("#{history_size}")).flatMap(Int.init) ?? 0) > 0 },
-        "copy-mode check pane accumulated no scrollback history"
-    )
-
-    try controller.enterCopyMode(pane.id)
-    let modeAfterEntry = try paneValue("#{pane_in_mode}")
-    try expect(modeAfterEntry == "1", "explicit Copy Mode entry did not engage tmux copy mode")
-    _ = try tmuxCommand(["send-keys", "-X", "-t", pane.id, "scroll-up"])
-    let scrolledPosition = try paneValue("#{scroll_position}")
-    try expect(scrolledPosition == "1", "copy-mode check did not scroll into history")
-    _ = try tmuxCommand(["send-keys", "-X", "-t", pane.id, "scroll-down"])
-    let modeAtBottom = try paneValue("#{pane_in_mode}")
-    try expect(
-        modeAtBottom == "1",
-        "scrolling back to the bottom of history exited Copy Mode, so a downward drag-selection dies mid-gesture"
-    )
-    try controller.cancelCopyMode(pane.id)
-    let modeAfterCancel = try paneValue("#{pane_in_mode}")
-    try expect(modeAfterCancel == "0", "explicit Copy Mode exit left the pane in copy mode")
-}
-
-private func checkRealTmuxCopyModeZoomsMultiPaneWindows() throws {
-    // tmux stops a drag-selection's edge auto-scroll the moment the pointer
-    // crosses into a neighbouring pane, so in a split window "drag past the
-    // pane's bottom edge" freezes. Zooming for the duration of Copy Mode makes
-    // the pane's edges the window's edges, where the outer terminal clamps the
-    // drag and tmux's own edge repeat keeps scrolling.
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "copy-mode zoom check could not find tmux"
-    )
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: directory,
-        sessionName: "parley-copy-zoom-check",
-        environment: environment
-    )
-    let runner = ProcessCommandRunner(timeout: 2)
-    defer {
-        _ = try? runner.run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-
-    try controller.bootstrap(cwd: directory.path)
-    let top = try require(try controller.listPanes().first, "copy-mode zoom check created no pane")
-    _ = try controller.createPane(kind: .shell, cwd: directory.path, direction: .vertical)
-    func paneValue(_ format: String) throws -> String {
-        try runner.run(
-            executable: tmux,
-            arguments: [
-                "-S", controller.socketPath.path, "-f", controller.configPath.path,
-                "display-message", "-p", "-t", top.id, format,
-            ],
-            environment: controller.environment,
-            input: nil
-        ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    _ = try controller.selectPane(top.id)
-    let zoomedByEntry = try controller.enterCopyMode(top.id)
-    try expect(zoomedByEntry, "Copy Mode entry did not report the zoom it introduced")
-    let modeAfterEntry = try paneValue("#{pane_in_mode}")
-    try expect(modeAfterEntry == "1", "explicit Copy Mode entry did not engage tmux copy mode in a split window")
-    let zoomAfterEntry = try paneValue("#{window_zoomed_flag}")
-    try expect(
-        zoomAfterEntry == "1",
-        "Copy Mode in a split window did not zoom the pane, so a drag-selection freezes at the pane border instead of auto-scrolling"
-    )
-
-    try controller.cancelCopyMode(top.id, restoreZoom: true)
-    let modeAfterExit = try paneValue("#{pane_in_mode}")
-    try expect(modeAfterExit == "0", "explicit Copy Mode exit left the split pane in copy mode")
-    let zoomAfterExit = try paneValue("#{window_zoomed_flag}")
-    try expect(zoomAfterExit == "0", "leaving Copy Mode did not restore the split layout it zoomed")
-
-    _ = try runner.run(
-        executable: tmux,
-        arguments: [
-            "-S", controller.socketPath.path, "-f", controller.configPath.path,
-            "resize-pane", "-Z", "-t", top.id,
-        ],
-        environment: controller.environment,
-        input: nil
-    )
-    let zoomedByPerson = try controller.enterCopyMode(top.id)
-    try expect(!zoomedByPerson, "Copy Mode entry claimed a zoom the person already owned")
-    try controller.cancelCopyMode(top.id, restoreZoom: false)
-    let zoomKept = try paneValue("#{window_zoomed_flag}")
-    try expect(zoomKept == "1", "leaving Copy Mode removed a zoom the person chose themselves")
-}
-
-@MainActor
-private final class FocusReportProbeTerminalView: ParleyLocalProcessTerminalView {
-    var sentBytes: [[UInt8]] = []
-
-    override func forwardTerminalInput(
-        source: TerminalView,
-        data: ArraySlice<UInt8>
-    ) {
-        sentBytes.append(Array(data))
-    }
-}
-
-@MainActor
-private func checkPreviewTerminalFocusIsolation() throws {
-    let terminal = FocusReportProbeTerminalView(
-        frame: NSRect(x: 0, y: 0, width: 640, height: 480)
-    )
-    terminal.terminal.feed(text: "\u{1b}[?1004h")
-    terminal.sentBytes.removeAll()
-
-    terminal.preservesTerminalFocusOnResign = true
-    terminal.terminal.setTerminalFocus(false)
-    try expect(
-        terminal.sentBytes.isEmpty,
-        "preview terminal emitted DEC focus-out when native keyboard focus moved"
-    )
-
-    terminal.send(source: terminal, data: ArraySlice([0x61]))
-    try expect(
-        terminal.sentBytes == [[0x61]],
-        "preview focus filtering swallowed ordinary terminal input"
-    )
-
-    terminal.preservesTerminalFocusOnResign = false
-    terminal.terminal.setTerminalFocus(true)
-    terminal.sentBytes.removeAll()
-    terminal.terminal.setTerminalFocus(false)
-    try expect(
-        terminal.sentBytes.contains([0x1b, 0x5b, 0x4f]),
-        "ordinary terminal no longer emits DEC focus-out"
-    )
-}
-
-private func checkRealTmuxPerPaneViewSessions() throws {
-    // Windows-as-panes: every visible pane renders through its own independent
-    // view session, so each window is sized by exactly one client and a
-    // drag-selection's edge is always the view's edge.
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "view-session check could not find tmux"
-    )
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: directory,
-        sessionName: "parley-view-check",
-        environment: environment
-    )
-    let runner = ProcessCommandRunner(timeout: 2)
-    defer {
-        _ = try? runner.run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-
-    try controller.bootstrap(cwd: directory.path)
-    let first = try require(try controller.listPanes().first, "view-session check created no pane")
-    let secondWorkspace = try controller.createWorkspace(folder: directory.path, name: "Second")
-    let second = try require(
-        try controller.listPanes().first(where: { $0.windowID == secondWorkspace.id }),
-        "view-session check created no second workspace pane"
-    )
-
-    _ = try runner.run(
-        executable: tmux,
-        arguments: [
-            "-S", controller.socketPath.path, "-f", controller.configPath.path,
-            "respawn-pane", "-k", "-t", first.id,
-            "/bin/sh", "-c", "printf '\\033[?2004h'; exec /bin/sleep 30",
-        ],
-        environment: controller.environment,
-        input: nil
-    )
-    Thread.sleep(forTimeInterval: 0.05)
-    let basePaneReady = try controller.listPanes()
-        .first(where: { $0.id == first.id })?.bracketedPasteActive == true
-    try expect(basePaneReady, "real pane fixture did not enable bracketed-paste readiness")
-
-    try controller.ensureViewSession(paneID: first.id)
-    try controller.ensureViewSession(paneID: second.id)
-    try controller.ensureViewSession(paneID: second.id)
-
-    let linkedPaneReady = try controller.listPanes()
-        .first(where: { $0.id == first.id })?.bracketedPasteActive == true
-    try expect(
-        linkedPaneReady,
-        "linking a pane into its viewer session lost the pane's bracketed-paste readiness"
-    )
-
-    try controller.selectPane(first.id)
-    let firstSelected = try controller.listPanes()
-        .first(where: { $0.id == first.id })?.isActive == true
-    try expect(
-        firstSelected,
-        "linked viewer sessions prevented selecting the first pane in the base session"
-    )
-    try controller.selectPane(second.id)
-    let secondSelected = try controller.listPanes()
-        .first(where: { $0.id == second.id })?.isActive == true
-    try expect(
-        secondSelected,
-        "linked viewer sessions prevented selecting the second pane in the base session"
-    )
-
-    func sessionValue(_ session: String, _ format: String) throws -> String {
-        try runner.run(
-            executable: tmux,
-            arguments: [
-                "-S", controller.socketPath.path, "-f", controller.configPath.path,
-                "display-message", "-p", "-t", "=\(session):", format,
-            ],
-            environment: controller.environment,
-            input: nil
-        ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    let firstView = controller.viewSessionName(forPane: first.id)
-    let secondView = controller.viewSessionName(forPane: second.id)
-    let baseFocusEvents = try runner.run(
-        executable: tmux,
-        arguments: [
-            "-S", controller.socketPath.path, "-f", controller.configPath.path,
-            "show-options", "-v", "-t", "=\(controller.sessionName)", "focus-events",
-        ],
-        environment: controller.environment,
-        input: nil
-    ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
-    try expect(
-        baseFocusEvents == "on",
-        "per-pane viewer setup changed the server-wide focus-events setting"
-    )
-    let firstCurrent = try sessionValue(firstView, "#{window_id}")
-    try expect(
-        firstCurrent == first.windowID,
-        "first view session shows \(firstCurrent), expected its pane's window \(first.windowID)"
-    )
-    let secondCurrent = try sessionValue(secondView, "#{window_id}")
-    try expect(
-        secondCurrent == second.windowID,
-        "second view session shows \(secondCurrent), expected its pane's window \(second.windowID)"
-    )
-    let firstWindowCount = try sessionValue(firstView, "#{session_windows}")
-    try expect(
-        firstWindowCount == "1",
-        "view session holds \(firstWindowCount) windows; one linked window is the confinement contract"
-    )
-    let firstGroup = try sessionValue(firstView, "#{session_group}")
-    try expect(
-        firstGroup.isEmpty,
-        "view session joined a session group, so its client could be steered to another pane's window"
-    )
-    let attach = controller.attachArguments(viewingPane: second.id)
-    try expect(
-        attach.contains("=\(secondView)"),
-        "per-pane attach arguments do not target the pane's view session"
-    )
-
-    try controller.releaseViewSession(paneID: second.id)
-    let secondViewGone = try runner.run(
-        executable: tmux,
-        arguments: [
-            "-S", controller.socketPath.path, "-f", controller.configPath.path,
-            "has-session", "-t", "=\(secondView)",
-        ],
-        environment: controller.environment,
-        input: nil
-    ).status != 0
-    try expect(secondViewGone, "released view session is still running")
-    let survivingPanes = try controller.listPanes()
-    try expect(
-        survivingPanes.contains(where: { $0.id == second.id }),
-        "releasing a view session destroyed the pane's shared window"
-    )
-}
-
-private func checkRealTmuxControlModeStreamsPaneOutput() throws {
-    // The control-mode connection streams pane output and lifecycle events,
-    // and carries only validated high-frequency input/resize commands over
-    // its held-open stdin. All other mutations stay on the argv runner.
-    final class Collector: @unchecked Sendable {
-        private let lock = NSLock()
-        private var outputs: [String: Data] = [:]
-        private var events: [TmuxControlModeConnection.Event] = []
-        func append(paneID: String, bytes: Data) {
-            lock.withLock { outputs[paneID, default: Data()].append(bytes) }
-        }
-        func append(event: TmuxControlModeConnection.Event) {
-            lock.withLock { events.append(event) }
-        }
-        func output(for paneID: String) -> Data {
-            lock.withLock { outputs[paneID] ?? Data() }
-        }
-        func hasEvent(_ event: TmuxControlModeConnection.Event) -> Bool {
-            lock.withLock { events.contains(event) }
-        }
-    }
-
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "control-mode check could not find tmux"
-    )
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: directory,
-        sessionName: "parley-control-check",
-        environment: environment
-    )
-    let runner = ProcessCommandRunner(timeout: 2)
-    defer {
-        _ = try? runner.run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-
-    try controller.bootstrap(cwd: directory.path)
-    let pane = try require(try controller.listPanes().first, "control-mode check created no pane")
-
-    let collector = Collector()
-    let connection = TmuxControlModeConnection(
-        tmuxExecutable: tmux,
-        socketPath: controller.socketPath,
-        configPath: controller.configPath,
-        sessionName: controller.sessionName,
-        environment: controller.environment,
-        onPaneOutput: { collector.append(paneID: $0, bytes: $1) },
-        onEvent: { collector.append(event: $0) }
-    )
-    defer { connection.stop() }
-    try connection.start()
-    try expect(connection.isRunning, "control-mode client did not stay attached")
-
-    _ = try runner.run(
-        executable: tmux,
-        arguments: [
-            "-S", controller.socketPath.path, "-f", controller.configPath.path,
-            "respawn-pane", "-k", "-t", pane.id,
-            "/bin/sh", "-c", "printf 'hello-control\\033[31mred\\n'; /bin/sleep 30",
-        ],
-        environment: controller.environment,
-        input: nil
-    )
-    let streamed = eventually(timeout: 5) {
-        let bytes = collector.output(for: pane.id)
-        return bytes.range(of: Data("hello-control".utf8)) != nil && bytes.contains(0x1B)
-    }
-    try expect(
-        streamed,
-        "control mode did not stream the pane's output with escape bytes decoded"
-    )
-
-    let second = try controller.createWorkspace(folder: directory.path, name: "Second")
-    let added = eventually(timeout: 5) { collector.hasEvent(.windowAdded(second.id)) }
-    try expect(added, "control mode did not report the added window")
-    try controller.closeWorkspace(second.id)
-    let closed = eventually(timeout: 5) { collector.hasEvent(.windowClosed(second.id)) }
-    try expect(closed, "control mode did not report the closed window")
-
-    // Input round trip through the control client's own stdin: only typed,
-    // validated pane input and resize operations may reach this held-open
-    // channel. Agent-authored ids cannot append a second control command.
-    let rejectedInjection = connection.sendInput(
-        toPaneID: "\(pane.id)\nnew-window -d -n injected",
-        bytes: ArraySlice("not-sent".utf8)
-    )
-    try expect(!rejectedInjection, "control mode accepted a command-injecting pane id")
-    let sent = connection.sendInput(
-        toPaneID: pane.id,
-        bytes: ArraySlice("roundtrip-input".utf8)
-    )
-    try expect(sent, "control mode rejected valid pane input")
-    let roundTripped = eventually(timeout: 5) {
-        collector.output(for: pane.id).range(of: Data("roundtrip-input".utf8)) != nil
-    }
-    try expect(roundTripped, "stdin-forwarded input did not reach the pane and stream back")
-
-    try expect(
-        connection.resizeWindow(pane.windowID, columns: 91, rows: 27),
-        "control mode rejected a valid member-window resize"
-    )
-    let resized = eventually(timeout: 5) {
-        (try? runner.run(
-            executable: tmux,
-            arguments: [
-                "-S", controller.socketPath.path, "-f", controller.configPath.path,
-                "display-message", "-p", "-t", pane.id, "#{window_width}x#{window_height}",
-            ],
-            environment: controller.environment,
-            input: nil
-        ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)) == "91x27"
-    }
-    try expect(resized, "control-mode resize did not set the exact member-window size")
-
-    connection.stop()
-    try expect(!connection.isRunning, "control-mode client survived stop")
-    Thread.sleep(forTimeInterval: 0.1)
-    try expect(
-        !collector.hasEvent(.exited(nil)),
-        "an intentional control-mode stop was reported as an unexpected stream exit"
-    )
-    try connection.start()
-    try expect(connection.isRunning, "a stopped control-mode connection could not restart")
-    connection.stop()
-    try expect(!connection.isRunning, "a restarted control-mode client survived its second stop")
 }
 
 private func checkNativeWorkspaceLayoutTree() throws {
@@ -4768,8 +2975,8 @@ private func checkNativeWorkspaceLayoutTree() throws {
         "saved split rebinding silently accepted a pane-count mismatch"
     )
     try expect(
-        TmuxIdentifierOrder.sorted(["%10", "%2", "%1"]) == ["%1", "%2", "%10"],
-        "live tmux ids were ordered lexicographically instead of naturally"
+        WorkbenchIdentifierOrder.sorted(["%10", "%2", "%1"]) == ["%1", "%2", "%10"],
+        "live pane ids were ordered lexicographically instead of naturally"
     )
     try expect(
         NativeLayoutNode.reconciled(right, with: []) == nil,
@@ -4796,6 +3003,101 @@ private func checkNativeWorkspaceLayoutTree() throws {
     try expect(decoded == tiled, "the native layout tree did not round-trip losslessly")
 }
 
+private func checkWindowAndSplitGeometryRecovery() throws {
+    let primary = CGRect(x: 0, y: 0, width: 1_440, height: 900)
+    let secondary = CGRect(x: 1_440, y: 0, width: 1_200, height: 800)
+    let recovered = WindowFrameRecovery.recoveredFrame(
+        CGRect(x: -6_016, y: -271, width: 1_500, height: 900),
+        visibleFrames: [primary, secondary]
+    )
+    try expect(primary.contains(recovered), "an off-screen Parley window was not recovered onto a connected display")
+    try expect(recovered.width == 1_400 && recovered.height == 860, "window recovery did not fit an oversized frame with a usable inset")
+
+    let alreadyVisible = CGRect(x: 80, y: 60, width: 1_200, height: 760)
+    try expect(
+        WindowFrameRecovery.recoveredFrame(alreadyVisible, visibleFrames: [primary]) == alreadyVisible,
+        "window recovery moved an already visible window"
+    )
+
+    try expect(
+        abs(NativeSplitGeometry.clampedFraction(0.001, availableLength: 1_000, minimumLeafLength: 180) - 0.18) < 0.000_001,
+        "a collapsed leading pane was not restored to the minimum usable width"
+    )
+    try expect(
+        abs(NativeSplitGeometry.clampedFraction(0.999, availableLength: 1_000, minimumLeafLength: 180) - 0.82) < 0.000_001,
+        "a collapsed trailing pane was not restored to the minimum usable width"
+    )
+    try expect(
+        NativeSplitGeometry.clampedFraction(0.4, availableLength: 1_000, minimumLeafLength: 180) == 0.4,
+        "a valid split ratio was changed"
+    )
+    try expect(
+        NativeSplitGeometry.proportionalFraction(firstLeafCount: 1, secondLeafCount: 3) == 0.25,
+        "fresh nested horizontal splits did not distribute space evenly by leaf count"
+    )
+    try expect(
+        NativeSplitGeometry.proportionalFraction(firstLeafCount: 2, secondLeafCount: 1) == (2.0 / 3.0),
+        "fresh split geometry did not reserve proportional space for each subtree"
+    )
+
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let registry = WorkspaceRegistry(file: directory.appendingPathComponent("workspace-registry.json"))
+    let workspace = WorkbenchWorkspace(
+        id: "window",
+        name: "Geometry",
+        defaultFolder: directory.path,
+        isActive: true,
+        workspaceID: "workspace-geometry"
+    )
+    _ = try registry.synchronize(workspaces: [workspace])
+    try registry.updateSplitFractions(
+        workspaceID: workspace.workspaceID,
+        fractions: ["root": 0.37, "root.first": 0.62]
+    )
+    let stored = try require(
+        registry.record(workspaceID: workspace.workspaceID),
+        "the split geometry workspace record disappeared"
+    )
+    try expect(
+        stored.splitFractions == ["root": 0.37, "root.first": 0.62],
+        "split ratios did not persist with the workspace"
+    )
+}
+
+private func checkWorkbenchKeyboardShortcuts() throws {
+    try expect(
+        WorkbenchKeyboardShortcut.resolve(
+            key: "f", command: true, shift: true, option: false, control: false
+        ) == .toggleFocusCanvas,
+        "Command-Shift-F did not resolve to Focus Canvas"
+    )
+    try expect(
+        WorkbenchKeyboardShortcut.resolve(
+            key: "3", command: true, shift: false, option: false, control: false
+        ) == .selectPane(2),
+        "Command-3 did not resolve to the third pane"
+    )
+    try expect(
+        WorkbenchKeyboardShortcut.resolve(
+            key: "d", command: true, shift: true, option: false, control: false
+        ) == .toggleCollaborationDock,
+        "Command-Shift-D did not resolve to the Collaboration Dock"
+    )
+    try expect(
+        WorkbenchKeyboardShortcut.resolve(
+            key: "f", command: false, shift: false, option: false, control: false
+        ) == nil,
+        "an unmodified terminal key was stolen by application navigation"
+    )
+    try expect(
+        WorkbenchKeyboardShortcut.resolve(
+            key: "c", command: true, shift: false, option: false, control: false
+        ) == nil,
+        "a standard terminal copy shortcut was stolen by application navigation"
+    )
+}
+
 private func checkIdleAgentReaperGates() throws {
     let now = Date()
     let idle = now.addingTimeInterval(-IdleAgentReaper.defaultIdleInterval - 1)
@@ -4805,13 +3107,11 @@ private func checkIdleAgentReaperGates() throws {
         active: Bool = false,
         started: Bool = true,
         dead: Bool = false,
-        lead: Bool = false,
-        copyMode: Bool = false
-    ) -> TmuxPane {
-        TmuxPane(
+        lead: Bool = false
+    ) -> WorkbenchPane {
+        WorkbenchPane(
             id: "%9", kind: kind, customName: nil, terminalTitle: "", cwd: "/tmp",
-            currentCommand: "claude", isActive: active, windowID: "@1", returnToPaneID: nil,
-            isDead: dead, isStarted: started, isWorkspaceLead: lead, isInCopyMode: copyMode
+            currentCommand: "claude", isActive: active, workspaceID: "@1",             isDead: dead, isStarted: started, isWorkspaceLead: lead
         )
     }
     try expect(
@@ -4824,7 +3124,6 @@ private func checkIdleAgentReaperGates() throws {
         ("stopped pane", IdleAgentReaper.shouldReap(pane: pane(started: false), lastActivity: idle, now: now, hasLiveCollaboration: false)),
         ("dead pane", IdleAgentReaper.shouldReap(pane: pane(dead: true), lastActivity: idle, now: now, hasLiveCollaboration: false)),
         ("workspace lead", IdleAgentReaper.shouldReap(pane: pane(lead: true), lastActivity: idle, now: now, hasLiveCollaboration: false)),
-        ("copy-mode pane", IdleAgentReaper.shouldReap(pane: pane(copyMode: true), lastActivity: idle, now: now, hasLiveCollaboration: false)),
         ("collaborating pane", IdleAgentReaper.shouldReap(pane: pane(), lastActivity: idle, now: now, hasLiveCollaboration: true)),
         ("recently active pane", IdleAgentReaper.shouldReap(pane: pane(), lastActivity: recent, now: now, hasLiveCollaboration: false)),
         ("unknown activity", IdleAgentReaper.shouldReap(pane: pane(), lastActivity: nil, now: now, hasLiveCollaboration: false)),
@@ -4834,708 +3133,13 @@ private func checkIdleAgentReaperGates() throws {
     }
 }
 
-private func checkStopPaneProcessKeepsSeat() throws {
-    let started = paneRow(id: "%4", kind: .claude, active: false, relayEnabled: true, protocolVersion: AgentProtocol.version)
-    let runner = RecordingRunner { arguments, _ in
-        command(arguments) == "list-panes" ? output(started + "\n") : output()
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: try temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-    try controller.stopPaneProcess("%4")
-    try expect(
-        runner.calls.contains { call in
-            command(call.arguments) == "respawn-pane"
-                && call.arguments.contains("/bin/sleep")
-                && call.arguments.contains("2147483647")
-                && call.arguments.contains("%4")
-        },
-        "stopping a pane process did not park the seat on the inert placeholder"
-    )
-    try expect(
-        runner.calls.contains { call in
-            command(call.arguments) == "set-option"
-                && call.arguments.contains("@parley-started")
-                && call.arguments.contains("0")
-        },
-        "a stopped seat still claims a started session"
-    )
-    try expect(
-        runner.calls.contains { call in
-            command(call.arguments) == "set-option"
-                && call.arguments.contains("-u")
-                && call.arguments.contains("@parley-relay")
-        },
-        "a stopped seat kept its relay flag"
-    )
-}
-
-private func checkRealTmuxServerShutdown() throws {
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "shutdown check could not find tmux"
-    )
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: directory,
-        sessionName: "parley-shutdown-check",
-        environment: environment
-    )
-    let runner = ProcessCommandRunner(timeout: 2)
-    defer {
-        _ = try? runner.run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-    try controller.bootstrap(cwd: directory.path)
-    try controller.shutdownServer()
-    let gone = try runner.run(
-        executable: tmux,
-        arguments: [
-            "-S", controller.socketPath.path, "-f", controller.configPath.path,
-            "has-session", "-t", "=parley-shutdown-check",
-        ],
-        environment: controller.environment,
-        input: nil
-    ).status != 0
-    try expect(gone, "stop-everything left the tmux server running")
-}
-
-private func checkRealTmuxPaneModeSeeding() throws {
-    // A native view attaching to a pane must learn the modes the program
-    // enabled before attach — mouse reporting above all — or a mouse-aware
-    // CLI silently loses its mouse in the control-mode host.
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "mode-seed check could not find tmux"
-    )
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: directory,
-        sessionName: "parley-mode-seed-check",
-        environment: environment
-    )
-    let runner = ProcessCommandRunner(timeout: 2)
-    defer {
-        _ = try? runner.run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-
-    try controller.bootstrap(cwd: directory.path)
-    let pane = try require(try controller.listPanes().first, "mode-seed check created no pane")
-    _ = try runner.run(
-        executable: tmux,
-        arguments: [
-            "-S", controller.socketPath.path, "-f", controller.configPath.path,
-            "respawn-pane", "-k", "-t", pane.id,
-            "/bin/sh", "-c",
-            "printf '\\033[?1049h\\033[?1002h\\033[?1006h\\033[?2004h'; /bin/sleep 30",
-        ],
-        environment: controller.environment,
-        input: nil
-    )
-    let seeded = eventually(timeout: 5) {
-        guard let modes = try? controller.capturePaneModeSeed(pane.id),
-              let text = String(data: modes, encoding: .utf8) else { return false }
-        return text.contains("\u{1b}[?1002h") && text.contains("\u{1b}[?1006h")
-            && text.contains("\u{1b}[?2004h") && text.hasSuffix("\u{1b}[?1049h")
-    }
-    try expect(seeded, "pre-attach pane modes were not seeded (mouse, paste, alternate screen last)")
-
-    _ = try runner.run(
-        executable: tmux,
-        arguments: [
-            "-S", controller.socketPath.path, "-f", controller.configPath.path,
-            "respawn-pane", "-k", "-t", pane.id, "/bin/sleep", "30",
-        ],
-        environment: controller.environment,
-        input: nil
-    )
-    let quiet = eventually(timeout: 5) {
-        (try? controller.capturePaneModeSeed(pane.id))?.isEmpty == true
-    }
-    try expect(quiet, "a plain pane produced spurious mode sequences")
-
-    // An idle full-screen TUI must attach with its picture and cursor, not as
-    // an empty alternate buffer.
-    _ = try runner.run(
-        executable: tmux,
-        arguments: [
-            "-S", controller.socketPath.path, "-f", controller.configPath.path,
-            "respawn-pane", "-k", "-t", pane.id,
-            "/bin/sh", "-c",
-            "printf '\\033[?1049h\\033[2J\\033[Halt-screen-picture\\033[5;9H'; /bin/sleep 30",
-        ],
-        environment: controller.environment,
-        input: nil
-    )
-    let repainted = eventually(timeout: 5) {
-        guard let picture = try? controller.capturePaneAlternateScreen(pane.id),
-              let text = String(data: picture, encoding: .utf8) else { return false }
-        return text.contains("alt-screen-picture")
-            && text.hasPrefix("\u{1b}[2J\u{1b}[H")
-            && text.hasSuffix("\u{1b}[5;9H")
-    }
-    try expect(
-        repainted,
-        "the alternate-screen repaint did not carry the pane's picture and cursor position"
-    )
-}
-
-private func checkRealTmuxWindowPerPaneCreationAndClose() throws {
-    // Windows-as-panes creation: a new pane becomes its own member window of
-    // the active workspace, the workspace list still shows one workspace, and
-    // closing the workspace removes the exact member set.
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "window-per-pane check could not find tmux"
-    )
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: directory,
-        sessionName: "parley-member-check",
-        environment: environment
-    )
-    let runner = ProcessCommandRunner(timeout: 2)
-    defer {
-        _ = try? runner.run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-    func windowOption(_ name: String, windowID: String) throws -> String {
-        try runner.run(
-            executable: tmux,
-            arguments: [
-                "-S", controller.socketPath.path, "-f", controller.configPath.path,
-                "show-options", "-w", "-q", "-v", "-t", windowID, name,
-            ],
-            environment: controller.environment,
-            input: nil
-        ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    func borderStatus(_ windowID: String) throws -> String {
-        try windowOption("pane-border-status", windowID: windowID)
-    }
-
-    try controller.bootstrap(cwd: directory.path)
-    let workspace = try require(try controller.listWorkspaces().first, "member check created no workspace")
-    let original = try require(try controller.listPanes().first, "member check created no pane")
-
-    let member = try controller.createPane(
-        kind: .shell,
-        cwd: directory.path,
-        direction: .horizontal,
-        inOwnWindow: true
-    )
-    try expect(member.windowID != original.windowID, "an own-window pane landed in the existing window")
-    try expect(
-        member.workspaceID == workspace.workspaceID,
-        "a member window did not inherit the workspace's durable identity"
-    )
-    let second = try controller.createWorkspace(folder: directory.path, name: "Second")
-    let grouped = try controller.listWorkspaces()
-    try expect(
-        grouped.count == 2,
-        "member windows were listed as workspaces of their own (\(grouped.count) rows)"
-    )
-    let first = try require(
-        grouped.first(where: { $0.workspaceID == workspace.workspaceID }),
-        "the grouped workspace disappeared"
-    )
-    let memberPanes = try controller.listPanes().filter { $0.workspaceID == first.workspaceID }
-    try expect(memberPanes.count == 2, "the workspace does not contain both member panes")
-
-    try controller.renameWorkspace(member.windowID, name: "Renamed Members")
-    try controller.setWorkspaceAutomationPolicy(member.windowID, policy: .askAnswer)
-    for windowID in [original.windowID, member.windowID] {
-        let memberName = try windowOption("@parley-workspace-name", windowID: windowID)
-        try expect(
-            memberName == "Renamed Members",
-            "workspace rename did not reach every member window"
-        )
-        let memberPolicy = try windowOption("@parley-automation-policy", windowID: windowID)
-        try expect(
-            memberPolicy == WorkspaceAutomationPolicy.askAnswer.rawValue,
-            "workspace automation policy did not reach every member window"
-        )
-    }
-
-    let memberPIDBeforeMove = try runner.run(
-        executable: tmux,
-        arguments: [
-            "-S", controller.socketPath.path, "-f", controller.configPath.path,
-            "display-message", "-p", "-t", member.id, "#{pane_pid}",
-        ],
-        environment: controller.environment,
-        input: nil
-    ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
-    let movedMember = try controller.movePane(
-        member.id,
-        toWorkspaceID: second.id,
-        direction: .horizontal,
-        activeHandoffCount: 0,
-        preserveOwnWindowTopology: true
-    )
-    let memberPIDAfterMove = try runner.run(
-        executable: tmux,
-        arguments: [
-            "-S", controller.socketPath.path, "-f", controller.configPath.path,
-            "display-message", "-p", "-t", member.id, "#{pane_pid}",
-        ],
-        environment: controller.environment,
-        input: nil
-    ).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
-    try expect(
-        movedMember.windowID == member.windowID
-            && movedMember.workspaceID == second.workspaceID
-            && memberPIDAfterMove == memberPIDBeforeMove,
-        "own-window move changed the pane window, process, or durable destination"
-    )
-
-    // A single-pane window carries no border title row (it would freeze an
-    // upward drag-selection at the top edge); a real grid keeps it.
-    let bootstrapChrome = try borderStatus(original.windowID)
-    try expect(bootstrapChrome == "off", "a single-pane bootstrap window kept its border title row")
-    let memberChrome = try borderStatus(member.windowID)
-    try expect(memberChrome == "off", "a single-pane member window kept its border title row")
-    let splitPane = try controller.createPane(kind: .shell, cwd: directory.path, direction: .vertical)
-    let gridChrome = try borderStatus(splitPane.windowID)
-    try expect(gridChrome == "top", "a real grid window lost its border title row")
-
-    // Closing an own-window pane removes its window; the border-chrome
-    // reconcile must tolerate the window already being gone.
-    let closable = try controller.createPane(
-        kind: .shell,
-        cwd: directory.path,
-        direction: .horizontal,
-        inOwnWindow: true
-    )
-    try controller.closePane(closable.id)
-    let afterPaneClose = try controller.listPanes()
-    try expect(
-        !afterPaneClose.contains(where: { $0.id == closable.id }),
-        "closing an own-window pane left it behind"
-    )
-
-    try controller.closeWorkspace(original.windowID)
-    let remainingWorkspaces = try controller.listWorkspaces()
-    let remainingPanes = try controller.listPanes()
-    try expect(
-        remainingWorkspaces.map(\.workspaceID) == [second.workspaceID],
-        "closing a workspace did not remove its exact member window set"
-    )
-    try expect(
-        !remainingPanes.contains(where: { $0.id == original.id })
-            && remainingPanes.contains(where: { $0.id == member.id }),
-        "closing a workspace removed a pane already moved away or left a source member alive"
-    )
-}
-
-private func checkRealTmuxDeliveryNeedsNoViewer() throws {
-    // Relay delivery is server-side: bytes must reach a pane that has no
-    // viewer session, one whose viewer exists but has no client (the shape a
-    // closed UI leaves), and one whose viewer was just released. Vendor
-    // focus-sensitivity with a live client attached elsewhere (Copilot) is
-    // conformance territory, not reproducible here without a pty.
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "delivery check could not find tmux"
-    )
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: directory,
-        sessionName: "parley-delivery-check",
-        environment: environment
-    )
-    let runner = ProcessCommandRunner(timeout: 2)
-    defer {
-        _ = try? runner.run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-
-    try controller.bootstrap(cwd: directory.path)
-    let first = try require(try controller.listPanes().first, "delivery check created no pane")
-    let secondWorkspace = try controller.createWorkspace(folder: directory.path, name: "Hidden")
-    let second = try require(
-        try controller.listPanes().first(where: { $0.windowID == secondWorkspace.id }),
-        "delivery check created no second pane"
-    )
-    func tmuxCommand(_ arguments: [String], input: Data? = nil) throws {
-        _ = try runner.run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "-f", controller.configPath.path] + arguments,
-            environment: controller.environment,
-            input: input
-        )
-    }
-    for pane in [first, second] {
-        try tmuxCommand(["respawn-pane", "-k", "-t", pane.id, "/bin/cat"])
-    }
-    func delivered(_ sentinel: String, to paneID: String) throws -> Bool {
-        try tmuxCommand(["send-keys", "-t", paneID, "-l", sentinel])
-        try tmuxCommand(["send-keys", "-t", paneID, "Enter"])
-        return eventually(timeout: 3) {
-            (try? controller.capturePane(paneID))?.contains(sentinel) == true
-        }
-    }
-
-    let noViewer = try delivered("parley-delivery-none", to: first.id)
-    try expect(noViewer, "a pane with no viewer session did not receive input")
-
-    try controller.ensureViewSession(paneID: first.id)
-    let hidden = try delivered("parley-delivery-hidden", to: second.id)
-    try expect(hidden, "a pane outside every viewer did not receive input")
-    let clientless = try delivered("parley-delivery-clientless", to: first.id)
-    try expect(clientless, "a pane whose viewer has no attached client did not receive input")
-
-    try controller.releaseViewSession(paneID: first.id)
-    let released = try delivered("parley-delivery-released", to: first.id)
-    try expect(released, "a pane did not receive input after its viewer was released")
-
-    // The exact buffer mechanism the relay paste path uses.
-    let pasted = "parley-delivery-buffer"
-    try tmuxCommand(["load-buffer", "-b", "parley-check-buffer", "-"], input: Data(pasted.utf8))
-    try tmuxCommand(["paste-buffer", "-d", "-p", "-r", "-b", "parley-check-buffer", "-t", first.id])
-    let bufferDelivered = eventually(timeout: 3) {
-        (try? controller.capturePane(first.id))?.contains(pasted) == true
-    }
-    try expect(bufferDelivered, "a paste-buffer delivery did not reach a viewer-less pane")
-}
-
-private func checkRealTmuxWorkspaceIdentityIsDurable() throws {
-    // Durable workspace identity (@parley-ws-id) must be minted once and then
-    // survive renames and repeated bootstraps, so durable records can outlive
-    // live tmux window ids.
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "workspace identity check could not find tmux"
-    )
-    let directory = try temporaryDirectory()
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: directory,
-        sessionName: "parley-ws-id-check",
-        environment: environment
-    )
-    defer {
-        _ = try? ProcessCommandRunner(timeout: 2).run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-
-    try controller.bootstrap(cwd: directory.path)
-    let first = try require(try controller.listWorkspaces().first, "identity check created no workspace")
-    try expect(
-        first.workspaceID != first.id && first.workspaceID.count == 36,
-        "bootstrap did not mint a durable workspace identity distinct from the window id"
-    )
-    let second = try controller.createWorkspace(folder: directory.path, name: "Second")
-    try expect(
-        second.workspaceID.count == 36 && second.workspaceID != first.workspaceID,
-        "created workspace did not receive its own durable identity"
-    )
-    try controller.renameWorkspace(second.id, name: "Renamed")
-    try controller.bootstrap(cwd: directory.path)
-    let after = try controller.listWorkspaces()
-    try expect(
-        after.first(where: { $0.id == first.id })?.workspaceID == first.workspaceID,
-        "repeated bootstrap re-minted the first workspace's identity"
-    )
-    try expect(
-        after.first(where: { $0.id == second.id })?.workspaceID == second.workspaceID,
-        "rename or repeated bootstrap changed the renamed workspace's identity"
-    )
-    let panes = try controller.listPanes()
-    for workspace in after {
-        for pane in panes.filter({ $0.windowID == workspace.id }) {
-            try expect(
-                pane.workspaceID == workspace.workspaceID,
-                "pane \(pane.id) does not carry its workspace's durable identity"
-            )
-        }
-    }
-}
-
-private func checkRealAgentProcessBoundary() throws {
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "agent process boundary check could not find tmux"
-    )
-    let root = URL(
-        fileURLWithPath: "/private/tmp/parley-live-boundary-\(UUID().uuidString.prefix(8))",
-        isDirectory: true
-    )
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let applicationDirectory = root.appendingPathComponent("application", isDirectory: true)
-    let repositoryDirectory = root.appendingPathComponent("repository", isDirectory: true)
-    let shimDirectory = applicationDirectory.appendingPathComponent("bin", isDirectory: true)
-    let transportDirectory = root.appendingPathComponent("transport", isDirectory: true)
-    try FileManager.default.createDirectory(at: repositoryDirectory, withIntermediateDirectories: true)
-    try FileManager.default.createDirectory(at: shimDirectory, withIntermediateDirectories: true)
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: applicationDirectory,
-        sessionName: "parley-boundary-check",
-        environment: environment
-    )
-    defer {
-        _ = try? ProcessCommandRunner(timeout: 2).run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-    try controller.bootstrap(cwd: repositoryDirectory.path)
-
-    let credentials = try RelayCredentials(
-        file: applicationDirectory.appendingPathComponent("relay-tokens.json")
-    )
-    let sourceToken = try credentials.token(for: "%1")
-    let siblingToken = try credentials.token(for: "%2")
-    let boundary = try AgentProcessBoundary(
-        applicationDirectory: applicationDirectory,
-        protocolDirectory: controller.protocolDirectory,
-        shimDirectory: shimDirectory,
-        tmuxSocket: controller.socketPath,
-        transportDirectory: transportDirectory,
-        paneToken: sourceToken
-    )
-    let siblingEndpoint = try RelayFileTransport.prepareEndpoint(
-        runtimeDirectory: transportDirectory,
-        paneToken: siblingToken
-    )
-    let privateControl = applicationDirectory.appendingPathComponent("core-control-token")
-    let repositoryProbe = repositoryDirectory.appendingPathComponent("probe")
-    let ownProbe = boundary.endpointDirectory.appendingPathComponent("probe")
-    let siblingProbe = siblingEndpoint.appendingPathComponent("probe")
-    try Data("private".utf8).write(to: privateControl, options: .atomic)
-    try Data("repository".utf8).write(to: repositoryProbe, options: .atomic)
-    try Data("own-endpoint".utf8).write(to: ownProbe, options: .atomic)
-    try Data("sibling-endpoint".utf8).write(to: siblingProbe, options: .atomic)
-
-    let runner = ProcessCommandRunner(timeout: 3)
-    func sandboxed(_ command: [String]) throws -> CommandOutput {
-        try runner.run(
-            executable: URL(fileURLWithPath: boundary.arguments[0]),
-            arguments: Array(boundary.arguments.dropFirst()) + command,
-            environment: environment,
-            input: nil
-        )
-    }
-
-    let repositoryRead = try sandboxed(["/bin/cat", repositoryProbe.path])
-    try expect(
-        repositoryRead.status == 0 && repositoryRead.stdoutText == "repository",
-        "agent boundary blocked ordinary repository access"
-    )
-    let ownRead = try sandboxed(["/bin/cat", ownProbe.path])
-    try expect(
-        ownRead.status == 0 && ownRead.stdoutText == "own-endpoint",
-        "agent boundary blocked its own relay endpoint"
-    )
-    let privateRead = try sandboxed(["/bin/cat", privateControl.path])
-    try expect(
-        privateRead.status != 0,
-        "agent boundary exposed the UI control capability: status=\(privateRead.status) stdout=\(privateRead.stdoutText) stderr=\(privateRead.stderrText) profile=\(boundary.arguments[2])"
-    )
-    let siblingRead = try sandboxed(["/bin/cat", siblingProbe.path])
-    try expect(siblingRead.status != 0, "agent boundary exposed another pane's relay endpoint")
-    let tmuxRead = try sandboxed([
-        tmux.path,
-        "-S", controller.socketPath.path,
-        "list-panes", "-s", "-F", "#{pane_id}",
-    ])
-    try expect(tmuxRead.status != 0, "agent boundary exposed direct tmux control")
-    try expect(
-        tmuxRead.stderrText.localizedCaseInsensitiveContains("operation not permitted"),
-        "tmux denial did not come from the macOS process boundary: \(tmuxRead.stderrText)"
-    )
-}
-
-private func checkRealTmuxSavedLayoutRestorationPolicy() throws {
-    let environment = EnvironmentResolver.resolved()
-    let tmux = try require(
-        TmuxController.findTmux(environment: environment),
-        "saved-layout integration check could not find tmux"
-    )
-    let directory = try temporaryDirectory()
-    let consumer = try temporaryDirectory()
-    let projectPath = canonicalPath(directory.path)
-    let consumerPath = canonicalPath(consumer.path)
-    let controller = try TmuxController(
-        tmuxExecutable: tmux,
-        applicationDirectory: directory,
-        sessionName: "parley-layout-check",
-        environment: environment
-    )
-    defer {
-        _ = try? ProcessCommandRunner(timeout: 2).run(
-            executable: tmux,
-            arguments: ["-S", controller.socketPath.path, "kill-server"],
-            environment: controller.environment,
-            input: nil
-        )
-    }
-
-    try controller.bootstrap(cwd: projectPath)
-    let originalWorkspace = try require(try controller.listWorkspaces().first, "layout check created no initial workspace")
-    let originalPaneIDs = Set(try controller.listPanes().map(\.id))
-    let flexibleSelection = PermissionProfileSelection(
-        profileID: "flexible",
-        approvedRoots: [projectPath],
-        lifetime: .remembered
-    )
-    let layout = SavedWorkspaceLayout(
-        name: "Restored Review",
-        defaultFolder: projectPath,
-        root: .split(
-            direction: .horizontal,
-            ratio: 0.58,
-            first: .leaf(SavedLayoutLeaf(kind: .shell, name: "Tests", folder: projectPath)),
-            second: .split(
-                direction: .vertical,
-                ratio: 0.5,
-                first: .leaf(SavedLayoutLeaf(
-                    kind: .codex,
-                    name: "Reviewer",
-                    folder: projectPath,
-                    isWorkspaceLead: true,
-                    permissionSelection: flexibleSelection
-                )),
-                second: .leaf(SavedLayoutLeaf(kind: .agy, name: "Second", folder: consumerPath))
-            )
-        ),
-        automationPolicy: .askAnswer
-    )
-
-    let restored = try controller.restoreWorkspaceLayout(layout, replacing: originalWorkspace.id)
-    let workspaces = try controller.listWorkspaces()
-    try expect(workspaces.count == 1 && workspaces[0].id == restored.id, "layout restoration did not transactionally replace the old workspace")
-    try expect(workspaces[0].automationPolicy == .askAnswer, "layout restoration lost its automation policy")
-    let panes = try controller.listPanes().filter { $0.windowID == restored.id }
-    try expect(panes.count == 3, "restored layout created the wrong pane count")
-    try expect(Set(panes.map(\.id)).isDisjoint(with: originalPaneIDs), "restored layout reused dead tmux pane ids")
-    let shell = try require(panes.first(where: { $0.kind == .shell }), "restored layout lost its shell")
-    try expect(shell.isStarted && shell.currentCommand != "sleep", "restored shell was not started automatically")
-    let agents = panes.filter { $0.kind.isAgent }
-    try expect(agents.count == 2, "restored layout lost an agent placeholder")
-    try expect(agents.first(where: { $0.kind == .codex })?.isWorkspaceLead == true, "restored layout lost its workspace lead")
-    try expect(
-        agents.first(where: { $0.kind == .codex })?.permissionSelection == flexibleSelection,
-        "restored agent placeholder lost its permission profile"
-    )
-    try expect(agents.allSatisfy { $0.automationPolicy == .askAnswer }, "pane routing metadata did not inherit the workspace automation policy")
-    try expect(agents.allSatisfy { !$0.isStarted && $0.currentCommand == "sleep" }, "restored layout spent an agent session")
-    try expect(agents.allSatisfy { !$0.relayEnabled && $0.protocolVersion == nil }, "stopped agent placeholder received live relay capability")
-    let restoredAgyFolder = agents.first(where: { $0.kind == .agy })?.cwd
-    try expect(restoredAgyFolder == consumerPath, "restored agent folder was \(restoredAgyFolder ?? "missing"), expected \(consumerPath)")
-
-    let recaptured = try controller.captureWorkspaceLayout(workspaceID: restored.id)
-    try expect(recaptured.name == layout.name && recaptured.defaultFolder == layout.defaultFolder, "recaptured workspace lost its durable identity")
-    try expect(recaptured.root.leaves.map(\.kind) == layout.root.leaves.map(\.kind), "recaptured workspace changed pane ordering or kind")
-    try expect(recaptured.root.leaves.map(\.name) == layout.root.leaves.map(\.name), "recaptured workspace changed pane names")
-    try expect(
-        recaptured.root.leaves.first(where: { $0.kind == .codex })?.permissionSelection == flexibleSelection,
-        "recaptured workspace changed its selected permission profile"
-    )
-    try expect(
-        recaptured.root.leaves.map { canonicalPath($0.folder) } == layout.root.leaves.map { canonicalPath($0.folder) },
-        "recaptured workspace changed a pane folder"
-    )
-    guard case let .split(direction, ratio, _, _) = recaptured.root else {
-        throw CheckFailure(description: "recaptured workspace lost its root split")
-    }
-    try expect(direction == .horizontal && abs(ratio - 0.58) < 0.03, "recaptured workspace lost its root direction or ratio")
-
-    let nativeRestored = try controller.restoreWorkspaceLayout(
-        layout,
-        replacing: restored.id,
-        inOwnWindows: true
-    )
-    let nativePanes = try controller.listPanes().filter {
-        $0.workspaceID == nativeRestored.workspaceID
-    }
-    try expect(nativePanes.count == 3, "native layout restoration created the wrong pane count")
-    try expect(
-        Set(nativePanes.map { $0.windowID }).count == nativePanes.count,
-        "native layout restoration put more than one pane in a member window"
-    )
-    try expect(
-        nativePanes.allSatisfy { $0.workspaceID == nativeRestored.workspaceID },
-        "native layout restoration did not stamp one durable workspace identity"
-    )
-    try expect(
-        nativePanes.filter { $0.kind.isAgent }.allSatisfy { !$0.isStarted },
-        "native layout restoration started an agent session"
-    )
-}
-
-private func checkInheritedParleyCapabilitiesAreScrubbed() throws {
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: [
-            "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
-            "PARLEY_PANE": "1",
-            "PARLEY_PANE_ID": "%99",
-            "PARLEY_RELAY_INFO": "/tmp/foreign-relay",
-            "PARLEY_RELAY_TOKEN": "foreign-token",
-            "PARLEY_IDEMPOTENCY_KEY": "foreign-request",
-            "PARLEY_PROTOCOL_VERSION": "foreign-version",
-            "PARLEY_CORE_SERVICE": "/tmp/parley-core-service",
-            "PARLEY_TMUX": "/opt/homebrew/bin/tmux",
-            "TMUX": "/tmp/outer-tmux.sock,123,0",
-            "TMUX_PANE": "%99",
-        ],
-        runner: RecordingRunner()
-    )
-
-    for key in ["PARLEY_PANE", "PARLEY_PANE_ID", "PARLEY_RELAY_INFO", "PARLEY_RELAY_TOKEN", "PARLEY_IDEMPOTENCY_KEY", "PARLEY_PROTOCOL_VERSION", "TMUX", "TMUX_PANE"] {
-        try expect(controller.environment[key] == nil, "controller inherited the foreign capability \(key)")
-    }
-    try expect(controller.environment["PARLEY_CORE_SERVICE"] == "/tmp/parley-core-service", "dev core executable override was scrubbed")
-    try expect(controller.environment["PARLEY_TMUX"] == "/opt/homebrew/bin/tmux", "explicit tmux executable override was scrubbed")
-}
-
 private func checkSharedProtocolLaunchAdapters() throws {
     let directory = try temporaryDirectory()
     let protocolDirectory = try AgentProtocol.install(in: directory)
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "8", "the distinct-pane routing protocol did not advance the shared protocol version")
+    try expect(AgentProtocol.version == "9", "the app-resident Ghostty protocol did not advance the shared protocol version")
     try expect(AgentProtocol.text.contains("@reviewer"), "shared protocol omitted explicit stable-role addressing")
     try expect(
         AgentProtocol.text.lowercased().contains("same-vendor") && AgentProtocol.text.contains("different pane"),
@@ -5580,14 +3184,14 @@ private func checkSharedProtocolLaunchAdapters() throws {
     )
 
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: nil, terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: nil, terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil, protocolVersion: "0"),
-        TmuxPane(id: "%3", kind: .agy, customName: nil, terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil, protocolVersion: AgentProtocol.version),
-        TmuxPane(id: "%4", kind: .shell, customName: nil, terminalTitle: "", cwd: "/tmp", currentCommand: "zsh", isActive: false, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%5", kind: .copilot, customName: nil, terminalTitle: "", cwd: "/tmp", currentCommand: "copilot", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .claude, customName: nil, terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: nil, terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", protocolVersion: "0"),
+        WorkbenchPane(id: "%3", kind: .agy, customName: nil, terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", protocolVersion: AgentProtocol.version),
+        WorkbenchPane(id: "%4", kind: .shell, customName: nil, terminalTitle: "", cwd: "/tmp", currentCommand: "zsh", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%5", kind: .copilot, customName: nil, terminalTitle: "", cwd: "/tmp", currentCommand: "copilot", isActive: false, workspaceID: "@0"),
     ]
     try expect(AgentProtocol.stalePaneIDs(in: panes) == ["%1", "%2", "%5"], "protocol restart targeting missed Copilot or included a current agent or shell")
-    let stoppedPlaceholder = TmuxPane(
+    let stoppedPlaceholder = WorkbenchPane(
         id: "%6",
         kind: .codex,
         customName: "Stopped reviewer",
@@ -5595,122 +3199,13 @@ private func checkSharedProtocolLaunchAdapters() throws {
         cwd: "/tmp",
         currentCommand: "sleep",
         isActive: false,
-        windowID: "@0",
-        returnToPaneID: nil,
-        isStarted: false
+        workspaceID: "@0",
+                isStarted: false
     )
     try expect(
         AgentProtocol.stalePaneIDs(in: panes + [stoppedPlaceholder]) == ["%1", "%2", "%5"],
         "protocol migration would auto-start a restored agent placeholder"
     )
-}
-
-private func checkSupervisionMetadataAndRecipesPersistWithoutLiveIDs() throws {
-    let lead = SavedLayoutLeaf(
-        kind: .claude,
-        name: "Planner",
-        folder: "/tmp/project",
-        isWorkspaceLead: true
-    )
-    let layout = SavedWorkspaceLayout(
-        name: "Supervised",
-        defaultFolder: "/tmp/project",
-        root: .split(
-            direction: .horizontal,
-            ratio: 0.5,
-            first: .leaf(lead),
-            second: .leaf(SavedLayoutLeaf(kind: .codex, name: "Reviewer", folder: "/tmp/project"))
-        ),
-        automationPolicy: .askAnswer
-    )
-    let encoded = try JSONEncoder().encode(layout)
-    let json = try require(String(data: encoded, encoding: .utf8), "supervised layout JSON was not UTF-8")
-    try expect(json.contains("askAnswer") && json.contains("isWorkspaceLead"), "saved layout omitted supervision metadata")
-    try expect(!json.contains("paneID") && !json.contains("%"), "supervised layout persisted a live pane id")
-    let decoded = try JSONDecoder().decode(SavedWorkspaceLayout.self, from: encoded)
-    try expect(decoded == layout, "supervised layout did not round-trip")
-    try expect(decoded.root.leaves.first?.isWorkspaceLead == true, "saved layout lost its lead stamp")
-
-    let legacy = #"{"name":"Legacy","defaultFolder":"/tmp","root":{"type":"leaf","kind":"shell","name":"Shell","folder":"/tmp"}}"#
-    let migrated = try JSONDecoder().decode(SavedWorkspaceLayout.self, from: Data(legacy.utf8))
-    try expect(migrated.automationPolicy == .askAndDelegate, "legacy layout did not preserve the existing automation workflow")
-    try expect(migrated.root.leaves.first?.isWorkspaceLead == false, "legacy layout invented a workspace lead")
-
-    let directory = try temporaryDirectory()
-    let layoutStore = SavedWorkspaceLayoutStore(file: directory.appendingPathComponent("layouts.json"))
-    let invalidLeads = SavedWorkspaceLayout(
-        name: "Two leads",
-        defaultFolder: "/tmp",
-        root: .split(
-            direction: .horizontal,
-            ratio: 0.5,
-            first: .leaf(SavedLayoutLeaf(kind: .claude, name: "One", folder: "/tmp", isWorkspaceLead: true)),
-            second: .leaf(SavedLayoutLeaf(kind: .codex, name: "Two", folder: "/tmp", isWorkspaceLead: true))
-        )
-    )
-    do {
-        try layoutStore.save(invalidLeads)
-        throw CheckFailure(description: "layout store accepted two workspace leads")
-    } catch let error as SavedWorkspaceLayoutStoreError {
-        try expect(error.localizedDescription.contains("only one"), "duplicate-lead refusal was unclear")
-    }
-
-    let file = directory.appendingPathComponent("handoff-recipes.json")
-    let store = HandoffRecipeStore(file: file)
-    let defaults = try store.recipes()
-    try expect(Set(defaults.map(\.name)) == Set(["Plan review", "Implementation review", "Adversarial bug hunt", "Compare recommendations"]), "recipe store did not provide the four product recipes")
-    let plan = try require(defaults.first(where: { $0.id == "plan-review" }), "plan-review recipe was missing")
-    let rendered = try plan.render(targets: ["api/Codex"])
-    try expect(rendered.contains("api/Codex") && !rendered.contains("{{targets}}"), "recipe did not render its explicit target")
-    let edited = HandoffRecipe(id: plan.id, name: plan.name, kind: plan.kind, instructions: "Ask {{targets}} to challenge the plan, evaluate the answer, then continue.")
-    try store.save(edited)
-    let persisted = try store.recipes()
-    try expect(persisted.first(where: { $0.id == plan.id }) == edited, "edited recipe was not persisted")
-    var metadata = stat()
-    try expect(lstat(file.path, &metadata) == 0 && metadata.st_mode & 0o077 == 0, "recipe file was not owner-only")
-
-    let paneRows = [
-        paneRow(id: "%1", kind: .claude, active: true, isLead: true, automationPolicy: .askAnswer, role: "planner"),
-        paneRow(id: "%2", kind: .codex, active: false, automationPolicy: .askAnswer, role: "implementer"),
-    ].joined(separator: "\n") + "\n"
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-panes": output(paneRows)
-        case "list-windows": output(workspaceRow(id: "@0", windowName: "app", active: true, name: "app", folder: "/tmp", automationPolicy: .askAnswer) + "\n")
-        default: output()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-    let listedPanes = try controller.listPanes()
-    let listedWorkspaces = try controller.listWorkspaces()
-    try expect(listedPanes.first?.isWorkspaceLead == true, "tmux pane metadata lost the workspace lead")
-    try expect(listedPanes.map(\.role) == ["planner", "implementer"], "tmux pane metadata lost stable routing roles")
-    try expect(listedWorkspaces.first?.automationPolicy == .askAnswer, "tmux workspace metadata lost its automation policy")
-    try controller.setWorkspaceAutomationPolicy("@0", policy: .off)
-    try controller.setWorkspaceLead("%2", workspaceID: "@0")
-    try controller.setPaneRole("reviewer", paneID: "%2", workspaceID: "@0")
-    do {
-        try controller.setPaneRole("planner", paneID: "%2", workspaceID: "@0")
-        throw CheckFailure(description: "role control accepted a duplicate workspace role")
-    } catch let error as ParleyTmuxError {
-        try expect(error.localizedDescription.contains("already assigned"), "duplicate role refusal was unclear")
-    }
-    do {
-        try controller.setPaneRole("codex", paneID: "%2", workspaceID: "@0")
-        throw CheckFailure(description: "role control accepted a reserved vendor route")
-    } catch let error as ParleyTmuxError {
-        try expect(error.localizedDescription.contains("reserved"), "reserved role refusal was unclear")
-    }
-    try controller.interruptPane("%2")
-    try expect(runner.calls.contains { $0.arguments.contains("@parley-automation-policy") && $0.arguments.contains("off") }, "policy control did not write tmux workspace metadata")
-    try expect(runner.calls.contains { $0.arguments.contains("@parley-lead") && $0.arguments.contains("%2") && $0.arguments.contains("1") }, "lead control did not stamp the selected pane")
-    try expect(runner.calls.contains { $0.arguments.contains("@parley-role") && $0.arguments.contains("%2") && $0.arguments.contains("reviewer") }, "role control did not stamp the selected pane")
-    try expect(runner.calls.contains { command($0.arguments) == "send-keys" && $0.arguments.contains("%2") && $0.arguments.contains("C-c") }, "explicit Stop did not target the exact lead pane")
 }
 
 private func checkBoundedSupervisedWorkflowLifecycle() throws {
@@ -5931,10 +3426,10 @@ private func checkSupervisedLeadWorkflowPolicyAndCancellation() throws {
     let implementerToken = try credentials.token(for: "%3")
     let observerToken = try credentials.token(for: "%4")
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: "Planner", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "app", isWorkspaceLead: true, automationPolicy: .askAndDelegate),
-        TmuxPane(id: "%2", kind: .codex, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil, workspaceName: "app", automationPolicy: .askAndDelegate),
-        TmuxPane(id: "%3", kind: .agy, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil, workspaceName: "app", automationPolicy: .askAndDelegate),
-        TmuxPane(id: "%4", kind: .copilot, customName: "Observer", terminalTitle: "", cwd: "/tmp", currentCommand: "copilot", isActive: false, windowID: "@0", returnToPaneID: nil, workspaceName: "app", automationPolicy: .askAndDelegate),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Planner", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0", workspaceName: "app", isWorkspaceLead: true, automationPolicy: .askAndDelegate),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", workspaceName: "app", automationPolicy: .askAndDelegate),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", workspaceName: "app", automationPolicy: .askAndDelegate),
+        WorkbenchPane(id: "%4", kind: .copilot, customName: "Observer", terminalTitle: "", cwd: "/tmp", currentCommand: "copilot", isActive: false, workspaceID: "@0", workspaceName: "app", automationPolicy: .askAndDelegate),
     ]
     let submissions = LockedSubmissions()
     let broker = RelayBroker(
@@ -5969,14 +3464,14 @@ private func checkSupervisedLeadWorkflowPolicyAndCancellation() throws {
     try expect(broker.handoffs().first(where: { $0.id == cancellableID })?.state == .cancelled, "agent cancellation did not reach a terminal state")
 
     let offPanes = panes.map { pane in
-        TmuxPane(id: pane.id, kind: pane.kind, customName: pane.customName, terminalTitle: pane.terminalTitle, cwd: pane.cwd, currentCommand: pane.currentCommand, isActive: pane.isActive, windowID: pane.windowID, returnToPaneID: pane.returnToPaneID, workspaceName: pane.workspaceName, isWorkspaceLead: pane.isWorkspaceLead, automationPolicy: .off)
+        WorkbenchPane(id: pane.id, kind: pane.kind, customName: pane.customName, terminalTitle: pane.terminalTitle, cwd: pane.cwd, currentCommand: pane.currentCommand, isActive: pane.isActive, workspaceID: pane.workspaceID, workspaceName: pane.workspaceName, inputAvailable: pane.inputAvailable, isWorkspaceLead: pane.isWorkspaceLead, automationPolicy: .off)
     }
     let offBroker = RelayBroker(credentials: credentials, panes: { offPanes }, paste: { _, _ in }, submit: { _, _ in })
     try expect(offBroker.handle(token: leadToken, target: "reviewer", text: "Must not send.").status == 403, "Off policy allowed automatic relay")
     try expect(offBroker.handleAsk(token: leadToken, target: "reviewer", text: "Must not ask.").status == 403, "Off policy allowed Ask")
 
     let askOnlyPanes = panes.map { pane in
-        TmuxPane(id: pane.id, kind: pane.kind, customName: pane.customName, terminalTitle: pane.terminalTitle, cwd: pane.cwd, currentCommand: pane.currentCommand, isActive: pane.isActive, windowID: pane.windowID, returnToPaneID: pane.returnToPaneID, workspaceName: pane.workspaceName, isWorkspaceLead: pane.isWorkspaceLead, automationPolicy: .askAnswer)
+        WorkbenchPane(id: pane.id, kind: pane.kind, customName: pane.customName, terminalTitle: pane.terminalTitle, cwd: pane.cwd, currentCommand: pane.currentCommand, isActive: pane.isActive, workspaceID: pane.workspaceID, workspaceName: pane.workspaceName, inputAvailable: pane.inputAvailable, isWorkspaceLead: pane.isWorkspaceLead, automationPolicy: .askAnswer)
     }
     let askOnlyBroker = RelayBroker(credentials: credentials, panes: { askOnlyPanes }, paste: { _, _ in }, submit: { _, _ in })
     try expect(askOnlyBroker.handleDelegate(token: leadToken, target: "builder", text: "Must not delegate.").status == 403, "Ask/Answer policy allowed tracked delegation")
@@ -5989,9 +3484,9 @@ private func checkTrackedDelegationCompletesAndWaits() throws {
     let targetToken = try credentials.token(for: "%2")
     let wrongToken = try credentials.token(for: "%3")
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp/api", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "api"),
-        TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/web", currentCommand: "agy", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "web"),
-        TmuxPane(id: "%3", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp/api", currentCommand: "codex", isActive: true, workspaceID: "@0", workspaceName: "api"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/web", currentCommand: "agy", isActive: false, workspaceID: "@1", workspaceName: "web"),
+        WorkbenchPane(id: "%3", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0"),
     ]
     let submitted = LockedDelivery()
     let submissionCount = LockedCounter()
@@ -6075,8 +3570,8 @@ private func checkTrackedDelegationFailureAndLiveness() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
-    let source = TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil)
-    let target = TmuxPane(id: "%2", kind: .copilot, customName: "Copilot", terminalTitle: "", cwd: "/tmp", currentCommand: "copilot", isActive: false, windowID: "@0", returnToPaneID: nil)
+    let source = WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0")
+    let target = WorkbenchPane(id: "%2", kind: .copilot, customName: "Copilot", terminalTitle: "", cwd: "/tmp", currentCommand: "copilot", isActive: false, workspaceID: "@0")
     let livePanes = LockedPanes([source, target])
     let broker = RelayBroker(
         credentials: credentials,
@@ -6129,8 +3624,8 @@ private func checkDelegationShimRoundTrip() throws {
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0"),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -6223,298 +3718,6 @@ private func checkDelegationShimRoundTrip() throws {
     try expect(broker.handoffs().first(where: { $0.id == cancellableID })?.state == .cancelled, "shim cancellation did not end tracked work")
 }
 
-private func checkCopilotAgentSpawn() throws {
-    let source = paneRow(id: "%1", kind: .shell, active: true)
-    let created = paneRow(
-        id: "%2",
-        kind: .copilot,
-        active: true,
-        relayEnabled: true,
-        protocolVersion: AgentProtocol.version
-    )
-    var lists = 0
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-panes":
-            lists += 1
-            return output(lists == 1 ? "\(source)\n" : "\(source)\n\(created)\n")
-        case "split-window": return output("%2\n")
-        default: return output()
-        }
-    }
-    let directory = try temporaryDirectory()
-    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: directory,
-        environment: [
-            "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
-            "COPILOT_CUSTOM_INSTRUCTIONS_DIRS": "/user/rules",
-        ],
-        runner: runner
-    )
-    controller.configureRelay(RelayRuntime(
-        infoFile: directory.appendingPathComponent("relay-url"),
-        shimDirectory: directory.appendingPathComponent("bin"),
-        transportDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: directory),
-        credentials: credentials
-    ))
-
-    let pane = try controller.createPane(kind: .copilot, cwd: "/tmp", direction: .horizontal)
-
-    let respawn = try require(runner.calls.first(where: { command($0.arguments) == "respawn-pane" }), "Copilot pane was not respawned")
-    try expect(
-        respawn.arguments.suffix(2) == ["copilot", "--allow-tool=shell(parley)"],
-        "Copilot was not launched directly with only its narrow Parley permission"
-    )
-    try expect(
-        respawn.arguments.contains("--allow-tool=shell(parley)"),
-        "Copilot still requires approval before it can return a Parley answer"
-    )
-    try expect(
-        respawn.arguments.contains("COPILOT_CUSTOM_INSTRUCTIONS_DIRS=\(controller.protocolDirectory.path),/user/rules"),
-        "Copilot did not receive Parley's shared protocol directory"
-    )
-    try expect(!respawn.arguments.contains("--allow-all"), "Copilot launch bypassed permission prompts")
-    try expect(!respawn.arguments.contains("--allow-all-tools"), "Copilot launch automatically approved tools")
-    try expect(!respawn.arguments.contains("--yolo"), "Copilot launch used the unsafe yolo alias")
-    try expect(pane.relayEnabled, "new Copilot pane was not relay-ready")
-    try expect(pane.protocolVersion == AgentProtocol.version, "new Copilot pane was not stamped with its protocol version")
-}
-
-private func checkCopilotSubmitUsesEnterAfterTrust() throws {
-    let panes = [
-        paneRow(id: "%1", kind: .claude, active: true),
-        paneRow(
-            id: "%4",
-            kind: .copilot,
-            active: false,
-            relayEnabled: true,
-            protocolVersion: AgentProtocol.version
-        ),
-    ].joined(separator: "\n") + "\n"
-    var pauses: [TimeInterval] = []
-    let runner = RecordingRunner { arguments, _ in
-        command(arguments) == "list-panes" ? output(panes) : output()
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner,
-        pause: { pauses.append($0) }
-    )
-
-    try controller.paste("queued question", into: "%4", submit: true)
-
-    let submit = try require(runner.calls.first(where: { command($0.arguments) == "send-keys" }), "Copilot submission sent no key")
-    try expect(submit.arguments.contains("Enter"), "trusted Copilot submission did not start the turn")
-    try expect(!submit.arguments.contains("C-q"), "Copilot submission only queued the prompt instead of starting it")
-    let focusCalls = runner.calls.filter { command($0.arguments) == "select-pane" }
-    try expect(focusCalls.count == 2, "inactive Copilot was not focused and then restored")
-    try expect(focusCalls[0].arguments.contains("%4"), "Copilot was not focused before submission")
-    try expect(focusCalls[1].arguments.contains("%1"), "the original pane was not restored after Copilot submission")
-    let focusIndex = try require(runner.calls.firstIndex(where: {
-        command($0.arguments) == "select-pane" && $0.arguments.contains("%4")
-    }), "Copilot focus call disappeared")
-    let submitIndex = try require(runner.calls.firstIndex(where: {
-        command($0.arguments) == "send-keys" && $0.arguments.contains("Enter")
-    }), "Copilot submit call disappeared")
-    let restoreIndex = try require(runner.calls.firstIndex(where: {
-        command($0.arguments) == "select-pane" && $0.arguments.contains("%1")
-    }), "Copilot restore call disappeared")
-    try expect(focusIndex < submitIndex && submitIndex < restoreIndex, "Copilot focus handoff happened in the wrong order")
-    try expect(pauses == [0.1, 0.25, 0.1], "Copilot focus, paste, and restore were not separated by settling delays")
-}
-
-private func checkCopilotTrustPromptRefusesSubmission() throws {
-    let panes = paneRow(
-        id: "%4",
-        kind: .copilot,
-        active: true,
-        relayEnabled: true,
-        protocolVersion: AgentProtocol.version
-    ) + "\n"
-    let runner = RecordingRunner { arguments, _ in
-        switch command(arguments) {
-        case "list-panes": output(panes)
-        case "capture-pane": output("Confirm folder trust\nDo you trust the files in this folder?\n")
-        default: output()
-        }
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    do {
-        try controller.paste("do not queue behind trust", into: "%4", submit: true)
-        throw CheckFailure(description: "Copilot accepted an Ask behind its folder-trust dialog")
-    } catch ParleyTmuxError.copilotTrustRequired {
-        // Expected: only the person can grant repository trust.
-    }
-    try expect(!runner.calls.contains { command($0.arguments) == "load-buffer" }, "a refused Copilot Ask still pasted its prompt")
-}
-
-private func checkPasteRequiresRelayReadyBracketedTarget() throws {
-    func attempt(relayEnabled: Bool, protocolVersion: String, bracketedPasteActive: Bool) throws {
-        let panes = paneRow(
-            id: "%2",
-            kind: .codex,
-            active: true,
-            relayEnabled: relayEnabled,
-            protocolVersion: protocolVersion,
-            bracketedPasteActive: bracketedPasteActive
-        ) + "\n"
-        let runner = RecordingRunner { arguments, _ in
-            command(arguments) == "list-panes" ? output(panes) : output()
-        }
-        let controller = try TmuxController(
-            tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-            applicationDirectory: temporaryDirectory(),
-            environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-            runner: runner
-        )
-        do {
-            try controller.paste("unsafe\nmultiline", into: "%2", submit: false)
-            throw CheckFailure(description: "unsafe relay target accepted a multiline paste")
-        } catch ParleyTmuxError.unsafeRelayTarget {
-            // Expected: no bytes reach a target outside the current protocol.
-        }
-        try expect(!runner.calls.contains { command($0.arguments) == "load-buffer" }, "refused relay still loaded a tmux buffer")
-    }
-
-    try attempt(relayEnabled: true, protocolVersion: AgentProtocol.version, bracketedPasteActive: false)
-    try attempt(relayEnabled: false, protocolVersion: AgentProtocol.version, bracketedPasteActive: true)
-    try attempt(relayEnabled: true, protocolVersion: "stale", bracketedPasteActive: true)
-}
-
-private func checkAsk() throws {
-    let panes = [
-        paneRow(id: "%1", kind: .claude, active: true),
-        paneRow(
-            id: "%2",
-            kind: .codex,
-            active: false,
-            relayEnabled: true,
-            protocolVersion: AgentProtocol.version
-        ),
-    ].joined(separator: "\n") + "\n"
-    let runner = RecordingRunner { arguments, _ in
-        command(arguments) == "list-panes" ? output(panes) : output()
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    try controller.ask(from: "%1", to: "%2", text: "Should this cache be per worktree?")
-
-    let load = try require(runner.calls.first(where: { command($0.arguments) == "load-buffer" }), "Ask did not load a tmux buffer")
-    let body = String(decoding: try require(load.input, "Ask buffer had no stdin"), as: UTF8.self)
-    try expect(body.contains("Claude asked:"), "Ask omitted source attribution")
-    try expect(body.contains("per worktree"), "Ask omitted its body")
-    let paste = try require(runner.calls.first(where: { command($0.arguments) == "paste-buffer" }), "Ask did not paste the buffer")
-    try expect(paste.arguments.contains("-p") && paste.arguments.contains("-r"), "Ask did not use a multiline bracketed paste")
-    try expect(paste.arguments.contains("%2"), "Ask targeted the wrong pane")
-    try expect(runner.calls.contains { command($0.arguments) == "send-keys" && $0.arguments.contains("Enter") }, "human Ask action did not submit")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("@parley-return-to") && call.arguments.contains("%1")
-    }, "Ask did not record its return route")
-
-    let explicitContext = "Review this exact layout:\n\n    indented code\n\n\n┌diagram┐"
-    try controller.askWithExplicitContext(from: "%1", to: "%2", text: explicitContext)
-    let contextLoad = try require(
-        runner.calls.last(where: { command($0.arguments) == "load-buffer" }),
-        "context Ask did not load a tmux buffer"
-    )
-    let contextBody = String(decoding: try require(contextLoad.input, "context Ask buffer had no stdin"), as: UTF8.self)
-    try expect(contextBody.contains("    indented code"), "context Ask stripped meaningful indentation")
-    try expect(contextBody.contains("code\n\n\n┌diagram┐"), "context Ask collapsed blank lines or stripped Unicode source content")
-}
-
-private func checkReturn() throws {
-    let panes = [
-        paneRow(
-            id: "%1",
-            kind: .claude,
-            active: false,
-            relayEnabled: true,
-            protocolVersion: AgentProtocol.version
-        ),
-        paneRow(id: "%2", kind: .codex, active: true, returnTo: "%1"),
-    ].joined(separator: "\n") + "\n"
-    let runner = RecordingRunner { arguments, _ in
-        command(arguments) == "list-panes" ? output(panes) : output()
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    try controller.returnAnswer(from: "%2", text: "No; worktrees can have different state.")
-
-    let load = try require(runner.calls.first(where: { command($0.arguments) == "load-buffer" }), "Return did not load a tmux buffer")
-    let body = String(decoding: try require(load.input, "Return buffer had no stdin"), as: UTF8.self)
-    try expect(body.contains("Codex answered:"), "Return omitted source attribution")
-    let paste = try require(runner.calls.first(where: { command($0.arguments) == "paste-buffer" }), "Return did not paste the buffer")
-    try expect(paste.arguments.contains("%1"), "Return targeted the wrong pane")
-    try expect(runner.calls.contains { call in
-        command(call.arguments) == "set-option" && call.arguments.contains("-u") && call.arguments.contains("@parley-return-to")
-    }, "Return did not consume its route")
-}
-
-private func checkDistinctPaneRouting() throws {
-    let panes = [
-        paneRow(id: "%1", kind: .claude, active: true),
-        paneRow(
-            id: "%2",
-            kind: .claude,
-            active: false,
-            relayEnabled: true,
-            protocolVersion: AgentProtocol.version
-        ),
-    ].joined(separator: "\n") + "\n"
-    let runner = RecordingRunner { arguments, _ in
-        command(arguments) == "list-panes" ? output(panes) : output()
-    }
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: temporaryDirectory(),
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-
-    try controller.ask(from: "%1", to: "%2", text: "review this")
-    _ = try require(
-        runner.calls.first(where: { command($0.arguments) == "load-buffer" }),
-        "same-vendor Ask did not relay content to a distinct pane"
-    )
-    let paste = try require(
-        runner.calls.first(where: { command($0.arguments) == "paste-buffer" }),
-        "same-vendor Ask did not paste its loaded content"
-    )
-    try expect(paste.arguments.contains("%2"), "same-vendor Ask targeted the wrong pane")
-
-    let submissionCount = runner.calls.filter { command($0.arguments) == "load-buffer" }.count
-    do {
-        try controller.ask(from: "%1", to: "%1", text: "do not send this")
-        throw CheckFailure(description: "Ask accepted its own source pane as the target")
-    } catch ParleyTmuxError.samePane {
-        // Expected: pane identity, rather than vendor identity, is the boundary.
-    }
-    try expect(
-        runner.calls.filter { command($0.arguments) == "load-buffer" }.count == submissionCount,
-        "a rejected self-target Ask relayed content"
-    )
-}
-
 private func checkRelayCleaning() throws {
     let cleaned = RelayText.clean("\u{1b}[31m│ - old\r\n│ + new\u{7}\n\n\n")
     try expect(!cleaned.contains("\u{1b}"), "relay preserved an escape control")
@@ -6577,7 +3780,7 @@ private func checkReviewDraftsAreBoundedShellFreeAndExplicit() throws {
         _ = try tinyBuilder.file(at: plan)
         throw CheckFailure(description: "oversized review file was accepted")
     } catch ReviewDraftError.contentTooLarge {
-        // Expected: prompts are bounded before they reach tmux.
+        // Expected: prompts are bounded before they reach a terminal.
     }
 
     let binary = repository.appendingPathComponent("binary.dat")
@@ -6667,13 +3870,13 @@ private func checkContextPacksAreExplicitBoundedAndAttributed() throws {
     try expect(gitRunner.calls.allSatisfy { $0.executable.path == "/usr/bin/git" }, "Git context invoked a shell or foreign executable")
     try expect(gitRunner.calls.allSatisfy { $0.environment["GIT_OPTIONAL_LOCKS"] == "0" }, "Git context allowed optional index locks")
 
-    let terminal = try builder.visibleTerminal(
+    let terminal = try builder.terminalSelection(
         paneID: "%7",
         paneName: "Review shell",
-        text: "Only the visible screen\nnot hidden scrollback"
+        text: "Only the selected terminal text"
     )
-    try expect(terminal.source.kind == .visibleTerminal, "visible terminal context lost its source kind")
-    try expect(terminal.source.detail.contains("%7") && terminal.text == "Only the visible screen\nnot hidden scrollback", "visible terminal context changed its explicit capture")
+    try expect(terminal.source.kind == .visibleTerminal, "terminal-selection context lost its source kind")
+    try expect(terminal.source.detail.contains("%7") && terminal.text == "Only the selected terminal text", "terminal-selection context changed its explicit capture")
 
     let command = try builder.commandResult(
         executablePath: "/usr/bin/printf",
@@ -6821,11 +4024,10 @@ private func checkVendorToolEvidenceIsCapabilityGatedAndAttributed() throws {
             ($0, $0 == .networkAccess ? PermissionRule.allow : PermissionRule.requireApproval)
         })
     )
-    let pane = TmuxPane(
+    let pane = WorkbenchPane(
         id: "%browser", kind: .claude, customName: "Researcher",
         terminalTitle: "Browser task completed successfully", cwd: directory.path,
-        currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
-        relayEnabled: true, protocolVersion: AgentProtocol.version,
+        currentCommand: "claude", isActive: true, workspaceID: "@0",         relayEnabled: true, protocolVersion: AgentProtocol.version,
         permissionSelection: PermissionProfileSelection(
             profileID: profile.id,
             approvedRoots: [directory.path],
@@ -6843,10 +4045,9 @@ private func checkVendorToolEvidenceIsCapabilityGatedAndAttributed() throws {
         "the capability summary did not explain why successful-looking terminal prose proves nothing"
     )
 
-    let stopped = TmuxPane(
+    let stopped = WorkbenchPane(
         id: "%stopped", kind: .codex, customName: nil, terminalTitle: "", cwd: directory.path,
-        currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil,
-        isStarted: false
+        currentCommand: "codex", isActive: false, workspaceID: "@0",         isStarted: false
     )
     let stoppedCapability = PaneToolCapabilityProjection.summary(for: stopped, profiles: [])
     try expect(
@@ -6971,7 +4172,7 @@ private func checkWorkspaceBriefsAreDurableAndExplicitlyAttached() throws {
     try expect(brief.createdAt == createdAt && brief.updatedAt == createdAt, "workspace brief timestamps were not stable")
 
     let builder = ContextPackBuilder()
-    let ordinary = try builder.visibleTerminal(paneID: "%1", paneName: "Claude", text: "Visible output only")
+    let ordinary = try builder.terminalSelection(paneID: "%1", paneName: "Claude", text: "Selected output only")
     let withoutBrief = try builder.render(ContextPack(
         name: "No brief",
         note: "Review this output.",
@@ -7046,7 +4247,7 @@ private func checkPinnedContextSnippetsAreDurableReusableAndExplicit() throws {
     try expect(initialSnippets == [snippet], "a pinned snippet did not survive a store reload")
 
     let builder = ContextPackBuilder()
-    let ordinary = try builder.visibleTerminal(paneID: "%1", paneName: "Claude", text: "Implementation complete")
+    let ordinary = try builder.terminalSelection(paneID: "%1", paneName: "Claude", text: "Implementation complete")
     let withoutSnippet = try builder.render(ContextPack(
         name: "No pinned context",
         note: "Review the implementation.",
@@ -7181,7 +4382,7 @@ private func checkDiagnosticsExportIsUsefulAndPrivacyBounded() throws {
         transitionDetail: secrets[4],
         transitionCount: 25
     )
-    let pane = TmuxPane(
+    let pane = WorkbenchPane(
         id: "%77",
         kind: .codex,
         customName: secrets[2],
@@ -7189,12 +4390,11 @@ private func checkDiagnosticsExportIsUsefulAndPrivacyBounded() throws {
         cwd: "/tmp/\(secrets[5])",
         currentCommand: secrets[6],
         isActive: true,
-        windowID: "@0",
-        returnToPaneID: "%private-return-route",
+        workspaceID: "@0",
         relayEnabled: true,
         protocolVersion: AgentProtocol.version,
         workspaceName: secrets[5],
-        bracketedPasteActive: true,
+        inputAvailable: true,
         isDead: false,
         exitStatus: nil,
         isStarted: true
@@ -7223,7 +4423,7 @@ private func checkDiagnosticsExportIsUsefulAndPrivacyBounded() throws {
         architecture: "arm64",
         uiResidentBytes: 12_345,
         coreResidentBytes: 54_321,
-        tmuxAvailable: true,
+        terminalAvailable: true,
         coreAvailable: false,
         workspaceCount: 2,
         panes: [pane],
@@ -7322,10 +4522,10 @@ private func checkMemoryPlateauAssessment() throws {
 
 private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Lead", terminalTitle: "", cwd: "/tmp/a", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "a", isStarted: true),
-        TmuxPane(id: "%2", kind: .agy, customName: "Reviewer", terminalTitle: "", cwd: "/tmp/a", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "a", isStarted: true),
-        TmuxPane(id: "%3", kind: .claude, customName: "Builder", terminalTitle: "", cwd: "/tmp/b", currentCommand: "claude", isActive: false, windowID: "@1", returnToPaneID: nil, relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "b", isStarted: true),
-        TmuxPane(id: "%4", kind: .copilot, customName: "Stopped", terminalTitle: "", cwd: "/tmp/b", currentCommand: "sleep", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "b", isStarted: false),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Lead", terminalTitle: "", cwd: "/tmp/a", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "a", isStarted: true),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Reviewer", terminalTitle: "", cwd: "/tmp/a", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "a", isStarted: true),
+        WorkbenchPane(id: "%3", kind: .claude, customName: "Builder", terminalTitle: "", cwd: "/tmp/b", currentCommand: "claude", isActive: false, workspaceID: "@1", relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "b", isStarted: true),
+        WorkbenchPane(id: "%4", kind: .copilot, customName: "Stopped", terminalTitle: "", cwd: "/tmp/b", currentCommand: "sleep", isActive: false, workspaceID: "@1", workspaceName: "b", isStarted: false),
     ]
     let handoffs = [
         try statusHandoff(id: "ask", kind: .ask, state: .waiting, sourceWorkspaceID: "@0", targetWorkspaceID: "@0", occurredAt: 30),
@@ -7545,7 +4745,7 @@ private func checkCollaborationHistorySearchExportAndRepeat() throws {
     )
     try expect(permissions.intValue & 0o077 == 0, "history export was readable outside its owner")
 
-    let source = TmuxPane(
+    let source = WorkbenchPane(
         id: completedAsk.sourcePaneID,
         kind: .codex,
         customName: "Builder",
@@ -7553,15 +4753,14 @@ private func checkCollaborationHistorySearchExportAndRepeat() throws {
         cwd: "/tmp/a",
         currentCommand: "codex",
         isActive: false,
-        windowID: "@0",
-        returnToPaneID: nil,
-        relayEnabled: true,
+        workspaceID: "@0",
+                relayEnabled: true,
         protocolVersion: AgentProtocol.version,
         workspaceName: "a",
-        bracketedPasteActive: true,
+        inputAvailable: true,
         isStarted: true
     )
-    let target = TmuxPane(
+    let target = WorkbenchPane(
         id: completedAsk.targetPaneID,
         kind: .codex,
         customName: "Codex Reviewer",
@@ -7569,12 +4768,11 @@ private func checkCollaborationHistorySearchExportAndRepeat() throws {
         cwd: "/tmp/a",
         currentCommand: "codex",
         isActive: false,
-        windowID: "@0",
-        returnToPaneID: nil,
-        relayEnabled: true,
+        workspaceID: "@0",
+                relayEnabled: true,
         protocolVersion: AgentProtocol.version,
         workspaceName: "a",
-        bracketedPasteActive: true,
+        inputAvailable: true,
         isStarted: true
     )
     let route = try require(
@@ -7583,7 +4781,7 @@ private func checkCollaborationHistorySearchExportAndRepeat() throws {
     )
     try expect(route.sourcePaneID == source.id && route.targetPaneID == target.id, "Ask This Again changed the recorded route")
     try expect(CollaborationHistoryRepeat.route(for: failedRelay, panes: [source, target]) == nil, "Ask This Again accepted a non-Ask handoff")
-    let staleTarget = TmuxPane(
+    let staleTarget = WorkbenchPane(
         id: target.id,
         kind: target.kind,
         customName: target.customName,
@@ -7591,12 +4789,11 @@ private func checkCollaborationHistorySearchExportAndRepeat() throws {
         cwd: target.cwd,
         currentCommand: target.currentCommand,
         isActive: target.isActive,
-        windowID: target.windowID,
-        returnToPaneID: target.returnToPaneID,
+        workspaceID: target.workspaceID,
         relayEnabled: target.relayEnabled,
         protocolVersion: "v0",
         workspaceName: target.workspaceName,
-        bracketedPasteActive: target.bracketedPasteActive,
+        inputAvailable: target.inputAvailable,
         isStarted: target.isStarted
     )
     try expect(CollaborationHistoryRepeat.route(for: completedAsk, panes: [source, staleTarget]) == nil, "Ask This Again bypassed the current-protocol gate")
@@ -7695,8 +4892,8 @@ private func checkHistoryRetentionCoreControlRoute() throws {
     let sourceToken = try credentials.token(for: "%source")
     _ = try credentials.token(for: "%target")
     let panes = [
-        TmuxPane(id: "%source", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "app"),
-        TmuxPane(id: "%target", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil, workspaceName: "app"),
+        WorkbenchPane(id: "%source", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0", workspaceName: "app"),
+        WorkbenchPane(id: "%target", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0", workspaceName: "app"),
     ]
     let retentionStore = CollaborationHistoryRetentionStore(
         file: directory.appendingPathComponent("history-retention.json")
@@ -7783,17 +4980,15 @@ private func checkHumanAskAgainUsesTrackedCoreControlRoute() throws {
     _ = try credentials.token(for: "%source")
     let targetToken = try credentials.token(for: "%target")
     let panes = [
-        TmuxPane(
+        WorkbenchPane(
             id: "%source", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp",
-            currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil,
-            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
-            bracketedPasteActive: true, automationPolicy: .off
+            currentCommand: "codex", isActive: true, workspaceID: "@0",             relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+            inputAvailable: true, automationPolicy: .off
         ),
-        TmuxPane(
+        WorkbenchPane(
             id: "%target", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp",
-            currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil,
-            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
-            bracketedPasteActive: true
+            currentCommand: "claude", isActive: false, workspaceID: "@0",             relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+            inputAvailable: true
         ),
     ]
     let submissions = LockedSubmissions()
@@ -7851,7 +5046,7 @@ private func checkHumanAskAgainUsesTrackedCoreControlRoute() throws {
 }
 
 private func checkRecoveryGuidanceProjectsKnownFailures() throws {
-    let dead = TmuxPane(
+    let dead = WorkbenchPane(
         id: "%dead",
         kind: .codex,
         customName: "Exited Codex",
@@ -7859,16 +5054,15 @@ private func checkRecoveryGuidanceProjectsKnownFailures() throws {
         cwd: "/tmp/a",
         currentCommand: "codex",
         isActive: false,
-        windowID: "@0",
-        returnToPaneID: nil,
-        relayEnabled: true,
+        workspaceID: "@0",
+                relayEnabled: true,
         protocolVersion: AgentProtocol.version,
         workspaceName: "a",
         isDead: true,
         exitStatus: 9,
         isStarted: true
     )
-    let stale = TmuxPane(
+    let stale = WorkbenchPane(
         id: "%stale",
         kind: .agy,
         customName: "Older Agy",
@@ -7876,9 +5070,8 @@ private func checkRecoveryGuidanceProjectsKnownFailures() throws {
         cwd: "/tmp/a",
         currentCommand: "agy",
         isActive: true,
-        windowID: "@0",
-        returnToPaneID: nil,
-        relayEnabled: false,
+        workspaceID: "@0",
+                relayEnabled: false,
         protocolVersion: "1",
         workspaceName: "a",
         isStarted: true
@@ -8041,8 +5234,8 @@ private func checkAgentRelaySubmitsAndExplicitPasteDoesNot() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
     ]
     let pasted = LockedDelivery()
     let submitted = LockedDelivery()
@@ -8074,8 +5267,8 @@ private func checkStableHandoffIdentityAndIdempotentRelay() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
     ]
     let submissions = LockedCounter()
     let broker = RelayBroker(
@@ -8135,8 +5328,8 @@ private func checkCompletedHandoffRetentionIsBounded() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -8156,7 +5349,7 @@ private func checkCompletedHandoffRetentionIsBounded() throws {
     }
 
     let retained = broker.handoffs()
-    try expect(retained.count == 500, "persistent core retained \(retained.count) completed handoffs instead of its 500-record bound")
+    try expect(retained.count == 500, "app-resident core retained \(retained.count) completed handoffs instead of its 500-record bound")
     try expect(retained.contains(where: { $0.idempotencyKey == "retention-509" }), "retention discarded the newest handoff")
     try expect(!retained.contains(where: { $0.idempotencyKey == "retention-0" }), "retention kept the oldest handoff")
 }
@@ -8167,8 +5360,8 @@ private func checkDurableHandoffJournal() throws {
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp/repo-a", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "repo-a"),
-        TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/repo-b", currentCommand: "agy", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "repo-b"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp/repo-a", currentCommand: "codex", isActive: true, workspaceID: "@0", workspaceName: "repo-a"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/repo-b", currentCommand: "agy", isActive: false, workspaceID: "@1", workspaceName: "repo-b"),
     ]
     let historyFile = directory.appendingPathComponent("handoffs.jsonl")
     let journal = try RelayHandoffJournal(file: historyFile)
@@ -8302,12 +5495,12 @@ private func checkWorkspaceHandoffHistoryDeletion() throws {
     let repoCToken = try credentials.token(for: "%3")
     let duplicateNameToken = try credentials.token(for: "%5")
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Codex A", terminalTitle: "", cwd: "/tmp/repo-a", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "repo-a"),
-        TmuxPane(id: "%2", kind: .agy, customName: "Agy B", terminalTitle: "", cwd: "/tmp/repo-b", currentCommand: "agy", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "repo-b"),
-        TmuxPane(id: "%3", kind: .claude, customName: "Claude C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "claude", isActive: false, windowID: "@2", returnToPaneID: nil, workspaceName: "repo-c"),
-        TmuxPane(id: "%4", kind: .codex, customName: "Codex C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "codex", isActive: false, windowID: "@2", returnToPaneID: nil, workspaceName: "repo-c"),
-        TmuxPane(id: "%5", kind: .claude, customName: "Claude Duplicate", terminalTitle: "", cwd: "/tmp/duplicate-a", currentCommand: "claude", isActive: false, windowID: "@3", returnToPaneID: nil, workspaceName: "repo-a"),
-        TmuxPane(id: "%6", kind: .codex, customName: "Codex Duplicate", terminalTitle: "", cwd: "/tmp/duplicate-a", currentCommand: "codex", isActive: false, windowID: "@3", returnToPaneID: nil, workspaceName: "repo-a"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex A", terminalTitle: "", cwd: "/tmp/repo-a", currentCommand: "codex", isActive: true, workspaceID: "@0", workspaceName: "repo-a"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy B", terminalTitle: "", cwd: "/tmp/repo-b", currentCommand: "agy", isActive: false, workspaceID: "@1", workspaceName: "repo-b"),
+        WorkbenchPane(id: "%3", kind: .claude, customName: "Claude C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "claude", isActive: false, workspaceID: "@2", workspaceName: "repo-c"),
+        WorkbenchPane(id: "%4", kind: .codex, customName: "Codex C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "codex", isActive: false, workspaceID: "@2", workspaceName: "repo-c"),
+        WorkbenchPane(id: "%5", kind: .claude, customName: "Claude Duplicate", terminalTitle: "", cwd: "/tmp/duplicate-a", currentCommand: "claude", isActive: false, workspaceID: "@3", workspaceName: "repo-a"),
+        WorkbenchPane(id: "%6", kind: .codex, customName: "Codex Duplicate", terminalTitle: "", cwd: "/tmp/duplicate-a", currentCommand: "codex", isActive: false, workspaceID: "@3", workspaceName: "repo-a"),
     ]
     let historyFile = directory.appendingPathComponent("handoffs.jsonl")
     let journal = try RelayHandoffJournal(file: historyFile)
@@ -8379,10 +5572,10 @@ private func checkCrossWorkspaceRelayAddressing() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp/api", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil, workspaceName: "api"),
-        TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/api", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil, workspaceName: "api"),
-        TmuxPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/web", currentCommand: "agy", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "web"),
-        TmuxPane(id: "%4", kind: .claude, customName: "Critic", terminalTitle: "", cwd: "/tmp/web", currentCommand: "claude", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "web", role: "reviewer"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp/api", currentCommand: "codex", isActive: true, workspaceID: "@0", workspaceName: "api"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/api", currentCommand: "agy", isActive: false, workspaceID: "@0", workspaceName: "api"),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/web", currentCommand: "agy", isActive: false, workspaceID: "@1", workspaceName: "web"),
+        WorkbenchPane(id: "%4", kind: .claude, customName: "Critic", terminalTitle: "", cwd: "/tmp/web", currentCommand: "claude", isActive: false, workspaceID: "@1", workspaceName: "web", role: "reviewer"),
     ]
     let submitted = LockedDelivery()
     let broker = RelayBroker(
@@ -8404,7 +5597,7 @@ private func checkCrossWorkspaceRelayAddressing() throws {
     try expect(bareRole.status == 400, "a bare name silently resolved through the stable-role namespace")
 
     let ambiguousPanes = panes + [
-        TmuxPane(id: "%5", kind: .copilot, customName: "Second critic", terminalTitle: "", cwd: "/tmp/web", currentCommand: "copilot", isActive: false, windowID: "@1", returnToPaneID: nil, workspaceName: "web", role: "reviewer"),
+        WorkbenchPane(id: "%5", kind: .copilot, customName: "Second critic", terminalTitle: "", cwd: "/tmp/web", currentCommand: "copilot", isActive: false, workspaceID: "@1", workspaceName: "web", role: "reviewer"),
     ]
     let ambiguousBroker = RelayBroker(
         credentials: credentials,
@@ -8441,53 +5634,13 @@ private func checkRelayCredentialReloadsExternalChanges() throws {
     )
 }
 
-private func checkRestartRotatesRelayCredential() throws {
-    let pane = paneRow(
-        id: "%12",
-        kind: .codex,
-        active: true,
-        relayEnabled: true,
-        protocolVersion: AgentProtocol.version
-    ) + "\n"
-    let runner = RecordingRunner { arguments, _ in
-        command(arguments) == "list-panes" ? output(pane) : output()
-    }
-    let directory = try temporaryDirectory()
-    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
-    let oldToken = try credentials.token(for: "%12")
-    let controller = try TmuxController(
-        tmuxExecutable: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-        applicationDirectory: directory,
-        environment: ["PATH": "/opt/homebrew/bin:/usr/bin:/bin"],
-        runner: runner
-    )
-    controller.configureRelay(RelayRuntime(
-        infoFile: directory.appendingPathComponent("relay-url"),
-        shimDirectory: directory.appendingPathComponent("bin"),
-        transportDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: directory),
-        credentials: credentials
-    ))
-
-    try controller.restartPane("%12")
-
-    let respawn = try require(runner.calls.first(where: { command($0.arguments) == "respawn-pane" }), "restart did not respawn the pane")
-    let field = try require(
-        respawn.arguments.first(where: { $0.hasPrefix("PARLEY_RELAY_TOKEN=") }),
-        "restarted pane received no relay credential"
-    )
-    let newToken = String(field.dropFirst("PARLEY_RELAY_TOKEN=".count))
-    try expect(newToken != oldToken, "pane restart reused its old relay credential")
-    try expect(credentials.paneID(for: oldToken) == nil, "old relay credential survived pane restart")
-    try expect(credentials.paneID(for: newToken) == "%12", "new relay credential does not identify the restarted pane")
-}
-
 private func checkRelayFilesystemRoundTrip() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
     ]
     let pasted = LockedDelivery()
     let submitted = LockedDelivery()
@@ -8636,18 +5789,10 @@ private func checkRelayFilesystemRuntimeIsProtectedAndStopsCleanly() throws {
         .appendingPathComponent("outbox", isDirectory: true)
         .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
     try FileManager.default.createDirectory(at: queuedResponse, withIntermediateDirectories: false)
-    try transport.preserveExchangeFilesForNextStart()
-    try transport.start()
-    try expect(
-        FileManager.default.fileExists(atPath: queuedResponse.path),
-        "graceful core handover discarded a command response"
-    )
-    transport.stop()
-
     try transport.start()
     try expect(
         !FileManager.default.fileExists(atPath: queuedResponse.path),
-        "ordinary core startup preserved an uncertain stale response"
+        "app-resident transport startup preserved an uncertain stale response"
     )
     transport.stop()
 
@@ -8670,8 +5815,8 @@ private func checkLargeCoreActivityResponseIsComplete() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
     ]
     let broker = RelayBroker(credentials: credentials, panes: { panes }, paste: { _, _ in }, submit: { _, _ in })
     for index in 0..<40 {
@@ -8696,8 +5841,8 @@ private func checkCoreControlSurvivesClientReattachment() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
     ]
     let retryAttempts = LockedCounter()
     let broker = RelayBroker(
@@ -8708,7 +5853,7 @@ private func checkCoreControlSurvivesClientReattachment() throws {
             guard text.contains("retry this delivery") else { return }
             retryAttempts.increment()
             if retryAttempts.value == 1 {
-                throw ParleyTmuxError.unsafeRelayTarget("Agy")
+                throw ParleyWorkbenchError.unsafeRelayTarget("Agy")
             }
         },
         consultationTimeout: 3
@@ -8847,239 +5992,6 @@ private func checkCoreControlSurvivesClientReattachment() throws {
     try expect(activityAfterDeletion.isEmpty, "workspace deletion route retained operational activity")
 }
 
-private func checkPersistentCoreProcessSurvivesClientExit() throws {
-    let directory = try temporaryDirectory()
-    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
-    let sourceToken = try credentials.token(for: "%1")
-    _ = try credentials.token(for: "%2")
-    let shimDirectory = try RelayShim.install(in: directory)
-    let infoFile = directory.appendingPathComponent("relay-url")
-    let uiEnvironment = ProcessInfo.processInfo.environment.merging([
-        "PARLEY_UI_FIXTURE": "1",
-    ]) { _, supplied in supplied }
-    let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
-
-    let ui = try ProcessCommandRunner(timeout: 5).run(
-        executable: executable,
-        arguments: ["--application-directory", directory.path, "--cwd", "/tmp"],
-        environment: uiEnvironment,
-        input: nil
-    )
-    try expect(ui.status == 0, "the fixture UI could not launch the core: \(ui.stderrText)")
-    let logAttributes = try FileManager.default.attributesOfItem(
-        atPath: directory.appendingPathComponent("core.log").path
-    )
-    let logMode = (logAttributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
-    try expect(logMode & 0o777 == 0o600, "core log was not owner-only")
-    let pidFile = directory.appendingPathComponent("core.pid")
-    defer {
-        if let rawPID = try? String(contentsOf: pidFile, encoding: .utf8),
-           let pid = Int32(rawPID.trimmingCharacters(in: .whitespacesAndNewlines)),
-           pid > 1 {
-            _ = Darwin.kill(pid, SIGTERM)
-        }
-    }
-
-    let controlToken = try RelayCoreControlToken.loadOrCreate(
-        at: directory.appendingPathComponent("core-control-token")
-    )
-    let reattachedClient = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
-    try expect(reattachedClient.isHealthy(), "the core exited when its launching UI process exited")
-
-    let askResult = LockedAskResult()
-    DispatchQueue.global(qos: .utility).async {
-        do {
-            let output = try ProcessCommandRunner(timeout: 5).run(
-                executable: URL(fileURLWithPath: "/bin/sh"),
-                arguments: [shimDirectory.appendingPathComponent("parley").path, "ask", "agy", "Will this wait survive UI exit?"],
-                environment: ProcessInfo.processInfo.environment.merging([
-                    "PARLEY_RELAY_INFO": infoFile.path,
-                    "PARLEY_RELAY_TOKEN": sourceToken,
-                ]) { _, supplied in supplied },
-                input: nil
-            )
-            askResult.set(RelayTextResponse(status: Int(output.status), text: output.stdoutText))
-        } catch {
-            askResult.set(RelayTextResponse(status: -1, text: error.localizedDescription))
-        }
-    }
-
-    try expect(
-        eventually(timeout: 3) { (try? reattachedClient.consultations().count) == 1 },
-        "the separate core process did not retain the blocking Ask"
-    )
-    let pending = try require(try reattachedClient.consultations().first, "the new UI client lost the wait")
-    let answer = try reattachedClient.answerFromUI(
-        consultationID: pending.id,
-        text: "Yes. The service owns the wait."
-    )
-    try expect(answer.status == 200, "the reattached UI could not answer through the core")
-    try expect(eventually(timeout: 3) { askResult.value != nil }, "the separate core left Ask blocked")
-    try expect(askResult.value?.status == 0, "the Ask command failed after UI reattachment")
-    try expect(askResult.value?.text == "Yes. The service owns the wait.", "the reattached answer was changed")
-}
-
-private func checkCoreRestartInterruptsWaitAndRecoversDiscovery() throws {
-    let directory = try temporaryDirectory()
-    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
-    let sourceToken = try credentials.token(for: "%1")
-    _ = try credentials.token(for: "%2")
-    let shimDirectory = try RelayShim.install(in: directory)
-    let infoFile = directory.appendingPathComponent("relay-url")
-    let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
-    let uiEnvironment = ProcessInfo.processInfo.environment.merging([
-        "PARLEY_UI_FIXTURE": "1",
-    ]) { _, supplied in supplied }
-
-    func launchUI() throws {
-        let output = try ProcessCommandRunner(timeout: 5).run(
-            executable: executable,
-            arguments: ["--application-directory", directory.path, "--cwd", "/tmp"],
-            environment: uiEnvironment,
-            input: nil
-        )
-        try expect(output.status == 0, "fixture UI could not start the core: \(output.stderrText)")
-    }
-
-    func servicePID() throws -> Int32 {
-        let raw = try String(contentsOf: directory.appendingPathComponent("core.pid"), encoding: .utf8)
-        guard let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1 else {
-            throw CheckFailure(description: "fixture core wrote an invalid pid")
-        }
-        return pid
-    }
-
-    try launchUI()
-    var activePID = try servicePID()
-    defer { _ = Darwin.kill(activePID, SIGTERM) }
-    let controlToken = try RelayCoreControlToken.loadOrCreate(
-        at: directory.appendingPathComponent("core-control-token")
-    )
-    var client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
-    try expect(
-        eventually(timeout: 3) { client.isHealthy() },
-        "fixture core did not remain healthy after its launching UI exited"
-    )
-
-    let askResult = LockedAskResult()
-    DispatchQueue.global(qos: .utility).async {
-        do {
-            let output = try ProcessCommandRunner(timeout: 6).run(
-                executable: URL(fileURLWithPath: "/bin/sh"),
-                arguments: [shimDirectory.appendingPathComponent("parley").path, "ask", "agy", "Will restart strand this wait?"],
-                environment: ProcessInfo.processInfo.environment.merging([
-                    "PARLEY_RELAY_INFO": infoFile.path,
-                    "PARLEY_RELAY_TOKEN": sourceToken,
-                ]) { _, supplied in supplied },
-                input: nil
-            )
-            let detail = [output.stdoutText, output.stderrText].filter { !$0.isEmpty }.joined(separator: "\n")
-            askResult.set(RelayTextResponse(status: Int(output.status), text: detail))
-        } catch {
-            askResult.set(RelayTextResponse(status: -1, text: error.localizedDescription))
-        }
-    }
-    try expect(
-        eventually(timeout: 3) { (try? client.consultations().count) == 1 },
-        "restart check never established its blocking Ask"
-    )
-
-    try expect(Darwin.kill(activePID, SIGTERM) == 0, "could not stop the fixture core")
-    try expect(eventually(timeout: 3) { askResult.value != nil }, "core restart left the Ask command hanging")
-    try expect(askResult.value?.status != 0, "core restart pretended the interrupted Ask succeeded")
-    try expect(
-        askResult.value?.text.localizedCaseInsensitiveContains("stopped before the consultation completed") == true,
-        "core restart did not return an explicit interruption reason: \(askResult.value?.text ?? "no response")"
-    )
-    try expect(eventually(timeout: 3) { !client.isHealthy() }, "stopped core still reported healthy")
-
-    try launchUI()
-    activePID = try servicePID()
-    client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
-    try expect(
-        eventually(timeout: 3) { client.isHealthy() },
-        "a new UI could not restart the core"
-    )
-    let restartedConsultations = try client.consultations()
-    try expect(restartedConsultations.isEmpty, "the restarted core revived an impossible stale wait")
-}
-
-private func runUIFixture() throws {
-    guard let rawDirectory = argument(named: "--application-directory") else {
-        throw CheckFailure(description: "fixture UI needs an application directory")
-    }
-    var coreEnvironment = ProcessInfo.processInfo.environment
-    coreEnvironment.removeValue(forKey: "PARLEY_UI_FIXTURE")
-    coreEnvironment["PARLEY_CORE_FIXTURE"] = "1"
-    _ = try RelayCoreLauncher.ensureRunning(
-        applicationDirectory: URL(fileURLWithPath: rawDirectory, isDirectory: true),
-        cwd: argument(named: "--cwd") ?? "/tmp",
-        environment: coreEnvironment,
-        executable: URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL,
-        timeout: 3
-    )
-}
-
-@MainActor
-private func runCoreServiceFixture() throws {
-    // The launcher returns as soon as the health endpoint responds, after
-    // which its short-lived fixture UI exits. Ignore its parent-exit signal
-    // before opening that endpoint so readiness cannot be observed inside a
-    // small SIGHUP race.
-    signal(SIGHUP, SIG_IGN)
-    guard let rawDirectory = argument(named: "--application-directory") else {
-        throw CheckFailure(description: "fixture core needs an application directory")
-    }
-    let directory = URL(fileURLWithPath: rawDirectory, isDirectory: true)
-    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
-    let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
-    ]
-    let broker = RelayBroker(
-        credentials: credentials,
-        panes: { panes },
-        paste: { _, _ in },
-        submit: { _, _ in },
-        consultationTimeout: 10
-    )
-    let controlToken = try RelayCoreControlToken.loadOrCreate(
-        at: directory.appendingPathComponent("core-control-token")
-    )
-    let server = RelayHTTPServer(
-        broker: broker,
-        infoFile: directory.appendingPathComponent("relay-url"),
-        controlToken: controlToken,
-        identity: ProcessInfo.processInfo.environment["PARLEY_CORE_FIXTURE_BUILD"].map {
-            CoreServiceIdentity(
-                contractVersion: CoreServiceIdentity.currentContractVersion,
-                applicationVersion: "fixture",
-                build: $0
-            )
-        } ?? .resolve(infoDictionary: nil),
-        shutdownRequested: { _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                _ = Darwin.kill(ProcessInfo.processInfo.processIdentifier, SIGTERM)
-            }
-        }
-    )
-    try server.start()
-    let agentTransport = RelayFileTransport(
-        broker: broker,
-        credentials: credentials,
-        runtimeDirectory: RelayFileTransport.runtimeDirectory(applicationDirectory: directory)
-    )
-    try agentTransport.start()
-    let pidFile = directory.appendingPathComponent("core.pid")
-    try String(ProcessInfo.processInfo.processIdentifier).write(to: pidFile, atomically: true, encoding: .utf8)
-
-    RelayServiceProcess.waitForTermination { _ in
-        server.stop()
-        agentTransport.stop()
-        try? FileManager.default.removeItem(at: pidFile)
-    }
-}
-
 private func checkStableRouterSelectsRuntimeAndPreservesForeignCommands() throws {
     let directory = try temporaryDirectory()
     let productionCommand = directory.appendingPathComponent("production-parley")
@@ -9141,9 +6053,9 @@ private func checkAgentAskSubmitsAndBlocksUntilTheTargetAnswers() throws {
     let targetToken = try credentials.token(for: "%2")
     let wrongToken = try credentials.token(for: "%3")
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%3", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%3", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0"),
     ]
     let submitted = LockedDelivery()
     let submissionCount = LockedCounter()
@@ -9242,9 +6154,9 @@ private func checkAskManyFansOutIndependentlyAndReturnsAnOrderedBundle() throws 
     let codexToken = try credentials.token(for: "%2")
     let agyToken = try credentials.token(for: "%3")
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
     ]
     let submissions = LockedSubmissions()
     let broker = RelayBroker(
@@ -9431,9 +6343,9 @@ private func checkHumanAskManyUsesTheTrackedBrokerPath() throws {
     let codexToken = try credentials.token(for: "%2")
     let agyToken = try credentials.token(for: "%3")
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil, automationPolicy: .off),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0", automationPolicy: .off),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
     ]
     let submissions = LockedSubmissions()
     let broker = RelayBroker(
@@ -9479,7 +6391,7 @@ private func checkHumanAskManyUsesTheTrackedBrokerPath() throws {
         credentials: credentials,
         panes: {
             panes + [
-                TmuxPane(id: "%4", kind: .codex, customName: "Codex Two", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+                WorkbenchPane(id: "%4", kind: .codex, customName: "Codex Two", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
             ]
         },
         paste: { _, _ in },
@@ -9522,9 +6434,9 @@ private func checkHumanAskManyCoreControlRoute() throws {
     let codexToken = try credentials.token(for: "%2")
     let agyToken = try credentials.token(for: "%3")
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil, automationPolicy: .off),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0", automationPolicy: .off),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
     ]
     let submissions = LockedSubmissions()
     let broker = RelayBroker(
@@ -9588,8 +6500,8 @@ private func checkAgentAskRejectsBusyTargetAndTimesOut() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -9643,17 +6555,15 @@ private func checkReviewedBusyQueueRequiresExplicitHumanSend() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
-    let source = TmuxPane(
+    let source = WorkbenchPane(
         id: "%1", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp/app",
-        currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil,
-        relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
-        bracketedPasteActive: true, isStarted: true
+        currentCommand: "codex", isActive: true, workspaceID: "@0",         relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+        inputAvailable: true, isStarted: true
     )
-    let target = TmuxPane(
+    let target = WorkbenchPane(
         id: "%2", kind: .codex, customName: "Codex Reviewer", terminalTitle: "", cwd: "/tmp/app",
-        currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil,
-        relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
-        bracketedPasteActive: true, isStarted: true
+        currentCommand: "codex", isActive: false, workspaceID: "@0",         relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
+        inputAvailable: true, isStarted: true
     )
     let submissions = LockedCounter()
     let storeFile = directory.appendingPathComponent("reviewed-busy-drafts.json")
@@ -9701,12 +6611,12 @@ private func checkReviewedBusyQueueRequiresExplicitHumanSend() throws {
         sourcePaneID: source.id,
         sourceName: source.displayName,
         sourceKind: source.kind,
-        sourceWorkspaceID: source.windowID,
+        sourceWorkspaceID: source.workspaceID,
         sourceWorkspaceName: source.workspaceName,
         targetPaneID: target.id,
         targetName: target.displayName,
         targetKind: target.kind,
-        targetWorkspaceID: target.windowID,
+        targetWorkspaceID: target.workspaceID,
         targetWorkspaceName: target.workspaceName,
         text: "Remain visible if a durable discard fails.",
         preserveFormatting: false
@@ -9731,12 +6641,12 @@ private func checkReviewedBusyQueueRequiresExplicitHumanSend() throws {
         sourcePaneID: source.id,
         sourceName: source.displayName,
         sourceKind: source.kind,
-        sourceWorkspaceID: source.windowID,
+        sourceWorkspaceID: source.workspaceID,
         sourceWorkspaceName: source.workspaceName,
         targetPaneID: target.id,
         targetName: target.displayName,
         targetKind: target.kind,
-        targetWorkspaceID: target.windowID,
+        targetWorkspaceID: target.workspaceID,
         targetWorkspaceName: target.workspaceName,
         text: "An explicit send crossed the persistence boundary.",
         preserveFormatting: false,
@@ -9758,12 +6668,12 @@ private func checkReviewedBusyQueueRequiresExplicitHumanSend() throws {
             sourcePaneID: source.id,
             sourceName: source.displayName,
             sourceKind: source.kind,
-            sourceWorkspaceID: source.windowID,
+            sourceWorkspaceID: source.workspaceID,
             sourceWorkspaceName: source.workspaceName,
             targetPaneID: target.id,
             targetName: target.displayName,
             targetKind: target.kind,
-            targetWorkspaceID: target.windowID,
+            targetWorkspaceID: target.workspaceID,
             targetWorkspaceName: target.workspaceName,
             text: "Bounded draft \(index)",
             preserveFormatting: false
@@ -9775,12 +6685,12 @@ private func checkReviewedBusyQueueRequiresExplicitHumanSend() throws {
             sourcePaneID: source.id,
             sourceName: source.displayName,
             sourceKind: source.kind,
-            sourceWorkspaceID: source.windowID,
+            sourceWorkspaceID: source.workspaceID,
             sourceWorkspaceName: source.workspaceName,
             targetPaneID: target.id,
             targetName: target.displayName,
             targetKind: target.kind,
-            targetWorkspaceID: target.windowID,
+            targetWorkspaceID: target.workspaceID,
             targetWorkspaceName: target.workspaceName,
             text: "This draft must be refused.",
             preserveFormatting: false
@@ -9798,12 +6708,12 @@ private func checkReviewedBusyQueueRequiresExplicitHumanSend() throws {
         sourcePaneID: source.id,
         sourceName: source.displayName,
         sourceKind: source.kind,
-        sourceWorkspaceID: source.windowID,
+        sourceWorkspaceID: source.workspaceID,
         sourceWorkspaceName: source.workspaceName,
         targetPaneID: target.id,
         targetName: target.displayName,
         targetKind: target.kind,
-        targetWorkspaceID: target.windowID,
+        targetWorkspaceID: target.workspaceID,
         targetWorkspaceName: target.workspaceName,
         text: "Do not let discard race this explicit send.",
         preserveFormatting: false
@@ -9979,8 +6889,8 @@ private func checkHumanCancellationUnblocksAsk() throws {
     let sourceToken = try credentials.token(for: "%1")
     _ = try credentials.token(for: "%2")
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
     ]
     let submissions = LockedCounter()
     let broker = RelayBroker(
@@ -10033,8 +6943,8 @@ private func checkSafeFailedDeliveryRetryIsStableAndDeduplicated() throws {
     let sourceToken = try credentials.token(for: "%1")
     _ = try credentials.token(for: "%2")
     let panes = [
-        TmuxPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
     ]
     let attempts = LockedCounter()
     let retryStarted = DispatchSemaphore(value: 0)
@@ -10046,7 +6956,7 @@ private func checkSafeFailedDeliveryRetryIsStableAndDeduplicated() throws {
         submit: { _, _ in
             attempts.increment()
             if attempts.value == 1 {
-                throw ParleyTmuxError.unsafeRelayTarget("Codex")
+                throw ParleyWorkbenchError.unsafeRelayTarget("Codex")
             }
             retryStarted.signal()
             _ = finishRetry.wait(timeout: .now() + 2)
@@ -10104,8 +7014,8 @@ private func checkUncertainAndAskFailuresCannotBeRetried() throws {
     let sourceToken = try credentials.token(for: "%1")
     _ = try credentials.token(for: "%2")
     let panes = [
-        TmuxPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
     ]
     let attempts = LockedCounter()
     let broker = RelayBroker(
@@ -10114,7 +7024,7 @@ private func checkUncertainAndAskFailuresCannotBeRetried() throws {
         paste: { _, _ in },
         submit: { _, _ in
             attempts.increment()
-            throw ParleyTmuxError.commandFailed("submit failed after paste")
+            throw ParleyWorkbenchError.commandFailed("submit failed after paste")
         },
         consultationTimeout: 0.05
     )
@@ -10150,8 +7060,8 @@ private func checkAskDetectsDeadAndRestartedPanes() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     _ = try credentials.token(for: "%2")
-    let source = TmuxPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil)
-    let target = TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil)
+    let source = WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0")
+    let target = WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0")
     let livePanes = LockedPanes([source, target])
     let broker = RelayBroker(
         credentials: credentials,
@@ -10239,8 +7149,8 @@ private func checkConsultationShimRoundTrip() throws {
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
     let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -10299,9 +7209,9 @@ private func checkAskManyShimRoundTrip() throws {
     let codexToken = try credentials.token(for: "%2")
     let agyToken = try credentials.token(for: "%3")
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -10465,533 +7375,14 @@ private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate
     }
 }
 
-private func checkCoreStartupTimeoutReportsLastPhase() throws {
-    let directory = try temporaryDirectory()
-    var environment = ProcessInfo.processInfo.environment
-    environment["PARLEY_CORE_HANG_FIXTURE"] = "1"
-
-    do {
-        _ = try RelayCoreLauncher.ensureRunning(
-            applicationDirectory: directory,
-            cwd: "/tmp",
-            environment: environment,
-            executable: URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL,
-            timeout: 0.1
-        )
-        throw CheckFailure(description: "hanging fixture unexpectedly became healthy")
-    } catch let error as RelayCoreError {
-        let detail = error.localizedDescription
-        try expect(detail.contains("startup timed out"), "core timeout lost its failure reason: \(detail)")
-        try expect(detail.contains("fixture reached startup"), "core timeout lost its last startup phase: \(detail)")
-    }
-}
-
-private func checkBundledCoreServiceResolution() throws {
-    let root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("parley-bundled-core-\(UUID().uuidString)", isDirectory: true)
-    let executableDirectory = root.appendingPathComponent("Parley.app/Contents/MacOS", isDirectory: true)
-    try FileManager.default.createDirectory(at: executableDirectory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: root) }
-
-    let app = executableDirectory.appendingPathComponent("parley-native")
-    let core = executableDirectory.appendingPathComponent("parley-core-service")
-    try Data().write(to: app)
-    try Data().write(to: core)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: core.path)
-
-    let resolved = RelayCoreLauncher.resolveExecutable(
-        environment: [:],
-        bundleExecutable: app,
-        argument0: "/missing/parley-native"
-    )
-    try expect(resolved == core, "packaged UI did not resolve its sibling core service")
-}
-
-private func checkCoreServiceStopsCleanly() throws {
-    let directory = try temporaryDirectory()
-    let stateFile = directory.appendingPathComponent("service-state")
-    let process = Process()
-    let finished = DispatchSemaphore(value: 0)
-    var environment = ProcessInfo.processInfo.environment
-    environment["PARLEY_CORE_LIFECYCLE_FIXTURE"] = stateFile.path
-    process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
-    process.environment = environment
-    process.standardInput = FileHandle.nullDevice
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-    process.terminationHandler = { _ in finished.signal() }
-    try process.run()
-
-    guard eventually(timeout: 2, { FileManager.default.fileExists(atPath: stateFile.path) }) else {
-        process.terminate()
-        throw CheckFailure(description: "lifecycle fixture never became ready")
-    }
-    let ready = try String(contentsOf: stateFile, encoding: .utf8)
-    try expect(ready == "ready", "lifecycle fixture wrote malformed process state")
-
-    try expect(Darwin.kill(process.processIdentifier, SIGTERM) == 0, "could not terminate lifecycle fixture")
-    if finished.wait(timeout: .now() + 2) == .timedOut {
-        _ = Darwin.kill(process.processIdentifier, SIGKILL)
-        _ = finished.wait(timeout: .now() + 1)
-        throw CheckFailure(description: "core service did not handle SIGTERM")
-    }
-    process.waitUntilExit()
-    try expect(process.terminationStatus == 0, "core service shutdown trapped with status \(process.terminationStatus)")
-    let stopped = try String(contentsOf: stateFile, encoding: .utf8)
-    try expect(stopped == "stopped \(SIGTERM)", "core service did not finish its shutdown handler")
-}
-
-private func checkCoreServiceLoginLaunchConfiguration() throws {
-    let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
-    let login = CoreServiceLaunchConfiguration.resolve(
-        arguments: ["parley-core-service", "--login-agent"],
-        homeDirectory: home,
-        currentDirectory: "/"
-    )
-    try expect(login.mode == .loginAgent, "login launch mode was not detected")
-    try expect(!login.bootstrapsTmux, "login launch would create a tmux workspace before the UI opens")
-    try expect(login.cwd == "/Users/tester", "login launch did not use the user home as its safe fallback folder")
-    try expect(login.tmuxSessionName == "parley", "login launch lost the Production tmux session")
-    try expect(login.runtimeMarker == nil, "login launch invented a Development marker")
-    try expect(
-        login.applicationDirectory.path == "/Users/tester/Library/Application Support/Parley Native",
-        "login launch did not resolve the standard owner-local application directory"
-    )
-
-    let foreground = CoreServiceLaunchConfiguration.resolve(
-        arguments: [
-            "parley-core-service",
-            "--application-directory", "/tmp/parley-app",
-            "--cwd", "/tmp/project",
-            "--tmux-session", "parley-development",
-            "--runtime-marker", "DEV",
-        ],
-        homeDirectory: home,
-        currentDirectory: "/tmp/fallback"
-    )
-    try expect(foreground.mode == .foregroundLauncher, "ordinary UI launch was mistaken for a login agent")
-    try expect(foreground.bootstrapsTmux, "ordinary UI launch stopped bootstrapping tmux")
-    try expect(foreground.applicationDirectory.path == "/tmp/parley-app", "explicit application directory was ignored")
-    try expect(foreground.cwd == "/tmp/project", "explicit working directory was ignored")
-    try expect(foreground.tmuxSessionName == "parley-development", "foreground core lost the isolated tmux session")
-    try expect(foreground.runtimeMarker == "DEV", "foreground core lost the Development marker")
-
-    let active = try statusHandoff(
-        id: "active-delegation",
-        kind: .delegate,
-        state: .waiting,
-        sourceWorkspaceID: "@0",
-        targetWorkspaceID: "@0",
-        occurredAt: 1
-    )
-    let finished = try statusHandoff(
-        id: "finished-relay",
-        kind: .relay,
-        state: .completed,
-        sourceWorkspaceID: "@0",
-        targetWorkspaceID: "@0",
-        occurredAt: 2
-    )
-    try expect(
-        !CoreLoginItemChangePolicy.canDisable(activeConsultationCount: 0, handoffs: [active]),
-        "launch-at-login could be disabled while tracked work was active"
-    )
-    try expect(
-        !CoreLoginItemChangePolicy.canDisable(
-            activeConsultationCount: 1,
-            handoffs: [finished]
-        ),
-        "launch-at-login could be disabled while a consultation was waiting"
-    )
-    try expect(
-        CoreLoginItemChangePolicy.canDisable(activeConsultationCount: 0, handoffs: [finished]),
-        "completed work unnecessarily blocked disabling launch-at-login"
-    )
-}
-
-private func checkCoreServiceUpgradeIdentity() throws {
-    let packaged = CoreServiceIdentity.resolve(infoDictionary: [
-        "CFBundleShortVersionString": "1.2.3",
-        "CFBundleVersion": "456",
-    ])
-    let development = CoreServiceIdentity.resolve(infoDictionary: nil)
-
-    try expect(packaged.contractVersion == 6, "packaged core identity has the wrong coordination contract")
-    try expect(packaged.applicationVersion == "1.2.3", "packaged core identity lost the app version")
-    try expect(packaged.build == "456", "packaged core identity lost the app build")
-    try expect(development.applicationVersion == "development", "development core identity invented an app version")
-    try expect(development.build == "development", "development core identity invented a build")
-    try expect(packaged.requiresHandover(from: development), "a different core build was treated as current")
-    try expect(!packaged.requiresHandover(from: packaged), "an identical core build requested a handover")
-    try expect(packaged.requiresHandover(from: nil), "a legacy core with no identity was treated as current")
-
-    try expect(
-        RelayCoreHandover.validatedLegacyPID(
-            pidFileContents: "42\n",
-            executablePath: "/Applications/Parley.app/Contents/MacOS/parley-core-service",
-            currentPID: 99
-        ) == 42,
-        "the exact legacy core executable was refused"
-    )
-    try expect(
-        RelayCoreHandover.validatedLegacyPID(
-            pidFileContents: "42",
-            executablePath: "/tmp/unrelated-service",
-            currentPID: 99
-        ) == nil,
-        "an unrelated process passed legacy-core validation"
-    )
-    try expect(
-        RelayCoreHandover.validatedLegacyPID(
-            pidFileContents: "99",
-            executablePath: "/tmp/parley-core-service",
-            currentPID: 99
-        ) == nil,
-        "the UI could mistake itself for a legacy core"
-    )
-}
-
-private func checkCoreUpgradeDrainIsAtomic() throws {
-    let directory = try temporaryDirectory()
-    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
-    let sourceToken = try credentials.token(for: "%1")
-    _ = try credentials.token(for: "%2")
-    let panes = [
-        TmuxPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
-    ]
-    let writerEntered = DispatchSemaphore(value: 0)
-    let releaseWriter = DispatchSemaphore(value: 0)
-    let result = LockedAskResult()
-    let broker = RelayBroker(
-        credentials: credentials,
-        panes: { panes },
-        paste: { _, _ in },
-        submit: { _, _ in
-            writerEntered.signal()
-            _ = releaseWriter.wait(timeout: .now() + 3)
-        }
-    )
-
-    DispatchQueue.global(qos: .utility).async {
-        let response = broker.handle(
-            token: sourceToken,
-            target: "agy",
-            text: "in flight",
-            idempotencyKey: "upgrade-drain-in-flight"
-        )
-        result.set(RelayTextResponse(status: response.status, text: response.body.error ?? response.body.note ?? ""))
-    }
-    try expect(writerEntered.wait(timeout: .now() + 2) == .success, "upgrade drain fixture never entered delivery")
-    let inFlight = broker.prepareForUpgrade()
-    try expect(!inFlight.accepted && inFlight.activeDispatches == 1, "upgrade drain ignored an in-flight delivery")
-    releaseWriter.signal()
-    try expect(eventually { result.value?.status == 200 }, "in-flight delivery did not finish")
-
-    let ready = broker.prepareForUpgrade()
-    try expect(ready.accepted, "idle broker refused upgrade drain")
-    let refused = broker.handle(
-        token: sourceToken,
-        target: "agy",
-        text: "too late",
-        idempotencyKey: "upgrade-drain-refused"
-    )
-    try expect(refused.status == 409, "draining core accepted a new handoff")
-    try expect(refused.body.error?.localizedCaseInsensitiveContains("upgrade") == true, "drain refusal did not explain the upgrade")
-}
-
-private func checkCoreUpgradeControlRoundTrip() throws {
-    let directory = try temporaryDirectory()
-    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
-    let broker = RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in })
-    let controlToken = try RelayCoreControlToken.loadOrCreate(
-        at: directory.appendingPathComponent("core-control-token")
-    )
-    let identity = CoreServiceIdentity.resolve(infoDictionary: [
-        "CFBundleShortVersionString": "2.0.0",
-        "CFBundleVersion": "99",
-    ])
-    let shutdowns = LockedShutdownReasons()
-    let server = RelayHTTPServer(
-        broker: broker,
-        infoFile: directory.appendingPathComponent("relay-url"),
-        controlToken: controlToken,
-        identity: identity,
-        shutdownRequested: { shutdowns.append($0) }
-    )
-    try server.start()
-    defer { server.stop() }
-    let client = RelayCoreClient(
-        infoFile: directory.appendingPathComponent("relay-url"),
-        controlToken: controlToken
-    )
-
-    let observedIdentity = try client.coreIdentity()
-    try expect(observedIdentity == identity, "core identity round trip changed its fields")
-    let response = try client.shutdownIfIdle()
-    try expect(response.status == 202, "idle core did not acknowledge graceful handover")
-    try expect(eventually { shutdowns.values == [.upgrade] }, "upgrade shutdown callback lost its reason")
-}
-
-private func checkCoreUninstallStopControlRoundTrip() throws {
-    let directory = try temporaryDirectory()
-    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
-    let broker = RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in })
-    let controlToken = try RelayCoreControlToken.loadOrCreate(
-        at: directory.appendingPathComponent("core-control-token")
-    )
-    let shutdowns = LockedShutdownReasons()
-    let server = RelayHTTPServer(
-        broker: broker,
-        infoFile: directory.appendingPathComponent("relay-url"),
-        controlToken: controlToken,
-        shutdownRequested: { shutdowns.append($0) }
-    )
-    try server.start()
-    defer { server.stop() }
-    let client = RelayCoreClient(
-        infoFile: directory.appendingPathComponent("relay-url"),
-        controlToken: controlToken
-    )
-
-    let response = try client.stopIfIdle()
-    try expect(response.status == 202, "idle core did not acknowledge uninstall preparation")
-    try expect(eventually { shutdowns.values == [.uninstall] }, "uninstall shutdown callback lost its reason")
-}
-
-private func checkCoreUninstallTransactionRollback() throws {
-    try expect(RelayCoreShutdownReason.upgrade.preservesExchangeFiles, "upgrade would discard commands spanning handover")
-    try expect(!RelayCoreShutdownReason.uninstall.preservesExchangeFiles, "uninstall would replay stale commands after reinstall")
-
-    var registered = RelayCoreUninstallTransaction(loginItemWasRegistered: true)
-    try expect(!registered.requiresLoginItemRollback, "unmodified uninstall transaction requested rollback")
-    registered.recordLoginItemDisabled()
-    try expect(registered.requiresLoginItemRollback, "failed core stop would leave launch at login disabled")
-    registered.recordCoreStopAccepted()
-    try expect(registered.requiresLoginItemRollback, "accepted core stop hid a later uninstall failure")
-    registered.recordPreparationCompleted()
-    try expect(!registered.requiresLoginItemRollback, "completed uninstall transaction still requested rollback")
-
-    var unregistered = RelayCoreUninstallTransaction(loginItemWasRegistered: false)
-    unregistered.recordLoginItemDisabled()
-    try expect(!unregistered.requiresLoginItemRollback, "uninstall invented a login-item registration")
-}
-
-private func checkCoreUpgradeReplacesPersistentFixture() throws {
-    let directory = try temporaryDirectory()
-    let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
-    let process = Process()
-    var oldEnvironment = ProcessInfo.processInfo.environment
-    oldEnvironment["PARLEY_CORE_FIXTURE"] = "1"
-    oldEnvironment["PARLEY_CORE_FIXTURE_BUILD"] = "old"
-    process.executableURL = executable
-    process.arguments = [
-        "--application-directory", directory.path,
-        "--cwd", "/tmp",
-    ]
-    process.environment = oldEnvironment
-    process.standardInput = FileHandle.nullDevice
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-    try process.run()
-
-    let controlToken = try RelayCoreControlToken.loadOrCreate(
-        at: directory.appendingPathComponent("core-control-token")
-    )
-    let client = RelayCoreClient(
-        infoFile: directory.appendingPathComponent("relay-url"),
-        controlToken: controlToken
-    )
-    guard eventually(timeout: 3, { client.isHealthy() }) else {
-        process.terminate()
-        throw CheckFailure(description: "old fixture core never became healthy")
-    }
-    let oldPID = process.processIdentifier
-
-    var replacementEnvironment = ProcessInfo.processInfo.environment
-    replacementEnvironment["PARLEY_CORE_FIXTURE"] = "1"
-    replacementEnvironment.removeValue(forKey: "PARLEY_CORE_FIXTURE_BUILD")
-    let expectedIdentity = CoreServiceIdentity.resolve(infoDictionary: nil)
-    let result = try RelayCoreHandover.reconcile(
-        client: client,
-        expectedIdentity: expectedIdentity,
-        applicationDirectory: directory,
-        cwd: "/tmp",
-        environment: replacementEnvironment,
-        executable: executable,
-        timeout: 3
-    )
-    try expect(result.outcome == .replaced, "mismatched fixture core was not replaced")
-    try expect(result.client.isHealthy(), "replacement fixture core was not healthy")
-    let newPIDText = try String(contentsOf: directory.appendingPathComponent("core.pid"), encoding: .utf8)
-    let newPID = try require(
-        Int32(newPIDText.trimmingCharacters(in: .whitespacesAndNewlines)),
-        "replacement fixture core wrote an invalid PID"
-    )
-    try expect(newPID != oldPID, "upgrade reused the old core process")
-    let replacementIdentity = try result.client.coreIdentity()
-    try expect(replacementIdentity == expectedIdentity, "replacement fixture has the wrong identity")
-    _ = Darwin.kill(newPID, SIGTERM)
-    try expect(eventually(timeout: 3) { !result.client.isHealthy() }, "replacement fixture did not stop cleanly")
-}
-
-private func checkVendorConformancePlanning() throws {
-    let panes = [
-        TmuxPane(
-            id: "%1", kind: .codex, customName: "Codex active", terminalTitle: "", cwd: "/tmp",
-            currentCommand: "codex", isActive: true, windowID: "@0", returnToPaneID: nil,
-            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
-            bracketedPasteActive: true
-        ),
-        TmuxPane(
-            id: "%2", kind: .codex, customName: "Codex inactive", terminalTitle: "", cwd: "/tmp",
-            currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
-            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "library",
-            bracketedPasteActive: true
-        ),
-        TmuxPane(
-            id: "%3", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp",
-            currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
-            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
-            bracketedPasteActive: true
-        ),
-        TmuxPane(
-            id: "%4", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp",
-            currentCommand: "agy", isActive: false, windowID: "@2", returnToPaneID: nil,
-            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "docs",
-            bracketedPasteActive: true
-        ),
-    ]
-
-    let plan = VendorConformancePlanner.plan(panes: panes, vendors: [.codex])
-    try expect(plan.count == 1, "conformance planner did not return one result per requested vendor")
-    guard case let .probe(probe) = plan[0] else {
-        throw CheckFailure(description: "ready Codex panes were unexpectedly skipped")
-    }
-    try expect(probe.target.id == "%2", "conformance planner did not prefer an inactive target")
-    try expect(probe.testsInactiveTarget, "conformance probe lost inactive-pane coverage")
-    try expect(probe.testsCrossWorkspace, "conformance probe lost cross-workspace coverage")
-    try expect(probe.source.id != probe.target.id, "conformance planner selected the target pane as its own source")
-
-    let sameVendorPlan = VendorConformancePlanner.plan(panes: Array(panes.prefix(2)), vendors: [.codex])
-    guard case let .probe(sameVendorProbe) = sameVendorPlan.first else {
-        throw CheckFailure(description: "same-vendor conformance panes were unexpectedly skipped")
-    }
-    try expect(
-        sameVendorProbe.source.kind == .codex
-            && sameVendorProbe.target.kind == .codex
-            && sameVendorProbe.source.id != sameVendorProbe.target.id,
-        "conformance planner did not use two distinct same-vendor panes"
-    )
-}
-
-private func checkVendorConformancePlanningFailsClosed() throws {
-    let panes = [
-        TmuxPane(
-            id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp",
-            currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
-            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
-            bracketedPasteActive: true
-        ),
-        TmuxPane(
-            id: "%2", kind: .codex, customName: "Stale Codex", terminalTitle: "", cwd: "/tmp",
-            currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil,
-            relayEnabled: true, protocolVersion: "0", workspaceName: "app",
-            bracketedPasteActive: true
-        ),
-        TmuxPane(
-            id: "%3", kind: .agy, customName: "Unready Agy", terminalTitle: "", cwd: "/tmp",
-            currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil,
-            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
-            bracketedPasteActive: false
-        ),
-    ]
-
-    let plan = VendorConformancePlanner.plan(panes: panes, vendors: [.codex, .agy, .copilot])
-    try expect(plan.count == 3, "conformance planner omitted requested vendors")
-    guard case let .skipped(_, codexReason) = plan[0] else {
-        throw CheckFailure(description: "stale Codex pane was accepted for a live probe")
-    }
-    guard case let .skipped(_, agyReason) = plan[1] else {
-        throw CheckFailure(description: "non-bracketed Agy pane was accepted for a live probe")
-    }
-    guard case let .skipped(_, copilotReason) = plan[2] else {
-        throw CheckFailure(description: "missing Copilot pane was accepted for a live probe")
-    }
-    try expect(codexReason.contains("protocol"), "stale pane skip did not explain its protocol failure")
-    try expect(agyReason.contains("bracketed paste"), "unready pane skip did not explain its input failure")
-    try expect(copilotReason.contains("No open"), "missing vendor skip did not explain what to open")
-}
-
-private func checkVendorConformanceRejectsExitedPanes() throws {
-    let panes = [
-        TmuxPane(
-            id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp",
-            currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil,
-            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "app",
-            bracketedPasteActive: true
-        ),
-        TmuxPane(
-            id: "%2", kind: .codex, customName: "Exited Codex", terminalTitle: "", cwd: "/tmp",
-            currentCommand: "codex", isActive: false, windowID: "@1", returnToPaneID: nil,
-            relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "library",
-            bracketedPasteActive: true, isDead: true, exitStatus: 7
-        ),
-    ]
-
-    let plan = VendorConformancePlanner.plan(panes: panes, vendors: [.codex])
-    guard case let .skipped(_, reason) = plan[0] else {
-        throw CheckFailure(description: "exited Codex pane was accepted for a live probe")
-    }
-    try expect(reason.contains("exited"), "exited pane skip did not explain its process state")
-}
-
-private func checkVendorConformanceReport() throws {
-    let results = [
-        VendorConformanceResult(vendor: .claude, check: "round trip", outcome: .passed, detail: "exact response"),
-        VendorConformanceResult(vendor: .codex, check: "cross-workspace", outcome: .notExercised, detail: "one workspace"),
-        VendorConformanceResult(vendor: .copilot, check: "trust gate", outcome: .blocked, detail: "folder trust is waiting"),
-        VendorConformanceResult(vendor: .agy, check: "round trip", outcome: .failed, detail: "wrong response"),
-    ]
-    let report = VendorConformanceReport(results: results)
-    let rendered = report.rendered()
-
-    try expect(report.hasFailures, "failed conformance result did not fail the report")
-    try expect(report.hasBlockedChecks, "blocked conformance result was hidden")
-    try expect(rendered.contains("PASS Claude — round trip: exact response"), "report omitted passing evidence")
-    try expect(rendered.contains("SKIP Codex — cross-workspace: one workspace"), "report disguised an unexercised check")
-    try expect(rendered.contains("BLOCKED Copilot — trust gate: folder trust is waiting"), "report disguised a blocked check")
-    try expect(rendered.contains("FAIL Agy — round trip: wrong response"), "report omitted failure detail")
-    try expect(rendered.contains("1 passed, 1 failed, 1 blocked, 1 not exercised"), "report summary counts are wrong")
-}
-
-private func checkVendorConformanceAttentionGate() throws {
-    let trust = VendorConformanceAttention.blockedReason(
-        kind: .copilot,
-        visibleText: "Confirm folder trust\nDo you trust the files in this folder?"
-    )
-    let permission = VendorConformanceAttention.blockedReason(
-        kind: .claude,
-        visibleText: "Would you like to run the following command?\nAllow once"
-    )
-    let ready = VendorConformanceAttention.blockedReason(
-        kind: .codex,
-        visibleText: "Ask Codex to do anything"
-    )
-
-    try expect(trust?.kind == .trust, "folder trust prompt was not recognized")
-    try expect(permission?.kind == .permission, "tool permission prompt was not recognized")
-    try expect(ready == nil, "normal agent prompt was incorrectly blocked")
-}
-
-private func checkAgentContextDraftsRequireHumanApprovalBeforeAsk() throws {
+ private func checkAgentContextDraftsRequireHumanApprovalBeforeAsk() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let claudeToken = try credentials.token(for: "%1")
     let reviewerToken = try credentials.token(for: "%2")
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp/project", currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .claude, customName: "Claude Reviewer", terminalTitle: "", cwd: "/tmp/project", currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp/project", currentCommand: "claude", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .claude, customName: "Claude Reviewer", terminalTitle: "", cwd: "/tmp/project", currentCommand: "claude", isActive: false, workspaceID: "@0"),
     ]
     let submissions = LockedDelivery()
     let reviewStore = try AgentContextReviewStore(
@@ -11094,7 +7485,7 @@ private func checkConcurrentContextAddsRetainEveryAcceptedPart() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(
+        WorkbenchPane(
             id: "%1",
             kind: .claude,
             customName: "Claude",
@@ -11102,8 +7493,7 @@ private func checkConcurrentContextAddsRetainEveryAcceptedPart() throws {
             cwd: directory.path,
             currentCommand: "claude",
             isActive: true,
-            windowID: "@0",
-            returnToPaneID: nil
+            workspaceID: "@0"
         ),
     ]
     let broker = RelayBroker(
@@ -11174,7 +7564,7 @@ private func checkContextAddRacingAskHasOneDurableWinner() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(
+        WorkbenchPane(
             id: "%1",
             kind: .claude,
             customName: "Claude",
@@ -11182,10 +7572,9 @@ private func checkContextAddRacingAskHasOneDurableWinner() throws {
             cwd: directory.path,
             currentCommand: "claude",
             isActive: true,
-            windowID: "@0",
-            returnToPaneID: nil
+            workspaceID: "@0"
         ),
-        TmuxPane(
+        WorkbenchPane(
             id: "%2",
             kind: .codex,
             customName: "Codex",
@@ -11193,8 +7582,7 @@ private func checkContextAddRacingAskHasOneDurableWinner() throws {
             cwd: directory.path,
             currentCommand: "codex",
             isActive: false,
-            windowID: "@0",
-            returnToPaneID: nil
+            workspaceID: "@0"
         ),
     ]
     let broker = RelayBroker(
@@ -11281,8 +7669,8 @@ private func checkContextAddRacingCompletionHasOneDurableWinner() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0"),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -11414,9 +7802,9 @@ private func checkContextDraftDiscardIsOwnedReleasesAskAndCleansUpStaleDrafts() 
     let targetToken = try credentials.token(for: "%2")
     let outsiderToken = try credentials.token(for: "%3")
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: directory.path, currentCommand: "agy", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: directory.path, currentCommand: "agy", isActive: false, workspaceID: "@0"),
     ]
     let store = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
     let broker = RelayBroker(
@@ -11541,8 +7929,8 @@ private func checkDirectContextDraftCompletionOwnsDeliveryAndFailureState() thro
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .claude, customName: "Claude Reviewer", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .claude, customName: "Claude Reviewer", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: false, workspaceID: "@0"),
     ]
     let delivered = LockedDelivery()
     let broker = RelayBroker(
@@ -11635,15 +8023,15 @@ private func checkTrustedContextCaptureExtendsAgentDraftWithoutTrustingApproval(
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0"),
     ]
     let broker = RelayBroker(
         credentials: credentials,
         panes: { panes },
         paste: { _, _ in },
         submit: { _, _ in },
-        visibleText: { paneID in "visible output from \(paneID)" },
+        selectedText: { paneID in "selected output from \(paneID)" },
         contextReviewStore: try AgentContextReviewStore(
             file: directory.appendingPathComponent("context-reviews.json")
         )
@@ -11756,8 +8144,8 @@ private func checkContextReviewTransportBoundsAndEscaping() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0"),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -11852,8 +8240,8 @@ private func checkContextReviewShimRoundTrip() throws {
     let claudeToken = try credentials.token(for: "%1")
     let codexToken = try credentials.token(for: "%2")
     let panes = [
-        TmuxPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, windowID: "@0", returnToPaneID: nil),
-        TmuxPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, windowID: "@0", returnToPaneID: nil),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0"),
     ]
     let submissions = LockedDelivery()
     let reviewStore = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
@@ -11949,31 +8337,424 @@ private func checkContextReviewShimRoundTrip() throws {
     try expect(askResult.value?.status == 0 && askResult.value?.text.contains("Parser reviewed") == true, "shim context Ask returned the wrong result")
 }
 
+private func checkGhosttyAppResidentLifecycleContract() throws {
+    try expect(
+        AppResidentPaneLifecycle.effect(of: .closeWindow) == .keepRunning,
+        "closing Parley's window must keep Ghostty pane processes alive"
+    )
+    try expect(
+        AppResidentPaneLifecycle.effect(of: .quitApplication) == .terminate,
+        "quitting Parley must terminate Ghostty pane processes"
+    )
+    try expect(
+        AppResidentPaneLifecycle.effect(of: .stopEverything) == .terminate,
+        "Stop Everything must terminate every Ghostty pane process"
+    )
+}
+
+private func checkGhosttyLaunchCommandEncoding() throws {
+    let rendered = GhosttyLaunchCommand.render([
+        "/usr/bin/env",
+        "plain",
+        "folder with spaces",
+        "single'quote",
+        "$HOME",
+        "line\nbreak",
+    ])
+    try expect(
+        rendered == "'/usr/bin/env' 'plain' 'folder with spaces' 'single'\\''quote' '$HOME' 'line\nbreak'",
+        "Ghostty launch argv was not encoded as literal shell words: \(rendered)"
+    )
+}
+
+private func checkVendorSubmissionTiming() throws {
+    let copilot = PaneSubmissionTiming.forKind(.copilot, submit: true)
+    try expect(
+        copilot == PaneSubmissionTiming(
+            afterFocus: 0.1,
+            afterPaste: 0.25,
+            beforeRestoringFocus: 0.1
+        ),
+        "Copilot submission lost its focus/paste settling intervals"
+    )
+    for kind in [PaneKind.claude, .codex, .agy, .shell] {
+        let timing = PaneSubmissionTiming.forKind(kind, submit: true)
+        try expect(
+            timing.afterFocus == 0 && timing.afterPaste == 0 && timing.beforeRestoringFocus == 0,
+            "\(kind.label) inherited Copilot-only submission delays"
+        )
+    }
+    let copilotPaste = PaneSubmissionTiming.forKind(.copilot, submit: false)
+    try expect(
+        copilotPaste.afterFocus == 0 && copilotPaste.afterPaste == 0,
+        "review-only Copilot paste was delayed like a submitted handoff"
+    )
+}
+
+private func checkAppResidentWorkbenchStateRoundTrip() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let first = try WorkbenchController(
+        applicationDirectory: directory,
+        environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"]
+    )
+    try first.bootstrap(cwd: directory.path)
+    _ = try first.createWorkspace(folder: directory.path, name: "Second")
+    let expectedWorkspaces = try first.listWorkspaces()
+    let expectedPanes = try first.listPanes()
+
+    let stateFile = directory.appendingPathComponent("workbench-state.json")
+    var stored = try require(
+        try JSONSerialization.jsonObject(with: Data(contentsOf: stateFile)) as? [String: Any],
+        "the app-resident workbench state was not a JSON object"
+    )
+    var legacyPanes = try require(
+        stored["panes"] as? [[String: Any]],
+        "the app-resident workbench state omitted panes"
+    )
+    for index in legacyPanes.indices { legacyPanes[index]["windowID"] = "legacy-shared-slot" }
+    stored["panes"] = legacyPanes
+    stored["ownerPID"] = 0
+    try JSONSerialization.data(withJSONObject: stored, options: [.prettyPrinted, .sortedKeys])
+        .write(to: stateFile, options: .atomic)
+
+    let reopened = try WorkbenchController(
+        applicationDirectory: directory,
+        environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"]
+    )
+    try reopened.bootstrap(cwd: directory.path)
+    let reopenedWorkspaces = try reopened.listWorkspaces()
+    let reopenedPanes = try reopened.listPanes()
+    try expect(
+        reopenedWorkspaces.map(\.workspaceID) == expectedWorkspaces.map(\.workspaceID),
+        "reopening the app-resident workbench changed durable workspace identities"
+    )
+    try expect(
+        reopenedPanes.map(\.id) == expectedPanes.map(\.id),
+        "reopening the app-resident workbench changed durable pane identities"
+    )
+    try expect(
+        reopenedPanes.map(\.workspaceID) == expectedPanes.map(\.workspaceID),
+        "reopening changed durable pane-to-workspace routing"
+    )
+}
+
+private final class RecordingPaneTransport: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedInputs: [(String, String, Bool)] = []
+    private var recordedTerminations: [String] = []
+    private var recordedTerminateAll = false
+
+    var inputs: [(String, String, Bool)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedInputs
+    }
+
+    var terminations: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedTerminations
+    }
+
+    var didTerminateAll: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedTerminateAll
+    }
+
+    func transport() -> PaneTerminalTransport {
+        PaneTerminalTransport(
+            paste: { [weak self] paneID, text, submit in
+                guard let self else { return }
+                lock.lock()
+                recordedInputs.append((paneID, text, submit))
+                lock.unlock()
+            },
+            interrupt: { _ in },
+            captureSelectedText: { _ in "selected context" },
+            terminate: { [weak self] paneID in
+                guard let self else { return }
+                lock.lock()
+                recordedTerminations.append(paneID)
+                lock.unlock()
+            },
+            terminateAll: { [weak self] in
+                guard let self else { return }
+                lock.lock()
+                recordedTerminateAll = true
+                lock.unlock()
+            }
+        )
+    }
+}
+
+private func checkAppResidentWorkbenchRelayAndShutdown() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let controller = try WorkbenchController(
+        applicationDirectory: directory,
+        environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"]
+    )
+    try controller.bootstrap(cwd: directory.path)
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let shimDirectory = directory.appendingPathComponent("bin", isDirectory: true)
+    let transportDirectory = directory.appendingPathComponent("relay", isDirectory: true)
+    try FileManager.default.createDirectory(at: shimDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: transportDirectory, withIntermediateDirectories: true)
+    controller.configureRelay(RelayRuntime(
+        infoFile: directory.appendingPathComponent("relay-url"),
+        shimDirectory: shimDirectory,
+        transportDirectory: transportDirectory,
+        credentials: credentials,
+        runtimeMarker: "DEV"
+    ))
+    let recorder = RecordingPaneTransport()
+    controller.configureTerminalTransport(recorder.transport())
+
+    _ = try controller.createPane(kind: .claude, cwd: directory.path)
+    let codex = try controller.createPane(kind: .codex, cwd: directory.path)
+    let beforeAttach = try controller.listPanes()
+    try expect(
+        beforeAttach.first(where: { $0.id == codex.id })?.inputAvailable == false,
+        "a new pane claimed input availability before its Ghostty surface attached"
+    )
+    try controller.terminalDidAttach(paneID: codex.id)
+    let afterAttach = try controller.listPanes()
+    try expect(
+        afterAttach.first(where: { $0.id == codex.id })?.inputAvailable == true,
+        "a live Ghostty attachment did not enable pane input"
+    )
+    try controller.terminalDidDetach(paneID: codex.id)
+    let afterDetach = try controller.listPanes()
+    try expect(
+        afterDetach.first(where: { $0.id == codex.id })?.inputAvailable == false,
+        "a detached Ghostty surface remained advertised as input-capable"
+    )
+    try controller.terminalDidAttach(paneID: codex.id)
+    try controller.paste("review before send", into: codex.id, submit: false)
+    try controller.paste("submit exactly once", into: codex.id, submit: true)
+
+    let inputs = recorder.inputs
+    try expect(inputs.count == 2, "the app-resident workbench did not deliver every relay input")
+    try expect(
+        inputs[0].0 == codex.id && inputs[0].1 == "review before send" && !inputs[0].2,
+        "paste unexpectedly submitted or targeted the wrong Ghostty pane"
+    )
+    try expect(
+        inputs[1].0 == codex.id && inputs[1].1 == "submit exactly once" && inputs[1].2,
+        "relay did not preserve its separate submit event"
+    )
+    let generationBeforeRestart = codex.launchGeneration
+    let tokenBeforeRestart = try credentials.token(for: codex.id)
+    try controller.restartPane(codex.id)
+    let restarted = try require(
+        controller.listPanes().first(where: { $0.id == codex.id }),
+        "the restarted pane disappeared"
+    )
+    try expect(restarted.launchGeneration == generationBeforeRestart + 1, "restart did not replace the Ghostty surface generation")
+    try expect(!restarted.inputAvailable, "restart trusted input state from the replaced Ghostty surface")
+    try expect(recorder.terminations == [codex.id], "restart did not terminate exactly the selected pane surface")
+    let tokenAfterRestart = try credentials.token(for: codex.id)
+    try expect(tokenAfterRestart != tokenBeforeRestart, "restart did not rotate the pane relay identity")
+
+    try controller.shutdown()
+    try expect(recorder.didTerminateAll, "full shutdown did not terminate every retained Ghostty surface")
+    let stoppedPanes = try controller.listPanes()
+    try expect(
+        stoppedPanes.allSatisfy { !$0.isStarted && !$0.relayEnabled },
+        "full shutdown left a pane advertised as running"
+    )
+}
+
+private func checkRealGhosttyAppResidentPaneLifecycle() throws {
+    try MainActor.assumeIsolated {
+        _ = NSApplication.shared
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let beforeHide = directory.appendingPathComponent("before-hide")
+        let whileHidden = directory.appendingPathComponent("while-hidden")
+        let processFile = directory.appendingPathComponent("shell-pid")
+
+        let controller = TerminalController { builder in
+            builder.withBackgroundOpacity(1)
+        }
+        let terminal = AppTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 420))
+        terminal.configuration = TerminalSurfaceOptions(
+            backend: .exec,
+            workingDirectory: directory.path,
+            command: GhosttyLaunchCommand.render(["/bin/zsh", "-f"]),
+            waitAfterCommand: true
+        )
+        terminal.controller = controller
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = terminal
+        window.orderFront(nil)
+
+        func pump(until condition: () -> Bool, timeout: TimeInterval = 3) -> Bool {
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline {
+                if condition() { return true }
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+            return condition()
+        }
+
+        try expect(
+            terminal.paste(text: GhosttyLaunchCommand.render(["/usr/bin/touch", beforeHide.path])),
+            "Ghostty refused bracketed text input"
+        )
+        try expect(terminal.sendKey(.enter), "Ghostty refused the separate Enter key event")
+        try expect(
+            pump(until: { FileManager.default.fileExists(atPath: beforeHide.path) }),
+            "the visible Ghostty shell did not execute input"
+        )
+        try expect(
+            terminal.paste(text: "echo $$ > \(GhosttyLaunchCommand.render([processFile.path]))"),
+            "Ghostty refused its process-id probe"
+        )
+        try expect(terminal.sendKey(.enter), "Ghostty refused the process-id probe Enter")
+        try expect(
+            pump(until: { FileManager.default.fileExists(atPath: processFile.path) }),
+            "the Ghostty shell did not report its process id"
+        )
+        let processText = try String(contentsOf: processFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let processID = try require(pid_t(processText), "the Ghostty shell reported an invalid process id")
+
+        window.orderOut(nil)
+        try expect(terminal.window === window, "hiding the window detached the retained Ghostty surface")
+        try expect(
+            terminal.paste(text: GhosttyLaunchCommand.render(["/usr/bin/touch", whileHidden.path])),
+            "the hidden app-resident Ghostty surface refused input"
+        )
+        try expect(terminal.sendKey(.enter), "the hidden Ghostty surface refused Enter")
+        try expect(
+            pump(until: { FileManager.default.fileExists(atPath: whileHidden.path) }),
+            "the Ghostty pane stopped when its window was hidden"
+        )
+
+        terminal.controller = nil
+        try expect(
+            pump(until: {
+                errno = 0
+                return Darwin.kill(processID, 0) != 0 && errno == ESRCH
+            }),
+            "tearing down the Ghostty surface did not terminate its pane process"
+        )
+        window.close()
+    }
+}
+
+private func checkRealGhosttySixPaneInputIsolation() throws {
+    try MainActor.assumeIsolated {
+        _ = NSApplication.shared
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = TerminalController { builder in
+            builder.withBackgroundOpacity(1)
+        }
+        var terminals: [AppTerminalView] = []
+        var windows: [NSWindow] = []
+        var processIDs: [pid_t] = []
+
+        func pump(until condition: () -> Bool, timeout: TimeInterval = 5) -> Bool {
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline {
+                if condition() { return true }
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+            return condition()
+        }
+
+        for index in 0..<6 {
+            let terminal = AppTerminalView(frame: NSRect(x: 0, y: 0, width: 360, height: 220))
+            terminal.configuration = TerminalSurfaceOptions(
+                backend: .exec,
+                workingDirectory: directory.path,
+                command: GhosttyLaunchCommand.render(["/bin/zsh", "-f"]),
+                waitAfterCommand: true
+            )
+            let window = NSWindow(
+                contentRect: NSRect(x: 20 * index, y: 20 * index, width: 360, height: 220),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentView = terminal
+            terminal.controller = controller
+            window.orderFront(nil)
+            terminals.append(terminal)
+            windows.append(window)
+        }
+
+        for index in terminals.indices {
+            let marker = directory.appendingPathComponent("pane-\(index)-marker")
+            let pidFile = directory.appendingPathComponent("pane-\(index)-pid")
+            try expect(
+                terminals[index].paste(text: "echo $$ > \(GhosttyLaunchCommand.render([pidFile.path])); /usr/bin/touch \(GhosttyLaunchCommand.render([marker.path]))"),
+                "Ghostty pane \(index) refused bracketed input"
+            )
+            try expect(terminals[index].sendKey(.enter), "Ghostty pane \(index) refused its separate Enter event")
+        }
+        try expect(
+            pump(until: {
+                (0..<6).allSatisfy {
+                    FileManager.default.fileExists(atPath: directory.appendingPathComponent("pane-\($0)-marker").path)
+                }
+            }),
+            "one or more Ghostty panes stopped accepting input beyond the four-pane boundary"
+        )
+        for index in 0..<6 {
+            let pidText = try String(
+                contentsOf: directory.appendingPathComponent("pane-\(index)-pid"),
+                encoding: .utf8
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            processIDs.append(try require(pid_t(pidText), "Ghostty pane \(index) reported an invalid process id"))
+        }
+
+        for terminal in terminals { terminal.controller = nil }
+        try expect(
+            pump(until: {
+                processIDs.allSatisfy {
+                    errno = 0
+                    return Darwin.kill($0, 0) != 0 && errno == ESRCH
+                }
+            }),
+            "tearing down six Ghostty panes left one or more child processes alive"
+        )
+        for window in windows { window.close() }
+    }
+}
+
 let checks: [(String, () throws -> Void)] = [
+    ("bounded safe terminal font preference", checkTerminalFontPreferenceIsBoundedAndSafe),
+    ("pane state uses durable workspace and Ghostty input identity", checkPaneStateUsesDurableWorkspaceAndGhosttyInputIdentity),
+    ("native tracked Ask preserves formatting intent", checkNativeAskRequestCarriesFormattingIntent),
+    ("Ghostty app-resident lifecycle", checkGhosttyAppResidentLifecycleContract),
+    ("Ghostty launch command encoding", checkGhosttyLaunchCommandEncoding),
+    ("vendor submission timing", checkVendorSubmissionTiming),
+    ("app-resident workbench state round-trip", checkAppResidentWorkbenchStateRoundTrip),
+    ("app-resident workbench relay and shutdown", checkAppResidentWorkbenchRelayAndShutdown),
+    ("real Ghostty app-resident pane lifecycle", checkRealGhosttyAppResidentPaneLifecycle),
+    ("real Ghostty six-pane input isolation", checkRealGhosttySixPaneInputIsolation),
     ("runtime namespaces are explicit and disjoint", checkRuntimeNamespacesAreExplicitAndDisjoint),
     ("runtime termination choice survives dead agents", checkRuntimeTerminationChoiceSurvivesDeadAgents),
-    ("Stop Everything refuses silent failure", checkStopEverythingRefusesSilentFailure),
     ("useful copyable build information", checkBuildInformationIsUsefulAndCopyable),
     ("vendor-neutral local permission profiles", checkPermissionProfilesAreVendorNeutralAndLocal),
-    ("safe permission profiles reach pane lifecycle", checkPermissionProfilesReachPaneLifecycleWithoutUnsafeFlags),
-    ("vendor permission stops become passive attention", checkVendorPermissionStopsBecomeAttentionWithoutAction),
+    ("vendor permission state is never inferred from terminal text", checkVendorPermissionStateIsNotInferredFromTerminalText),
     ("runtime UI lease refuses duplicate owners", checkRuntimeUILeaseRefusesDuplicateOwners),
     ("child process cannot retain runtime UI lease", checkChildProcessCannotRetainRuntimeUILease),
-    ("read-only runtime attachment requires prepared files", checkReadOnlyRuntimeAttachmentRequiresPreparedFiles),
-    ("real production and development tmux isolation", checkRealProductionAndDevelopmentTmuxIsolation),
     ("UTF-8 locale fallback preserves explicit configuration", checkUTF8LocaleFallbackPreservesExplicitConfiguration),
-    ("bootstrap", checkBootstrap),
-    ("bootstrap recovers missing tmux identifiers", checkBootstrapRecoversMissingIdentifiers),
-    ("existing session workspace adoption", checkExistingSessionAdoptsWorkspaceWithoutRestart),
-    ("workspace lifecycle", checkWorkspaceLifecycle),
-    ("workspace creation recovers missing tmux identifiers", checkWorkspaceCreationRecoversMissingIdentifiers),
-    ("workspace creation cleans ambiguous pending windows", checkWorkspaceCreationCleansAmbiguousPendingWindow),
-    ("workspace creation retries its exact pending target", checkWorkspaceCreationRetriesExactPendingTarget),
-    ("workspace creation cleans an uncaptured exact target", checkWorkspaceCreationCleansPendingTargetWithoutCapturedIDs),
-    ("existing sessions adopt only unclassified shells", checkExistingSessionAdoptsOnlyUnclassifiedShells),
     ("workspace continuity state", checkWorkspaceContinuityState),
     ("durable workspace registry", checkWorkspaceRegistryDurability),
-    ("workspace home and New Pane Folder model", checkWorkspaceHomeAndNewPaneFolderModel),
+    ("workspace folder attachment model", checkWorkspaceFolderAttachmentModel),
     ("legacy packaged-app preferences migration", checkLegacyPreferencesMigration),
     ("quota-free runtime readiness probes", checkRuntimeReadinessProbesAreQuotaFree),
     ("truthful vendor compatibility and runtime signals", checkVendorCompatibilityAndRuntimeSignalsAreTruthful),
@@ -11991,55 +8772,25 @@ let checks: [(String, () throws -> Void)] = [
     ("menu-safe periodic refresh", checkMenuTrackingRefreshPolicy),
     ("detailed in-app help coverage", checkInAppHelpGuideCoverage),
     ("workbench state projection", checkWorkbenchStateProjection),
-    ("exited pane retention", checkExitedPaneRetention),
-    ("embedded tmux presentation", checkEmbeddedTmuxPresentation),
-    ("pane focus and copy metadata", checkPaneFocusAndCopyMetadata),
+    ("Precision Grid chrome uses owned state", checkPrecisionGridChromeUsesOwnedState),
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
     ("portable team template persistence and application", checkPortableTeamTemplatePersistenceAndApplication),
-    ("deliberate pane mobility safety contract", checkPaneMobilitySafetyContract),
     ("external workspace open contract", checkExternalWorkspaceOpenContract),
     ("external editor context import contract", checkExternalEditorContextImportContract),
     ("content-free external attention and navigation contract", checkExternalAttentionAndNavigationContract),
     ("bounded menu bar attention inbox", checkMenuBarAttentionInboxProjection),
-    ("tmux layout to ID-free saved tree", checkTmuxLayoutBecomesAnIDFreeSavedTree),
-    ("active pane workspace scope", checkActivePaneIsScopedToSelectedWorkspace),
-    ("direct agent argv", checkDirectAgentSpawn),
     ("mandatory pane-scoped agent process boundary", checkAgentProcessBoundaryIsMandatoryAndPaneScoped),
-    ("stopped agent explicit start", checkStoppedAgentStartsOnlyThroughExplicitAction),
-    ("shell pane login shell", checkShellPaneStartsLoginShell),
-    ("real tmux shell lifecycle", checkRealTmuxShellLifecycle),
-    ("real tmux pane mobility", checkRealTmuxPaneMobility),
-    ("real tmux Copy Mode survives scrolling to bottom", checkRealTmuxCopyModeSurvivesScrollingToBottom),
-    ("real tmux Copy Mode zooms multi-pane windows", checkRealTmuxCopyModeZoomsMultiPaneWindows),
-    ("preview terminal focus isolation", checkPreviewTerminalFocusIsolation),
-    ("real tmux per-pane view sessions", checkRealTmuxPerPaneViewSessions),
-    ("real tmux durable workspace identity", checkRealTmuxWorkspaceIdentityIsDurable),
-    ("real tmux delivery needs no viewer", checkRealTmuxDeliveryNeedsNoViewer),
-    ("real tmux window-per-pane creation and close", checkRealTmuxWindowPerPaneCreationAndClose),
-    ("real tmux control mode streams pane output", checkRealTmuxControlModeStreamsPaneOutput),
-    ("real tmux pane mode seeding", checkRealTmuxPaneModeSeeding),
     ("native workspace layout tree", checkNativeWorkspaceLayoutTree),
+    ("window and split geometry recovery", checkWindowAndSplitGeometryRecovery),
+    ("workbench keyboard shortcut routing", checkWorkbenchKeyboardShortcuts),
     ("idle agent reaper gates", checkIdleAgentReaperGates),
-    ("stopped pane process keeps its seat", checkStopPaneProcessKeepsSeat),
-    ("real tmux stop-everything shutdown", checkRealTmuxServerShutdown),
-    ("real macOS agent process boundary", checkRealAgentProcessBoundary),
-    ("real tmux saved-layout restoration policy", checkRealTmuxSavedLayoutRestorationPolicy),
-    ("inherited Parley capability scrub", checkInheritedParleyCapabilitiesAreScrubbed),
     ("shared protocol launch adapters", checkSharedProtocolLaunchAdapters),
-    ("supervision metadata and editable recipes", checkSupervisionMetadataAndRecipesPersistWithoutLiveIDs),
     ("bounded supervised workflow lifecycle", checkBoundedSupervisedWorkflowLifecycle),
     ("readable handoff chains preserve exact evidence", checkReadableHandoffChainsPreserveEvidence),
     ("supervised lead workflow policy and cancellation", checkSupervisedLeadWorkflowPolicyAndCancellation),
     ("tracked delegation completion and wait", checkTrackedDelegationCompletesAndWaits),
     ("tracked delegation failure and liveness", checkTrackedDelegationFailureAndLiveness),
     ("tracked delegation shim round trip", checkDelegationShimRoundTrip),
-    ("Copilot agent argv", checkCopilotAgentSpawn),
-    ("Copilot trusted submission", checkCopilotSubmitUsesEnterAfterTrust),
-    ("Copilot folder trust gate", checkCopilotTrustPromptRefusesSubmission),
-    ("safe relay target gate", checkPasteRequiresRelayReadyBracketedTarget),
-    ("Ask and route", checkAsk),
-    ("Return and consume route", checkReturn),
-    ("distinct-pane routing", checkDistinctPaneRouting),
     ("relay cleaning", checkRelayCleaning),
     ("selection-or-empty relay draft", checkRelayDraftStartsWithSelectionOrNothing),
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
@@ -12071,14 +8822,11 @@ let checks: [(String, () throws -> Void)] = [
     ("cross-workspace relay addressing", checkCrossWorkspaceRelayAddressing),
     ("persistent relay identity", checkRelayCredentialPersistsAndIdentifiesSender),
     ("cross-process relay identity refresh", checkRelayCredentialReloadsExternalChanges),
-    ("restart rotates relay credential", checkRestartRotatesRelayCredential),
     ("relay filesystem round trip", checkRelayFilesystemRoundTrip),
     ("relay shim filesystem transport", checkRelayShimUsesPinnedFilesystemTransport),
     ("protected filesystem relay runtime", checkRelayFilesystemRuntimeIsProtectedAndStopsCleanly),
     ("complete large core activity response", checkLargeCoreActivityResponseIsComplete),
     ("core control survives UI reattachment", checkCoreControlSurvivesClientReattachment),
-    ("persistent core process survives UI exit", checkPersistentCoreProcessSurvivesClientExit),
-    ("core restart interrupts wait and recovers", checkCoreRestartInterruptsWaitAndRecoversDiscovery),
     ("runtime-aware stable relay router", checkStableRouterSelectsRuntimeAndPreservesForeignCommands),
     ("agent Ask auto-submits and returns", checkAgentAskSubmitsAndBlocksUntilTheTargetAnswers),
     ("ask-many independent ordered fanout", checkAskManyFansOutIndependentlyAndReturnsAnOrderedBundle),
@@ -12097,35 +8845,7 @@ let checks: [(String, () throws -> Void)] = [
     ("child-process input and both output streams", checkCommandInputAndBothOutputStreams),
     ("daemon child cannot hold output capture open", checkDaemonizingCommandCannotHoldOutputCaptureOpen),
     ("child-process timeout", checkCommandTimeout),
-    ("core startup timeout diagnostics", checkCoreStartupTimeoutReportsLastPhase),
-    ("bundled core service resolution", checkBundledCoreServiceResolution),
-    ("core service lifecycle", checkCoreServiceStopsCleanly),
-    ("core service login launch configuration", checkCoreServiceLoginLaunchConfiguration),
-    ("core service upgrade identity", checkCoreServiceUpgradeIdentity),
-    ("core upgrade drain is atomic", checkCoreUpgradeDrainIsAtomic),
-    ("core upgrade control round trip", checkCoreUpgradeControlRoundTrip),
-    ("core uninstall stop control round trip", checkCoreUninstallStopControlRoundTrip),
-    ("core uninstall transaction rollback", checkCoreUninstallTransactionRollback),
-    ("persistent core seamless replacement", checkCoreUpgradeReplacesPersistentFixture),
-    ("vendor conformance planning", checkVendorConformancePlanning),
-    ("vendor conformance planning fails closed", checkVendorConformancePlanningFailsClosed),
-    ("vendor conformance rejects exited panes", checkVendorConformanceRejectsExitedPanes),
-    ("vendor conformance reporting", checkVendorConformanceReport),
-    ("vendor conformance attention gate", checkVendorConformanceAttentionGate),
 ]
-
-if let statePath = ProcessInfo.processInfo.environment["PARLEY_CORE_LIFECYCLE_FIXTURE"] {
-    do {
-        try "ready".write(toFile: statePath, atomically: true, encoding: .utf8)
-        RelayServiceProcess.waitForTermination { signalNumber in
-            try? "stopped \(signalNumber)".write(toFile: statePath, atomically: true, encoding: .utf8)
-            exit(0)
-        }
-    } catch {
-        FileHandle.standardError.write(Data("Lifecycle fixture failed: \(error)\n".utf8))
-        exit(1)
-    }
-}
 
 if ProcessInfo.processInfo.environment["PARLEY_CORE_HANG_FIXTURE"] == "1" {
     FileHandle.standardError.write(Data("fixture reached startup\n".utf8))
@@ -12188,26 +8908,6 @@ if let resultPath = ProcessInfo.processInfo.environment["PARLEY_COMMAND_CAPTURE_
     application.delegate = delegate
     application.run()
     exit(FileManager.default.fileExists(atPath: resultPath) ? 0 : 1)
-}
-
-if ProcessInfo.processInfo.environment["PARLEY_UI_FIXTURE"] == "1" {
-    do {
-        try runUIFixture()
-        exit(0)
-    } catch {
-        FileHandle.standardError.write(Data("Fixture UI failed: \(error)\n".utf8))
-        exit(1)
-    }
-}
-
-if ProcessInfo.processInfo.environment["PARLEY_CORE_FIXTURE"] == "1" {
-    do {
-        try runCoreServiceFixture()
-        exit(0)
-    } catch {
-        FileHandle.standardError.write(Data("Fixture core failed: \(error)\n".utf8))
-        exit(1)
-    }
 }
 
 var failureCount = 0

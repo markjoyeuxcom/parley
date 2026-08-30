@@ -1,8 +1,8 @@
 import Foundation
 
-/// Natural ordering for ephemeral tmux ids: `%2` precedes `%10`. This is
+/// Natural ordering for ephemeral pane ids: `%2` precedes `%10`. This is
 /// presentation ordering only; durable state never uses a live id as identity.
-public enum TmuxIdentifierOrder {
+public enum WorkbenchIdentifierOrder {
     public static func sorted<S: Sequence>(_ identifiers: S) -> [String]
     where S.Element == String {
         identifiers.sorted {
@@ -11,10 +11,10 @@ public enum TmuxIdentifierOrder {
     }
 }
 
-/// The native split structure of one workspace's viewers: pane-id leaves (a
-/// legacy grid window is represented by its representative pane) combined by
-/// split direction. Divider positions stay with AppKit; the tree records only
-/// the structure, which is what must survive relaunches and reconciliation.
+/// The native split structure of one workspace's terminal leaves, combined by
+/// split direction. Every leaf is one retained Ghostty surface. Divider
+/// positions stay with AppKit; the tree records only the structure that must
+/// survive relaunches and reconciliation.
 public indirect enum NativeLayoutNode: Codable, Equatable, Sendable {
     case leaf(String)
     case split(direction: SplitDirection, first: NativeLayoutNode, second: NativeLayoutNode)

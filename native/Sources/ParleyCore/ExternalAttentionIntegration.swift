@@ -103,8 +103,8 @@ public enum ExternalAttentionProjection {
     public static let maximumItems = 512
 
     public static func snapshot(
-        workspaces: [TmuxWorkspace],
-        panes: [TmuxPane],
+        workspaces: [WorkbenchWorkspace],
+        panes: [WorkbenchPane],
         handoffs: [RelayHandoff],
         generatedAt: Date = Date()
     ) -> ExternalAttentionSnapshot {
@@ -116,7 +116,6 @@ public enum ExternalAttentionProjection {
             workspaceNames[workspace.workspaceID] = workspace.name
         }
         for pane in panes {
-            canonicalWorkspaceByAlias[pane.windowID] = pane.workspaceID
             canonicalWorkspaceByAlias[pane.workspaceID] = pane.workspaceID
             if workspaceNames[pane.workspaceID] == nil, let name = pane.workspaceName {
                 workspaceNames[pane.workspaceID] = name

@@ -266,7 +266,7 @@ public struct WorktreeWriterCollision: Identifiable, Equatable, Sendable {
 /// pane has touched a file or that an idle-looking terminal is safe.
 public enum WorktreeWriterCollisionProjection {
     public static func collisions(
-        panes: [TmuxPane],
+        panes: [WorkbenchPane],
         profiles: [PermissionProfileDefinition],
         worktrees: [GitWorktreeRecord],
         paneWorktreePaths: [String: String]

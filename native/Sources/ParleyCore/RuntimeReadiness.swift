@@ -1,7 +1,7 @@
 import Foundation
 
 public enum RuntimeReadinessID: String, CaseIterable, Sendable {
-    case tmux
+    case terminal
     case core
     case relay
     case protocolRules
@@ -106,10 +106,10 @@ public final class RuntimeReadinessChecker: @unchecked Sendable {
         environment: [String: String],
         applicationDirectory: URL,
         coreHealthy: Bool,
-        panes: [TmuxPane]
+        panes: [WorkbenchPane]
     ) -> RuntimeReadinessSnapshot {
         RuntimeReadinessSnapshot(items: [
-            checkTmux(environment: environment),
+            checkTerminal(),
             checkCore(coreHealthy),
             checkRelay(applicationDirectory: applicationDirectory),
             checkProtocol(applicationDirectory: applicationDirectory, panes: panes),
@@ -120,29 +120,13 @@ public final class RuntimeReadinessChecker: @unchecked Sendable {
         ])
     }
 
-    private func checkTmux(environment: [String: String]) -> RuntimeReadinessItem {
-        guard let executable = TmuxController.findTmux(
-            environment: environment,
-            fileManager: fileManager
-        ) else {
-            return local(
-                .tmux,
-                "tmux",
-                .unavailable,
-                "tmux was not found on Parley's resolved login PATH.",
-                recovery: "Install tmux, then reopen Parley or run Check Again."
-            )
-        }
-        guard run(executable, ["-V"], environment: environment)?.status == 0 else {
-            return local(
-                .tmux,
-                "tmux",
-                .attention,
-                "The tmux executable was found but did not start successfully.",
-                recovery: "Repair the tmux installation, then run Check Again."
-            )
-        }
-        return local(.tmux, "tmux", .ready, "Available for Parley's private terminal server.")
+    private func checkTerminal() -> RuntimeReadinessItem {
+        local(
+            .terminal,
+            "Terminal engine",
+            .ready,
+            "Embedded Ghostty owns each interactive pane inside Parley."
+        )
     }
 
     private func checkCore(_ healthy: Bool) -> RuntimeReadinessItem {
@@ -152,7 +136,7 @@ public final class RuntimeReadinessChecker: @unchecked Sendable {
                 .core,
                 "Coordination core",
                 .attention,
-                "The terminal grid can remain attached, but agent coordination actions are paused.",
+                "Terminal panes remain available, but agent coordination actions are paused.",
                 recovery: "Use Reconnect in the workbench before sending an Ask."
             )
     }
@@ -175,7 +159,7 @@ public final class RuntimeReadinessChecker: @unchecked Sendable {
 
     private func checkProtocol(
         applicationDirectory: URL,
-        panes: [TmuxPane]
+        panes: [WorkbenchPane]
     ) -> RuntimeReadinessItem {
         let rules = applicationDirectory.appendingPathComponent("agent-protocol/AGENTS.md")
         guard let installed = try? String(contentsOf: rules, encoding: .utf8),

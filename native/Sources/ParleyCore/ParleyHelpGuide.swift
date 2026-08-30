@@ -71,7 +71,7 @@ public enum ParleyHelpGuide {
         ParleyHelpTopic(
             id: "start",
             title: "Start here",
-            summary: "Use several subscription CLIs in one grid and move work between vendors without copy and paste.",
+            summary: "Use several subscription CLIs in one native workbench and move work between vendors without copy and paste.",
             symbol: "sparkles.rectangle.stack",
             sections: [
                 ParleyHelpSection(
@@ -107,41 +107,36 @@ public enum ParleyHelpGuide {
             sections: [
                 ParleyHelpSection(
                     id: "workspaces-folders",
-                    title: "Workspace home and pane folders",
+                    title: "Folderless workspaces, attachments and pane folders",
                     paragraphs: [
-                        "A workspace is a named collaboration container. Its home folder is the stable folder-opening association; the New Pane Folder is only where future toolbar-created panes start. Every pane then owns its live working directory.",
+                        "A workspace is a named collaboration container, not a repository identity. New Workspace creates one with no attached folders. Open Folder is the folder-first navigation path. Every pane owns its live working directory.",
                     ],
                     items: [
-                        "Split Right and Split Below use the visible New Pane Folder.",
+                        "Attach zero, one or several folders for opening and search. Attachment order is presentation metadata; attaching, moving or removing one never changes a pane or grants filesystem permission.",
+                        "Split Right and Split Below use the optional New Pane Folder. When it is clear, shells follow the active pane and a new agent asks for an explicit working folder.",
                         "When the active pane has moved elsewhere, Split Right Here and Split Below Here explicitly use that pane's current folder.",
                         "Changing the New Pane Folder does not move or restart running panes.",
-                        "Several task workspaces may share one home folder. Opening that folder presents a chooser instead of guessing; Open New Workspace Here deliberately creates another.",
+                        "Several task workspaces may attach one folder. Opening that folder presents a chooser instead of guessing; Open New Workspace Here deliberately creates another.",
+                        "A folderless team leaves agent panes as stopped placeholders without permission roots. Start asks for the pane folder and then shows the normal permission review.",
                         "Use the plus beside Favourite Folders to bookmark a repository without changing the active workspace. A row shows whether it will create, focus or choose among matching workspaces.",
                         "Cross-workspace handoffs work; qualify an ambiguous target as workspace/pane.",
                     ]
                 ),
                 ParleyHelpSection(
                     id: "workspaces-pane-focus-copy",
-                    title: "Pane focus, zoom and copy mode",
+                    title: "Pane focus, selection and scrollback",
                     paragraphs: [
-                        "The left sidebar is Parley's rich pane navigator: it keeps status, permissions, recovery actions and context menus visible. When you hide the sidebar, a compact pane focus strip appears above the terminal in both grid and zoom views. It names every pane, marks the selected one and shows only Parley-owned states such as Copy, Return, Result, stopped, failed or attention required. Clicking another pane focuses it; while zoomed, Parley keeps the workspace zoomed and shows the chosen pane.",
-                        "The compact title at the top of each legacy tmux pane identifies the pane inside the grid. It is deliberately not a second session or hidden surface: every item in the focus strip is one visible tmux pane and one real interactive process.",
-                        "Pane history belongs to tmux in both renderers. The opt-in Windows-as-Panes Preview renders each member window through one ordinary, confined tmux client while SwiftUI owns the visible split. tmux continues to own terminal modes, the real process and its scrollback.",
+                        "The left sidebar is Parley's rich pane navigator: it keeps status, permissions, recovery actions and context menus visible. When you hide the sidebar, a compact pane focus strip remains above the terminals. Every visible leaf has a clear border, and the selected leaf uses the app accent. Clicking a leaf or its focus-strip item makes that exact pane authoritative for typing and actions.",
+                        "SwiftUI owns the visible split tree and each leaf is one retained Ghostty surface. Ghostty owns the real PTY, process, vendor TUI, selection, scrollback and terminal state; Parley's app-resident coordination core owns relay delivery.",
+                        "Hiding or closing the main window does not destroy its terminal surfaces. Quitting Parley is the explicit lifetime boundary and ends every pane process and the coordination core.",
                     ],
                     items: [
-                        "Normal dragging is selection-first: it enters tmux Copy Mode even when a mouse-aware CLI would otherwise capture the drag.",
-                        "In the preview, each native leaf has its own tmux client and its bottom edge is the pane edge, so dragging below it can continue through tmux-owned history.",
-                        "In a legacy split workspace, entering Copy Mode temporarily zooms the pane so a drag can keep auto-scrolling at the window edges; leaving Copy Mode restores the split layout. A zoom you chose yourself is kept.",
-                        "Releasing a Copy Mode selection copies it to the macOS clipboard through /usr/bin/pbcopy and exits Copy Mode. Escape or the Exit Copy Mode control cancels without sending terminal input.",
-                        "The COPY badge is authoritative tmux state. Parley does not infer selection state from terminal text.",
-                        "Windows-as-Panes Preview is experimental and must be enabled explicitly in Tools. Existing legacy grids are not broken apart automatically.",
-                        "Native divider positions reopen balanced. The preview uses ordinary tmux PTY attachment, so live terminal modes and screen state follow the same path as the established renderer.",
-                        "Each independent viewer keeps terminal focus-out separate from native keyboard focus. Background agent prompts remain eligible for safe relay input, while only the clicked leaf receives typing.",
+                        "Normal dragging selects text in the native terminal even when a mouse-aware vendor TUI is active. Releasing a selection copies it to the macOS clipboard.",
+                        "Ghostty handles mouse reporting, selection, copy and scrollback directly. Parley does not place another terminal multiplexer between the mouse and the vendor TUI.",
+                        "Ghostty retains authoritative terminal modes and scrollback while a leaf is hidden and restores the same surface when it reattaches.",
+                        "Moving keyboard focus between leaves does not send DEC focus-out to a background agent. Safe relay readiness stays independent from which leaf receives the person's typing.",
+                        "Native divider positions currently reopen balanced; Balance Panes rebuilds an even native split tree.",
                         "The pane focus strip is navigation, not hidden tabs: every leaf remains a real interactive process.",
-                    ],
-                    commands: [
-                        ParleyHelpCommand("Control-Command-C", "Enter or exit Copy Mode for the active pane."),
-                        ParleyHelpCommand("Command-Shift-Z", "Toggle the active workspace between its grid and one zoomed pane."),
                     ]
                 ),
                 ParleyHelpSection(
@@ -162,7 +157,7 @@ public enum ParleyHelpGuide {
                     id: "workspaces-layouts",
                     title: "Saved layouts",
                     paragraphs: [
-                        "A saved layout remembers the split shape, pane kind, pane name, folder, workspace lead and automation policy. It never stores live process or tmux pane ids.",
+                        "A saved layout remembers the split shape, pane kind, pane name, folder, workspace lead and automation policy. It never stores a live process or terminal-surface id.",
                     ],
                     items: [
                         "Restoring a layout starts shell panes automatically.",
@@ -201,7 +196,7 @@ public enum ParleyHelpGuide {
                     id: "workspaces-mobility",
                     title: "Move or clone a pane",
                     paragraphs: [
-                        "Right-click a pane and choose Move to Workspace to transfer the exact live tmux pane, or Clone Configuration to Workspace to create a separate pane with the same visible setup. Every action names its destination and shows its process, folder and handoff consequences before it runs.",
+                        "Right-click a pane and choose Move to Workspace to transfer the exact retained Ghostty surface, or Clone Configuration to Workspace to create a separate pane with the same visible setup. Every action names its destination and shows its process, folder and handoff consequences before it runs.",
                     ],
                     items: [
                         "Move preserves the pane id, running process and vendor session, scrollback, terminal state and pane-local folder. The destination workspace's automation policy applies after the move.",
@@ -217,7 +212,7 @@ public enum ParleyHelpGuide {
                         "Before closing a workspace, replacing it with a saved layout, or moving a pane between workspaces, Parley shows a content-free summary of the affected workspace state. Read it before approving the action; it is evidence for a human decision, not an automatic safety verdict.",
                     ],
                     items: [
-                        "Running agents come from tmux process state. Stopped placeholders and shell panes are not described as running agents.",
+                        "Running agents come from processes Parley launched into retained Ghostty surfaces. Stopped placeholders and shell panes are not described as running agents.",
                         "Active handoffs come from the coordination core. If the core is disconnected, the summary says that handoff state is unavailable instead of claiming there are none.",
                         "Dirty repositories come from bounded Git status snapshots and are deduplicated by exact discovered worktree path. A missing snapshot is shown as unavailable, not clean.",
                         "Shared-worktree writers come from exact canonical worktree paths plus visible write-capable permission profiles. Parley does not infer whether an agent is thinking or which process changed a file.",
@@ -378,7 +373,7 @@ public enum ParleyHelpGuide {
                         "Adding saved context to a Context Pack creates an attributed snapshot. Edit that copy for the receiving vendor without changing its durable source, then inspect the complete pack before Ask or Compare submits it.",
                     ],
                     items: [
-                        "A person-created pack can attach a brief or pinned snippets; an agent-staged draft cannot read either library. During review, a person can add a file, Git diff, visible screen or command result through Parley's own bounded capture path.",
+                        "A person-created pack can attach a brief or pinned snippets; an agent-staged draft cannot read either library. During review, a person can add a file, Git diff, current terminal selection or command result through Parley's own bounded capture path.",
                         "A pack includes only visible sources you deliberately add. Hidden terminal history and complete transcripts are not scraped.",
                         "Deleting or updating a saved reference never rewrites a snapshot already placed in a pack.",
                         "Context is evidence and instruction, not credential storage. Keep passwords, API keys and vendor tokens out of briefs and snippets.",
@@ -430,16 +425,16 @@ public enum ParleyHelpGuide {
                     id: "context-packs-build",
                     title: "Build an explicit pack",
                     paragraphs: [
-                        "From a ready agent pane, open Context and choose New Context Pack. Add selected UTF-8 files, the source pane's current Git diff, one chosen pane's visible screen, a captured command result, that workspace's saved brief, or reusable pinned context.",
+                        "From a ready agent pane, open Context and choose New Context Pack. Add selected UTF-8 files, the source pane's current Git diff, a chosen pane's current terminal selection, a captured command result, that workspace's saved brief, or reusable pinned context.",
                         "Every source remains a separate editable part with its exact path or pane/command provenance, captured UTF-8 bytes, current UTF-8 bytes and an EDITED marker when the preview differs from the capture.",
                     ],
                     items: [
                         "Git capture uses read-only argv calls. Untracked files are named by status but their contents are never read implicitly.",
-                        "Visible terminal capture means the current visible screen only. Hidden scrollback, another pane and the complete transcript are not scraped.",
+                        "Terminal context means only text the person selected in that exact pane. Hidden scrollback, another pane and the complete transcript are never scraped.",
                         "Command capture requires an absolute executable and treats each non-empty line as one literal argument. It never invokes a shell, expands variables, pipes or redirects.",
                         "Both command stdout and stderr plus the exit status are retained. Time and output bounds prevent a noisy process from creating an unbounded preview.",
                         "A pane agent can stage repository files with `parley context draft --name \"Review\" --file path`, append with `parley context add <draft> --file path`, and abandon its own draft with `parley context discard <draft>`. These files must remain under that pane's working folder and are visibly labelled agent-provided because Parley did not independently capture them.",
-                        "While reviewing an agent draft, a person may add Files, Git Diff, Visible Screen or Capture Command. The persistent core performs that separate capture, labels its real provenance and retains the original bytes; the agent-provided parts remain claims.",
+                        "While reviewing an agent draft, a person may add Files, Git Diff, Selection or Capture Command. The app-resident core performs that separate capture, labels its real provenance and retains the original bytes; the agent-provided parts remain claims.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -673,7 +668,7 @@ public enum ParleyHelpGuide {
                         "Passwords, API tokens, private keys, keychains, SSH or cloud credential directories.",
                         "sudo, system configuration, security-setting changes or permission-bypass flags.",
                         "Destructive filesystem or Git operations without a precise target and explicit current instruction.",
-                        "Parley's private tmux socket, pane credentials or broad Application Support tree.",
+                        "Parley's pane credentials or broad Application Support tree.",
                         "The entire home folder merely to avoid future prompts.",
                     ]
                 ),
@@ -706,7 +701,7 @@ public enum ParleyHelpGuide {
                     items: [
                         "Parley uses subscription CLIs only and never stores API keys or model-provider credentials.",
                         "It never launches agents with a dangerously bypass permissions flag.",
-                        "Agents receive pane-scoped credentials and cannot address shell panes or operate Parley's tmux server through the supported protocol.",
+                        "Agents receive pane-scoped credentials and cannot address shell panes or operate another pane's terminal through the supported protocol.",
                         "Every cross-vendor message carries its sender and exact target; ambiguity is refused.",
                         "Everything remains local unless the vendor CLI itself communicates with its normal service.",
                     ]
@@ -821,7 +816,7 @@ public enum ParleyHelpGuide {
                     title: "Quota-free vendor compatibility",
                     paragraphs: [
                         "Open Tools → Compatibility & Releases. Parley runs exactly one --version command for each installed Claude, Codex, Agy and Copilot CLI. The probe receives a minimal allowlisted launch environment and closed empty stdin, then Parley retains only the semantic version and reports adapter support for Launch, Submit, Ask/Answer and Permissions. No session is opened, no prompt is submitted, no vendor configuration is inspected and no model quota is spent.",
-                        "CLI CHANGED means the semantic version differs from the previous runtime-local check. It is a reason to consider live conformance, not a claim that conformance passed. Permission support remains Partial because Parley translates only documented safe controls and vendor prompts remain authoritative.",
+                        "CLI CHANGED means the semantic version differs from the previous runtime-local check. It is a prompt to review the vendor's release notes, not a claim that runtime behavior passed. Permission support remains Partial because Parley translates only documented safe controls and vendor prompts remain authoritative.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -829,29 +824,7 @@ public enum ParleyHelpGuide {
                     title: "Runtime state stays Unknown without evidence",
                     paragraphs: [
                         "Parley shows Ready, Working or Awaiting Permission only if a vendor supplies a trustworthy structured per-session hook. Current vendors do not, so a running pane is Unknown. Terminal prose, silence, animation and elapsed time never become runtime facts.",
-                        "Exited is different: Parley owns the process lifecycle and can report an observed exit and status without reading terminal content. The older conservative prompt detector remains only a safety stop for the opt-in live conformance runner; it never becomes a Status claim.",
-                    ]
-                ),
-                ParleyHelpSection(
-                    id: "release-live-conformance",
-                    title: "Run live conformance deliberately",
-                    paragraphs: [
-                        "Run Live Conformance is an explicit quota-spending action. After confirmation, the bundled runner uses eligible existing panes to prove protocol injection, exact multiline bracketed paste, automatic submission, correlated answer current routing, inactive-target and cross-workspace delivery. It never creates, restarts or closes a pane.",
-                    ],
-                    items: [
-                        "Parley refuses the run while tracked Ask or delegated work is active.",
-                        "A visible trust or permission decision blocks the probe; Parley never answers it.",
-                        "The result is kept in memory for review. A beta feedback bundle retains only vendor, check name and outcome—not returned text or failure detail.",
-                    ],
-                    commands: [
-                        ParleyHelpCommand(
-                            "PARLEY_LIVE=1 npm run test:conformance",
-                            "Developer equivalent for the isolated Development runtime. It spends vendor subscription quota and should follow the dry-run plan."
-                        ),
-                        ParleyHelpCommand(
-                            "npm run test:conformance:plan",
-                            "Print the safe Development probe plan without sending text or spending quota."
-                        ),
+                        "Exited is different: Parley owns the process lifecycle and can report an observed exit and status without reading terminal content.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -859,13 +832,13 @@ public enum ParleyHelpGuide {
                     title: "Stable and Beta GitHub Releases",
                     paragraphs: [
                         "Stable selects published non-prereleases. Beta selects the newest published release including prereleases. Parley contacts its public GitHub Releases API only after you press Check GitHub; there is no background update check.",
-                        "Before offering a DMG, Parley requires the GitHub asset list, release manifest and SHA256SUMS to agree on version, repository, architecture, filename, byte count and SHA-256. Download and Verify hashes the complete downloaded DMG before saving it locally. It does not install, relaunch or replace the persistent core.",
+                        "Before offering a DMG, Parley requires the GitHub asset list, release manifest and SHA256SUMS to agree on version, repository, architecture, filename, byte count and SHA-256. Download and Verify hashes the complete downloaded DMG before saving it locally. It does not install, relaunch or stop app-resident panes.",
                         "The automatic check is deliberately credential-free. A private releases repository returns HTTP 404 and cannot be checked from the app; Open Releases uses your signed-in browser, while automatic checks require releases to be published from a public repository.",
                     ],
                     items: [
                         "Release notes are shown before any download.",
                         "An unnotarized beta stays visibly labelled; checksum verification is not code signing or notarization.",
-                        "Installation remains a separate human action. When the new app opens, the existing core handover gate defers replacement while tracked Ask or delegated work is active.",
+                        "Installation remains a separate human action. Finish tracked work and quit Parley before replacing the app, because full quit ends app-resident panes and coordination.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -875,7 +848,7 @@ public enum ParleyHelpGuide {
                         "The Beta Feedback tab opens a field-level review before it can write an owner-only local ZIP. Nothing is uploaded automatically. The archive contains feedback.json, diagnostics.json and a privacy README.",
                     ],
                     items: [
-                        "Included: build facts, selected update channel, semantic vendor versions, compatibility states, capability outcomes, live conformance check names/outcomes and structurally redacted diagnostics.",
+                        "Included: build facts, selected update channel, semantic vendor versions, compatibility states, capability outcomes and structurally redacted diagnostics.",
                         "Excluded by structure: prompts, delegated instructions, answers, result bodies, terminal contents, selections, titles, commands, folders, display names, credentials, tokens, sockets, raw journals, raw logs, browser profiles and subscription data.",
                         "Review the generated files again before attaching the ZIP to an issue or sending it to another person.",
                     ]
@@ -895,7 +868,6 @@ public enum ParleyHelpGuide {
                         "Command-K — open the command palette.",
                         "Control-Tab / Control-Shift-Tab — next / previous workspace.",
                         "Control-Option-Right / Control-Option-Left — next / previous pane.",
-                        "Command-Shift-Z — zoom or restore the active pane.",
                         "Command-? — open this detailed help window.",
                     ]
                 ),
@@ -934,7 +906,7 @@ public enum ParleyHelpGuide {
                     id: "troubleshooting-runtime",
                     title: "A pane or the core will not start",
                     items: [
-                        "Run Tools → Environment Check. It verifies tmux, the agent CLIs, Parley's local files and protocol readiness without spending quota.",
+                        "Run Tools → Environment Check. It verifies the embedded terminal, the agent CLIs, Parley's local files and protocol readiness without spending quota.",
                         "If a CLI works in Terminal but not Parley, its install directory may be absent from the GUI login PATH. Environment Check reports the resolved path.",
                         "After a shared protocol upgrade, restart existing agent panes once so they receive the current instructions.",
                         "If the coordination core is unavailable, use the recovery action shown by Parley instead of launching a second app instance.",
@@ -946,8 +918,8 @@ public enum ParleyHelpGuide {
                     items: [
                         "Press Command-Q to quit the app. Closing the last window with its red button leaves Parley running.",
                         "An owned Production or Development runtime always offers Keep Running, Stop Everything, or Cancel, even when every agent is stopped or dead.",
-                        "Keep Running detaches the UI while the isolated tmux session survives. Stop Everything ends every pane process and the isolated tmux session.",
-                        "If Parley cannot verify that the session stopped, it reports the failure and keeps the app open. Read-only Development attached to Production never offers a destructive stop.",
+                        "Closing the main window keeps panes running while Parley remains open. Quit or Stop Everything ends every pane process and the app-resident coordination core.",
+                        "If Parley cannot verify that every pane stopped, it reports the failure and keeps the app open instead of claiming shutdown succeeded.",
                     ]
                 ),
                 ParleyHelpSection(

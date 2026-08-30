@@ -38,7 +38,7 @@ public struct DiagnosticsCounts: Codable, Equatable, Sendable {
 }
 
 public struct DiagnosticsHealth: Codable, Equatable, Sendable {
-    public let tmuxAvailable: Bool
+    public let terminalAvailable: Bool
     public let coreAvailable: Bool
     public let condition: String
     public let counts: DiagnosticsCounts
@@ -58,7 +58,7 @@ public struct DiagnosticsPane: Codable, Equatable, Sendable {
     public let relayEnabled: Bool
     public let protocolVersion: String?
     public let protocolCurrent: Bool
-    public let bracketedPasteActive: Bool
+    public let inputAvailable: Bool
 }
 
 public struct DiagnosticsTransition: Codable, Equatable, Sendable {
@@ -117,10 +117,10 @@ public enum DiagnosticsReportBuilder {
         architecture: String,
         uiResidentBytes: UInt64?,
         coreResidentBytes: UInt64?,
-        tmuxAvailable: Bool,
+        terminalAvailable: Bool,
         coreAvailable: Bool,
         workspaceCount: Int,
-        panes: [TmuxPane],
+        panes: [WorkbenchPane],
         handoffs: [RelayHandoff],
         readiness: RuntimeReadinessSnapshot?,
         maximumFailures: Int = 50
@@ -144,7 +144,7 @@ public enum DiagnosticsReportBuilder {
                     relayEnabled: pane.relayEnabled,
                     protocolVersion: pane.protocolVersion,
                     protocolCurrent: pane.hasCurrentProtocol,
-                    bracketedPasteActive: pane.bracketedPasteActive
+                    inputAvailable: pane.inputAvailable
                 )
             }
             .sorted { $0.id < $1.id }
@@ -202,7 +202,7 @@ public enum DiagnosticsReportBuilder {
                 coreResidentBytes: coreResidentBytes
             ),
             health: DiagnosticsHealth(
-                tmuxAvailable: tmuxAvailable,
+                terminalAvailable: terminalAvailable,
                 coreAvailable: coreAvailable,
                 condition: status.condition.rawValue,
                 counts: DiagnosticsCounts(

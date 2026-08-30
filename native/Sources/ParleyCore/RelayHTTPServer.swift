@@ -14,7 +14,7 @@ public enum RelayServerError: LocalizedError {
     }
 }
 
-/// The native UI's narrow local Unix-socket door into the persistent core.
+/// The native UI's narrow local Unix-socket door into the app-resident core.
 /// Agent panes use `RelayFileTransport` because vendor sandboxes may deny every
 /// network syscall, including Unix-domain socket connections.
 public final class RelayHTTPServer: @unchecked Sendable {
@@ -24,29 +24,22 @@ public final class RelayHTTPServer: @unchecked Sendable {
     private let infoFile: URL
     private let socketFile: URL
     private let controlToken: String?
-    private let identity: CoreServiceIdentity
-    private let shutdownRequested: @Sendable (RelayCoreShutdownReason) -> Void
     private let queue = DispatchQueue(label: "parley.native.relay", qos: .utility)
     private let connections = DispatchGroup()
     private let lock = NSLock()
     private var source: DispatchSourceRead?
     private var listener: Int32 = -1
-    private var shutdownCallbackSent = false
 
     public init(
         broker: RelayBroker,
         infoFile: URL,
         socketFile: URL? = nil,
-        controlToken: String? = nil,
-        identity: CoreServiceIdentity = .current(),
-        shutdownRequested: @escaping @Sendable (RelayCoreShutdownReason) -> Void = { _ in }
+        controlToken: String? = nil
     ) {
         self.broker = broker
         self.infoFile = infoFile
         self.socketFile = socketFile ?? infoFile.deletingLastPathComponent().appendingPathComponent("relay.sock")
         self.controlToken = controlToken
-        self.identity = identity
-        self.shutdownRequested = shutdownRequested
     }
 
     deinit {
@@ -210,14 +203,6 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 write(RelayTextResponse(status: 200, text: "ok"), to: client)
                 return
             }
-            if request.method == "GET", request.path == "/identity" {
-                guard controlAuthorized(request) else {
-                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
-                    return
-                }
-                writeJSON(identity, fallback: "could not encode core identity", to: client)
-                return
-            }
             if request.method == "GET", request.path == "/consultations" {
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
@@ -326,32 +311,6 @@ public final class RelayHTTPServer: @unchecked Sendable {
             let idempotencyKey = request.headers["x-parley-idempotency-key"]
             let text = String(decoding: request.body, as: UTF8.self)
             switch request.path {
-            case "/ui/shutdown-if-idle":
-                guard controlAuthorized(request) else {
-                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
-                    return
-                }
-                let readiness = broker.prepareForUpgrade()
-                writeJSON(
-                    readiness,
-                    status: readiness.accepted ? 202 : 409,
-                    fallback: "could not encode upgrade readiness",
-                    to: client
-                )
-                if readiness.accepted { requestShutdownOnce(.upgrade) }
-            case "/ui/stop-if-idle":
-                guard controlAuthorized(request) else {
-                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
-                    return
-                }
-                let readiness = broker.prepareForUpgrade()
-                writeJSON(
-                    readiness,
-                    status: readiness.accepted ? 202 : 409,
-                    fallback: "could not encode uninstall readiness",
-                    to: client
-                )
-                if readiness.accepted { requestShutdownOnce(.uninstall) }
             case "/ui/activity":
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
@@ -456,7 +415,8 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     sourcePaneID: ask.sourcePaneID,
                     targetPaneID: ask.targetPaneID,
                     text: ask.text,
-                    idempotencyKey: ask.idempotencyKey
+                    idempotencyKey: ask.idempotencyKey,
+                    preserveFormatting: ask.preserveFormatting ?? false
                 ), to: client)
             case "/ui/ask-many":
                 guard controlAuthorized(request) else {
@@ -754,16 +714,6 @@ public final class RelayHTTPServer: @unchecked Sendable {
         }
         let head = "HTTP/1.1 \(status) \(reason(for: status))\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
         send(Data(head.utf8) + body, to: client)
-    }
-
-    private func requestShutdownOnce(_ reason: RelayCoreShutdownReason) {
-        let shouldRequest = lock.withLock { () -> Bool in
-            guard !shutdownCallbackSent else { return false }
-            shutdownCallbackSent = true
-            return true
-        }
-        guard shouldRequest else { return }
-        shutdownRequested(reason)
     }
 
     private func controlAuthorized(_ request: Request) -> Bool {

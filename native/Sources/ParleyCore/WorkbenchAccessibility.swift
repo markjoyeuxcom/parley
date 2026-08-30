@@ -35,10 +35,10 @@ public enum WorkbenchAccessibility {
         ].joined(separator: ", ")
     }
 
-    public static func agent(_ pane: TmuxPane) -> String {
+    public static func agent(_ pane: WorkbenchPane) -> String {
         let state: String = switch WorkbenchStateProjection.pane(pane) {
         case .empty: "No pane"
-        case .running: pane.bracketedPasteActive ? "Running, relay ready" : "Running, not at prompt"
+        case .running: pane.inputAvailable ? "Running, input available" : "Running, input unavailable"
         case .stopped: "Not started"
         case let .exited(status): status.map { "Exited with status \($0)" } ?? "Exited"
         case .protocolStale: "Protocol restart required"
@@ -51,7 +51,7 @@ public enum WorkbenchAccessibility {
             reportedVersion.map { "Protocol v\($0), restart required" }
                 ?? "Protocol unknown, restart required"
         }
-        let workspace = clean(pane.workspaceName ?? pane.windowID)
+        let workspace = clean(pane.workspaceName ?? pane.workspaceID)
         var parts = [
             "\(clean(pane.displayName)), \(pane.kind.label) agent",
             state,

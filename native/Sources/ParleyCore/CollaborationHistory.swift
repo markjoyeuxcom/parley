@@ -173,7 +173,7 @@ public struct RepeatAskRoute: Equatable, Sendable {
 public enum CollaborationHistoryRepeat {
     public static func route(
         for handoff: RelayHandoff,
-        panes: [TmuxPane]
+        panes: [WorkbenchPane]
     ) -> RepeatAskRoute? {
         guard handoff.kind == .ask,
               handoff.submitted,
@@ -187,11 +187,12 @@ public enum CollaborationHistoryRepeat {
               !source.isDead,
               source.relayEnabled,
               source.hasCurrentProtocol,
+              source.inputAvailable,
               target.isStarted,
               !target.isDead,
               target.relayEnabled,
               target.hasCurrentProtocol,
-              target.bracketedPasteActive else { return nil }
+              target.inputAvailable else { return nil }
         return RepeatAskRoute(sourcePaneID: source.id, targetPaneID: target.id)
     }
 }

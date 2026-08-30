@@ -5,17 +5,20 @@ public struct RelayUIAskRequest: Codable, Equatable, Sendable {
     public let targetPaneID: String
     public let text: String
     public let idempotencyKey: String
+    public let preserveFormatting: Bool?
 
     public init(
         sourcePaneID: String,
         targetPaneID: String,
         text: String,
-        idempotencyKey: String
+        idempotencyKey: String,
+        preserveFormatting: Bool = false
     ) {
         self.sourcePaneID = sourcePaneID
         self.targetPaneID = targetPaneID
         self.text = text
         self.idempotencyKey = idempotencyKey
+        self.preserveFormatting = preserveFormatting
     }
 }
 

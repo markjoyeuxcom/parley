@@ -94,8 +94,8 @@ public enum WorkspaceSafetyProjection {
     ]
 
     public static func summary(
-        workspace: TmuxWorkspace,
-        panes: [TmuxPane],
+        workspace: WorkbenchWorkspace,
+        panes: [WorkbenchPane],
         handoffs: [RelayHandoff],
         projectContextsByPaneID: [String: GitProjectContext],
         paneWorktreePaths: [String: String],
@@ -105,7 +105,7 @@ public enum WorkspaceSafetyProjection {
         let workspacePanes = panes
             .filter { $0.workspaceID == workspace.workspaceID }
             .sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
-        let workspaceAliases = Set(workspacePanes.flatMap { [$0.workspaceID, $0.windowID] })
+        let workspaceAliases = Set(workspacePanes.map(\.workspaceID))
             .union([workspace.id, workspace.workspaceID])
         let runningAgents = workspacePanes.compactMap { pane -> WorkspaceSafetyAgent? in
             guard pane.kind.isAgent, pane.isStarted, !pane.isDead else { return nil }

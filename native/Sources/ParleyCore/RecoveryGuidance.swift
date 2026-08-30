@@ -71,8 +71,8 @@ public enum RecoveryGuidanceProjection {
             title: "Coordination socket unavailable",
             symptom: "Terminals still work, but Ask, Return and tracked handoffs report that the local core cannot be reached.",
             steps: [
-                "Keep Parley open; the tmux panes and their processes are independent of the coordination socket.",
-                "Choose Reconnect once. Parley probes the authenticated discovery file, reuses a healthy core, or starts the bundled core when it is absent.",
+                "Keep Parley open; its retained Ghostty panes remain usable while coordination reconnects.",
+                "Choose Reconnect once. Parley rebuilds its app-resident authenticated coordination endpoints.",
                 "If Reconnect still fails, run Environment Check and export Diagnostics. Do not start a second Parley instance or delete socket files by hand.",
             ]
         ),
@@ -99,7 +99,7 @@ public enum RecoveryGuidanceProjection {
         RecoveryPlaybookEntry(
             topic: .deadPane,
             title: "Pane process exited",
-            symptom: "tmux retained the pane after its shell or agent process exited, including its numeric exit status and final output.",
+            symptom: "The embedded terminal retained the pane after its shell or agent process exited, including its final output.",
             steps: [
                 "Read the preserved terminal output before taking action.",
                 "Choose Restart to launch a new process in the same pane and folder, or close the pane if it is no longer needed.",
@@ -121,7 +121,7 @@ public enum RecoveryGuidanceProjection {
     public static func issues(
         coreAvailable: Bool,
         readiness: RuntimeReadinessSnapshot?,
-        panes: [TmuxPane],
+        panes: [WorkbenchPane],
         handoffs: [RelayHandoff],
         workspaceID: String?
     ) -> [RecoveryGuidanceIssue] {
@@ -156,9 +156,8 @@ public enum RecoveryGuidanceProjection {
         }
 
         let workspaceAliases: Set<String> = if let workspaceID {
-            Set(panes.lazy.filter {
-                $0.workspaceID == workspaceID || $0.windowID == workspaceID
-            }.flatMap { [$0.workspaceID, $0.windowID] }).union([workspaceID])
+            Set(panes.lazy.filter { $0.workspaceID == workspaceID }.map(\.workspaceID))
+                .union([workspaceID])
         } else {
             []
         }
@@ -190,7 +189,7 @@ public enum RecoveryGuidanceProjection {
                 id: "recovery:dead-pane:\(pane.id)",
                 topic: .deadPane,
                 title: "\(pane.displayName) exited\(status)",
-                detail: "tmux preserved its final output. Restarting begins a new \(pane.kind.label) process in the same pane and folder.",
+                detail: "Ghostty preserved its final output. Restarting begins a new \(pane.kind.label) process in the same pane and folder.",
                 actionLabel: "Restart…",
                 action: .restartPane(pane.id)
             ))
@@ -222,12 +221,12 @@ public enum RecoveryGuidanceProjection {
         return issues
     }
 
-    private static func isProtocolStale(_ pane: TmuxPane) -> Bool {
+    private static func isProtocolStale(_ pane: WorkbenchPane) -> Bool {
         if case .protocolStale = WorkbenchStateProjection.pane(pane) { return true }
         return false
     }
 
-    private static func isDead(_ pane: TmuxPane) -> Bool {
+    private static func isDead(_ pane: WorkbenchPane) -> Bool {
         if case .exited = WorkbenchStateProjection.pane(pane) { return true }
         return false
     }

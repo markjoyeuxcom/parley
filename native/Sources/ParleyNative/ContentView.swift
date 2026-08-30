@@ -6,55 +6,71 @@ struct ContentView: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
     @State private var sidebarVisible = true
+    @State private var sidebarQuery = ""
+    @State private var workspacesExpanded = true
+    @State private var participantsExpanded = true
+    @State private var favouritesExpanded = true
 
     var body: some View {
         HSplitView {
             if sidebarVisible {
                 sidebar
-                    .frame(minWidth: 170, idealWidth: 220, maxWidth: 290, maxHeight: .infinity)
+                    .frame(minWidth: 184, idealWidth: 218, maxWidth: 276, maxHeight: .infinity)
                     .background(EdgeToEdgeSidebarMaterial())
             }
             VStack(spacing: 0) {
-                workspaceTabs
-                if model.runtime.visibleMarker != nil {
+                if !sidebarVisible {
+                    workspaceTabs
                     Divider()
-                    RuntimeBanner(runtime: model.runtime)
                 }
-                Divider()
                 toolbar
-                if let collision = model.activeWorktreeWriterCollisions.first {
+                Divider()
+                if model.focusCanvasPaneID != nil {
+                    focusCanvasStrip
                     Divider()
+                }
+                if let collision = model.activeWorktreeWriterCollisions.first {
                     worktreeWriterNotice(collision, additional: model.activeWorktreeWriterCollisions.count - 1)
+                    Divider()
                 }
                 if model.connectionState == .coreDisconnected {
-                    Divider()
                     connectionNotice
-                }
-                if model.tmuxAvailable, model.activePaneState != .running, model.activePaneState != .empty {
                     Divider()
+                }
+                if model.terminalAvailable, model.activePaneState != .running, model.activePaneState != .empty {
                     paneNotice
+                    Divider()
                 }
                 if let recipe = model.activeRecipeRun {
-                    Divider()
                     recipeRunStrip(recipe)
+                    Divider()
                 }
                 if let workflow = model.activeSupervisedWorkflow {
-                    Divider()
                     supervisedWorkflowStrip(workflow)
+                    Divider()
                 }
                 if let activity = model.primaryActivity {
-                    Divider()
                     activityStrip(activity)
+                    Divider()
+                }
+                if model.handoffComposerDraft != nil {
+                    handoffComposer
+                    Divider()
                 }
                 if model.visiblePanes.count > 1, !sidebarVisible {
-                    Divider()
                     paneFocusStrip
+                    Divider()
                 }
-                Divider()
                 terminal
+                Divider()
+                workbenchStatusBar
+            }
+            if model.collaborationDockVisible {
+                collaborationDock
+                    .frame(minWidth: 220, idealWidth: 252, maxWidth: 310, maxHeight: .infinity)
             }
         }
-        .frame(minWidth: 720, minHeight: 680)
+        .frame(minWidth: model.collaborationDockVisible ? 980 : 760, minHeight: 620)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button {
@@ -99,6 +115,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.releaseLifecyclePresented) {
             ReleaseLifecycleView(model: model)
         }
+        .sheet(isPresented: $model.terminalFontSettingsPresented) {
+            TerminalFontSettingsView(model: model)
+        }
         .alert(
             "Parley needs attention",
             isPresented: Binding(
@@ -116,84 +135,93 @@ struct ContentView: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
-            List(model.visiblePanes) { pane in
-                HStack(spacing: 6) {
+            if model.workspaces.count + model.visiblePanes.count > 8 {
+                TextField("Filter workspaces and panes", text: $sidebarQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+                    .padding(.horizontal, 9)
+                    .padding(.top, 8)
+                    .accessibilityLabel("Filter sidebar")
+            }
+            List {
+                Section {
+                    if workspacesExpanded {
+                        ForEach(filteredWorkspaces) { workspace in
+                            workspaceSidebarRow(workspace)
+                        }
+                        .onMove { offsets, destination in
+                            guard sidebarQuery.isEmpty else { return }
+                            model.moveWorkspaces(fromOffsets: offsets, toOffset: destination)
+                        }
+                    }
+                } header: {
+                    HStack(spacing: 6) {
+                        Button {
+                            workspacesExpanded.toggle()
+                        } label: {
+                            Label("WORKSPACES", systemImage: workspacesExpanded ? "chevron.down" : "chevron.right")
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(workspacesExpanded ? "Collapse workspaces" : "Expand workspaces")
+                        Spacer()
+                        workspaceActionsMenu
+                    }
+                }
+
+                Section {
+                    if participantsExpanded {
+                        ForEach(filteredVisiblePanes) { pane in
+                            HStack(spacing: 6) {
+                                Button {
+                                    model.select(pane)
+                                } label: {
+                                    PaneRow(
+                                        pane: pane,
+                                        projectContext: model.projectContext(for: pane),
+                                        awaitingAnswerCount: model.awaitingAnswerCount(for: pane.id),
+                                        unreadResultCount: model.unreadResultCount(forPane: pane.id),
+                                        latestFailure: model.latestFailure(for: pane.id),
+                                        permissionProfileName: model.permissionProfileName(for: pane)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("\(pane.displayName), \(pane.kind.label) pane")
+                                .accessibilityValue(paneAccessibilityValue(pane))
+                                .accessibilityHint("Focus this pane")
+                                paneRecoveryButton(pane)
+                            }
+                            .listRowBackground(pane.isActive ? Color.accentColor.opacity(0.14) : Color.clear)
+                            .listRowInsets(EdgeInsets(top: 1, leading: 5, bottom: 1, trailing: 5))
+                            .contextMenu {
+                                paneContextMenu(pane)
+                            }
+                        }
+                    }
+                } header: {
                     Button {
-                        model.select(pane)
+                        participantsExpanded.toggle()
                     } label: {
-                        PaneRow(
-                            pane: pane,
-                            projectContext: model.projectContext(for: pane),
-                            awaitingAnswerCount: model.awaitingAnswerCount(for: pane.id),
-                            unreadResultCount: model.unreadResultCount(forPane: pane.id),
-                            latestFailure: model.latestFailure(for: pane.id),
-                            permissionProfileName: model.permissionProfileName(for: pane)
-                        )
+                        Label("PARTICIPANTS", systemImage: participantsExpanded ? "chevron.down" : "chevron.right")
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(pane.displayName), \(pane.kind.label) pane")
-                    .accessibilityValue(paneAccessibilityValue(pane))
-                    .accessibilityHint("Focus this pane")
-                    paneRecoveryButton(pane)
-                }
-                .listRowBackground(pane.isActive ? Color.accentColor.opacity(0.12) : Color.clear)
-                .contextMenu {
-                    Button("Rename…") { model.rename(pane) }
-                    if pane.kind.isAgent {
-                        if pane.isWorkspaceLead {
-                            Button("Remove as Workspace Lead") {
-                                if let workspace = model.workspaces.first(where: { $0.workspaceID == pane.workspaceID }) {
-                                    model.clearWorkspaceLead(workspace)
-                                }
-                            }
-                        } else {
-                            Button("Make Workspace Lead") { model.setWorkspaceLead(pane) }
-                        }
-                        Divider()
-                        Button(pane.role == nil ? "Set Routing Role…" : "Change Routing Role…") {
-                            model.setRole(pane)
-                        }
-                        if pane.role != nil {
-                            Button("Clear Routing Role") { model.clearRole(pane) }
-                        }
-                        Divider()
-                        Button("Browser & Tool Capability…") {
-                            model.showPaneToolCapabilitySummary(pane)
-                        }
-                    }
-                    if pane.kind.isAgent && !pane.isStarted {
-                        Button("Start") { model.start(pane) }
-                    } else {
-                        Button("Restart…") { model.restart(pane) }
-                    }
-                    let mobilityDestinations = model.mobilityDestinations(for: pane)
-                    if !mobilityDestinations.isEmpty {
-                        Divider()
-                        Menu("Move to Workspace") {
-                            ForEach(mobilityDestinations) { workspace in
-                                Button(workspace.name) { model.movePane(pane, to: workspace) }
-                            }
-                        }
-                        Menu("Clone Configuration to Workspace") {
-                            ForEach(mobilityDestinations) { workspace in
-                                Button(workspace.name) {
-                                    model.clonePaneConfiguration(pane, to: workspace)
-                                }
-                            }
-                        }
-                    }
-                    Divider()
-                    Button("Close Pane…", role: .destructive) { model.close(pane) }
+                    .accessibilityLabel(participantsExpanded ? "Collapse participants" : "Expand participants")
                 }
             }
+            .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
             Divider()
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
-                    Text("FAVOURITE FOLDERS")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .accessibilityAddTraits(.isHeader)
+                    Button {
+                        favouritesExpanded.toggle()
+                    } label: {
+                        Label("FAVOURITE FOLDERS", systemImage: favouritesExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(favouritesExpanded ? "Collapse favourite folders" : "Expand favourite folders")
                     Spacer()
                     Button(action: model.addFavouriteFolder) {
                         Image(systemName: "plus")
@@ -206,11 +234,7 @@ struct ContentView: View {
                     .accessibilityLabel("Add favourite folder")
                     .accessibilityHint("Choose a folder to bookmark for opening as a workspace")
                 }
-                if model.favouriteFolders.isEmpty {
-                    Text("Add folders for quick workspace access")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                } else {
+                if favouritesExpanded, !model.favouriteFolders.isEmpty {
                     ScrollView(.vertical, showsIndicators: model.favouriteFolders.count > 5) {
                         LazyVStack(alignment: .leading, spacing: 2) {
                             ForEach(model.favouriteFolders, id: \.self) { folder in
@@ -231,6 +255,9 @@ struct ContentView: View {
                     .accessibilityAddTraits(.isHeader)
                 Menu {
                     Button("Choose New Pane Folder…", action: model.chooseFolder)
+                    if model.activeWorkspace?.newPaneFolder != nil {
+                        Button("Clear New Pane Folder", action: model.clearWorkspaceNewPaneFolder)
+                    }
                     Button(model.isFavouriteFolder(model.defaultFolder) ? "Remove This Folder from Favourites" : "Add This Folder to Favourites") {
                         model.toggleFavouriteFolder(model.defaultFolder)
                     }
@@ -264,17 +291,274 @@ struct ContentView: View {
                         }
                     }
                 } label: {
-                    Label(WorkspaceFolderIdentity.displayName(for: model.defaultFolder), systemImage: "folder")
+                    Label(
+                        model.activeWorkspace?.newPaneFolder.map(WorkspaceFolderIdentity.displayName(for:))
+                            ?? "Follows Active Pane",
+                        systemImage: model.activeWorkspace?.newPaneFolder == nil ? "arrow.turn.down.right" : "folder"
+                    )
                         .lineLimit(1)
                 }
                 .menuStyle(.borderlessButton)
                 .accessibilityLabel("New pane folder")
-                .accessibilityValue(model.defaultFolder)
+                .accessibilityValue(model.activeWorkspace?.newPaneFolder ?? "Follows active pane")
                 .accessibilityHint("Choose where newly opened toolbar panes start")
-                .help("New panes in this workspace open in \(model.defaultFolder). Running panes keep their own folders.")
+                .help(model.activeWorkspace?.newPaneFolder.map {
+                    "New panes in this workspace open in \($0). Running panes keep their own folders."
+                } ?? "No fixed New Pane Folder. Shell panes follow the active pane; creating an agent asks for its working folder.")
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
         }
+    }
+
+    private var filteredWorkspaces: [WorkbenchWorkspace] {
+        let query = sidebarQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return model.workspaces }
+        return model.workspaces.filter {
+            $0.name.localizedCaseInsensitiveContains(query)
+                || $0.attachedFolders.contains { $0.localizedCaseInsensitiveContains(query) }
+        }
+    }
+
+    private var filteredVisiblePanes: [WorkbenchPane] {
+        let query = sidebarQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return model.layoutOrderedVisiblePanes }
+        return model.layoutOrderedVisiblePanes.filter {
+            $0.displayName.localizedCaseInsensitiveContains(query)
+                || $0.kind.label.localizedCaseInsensitiveContains(query)
+                || $0.cwd.localizedCaseInsensitiveContains(query)
+                || ($0.role?.localizedCaseInsensitiveContains(query) ?? false)
+        }
+    }
+
+    private func workspaceSidebarRow(_ workspace: WorkbenchWorkspace) -> some View {
+        let paneCount = model.panes.count { $0.workspaceID == workspace.workspaceID }
+        let waiting = model.waitingCount(for: workspace.id)
+        let failures = model.failureCount(for: workspace.id)
+        let unread = model.unreadResultCount(forWorkspace: workspace.id)
+
+        return Button {
+            model.select(workspace)
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: workspace.isFolderless
+                    ? "square.stack.3d.up"
+                    : (workspace.isActive ? "folder.fill" : "folder"))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(workspace.isActive ? Color.accentColor : Color.secondary)
+                    .frame(width: 15)
+                Text(workspace.name)
+                    .font(.system(size: 11, weight: workspace.isActive ? .semibold : .regular))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if failures > 0 {
+                    Image(systemName: model.requiresHumanAttention(workspace.id) ? "exclamationmark.triangle.fill" : "xmark.octagon.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(model.requiresHumanAttention(workspace.id) ? Color.orange : Color.red)
+                } else if unread > 0 {
+                    Image(systemName: "envelope.badge.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                } else if waiting > 0 {
+                    Image(systemName: "clock")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+                Text("\(paneCount)")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 7)
+            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(workspace.isActive ? Color.accentColor.opacity(0.14) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 1, leading: 5, bottom: 1, trailing: 5))
+        .listRowBackground(Color.clear)
+        .help(workspaceTabHelp(workspace))
+        .accessibilityLabel("Workspace \(workspace.name)")
+        .accessibilityValue(workspaceTabAccessibilityValue(workspace))
+        .accessibilityHint(workspace.isFolderless
+            ? "Open folderless workspace"
+            : "Open workspace with \(workspace.attachedFolders.count) attached folder\(workspace.attachedFolders.count == 1 ? "" : "s")")
+        .contextMenu {
+            workspaceContextMenu(workspace)
+        }
+    }
+
+    private var workspaceActionsMenu: some View {
+        Menu {
+            workspaceCreationMenuItems
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 9, weight: .semibold))
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityLabel("Create workspace")
+        .help("Create workspace")
+        .accessibilityHint("Create a folderless workspace or create one from a saved layout or team template")
+    }
+
+    @ViewBuilder
+    private var workspaceCreationMenuItems: some View {
+        Button("New Workspace", action: model.createWorkspace)
+        if !model.savedLayouts.isEmpty {
+            Menu("From Saved Layout") {
+                ForEach(model.savedLayouts) { layout in
+                    Button(layout.name) { model.createWorkspace(from: layout) }
+                }
+            }
+        }
+        if !model.teamTemplates.isEmpty {
+            Menu("From Team Template") {
+                ForEach(model.teamTemplates) { template in
+                    Button(template.name) { model.apply(template) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func workspaceContextMenu(_ workspace: WorkbenchWorkspace) -> some View {
+        Button("Rename…") { model.rename(workspace) }
+        Button("Save Layout…") { model.saveLayout(of: workspace) }
+        Button("Save as Team Template…") { model.saveActiveWorkspaceAsTeamTemplate() }
+            .disabled(!workspace.isActive)
+        if !model.savedLayouts.isEmpty {
+            Menu("Saved Layouts") {
+                ForEach(model.savedLayouts) { layout in
+                    Menu(layout.name) {
+                        Button("Create New Workspace") { model.createWorkspace(from: layout) }
+                        Button("Replace This Workspace…") {
+                            model.open(layout, replacing: workspace)
+                        }
+                        Divider()
+                        Button("Delete Saved Layout…", role: .destructive) { model.delete(layout) }
+                    }
+                }
+            }
+        }
+        if !model.teamTemplates.isEmpty {
+            Menu("Team Templates") {
+                ForEach(model.teamTemplates) { template in
+                    Menu(template.name) {
+                        Button("Create Workspace…") { model.apply(template) }
+                        Divider()
+                        Button("Delete Team Template…", role: .destructive) { model.delete(template) }
+                    }
+                }
+            }
+        }
+        Menu("Automation: \(workspace.automationPolicy.label)") {
+            ForEach(WorkspaceAutomationPolicy.allCases, id: \.rawValue) { policy in
+                Button {
+                    model.setAutomationPolicy(policy, for: workspace)
+                } label: {
+                    Label(policy.label, systemImage: policy == workspace.automationPolicy ? "checkmark" : "")
+                }
+            }
+        }
+        if model.panes.contains(where: { $0.workspaceID == workspace.workspaceID && $0.isWorkspaceLead }) {
+            Button("Clear Workspace Lead") { model.clearWorkspaceLead(workspace) }
+        }
+        Button("Attach Folder…") { model.attachFolder(to: workspace) }
+        if !workspace.attachedFolders.isEmpty {
+            Menu("Attached Folders") {
+                ForEach(Array(workspace.attachedFolders.enumerated()), id: \.element) { index, folder in
+                    Menu(WorkspaceFolderIdentity.displayName(for: folder)) {
+                        Button("Use for New Panes") { model.setWorkspaceFolder(folder) }
+                        Button(model.isFavouriteFolder(folder) ? "Remove from Favourites" : "Add to Favourites") {
+                            model.toggleFavouriteFolder(folder)
+                        }
+                        Button("Open New Workspace Here") {
+                            model.createNewWorkspace(folder: folder)
+                        }
+                        Divider()
+                        Button("Move Earlier") {
+                            model.moveAttachedFolder(folder, in: workspace, by: -1)
+                        }
+                        .disabled(index == 0)
+                        Button("Move Later") {
+                            model.moveAttachedFolder(folder, in: workspace, by: 1)
+                        }
+                        .disabled(index == workspace.attachedFolders.count - 1)
+                        Divider()
+                        Button("Detach from Workspace", role: .destructive) {
+                            model.detachFolder(folder, from: workspace)
+                        }
+                    }
+                }
+            }
+        }
+        Divider()
+        Button("Move Workspace Up") { model.move(workspace, by: -1) }
+            .disabled(!model.canMove(workspace, by: -1))
+        Button("Move Workspace Down") { model.move(workspace, by: 1) }
+            .disabled(!model.canMove(workspace, by: 1))
+        Divider()
+        Button("Close Workspace…", role: .destructive) { model.close(workspace) }
+            .disabled(model.workspaces.count == 1)
+    }
+
+    @ViewBuilder
+    private func paneContextMenu(_ pane: WorkbenchPane) -> some View {
+        Button("Rename…") { model.rename(pane) }
+        if pane.kind.isAgent {
+            if pane.isWorkspaceLead {
+                Button("Remove as Workspace Lead") {
+                    if let workspace = model.workspaces.first(where: { $0.workspaceID == pane.workspaceID }) {
+                        model.clearWorkspaceLead(workspace)
+                    }
+                }
+            } else {
+                Button("Make Workspace Lead") { model.setWorkspaceLead(pane) }
+            }
+            Divider()
+            Button(pane.role == nil ? "Set Routing Role…" : "Change Routing Role…") {
+                model.setRole(pane)
+            }
+            if pane.role != nil {
+                Button("Clear Routing Role") { model.clearRole(pane) }
+            }
+            Divider()
+            Button("Browser & Tool Capability…") {
+                model.showPaneToolCapabilitySummary(pane)
+            }
+        }
+        if pane.kind.isAgent && !pane.isStarted {
+            Button("Start") { model.start(pane) }
+        } else {
+            Button("Restart…") { model.restart(pane) }
+        }
+        let mobilityDestinations = model.mobilityDestinations(for: pane)
+        if !mobilityDestinations.isEmpty {
+            Divider()
+            Menu("Move to Workspace") {
+                ForEach(mobilityDestinations) { workspace in
+                    Button(workspace.name) { model.movePane(pane, to: workspace) }
+                }
+            }
+            Menu("Clone Configuration to Workspace") {
+                ForEach(mobilityDestinations) { workspace in
+                    Button(workspace.name) {
+                        model.clonePaneConfiguration(pane, to: workspace)
+                    }
+                }
+            }
+        }
+        Divider()
+        Button("Terminal Font…") { model.showTerminalFontSettings() }
+        Divider()
+        Button("Close Pane…", role: .destructive) { model.close(pane) }
     }
 
     private func favouriteFolderRow(_ folder: String) -> some View {
@@ -346,23 +630,21 @@ struct ContentView: View {
         }
     }
 
-    private func workspaceTabHelp(_ workspace: TmuxWorkspace) -> String {
-        let folders = WorkspaceFolderIdentity.matches(workspace.homeFolder, workspace.defaultFolder)
-            ? ["Home and new panes: \(workspace.homeFolder)"]
-            : [
-                "Home: \(workspace.homeFolder)",
-                "New panes: \(workspace.defaultFolder)",
-            ]
+    private func workspaceTabHelp(_ workspace: WorkbenchWorkspace) -> String {
+        var folders = workspace.attachedFolders.isEmpty
+            ? ["No folders attached"]
+            : ["Attached: \(workspace.attachedFolders.joined(separator: ", "))"]
+        folders.append(workspace.newPaneFolder.map { "New panes: \($0)" } ?? "New panes: follows active pane")
         return (folders + workspaceTabStatusDetails(workspace) + ["Control-Tab switches workspaces"])
             .joined(separator: "\n")
     }
 
-    private func workspaceTabAccessibilityValue(_ workspace: TmuxWorkspace) -> String {
+    private func workspaceTabAccessibilityValue(_ workspace: WorkbenchWorkspace) -> String {
         ([workspace.isActive ? "Selected" : "Not selected"] + workspaceTabStatusDetails(workspace))
             .joined(separator: ", ")
     }
 
-    private func workspaceTabStatusDetails(_ workspace: TmuxWorkspace) -> [String] {
+    private func workspaceTabStatusDetails(_ workspace: WorkbenchWorkspace) -> [String] {
         var details = ["Automation \(workspace.automationPolicy.label)"]
         let waiting = model.waitingCount(for: workspace.id)
         if waiting > 0 { details.append("\(waiting) waiting") }
@@ -382,11 +664,8 @@ struct ContentView: View {
         return details
     }
 
-    private func paneAccessibilityValue(_ pane: TmuxPane) -> String {
+    private func paneAccessibilityValue(_ pane: WorkbenchPane) -> String {
         let folder = WorkspaceFolderIdentity.displayName(for: pane.cwd)
-        if pane.isInCopyMode {
-            return "copy mode, \(folder)"
-        }
         let state: String = switch WorkbenchStateProjection.pane(pane) {
         case .empty: "empty"
         case .running: pane.isActive ? "selected" : "running"
@@ -401,7 +680,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func paneRecoveryButton(_ pane: TmuxPane) -> some View {
+    private func paneRecoveryButton(_ pane: WorkbenchPane) -> some View {
         switch WorkbenchStateProjection.pane(pane) {
         case .stopped:
             Button("Start") { model.start(pane) }
@@ -484,94 +763,18 @@ struct ContentView: View {
                         .help(workspaceTabHelp(workspace))
                         .accessibilityLabel("Workspace \(workspace.name)")
                         .accessibilityValue(workspaceTabAccessibilityValue(workspace))
-                        .accessibilityHint("Open workspace with home folder \(workspace.homeFolder)")
+                        .accessibilityHint(workspace.isFolderless
+                            ? "Open folderless workspace"
+                            : "Open workspace with \(workspace.attachedFolders.count) attached folder\(workspace.attachedFolders.count == 1 ? "" : "s")")
                         .contextMenu {
-                            Button("Rename…") { model.rename(workspace) }
-                            Button("Save Layout…") { model.saveLayout(of: workspace) }
-                            Menu("Automation: \(workspace.automationPolicy.label)") {
-                                ForEach(WorkspaceAutomationPolicy.allCases, id: \.rawValue) { policy in
-                                    Button {
-                                        model.setAutomationPolicy(policy, for: workspace)
-                                    } label: {
-                                        Label(policy.label, systemImage: policy == workspace.automationPolicy ? "checkmark" : "")
-                                    }
-                                }
-                            }
-                            if model.panes.contains(where: { $0.workspaceID == workspace.workspaceID && $0.isWorkspaceLead }) {
-                                Button("Clear Workspace Lead") { model.clearWorkspaceLead(workspace) }
-                            }
-                            Button(model.isFavouriteFolder(workspace.homeFolder) ? "Remove Home from Favourites" : "Add Home to Favourites") {
-                                model.toggleFavouriteFolder(workspace.homeFolder)
-                            }
-                            Button("Open New Workspace Here") {
-                                model.createNewWorkspace(folder: workspace.homeFolder)
-                            }
-                            Divider()
-                            Button("Move Tab Left") { model.move(workspace, by: -1) }
-                                .disabled(!model.canMove(workspace, by: -1))
-                            Button("Move Tab Right") { model.move(workspace, by: 1) }
-                                .disabled(!model.canMove(workspace, by: 1))
-                            Divider()
-                            Button("Close Workspace…", role: .destructive) { model.close(workspace) }
-                                .disabled(model.workspaces.count == 1)
+                            workspaceContextMenu(workspace)
                         }
                     }
                 }
             }
 
             Menu {
-                Button("Open or Focus Folder…", action: model.createWorkspace)
-                Button("Open New Workspace…", action: model.createAdditionalWorkspace)
-                Button("Open Existing Worktree as Workspace…", action: model.showWorktreeBrowser)
-                Button("Save Current Layout…", action: model.saveActiveWorkspaceLayout)
-                Button("Save Current as Team Template…", action: model.saveActiveWorkspaceAsTeamTemplate)
-                if !model.favouriteFolders.isEmpty {
-                    Divider()
-                    Section("Favourite Folders") {
-                        ForEach(model.favouriteFolders, id: \.self) { folder in
-                            Button(WorkspaceFolderIdentity.displayName(for: folder)) {
-                                model.createWorkspace(folder: folder)
-                            }
-                            .help(folder)
-                        }
-                    }
-                }
-                let nonFavouriteRecents = model.recentFolders.filter { !model.isFavouriteFolder($0) }
-                if !nonFavouriteRecents.isEmpty {
-                    Divider()
-                    Section("Recent Folders") {
-                        ForEach(nonFavouriteRecents, id: \.self) { folder in
-                            Button(WorkspaceFolderIdentity.displayName(for: folder)) {
-                                model.createWorkspace(folder: folder)
-                            }
-                            .help(folder)
-                        }
-                    }
-                }
-                if !model.savedLayouts.isEmpty {
-                    Divider()
-                    Section("Saved Layouts") {
-                        ForEach(model.savedLayouts) { layout in
-                            Menu(layout.name) {
-                                Button("Open Over Current Workspace…") { model.open(layout) }
-                                Divider()
-                                Button("Delete Saved Layout…", role: .destructive) { model.delete(layout) }
-                            }
-                        }
-                    }
-                }
-                if !model.teamTemplates.isEmpty {
-                    Divider()
-                    Section("Team Templates") {
-                        ForEach(model.teamTemplates) { template in
-                            Menu(template.name) {
-                                Button("Apply to Folder…") { model.apply(template) }
-                                Divider()
-                                Button("Delete Team Template…", role: .destructive) { model.delete(template) }
-                            }
-                        }
-                    }
-                }
+                workspaceCreationMenuItems
             } label: {
                 Image(systemName: "plus")
                     .frame(width: 24, height: 24)
@@ -579,9 +782,9 @@ struct ContentView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .accessibilityLabel("Open workspace")
-            .help("Open workspace")
-            .accessibilityHint("Choose a folder, existing Git worktree, favourite, recent folder, or saved layout")
+            .accessibilityLabel("Create or open workspace")
+            .help("Create or open workspace")
+            .accessibilityHint("Create a folderless workspace or open a folder, worktree, favourite, recent folder, or saved layout")
         }
         .padding(.horizontal, 10)
         .frame(height: 36)
@@ -594,18 +797,16 @@ struct ContentView: View {
         }
         .buttonStyle(.borderless)
         .controlSize(.small)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
         .frame(height: 42)
+        .background(Color(nsColor: .controlBackgroundColor))
     }
 
     private var wideToolbar: some View {
-        HStack(spacing: 8) {
-            paneMenu(kind: .claude)
-            paneMenu(kind: .codex)
-            paneMenu(kind: .agy)
-            paneMenu(kind: .copilot)
-            paneMenu(kind: .shell)
+        HStack(spacing: 7) {
+            workspaceIdentity(maxWidth: 210)
             Divider().frame(height: 18)
+            newPaneMenu
             askMenu
             reviewMenu
             contextPackMenu
@@ -618,23 +819,19 @@ struct ContentView: View {
             }
 
             Spacer()
-            activePaneContext(maxWidth: 240)
-            Button(action: model.toggleCopyMode) {
-                Image(systemName: model.activePane?.isInCopyMode == true ? "xmark.square" : "doc.on.doc")
+            Button(action: { model.toggleFocusCanvas() }) {
+                Label(
+                    model.focusCanvasPaneID == nil ? "Focus" : "Grid",
+                    systemImage: model.focusCanvasPaneID == nil ? "rectangle.inset.filled" : "rectangle.grid.2x2"
+                )
             }
             .disabled(model.activePane == nil)
-            .accessibilityLabel(model.activePane?.isInCopyMode == true ? "Exit copy mode" : "Enter copy mode")
-            .help(model.activePane?.isInCopyMode == true ? "Exit pane history copy mode" : "Select and copy from pane history")
-            .accessibilityHint("Use tmux-owned scrollback; drag to select and release to copy to the macOS clipboard")
-            Button(action: model.zoom) { Image(systemName: "arrow.up.left.and.arrow.down.right") }
-                .accessibilityLabel("Zoom active pane")
-                .help("Zoom active pane")
-                .accessibilityHint("Toggle between the active pane and the full pane grid")
+            .accessibilityLabel(model.focusCanvasPaneID == nil ? "Enter Focus Canvas" : "Return to pane grid")
+            .help(model.focusCanvasPaneID == nil ? "Enlarge the selected pane while keeping peers visible" : "Restore persisted pane proportions")
             Button(action: model.balance) { Image(systemName: "rectangle.grid.2x2") }
                 .accessibilityLabel("Balance panes")
                 .help("Balance panes")
                 .accessibilityHint("Make panes in the active workspace equal size")
-            Divider().frame(height: 18)
             Button {
                 openWindow(id: "status-center")
             } label: {
@@ -643,16 +840,27 @@ struct ContentView: View {
             .accessibilityLabel("Open Status Center")
             .help("Open Status Center")
             .accessibilityHint("Inspect collaboration state, returned results, agents, and activity")
+            Button(action: model.toggleCollaborationDock) {
+                Image(systemName: "sidebar.trailing")
+            }
+            .accessibilityLabel(model.collaborationDockVisible ? "Hide Collaboration Dock" : "Show Collaboration Dock")
+            .help(model.collaborationDockVisible ? "Hide Collaboration Dock" : "Show Collaboration Dock")
         }
     }
 
     private var compactToolbar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 7) {
+            workspaceIdentity(maxWidth: 140)
+            Divider().frame(height: 18)
             newPaneMenu
             askMenu
             compactActionsMenu
             Spacer(minLength: 6)
-            activePaneContext(maxWidth: 130)
+            Button(action: { model.toggleFocusCanvas() }) {
+                Image(systemName: model.focusCanvasPaneID == nil ? "rectangle.inset.filled" : "rectangle.grid.2x2")
+            }
+            .disabled(model.activePane == nil)
+            .accessibilityLabel(model.focusCanvasPaneID == nil ? "Enter Focus Canvas" : "Return to pane grid")
             Button {
                 openWindow(id: "status-center")
             } label: {
@@ -661,6 +869,10 @@ struct ContentView: View {
             .accessibilityLabel("Open Status Center")
             .help("Open Status Center")
             .accessibilityHint("Inspect collaboration state, returned results, agents, and activity")
+            Button(action: model.toggleCollaborationDock) {
+                Image(systemName: "sidebar.trailing")
+            }
+            .accessibilityLabel(model.collaborationDockVisible ? "Hide Collaboration Dock" : "Show Collaboration Dock")
         }
     }
 
@@ -672,7 +884,7 @@ struct ContentView: View {
                 }
             }
         } label: {
-            Label("New", systemImage: "plus")
+            Label("Pane", systemImage: "plus")
         }
         .accessibilityLabel("New pane")
         .help("Open a new agent or shell pane")
@@ -858,10 +1070,6 @@ struct ContentView: View {
                     model.returnConsultation(consultation)
                 }
             }
-            if let legacyTarget = model.legacyReturnTarget {
-                if !model.activePaneConsultations.isEmpty { Divider() }
-                Button("Return to \(legacyTarget.displayName)") { model.returnAnswer() }
-            }
         } label: {
             Label("Return", systemImage: "arrow.turn.down.left")
         }
@@ -881,15 +1089,12 @@ struct ContentView: View {
                 waitingMenu
             }
             Divider()
-            Button(model.activePane?.isInCopyMode == true ? "Exit Copy Mode" : "Enter Copy Mode", action: model.toggleCopyMode)
-                .disabled(model.activePane == nil)
-            Button("Zoom Active Pane", action: model.zoom)
             Button("Balance Panes", action: model.balance)
         } label: {
             Label("Actions", systemImage: "ellipsis.circle")
         }
         .accessibilityLabel("Pane actions")
-        .accessibilityHint("Review, return, inspect waiting work, copy pane history, zoom, or balance panes")
+        .accessibilityHint("Review, return, inspect waiting work, or balance panes")
     }
 
     private var hasWaitingWork: Bool {
@@ -939,17 +1144,72 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func activePaneContext(maxWidth: CGFloat) -> some View {
-        if let active = model.activePane {
-            Text("\(active.displayName) · \(WorkspaceFolderIdentity.displayName(for: active.cwd))")
-                .font(.system(size: 11, design: .monospaced))
+    private func workspaceIdentity(maxWidth: CGFloat) -> some View {
+        if let workspace = model.activeWorkspace {
+            HStack(spacing: 6) {
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text(workspace.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let marker = model.runtime.visibleMarker {
+                    Text(marker)
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.orange)
+                }
+            }
+            .frame(maxWidth: maxWidth, alignment: .leading)
+            .help(workspaceTabHelp(workspace))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Workspace \(workspace.name)\(model.runtime.visibleMarker.map { ", \($0) runtime" } ?? "")")
+        }
+    }
+
+    private var workbenchStatusBar: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(connectionStatusColor)
+                .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
+            Text(WorkbenchChromeProjection.connectionLabel(model.connectionState))
+                .foregroundStyle(connectionStatusColor)
+            Text("Protocol \(AgentProtocol.version)")
+            Text("\(model.visiblePanes.count) pane\(model.visiblePanes.count == 1 ? "" : "s")")
+            if let pane = model.activePane {
+                Rectangle()
+                    .fill(paneFocusColor(pane.kind))
+                    .frame(width: 3, height: 13)
+                    .accessibilityHidden(true)
+                Text(pane.displayName)
+                    .foregroundStyle(.primary)
+                if let role = pane.role {
+                    Text("@\(role)")
+                        .foregroundStyle(Color.accentColor)
+                }
+                Text("selected")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 6)
+            Button("⌘K Actions", action: model.showCommandPalette)
+                .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: maxWidth)
-                .accessibilityLabel("Active pane")
-                .accessibilityValue("\(active.displayName), \(active.cwd)")
-                .help("\(active.displayName) · \(active.cwd)")
+                .help("Open the Command Palette")
+                .accessibilityLabel("Open Command Palette")
+        }
+        .font(.system(size: 9, weight: .medium, design: .monospaced).monospacedDigit())
+        .padding(.horizontal, 9)
+        .frame(height: 25)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var connectionStatusColor: Color {
+        switch model.connectionState {
+        case .connected: .green
+        case .coreDisconnected: .orange
+        case .terminalDisconnected: .red
         }
     }
 
@@ -1012,6 +1272,20 @@ struct ContentView: View {
         .accessibilityElement(children: .contain)
     }
 
+    private var focusCanvasStrip: some View {
+        FocusCanvasStrip(model: model)
+    }
+
+    private var handoffComposer: some View {
+        HandoffComposerView(model: model)
+    }
+
+    private var collaborationDock: some View {
+        CollaborationDockView(model: model) {
+            openWindow(id: "status-center")
+        }
+    }
+
     private func activityStrip(_ handoff: RelayHandoff) -> some View {
         ViewThatFits(in: .horizontal) {
             wideActivityStrip(handoff)
@@ -1021,7 +1295,13 @@ struct ContentView: View {
         .controlSize(.small)
         .padding(.horizontal, 12)
         .frame(height: 31)
-        .background(Color.secondary.opacity(0.045))
+        .background(activityColor(handoff).opacity(0.065))
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(activityColor(handoff))
+                .frame(width: 3)
+                .accessibilityHidden(true)
+        }
     }
 
     private func wideActivityStrip(_ handoff: RelayHandoff) -> some View {
@@ -1332,32 +1612,25 @@ struct ContentView: View {
         .background(color.opacity(0.07))
     }
 
-    private func exitedTitle(pane: TmuxPane, status: Int?) -> String {
+    private func exitedTitle(pane: WorkbenchPane, status: Int?) -> String {
         guard let status else { return "\(pane.displayName) exited" }
         return "\(pane.displayName) exited with status \(status)"
     }
 
     private var paneFocusStrip: some View {
         HStack(spacing: 8) {
-            Text(model.activeWorkspace?.isZoomed == true ? "ZOOMED PANE" : "PANES")
+            Text("PANES")
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
-                    ForEach(model.visiblePanes) { pane in
+                    ForEach(model.layoutOrderedVisiblePanes) { pane in
                         paneFocusButton(pane)
                     }
                 }
                 .padding(.vertical, 3)
-            }
-
-            if model.activeWorkspace?.isZoomed == true {
-                Button("Show Grid", action: model.zoom)
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .help("Return to the full pane grid")
             }
         }
         .padding(.horizontal, 12)
@@ -1366,7 +1639,7 @@ struct ContentView: View {
         .accessibilityElement(children: .contain)
     }
 
-    private func paneFocusButton(_ pane: TmuxPane) -> some View {
+    private func paneFocusButton(_ pane: WorkbenchPane) -> some View {
         Button {
             model.select(pane)
         } label: {
@@ -1404,20 +1677,15 @@ struct ContentView: View {
         .help(paneFocusHelp(pane))
         .accessibilityLabel("Focus \(pane.displayName), \(pane.kind.label) pane")
         .accessibilityValue(paneAccessibilityValue(pane))
-        .accessibilityHint(
-            model.activeWorkspace?.isZoomed == true
-                ? "Show this pane while keeping the workspace zoomed"
-                : "Focus this pane in the visible grid"
-        )
+        .accessibilityHint("Focus this pane in the native workspace layout")
     }
 
-    private func paneFocusState(_ pane: TmuxPane) -> (label: String, color: Color)? {
-        if pane.isInCopyMode { return ("COPY", .accentColor) }
+    private func paneFocusState(_ pane: WorkbenchPane) -> (label: String, color: Color)? {
         if let failure = model.latestFailure(for: pane.id) {
             return failure.attention == nil ? ("FAILED", .red) : ("ATTENTION", .orange)
         }
         let awaiting = model.awaitingAnswerCount(for: pane.id)
-        if pane.returnToPaneID != nil || awaiting > 0 {
+        if awaiting > 0 {
             return (awaiting > 1 ? "RETURN \(awaiting)" : "RETURN", .accentColor)
         }
         let unread = model.unreadResultCount(forPane: pane.id)
@@ -1441,23 +1709,21 @@ struct ContentView: View {
         }
     }
 
-    private func paneFocusHelp(_ pane: TmuxPane) -> String {
-        let action = model.activeWorkspace?.isZoomed == true
-            ? "Focus while keeping the workspace zoomed"
-            : "Focus in the visible pane grid"
-        let state = pane.isInCopyMode
-            ? "Copy mode: drag to select, scroll through history, and release to copy"
-            : "Enter Copy Mode when a mouse-aware CLI captures normal dragging"
-        return [action, pane.cwd, state].joined(separator: "\n")
+    private func paneFocusHelp(_ pane: WorkbenchPane) -> String {
+        [
+            "Focus in the native pane layout",
+            pane.cwd,
+            "Drag to select and release to copy; scroll normally inside the vendor terminal",
+        ].joined(separator: "\n")
     }
 
     @ViewBuilder
     private var terminal: some View {
-        if model.connectionState == .tmuxDisconnected {
+        if model.connectionState == .terminalDisconnected {
             ContentUnavailableView {
-                Label("Terminal server disconnected", systemImage: "terminal.fill")
+                Label("Terminal workbench unavailable", systemImage: "terminal.fill")
             } description: {
-                Text(model.tmuxError ?? "Parley cannot reach its isolated tmux server.")
+                Text(model.terminalError ?? "Parley cannot initialise its embedded Ghostty workbench.")
             } actions: {
                 Button("Reconnect", action: model.retryConnections)
                     .disabled(!model.canRetryConnections)
@@ -1466,70 +1732,166 @@ struct ContentView: View {
             ContentUnavailableView {
                 Label("No pane in this workspace", systemImage: "rectangle.split.2x1")
             } description: {
-                Text("Open another workspace or restore a saved layout to continue.")
+                Text("Create another workspace or restore a saved layout to continue.")
             } actions: {
-                Button("Open Workspace…", action: model.createWorkspace)
+                Button("New Workspace", action: model.createWorkspace)
             }
-        } else if model.windowsAsPanesPreview, !model.previewWindowViewers.isEmpty {
-            previewViewerSplit
-        } else if let configuration = model.attachConfiguration {
-            TerminalHost(configuration: configuration, handle: model.terminalHandle)
-                .background(Color(nsColor: NSColor(white: 0.085, alpha: 1)))
+        } else if !model.nativePaneSurfaces.isEmpty {
+            nativePaneSplit
         } else {
             ContentUnavailableView(
-                "tmux is unavailable",
+                "Native panes are unavailable",
                 systemImage: "terminal",
-                description: Text(model.startupError ?? "Parley could not create its isolated session.")
+                description: Text(model.startupError ?? "Parley could not construct this workspace's native layout.")
             )
         }
     }
 
-    /// Windows-as-panes preview: one ordinary, confined tmux PTY client
-    /// per member window, split natively. tmux remains authoritative for TUI
-    /// modes and scrollback while native view edges match pane edges.
+    /// The sole workbench renderer: one native terminal per retained pane,
+    /// arranged by the durable SwiftUI split tree.
     @ViewBuilder
-    private var previewViewerSplit: some View {
-        if let tree = model.previewLayoutTree {
-            NativeLayoutSplitView(node: tree) { paneID in
-                previewLeaf(representativePaneID: paneID)
+    private var nativePaneSplit: some View {
+        if let tree = model.nativeLayoutTree {
+            NativeLayoutSplitView(
+                node: tree,
+                path: "root",
+                focusPaneID: model.focusCanvasPaneID,
+                fractionForPath: model.nativeSplitFraction,
+                onFractionCommit: model.persistNativeSplitFraction
+            ) { paneID in
+                nativePaneLeaf(representativePaneID: paneID)
             }
+            .background(Color(nsColor: .windowBackgroundColor))
         }
     }
 
     @ViewBuilder
-    private func previewLeaf(representativePaneID: String) -> some View {
-        if let viewer = model.previewWindowViewers.first(where: {
+    private func nativePaneLeaf(representativePaneID: String) -> some View {
+        if let paneSurface = model.nativePaneSurfaces.first(where: {
             $0.representativePaneID == representativePaneID
-        }) {
-            previewViewerLeaf(viewer)
-                .background(Color(nsColor: NSColor(white: 0.085, alpha: 1)))
+        }), let pane = model.visiblePanes.first(where: { $0.id == representativePaneID }) {
+            VStack(spacing: 0) {
+                paneChromeHeader(pane)
+                nativeTerminalLeaf(paneSurface)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .background(Color(nsColor: NSColor(white: 0.075, alpha: 1)))
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(
+                        paneSurface.containsActivePane
+                            ? Color.accentColor
+                            : Color(nsColor: .separatorColor).opacity(0.9),
+                        lineWidth: paneSurface.containsActivePane ? 2 : 1
+                    )
+                    .allowsHitTesting(false)
+            }
+            .shadow(
+                color: paneSurface.containsActivePane ? Color.accentColor.opacity(0.22) : Color.clear,
+                radius: 4
+            )
+            .padding(4)
+        }
+    }
+
+    private func paneChromeHeader(_ pane: WorkbenchPane) -> some View {
+        HStack(spacing: 7) {
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(paneFocusColor(pane.kind))
+                .frame(width: 3, height: 15)
+                .accessibilityHidden(true)
+            Text(pane.displayName)
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .layoutPriority(2)
+            if let role = pane.role {
+                Text("@\(role)")
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Color.accentColor)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+            }
+            ViewThatFits(in: .horizontal) {
+                Text(WorkspaceFolderIdentity.displayName(for: pane.cwd))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                EmptyView()
+            }
+            Spacer(minLength: 4)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    Text(WorkbenchChromeProjection.processLabel(pane))
+                        .foregroundStyle(paneProcessColor(pane))
+                    if let selection = WorkbenchChromeProjection.selectionLabel(pane) {
+                        Text(selection)
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+                if let selection = WorkbenchChromeProjection.selectionLabel(pane) {
+                    Text(selection)
+                        .foregroundStyle(Color.accentColor)
+                }
+                Text(WorkbenchChromeProjection.processLabel(pane))
+                    .foregroundStyle(paneProcessColor(pane))
+            }
+            .font(.system(size: 8, weight: .bold, design: .monospaced))
+            .lineLimit(1)
+            Menu {
+                Button(model.focusCanvasPaneID == pane.id ? "Return to Grid" : "Focus Canvas") {
+                    model.toggleFocusCanvas(paneID: pane.id)
+                }
+                Divider()
+                paneContextMenu(pane)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 9, weight: .semibold))
+                    .frame(width: 16, height: 20)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Pane actions for \(pane.displayName)")
+        }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+        .contentShape(Rectangle())
+        .background(pane.isActive ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+        .onTapGesture(count: 2) {
+            model.toggleFocusCanvas(paneID: pane.id)
+        }
+        .onTapGesture {
+            model.select(pane)
+        }
+        .focusable()
+        .accessibilityLabel("Focus \(pane.displayName), \(pane.kind.label) pane")
+        .accessibilityValue(paneAccessibilityValue(pane))
+        .accessibilityHint("Select this terminal; double-click to toggle Focus Canvas")
+        .help("\(pane.displayName) · \(pane.cwd)\nClick to select; double-click to toggle Focus Canvas")
+    }
+
+    private func paneProcessColor(_ pane: WorkbenchPane) -> Color {
+        switch WorkbenchStateProjection.pane(pane) {
+        case .empty, .running: .secondary
+        case .stopped: .secondary
+        case .exited: .red
+        case .protocolStale, .relayUnavailable: .orange
         }
     }
 
     @ViewBuilder
-    private func previewViewerLeaf(_ viewer: AppModel.PreviewWindowViewer) -> some View {
-        let handle = viewer.containsActivePane
-            ? model.terminalHandle
-            : model.viewerHandle(forWindow: viewer.windowID)
-        if let configuration = model.viewerAttachConfiguration(
-            representativePaneID: viewer.representativePaneID
-        ) {
-            TerminalHost(
-                configuration: configuration,
-                handle: handle,
-                focusOnAttach: viewer.containsActivePane,
-                preservesTerminalFocusOnResign: true,
-                onFocus: {
-                    model.selectPreviewPane(viewer.representativePaneID)
-                }
-            )
-            // A viewer process is permanently pinned to this member window.
-            // Never let SwiftUI recycle it for a different pane identity.
-            .id("preview-pty-\(viewer.representativePaneID)")
-        } else {
-            ProgressView("Preparing terminal...")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+    private func nativeTerminalLeaf(_ paneSurface: AppModel.NativePaneSurface) -> some View {
+        NativeTerminalHost(
+            paneID: paneSurface.representativePaneID,
+            model: model,
+            focusOnAttach: paneSurface.containsActivePane
+        )
+        .id(
+            "native-terminal-\(paneSurface.representativePaneID)-\(model.panes.first(where: { $0.id == paneSurface.representativePaneID })?.launchGeneration ?? 0)"
+        )
     }
 
     private func paneMenu(kind: PaneKind) -> some View {
@@ -1572,7 +1934,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func reviewTargetItems(action: @escaping (TmuxPane) -> Void) -> some View {
+    private func reviewTargetItems(action: @escaping (WorkbenchPane) -> Void) -> some View {
         if !model.localAskTargets.isEmpty {
             Section("This Workspace") {
                 ForEach(model.localAskTargets) { target in
@@ -1594,30 +1956,170 @@ struct ContentView: View {
 /// vertical splits stack, and dividers stay AppKit-draggable.
 private struct NativeLayoutSplitView<Leaf: View>: View {
     let node: NativeLayoutNode
+    let path: String
+    let focusPaneID: String?
+    let fractionForPath: (String) -> Double?
+    let onFractionCommit: (Double, String) -> Void
     let leaf: (String) -> Leaf
 
+    @State private var dragStartFraction: Double?
+    @State private var draggedFraction: Double?
+
     var body: some View {
+        GeometryReader { geometry in
+            splitContent(size: geometry.size)
+        }
+    }
+
+    @ViewBuilder
+    private func splitContent(size: CGSize) -> some View {
         switch node {
         case let .leaf(paneID):
             leaf(paneID)
         case let .split(direction, first, second):
+            let dividerLength: CGFloat = 7
+            let availableLength = max(
+                (direction == .horizontal ? size.width : size.height) - dividerLength,
+                1
+            )
+            let minimumLeafLength: CGFloat = direction == .horizontal ? 180 : 120
+            let stored = draggedFraction
+                ?? fractionForPath(path)
+                ?? NativeSplitGeometry.proportionalFraction(
+                    firstLeafCount: first.leaves.count,
+                    secondLeafCount: second.leaves.count
+                )
+            let focused = focusAdjustedFraction(
+                stored,
+                first: first,
+                second: second
+            )
+            let fraction = NativeSplitGeometry.clampedFraction(
+                focused,
+                availableLength: availableLength,
+                minimumLeafLength: minimumLeafLength
+            )
+            let firstLength = availableLength * fraction
+            let secondLength = availableLength - firstLength
             if direction == .horizontal {
-                HSplitView {
-                    NativeLayoutSplitView(node: first, leaf: leaf)
-                    NativeLayoutSplitView(node: second, leaf: leaf)
+                HStack(spacing: 0) {
+                    child(first, path: "\(path).first")
+                        .frame(width: firstLength)
+                    divider(
+                        direction: direction,
+                        availableLength: availableLength,
+                        fraction: fraction
+                    )
+                    child(second, path: "\(path).second")
+                        .frame(width: secondLength)
                 }
             } else {
-                VSplitView {
-                    NativeLayoutSplitView(node: first, leaf: leaf)
-                    NativeLayoutSplitView(node: second, leaf: leaf)
+                VStack(spacing: 0) {
+                    child(first, path: "\(path).first")
+                        .frame(height: firstLength)
+                    divider(
+                        direction: direction,
+                        availableLength: availableLength,
+                        fraction: fraction
+                    )
+                    child(second, path: "\(path).second")
+                        .frame(height: secondLength)
                 }
             }
         }
     }
+
+    private func child(_ childNode: NativeLayoutNode, path childPath: String) -> some View {
+        NativeLayoutSplitView(
+            node: childNode,
+            path: childPath,
+            focusPaneID: focusPaneID,
+            fractionForPath: fractionForPath,
+            onFractionCommit: onFractionCommit,
+            leaf: leaf
+        )
+    }
+
+    private func focusAdjustedFraction(
+        _ stored: Double,
+        first: NativeLayoutNode,
+        second: NativeLayoutNode
+    ) -> Double {
+        guard let focusPaneID else { return stored }
+        if first.leaves.contains(focusPaneID), !second.leaves.contains(focusPaneID) { return 0.78 }
+        if second.leaves.contains(focusPaneID), !first.leaves.contains(focusPaneID) { return 0.22 }
+        return stored
+    }
+
+    private func divider(
+        direction: SplitDirection,
+        availableLength: CGFloat,
+        fraction: Double
+    ) -> some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor).opacity(0.72))
+            .frame(
+                width: direction == .horizontal ? 7 : nil,
+                height: direction == .vertical ? 7 : nil
+            )
+            .overlay {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.34))
+                    .frame(
+                        width: direction == .horizontal ? 1 : 28,
+                        height: direction == .vertical ? 1 : 28
+                    )
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                guard focusPaneID == nil else { return }
+                if hovering {
+                    (direction == .horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        guard focusPaneID == nil else { return }
+                        if dragStartFraction == nil { dragStartFraction = fraction }
+                        let translation = direction == .horizontal
+                            ? value.translation.width
+                            : value.translation.height
+                        let candidate = (dragStartFraction ?? fraction) + Double(translation / availableLength)
+                        draggedFraction = NativeSplitGeometry.clampedFraction(
+                            candidate,
+                            availableLength: availableLength,
+                            minimumLeafLength: direction == .horizontal ? 180 : 120
+                        )
+                    }
+                    .onEnded { _ in
+                        guard focusPaneID == nil else { return }
+                        let committed = draggedFraction ?? fraction
+                        onFractionCommit(committed, path)
+                        dragStartFraction = nil
+                        draggedFraction = nil
+                    }
+            )
+            .accessibilityElement()
+            .accessibilityLabel("Resize terminal panes")
+            .accessibilityValue("\(Int(fraction * 100)) percent")
+            .accessibilityAdjustableAction { directionAction in
+                guard focusPaneID == nil else { return }
+                let delta = directionAction == .increment ? 0.05 : -0.05
+                let adjusted = NativeSplitGeometry.clampedFraction(
+                    fraction + delta,
+                    availableLength: availableLength,
+                    minimumLeafLength: direction == .horizontal ? 180 : 120
+                )
+                onFractionCommit(adjusted, path)
+            }
+    }
 }
 
 private struct PaneRow: View {
-    let pane: TmuxPane
+    let pane: WorkbenchPane
     let projectContext: GitProjectContext?
     let awaitingAnswerCount: Int
     let unreadResultCount: Int
@@ -1625,14 +2127,25 @@ private struct PaneRow: View {
     let permissionProfileName: String?
 
     var body: some View {
-        HStack(spacing: 8) {
-            RoundedRectangle(cornerRadius: 2)
+        HStack(spacing: 7) {
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                 .fill(kindColor)
-                .frame(width: 5, height: 28)
+                .frame(width: 3, height: 30)
+            ZStack {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.8), lineWidth: 1)
+                Text(monogram)
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 24, height: 24)
+            .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Text(pane.displayName)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 11, weight: pane.isActive ? .semibold : .medium))
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .layoutPriority(1)
@@ -1651,7 +2164,7 @@ private struct PaneRow: View {
                             .font(.system(size: 8, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
-                    if pane.returnToPaneID != nil || awaitingAnswerCount > 0 {
+                    if awaitingAnswerCount > 0 {
                         Text(awaitingAnswerCount > 1 ? "RETURN \(awaitingAnswerCount)" : "RETURN")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(Color.accentColor)
@@ -1660,9 +2173,6 @@ private struct PaneRow: View {
                         Text(unreadResultCount > 1 ? "RESULT \(unreadResultCount)" : "RESULT")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(Color.accentColor)
-                    }
-                    if pane.isInCopyMode {
-                        stateLabel("COPY", color: .accentColor)
                     }
                     switch WorkbenchStateProjection.pane(pane) {
                     case .empty, .running:
@@ -1701,10 +2211,33 @@ private struct PaneRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
+            Circle()
+                .fill(processColor)
+                .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
         }
         .contentShape(Rectangle())
-        .padding(.vertical, 3)
+        .padding(.vertical, 2)
         .help(paneHelp)
+    }
+
+    private var monogram: String {
+        switch pane.kind {
+        case .claude: "CL"
+        case .codex: "CX"
+        case .agy: "AG"
+        case .copilot: "CP"
+        case .shell: "SH"
+        }
+    }
+
+    private var processColor: Color {
+        switch WorkbenchStateProjection.pane(pane) {
+        case .running: .green
+        case .empty, .stopped: .secondary
+        case .exited: .red
+        case .protocolStale, .relayUnavailable: .orange
+        }
     }
 
     private var folderName: String {

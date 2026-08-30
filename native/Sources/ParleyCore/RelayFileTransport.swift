@@ -35,8 +35,6 @@ public final class RelayFileTransport: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private var lastHeartbeat = Date.distantPast
 
-    private var handoverMarker: URL { runtimeDirectory.appendingPathComponent("preserve-next-start", isDirectory: false) }
-
     public init(
         broker: RelayBroker,
         credentials: RelayCredentials,
@@ -99,9 +97,7 @@ public final class RelayFileTransport: @unchecked Sendable {
                     fileManager: fileManager
                 )
             }
-            if try consumeHandoverMarker() == false {
-                try discardStaleExchangeFiles()
-            }
+            try discardStaleExchangeFiles()
             try writeHeartbeats()
 
             let source = DispatchSource.makeTimerSource(queue: queue)
@@ -121,14 +117,6 @@ public final class RelayFileTransport: @unchecked Sendable {
             try? fileManager.removeItem(at: heartbeat(in: endpoint))
         }
         _ = workers.wait(timeout: .now() + 2)
-    }
-
-    /// Marks an orderly core replacement. The next transport consumes this
-    /// marker and keeps inbox/outbox files that belong to commands spanning
-    /// the short handover. Crash recovery has no marker and retains the
-    /// conservative stale-file cleanup.
-    public func preserveExchangeFilesForNextStart() throws {
-        try writeProtected("preserve", to: handoverMarker)
     }
 
     private func serviceTick() {
@@ -399,19 +387,6 @@ public final class RelayFileTransport: @unchecked Sendable {
                 }
             }
         }
-    }
-
-    private func consumeHandoverMarker() throws -> Bool {
-        guard fileManager.fileExists(atPath: handoverMarker.path) else { return false }
-        var metadata = stat()
-        guard lstat(handoverMarker.path, &metadata) == 0,
-              metadata.st_mode & S_IFMT == S_IFREG,
-              metadata.st_uid == getuid(),
-              metadata.st_mode & 0o077 == 0 else {
-            throw RelayFileTransportError.invalidRuntimeDirectory("invalid core handover marker")
-        }
-        try fileManager.removeItem(at: handoverMarker)
-        return true
     }
 
     private func writeHeartbeats() throws {

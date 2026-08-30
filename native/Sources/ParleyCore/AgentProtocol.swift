@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "8"
+    public static let version = "9"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -53,7 +53,8 @@ public enum AgentProtocol {
       namespace. `lead` names the marked workspace lead when another pane needs
       to return to it. Let Parley refuse ambiguity. The workspace's visible
       automation policy is authoritative; never work around a refusal. Never
-      start another Parley instance and never control its tmux server directly.
+      start another Parley instance or attempt to control another pane except
+      through the authenticated `parley` commands above.
 
     The latest explicit user instruction controls whether a handoff is sent or
     left as a draft. Parley's command result is authoritative about what happened.
@@ -108,7 +109,7 @@ public enum AgentProtocol {
         return [key: directories.joined(separator: ",")]
     }
 
-    public static func stalePaneIDs(in panes: [TmuxPane]) -> [String] {
+    public static func stalePaneIDs(in panes: [WorkbenchPane]) -> [String] {
         panes.filter { $0.kind.isAgent && $0.isStarted && !$0.hasCurrentProtocol }.map(\.id)
     }
 

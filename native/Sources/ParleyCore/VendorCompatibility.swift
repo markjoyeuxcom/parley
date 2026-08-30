@@ -153,7 +153,7 @@ public struct VendorRuntimeSignal: Codable, Equatable, Identifiable, Sendable {
 /// hook, a running pane is Unknown. Parley can state an exit because it owns the
 /// process lifecycle, not because it inferred meaning from the TUI.
 public enum VendorRuntimeSignalProjection {
-    public static func signal(for pane: TmuxPane) -> VendorRuntimeSignal? {
+    public static func signal(for pane: WorkbenchPane) -> VendorRuntimeSignal? {
         guard pane.kind.isAgent else { return nil }
         if pane.isDead {
             return VendorRuntimeSignal(
@@ -221,7 +221,7 @@ public final class VendorCompatibilityChecker: @unchecked Sendable {
     public func check(
         environment: [String: String],
         readiness: RuntimeReadinessSnapshot?,
-        panes: [TmuxPane],
+        panes: [WorkbenchPane],
         previous: VendorCompatibilitySnapshot?,
         checkedAt: Date = Date()
     ) -> VendorCompatibilitySnapshot {

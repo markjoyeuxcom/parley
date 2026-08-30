@@ -26,7 +26,7 @@ public struct AgentProcessBoundary: Sendable {
         applicationDirectory: URL,
         protocolDirectory: URL,
         shimDirectory: URL,
-        tmuxSocket: URL,
+        protectedControlEndpoint: URL? = nil,
         transportDirectory: URL,
         paneToken: String,
         fileManager: FileManager = .default
@@ -48,16 +48,18 @@ public struct AgentProcessBoundary: Sendable {
         let application = Self.schemeLiteral(Self.canonical(applicationDirectory))
         let rules = Self.schemeLiteral(Self.canonical(protocolDirectory))
         let shim = Self.schemeLiteral(Self.canonical(shimDirectory))
-        let socket = Self.schemeLiteral(Self.canonical(tmuxSocket))
         let transport = Self.schemeLiteral(Self.canonical(transportDirectory))
         let endpoint = Self.schemeLiteral(Self.canonical(endpointDirectory))
+        let controlDenial = protectedControlEndpoint.map {
+            "(deny network-outbound (literal \(Self.schemeLiteral(Self.canonical($0)))))"
+        } ?? ""
         let profile = """
         (version 1)
         (allow default)
         (deny file-read* file-write* (subpath \(application)))
         (allow file-read* (subpath \(rules)))
         (allow file-read* (subpath \(shim)))
-        (deny network-outbound (literal \(socket)))
+        \(controlDenial)
         (deny file-read* file-write* (subpath \(transport)))
         (allow file-read* file-write* (subpath \(endpoint)))
         """

@@ -149,7 +149,7 @@ public enum StatusNotificationProjection {
 public struct StatusCenterSnapshot: Equatable, Sendable {
     public let condition: StatusCenterCondition
     public let counts: StatusCenterCounts
-    public let agents: [TmuxPane]
+    public let agents: [WorkbenchPane]
     public let activeHandoffs: [RelayHandoff]
     public let handoffs: [RelayHandoff]
     public let timeline: [StatusTimelineEvent]
@@ -157,7 +157,7 @@ public struct StatusCenterSnapshot: Equatable, Sendable {
     public init(
         condition: StatusCenterCondition,
         counts: StatusCenterCounts,
-        agents: [TmuxPane],
+        agents: [WorkbenchPane],
         activeHandoffs: [RelayHandoff],
         handoffs: [RelayHandoff],
         timeline: [StatusTimelineEvent]
@@ -196,7 +196,7 @@ public enum StatusCenterProjection {
     private static let failureStates: Set<RelayHandoffState> = [.failed, .interrupted]
 
     public static func snapshot(
-        panes: [TmuxPane],
+        panes: [WorkbenchPane],
         handoffs: [RelayHandoff],
         activityEvents: [RelayActivityEvent] = [],
         workspaceID: String?,
@@ -205,9 +205,8 @@ public enum StatusCenterProjection {
         includeDismissed: Bool = false
     ) -> StatusCenterSnapshot {
         let workspaceAliases: Set<String> = if let workspaceID {
-            Set(panes.lazy.filter {
-                $0.workspaceID == workspaceID || $0.windowID == workspaceID
-            }.flatMap { [$0.workspaceID, $0.windowID] }).union([workspaceID])
+            Set(panes.lazy.filter { $0.workspaceID == workspaceID }.map(\.workspaceID))
+                .union([workspaceID])
         } else {
             []
         }
