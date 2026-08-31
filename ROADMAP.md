@@ -76,6 +76,9 @@ Non-negotiable properties:
 - [x] Explicit stop/cancel/retry/repeat actions.
 - [x] Local handoff history with retention and reviewed export.
 - [x] Supervised lead workflows and bounded fan-out.
+- [x] Smart Plan → Review → Implement → Verify orchestration with persisted
+  Supervised and Auto modes, automation-attributed transitions and a mandatory
+  final human completion decision.
 - [x] Honest Unknown when no structured vendor state exists.
 
 ### Daily workspace

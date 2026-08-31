@@ -416,7 +416,8 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     targetPaneID: ask.targetPaneID,
                     text: ask.text,
                     idempotencyKey: ask.idempotencyKey,
-                    preserveFormatting: ask.preserveFormatting ?? false
+                    preserveFormatting: ask.preserveFormatting ?? false,
+                    origin: ask.origin ?? .human
                 ), to: client)
             case "/ui/ask-many":
                 guard controlAuthorized(request) else {

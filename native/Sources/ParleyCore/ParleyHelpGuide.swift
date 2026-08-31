@@ -563,19 +563,18 @@ public enum ParleyHelpGuide {
                 ),
                 ParleyHelpSection(
                     id: "lead-bounded-workflow",
-                    title: "Run the bounded sequence",
+                    title: "Run smart orchestration",
                     paragraphs: [
-                        "Open Recipes and choose Plan → Review → Implement → Verify. Choose explicit reviewer and verifier panes, inspect the planning instruction, then start. The same pane may review and verify, and either role may use another pane from the lead's vendor.",
-                        "Parley advances only when you use the current checkpoint button. Capturing a plan, review or verification opens an editable preview; no hidden terminal history is collected. The two approval phases submit nothing until you explicitly approve them.",
+                        "Open Recipes and choose New Plan → Review → Implement → Verify. Choose Supervised or Auto plus explicit reviewer and verifier panes, then enter the exact objective. The same pane may review and verify, and either role may use another pane from the lead's vendor.",
+                        "Supervised pauses at every handoff for an editable human preview. Auto advances Plan, Review, Implement and Verify only when each target returns one correlated Parley answer; it never watches terminal prose to guess that a stage finished.",
                     ],
                     items: [
-                        "Planning tells the lead to stop before editing files.",
-                        "Independent review is submitted directly to the chosen reviewer; its answer remains in that pane until you capture it.",
-                        "Approve Implementation shows the exact combined plan and attributed review before granting the lead write work.",
-                        "Verification captures current Git changes into an editable request and asks the verifier not to modify files.",
-                        "Mark Complete records your judgment; Parley never treats successful-looking prose as proof.",
-                        "End Workflow stops sequence tracking without sending Control-C or cancelling work already running in an agent pane.",
-                        "The owner-only local record preserves participants, exact captured artifacts and every human-authorized transition across UI restarts.",
+                        "Planning and independent review remain read-only stages.",
+                        "Starting Auto explicitly authorizes the lead's implementation stage, but it cannot bypass a vendor permission or folder-trust prompt.",
+                        "The verifier receives the attributed implementation report, independently inspects the repository and is instructed not to modify files.",
+                        "Auto preserves every answer and stops at Completion Approval. Only you can mark the run complete; verifier prose is evidence, not proof.",
+                        "Stop Auto ends further advancement without sending Control-C. Work already running in a pane remains visible and can be interrupted separately.",
+                        "The owner-only local record preserves mode, participants, exact artifacts and HUMAN or AUTO attribution for every transition.",
                     ]
                 ),
                 ParleyHelpSection(

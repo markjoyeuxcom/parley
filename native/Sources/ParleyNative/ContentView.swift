@@ -1025,17 +1025,17 @@ struct ContentView: View {
                         .disabled(!model.canRun(recipe))
                 }
             }
-            Section("Bounded Sequence") {
+            Section("Smart Orchestration") {
                 if model.activeSupervisedWorkflow != nil {
-                    Button("Open Active Workflow…") { model.presentSupervisedWorkflow() }
+                    Button("Open Active Orchestration…") { model.presentSupervisedWorkflow() }
                 } else {
-                    Button("Plan → Review → Implement → Verify…") {
+                    Button("New Plan → Review → Implement → Verify…") {
                         model.startSupervisedWorkflow()
                     }
                     .disabled(!model.canStartSupervisedWorkflow)
                 }
                 if !model.recentSupervisedWorkflows.isEmpty {
-                    Menu("Recent Workflows") {
+                    Menu("Recent Orchestration") {
                         ForEach(model.recentSupervisedWorkflows.prefix(8)) { run in
                             Button {
                                 model.presentSupervisedWorkflow(run)
@@ -1057,10 +1057,10 @@ struct ContentView: View {
         } label: {
             Label("Recipes", systemImage: "list.bullet.rectangle")
         }
-        .accessibilityLabel("Supervised workflow recipes")
+        .accessibilityLabel("Recipes and smart orchestration")
         .accessibilityValue(model.workspaceLead.map { "Lead: \($0.displayName)" } ?? "No workspace lead")
-        .help("Run a one-shot recipe or a bounded human-checkpointed cross-vendor sequence")
-        .accessibilityHint("Choose a recipe or the Plan, Review, Implement, Verify sequence")
+        .help("Run a one-shot recipe or a bounded supervised or Auto cross-vendor sequence")
+        .accessibilityHint("Choose a recipe or configure smart Plan, Review, Implement, Verify orchestration")
     }
 
     private var returnMenu: some View {
@@ -1247,10 +1247,13 @@ struct ContentView: View {
 
     private func supervisedWorkflowStrip(_ run: SupervisedWorkflowRun) -> some View {
         HStack(spacing: 8) {
-            Text("WORKFLOW")
+            Text("ORCHESTRATION")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
+            Text(run.mode.label.uppercased())
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .foregroundStyle(run.mode == .automatic ? Color.accentColor : Color.secondary)
             Text(run.phase.label)
                 .font(.system(size: 10, weight: .medium))
                 .lineLimit(1)

@@ -20,6 +20,9 @@ or bypass a vendor's approval flow.
   and Wait commands.
 - Human Ask and Return previews, correlated answers and tracked delegation
   receipts.
+- Smart Plan → Review → Implement → Verify orchestration in Supervised and Auto
+  modes. Auto advances only from correlated answers and always stops for the
+  person's final completion decision.
 - Durable local handoff history and Status Center recovery actions.
 - Folder-backed workspaces, favourites, saved layouts, portable team
   templates, stable roles, workspace leads, pane move and configuration clone.
@@ -79,6 +82,29 @@ the first newline cannot submit a truncated prompt.
 Parley never infers thinking, token use, cost, context limits, permission state
 or completion from terminal text. Status contains only facts Parley owns or
 structured values a vendor exposes authoritatively.
+
+## Smart orchestration
+
+Mark one ready agent pane as the workspace lead, then open **Recipes → Smart
+Orchestration → New Plan → Review → Implement → Verify**. Choose explicit
+reviewer and verifier panes, select a mode and enter the exact objective.
+
+- **Supervised** pauses at every handoff. The person inspects and may edit the
+  exact plan, critique, implementation instruction and verification evidence.
+- **Auto** advances Plan, Review, Implement and Verify only when each target
+  returns one correlated Parley answer. Every automatic delivery and workflow
+  transition is labelled **AUTO** and remains visible in history.
+- Starting Auto authorizes the bounded implementation stage. It never bypasses
+  a vendor permission or folder-trust prompt, never guesses completion from
+  terminal text and stops if an exact handoff fails or the workspace automation
+  policy is switched Off.
+- Both modes stop at Completion Approval. Only the person can review the saved
+  evidence and mark the run complete.
+
+Closing the main window does not stop an active run because the application and
+its retained panes remain alive. Full application quit ends the current Ask and
+records an unfinished Auto run as interrupted; it is never silently resumed on
+the next launch.
 
 ## Workspaces and panes
 

@@ -1,6 +1,125 @@
 import Darwin
 import Foundation
 
+public enum SmartOrchestrationMode: String, CaseIterable, Codable, Equatable, Sendable {
+    case supervised
+    case automatic
+
+    public var label: String {
+        switch self {
+        case .supervised: "Supervised"
+        case .automatic: "Auto"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .supervised:
+            "Pause at every handoff so the person can inspect and edit the exact payload."
+        case .automatic:
+            "Advance correlated Plan, Review, Implement and Verify handoffs automatically, then stop for the person's final decision."
+        }
+    }
+}
+
+public enum SmartOrchestrationPolicy {
+    public static func allowsAutomaticTransition(
+        from: SupervisedWorkflowPhase,
+        to: SupervisedWorkflowPhase
+    ) -> Bool {
+        switch (from, to) {
+        case (.planning, .reviewingPlan),
+             (.reviewingPlan, .awaitingImplementationApproval),
+             (.awaitingImplementationApproval, .implementing),
+             (.implementing, .verifying),
+             (.verifying, .awaitingCompletionApproval):
+            true
+        default:
+            false
+        }
+    }
+}
+
+/// Builds the bounded, stage-specific prompts used by Auto orchestration.
+/// Completion still belongs to the person; these prompts never ask a model to
+/// approve its own result or infer another pane's hidden state.
+public struct SmartOrchestrationPromptBuilder: Sendable {
+    public let task: String
+
+    public init(task: String) {
+        self.task = ContextPackText.normalize(task)
+    }
+
+    public func planning() throws -> String {
+        try bounded("""
+        The person using Parley started a smart orchestration run for this task:
+
+        --- TASK ---
+
+        \(task)
+
+        Produce a concrete implementation plan. Inspect the repository as permitted and identify scope, risks and proportionate verification, but do not edit files or begin implementation. Return only the proposed plan with useful evidence.
+        """)
+    }
+
+    public func planReview(plan: String) throws -> String {
+        try bounded("""
+        Independently review the proposed plan below for correctness, missing risks, unnecessary scope and verification gaps. Do not implement anything and do not modify files. Return concrete objections, corrections and any evidence needed by the implementer.
+
+        --- TASK ---
+
+        \(task)
+
+        --- PROPOSED PLAN ---
+
+        \(plan)
+        """)
+    }
+
+    public func implementation(plan: String, review: String) throws -> String {
+        try bounded("""
+        The person using Parley authorized this Auto workflow to proceed through implementation. Implement the sound plan while accounting for confirmed review findings. Do not treat reviewer claims as facts without checking them. Preserve every vendor permission prompt and stop rather than bypassing a refusal. Run proportionate verification and return a concise implementation report with exact command outcomes.
+
+        --- TASK ---
+
+        \(task)
+
+        --- PROPOSED PLAN ---
+
+        \(plan)
+
+        --- INDEPENDENT PLAN REVIEW ---
+
+        \(review)
+        """)
+    }
+
+    public func verification(implementationEvidence: String) throws -> String {
+        try bounded("""
+        Independently verify the implementation evidence below. Inspect the repository as permitted, run proportionate checks and report concrete defects or a clean result with exact command outcomes. Do not modify files. Your report is evidence for the person using Parley; it does not automatically declare the workflow successful.
+
+        --- TASK ---
+
+        \(task)
+
+        --- IMPLEMENTATION EVIDENCE ---
+
+        \(implementationEvidence)
+        """)
+    }
+
+    private func bounded(_ text: String) throws -> String {
+        let normalized = ContextPackText.normalize(text)
+        guard !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              normalized.utf8.count <= ContextPackBuilder.defaultMaximumRenderedBytes else {
+            throw SupervisedWorkflowError.invalid(
+                "A smart orchestration stage must be non-empty and no larger than \(ContextPackBuilder.defaultMaximumRenderedBytes) bytes."
+            )
+        }
+        return normalized
+    }
+}
+
 public enum SupervisedWorkflowPhase: String, CaseIterable, Codable, Equatable, Sendable {
     case planning
     case reviewingPlan
@@ -109,6 +228,7 @@ public struct SupervisedWorkflowRun: Identifiable, Codable, Equatable, Sendable 
     public let reviewer: SupervisedWorkflowParticipant
     public let verifier: SupervisedWorkflowParticipant
     public let planningPrompt: String
+    public let mode: SmartOrchestrationMode
     public var phase: SupervisedWorkflowPhase
     public let createdAt: Date
     public var updatedAt: Date
@@ -119,6 +239,86 @@ public struct SupervisedWorkflowRun: Identifiable, Codable, Equatable, Sendable 
 
     public func artifact(_ kind: SupervisedWorkflowArtifactKind) -> SupervisedWorkflowArtifact? {
         artifacts.last { $0.kind == kind }
+    }
+
+    public init(
+        id: String,
+        workspaceID: String,
+        workspaceName: String,
+        lead: SupervisedWorkflowParticipant,
+        reviewer: SupervisedWorkflowParticipant,
+        verifier: SupervisedWorkflowParticipant,
+        planningPrompt: String,
+        mode: SmartOrchestrationMode = .supervised,
+        phase: SupervisedWorkflowPhase,
+        createdAt: Date,
+        updatedAt: Date,
+        artifacts: [SupervisedWorkflowArtifact],
+        transitions: [SupervisedWorkflowTransition]
+    ) {
+        self.id = id
+        self.workspaceID = workspaceID
+        self.workspaceName = workspaceName
+        self.lead = lead
+        self.reviewer = reviewer
+        self.verifier = verifier
+        self.planningPrompt = planningPrompt
+        self.mode = mode
+        self.phase = phase
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.artifacts = artifacts
+        self.transitions = transitions
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case workspaceID
+        case workspaceName
+        case lead
+        case reviewer
+        case verifier
+        case planningPrompt
+        case mode
+        case phase
+        case createdAt
+        case updatedAt
+        case artifacts
+        case transitions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        workspaceID = try values.decode(String.self, forKey: .workspaceID)
+        workspaceName = try values.decode(String.self, forKey: .workspaceName)
+        lead = try values.decode(SupervisedWorkflowParticipant.self, forKey: .lead)
+        reviewer = try values.decode(SupervisedWorkflowParticipant.self, forKey: .reviewer)
+        verifier = try values.decode(SupervisedWorkflowParticipant.self, forKey: .verifier)
+        planningPrompt = try values.decode(String.self, forKey: .planningPrompt)
+        mode = try values.decodeIfPresent(SmartOrchestrationMode.self, forKey: .mode) ?? .supervised
+        phase = try values.decode(SupervisedWorkflowPhase.self, forKey: .phase)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+        artifacts = try values.decode([SupervisedWorkflowArtifact].self, forKey: .artifacts)
+        transitions = try values.decode([SupervisedWorkflowTransition].self, forKey: .transitions)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(workspaceID, forKey: .workspaceID)
+        try values.encode(workspaceName, forKey: .workspaceName)
+        try values.encode(lead, forKey: .lead)
+        try values.encode(reviewer, forKey: .reviewer)
+        try values.encode(verifier, forKey: .verifier)
+        try values.encode(planningPrompt, forKey: .planningPrompt)
+        try values.encode(mode, forKey: .mode)
+        try values.encode(phase, forKey: .phase)
+        try values.encode(createdAt, forKey: .createdAt)
+        try values.encode(updatedAt, forKey: .updatedAt)
+        try values.encode(artifacts, forKey: .artifacts)
+        try values.encode(transitions, forKey: .transitions)
     }
 }
 
@@ -134,7 +334,8 @@ public enum SupervisedWorkflowError: LocalizedError, Equatable {
 }
 
 /// Durable, owner-only state for one deliberately small workflow. This store
-/// records human-authorized checkpoints; it never dispatches terminal input.
+/// records the initial human authorization plus explicitly attributed human or
+/// bounded Auto transitions; it never dispatches terminal input itself.
 public final class SupervisedWorkflowStore: @unchecked Sendable {
     private struct Document: Codable {
         let version: Int
@@ -166,6 +367,7 @@ public final class SupervisedWorkflowStore: @unchecked Sendable {
         reviewer: SupervisedWorkflowParticipant,
         verifier: SupervisedWorkflowParticipant,
         planningPrompt: String,
+        mode: SmartOrchestrationMode = .supervised,
         now: Date = Date()
     ) throws -> SupervisedWorkflowRun {
         try lock.withLock {
@@ -208,6 +410,7 @@ public final class SupervisedWorkflowStore: @unchecked Sendable {
                 reviewer: reviewer,
                 verifier: verifier,
                 planningPrompt: prompt,
+                mode: mode,
                 phase: .planning,
                 createdAt: now,
                 updatedAt: now,
@@ -225,6 +428,7 @@ public final class SupervisedWorkflowStore: @unchecked Sendable {
         to next: SupervisedWorkflowPhase,
         artifact: SupervisedWorkflowArtifact?,
         detail: String? = nil,
+        origin: RelayTransitionOrigin = .human,
         now: Date = Date()
     ) throws -> SupervisedWorkflowRun {
         try lock.withLock {
@@ -239,6 +443,16 @@ public final class SupervisedWorkflowStore: @unchecked Sendable {
             let expected = Self.allowedTransition[run.phase]
             guard expected == next else {
                 throw SupervisedWorkflowError.invalid("A supervised workflow cannot move from \(run.phase.label) to \(next.label).")
+            }
+            if origin == .automation {
+                guard run.mode == .automatic else {
+                    throw SupervisedWorkflowError.invalid("A supervised workflow cannot advance through automation.")
+                }
+                guard SmartOrchestrationPolicy.allowsAutomaticTransition(from: run.phase, to: next) else {
+                    throw SupervisedWorkflowError.invalid(
+                        "Auto mode stops for the person at \(run.phase.label); it cannot advance to \(next.label)."
+                    )
+                }
             }
             let requiredArtifact = Self.requiredArtifact[next]
             guard artifact?.kind == requiredArtifact else {
@@ -269,7 +483,8 @@ public final class SupervisedWorkflowStore: @unchecked Sendable {
                 from: previous,
                 to: next,
                 occurredAt: now,
-                detail: detail?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+                detail: detail?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+                origin: origin
             ))
             current[index] = run
             try writeLocked(current)

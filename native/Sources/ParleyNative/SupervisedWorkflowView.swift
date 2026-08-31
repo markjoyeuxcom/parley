@@ -10,9 +10,9 @@ struct SupervisedWorkflowView: View {
                 workflow(run)
             } else {
                 ContentUnavailableView(
-                    "No Active Workflow",
+                    "No Smart Orchestration Run",
                     systemImage: "checklist",
-                    description: Text("Start the bounded sequence from Recipes in the workspace toolbar.")
+                    description: Text("Start a supervised or Auto sequence from Recipes in the workspace toolbar.")
                 )
             }
         }
@@ -48,6 +48,9 @@ struct SupervisedWorkflowView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            Text(run.mode.label.uppercased())
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(run.mode == .automatic ? Color.accentColor : Color.secondary)
             Text(run.phase.label.uppercased())
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(phaseColor(run.phase))
@@ -93,9 +96,9 @@ struct SupervisedWorkflowView: View {
             Text("CURRENT CHECKPOINT")
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
-            Text(checkpointTitle(run.phase))
+            Text(checkpointTitle(run.phase, mode: run.mode))
                 .font(.system(size: 14, weight: .semibold))
-            Text(checkpointDetail(run.phase))
+            Text(checkpointDetail(run.phase, mode: run.mode))
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -176,7 +179,7 @@ struct SupervisedWorkflowView: View {
 
     private func history(_ run: SupervisedWorkflowRun) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text("HUMAN-AUTHORIZED HISTORY")
+            Text("WORKFLOW HISTORY")
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
             ForEach(run.transitions) { transition in
@@ -188,6 +191,9 @@ struct SupervisedWorkflowView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(transition.to.label)
                             .font(.system(size: 10, weight: .medium))
+                        Text(transition.origin == .automation ? "AUTO" : "HUMAN")
+                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(transition.origin == .automation ? Color.accentColor : Color.secondary)
                         if let detail = transition.detail {
                             Text(detail)
                                 .font(.system(size: 10))
@@ -207,9 +213,31 @@ struct SupervisedWorkflowView: View {
     private func footer(_ run: SupervisedWorkflowRun) -> some View {
         HStack {
             if !run.phase.isTerminal {
-                Button("End Workflow…", role: .destructive) { model.interruptSupervisedWorkflow() }
+                Button(run.mode == .automatic ? "Stop Auto…" : "End Workflow…", role: .destructive) {
+                    model.interruptSupervisedWorkflow()
+                }
             }
             Spacer()
+            if run.mode == .automatic,
+               !run.phase.isTerminal,
+               run.phase != .awaitingCompletionApproval {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Auto is waiting for a correlated answer")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            if run.mode == .supervised {
+                supervisedAction(run)
+            } else {
+                automaticAction(run)
+            }
+        }
+        .padding(16)
+    }
+
+    @ViewBuilder
+    private func supervisedAction(_ run: SupervisedWorkflowRun) -> some View {
             switch run.phase {
             case .planning:
                 Button("Capture Plan and Review…") { model.sendWorkflowPlanForReview() }
@@ -234,7 +262,19 @@ struct SupervisedWorkflowView: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(16)
+
+    @ViewBuilder
+    private func automaticAction(_ run: SupervisedWorkflowRun) -> some View {
+        switch run.phase {
+        case .awaitingCompletionApproval:
+            Button("Review and Mark Complete…") { model.completeSupervisedWorkflow() }
+                .keyboardShortcut(.defaultAction)
+        case .completed, .interrupted:
+            Button("Close") { model.supervisedWorkflowPresented = false }
+                .keyboardShortcut(.defaultAction)
+        default:
+            EmptyView()
+        }
     }
 
     private func reached(_ phase: SupervisedWorkflowPhase, in run: SupervisedWorkflowRun) -> Bool {
@@ -242,7 +282,7 @@ struct SupervisedWorkflowView: View {
     }
 
     private func phaseColor(_ phase: SupervisedWorkflowPhase) -> Color {
-        switch phase {
+        return switch phase {
         case .awaitingImplementationApproval, .awaitingCompletionApproval: .orange
         case .completed: .green
         case .interrupted: .red
@@ -250,8 +290,23 @@ struct SupervisedWorkflowView: View {
         }
     }
 
-    private func checkpointTitle(_ phase: SupervisedWorkflowPhase) -> String {
-        switch phase {
+    private func checkpointTitle(
+        _ phase: SupervisedWorkflowPhase,
+        mode: SmartOrchestrationMode
+    ) -> String {
+        if mode == .automatic {
+            switch phase {
+            case .planning: return "Auto is waiting for the lead's correlated plan"
+            case .reviewingPlan: return "Auto is waiting for independent critique"
+            case .awaitingImplementationApproval: return "Auto is preserving the reviewed implementation instruction"
+            case .implementing: return "Auto is waiting for the lead's implementation report"
+            case .verifying: return "Auto is waiting for independent verification"
+            case .awaitingCompletionApproval: return "Auto stopped for your final decision"
+            case .completed: return "Workflow completed by the person"
+            case .interrupted: return "Auto orchestration stopped"
+            }
+        }
+        return switch phase {
         case .planning: "Wait for the lead's plan"
         case .reviewingPlan: "Wait for the independent plan review"
         case .awaitingImplementationApproval: "You decide whether implementation starts"
@@ -263,8 +318,31 @@ struct SupervisedWorkflowView: View {
         }
     }
 
-    private func checkpointDetail(_ phase: SupervisedWorkflowPhase) -> String {
-        switch phase {
+    private func checkpointDetail(
+        _ phase: SupervisedWorkflowPhase,
+        mode: SmartOrchestrationMode
+    ) -> String {
+        if mode == .automatic {
+            switch phase {
+            case .planning:
+                return "The reviewer pane initiated an attributed Ask to the lead. Auto advances only after the lead answers through Parley."
+            case .reviewingPlan:
+                return "The exact plan is preserved below and has been sent to the named reviewer without a terminal-text completion guess."
+            case .awaitingImplementationApproval:
+                return "Your initial Auto authorization covers this transition. Parley still cannot bypass a vendor permission or trust prompt."
+            case .implementing:
+                return "The lead received the exact plan and critique. Auto waits for an explicit correlated report before asking the verifier."
+            case .verifying:
+                return "The verifier is asked to inspect and report without modifying files. Its answer remains evidence, not a success signal."
+            case .awaitingCompletionApproval:
+                return "Review every preserved artifact. Parley cannot infer a clean result or mark this run complete for you."
+            case .completed:
+                return "Auto advanced the bounded handoffs; a person reviewed the evidence and made the final completion decision."
+            case .interrupted:
+                return "No success was inferred. The history below records where and why automatic advancement stopped."
+            }
+        }
+        return switch phase {
         case .planning:
             "Inspect the lead pane. When its plan is ready, capture and edit exactly what the reviewer will receive."
         case .reviewingPlan:

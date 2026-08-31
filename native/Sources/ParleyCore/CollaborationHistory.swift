@@ -252,6 +252,7 @@ public enum CollaborationHistoryMarkdown {
             for transition in handoff.transitions {
                 var receipt = "- \(timestamp(transition.occurredAt)) — \(transition.state.rawValue)"
                 if transition.origin == .human { receipt += " — human" }
+                if transition.origin == .automation { receipt += " — Auto" }
                 if let detail = transition.detail, !detail.isEmpty {
                     receipt += " — \(inline(detail))"
                 }

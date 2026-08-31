@@ -316,14 +316,16 @@ public struct RelayCoreClient: Sendable {
         targetPaneID: String,
         text: String,
         idempotencyKey: String,
-        preserveFormatting: Bool = false
+        preserveFormatting: Bool = false,
+        origin: RelayTransitionOrigin = .human
     ) throws -> RelayTextResponse {
         let body = try JSONEncoder().encode(RelayUIAskRequest(
             sourcePaneID: sourcePaneID,
             targetPaneID: targetPaneID,
             text: text,
             idempotencyKey: idempotencyKey,
-            preserveFormatting: preserveFormatting
+            preserveFormatting: preserveFormatting,
+            origin: origin
         ))
         let response = try request(
             method: "POST",
