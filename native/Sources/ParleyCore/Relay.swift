@@ -321,6 +321,7 @@ public enum RelayAttention: String, Codable, Equatable, Sendable {
 
 public enum RelayTransitionOrigin: String, Codable, Equatable, Sendable {
     case human
+    case automation
 }
 
 public enum RelayActivityEventKind: String, Codable, Equatable, Sendable {
@@ -1797,8 +1798,10 @@ public final class RelayBroker: @unchecked Sendable {
         idempotencyKey suppliedIdempotencyKey: String?,
         humanInitiated: Bool,
         preserveFormatting: Bool,
+        transitionOrigin: RelayTransitionOrigin? = nil,
         onSubmitted: (() -> Void)? = nil
     ) -> RelayTextResponse {
+        let recordedOrigin = transitionOrigin ?? (humanInitiated ? .human : nil)
         let sender: WorkbenchPane
         let target: WorkbenchPane
         let idempotencyKey: String
@@ -1861,7 +1864,7 @@ public final class RelayBroker: @unchecked Sendable {
             target: target,
             text: cleaned,
             submitted: true,
-            origin: humanInitiated ? .human : nil
+            origin: recordedOrigin
         )
         let consultation = RelayConsultation(
             id: handoff.id,
@@ -1894,8 +1897,8 @@ public final class RelayBroker: @unchecked Sendable {
             let writer = preserveFormatting ? contextSubmit : submit
             try writer(target.id, consultationPrompt(for: consultation))
             consultationCondition.lock()
-            transitionHandoffLocked(handoff.id, to: .delivered, origin: humanInitiated ? .human : nil)
-            transitionHandoffLocked(handoff.id, to: .waiting, origin: humanInitiated ? .human : nil)
+            transitionHandoffLocked(handoff.id, to: .delivered, origin: recordedOrigin)
+            transitionHandoffLocked(handoff.id, to: .waiting, origin: recordedOrigin)
             onSubmitted?()
             consultationCondition.broadcast()
             consultationCondition.unlock()
@@ -1910,7 +1913,7 @@ public final class RelayBroker: @unchecked Sendable {
                 to: .failed,
                 detail: response.text,
                 failure: failureAssessment(kind: .ask, error: error),
-                origin: humanInitiated ? .human : nil
+                origin: recordedOrigin
             )
             idempotencyRecords[scope]?.response = .ask(response)
             consultationRecords.removeValue(forKey: consultation.id)
@@ -2100,7 +2103,8 @@ public final class RelayBroker: @unchecked Sendable {
         targetPaneID: String,
         text: String,
         idempotencyKey: String,
-        preserveFormatting: Bool = false
+        preserveFormatting: Bool = false,
+        origin: RelayTransitionOrigin = .human
     ) -> RelayTextResponse {
         let livePanes: [WorkbenchPane]
         do {
@@ -2123,7 +2127,8 @@ public final class RelayBroker: @unchecked Sendable {
             text: text,
             idempotencyKey: idempotencyKey,
             humanInitiated: true,
-            preserveFormatting: preserveFormatting
+            preserveFormatting: preserveFormatting,
+            transitionOrigin: origin
         )
     }
 

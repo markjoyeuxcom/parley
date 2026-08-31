@@ -1050,8 +1050,8 @@ struct StatusCenterView: View {
                                     .foregroundStyle(.secondary)
                                 Text(transition.state.rawValue.uppercased())
                                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                if transition.origin == .human {
-                                    Text("HUMAN")
+                                if let origin = transition.origin {
+                                    Text(origin == .automation ? "AUTO" : "HUMAN")
                                         .font(.system(size: 8, weight: .semibold, design: .monospaced))
                                         .foregroundStyle(Color.accentColor)
                                 }
@@ -1632,6 +1632,7 @@ struct StatusCenterView: View {
             "at \(transition.occurredAt.formatted(date: .omitted, time: .standard))",
         ]
         if transition.origin == .human { parts.append("human initiated") }
+        if transition.origin == .automation { parts.append("Auto orchestration") }
         if let detail = transition.detail, !detail.isEmpty { parts.append(detail) }
         return parts.joined(separator: ". ")
     }

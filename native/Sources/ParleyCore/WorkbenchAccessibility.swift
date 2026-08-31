@@ -21,6 +21,9 @@ public enum WorkbenchAccessibility {
         if handoff.transitions.contains(where: { $0.origin == .human }) {
             parts.append("Human initiated")
         }
+        if handoff.transitions.contains(where: { $0.origin == .automation }) {
+            parts.append("Auto orchestration")
+        }
         return sentences(parts)
     }
 
@@ -68,6 +71,7 @@ public enum WorkbenchAccessibility {
             "\(sentenceCase(event.category)), \(event.action.lowercased())",
         ]
         if event.origin == .human { parts.append("Human initiated") }
+        if event.origin == .automation { parts.append("Auto orchestration") }
         if let detail = event.detail, !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             parts.append(brief(clean(detail)))
         }

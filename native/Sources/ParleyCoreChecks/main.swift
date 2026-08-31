@@ -3298,6 +3298,139 @@ private func checkBoundedSupervisedWorkflowLifecycle() throws {
     }
 }
 
+private func checkSmartOrchestrationModesAndBoundaries() throws {
+    let directory = try temporaryDirectory()
+    let file = directory.appendingPathComponent("smart-orchestration.json")
+    let store = SupervisedWorkflowStore(file: file)
+    let lead = SupervisedWorkflowParticipant(
+        paneID: "%1",
+        name: "Claude lead",
+        kind: .claude,
+        workspaceID: "@0"
+    )
+    let reviewer = SupervisedWorkflowParticipant(
+        paneID: "%2",
+        name: "Codex reviewer",
+        kind: .codex,
+        workspaceID: "@0"
+    )
+    let verifier = SupervisedWorkflowParticipant(
+        paneID: "%3",
+        name: "Agy verifier",
+        kind: .agy,
+        workspaceID: "@0"
+    )
+    let started = try store.start(
+        workspaceID: "@0",
+        workspaceName: "parley",
+        lead: lead,
+        reviewer: reviewer,
+        verifier: verifier,
+        planningPrompt: "Design the bounded change.",
+        mode: .automatic,
+        now: Date(timeIntervalSince1970: 200)
+    )
+    try expect(started.mode == .automatic, "smart orchestration did not persist Auto mode")
+    try expect(started.transitions.first?.origin == .human, "Auto mode was not explicitly started by a person")
+
+    let plan = SupervisedWorkflowArtifact(kind: .plan, text: "Plan with evidence")
+    let reviewing = try store.advance(
+        id: started.id,
+        to: .reviewingPlan,
+        artifact: plan,
+        detail: "The lead returned a correlated plan.",
+        origin: .automation
+    )
+    try expect(reviewing.transitions.last?.origin == .automation, "automatic advancement was not visibly attributed")
+
+    let review = SupervisedWorkflowArtifact(kind: .planReview, text: "Independent objection")
+    _ = try store.advance(
+        id: started.id,
+        to: .awaitingImplementationApproval,
+        artifact: review,
+        origin: .automation
+    )
+    _ = try store.advance(id: started.id, to: .implementing, artifact: nil, origin: .automation)
+    _ = try store.advance(
+        id: started.id,
+        to: .verifying,
+        artifact: SupervisedWorkflowArtifact(kind: .implementation, text: "Lead report and trusted Git evidence"),
+        origin: .automation
+    )
+    _ = try store.advance(
+        id: started.id,
+        to: .awaitingCompletionApproval,
+        artifact: SupervisedWorkflowArtifact(kind: .verification, text: "Verifier report"),
+        origin: .automation
+    )
+    do {
+        _ = try store.advance(id: started.id, to: .completed, artifact: nil, origin: .automation)
+        throw CheckFailure(description: "Auto mode declared its own result complete")
+    } catch let error as SupervisedWorkflowError {
+        try expect(error.localizedDescription.contains("person"), "automatic completion refusal did not identify the human boundary")
+    }
+    let completed = try store.advance(id: started.id, to: .completed, artifact: nil, origin: .human)
+    try expect(completed.phase == .completed, "a person could not approve an Auto workflow's final result")
+
+    let supervised = try store.start(
+        workspaceID: "@1",
+        workspaceName: "legacy",
+        lead: SupervisedWorkflowParticipant(paneID: "%4", name: "Lead", kind: .claude, workspaceID: "@1"),
+        reviewer: SupervisedWorkflowParticipant(paneID: "%5", name: "Reviewer", kind: .codex, workspaceID: "@1"),
+        verifier: SupervisedWorkflowParticipant(paneID: "%6", name: "Verifier", kind: .agy, workspaceID: "@1"),
+        planningPrompt: "Plan only."
+    )
+    try expect(supervised.mode == .supervised, "existing call sites did not retain supervised mode by default")
+    do {
+        _ = try store.advance(
+            id: supervised.id,
+            to: .reviewingPlan,
+            artifact: SupervisedWorkflowArtifact(kind: .plan, text: "Unreviewed plan"),
+            origin: .automation
+        )
+        throw CheckFailure(description: "Supervised mode accepted an automatic transition")
+    } catch let error as SupervisedWorkflowError {
+        try expect(error.localizedDescription.contains("supervised"), "Supervised mode automation refusal was unclear")
+    }
+    let encoded = try String(contentsOf: file, encoding: .utf8)
+    let withoutMode = encoded.replacingOccurrences(
+        of: "          \"mode\" : \"supervised\",\n",
+        with: ""
+    )
+    try withoutMode.write(to: file, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    let restored = try require(
+        SupervisedWorkflowStore(file: file).runs().first(where: { $0.id == supervised.id }),
+        "legacy supervised workflow was not restored"
+    )
+    try expect(restored.mode == .supervised, "legacy workflow without a mode did not migrate safely")
+
+    let prompts = SmartOrchestrationPromptBuilder(
+        task: "Fix the coordination race without broadening scope."
+    )
+    let planPrompt = try prompts.planning()
+    let reviewPrompt = try prompts.planReview(plan: "Use one mutation lock.")
+    let implementationPrompt = try prompts.implementation(
+        plan: "Use one mutation lock.",
+        review: "Also cover stale revisions."
+    )
+    let verificationPrompt = try prompts.verification(
+        implementationEvidence: "Changed Relay.swift; focused checks passed."
+    )
+    try expect(planPrompt.contains("do not edit files"), "planning prompt did not preserve the read-only boundary")
+    try expect(reviewPrompt.contains("Use one mutation lock."), "review prompt lost the exact proposed plan")
+    try expect(implementationPrompt.contains("Also cover stale revisions."), "implementation prompt lost independent critique")
+    try expect(verificationPrompt.lowercased().contains("do not modify files"), "verification prompt did not preserve the read-only boundary")
+    do {
+        _ = try SmartOrchestrationPromptBuilder(
+            task: String(repeating: "x", count: ContextPackBuilder.defaultMaximumRenderedBytes)
+        ).planning()
+        throw CheckFailure(description: "smart orchestration accepted an oversized stage")
+    } catch let error as SupervisedWorkflowError {
+        try expect(error.localizedDescription.contains("no larger"), "oversized smart-orchestration refusal was unclear")
+    }
+}
+
 private func checkReadableHandoffChainsPreserveEvidence() throws {
     let directory = URL(
         fileURLWithPath: "/private/tmp/parley-handoff-chains-\(UUID().uuidString.lowercased())",
@@ -5043,6 +5176,33 @@ private func checkHumanAskAgainUsesTrackedCoreControlRoute() throws {
     try expect(eventually { result.value != nil }, "Ask This Again remained blocked after its answer returned")
     let completed = try require(result.value, "Ask This Again produced no response")
     try expect(completed.status == 200 && completed.text == "Reviewed answer", "Ask This Again lost its correlated answer")
+
+    let automaticResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        do {
+            automaticResult.set(try client.askFromUI(
+                sourcePaneID: "%source",
+                targetPaneID: "%target",
+                text: "Return one explicit Auto-stage result.",
+                idempotencyKey: "smart-origin-check",
+                origin: .automation
+            ))
+        } catch {
+            automaticResult.set(RelayTextResponse(status: 599, text: error.localizedDescription))
+        }
+    }
+    try expect(eventually { broker.handoffs().contains { $0.idempotencyKey == "smart-origin-check" } }, "Auto Ask did not create durable history")
+    let automatic = try require(
+        broker.handoffs().first { $0.idempotencyKey == "smart-origin-check" },
+        "Auto Ask history disappeared"
+    )
+    try expect(
+        automatic.transitions.prefix(3).allSatisfy { $0.origin == .automation },
+        "Auto Ask was presented as a human-dispatched handoff"
+    )
+    let automaticAnswer = broker.handleAnswer(token: targetToken, consultationID: "current", text: "Explicit Auto result")
+    try expect(automaticAnswer.status == 200, "the Auto Ask target could not return its correlated answer")
+    try expect(eventually { automaticResult.value != nil }, "Auto Ask remained blocked after its answer returned")
 }
 
 private func checkRecoveryGuidanceProjectsKnownFailures() throws {
@@ -8786,6 +8946,7 @@ let checks: [(String, () throws -> Void)] = [
     ("idle agent reaper gates", checkIdleAgentReaperGates),
     ("shared protocol launch adapters", checkSharedProtocolLaunchAdapters),
     ("bounded supervised workflow lifecycle", checkBoundedSupervisedWorkflowLifecycle),
+    ("smart orchestration modes and safety boundaries", checkSmartOrchestrationModesAndBoundaries),
     ("readable handoff chains preserve exact evidence", checkReadableHandoffChainsPreserveEvidence),
     ("supervised lead workflow policy and cancellation", checkSupervisedLeadWorkflowPolicyAndCancellation),
     ("tracked delegation completion and wait", checkTrackedDelegationCompletesAndWaits),
