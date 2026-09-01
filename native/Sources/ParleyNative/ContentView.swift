@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var workspacesExpanded = true
     @State private var participantsExpanded = true
     @State private var favouritesExpanded = true
+    @State private var collapsedWorkspaceFolderIDs: Set<String> = []
 
     var body: some View {
         HSplitView {
@@ -336,58 +337,176 @@ struct ContentView: View {
         let waiting = model.waitingCount(for: workspace.id)
         let failures = model.failureCount(for: workspace.id)
         let unread = model.unreadResultCount(forWorkspace: workspace.id)
+        let foldersExpanded = !collapsedWorkspaceFolderIDs.contains(workspace.workspaceID)
 
-        return Button {
-            model.select(workspace)
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: workspace.isFolderless
-                    ? "square.stack.3d.up"
-                    : (workspace.isActive ? "folder.fill" : "folder"))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(workspace.isActive ? Color.accentColor : Color.secondary)
-                    .frame(width: 15)
-                Text(workspace.name)
-                    .font(.system(size: 11, weight: workspace.isActive ? .semibold : .regular))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if failures > 0 {
-                    Image(systemName: model.requiresHumanAttention(workspace.id) ? "exclamationmark.triangle.fill" : "xmark.octagon.fill")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(model.requiresHumanAttention(workspace.id) ? Color.orange : Color.red)
-                } else if unread > 0 {
-                    Image(systemName: "envelope.badge.fill")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                } else if waiting > 0 {
-                    Image(systemName: "clock")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
+        return VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 2) {
+                if workspace.isFolderless {
+                    Color.clear
+                        .frame(width: 17, height: 22)
+                        .accessibilityHidden(true)
+                } else {
+                    Button {
+                        if foldersExpanded {
+                            collapsedWorkspaceFolderIDs.insert(workspace.workspaceID)
+                        } else {
+                            collapsedWorkspaceFolderIDs.remove(workspace.workspaceID)
+                        }
+                    } label: {
+                        Image(systemName: foldersExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 17, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .help(foldersExpanded ? "Hide attached folders" : "Show attached folders")
+                    .accessibilityLabel(
+                        foldersExpanded
+                            ? "Collapse folders attached to \(workspace.name)"
+                            : "Expand folders attached to \(workspace.name)"
+                    )
                 }
-                Text("\(paneCount)")
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                Button {
+                    model.select(workspace)
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: workspace.isFolderless
+                            ? "square.stack.3d.up"
+                            : (workspace.isActive ? "folder.fill" : "folder"))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(workspace.isActive ? Color.accentColor : Color.secondary)
+                            .frame(width: 15)
+                        Text(workspace.name)
+                            .font(.system(size: 11, weight: workspace.isActive ? .semibold : .regular))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if failures > 0 {
+                            Image(systemName: model.requiresHumanAttention(workspace.id) ? "exclamationmark.triangle.fill" : "xmark.octagon.fill")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(model.requiresHumanAttention(workspace.id) ? Color.orange : Color.red)
+                        } else if unread > 0 {
+                            Image(systemName: "envelope.badge.fill")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                        } else if waiting > 0 {
+                            Image(systemName: "clock")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        Text("\(paneCount)")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 7)
+                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(workspace.isActive ? Color.accentColor.opacity(0.14) : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(workspaceTabHelp(workspace))
+                .accessibilityLabel("Workspace \(workspace.name)")
+                .accessibilityValue(workspaceTabAccessibilityValue(workspace))
+                .accessibilityHint(workspace.isFolderless
+                    ? "Open folderless workspace"
+                    : "Open workspace with \(workspace.attachedFolders.count) attached folder\(workspace.attachedFolders.count == 1 ? "" : "s")")
+                .contextMenu {
+                    workspaceContextMenu(workspace)
+                }
             }
-            .padding(.horizontal, 7)
-            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(workspace.isActive ? Color.accentColor.opacity(0.14) : Color.clear)
-            )
+
+            if foldersExpanded {
+                if workspace.isFolderless {
+                    folderlessWorkspaceRow(workspace)
+                } else {
+                    ForEach(workspace.attachedFolders, id: \.self) { folder in
+                        workspaceFolderRow(folder, workspace: workspace)
+                    }
+                }
+            }
         }
-        .buttonStyle(.plain)
         .listRowInsets(EdgeInsets(top: 1, leading: 5, bottom: 1, trailing: 5))
         .listRowBackground(Color.clear)
-        .help(workspaceTabHelp(workspace))
-        .accessibilityLabel("Workspace \(workspace.name)")
-        .accessibilityValue(workspaceTabAccessibilityValue(workspace))
-        .accessibilityHint(workspace.isFolderless
-            ? "Open folderless workspace"
-            : "Open workspace with \(workspace.attachedFolders.count) attached folder\(workspace.attachedFolders.count == 1 ? "" : "s")")
+    }
+
+    private func folderlessWorkspaceRow(_ workspace: WorkbenchWorkspace) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "folder.badge.questionmark")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.tertiary)
+                .frame(width: 13)
+            Text("No folders attached")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Button("Attach…") {
+                model.attachFolder(to: workspace)
+            }
+            .font(.system(size: 9, weight: .medium))
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            .accessibilityLabel("Attach a folder to \(workspace.name)")
+        }
+        .padding(.leading, 35)
+        .padding(.trailing, 7)
+        .frame(minHeight: 24)
+    }
+
+    private func workspaceFolderRow(_ folder: String, workspace: WorkbenchWorkspace) -> some View {
+        let name = WorkspaceFolderIdentity.displayName(for: folder)
+        let displayPath = (WorkspaceFolderIdentity.normalized(folder) as NSString).abbreviatingWithTildeInPath
+        let isNewPaneFolder = workspace.newPaneFolder.map {
+            WorkspaceFolderIdentity.matches($0, folder)
+        } ?? false
+
+        return HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "folder")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 13, height: 14)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(name)
+                        .font(.system(size: 10, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if isNewPaneFolder {
+                        Text("NEW PANES")
+                            .font(.system(size: 7, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+                Text(displayPath)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.leading, 35)
+        .padding(.trailing, 7)
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .help(folder)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Attached folder \(name)")
+        .accessibilityValue(isNewPaneFolder ? "\(displayPath), used for new panes" : displayPath)
         .contextMenu {
-            workspaceContextMenu(workspace)
+            Button("Use for New Panes") { model.setWorkspaceFolder(folder) }
+            Button(model.isFavouriteFolder(folder) ? "Remove from Favourites" : "Add to Favourites") {
+                model.toggleFavouriteFolder(folder)
+            }
+            Button("Open New Workspace Here") {
+                model.createNewWorkspace(folder: folder)
+            }
+            Divider()
+            Button("Detach from Workspace", role: .destructive) {
+                model.detachFolder(folder, from: workspace)
+            }
         }
     }
 
@@ -532,6 +651,11 @@ struct ContentView: View {
             Divider()
             Button("Browser & Tool Capability…") {
                 model.showPaneToolCapabilitySummary(pane)
+            }
+            if pane.isStarted {
+                Button("Folder Access…") {
+                    model.showFolderAccess(pane)
+                }
             }
         }
         if pane.kind.isAgent && !pane.isStarted {
@@ -2206,6 +2330,13 @@ private struct PaneRow: View {
                                 .foregroundStyle(Color.orange)
                         }
                     }
+                    if pane.kind.isAgent, let rootCount = pane.permissionSelection?.approvedRoots.count,
+                       rootCount > 1 {
+                        Text("·")
+                        Text("\(rootCount) folders")
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Color.accentColor)
+                    }
                     Text("·")
                     Text(processLabel)
                 }
@@ -2266,9 +2397,12 @@ private struct PaneRow: View {
             let enforcement = pane.permissionEnforcement?.label ?? "not recorded"
             return "Permissions: \(name) · \(enforcement)"
         }
+        let folderAccess = pane.permissionSelection.map { selection in
+            "Folder access (\(selection.approvedRoots.count)): \(selection.approvedRoots.joined(separator: ", "))"
+        }
         let role = pane.role.map { "Routing role: \($0)" }
         guard let projectContext else {
-            return [pane.cwd, role, permission].compactMap { $0 }.joined(separator: "\n")
+            return [pane.cwd, role, permission, folderAccess].compactMap { $0 }.joined(separator: "\n")
         }
         let state = projectContext.isDirty ? "dirty" : "clean"
         return [
@@ -2276,6 +2410,7 @@ private struct PaneRow: View {
             "Git: \(projectContext.branch) · \(state)",
             role,
             permission,
+            folderAccess,
         ].compactMap { $0 }.joined(separator: "\n")
     }
 

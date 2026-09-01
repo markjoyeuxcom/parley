@@ -1787,7 +1787,8 @@ public final class RelayBroker: @unchecked Sendable {
             text: text,
             idempotencyKey: suppliedIdempotencyKey,
             humanInitiated: false,
-            preserveFormatting: false
+            preserveFormatting: false,
+            transitionOrigin: nil
         )
     }
 
@@ -1943,7 +1944,8 @@ public final class RelayBroker: @unchecked Sendable {
             text: text,
             idempotencyKey: suppliedIdempotencyKey,
             humanInitiated: false,
-            preserveFormatting: false
+            preserveFormatting: false,
+            transitionOrigin: nil
         )
     }
 
@@ -1953,7 +1955,8 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey suppliedIdempotencyKey: String?,
         humanInitiated: Bool,
-        preserveFormatting: Bool
+        preserveFormatting: Bool,
+        transitionOrigin: RelayTransitionOrigin?
     ) -> RelayTextResponse {
         let cleaned = preserveFormatting
             ? ContextPackText.normalize(text)
@@ -2015,7 +2018,8 @@ public final class RelayBroker: @unchecked Sendable {
                     text: cleaned,
                     idempotencyKey: childKey,
                     humanInitiated: humanInitiated,
-                    preserveFormatting: preserveFormatting
+                    preserveFormatting: preserveFormatting,
+                    transitionOrigin: transitionOrigin
                 )
                 consultationCondition.lock()
                 let handoffID = idempotencyRecords[
@@ -2064,7 +2068,8 @@ public final class RelayBroker: @unchecked Sendable {
         targetPaneIDs: [String],
         text: String,
         idempotencyKey: String? = nil,
-        preserveFormatting: Bool = false
+        preserveFormatting: Bool = false,
+        origin: RelayTransitionOrigin = .human
     ) -> RelayTextResponse {
         let livePanes: [WorkbenchPane]
         do {
@@ -2090,7 +2095,8 @@ public final class RelayBroker: @unchecked Sendable {
             text: text,
             idempotencyKey: idempotencyKey,
             humanInitiated: true,
-            preserveFormatting: preserveFormatting
+            preserveFormatting: preserveFormatting,
+            transitionOrigin: origin
         )
     }
 

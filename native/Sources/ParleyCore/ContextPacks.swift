@@ -186,6 +186,12 @@ public enum ContextPackError: LocalizedError, Equatable {
     }
 }
 
+public enum ContextPackGitDiffScope: Equatable, Sendable {
+    case combined
+    case workingTree
+    case staged
+}
+
 public protocol ContextCommandRunning {
     func run(
         executable: URL,
@@ -374,34 +380,98 @@ public final class ContextPackBuilder: @unchecked Sendable {
     }
 
     public func gitDiff(in folder: String) throws -> ContextPackPart {
+        try gitDiff(in: folder, scope: .combined, relativeFile: nil)
+    }
+
+    /// Recaptures a fixed Git surface from disk. An optional relative file is
+    /// passed only after `--`, never interpreted by a shell or as a Git option.
+    public func gitDiff(
+        in folder: String,
+        scope: ContextPackGitDiffScope,
+        relativeFile: String? = nil
+    ) throws -> ContextPackPart {
         try requireDirectory(folder)
         let root = try git(in: folder, ["rev-parse", "--show-toplevel"])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !root.isEmpty else { throw ContextPackError.commandFailed("git returned no repository root") }
-        let status = try git(in: root, ["status", "--short", "--untracked-files=all"])
+        let captureFolder = relativeFile == nil ? root : folder
+        let pathspec = relativeFile.map { ["--", $0] } ?? ["--"]
+        let status = try git(in: captureFolder, ["status", "--short", "--untracked-files=all"] + pathspec)
             .trimmingCharacters(in: .newlines)
-        let staged = try git(in: root, ["diff", "--cached", "--no-ext-diff", "--no-color", "--"])
-            .trimmingCharacters(in: .newlines)
-        let working = try git(in: root, ["diff", "--no-ext-diff", "--no-color", "--"])
-            .trimmingCharacters(in: .newlines)
-        guard !status.isEmpty || !staged.isEmpty || !working.isEmpty else {
-            throw ContextPackError.noChanges
+        let staged: String
+        let working: String
+        switch scope {
+        case .combined:
+            staged = try git(
+                in: captureFolder,
+                ["diff", "--cached", "--no-ext-diff", "--no-color"] + pathspec
+            ).trimmingCharacters(in: .newlines)
+            working = try git(
+                in: captureFolder,
+                ["diff", "--no-ext-diff", "--no-color"] + pathspec
+            ).trimmingCharacters(in: .newlines)
+        case .workingTree:
+            staged = ""
+            working = try git(
+                in: captureFolder,
+                ["diff", "--no-ext-diff", "--no-color"] + pathspec
+            ).trimmingCharacters(in: .newlines)
+        case .staged:
+            staged = try git(
+                in: captureFolder,
+                ["diff", "--cached", "--no-ext-diff", "--no-color"] + pathspec
+            ).trimmingCharacters(in: .newlines)
+            working = ""
         }
 
-        let content = """
-        Git status:
-        \(status.isEmpty ? "(clean outside the included diffs)" : status)
+        let containsUntracked = status.split(separator: "\n").contains { $0.hasPrefix("??") }
+        let hasChanges = switch scope {
+        case .combined: !status.isEmpty || !staged.isEmpty || !working.isEmpty
+        case .workingTree: !working.isEmpty || containsUntracked
+        case .staged: !staged.isEmpty
+        }
+        guard hasChanges else { throw ContextPackError.noChanges }
 
-        Staged diff:
-        \(staged.isEmpty ? "(none)" : staged)
+        let selected = relativeFile.map { " for \($0)" } ?? ""
+        let content = switch scope {
+        case .combined:
+            """
+            Git status\(selected):
+            \(status.isEmpty ? "(clean outside the included diffs)" : status)
 
-        Working-tree diff:
-        \(working.isEmpty ? "(none)" : working)
+            Staged diff:
+            \(staged.isEmpty ? "(none)" : staged)
 
-        Untracked files are named by status only. Their contents were not read.
-        """
+            Working-tree diff:
+            \(working.isEmpty ? "(none)" : working)
+
+            Untracked files are named by status only. Their contents were not read.
+            """
+        case .workingTree:
+            """
+            Git status\(selected):
+            \(status.isEmpty ? "(none)" : status)
+
+            Working-tree diff:
+            \(working.isEmpty ? "(none; untracked files are named by status only)" : working)
+            """
+        case .staged:
+            """
+            Git status\(selected):
+            \(status.isEmpty ? "(none)" : status)
+
+            Staged diff:
+            \(staged)
+            """
+        }
+        let label = switch scope {
+        case .combined: "Current Git changes"
+        case .workingTree: "Working-tree Git changes"
+        case .staged: "Staged Git changes"
+        }
+        let detail = relativeFile.map { "\(root) · \($0)" } ?? root
         return try part(
-            source: ContextPackSource(kind: .gitDiff, label: "Current Git changes", detail: root),
+            source: ContextPackSource(kind: .gitDiff, label: label, detail: detail),
             text: content
         )
     }

@@ -402,6 +402,9 @@ struct ParleyNativeApp: App {
                     .disabled(model.activeWorkspace == nil)
             }
             CommandMenu("Tools") {
+                Button("Task Manager…") { openWindow(id: "task-manager") }
+                    .keyboardShortcut("t", modifiers: [.command, .shift])
+                Divider()
                 Button("Environment Check…") { model.showEnvironmentCheck() }
                 Button("Compatibility & Releases…") { model.showReleaseLifecycle() }
                 Toggle(
@@ -448,6 +451,13 @@ struct ParleyNativeApp: App {
         }
         .defaultSize(width: 1_120, height: 780)
         .windowResizability(.contentMinSize)
+
+        Window("Task Manager", id: "task-manager") {
+            TaskManagerView(model: model)
+        }
+        .defaultSize(width: 1_020, height: 720)
+        .windowResizability(.contentMinSize)
+
 
         Window("Parley Help", id: "help") {
             HelpView(model: model)

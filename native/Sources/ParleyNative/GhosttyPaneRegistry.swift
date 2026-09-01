@@ -2,6 +2,11 @@ import AppKit
 import GhosttyTerminal
 import ParleyCore
 
+struct GhosttyPaneProcessAnchor {
+    let foregroundPID: Int32?
+    let ttyName: String?
+}
+
 @MainActor
 final class GhosttyPaneRegistry {
     private final class Delegate: NSObject,
@@ -153,6 +158,16 @@ final class GhosttyPaneRegistry {
 
     var selectedView: AppTerminalView? {
         selectedPaneID.flatMap { entries[$0]?.view }
+    }
+
+    func processAnchor(for paneID: String) -> GhosttyPaneProcessAnchor {
+        guard let view = entries[paneID]?.view else {
+            return GhosttyPaneProcessAnchor(foregroundPID: nil, ttyName: nil)
+        }
+        return GhosttyPaneProcessAnchor(
+            foregroundPID: view.foregroundPid,
+            ttyName: view.ttyName
+        )
     }
 
     func focusSelected(in window: NSWindow? = nil) -> Bool {

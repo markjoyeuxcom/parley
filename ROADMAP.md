@@ -21,6 +21,107 @@ Non-negotiable properties:
 - honest state from owned or authoritative facts only;
 - one native app and one embedded Ghostty terminal stack.
 
+## Official direction: vendor-driven, Parley-coordinated
+
+**Decision recorded 2 September 2026.** Parley will be the authenticated
+cross-vendor runtime, handoff and event layer around real vendor CLIs. It will
+not grow parallel research, planning, browser, memory, subagent or task systems
+that compete with capabilities already owned by Claude Code, Codex, Agy or
+Copilot.
+
+The durable product primitive is the **handoff**. A handoff has an authenticated
+source, one explicit target, correlation, lifecycle, result and optional human
+review. Cross-vendor verification is another handoff linked to the item it
+challenges; it is not a second evidence database. Workspace-level decisions
+belong in the Workspace Brief, and multi-handoff review belongs in Status
+Center.
+
+Parley owns:
+
+- retained Ghostty panes, process lifetime and exact pane identity;
+- workspaces, roles, leads and reviewed folder/capability boundaries;
+- authenticated Relay, Ask and Delegate delivery with durable receipts;
+- handoff review, reply lineage, recovery and reviewed Context Pack promotion;
+- normalized, authoritative vendor events where official hooks exist;
+- local attention, lifecycle, discovery and Task Manager facts.
+
+Vendor CLIs own their reasoning interfaces, plans, research and browser tools,
+tasks, teams, subagents, memory, model-specific hooks and MCP/tool semantics.
+Parley may adapt an official vendor hook into a small shared event vocabulary,
+but it must not reinterpret terminal text or replace the vendor workflow.
+
+### Committed sequence
+
+#### Phase 1 — consolidate around handoffs
+
+- [x] Freeze new first-class workflow windows and further Smart Auto expansion
+  until the discovery and event layer is proven.
+- [x] Retire the unreleased Research Board model, window, menu, help topic,
+  Status Center actions, checks and `parley research` protocol namespace.
+- [x] Confirm the experiment never entered a tracked release. Its v10 protocol
+  bump existed only in the dirty development tree, so removal restores the
+  released canonical v9 contract instead of manufacturing v11.
+- [x] Require no production migration because no Research Board build shipped.
+  Leave any local development `research-board.json` untouched rather than
+  silently deleting a person's experimental data.
+- [x] Retire the separate Handoff Chains model and Status Center surface after
+  confirming the current Production and Development runtimes contain no chain
+  data. Leave any legacy `handoff-chains.json` untouched and unloaded rather
+  than silently deleting a person's data; reviewed handoff attributes and
+  lineage remain explicit future work.
+- [ ] Move durable investigation conclusions, rationale, confidence and open
+  questions into the owning Workspace Brief.
+- [ ] Preserve reviewed Context Pack promotion as a Status Center action over
+  selected handoffs.
+
+#### Phase 2 — authenticated discovery and events
+
+- [ ] Add `parley whoami` for the caller's authenticated pane, workspace,
+  vendor and role identity without revealing credentials.
+- [ ] Add `parley panes` for bounded discovery of valid explicit targets and
+  authoritative pane lifecycle facts.
+- [ ] Add `parley events --since <cursor>` for local, ordered, resumable and
+  bounded cross-vendor lifecycle/handoff events.
+- [ ] Keep event payloads content-minimal, runtime-local and protected by the
+  existing pane capability boundary.
+
+#### Phase 3 — official vendor hook adapters
+
+- [ ] Add `parley signal <event>` as the authenticated ingress used only by
+  Parley-managed vendor hook adapters.
+- [ ] Normalize official structured hooks, where available, to a deliberately
+  small vocabulary: `session-started`, `turn-started`, `turn-ended`,
+  `awaiting-permission`, `notification` and `session-ended`.
+- [ ] Record the emitting pane and vendor as owned identity; never allow a hook
+  payload to choose another sender.
+- [ ] Report **Unknown** when a vendor lacks an authoritative hook. Do not fill
+  gaps with prompt scraping, terminal heuristics or guessed completion.
+- [ ] Verify each vendor's current official hook contract at implementation
+  time and keep adapters independent of the canonical protocol wording.
+
+#### Phase 4 — review primitives in Status Center
+
+- [ ] Add **Challenge** and **Verify** actions that create one correlated
+  handoff to one explicit pane and retain `inReplyTo` lineage.
+- [ ] Add person-owned verdict and note fields to completed handoffs. Agents may
+  propose evidence but cannot mark their own result reviewed.
+- [ ] Support side-by-side and multi-select review without creating a separate
+  evidence entity or hidden synthesis step.
+- [ ] Promote selected reviewed results into an editable Context Pack with
+  source pane, route, relationship and review state preserved.
+- [ ] Keep source selection explicit and stop at human review before any new
+  vendor submission.
+
+#### Phase 5 — prove the runtime, then prune
+
+- [ ] Add local-only product diagnostics for which coordination primitives are
+  used, without collecting prompts, results, terminal content or telemetry.
+- [ ] Measure delivery correctness, event loss/replay, recovery time and
+  long-running pane stability before expanding automation.
+- [ ] Remove unused duplicate surfaces after their durable data has migrated.
+- [ ] Make runtime soak quality and exact teardown a release gate for this
+  direction.
+
 ## Current baseline
 
 ### Native app and pane lifetime
@@ -46,6 +147,8 @@ Non-negotiable properties:
 - [x] One-executable app packaging and runtime manifest.
 - [x] Window close keeps coordination available; application quit ends it.
 - [x] Status Center reports embedded terminal and app-resident core health.
+- [x] Native Task Manager attributes live process trees to exact Ghostty panes,
+  groups them by workspace and exposes only confirmed pane-level controls.
 
 ### Delivery correctness
 
@@ -72,13 +175,22 @@ Non-negotiable properties:
 ### Supervised collaboration
 
 - [x] Human Ask and Return previews.
-- [x] Activity lane, handoff chains and Status Center.
+- [x] Activity lane and Status Center. The separate Handoff Chains experiment
+  was later retired before the handoff-review event model so Parley does not
+  maintain a parallel evidence store.
 - [x] Explicit stop/cancel/retry/repeat actions.
 - [x] Local handoff history with retention and reviewed export.
 - [x] Supervised lead workflows and bounded fan-out.
 - [x] Smart Plan → Review → Implement → Verify orchestration with persisted
   Supervised and Auto modes, automation-attributed transitions and a mandatory
   final human completion decision.
+- [x] Research Board experiment validated exact handoff attribution,
+  person-owned verdicts, reply lineage and reviewed multi-result Context Pack
+  promotion. It is superseded as a standalone product surface; Phase 1 retains
+  those useful primitives while removing the parallel evidence model.
+- [x] Bounded independent evidence collection demonstrated explicit multi-pane
+  sourcing without inferred synthesis. Future collection remains ordinary,
+  attributable handoffs reviewed in Status Center.
 - [x] Honest Unknown when no structured vendor state exists.
 
 ### Daily workspace
@@ -93,7 +205,19 @@ Non-negotiable properties:
   creating fresh identity.
 - [x] Workspace briefs, pinned snippets and reviewed context packs.
 - [x] Git context/diff capture and optional worktree awareness.
-- [x] Preview-only VS Code context import and content-free attention projection.
+- [x] VS Code companion Phase 1 — fail-closed Production capability negotiation,
+  correlated one-shot preview acknowledgements and privacy-safe diagnostics.
+- [x] VS Code companion Phase 2 — one multi-select context composer for editor
+  selections, files, diagnostics, Explorer resources and whole or path-scoped
+  staged/working Git changes.
+- [x] VS Code companion Phase 3 — native Collaboration views for content-free
+  attention, durable workspaces and exact live-pane navigation without a chat
+  surface or hidden vendor control.
+- [x] VS Code companion Phase 4 — per-window, per-folder in-memory Context
+  Baskets with exact-source replacement, bounded review and clear-on-accepted
+  acknowledgement semantics. Captured text is never persisted by the extension.
+- [x] VS Code companion Phase 5 — recovery actions, native welcome/onboarding
+  surfaces, packaging assets and deterministic model/extension-host coverage.
 
 ### Shipping
 
@@ -185,6 +309,11 @@ Non-negotiable properties:
 - A web renderer, embedded browser runtime, second terminal stack or external
   multiplexer.
 - Automatic repository mutation outside an explicit visible vendor pane.
+- A separate research/evidence database or first-class Research Board.
+- Parley-owned replacements for vendor planning, browsing, task, team,
+  subagent, memory, MCP or tool interfaces.
+- Treating terminal text, raw keystroke control or an unauthenticated external
+  socket as authoritative coordination state.
 
 ## Success measures
 
@@ -197,6 +326,13 @@ Non-negotiable properties:
 - Full application quit leaves no pane or coordination process behind.
 - Every cross-vendor message is attributable to an authenticated source and an
   explicit target.
+- Every reviewed claim remains an attributable handoff with optional human
+  verdict, note and reply lineage; workspace decisions have one durable home in
+  the Workspace Brief.
+- An authenticated pane can discover its own identity, valid targets and new
+  authoritative events without gaining control of another pane.
+- Unsupported vendor lifecycle state is visibly **Unknown**, never guessed from
+  terminal output.
 - Failed, interrupted and completed work remains distinguishable without
   reading or guessing from terminal text.
 - Deterministic checks, native build, Ghostty soak, packaging checks and public

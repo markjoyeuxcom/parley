@@ -107,12 +107,15 @@ enum PanePermissionAction: Equatable {
     case create(SplitDirection)
     case restart(String)
     case start(String)
+    case folderAccess(String)
 }
 
 struct PanePermissionRequest: Identifiable, Equatable {
     let id = UUID()
     let kind: PaneKind
     let folder: String
+    let workspaceName: String
+    let workspaceFolders: [String]
     let action: PanePermissionAction
     let existingSelection: PermissionProfileSelection?
 
@@ -121,7 +124,12 @@ struct PanePermissionRequest: Identifiable, Equatable {
         case .create: "Start Pane"
         case .restart: "Restart Pane"
         case .start: "Start Pane"
+        case .folderAccess: "Restart with Access"
         }
+    }
+
+    var isFolderAccessReview: Bool {
+        if case .folderAccess = action { true } else { false }
     }
 }
 
@@ -191,7 +199,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var teamTemplates: [TeamTemplate] = []
     @Published private(set) var recipes: [HandoffRecipe] = []
     @Published private(set) var supervisedWorkflowRuns: [SupervisedWorkflowRun] = []
-    @Published private(set) var handoffChains: [HandoffChain] = []
     @Published private(set) var permissionProfiles: [PermissionProfileDefinition] = []
     @Published private(set) var activeRecipeRun: ActiveRecipeRun?
     @Published private(set) var askManyComparisonRun: AskManyComparisonRun?
@@ -223,6 +230,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var sendingReviewedBusyDraftID: String?
     @Published private(set) var historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy
     @Published private(set) var terminalFontPreference = TerminalFontPreference.ghosttyDefault
+    @Published private(set) var taskManagerSnapshot: TaskManagerSnapshot?
     @Published private(set) var preparingToUninstall = false
     @Published var commandPalettePresented = false
     @Published var setupPresented = false
@@ -263,7 +271,6 @@ final class AppModel: ObservableObject {
     private let teamTemplateStore: TeamTemplateStore
     private let recipeStore: HandoffRecipeStore
     private let supervisedWorkflowStore: SupervisedWorkflowStore
-    private let handoffChainStore: HandoffChainStore
     private let workspaceBriefStore: WorkspaceBriefStore
     private let pinnedContextSnippetStore: PinnedContextSnippetStore
     private let permissionProfileStore: PermissionProfileStore
@@ -290,7 +297,9 @@ final class AppModel: ObservableObject {
     private var preparedForUninstall = false
     private var lastExternalAttentionSnapshot: ExternalAttentionSnapshot?
     private var lastExternalAttentionPublishedAt = Date.distantPast
+    private var lastExternalEditorCapabilitiesPublishedAt = Date.distantPast
     private var periodicRefreshTimer: Timer?
+    private let taskManagerSampler = TaskManagerSampler()
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
     private static let workspaceIdentityRecentResetKey = "parley.workspaceIdentityRecentResetV1"
     private static let workspaceContinuityKey = "parley.workspaceContinuity"
@@ -363,9 +372,6 @@ final class AppModel: ObservableObject {
         supervisedWorkflowStore = SupervisedWorkflowStore(
             file: applicationDirectory.appendingPathComponent("supervised-workflows.json")
         )
-        handoffChainStore = HandoffChainStore(
-            file: applicationDirectory.appendingPathComponent("handoff-chains.json")
-        )
         workspaceBriefStore = WorkspaceBriefStore(
             file: applicationDirectory.appendingPathComponent("workspace-briefs.json")
         )
@@ -398,7 +404,6 @@ final class AppModel: ObservableObject {
             )
         }
         supervisedWorkflowRuns = (try? supervisedWorkflowStore.runs()) ?? restoredWorkflows
-        handoffChains = (try? handoffChainStore.chains()) ?? []
         workspaceBriefs = (try? workspaceBriefStore.briefs()) ?? []
         pinnedContextSnippets = (try? pinnedContextSnippetStore.snippets()) ?? []
         permissionProfiles = (try? permissionProfileStore.profiles())
@@ -847,6 +852,7 @@ final class AppModel: ObservableObject {
         ), let controller else {
             residentCore?.stop()
             ghosttyRegistry.stopAll()
+            removeExternalEditorCapabilities()
             return true
         }
 
@@ -871,6 +877,7 @@ final class AppModel: ObservableObject {
                 )
                 residentCore?.stop()
                 try controller.shutdown()
+                removeExternalEditorCapabilities()
                 return true
             } catch {
                 let failure = NSAlert()
@@ -891,6 +898,74 @@ final class AppModel: ObservableObject {
     func showEnvironmentCheck() {
         setupPresented = true
         refreshRuntimeReadiness()
+    }
+
+    func refreshTaskManager() {
+        let workspaceNames = Dictionary(
+            uniqueKeysWithValues: workspaces.map { ($0.workspaceID, $0.name) }
+        )
+        let descriptors = panes.map { pane in
+            let anchor = ghosttyRegistry.processAnchor(for: pane.id)
+            return TaskManagerPaneDescriptor(
+                paneID: pane.id,
+                workspaceID: pane.workspaceID,
+                workspaceName: workspaceNames[pane.workspaceID] ?? pane.workspaceName ?? pane.workspaceID,
+                paneName: pane.displayName,
+                kind: pane.kind,
+                workingDirectory: pane.cwd,
+                isSelected: pane.isActive,
+                isStarted: pane.isStarted,
+                foregroundPID: anchor.foregroundPID,
+                ttyName: anchor.ttyName,
+                ttyDevice: anchor.ttyName.flatMap(TaskManagerTTY.deviceID(for:))
+            )
+        }
+        taskManagerSnapshot = taskManagerSampler.sample(
+            applicationPID: ProcessInfo.processInfo.processIdentifier,
+            paneDescriptors: descriptors
+        )
+    }
+
+    func interruptFromTaskManager(_ paneID: String) {
+        guard let pane = panes.first(where: { $0.id == paneID }), pane.isStarted else { return }
+        let alert = NSAlert()
+        alert.messageText = "Send Control-C to \(pane.displayName)?"
+        alert.informativeText = "This interrupts the current foreground command in that pane. Parley will not end or restart the pane."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Send Control-C")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        perform {
+            try controller?.interruptPane(paneID)
+            refreshTaskManager()
+        }
+    }
+
+    func copyTaskManagerDiagnostics(_ paneSnapshot: TaskManagerPaneSnapshot) {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .memory
+        let cpu = paneSnapshot.cpuPercent.map { String(format: "%.1f%%", $0) } ?? "unavailable"
+        var lines = [
+            "Parley pane diagnostics",
+            "Pane: \(paneSnapshot.paneName) (\(paneSnapshot.paneID))",
+            "Kind: \(paneSnapshot.kind.label)",
+            "State: \(paneSnapshot.isStarted ? "started" : "stopped")",
+            "Working folder: \(paneSnapshot.workingDirectory)",
+            "TTY: \(paneSnapshot.ttyName ?? "unavailable")",
+            "Foreground PID: \(paneSnapshot.foregroundPID.map(String.init) ?? "unavailable")",
+            "CPU: \(cpu)",
+            "Resident memory: \(formatter.string(fromByteCount: Int64(clamping: paneSnapshot.residentBytes)))",
+            "Processes: \(paneSnapshot.processCount)",
+        ]
+        for process in paneSnapshot.processes {
+            let processCPU = process.cpuPercent.map { String(format: "%.1f%%", $0) } ?? "unavailable"
+            lines.append(
+                "- PID \(process.pid) \(process.name): CPU \(processCPU), RSS \(formatter.string(fromByteCount: Int64(clamping: process.residentBytes)))"
+            )
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(lines.joined(separator: "\n"), forType: .string)
     }
 
     var canPrepareToUninstall: Bool {
@@ -938,6 +1013,7 @@ final class AppModel: ObservableObject {
                 self.coreAvailable = false
                 self.coreError = nil
                 self.preparedForUninstall = true
+                self.removeExternalEditorCapabilities()
 
                 let ready = NSAlert()
                 ready.messageText = "Parley Is Ready to Remove"
@@ -2056,6 +2132,7 @@ final class AppModel: ObservableObject {
     private func publishExternalAttentionSnapshot(force: Bool = false) {
         guard runtime.mode == .production else { return }
         let now = Date()
+        publishExternalEditorCapabilities(generatedAt: now, force: force)
         let snapshot = externalAttentionSnapshot(generatedAt: now)
         let contentChanged = lastExternalAttentionSnapshot?.hasSameContent(as: snapshot) != true
         let heartbeatDue = now.timeIntervalSince(lastExternalAttentionPublishedAt)
@@ -2073,6 +2150,33 @@ final class AppModel: ObservableObject {
             // unavailable. UI refresh must never fail because this optional,
             // read-only integration surface cannot be published safely.
         }
+    }
+
+    private func publishExternalEditorCapabilities(generatedAt: Date, force: Bool) {
+        let heartbeatDue = generatedAt.timeIntervalSince(lastExternalEditorCapabilitiesPublishedAt)
+            >= Self.externalAttentionHeartbeatInterval
+        guard force || heartbeatDue else { return }
+        do {
+            try ExternalEditorBridgeCapabilitiesFile.write(
+                ExternalEditorBridgeCapabilities(generatedAt: generatedAt),
+                applicationDirectory: applicationDirectory
+            )
+            try ExternalContextAcknowledgementFile.removeExpired(
+                applicationDirectory: applicationDirectory,
+                olderThan: ExternalContextImport.requestLifetime * 2,
+                now: generatedAt
+            )
+            lastExternalEditorCapabilitiesPublishedAt = generatedAt
+        } catch {
+            // A missing or stale file makes the optional editor bridge fail
+            // closed. It must never interrupt the native workbench refresh.
+        }
+    }
+
+    private func removeExternalEditorCapabilities() {
+        guard runtime.mode == .production else { return }
+        ExternalEditorBridgeCapabilitiesFile.remove(applicationDirectory: applicationDirectory)
+        lastExternalEditorCapabilitiesPublishedAt = .distantPast
     }
 
     func refreshStatusCenterQuietly() {
@@ -2187,14 +2291,6 @@ final class AppModel: ObservableObject {
         )
     }
 
-    func statusHandoffChains(workspaceID: String?) -> [HandoffChain] {
-        let aliases = workspaceID.map(workspaceAliases(for:)) ?? []
-        return handoffChains.filter { workspaceID == nil || aliases.contains($0.workspaceID) }
-            .sorted {
-                if $0.updatedAt == $1.updatedAt { return $0.id < $1.id }
-                return $0.updatedAt > $1.updatedAt
-            }
-    }
 
     func statusReviewedBusyDrafts(workspaceID: String?) -> [ReviewedBusyDraft] {
         let aliases = workspaceID.map(workspaceAliases(for:)) ?? []
@@ -2295,126 +2391,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func chains(containing handoff: RelayHandoff) -> [HandoffChain] {
-        handoffChains.filter { chain in
-            chain.entries.contains(where: { $0.handoffID == handoff.id })
-        }
-    }
-
-    func chainsAccepting(_ handoff: RelayHandoff) -> [HandoffChain] {
-        handoffChains.filter { chain in
-            (chain.workspaceID == handoff.sourceWorkspaceID || chain.workspaceID == handoff.targetWorkspaceID)
-                && !chain.entries.contains(where: { $0.handoffID == handoff.id })
-        }
-    }
-
-    func createHandoffChain(from handoff: RelayHandoff) -> HandoffChain? {
-        let alert = NSAlert()
-        alert.messageText = "Start a Handoff Chain"
-        alert.informativeText = "Give this person-curated collaboration history a short title. The selected handoff is snapshotted exactly; no agent is contacted."
-        let suggested = Self.paletteSubject(handoff.text)
-        let field = NSTextField(string: String(suggested.prefix(160)))
-        field.placeholderString = "What this collaboration is about"
-        field.frame = NSRect(x: 0, y: 0, width: 380, height: 24)
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Create Chain")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-
-        do {
-            let workspaceID = handoff.sourceWorkspaceID
-            let recordedWorkspaceName = handoff.sourceWorkspaceName?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let workspaceName = if let recordedWorkspaceName, !recordedWorkspaceName.isEmpty {
-                recordedWorkspaceName
-            } else {
-                workspaces.first(where: { $0.id == workspaceID })?.name ?? workspaceID
-            }
-            let chain = try handoffChainStore.create(
-                title: field.stringValue,
-                workspaceID: workspaceID,
-                workspaceName: workspaceName,
-                firstEntry: HandoffChainEntry(handoff: handoff)
-            )
-            try reloadHandoffChains()
-            terminalHandle.focus()
-            return chain
-        } catch {
-            NSAlert(error: error).runModal()
-            terminalHandle.focus()
-            return nil
-        }
-    }
-
-    func addHandoff(_ handoff: RelayHandoff, to chain: HandoffChain) {
-        perform {
-            _ = try handoffChainStore.add(entry: HandoffChainEntry(handoff: handoff), to: chain.id)
-            try reloadHandoffChains()
-            terminalHandle.focus()
-        }
-    }
-
-    func bookmarkResult(
-        from handoff: RelayHandoff,
-        in chain: HandoffChain,
-        as kind: HandoffChainBookmarkKind
-    ) {
-        guard kind != .decision,
-              let result = handoff.resultText,
-              !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let entry = chain.entries.first(where: { $0.handoffID == handoff.id }) else { return }
-        let alert = NSAlert()
-        alert.messageText = "Bookmark as \(kind.label)?"
-        alert.informativeText = "Parley will preserve the complete returned result verbatim in \(chain.title). It will not summarize it or infer agreement."
-        alert.addButton(withTitle: "Bookmark \(kind.label)")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform {
-            _ = try handoffChainStore.bookmark(
-                chainID: chain.id,
-                entryID: entry.id,
-                kind: kind,
-                text: result
-            )
-            try reloadHandoffChains()
-            terminalHandle.focus()
-        }
-    }
-
-    func addDecision(to chain: HandoffChain) {
-        guard let decision = editSupervisedWorkflowText(
-            title: "Add Human Decision",
-            message: "Record the decision in your own words. It remains attributed to the person using Parley and is never presented as agent consensus.",
-            text: "",
-            action: "Save Decision",
-            insertVisible: { "" }
-        ) else { return }
-        perform {
-            _ = try handoffChainStore.addDecision(chainID: chain.id, text: decision)
-            try reloadHandoffChains()
-            terminalHandle.focus()
-        }
-    }
-
-    func deleteHandoffChain(_ chain: HandoffChain) -> Bool {
-        let alert = NSAlert()
-        alert.messageText = "Delete \(chain.title)?"
-        alert.informativeText = "This permanently deletes the curated chain, its exact snapshots, bookmarks and human decisions. The broker's ordinary handoff journal is unchanged."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete Chain")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return false }
-        do {
-            try handoffChainStore.delete(id: chain.id)
-            try reloadHandoffChains()
-            terminalHandle.focus()
-            return true
-        } catch {
-            NSAlert(error: error).runModal()
-            terminalHandle.focus()
-            return false
-        }
-    }
 
     func isDismissed(_ handoff: RelayHandoff) -> Bool {
         dismissedHandoffIDs.contains(handoff.id)
@@ -2471,8 +2447,8 @@ final class AppModel: ObservableObject {
             let alert = NSAlert()
             alert.messageText = "Keep up to \(requested.maximumRecords) local history records?"
             alert.informativeText = lowering
-                ? "Parley will keep up to \(requested.maximumRecords) collaboration handoffs and \(requested.maximumRecords) lifecycle events. Lowering the current \(historyRetentionPolicy.maximumRecords)-record limit permanently removes the oldest eligible records immediately and cannot restore them later. Active handoffs and curated handoff chains are always preserved. This changes only this local \(runtime.mode.label) runtime; nothing is uploaded."
-                : "Parley will keep up to \(requested.maximumRecords) collaboration handoffs and \(requested.maximumRecords) lifecycle events. Increasing the limit does not restore records previously removed. Active handoffs and curated handoff chains are preserved. This changes only this local \(runtime.mode.label) runtime; nothing is uploaded."
+                ? "Parley will keep up to \(requested.maximumRecords) collaboration handoffs and \(requested.maximumRecords) lifecycle events. Lowering the current \(historyRetentionPolicy.maximumRecords)-record limit permanently removes the oldest eligible records immediately and cannot restore them later. Active handoffs are always preserved. This changes only this local \(runtime.mode.label) runtime; nothing is uploaded."
+                : "Parley will keep up to \(requested.maximumRecords) collaboration handoffs and \(requested.maximumRecords) lifecycle events. Increasing the limit does not restore records previously removed. Active handoffs are preserved. This changes only this local \(runtime.mode.label) runtime; nothing is uploaded."
             alert.alertStyle = lowering ? .warning : .informational
             alert.addButton(withTitle: lowering ? "Apply and Prune" : "Change Retention")
             alert.addButton(withTitle: "Cancel")
@@ -2488,7 +2464,7 @@ final class AppModel: ObservableObject {
             guard change.removedHandoffs > 0 || change.removedActivityEvents > 0 else { return }
             let result = NSAlert()
             result.messageText = "Local History Retention Updated"
-            result.informativeText = "Parley removed \(change.removedHandoffs) terminal handoff record\(change.removedHandoffs == 1 ? "" : "s") and \(change.removedActivityEvents) lifecycle event\(change.removedActivityEvents == 1 ? "" : "s"). Active work and curated handoff chains were preserved."
+            result.informativeText = "Parley removed \(change.removedHandoffs) terminal handoff record\(change.removedHandoffs == 1 ? "" : "s") and \(change.removedActivityEvents) lifecycle event\(change.removedActivityEvents == 1 ? "" : "s"). Active work was preserved."
             result.addButton(withTitle: "OK")
             result.runModal()
         } catch {
@@ -2659,6 +2635,8 @@ final class AppModel: ObservableObject {
         panePermissionRequest = PanePermissionRequest(
             kind: kind,
             folder: standardized,
+            workspaceName: activeWorkspace?.name ?? "Workspace",
+            workspaceFolders: activeWorkspace?.attachedFolders ?? [],
             action: .create(direction),
             existingSelection: nil
         )
@@ -2778,11 +2756,35 @@ final class AppModel: ObservableObject {
                         detail: "\(pane.kind.label) pane restarted with \(definition.name) permissions."
                     ))
                 }
+            case let .folderAccess(paneID):
+                guard let pane = panes.first(where: { $0.id == paneID }) else {
+                    throw RelayUIError.message("That pane no longer exists.")
+                }
+                guard effective.selection != pane.permissionSelection else {
+                    throw RelayUIError.message("Folder access is unchanged; the pane was not restarted.")
+                }
+                let alert = NSAlert()
+                alert.messageText = "Restart \(pane.displayName) with new folder access?"
+                alert.informativeText = "The current vendor process will end. Its working folder remains \(request.folder). On restart, only the exact reviewed roots shown here are passed to the vendor CLI."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Restart with Access")
+                alert.addButton(withTitle: "Keep Current Session")
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+                try controller.restartPane(paneID, permissionProfile: effective)
+                try recordSuccessfulActivity(RelayActivityEventRequest(
+                    kind: .paneRestarted,
+                    workspaceID: pane.workspaceID,
+                    workspaceName: pane.workspaceName ?? pane.workspaceID,
+                    paneID: pane.id,
+                    paneName: pane.displayName,
+                    paneKind: pane.kind,
+                    detail: "\(pane.kind.label) pane restarted with \(definition.name) access to \(effective.approvedRoots.count) reviewed folder\(effective.approvedRoots.count == 1 ? "" : "s")."
+                ))
             case let .start(paneID):
                 try controller.startPane(paneID, permissionProfile: effective)
             }
 
-            if definition.defaultLifetime == .remembered {
+            if definition.defaultLifetime == .remembered, !request.isFolderAccessReview {
                 preferences.set(
                     definition.id,
                     forKey: permissionProfilePreferenceKey(for: request.kind)
@@ -4430,9 +4432,6 @@ final class AppModel: ObservableObject {
         supervisedWorkflowRuns = try supervisedWorkflowStore.runs()
     }
 
-    private func reloadHandoffChains() throws {
-        handoffChains = try handoffChainStore.chains()
-    }
 
     private func reloadWorkspaceBriefs() throws {
         workspaceBriefs = try workspaceBriefStore.briefs()
@@ -4944,9 +4943,12 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         if pane.kind.isAgent {
+            let workspace = workspaces.first { $0.workspaceID == pane.workspaceID }
             panePermissionRequest = PanePermissionRequest(
                 kind: pane.kind,
                 folder: pane.cwd,
+                workspaceName: workspace?.name ?? pane.workspaceName ?? "Workspace",
+                workspaceFolders: workspace?.attachedFolders ?? [],
                 action: .restart(pane.id),
                 existingSelection: pane.permissionSelection
             )
@@ -4989,6 +4991,8 @@ final class AppModel: ObservableObject {
                 panePermissionRequest = PanePermissionRequest(
                     kind: pane.kind,
                     folder: folder,
+                    workspaceName: workspace?.name ?? pane.workspaceName ?? "Workspace",
+                    workspaceFolders: workspace?.attachedFolders ?? [],
                     action: .start(pane.id),
                     existingSelection: nil
                 )
@@ -5000,7 +5004,26 @@ final class AppModel: ObservableObject {
         panePermissionRequest = PanePermissionRequest(
             kind: pane.kind,
             folder: pane.cwd,
+            workspaceName: workspace?.name ?? pane.workspaceName ?? "Workspace",
+            workspaceFolders: workspace?.attachedFolders ?? [],
             action: .start(pane.id),
+            existingSelection: pane.permissionSelection
+        )
+    }
+
+    func showFolderAccess(_ pane: WorkbenchPane) {
+        guard pane.kind.isAgent else { return }
+        guard pane.isStarted else {
+            start(pane)
+            return
+        }
+        let workspace = workspaces.first { $0.workspaceID == pane.workspaceID }
+        panePermissionRequest = PanePermissionRequest(
+            kind: pane.kind,
+            folder: pane.cwd,
+            workspaceName: workspace?.name ?? pane.workspaceName ?? "Workspace",
+            workspaceFolders: workspace?.attachedFolders ?? [],
+            action: .folderAccess(pane.id),
             existingSelection: pane.permissionSelection
         )
     }
@@ -5255,10 +5278,12 @@ final class AppModel: ObservableObject {
     }
 
     func importExternalContext(file: URL) {
-        perform {
-            guard let contextPackBuilder else {
-                throw RelayUIError.message("Context capture is unavailable while Parley is starting.")
-            }
+        let requestID = ExternalContextImport.requestIdentifier(
+            file: file,
+            applicationDirectory: applicationDirectory
+        )
+        do {
+            guard let contextPackBuilder else { throw ExternalContextPresentationError.contextUnavailable }
             let imported = try ExternalContextImport.consume(
                 file: file,
                 applicationDirectory: applicationDirectory,
@@ -5274,9 +5299,7 @@ final class AppModel: ObservableObject {
                     && $0.hasCurrentProtocol
             }
             guard let source = candidates.first(where: \.isActive) ?? candidates.first else {
-                throw RelayUIError.message(
-                    "Parley opened this workspace, but it has no ready agent pane. Start the pane you want to send from, then run the VS Code command again. Nothing was submitted."
-                )
+                throw ExternalContextPresentationError.noReadyAgent
             }
             if let existing = contextPackDraft, !existing.pack.parts.isEmpty {
                 let alert = NSAlert()
@@ -5285,7 +5308,14 @@ final class AppModel: ObservableObject {
                 alert.alertStyle = .warning
                 alert.addButton(withTitle: "Open VS Code Context")
                 alert.addButton(withTitle: "Keep Current Draft")
-                guard alert.runModal() == .alertFirstButtonReturn else { return }
+                guard alert.runModal() == .alertFirstButtonReturn else {
+                    publishExternalContextAcknowledgement(.rejected(
+                        requestID: imported.requestID,
+                        code: .declinedReplacement,
+                        message: "Parley kept the existing context pack. Nothing was submitted."
+                    ))
+                    return
+                }
             }
             var draft = ActiveContextPack(
                 id: UUID().uuidString.lowercased(),
@@ -5305,6 +5335,86 @@ final class AppModel: ObservableObject {
             updateContextPackMeasurement(&draft)
             contextPackDraft = draft
             contextPackPresented = true
+            publishExternalContextAcknowledgement(.accepted(
+                requestID: imported.requestID,
+                workspaceID: workspace.workspaceID,
+                sourceCount: imported.parts.count
+            ))
+        } catch {
+            if let requestID {
+                publishExternalContextAcknowledgement(
+                    externalContextFailureAcknowledgement(requestID: requestID, error: error)
+                )
+            }
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    private func externalContextFailureAcknowledgement(
+        requestID: String,
+        error: Error
+    ) -> ExternalContextAcknowledgement {
+        if let importError = error as? ExternalContextImportError {
+            switch importError {
+            case .expiredManifest:
+                return .expired(requestID: requestID)
+            case .unsupportedVersion:
+                return .rejected(
+                    requestID: requestID,
+                    code: .unsupportedVersion,
+                    message: "Update Parley and its VS Code companion together, then build the context pack again."
+                )
+            case .invalidItem:
+                return .rejected(
+                    requestID: requestID,
+                    code: .invalidSource,
+                    message: "One selected editor source could not be recaptured safely. Nothing was submitted."
+                )
+            case .unsafeManifest, .invalidManifest:
+                return .rejected(
+                    requestID: requestID,
+                    code: .invalidRequest,
+                    message: "Parley refused that editor context request. Nothing was submitted."
+                )
+            }
+        }
+        if let presentationError = error as? ExternalContextPresentationError {
+            return .rejected(
+                requestID: requestID,
+                code: presentationError.code,
+                message: presentationError.safeMessage
+            )
+        }
+        if error is ContextPackError {
+            return .rejected(
+                requestID: requestID,
+                code: .invalidSource,
+                message: "One selected source could not be captured within Parley's context limits. Nothing was submitted."
+            )
+        }
+        return .rejected(
+            requestID: requestID,
+            code: .internalError,
+            message: "Parley could not open the editable context preview. Nothing was submitted."
+        )
+    }
+
+    private func publishExternalContextAcknowledgement(
+        _ acknowledgement: ExternalContextAcknowledgement
+    ) {
+        guard runtime.mode == .production else { return }
+        do {
+            try ExternalContextAcknowledgementFile.write(
+                acknowledgement,
+                applicationDirectory: applicationDirectory
+            )
+        } catch {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "VS Code confirmation unavailable"
+            alert.informativeText = "Parley could not publish the local one-shot confirmation. The context preview state shown in Parley is authoritative.\n\n\(error.localizedDescription)"
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
         }
     }
 
@@ -6070,6 +6180,36 @@ private enum RelayUIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .message(message): message
+        }
+    }
+}
+
+private enum ExternalContextPresentationError: LocalizedError {
+    case contextUnavailable
+    case noReadyAgent
+
+    var code: ExternalContextAcknowledgementCode {
+        switch self {
+        case .contextUnavailable: .contextUnavailable
+        case .noReadyAgent: .noReadyAgent
+        }
+    }
+
+    var safeMessage: String {
+        switch self {
+        case .contextUnavailable:
+            "Parley's context preview is unavailable while the workbench is starting. Nothing was submitted."
+        case .noReadyAgent:
+            "Start a ready agent pane in that workspace, then build the context pack again. Nothing was submitted."
+        }
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .contextUnavailable:
+            "Context capture is unavailable while Parley is starting."
+        case .noReadyAgent:
+            "Parley opened this workspace, but it has no ready agent pane. Start the pane you want to send from, then run the VS Code command again. Nothing was submitted."
         }
     }
 }
