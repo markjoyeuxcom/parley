@@ -5970,6 +5970,33 @@ private func checkRelayFilesystemRuntimeIsProtectedAndStopsCleanly() throws {
     }
 }
 
+private func checkRelayFilesystemStartupRemovesOrphanedEndpoints() throws {
+    let directory = try temporaryDirectory()
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    _ = try credentials.token(for: "%1")
+    let broker = RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in })
+    let runtime = directory.appendingPathComponent("runtime", isDirectory: true)
+    try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+    let orphanedEndpoint = RelayFileTransport.endpointDirectory(
+        runtimeDirectory: runtime,
+        paneToken: String(repeating: "a", count: 48)
+    )
+    try FileManager.default.createDirectory(at: orphanedEndpoint, withIntermediateDirectories: false)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o700],
+        ofItemAtPath: orphanedEndpoint.path
+    )
+
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: runtime)
+    try transport.start()
+    defer { transport.stop() }
+
+    try expect(
+        !FileManager.default.fileExists(atPath: orphanedEndpoint.path),
+        "filesystem relay startup retained an endpoint whose credential was revoked"
+    )
+}
+
 private func checkLargeCoreActivityResponseIsComplete() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
@@ -8986,6 +9013,7 @@ let checks: [(String, () throws -> Void)] = [
     ("relay filesystem round trip", checkRelayFilesystemRoundTrip),
     ("relay shim filesystem transport", checkRelayShimUsesPinnedFilesystemTransport),
     ("protected filesystem relay runtime", checkRelayFilesystemRuntimeIsProtectedAndStopsCleanly),
+    ("orphaned filesystem relay endpoint cleanup", checkRelayFilesystemStartupRemovesOrphanedEndpoints),
     ("complete large core activity response", checkLargeCoreActivityResponseIsComplete),
     ("core control survives UI reattachment", checkCoreControlSurvivesClientReattachment),
     ("runtime-aware stable relay router", checkStableRouterSelectsRuntimeAndPreservesForeignCommands),
