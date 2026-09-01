@@ -4,11 +4,14 @@ import {
   accessSync,
   chmodSync,
   constants,
+  cpSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -22,9 +25,13 @@ import { spawnSync } from 'node:child_process'
 export const BUNDLE_IDENTIFIER = 'com.markjoyeux.parley'
 export const MINIMUM_SYSTEM_VERSION = '14.0'
 export const UTF8_FALLBACK_LOCALE = 'C.UTF-8'
+export const GHOSTTY_RESOURCE_BUNDLE = 'GhosttyKit_GhosttyTerminal.bundle'
+const GHOSTTY_RESOURCE_ACCESSOR = 'GhosttyTerminal.build/DerivedSources/resource_bundle_accessor.swift'
 export const requiredBundlePaths = [
   'Contents/Info.plist',
   'Contents/MacOS/parley-native',
+  `Contents/Resources/${GHOSTTY_RESOURCE_BUNDLE}/Ghostty`,
+  `Contents/Resources/${GHOSTTY_RESOURCE_BUNDLE}/terminfo`,
   'Contents/Resources/Parley.icns',
   'Contents/Resources/runtime-components.json',
   'Contents/Resources/LICENSE',
@@ -242,7 +249,7 @@ function sourceMetadata() {
 }
 
 function swiftReleaseBinPath() {
-  run('node', [
+  const buildArguments = [
     'scripts/run-native-swift.mjs',
     'build',
     '--configuration',
@@ -251,8 +258,9 @@ function swiftReleaseBinPath() {
     'parley-native',
     '--package-path',
     'native',
-  ])
-  return run('node', [
+  ]
+  run('node', buildArguments)
+  const bin = run('node', [
     'scripts/run-native-swift.mjs',
     'build',
     '--configuration',
@@ -261,6 +269,12 @@ function swiftReleaseBinPath() {
     '--package-path',
     'native',
   ], { capture: true })
+  rewriteGhosttyResourceBundleAccessor({ bin })
+  run('node', buildArguments)
+  if (rewriteGhosttyResourceBundleAccessor({ bin })) {
+    throw new Error('SwiftPM regenerated the Ghostty resource accessor during the release rebuild')
+  }
+  return bin
 }
 
 function sign(path, identity) {
@@ -305,6 +319,46 @@ function replacePath(stagedPath, finalPath) {
   renameSync(stagedPath, finalPath)
 }
 
+function makeTreeOwnerWritable(path) {
+  const metadata = lstatSync(path)
+  if (metadata.isSymbolicLink()) {
+    throw new Error(`${GHOSTTY_RESOURCE_BUNDLE} must not contain symbolic links`)
+  }
+  chmodSync(path, metadata.mode | 0o200)
+  if (!metadata.isDirectory()) return
+  for (const child of readdirSync(path)) {
+    makeTreeOwnerWritable(join(path, child))
+  }
+}
+
+export function rewriteGhosttyResourceBundleAccessor({ bin }) {
+  const accessor = join(bin, GHOSTTY_RESOURCE_ACCESSOR)
+  if (!existsSync(accessor)) {
+    throw new Error(`SwiftPM output is missing ${GHOSTTY_RESOURCE_ACCESSOR}`)
+  }
+  const generated = readFileSync(accessor, 'utf8')
+  const generatedLookup = `Bundle.main.bundleURL.appendingPathComponent("${GHOSTTY_RESOURCE_BUNDLE}")`
+  const packagedLookup = `Bundle.main.resourceURL!.appendingPathComponent("${GHOSTTY_RESOURCE_BUNDLE}")`
+  const generatedCount = generated.split(generatedLookup).length - 1
+  const packagedCount = generated.split(packagedLookup).length - 1
+  if (generatedCount === 0 && packagedCount === 1) return false
+  if (generatedCount !== 1 || packagedCount !== 0) {
+    throw new Error('generated Ghostty resource accessor has an unexpected shape')
+  }
+  writeFileSync(accessor, generated.replace(generatedLookup, packagedLookup))
+  return true
+}
+
+export function copyGhosttyResourceBundle({ bin, resources }) {
+  const source = join(bin, GHOSTTY_RESOURCE_BUNDLE)
+  if (!existsSync(source)) {
+    throw new Error(`SwiftPM output is missing ${GHOSTTY_RESOURCE_BUNDLE}`)
+  }
+  const destination = join(resources, GHOSTTY_RESOURCE_BUNDLE)
+  cpSync(source, destination, { recursive: true, errorOnExist: true })
+  makeTreeOwnerWritable(destination)
+}
+
 export function packageNativeMacOS({ distributionReadme } = {}) {
   if (process.platform !== 'darwin') {
     throw new Error('Native macOS packaging must run on macOS')
@@ -332,6 +386,7 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
   const appExecutable = join(macOS, 'parley-native')
   copyFileSync(join(bin, 'parley-native'), appExecutable)
   chmodSync(appExecutable, 0o755)
+  copyGhosttyResourceBundle({ bin, resources })
   copyFileSync(join(repositoryRoot, 'resources/icon.icns'), join(resources, 'Parley.icns'))
   copyFileSync(join(repositoryRoot, 'LICENSE'), join(resources, 'LICENSE'))
   copyFileSync(join(repositoryRoot, 'NOTICE'), join(resources, 'NOTICE'))
