@@ -225,8 +225,9 @@ The app bundle contains one executable: `parley-native`. Ghostty and the
 app-resident coordination core are linked into it. Packaging emits an app, ZIP
 and DMG, validates the one-executable contract, signs the bundle and includes
 the project and third-party licences. Ghostty's runtime bundle is installed in
-`Contents/Resources`; release builds redirect SwiftPM's generated resource
-accessor there and fail closed if its expected shape changes.
+`Contents/Resources`; release builds apply a guarded temporary overlay to the
+official wrapper's resource resolver, restore the checkout after compilation
+and fail closed if the expected upstream source shape changes.
 
 `Prepare to Uninstall…` refuses active Ask or delegated work, ends every pane
 and coordination endpoint, and quits. It leaves workspace definitions and

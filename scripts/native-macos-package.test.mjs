@@ -9,10 +9,11 @@ import {
   GHOSTTY_RESOURCE_BUNDLE,
   MINIMUM_SYSTEM_VERSION,
   copyGhosttyResourceBundle,
+  patchGhosttyRuntimeResourcesSource,
   requiredBundlePaths,
   renderInfoPlist,
-  rewriteGhosttyResourceBundleAccessor,
   validateBundleStructure,
+  withGhosttyRuntimeResourcesOverlay,
 } from './native-macos-package.mjs'
 
 const packageJSON = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
@@ -99,38 +100,70 @@ test('Ghostty resource staging keeps the source immutable and makes the copy sig
   )
 })
 
-test('Ghostty generated accessor is narrowly redirected to the signed app resources directory', (context) => {
-  const root = mkdtempSync(join(tmpdir(), 'parley-ghostty-accessor-check-'))
-  context.after(() => rmSync(root, { recursive: true, force: true }))
-  const bin = join(root, 'release')
-  const accessor = join(bin, 'GhosttyTerminal.build/DerivedSources/resource_bundle_accessor.swift')
-  mkdirSync(join(bin, 'GhosttyTerminal.build/DerivedSources'), { recursive: true })
-  writeFileSync(accessor, `import Foundation
+test('Ghostty wrapper overlay prefers the signed app resources and keeps Bundle.module as development fallback', () => {
+  const source = `import Foundation
 
-extension Foundation.Bundle {
-    static nonisolated let module: Bundle = {
-        let mainPath = Bundle.main.bundleURL.appendingPathComponent("${GHOSTTY_RESOURCE_BUNDLE}").path
-        let buildPath = "/private/build/${GHOSTTY_RESOURCE_BUNDLE}"
-        let preferredBundle = Bundle(path: mainPath)
-        guard let bundle = preferredBundle ?? Bundle(path: buildPath) else {
-            Swift.fatalError("missing")
-        }
-        return bundle
-    }()
+public enum GhosttyRuntimeResources {
+    public static var directoryURL: URL? {
+        Bundle.module.url(forResource: "Ghostty", withExtension: nil)
+    }
+
+    public static var terminfoDirectoryURL: URL? {
+        Bundle.module.url(forResource: "terminfo", withExtension: nil)
+    }
 }
-`)
+`
 
-  assert.equal(rewriteGhosttyResourceBundleAccessor({ bin }), true)
-  const rewritten = readFileSync(accessor, 'utf8')
-  assert.doesNotMatch(rewritten, /Bundle\.main\.bundleURL\.appendingPathComponent/)
-  assert.match(rewritten, /Bundle\.main\.resourceURL!\.appendingPathComponent/)
-  assert.equal(rewriteGhosttyResourceBundleAccessor({ bin }), false)
+  const patched = patchGhosttyRuntimeResourcesSource(source)
+  assert.match(patched, /Bundle\.main\.resourceURL/)
+  assert.match(patched, /Bundle\(url: packagedBundleURL\)/)
+  assert.match(patched, /return Bundle\.module/)
+  assert.equal(patched.match(/resourceBundle\.url\(forResource:/g)?.length, 2)
+  assert.doesNotMatch(patched, /Bundle\.module\.url\(forResource:/)
 
-  writeFileSync(accessor, 'unexpected generated source')
   assert.throws(
-    () => rewriteGhosttyResourceBundleAccessor({ bin }),
-    /generated Ghostty resource accessor has an unexpected shape/,
+    () => patchGhosttyRuntimeResourcesSource('unexpected wrapper source'),
+    /Ghostty runtime resource source has an unexpected shape/,
   )
+})
+
+test('Ghostty wrapper overlay restores immutable checkout bytes and permissions after build', (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'parley-ghostty-overlay-check-'))
+  context.after(() => rmSync(root, { recursive: true, force: true }))
+  const sourceFile = join(root, 'GhosttyRuntimeResources.swift')
+  const original = `public enum GhosttyRuntimeResources {
+    public static var directoryURL: URL? {
+        Bundle.module.url(forResource: "Ghostty", withExtension: nil)
+    }
+    public static var terminfoDirectoryURL: URL? {
+        Bundle.module.url(forResource: "terminfo", withExtension: nil)
+    }
+}
+`
+  writeFileSync(sourceFile, original)
+  chmodSync(sourceFile, 0o444)
+
+  const result = withGhosttyRuntimeResourcesOverlay({
+    sourceFile,
+    build: () => {
+      assert.match(readFileSync(sourceFile, 'utf8'), /private static let resourceBundle/)
+      assert.notEqual(statSync(sourceFile).mode & 0o200, 0)
+      return 'built'
+    },
+  })
+
+  assert.equal(result, 'built')
+  assert.equal(readFileSync(sourceFile, 'utf8'), original)
+  assert.equal(statSync(sourceFile).mode & 0o200, 0)
+  assert.throws(
+    () => withGhosttyRuntimeResourcesOverlay({
+      sourceFile,
+      build: () => { throw new Error('build failed') },
+    }),
+    /build failed/,
+  )
+  assert.equal(readFileSync(sourceFile, 'utf8'), original)
+  assert.equal(statSync(sourceFile).mode & 0o200, 0)
 })
 
 test('repository carries notices for Ghostty, its Swift wrapper, theme data and display link', () => {
