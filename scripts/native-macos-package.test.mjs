@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
 import {
   BUNDLE_IDENTIFIER,
+  GHOSTTY_RESOURCE_BUNDLE,
   MINIMUM_SYSTEM_VERSION,
+  copyGhosttyResourceBundle,
   requiredBundlePaths,
   renderInfoPlist,
+  rewriteGhosttyResourceBundleAccessor,
   validateBundleStructure,
 } from './native-macos-package.mjs'
 
@@ -56,12 +59,78 @@ test('bundle contract contains one executable and the runtime/legal resources', 
   assert.deepEqual(requiredBundlePaths, [
     'Contents/Info.plist',
     'Contents/MacOS/parley-native',
+    'Contents/Resources/GhosttyKit_GhosttyTerminal.bundle/Ghostty',
+    'Contents/Resources/GhosttyKit_GhosttyTerminal.bundle/terminfo',
     'Contents/Resources/Parley.icns',
     'Contents/Resources/runtime-components.json',
     'Contents/Resources/LICENSE',
     'Contents/Resources/NOTICE',
     'Contents/Resources/THIRD_PARTY_NOTICES.md',
   ])
+})
+
+test('Ghostty resource staging keeps the source immutable and makes the copy signable', (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'parley-ghostty-resource-check-'))
+  context.after(() => rmSync(root, { recursive: true, force: true }))
+  const bin = join(root, 'bin')
+  const resources = join(root, 'Parley.app/Contents/Resources')
+  const source = join(bin, GHOSTTY_RESOURCE_BUNDLE)
+  const sourceGhostty = join(source, 'Ghostty/shell-integration/zsh/ghostty-integration')
+  const sourceTerminfo = join(source, 'terminfo/67/ghostty')
+  mkdirSync(join(source, 'Ghostty/shell-integration/zsh'), { recursive: true })
+  mkdirSync(join(source, 'terminfo/67'), { recursive: true })
+  mkdirSync(resources, { recursive: true })
+  writeFileSync(sourceGhostty, 'integration')
+  writeFileSync(sourceTerminfo, 'terminfo')
+  chmodSync(sourceGhostty, 0o444)
+  chmodSync(sourceTerminfo, 0o444)
+
+  copyGhosttyResourceBundle({ bin, resources })
+
+  assert.equal(statSync(sourceGhostty).mode & 0o200, 0)
+  assert.equal(statSync(sourceTerminfo).mode & 0o200, 0)
+  assert.notEqual(
+    statSync(join(resources, GHOSTTY_RESOURCE_BUNDLE, 'Ghostty/shell-integration/zsh/ghostty-integration')).mode & 0o200,
+    0,
+  )
+  assert.notEqual(
+    statSync(join(resources, GHOSTTY_RESOURCE_BUNDLE, 'terminfo/67/ghostty')).mode & 0o200,
+    0,
+  )
+})
+
+test('Ghostty generated accessor is narrowly redirected to the signed app resources directory', (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'parley-ghostty-accessor-check-'))
+  context.after(() => rmSync(root, { recursive: true, force: true }))
+  const bin = join(root, 'release')
+  const accessor = join(bin, 'GhosttyTerminal.build/DerivedSources/resource_bundle_accessor.swift')
+  mkdirSync(join(bin, 'GhosttyTerminal.build/DerivedSources'), { recursive: true })
+  writeFileSync(accessor, `import Foundation
+
+extension Foundation.Bundle {
+    static nonisolated let module: Bundle = {
+        let mainPath = Bundle.main.bundleURL.appendingPathComponent("${GHOSTTY_RESOURCE_BUNDLE}").path
+        let buildPath = "/private/build/${GHOSTTY_RESOURCE_BUNDLE}"
+        let preferredBundle = Bundle(path: mainPath)
+        guard let bundle = preferredBundle ?? Bundle(path: buildPath) else {
+            Swift.fatalError("missing")
+        }
+        return bundle
+    }()
+}
+`)
+
+  assert.equal(rewriteGhosttyResourceBundleAccessor({ bin }), true)
+  const rewritten = readFileSync(accessor, 'utf8')
+  assert.doesNotMatch(rewritten, /Bundle\.main\.bundleURL\.appendingPathComponent/)
+  assert.match(rewritten, /Bundle\.main\.resourceURL!\.appendingPathComponent/)
+  assert.equal(rewriteGhosttyResourceBundleAccessor({ bin }), false)
+
+  writeFileSync(accessor, 'unexpected generated source')
+  assert.throws(
+    () => rewriteGhosttyResourceBundleAccessor({ bin }),
+    /generated Ghostty resource accessor has an unexpected shape/,
+  )
 })
 
 test('repository carries notices for Ghostty, its Swift wrapper, theme data and display link', () => {
@@ -100,6 +169,8 @@ test('bundle structure rejects a non-executable app and missing legal resources'
 
   assert.deepEqual(validateBundleStructure(bundle), [
     'Contents/MacOS/parley-native is not executable',
+    'Contents/Resources/GhosttyKit_GhosttyTerminal.bundle/Ghostty is missing',
+    'Contents/Resources/GhosttyKit_GhosttyTerminal.bundle/terminfo is missing',
     'Contents/Resources/LICENSE is missing',
     'Contents/Resources/NOTICE is missing',
     'Contents/Resources/THIRD_PARTY_NOTICES.md is missing',
@@ -109,5 +180,7 @@ test('bundle structure rejects a non-executable app and missing legal resources'
   writeFileSync(join(bundle, 'Contents/Resources/LICENSE'), 'license')
   writeFileSync(join(bundle, 'Contents/Resources/NOTICE'), 'notice')
   writeFileSync(join(bundle, 'Contents/Resources/THIRD_PARTY_NOTICES.md'), 'notice')
+  mkdirSync(join(bundle, 'Contents/Resources/GhosttyKit_GhosttyTerminal.bundle/Ghostty'), { recursive: true })
+  mkdirSync(join(bundle, 'Contents/Resources/GhosttyKit_GhosttyTerminal.bundle/terminfo'), { recursive: true })
   assert.deepEqual(validateBundleStructure(bundle), [])
 })
