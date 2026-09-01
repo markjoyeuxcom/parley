@@ -26,7 +26,8 @@ export const BUNDLE_IDENTIFIER = 'com.markjoyeux.parley'
 export const MINIMUM_SYSTEM_VERSION = '14.0'
 export const UTF8_FALLBACK_LOCALE = 'C.UTF-8'
 export const GHOSTTY_RESOURCE_BUNDLE = 'GhosttyKit_GhosttyTerminal.bundle'
-const GHOSTTY_RESOURCE_ACCESSOR = 'GhosttyTerminal.build/DerivedSources/resource_bundle_accessor.swift'
+const GHOSTTY_RUNTIME_RESOURCES_SOURCE =
+  'Sources/GhosttyTerminal/Configuration/GhosttyRuntimeResources.swift'
 export const requiredBundlePaths = [
   'Contents/Info.plist',
   'Contents/MacOS/parley-native',
@@ -269,11 +270,18 @@ function swiftReleaseBinPath() {
     '--package-path',
     'native',
   ], { capture: true })
-  rewriteGhosttyResourceBundleAccessor({ bin })
-  run('node', buildArguments)
-  if (rewriteGhosttyResourceBundleAccessor({ bin })) {
-    throw new Error('SwiftPM regenerated the Ghostty resource accessor during the release rebuild')
+  const runtimeResources = join(
+    repositoryRoot,
+    'native/.build/checkouts/libghostty-spm',
+    GHOSTTY_RUNTIME_RESOURCES_SOURCE,
+  )
+  if (!existsSync(runtimeResources)) {
+    throw new Error(`SwiftPM checkout is missing libghostty-spm/${GHOSTTY_RUNTIME_RESOURCES_SOURCE}`)
   }
+  withGhosttyRuntimeResourcesOverlay({
+    sourceFile: runtimeResources,
+    build: () => run('node', buildArguments),
+  })
   return bin
 }
 
@@ -331,22 +339,43 @@ function makeTreeOwnerWritable(path) {
   }
 }
 
-export function rewriteGhosttyResourceBundleAccessor({ bin }) {
-  const accessor = join(bin, GHOSTTY_RESOURCE_ACCESSOR)
-  if (!existsSync(accessor)) {
-    throw new Error(`SwiftPM output is missing ${GHOSTTY_RESOURCE_ACCESSOR}`)
+export function patchGhosttyRuntimeResourcesSource(source) {
+  const declaration = 'public enum GhosttyRuntimeResources {\n'
+  const moduleLookup = 'Bundle.module.url(forResource:'
+  const declarationCount = source.split(declaration).length - 1
+  const lookupCount = source.split(moduleLookup).length - 1
+  if (declarationCount !== 1 || lookupCount !== 2 || source.includes('private static let resourceBundle')) {
+    throw new Error('Ghostty runtime resource source has an unexpected shape')
   }
-  const generated = readFileSync(accessor, 'utf8')
-  const generatedLookup = `Bundle.main.bundleURL.appendingPathComponent("${GHOSTTY_RESOURCE_BUNDLE}")`
-  const packagedLookup = `Bundle.main.resourceURL!.appendingPathComponent("${GHOSTTY_RESOURCE_BUNDLE}")`
-  const generatedCount = generated.split(generatedLookup).length - 1
-  const packagedCount = generated.split(packagedLookup).length - 1
-  if (generatedCount === 0 && packagedCount === 1) return false
-  if (generatedCount !== 1 || packagedCount !== 0) {
-    throw new Error('generated Ghostty resource accessor has an unexpected shape')
+  const resolver = `${declaration}    private static let resourceBundle: Bundle = {
+        if let resourceURL = Bundle.main.resourceURL {
+            let packagedBundleURL = resourceURL
+                .appendingPathComponent("${GHOSTTY_RESOURCE_BUNDLE}", isDirectory: true)
+            if let packagedBundle = Bundle(url: packagedBundleURL) {
+                return packagedBundle
+            }
+        }
+        return Bundle.module
+    }()
+
+`
+  return source
+    .replace(declaration, resolver)
+    .replaceAll(moduleLookup, 'resourceBundle.url(forResource:')
+}
+
+export function withGhosttyRuntimeResourcesOverlay({ sourceFile, build }) {
+  const originalSource = readFileSync(sourceFile, 'utf8')
+  const patchedSource = patchGhosttyRuntimeResourcesSource(originalSource)
+  const originalMode = lstatSync(sourceFile).mode & 0o7777
+  chmodSync(sourceFile, originalMode | 0o200)
+  try {
+    writeFileSync(sourceFile, patchedSource)
+    return build()
+  } finally {
+    writeFileSync(sourceFile, originalSource)
+    chmodSync(sourceFile, originalMode)
   }
-  writeFileSync(accessor, generated.replace(generatedLookup, packagedLookup))
-  return true
 }
 
 export function copyGhosttyResourceBundle({ bin, resources }) {
