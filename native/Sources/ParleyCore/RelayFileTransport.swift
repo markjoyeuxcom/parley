@@ -90,13 +90,15 @@ public final class RelayFileTransport: @unchecked Sendable {
         try lock.withLock {
             guard timer == nil else { throw RelayFileTransportError.runtime("transport is already running") }
             try Self.prepareDirectory(runtimeDirectory, createParents: true, fileManager: fileManager)
-            for token in try credentials.allTokens() {
+            let retainedTokens = Set(try credentials.allTokens())
+            for token in retainedTokens {
                 _ = try Self.prepareEndpoint(
                     runtimeDirectory: runtimeDirectory,
                     paneToken: token,
                     fileManager: fileManager
                 )
             }
+            try removeOrphanedEndpoints(retaining: retainedTokens)
             try discardStaleExchangeFiles()
             try writeHeartbeats()
 
@@ -386,6 +388,12 @@ public final class RelayFileTransport: @unchecked Sendable {
                     try fileManager.removeItem(at: entry)
                 }
             }
+        }
+    }
+
+    private func removeOrphanedEndpoints(retaining tokens: Set<String>) throws {
+        for endpoint in endpointDirectories() where !tokens.contains(endpoint.lastPathComponent) {
+            try fileManager.removeItem(at: endpoint)
         }
     }
 
