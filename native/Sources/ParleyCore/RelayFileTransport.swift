@@ -266,12 +266,25 @@ public final class RelayFileTransport: @unchecked Sendable {
             return encode(broker.delegationStatus(token: request.token))
         case "wait":
             return encode(broker.waitForTrackedWork(token: request.token, handoffID: request.item))
+        case "progress":
+            return encode(broker.handleDelegationProgress(
+                token: request.token,
+                handoffID: request.item,
+                text: request.body
+            ))
         case "done":
             return encode(broker.handleDelegationResult(
                 token: request.token,
                 handoffID: request.item,
                 text: request.body,
                 succeeded: true
+            ))
+        case "done-file":
+            return encode(broker.handleDelegationFileResult(
+                token: request.token,
+                handoffID: request.item,
+                path: request.target,
+                text: request.body
             ))
         case "fail":
             return encode(broker.handleDelegationResult(
@@ -304,7 +317,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         try validateDirectory(directory)
         let command = try readField("command", from: directory, maximumBytes: 32)
         let allowed = [
-            "whoami", "panes", "events", "signal", "relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "done", "fail", "cancel",
+            "whoami", "panes", "events", "signal", "relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "progress", "done", "done-file", "fail", "cancel",
             "context-draft", "context-add", "context-list", "context-show", "context-discard", "context-ask",
         ]
         guard allowed.contains(command) else { throw RelayFileTransportError.runtime("unknown command") }

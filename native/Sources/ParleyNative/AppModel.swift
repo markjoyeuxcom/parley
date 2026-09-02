@@ -188,6 +188,7 @@ struct PaletteCommand: Identifiable, Sendable {
         case newWorkspace
         case openWorkspace
         case openStatusCenter
+        case terminalAppearance
         case selectWorkspace(WorkbenchWorkspace)
         case selectPane(WorkbenchPane)
         case ask(WorkbenchPane)
@@ -246,6 +247,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var releaseChecking = false
     @Published private(set) var releaseDownloading = false
     @Published private(set) var releaseLifecycleMessage: String?
+    @Published private(set) var automaticUpdatesAvailable = false
+    @Published private(set) var automaticUpdateChecksEnabled = false
+    @Published private(set) var automaticUpdateCanCheck = false
+    @Published private(set) var automaticUpdateDetail = "Automatic updates require an installed, notarized Production build."
+    @Published private(set) var selectedSettingsSection = ApplicationSettingsSection.general
+    @Published private(set) var settingsOpenRequestID: UUID?
     @Published private(set) var betaFeedbackBundle: BetaFeedbackBundle?
     @Published private(set) var betaFeedbackExporting = false
     @Published private(set) var diagnosticsExporting = false
@@ -254,7 +261,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var submittingHandoffComposer = false
     @Published private(set) var historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy
     @Published private(set) var terminalFontPreference = TerminalFontPreference.ghosttyDefault
+    @Published private(set) var terminalAppearanceImport: GhosttyAppearanceImport?
     @Published private(set) var taskManagerSnapshot: TaskManagerSnapshot?
+    @Published private(set) var paneListeningPortSnapshot = PaneListeningPortSnapshot.empty
     @Published private(set) var preparingToUninstall = false
     @Published var commandPalettePresented = false
     @Published var setupPresented = false
@@ -266,7 +275,6 @@ final class AppModel: ObservableObject {
     @Published var supervisedWorkflowPresented = false
     @Published var worktreeBrowserPresented = false
     @Published var releaseLifecyclePresented = false
-    @Published var terminalFontSettingsPresented = false
     @Published var betaFeedbackPresented = false
     @Published var focusCanvasPaneID: String?
     @Published var collaborationDockVisible = true
@@ -300,10 +308,12 @@ final class AppModel: ObservableObject {
     private let permissionProfileStore: PermissionProfileStore
     private var workspaceContinuity = WorkspaceContinuityState()
     private let projectContextResolver = GitProjectContextResolver()
+    private let paneListeningPortResolver = PaneListeningPortResolver()
     private let worktreeResolver = GitWorktreeResolver()
     private var projectContextRefreshTask: Task<Void, Never>?
     private var projectContextFolders: Set<String> = []
     private var lastProjectContextRefresh = Date.distantPast
+    private var paneListeningPortRefreshState = PaneListeningPortRefreshState()
     private var worktreeRefreshTask: Task<Void, Never>?
     private var worktreePaneFolders: [String: String] = [:]
     private var lastWorktreeRefresh = Date.distantPast
@@ -318,6 +328,7 @@ final class AppModel: ObservableObject {
     private var observedNotificationEventIDs: Set<String> = []
     private var runtimeReadinessTask: Task<Void, Never>?
     private var releaseTask: Task<Void, Never>?
+    private var automaticUpdater: ParleyAutomaticUpdater?
     private var preparedForUninstall = false
     private var lastExternalAttentionSnapshot: ExternalAttentionSnapshot?
     private var lastExternalAttentionPublishedAt = Date.distantPast
@@ -337,6 +348,7 @@ final class AppModel: ObservableObject {
     private static let permissionProfileKeyPrefix = "parley.permissionProfile"
     private static let collaborationDockVisibleKey = "parley.collaborationDockVisible"
     private static let terminalFontPreferenceKey = "parley.terminalFontPreference"
+    private static let terminalAppearanceImportKey = "parley.terminalAppearanceImport"
     private static let projectContextRefreshInterval: TimeInterval = 5
     private static let worktreeRefreshInterval: TimeInterval = 15
     private static let externalAttentionHeartbeatInterval: TimeInterval = 10
@@ -372,6 +384,13 @@ final class AppModel: ObservableObject {
                 terminalFontPreference = stored
             } else {
                 preferences.removeObject(forKey: Self.terminalFontPreferenceKey)
+            }
+        }
+        if let data = preferences.data(forKey: Self.terminalAppearanceImportKey) {
+            if let stored = try? JSONDecoder().decode(GhosttyAppearanceImport.self, from: data) {
+                terminalAppearanceImport = stored
+            } else {
+                preferences.removeObject(forKey: Self.terminalAppearanceImportKey)
             }
         }
         if preferences.object(forKey: Self.collaborationDockVisibleKey) != nil {
@@ -435,10 +454,15 @@ final class AppModel: ObservableObject {
         permissionProfiles = (try? permissionProfileStore.profiles())
             ?? PermissionProfileDefinition.builtIns
         do {
-            try ghosttyRegistry.applyTerminalFont(terminalFontPreference)
+            try ghosttyRegistry.applyTerminalAppearance(
+                font: terminalFontPreference,
+                imported: terminalAppearanceImport
+            )
         } catch {
             terminalFontPreference = .ghosttyDefault
+            terminalAppearanceImport = nil
             preferences.removeObject(forKey: Self.terminalFontPreferenceKey)
+            preferences.removeObject(forKey: Self.terminalAppearanceImportKey)
             try? ghosttyRegistry.applyTerminalFont(.ghosttyDefault)
         }
         if runtime.mode == .production {
@@ -479,6 +503,13 @@ final class AppModel: ObservableObject {
         releaseChannel = preferences.string(forKey: Self.releaseChannelKey)
             .flatMap(UpdateChannel.init(rawValue:))
             ?? .stable
+        automaticUpdater = ParleyAutomaticUpdater(runtime: runtime)
+        automaticUpdatesAvailable = automaticUpdater != nil
+        if automaticUpdater != nil {
+            automaticUpdateDetail = "Stable checks use Parley's signed feed. Downloads and installation always require a visible decision."
+        } else if runtime.mode == .development {
+            automaticUpdateDetail = "Development builds never attach to the Production update channel."
+        }
         setupPresented = !preferences.bool(forKey: Self.firstRunCompletedKey)
 
         guard runtimeLease != nil, startupError == nil else {
@@ -591,6 +622,7 @@ final class AppModel: ObservableObject {
             savedLayouts = try layoutStore.layouts()
             rememberFolder(defaultFolder)
             scheduleProjectContextRefresh(force: true)
+            schedulePaneListeningPortRefresh(force: true)
             scheduleWorktreeRefresh(force: true)
             publishExternalAttentionSnapshot(force: true)
         } catch {
@@ -797,13 +829,30 @@ final class AppModel: ObservableObject {
 
     // MARK: Idle agent reaper (opt-in)
 
-    func showTerminalFontSettings() {
-        terminalFontSettingsPresented = true
+    func showSettings(_ section: ApplicationSettingsSection = .general) {
+        selectedSettingsSection = section
+        settingsOpenRequestID = UUID()
     }
 
-    func updateTerminalFont(family: String?, size: Double?) throws {
+    func selectSettingsSection(_ section: ApplicationSettingsSection) {
+        selectedSettingsSection = section
+    }
+
+    func showTerminalFontSettings() {
+        showSettings(.appearance)
+    }
+
+    func loadGhosttyAppearanceImport() throws -> GhosttyAppearanceImport {
+        try ghosttyRegistry.loadGhosttyAppearanceImport()
+    }
+
+    func updateTerminalAppearance(
+        family: String?,
+        size: Double?,
+        imported appearance: GhosttyAppearanceImport?
+    ) throws {
         let preference = try TerminalFontPreference(family: family, size: size)
-        try ghosttyRegistry.applyTerminalFont(preference)
+        try ghosttyRegistry.applyTerminalAppearance(font: preference, imported: appearance)
         if preference == .ghosttyDefault {
             preferences.removeObject(forKey: Self.terminalFontPreferenceKey)
         } else {
@@ -812,11 +861,28 @@ final class AppModel: ObservableObject {
                 forKey: Self.terminalFontPreferenceKey
             )
         }
+        if let appearance {
+            preferences.set(
+                try JSONEncoder().encode(appearance),
+                forKey: Self.terminalAppearanceImportKey
+            )
+        } else {
+            preferences.removeObject(forKey: Self.terminalAppearanceImportKey)
+        }
         terminalFontPreference = preference
+        terminalAppearanceImport = appearance
+    }
+
+    func updateTerminalFont(family: String?, size: Double?) throws {
+        try updateTerminalAppearance(
+            family: family,
+            size: size,
+            imported: terminalAppearanceImport
+        )
     }
 
     func resetTerminalFont() throws {
-        try updateTerminalFont(family: nil, size: nil)
+        try updateTerminalAppearance(family: nil, size: nil, imported: nil)
     }
 
     @Published var idleAgentReaperEnabled = false {
@@ -927,10 +993,26 @@ final class AppModel: ObservableObject {
     }
 
     func refreshTaskManager() {
+        let descriptors = taskManagerPaneDescriptors()
+        taskManagerSnapshot = taskManagerSampler.sample(
+            applicationPID: ProcessInfo.processInfo.processIdentifier,
+            paneDescriptors: descriptors
+        )
+    }
+
+    /// The Task Manager's Refresh button: resample processes now and force one
+    /// listener inspection past the sidebar throttle. The automatic timer uses
+    /// `refreshTaskManager()` alone.
+    func refreshTaskManagerManually() {
+        refreshTaskManager()
+        schedulePaneListeningPortRefresh(force: true)
+    }
+
+    private func taskManagerPaneDescriptors() -> [TaskManagerPaneDescriptor] {
         let workspaceNames = Dictionary(
             uniqueKeysWithValues: workspaces.map { ($0.workspaceID, $0.name) }
         )
-        let descriptors = panes.map { pane in
+        return panes.map { pane in
             let anchor = ghosttyRegistry.processAnchor(for: pane.id)
             return TaskManagerPaneDescriptor(
                 paneID: pane.id,
@@ -946,10 +1028,6 @@ final class AppModel: ObservableObject {
                 ttyDevice: anchor.ttyName.flatMap(TaskManagerTTY.deviceID(for:))
             )
         }
-        taskManagerSnapshot = taskManagerSampler.sample(
-            applicationPID: ProcessInfo.processInfo.processIdentifier,
-            paneDescriptors: descriptors
-        )
     }
 
     func interruptFromTaskManager(_ paneID: String) {
@@ -1146,6 +1224,27 @@ final class AppModel: ObservableObject {
                 self.releaseLifecycleMessage = error.localizedDescription
             }
         }
+    }
+
+    func startAutomaticUpdater() {
+        guard let automaticUpdater else { return }
+        automaticUpdater.start()
+        refreshAutomaticUpdateState()
+    }
+
+    func checkForStableAutomaticUpdate() {
+        automaticUpdater?.checkForUpdates()
+        refreshAutomaticUpdateState()
+    }
+
+    func setAutomaticUpdateChecksEnabled(_ enabled: Bool) {
+        automaticUpdater?.setAutomaticallyChecksForUpdates(enabled)
+        refreshAutomaticUpdateState()
+    }
+
+    private func refreshAutomaticUpdateState() {
+        automaticUpdateChecksEnabled = automaticUpdater?.automaticallyChecksForUpdates ?? false
+        automaticUpdateCanCheck = automaticUpdater?.canCheckForUpdates ?? false
     }
 
     func openCheckedReleasePage() {
@@ -1399,6 +1498,15 @@ final class AppModel: ObservableObject {
         return projectContexts[folder]
     }
 
+    func sidebarFacts(for pane: WorkbenchPane) -> PaneSidebarFacts {
+        PaneSidebarFactsProjection.facts(
+            for: pane,
+            projectContext: projectContext(for: pane),
+            listeningPortSnapshot: paneListeningPortSnapshot,
+            attentionItems: paneAttentionItems
+        )
+    }
+
     func workspaceSafetySummary(for workspace: WorkbenchWorkspace) -> WorkspaceSafetySummary {
         let workspacePanes = panes.filter { $0.workspaceID == workspace.workspaceID }
         let contextsByPaneID = Dictionary(uniqueKeysWithValues: workspacePanes.compactMap { pane in
@@ -1525,6 +1633,16 @@ final class AppModel: ObservableObject {
                 ),
                 action: .openStatusCenter
             ),
+            PaletteCommand(
+                item: CommandPaletteItem(
+                    id: "action:terminal-appearance",
+                    category: .action,
+                    title: "Terminal Appearance…",
+                    detail: "Set a shared pane font or import allowlisted Ghostty colours",
+                    keywords: ["font", "size", "theme", "palette", "color", "colour", "settings"]
+                ),
+                action: .terminalAppearance
+            ),
         ]
 
         commands += workspaces.map { workspace in
@@ -1609,6 +1727,8 @@ final class AppModel: ObservableObject {
             openWorkspacePicker()
         case .openStatusCenter:
             break
+        case .terminalAppearance:
+            showTerminalFontSettings()
         case let .selectWorkspace(workspace):
             select(workspace)
         case let .selectPane(pane):
@@ -1962,6 +2082,16 @@ final class AppModel: ObservableObject {
     func paneAttention(for paneID: String) -> PaneAttentionItem? {
         PaneAttentionProjection.primary(forPaneID: paneID, in: paneAttentionItems)
     }
+    var handoffComposerSignalAdvisory: HandoffComposerSignalAdvisory? {
+        guard let draft = handoffComposerDraft,
+              let target = panes.first(where: {
+                  $0.id == draft.targetPaneID && $0.kind == draft.targetKind
+              }) else {
+            return nil
+        }
+        return HandoffComposerSignalProjection.advisory(for: target)
+    }
+
 
     /// Returns true when the Status Center should be presented for the item.
     @discardableResult
@@ -2141,6 +2271,7 @@ final class AppModel: ObservableObject {
         }
         if terminalAvailable {
             scheduleProjectContextRefresh()
+            schedulePaneListeningPortRefresh()
             scheduleWorktreeRefresh()
         }
         publishExternalAttentionSnapshot()
@@ -2330,6 +2461,75 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func schedulePaneListeningPortRefresh(force: Bool = false) {
+        let descriptors = taskManagerPaneDescriptors()
+        let signature = paneListeningPortSignature(descriptors)
+        let now = Date()
+        guard paneListeningPortRefreshState.shouldAttempt(
+            now: now,
+            inputSignature: signature,
+            forced: force
+        ) else { return }
+
+        paneListeningPortRefreshState.beginAttempt(at: now, inputSignature: signature)
+        guard descriptors.contains(where: \.isStarted) else {
+            paneListeningPortRefreshState.publish(PaneListeningPortSnapshot(
+                sampledAt: now,
+                portsByPaneID: Dictionary(
+                    uniqueKeysWithValues: descriptors.map { ($0.paneID, []) }
+                )
+            ))
+            publishPaneListeningPortSnapshot()
+            return
+        }
+
+        let resolver = paneListeningPortResolver
+        let applicationPID = ProcessInfo.processInfo.processIdentifier
+        Task.detached(priority: .utility) {
+            // nil means lsof could not run or timed out; the previous snapshot
+            // and its freshness are kept and the attempt still counts for the
+            // throttle.
+            let sampled = resolver.sample(
+                applicationPID: applicationPID,
+                paneDescriptors: descriptors,
+                sampledAt: now
+            )
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                let currentSignature = self.paneListeningPortSignature(
+                    self.taskManagerPaneDescriptors()
+                )
+                let inputsStillMatch = currentSignature == signature
+                self.paneListeningPortRefreshState.finishAttempt(with: inputsStillMatch ? sampled : nil)
+                guard inputsStillMatch else {
+                    self.schedulePaneListeningPortRefresh(force: true)
+                    return
+                }
+                self.publishPaneListeningPortSnapshot()
+            }
+        }
+    }
+
+    private func publishPaneListeningPortSnapshot() {
+        let snapshot = paneListeningPortRefreshState.snapshot
+        if snapshot != paneListeningPortSnapshot {
+            paneListeningPortSnapshot = snapshot
+        }
+    }
+
+    private func paneListeningPortSignature(
+        _ descriptors: [TaskManagerPaneDescriptor]
+    ) -> [String] {
+        descriptors.map { descriptor in
+            [
+                descriptor.paneID,
+                descriptor.isStarted ? "started" : "stopped",
+                descriptor.foregroundPID.map(String.init) ?? "-",
+                descriptor.ttyDevice.map(String.init) ?? "-",
+            ].joined(separator: "\u{1f}")
+        }.sorted()
     }
 
     private func scheduleWorktreeRefresh(force: Bool = false) {
@@ -3524,6 +3724,7 @@ final class AppModel: ObservableObject {
             && handoffs.count <= ContextPackBuilder.maximumParts
             && Set(handoffs.map(\.id)).count == handoffs.count
             && handoffs.allSatisfy(\.hasReturnedResult)
+            && handoffs.allSatisfy { $0.resultContextReviewID == nil }
     }
 
     func promoteHandoffResultsToContextPack(_ handoffs: [RelayHandoff]) {
@@ -3574,6 +3775,11 @@ final class AppModel: ObservableObject {
     func presentContextPack() {
         guard contextPackDraft != nil else { return }
         contextPackPresented = true
+    }
+
+    func returnedFileReview(for handoff: RelayHandoff) -> AgentContextReview? {
+        guard let reviewID = handoff.resultContextReviewID else { return nil }
+        return contextReviews.first(where: { $0.id == reviewID })
     }
 
     func presentContextReview(_ review: AgentContextReview) {

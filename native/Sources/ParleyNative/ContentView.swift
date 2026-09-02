@@ -5,6 +5,7 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @State private var sidebarVisible = true
     @State private var sidebarQuery = ""
     @State private var workspacesExpanded = true
@@ -116,8 +117,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.releaseLifecyclePresented) {
             ReleaseLifecycleView(model: model)
         }
-        .sheet(isPresented: $model.terminalFontSettingsPresented) {
-            TerminalFontSettingsView(model: model)
+        .onChange(of: model.settingsOpenRequestID) { _, requestID in
+            guard requestID != nil else { return }
+            openSettings()
         }
         .alert(
             "Parley needs attention",
@@ -179,7 +181,7 @@ struct ContentView: View {
                                 } label: {
                                     PaneRow(
                                         pane: pane,
-                                        projectContext: model.projectContext(for: pane),
+                                        facts: model.sidebarFacts(for: pane),
                                         awaitingAnswerCount: model.awaitingAnswerCount(for: pane.id),
                                         unreadResultCount: model.unreadResultCount(forPane: pane.id),
                                         latestFailure: model.latestFailure(for: pane.id),
@@ -689,7 +691,7 @@ struct ContentView: View {
             }
         }
         Divider()
-        Button("Terminal Font…") { model.showTerminalFontSettings() }
+        Button("Terminal Appearance…") { model.showTerminalFontSettings() }
         Divider()
         Button("Close Pane…", role: .destructive) { model.close(pane) }
     }
@@ -798,7 +800,7 @@ struct ContentView: View {
     }
 
     private func paneAccessibilityValue(_ pane: WorkbenchPane) -> String {
-        let folder = WorkspaceFolderIdentity.displayName(for: pane.cwd)
+        let facts = model.sidebarFacts(for: pane)
         let state: String = switch WorkbenchStateProjection.pane(pane) {
         case .empty: "empty"
         case .running: pane.isActive ? "selected" : "running"
@@ -811,7 +813,13 @@ struct ContentView: View {
         let role = pane.role.map { ", routing role \($0)" } ?? ""
         let attention = model.paneAttention(for: pane.id)
             .map { ", \($0.accessibilityDescription())" } ?? ""
-        return "\(state)\(lead)\(role)\(attention), \(folder)"
+        let git = facts.gitContext.map {
+            ", Git branch \($0.branch), \($0.isDirty ? "dirty" : "clean")"
+        } ?? ""
+        let listeners = facts.listeningPorts.isEmpty
+            ? ""
+            : ", listening on TCP ports \(facts.listeningPorts.map(String.init).joined(separator: ", "))"
+        return "\(state)\(lead)\(role)\(attention)\(git)\(listeners), working folder \(facts.workingDirectory)"
     }
 
     @ViewBuilder
@@ -2304,7 +2312,7 @@ private struct NativeLayoutSplitView<Leaf: View>: View {
 
 private struct PaneRow: View {
     let pane: WorkbenchPane
-    let projectContext: GitProjectContext?
+    let facts: PaneSidebarFacts
     let awaitingAnswerCount: Int
     let unreadResultCount: Int
     let latestFailure: RelayHandoff?
@@ -2314,7 +2322,7 @@ private struct PaneRow: View {
         HStack(spacing: 7) {
             RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                 .fill(kindColor)
-                .frame(width: 3, height: 30)
+                .frame(width: 3, height: 40)
             ZStack {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .fill(Color(nsColor: .controlBackgroundColor))
@@ -2377,8 +2385,8 @@ private struct PaneRow: View {
                     }
                 }
                 HStack(spacing: 4) {
-                    Text(folderName)
-                    if let projectContext {
+                    Text(workingDirectoryLabel)
+                    if let projectContext = facts.gitContext {
                         Text("·")
                         Text(projectContext.branch)
                         if projectContext.isDirty {
@@ -2394,12 +2402,28 @@ private struct PaneRow: View {
                             .fontWeight(.semibold)
                             .foregroundStyle(Color.accentColor)
                     }
-                    Text("·")
-                    Text(processLabel)
                 }
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(processLabel)
+                    if !facts.listeningPorts.isEmpty {
+                        Text("·")
+                        Text("LISTEN \(listeningPortLabel)")
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    if let attention = facts.latestAttention {
+                        Text("·")
+                        Text(attentionReasonLabel(attention))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(attentionColor(attention))
+                    }
+                }
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             }
             Spacer(minLength: 0)
             Circle()
@@ -2431,8 +2455,14 @@ private struct PaneRow: View {
         }
     }
 
-    private var folderName: String {
-        WorkspaceFolderIdentity.displayName(for: pane.cwd)
+    private var workingDirectoryLabel: String {
+        (facts.workingDirectory as NSString).abbreviatingWithTildeInPath
+    }
+
+    private var listeningPortLabel: String {
+        let visible = facts.listeningPorts.prefix(3).map(String.init)
+        let remainder = facts.listeningPorts.count - visible.count
+        return visible.joined(separator: ",") + (remainder > 0 ? " +\(remainder)" : "")
     }
 
     private var processLabel: String {
@@ -2458,17 +2488,45 @@ private struct PaneRow: View {
             "Folder access (\(selection.approvedRoots.count)): \(selection.approvedRoots.joined(separator: ", "))"
         }
         let role = pane.role.map { "Routing role: \($0)" }
-        guard let projectContext else {
-            return [pane.cwd, role, permission, folderAccess].compactMap { $0 }.joined(separator: "\n")
+        let listeners = facts.listeningPorts.isEmpty ? nil : [
+            "Listening TCP ports attributed to this pane's process tree",
+            facts.listeningPorts.map(String.init).joined(separator: ", "),
+        ].joined(separator: ": ")
+        let attention = facts.latestAttention.map {
+            "Latest authoritative attention: \($0.accessibilityDescription())"
+        }
+        guard let projectContext = facts.gitContext else {
+            return [facts.workingDirectory, listeners, attention, role, permission, folderAccess]
+                .compactMap { $0 }
+                .joined(separator: "\n")
         }
         let state = projectContext.isDirty ? "dirty" : "clean"
         return [
-            pane.cwd,
+            facts.workingDirectory,
             "Git: \(projectContext.branch) · \(state)",
+            listeners,
+            attention,
             role,
             permission,
             folderAccess,
         ].compactMap { $0 }.joined(separator: "\n")
+    }
+
+    private func attentionReasonLabel(_ attention: PaneAttentionItem) -> String {
+        switch (attention.reason, attention.source) {
+        case (.permissionRequest, .vendorOfficialHook): "PERMISSION REPORTED"
+        case (.permissionRequest, .durableHandoff): "PERMISSION"
+        case (.returnedResult, _): "RESULT"
+        case (.interruptedHandoff, _): "INTERRUPTED"
+        }
+    }
+
+    private func attentionColor(_ attention: PaneAttentionItem) -> Color {
+        switch attention.reason {
+        case .permissionRequest: .orange
+        case .returnedResult: .accentColor
+        case .interruptedHandoff: .red
+        }
     }
 
     private var kindColor: Color {

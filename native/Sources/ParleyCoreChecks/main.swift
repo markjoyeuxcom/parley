@@ -219,6 +219,129 @@ private func checkTerminalFontPreferenceIsBoundedAndSafe() throws {
     }
 }
 
+private func checkGhosttyAppearanceImportIsStrictlyAllowlisted() throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let home = root.appendingPathComponent("home", isDirectory: true)
+    let xdg = root.appendingPathComponent("xdg", isDirectory: true)
+    let xdgGhostty = xdg.appendingPathComponent("ghostty", isDirectory: true)
+    let themes = xdgGhostty.appendingPathComponent("themes", isDirectory: true)
+    let appSupportGhostty = home
+        .appendingPathComponent("Library/Application Support/com.mitchellh.ghostty", isDirectory: true)
+    try FileManager.default.createDirectory(at: themes, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: appSupportGhostty, withIntermediateDirectories: true)
+
+    let xdgConfig = xdgGhostty.appendingPathComponent("config.ghostty")
+    try """
+    font-family = \"  JetBrains Mono  \"
+    font-size = 13.5
+    theme = \"light:Custom Safe,dark:Safe Dark\"
+    background = #010203
+    palette = 1=#111111
+    keybind = global:cmd+x=close_all_windows
+    command = /bin/sh -c dangerous
+    config-file = included.conf
+    background-opacity = 0.5
+    cursor-style-blink = false
+    """.write(to: xdgConfig, atomically: true, encoding: .utf8)
+    try "background = #deadbe\n".write(
+        to: xdgGhostty.appendingPathComponent("included.conf"),
+        atomically: true,
+        encoding: .utf8
+    )
+    let customTheme = themes.appendingPathComponent("Custom Safe")
+    try """
+    background = #fefefe
+    foreground = #121212
+    cursor-color = #232323
+    palette = 5=#555555
+    command = should-never-enter-parley
+    keybind = ctrl+x=close_surface
+    """.write(to: customTheme, atomically: true, encoding: .utf8)
+
+    let appConfig = appSupportGhostty.appendingPathComponent("config")
+    try """
+    font-size = 15
+    foreground = #abcdef
+    palette = 1=#222222
+    palette = 2=#333333
+    shell-integration = none
+    """.write(to: appConfig, atomically: true, encoding: .utf8)
+
+    let imported = try GhosttyAppearanceImporter.load(
+        homeDirectory: home,
+        environment: ["XDG_CONFIG_HOME": xdg.path],
+        builtInTheme: { name in
+            guard name == "Safe Dark" else { return nil }
+            return GhosttyAppearanceColors(
+                background: "#000000",
+                foreground: "#eeeeee",
+                cursorColor: "#dddddd",
+                palette: [1: "#bbbbbb", 6: "#666666"]
+            )
+        }
+    )
+
+    try expect(imported.fontFamily == "JetBrains Mono", "imported font family was not normalized")
+    try expect(imported.fontSize == 15, "later Ghostty font size did not win")
+    try expect(
+        imported.themeDescription == "light:Custom Safe,dark:Safe Dark",
+        "light/dark Ghostty theme selection was not preserved"
+    )
+    try expect(imported.light.background == "#010203", "direct background did not override the light theme")
+    try expect(imported.dark.background == "#010203", "direct background did not override the dark theme")
+    try expect(imported.light.foreground == "#abcdef", "later direct foreground did not override the light theme")
+    try expect(imported.dark.foreground == "#abcdef", "later direct foreground did not override the dark theme")
+    try expect(imported.light.cursorColor == "#232323", "custom theme cursor colour was not imported")
+    try expect(imported.dark.cursorColor == "#dddddd", "built-in theme cursor colour was not imported")
+    try expect(imported.light.palette[1] == "#222222", "direct palette did not override the custom theme")
+    try expect(imported.dark.palette[1] == "#222222", "direct palette did not override the built-in theme")
+    try expect(imported.light.palette[2] == "#333333", "direct palette entry was not applied to the light theme")
+    try expect(imported.dark.palette[2] == "#333333", "direct palette entry was not applied to the dark theme")
+    try expect(imported.light.palette[5] == "#555555", "custom theme palette entry was lost")
+    try expect(imported.dark.palette[6] == "#666666", "built-in theme palette entry was lost")
+    try expect(imported.ignoredSettingCount >= 7, "excluded behavioral Ghostty settings were not counted")
+    try expect(imported.importedSettingCount >= 12, "appearance import did not report its bounded settings")
+    try expect(imported.sourceFiles.contains(canonicalPath(xdgConfig.path)), "XDG Ghostty config source was not recorded")
+    try expect(imported.sourceFiles.contains(canonicalPath(appConfig.path)), "macOS Ghostty config source was not recorded")
+    try expect(imported.sourceFiles.contains(canonicalPath(customTheme.path)), "custom Ghostty theme source was not recorded")
+    try expect(
+        !imported.sourceFiles.contains(canonicalPath(xdgGhostty.appendingPathComponent("included.conf").path)),
+        "appearance import followed a forbidden config-file include"
+    )
+
+    let encoded = try JSONEncoder().encode(imported)
+    let encodedText = String(decoding: encoded, as: UTF8.self)
+    for excluded in ["/bin/sh", "close_all_windows", "should-never-enter-parley", "included.conf"] {
+        try expect(!encodedText.contains(excluded), "excluded Ghostty behavior leaked into persisted appearance data")
+    }
+    let decoded = try JSONDecoder().decode(GhosttyAppearanceImport.self, from: encoded)
+    try expect(
+        decoded == imported,
+        "Ghostty appearance import did not round trip"
+    )
+
+    let explicitFamily = try TerminalFontPreference(family: "SF Mono", size: nil)
+        .resolving(imported: imported)
+    try expect(explicitFamily.family == "SF Mono", "Parley's explicit font family did not override Ghostty")
+    try expect(explicitFamily.size == 15, "Ghostty font size did not fill an unset Parley override")
+    let explicitSize = try TerminalFontPreference(family: nil, size: 18)
+        .resolving(imported: imported)
+    try expect(explicitSize.family == "JetBrains Mono", "Ghostty font family did not fill an unset Parley override")
+    try expect(explicitSize.size == 18, "Parley's explicit font size did not override Ghostty")
+
+    do {
+        _ = try GhosttyAppearanceImporter.load(
+            homeDirectory: root.appendingPathComponent("empty-home", isDirectory: true),
+            environment: [:],
+            builtInTheme: { _ in nil }
+        )
+        throw CheckFailure(description: "a missing Ghostty configuration was accepted")
+    } catch let error as GhosttyAppearanceImportError {
+        try expect(error == .configurationNotFound, "a missing Ghostty configuration failed for the wrong reason")
+    }
+}
+
 private func checkPaneStateUsesDurableWorkspaceAndGhosttyInputIdentity() throws {
     let pane = WorkbenchPane(
         id: "pane-current",
@@ -271,6 +394,82 @@ private func checkPaneStateUsesDurableWorkspaceAndGhosttyInputIdentity() throws 
     let migrated = try JSONDecoder().decode(WorkbenchPane.self, from: legacy)
     try expect(migrated.workspaceID == "workspace-legacy", "legacy window identity was not migrated once")
     try expect(!migrated.inputAvailable, "persisted tmux paste state was trusted as live Ghostty input state")
+}
+
+private func checkAutomaticUpdatesAreProductionSignedAndOptIn() throws {
+    let home = URL(fileURLWithPath: "/tmp/parley-update-check-home", isDirectory: true)
+    let production = ParleyRuntime.make(mode: .production, homeDirectory: home)
+    let development = ParleyRuntime.make(mode: .development, homeDirectory: home)
+    let publicKey = Data(repeating: 7, count: 32).base64EncodedString()
+    let signedInfo: [String: Any] = [
+        "SUFeedURL": AutomaticUpdateConfiguration.expectedFeedURL.absoluteString,
+        "SUPublicEDKey": publicKey,
+        "SURequireSignedFeed": true,
+        "SUVerifyUpdateBeforeExtraction": true,
+        "SUAllowsAutomaticUpdates": false,
+        "SUEnableAutomaticChecks": false,
+        "SUAutomaticallyUpdate": false,
+        "SUEnableSystemProfiling": false,
+    ]
+
+    let configuration = AutomaticUpdateConfiguration.resolve(
+        runtime: production,
+        infoDictionary: signedInfo
+    )
+    try expect(configuration?.publicKey == publicKey, "signed Production update configuration was unavailable")
+    try expect(
+        configuration?.checksEnabledByDefault == false,
+        "automatic update checks were not opt-in"
+    )
+    try expect(
+        AutomaticUpdateConfiguration.resolve(runtime: development, infoDictionary: signedInfo) == nil,
+        "Development runtime exposed Production automatic updates"
+    )
+    for key in ["SURequireSignedFeed", "SUVerifyUpdateBeforeExtraction"] {
+        var weakened = signedInfo
+        weakened[key] = false
+        try expect(
+            AutomaticUpdateConfiguration.resolve(runtime: production, infoDictionary: weakened) == nil,
+            "automatic updates accepted weakened \(key)"
+        )
+    }
+    var silentInstall = signedInfo
+    silentInstall["SUAllowsAutomaticUpdates"] = true
+    try expect(
+        AutomaticUpdateConfiguration.resolve(runtime: production, infoDictionary: silentInstall) == nil,
+        "automatic updates accepted background download and installation"
+    )
+    var profiled = signedInfo
+    profiled["SUEnableSystemProfiling"] = true
+    try expect(
+        AutomaticUpdateConfiguration.resolve(runtime: production, infoDictionary: profiled) == nil,
+        "automatic updates accepted system profiling"
+    )
+    var wrongFeed = signedInfo
+    wrongFeed["SUFeedURL"] = "https://example.invalid/appcast.xml"
+    try expect(
+        AutomaticUpdateConfiguration.resolve(runtime: production, infoDictionary: wrongFeed) == nil,
+        "automatic updates accepted a different feed origin"
+    )
+}
+
+private func checkApplicationSettingsSectionsAreComplete() throws {
+    try expect(
+        ApplicationSettingsSection.allCases.map(\.rawValue) == [
+            "general",
+            "appearance",
+            "notifications",
+        ],
+        "the native Settings window lost or reordered a required section"
+    )
+    try expect(
+        ApplicationSettingsSection.allCases.map(\.title) == [
+            "General",
+            "Appearance",
+            "Notifications",
+        ],
+        "the native Settings sections lost their user-facing labels"
+    )
 }
 
 private func checkNativeAskRequestCarriesFormattingIntent() throws {
@@ -688,6 +887,160 @@ private func checkTaskManagerProjectionIsPaneOwnedAndTruthful() throws {
     try expect(liveSample.processCount == 1, "a sampler without panes included unrelated host processes")
 }
 
+private func checkSidebarWorkspaceFactsAreOwnedBoundedAndThrottled() throws {
+    let startedAt = Date(timeIntervalSince1970: 100)
+    let sampledAt = Date(timeIntervalSince1970: 200)
+    let raw = [
+        TaskManagerRawProcess(
+            pid: 10, parentPID: 1, processGroupID: 10, ttyDevice: 42,
+            name: "zsh", residentBytes: 20, totalCPUTimeNanoseconds: 0,
+            startedAt: startedAt
+        ),
+        TaskManagerRawProcess(
+            pid: 11, parentPID: 10, processGroupID: 10, ttyDevice: 42,
+            name: "node", residentBytes: 30, totalCPUTimeNanoseconds: 0,
+            startedAt: startedAt
+        ),
+        TaskManagerRawProcess(
+            pid: 20, parentPID: 1, processGroupID: 20, ttyDevice: 43,
+            name: "python", residentBytes: 40, totalCPUTimeNanoseconds: 0,
+            startedAt: startedAt
+        ),
+        TaskManagerRawProcess(
+            pid: 99, parentPID: 1, processGroupID: 99, ttyDevice: 99,
+            name: "unrelated", residentBytes: 50, totalCPUTimeNanoseconds: 0,
+            startedAt: startedAt
+        ),
+    ]
+    let descriptors = [
+        TaskManagerPaneDescriptor(
+            paneID: "%1", workspaceID: "workspace-a", workspaceName: "Build",
+            paneName: "Codex", kind: .codex, workingDirectory: "/repo/api",
+            isSelected: true, isStarted: true, foregroundPID: 10,
+            ttyName: "/dev/ttys001", ttyDevice: 42
+        ),
+        TaskManagerPaneDescriptor(
+            paneID: "%2", workspaceID: "workspace-a", workspaceName: "Build",
+            paneName: "Claude", kind: .claude, workingDirectory: "/repo/web",
+            isSelected: false, isStarted: true, foregroundPID: 20,
+            ttyName: "/dev/ttys002", ttyDevice: 43
+        ),
+    ]
+    let processIDs = TaskManagerProjection.ownedProcessIDs(
+        applicationPID: 1,
+        paneDescriptors: descriptors,
+        rawProcesses: raw
+    )
+    try expect(processIDs["%1"] == Set([10, 11]), "sidebar port ownership lost a pane child process")
+    try expect(processIDs["%2"] == Set([20]), "sidebar port ownership lost the second pane")
+    try expect(!processIDs.values.contains(where: { $0.contains(99) }), "sidebar port ownership admitted an unrelated process")
+    let ownedProcesses = TaskManagerProjection.ownedProcesses(
+        applicationPID: 1,
+        paneDescriptors: descriptors,
+        rawProcesses: raw
+    )
+
+    let arguments = try require(
+        PaneListeningPortProjection.commandArguments(ownedProcesses: ownedProcesses),
+        "owned process ids produced no fixed lsof arguments"
+    )
+    try expect(
+        arguments == ["-nP", "-a", "-p", "20,11,10", "-iTCP", "-sTCP:LISTEN", "-Fpn"],
+        "sidebar listening-port inspection drifted from its bounded fixed-argument command"
+    )
+    try expect(!arguments.contains(where: { $0.contains("/bin/sh") || $0.contains("\n") }), "sidebar port inspection introduced a shell or multiline argument")
+
+    let lsof = """
+    p10
+    n*:3000
+    n127.0.0.1:3000
+    p11
+    n[::1]:8080
+    n*:70000
+    p20
+    n*:4173
+    p99
+    n*:9999
+    """
+    let snapshot = PaneListeningPortProjection.snapshot(
+        ownedProcesses: ownedProcesses,
+        lsofOutput: lsof,
+        sampledAt: sampledAt
+    )
+    try expect(snapshot.portsByPaneID["%1"] == [3000, 8080], "sidebar ports were not deduplicated and attributed to the exact pane tree")
+    try expect(snapshot.portsByPaneID["%2"] == [4173], "sidebar ports lost the second pane's listener")
+    try expect(!snapshot.portsByPaneID.values.contains(where: { $0.contains(9999) }), "an unrelated host listener entered sidebar facts")
+
+    let pane = WorkbenchPane(
+        id: "%1", kind: .codex, customName: "Codex", terminalTitle: "",
+        cwd: "/repo/api", currentCommand: "codex", isActive: true,
+        workspaceID: "workspace-a"
+    )
+    let older = PaneAttentionItem(
+        id: "older", paneID: "%1", handoffID: "handoff-a",
+        reason: .returnedResult, source: .durableHandoff,
+        occurredAt: Date(timeIntervalSince1970: 180)
+    )
+    let latest = PaneAttentionItem(
+        id: "latest", paneID: "%1", handoffID: nil,
+        reason: .permissionRequest, source: .vendorOfficialHook,
+        occurredAt: Date(timeIntervalSince1970: 190)
+    )
+    let unrelated = PaneAttentionItem(
+        id: "unrelated", paneID: "%2", handoffID: nil,
+        reason: .interruptedHandoff, source: .durableHandoff,
+        occurredAt: Date(timeIntervalSince1970: 195)
+    )
+    let facts = PaneSidebarFactsProjection.facts(
+        for: pane,
+        projectContext: GitProjectContext(branch: "feat/sidebar-facts", isDirty: true),
+        listeningPortSnapshot: snapshot,
+        attentionItems: [older, unrelated, latest]
+    )
+    try expect(facts.workingDirectory == "/repo/api", "sidebar facts did not use the pane-owned cwd")
+    try expect(facts.gitContext?.branch == "feat/sidebar-facts" && facts.gitContext?.isDirty == true, "sidebar facts lost fixed-argument Git state")
+    try expect(facts.listeningPorts == [3000, 8080], "sidebar facts lost attributed listener ports")
+    try expect(facts.latestAttention == latest, "sidebar facts did not select the latest exact-pane authoritative attention reason")
+
+    let manyPorts = (1...20).map { "n*:\($0)" }.joined(separator: "\n")
+    let bounded = PaneListeningPortProjection.snapshot(
+        ownedProcesses: ["%1": [raw[0]]],
+        lsofOutput: "p10\n\(manyPorts)",
+        sampledAt: sampledAt
+    )
+    try expect(
+        bounded.portsByPaneID["%1"]?.count == PaneListeningPortProjection.maximumPortsPerPane,
+        "sidebar facts did not bound the number of rendered listeners"
+    )
+    try expect(
+        !PaneListeningPortRefreshPolicy.shouldRefresh(
+            lastSampledAt: Date(timeIntervalSince1970: 195),
+            now: sampledAt,
+            inputsChanged: false,
+            isRefreshing: false
+        ),
+        "sidebar facts ignored their refresh throttle"
+    )
+    try expect(
+        PaneListeningPortRefreshPolicy.shouldRefresh(
+            lastSampledAt: Date(timeIntervalSince1970: 195),
+            now: sampledAt,
+            inputsChanged: true,
+            isRefreshing: false
+        ),
+        "sidebar facts did not refresh when pane process ownership changed"
+    )
+    try expect(
+        !PaneListeningPortRefreshPolicy.shouldRefresh(
+            lastSampledAt: .distantPast,
+            now: sampledAt,
+            inputsChanged: true,
+            isRefreshing: true
+        ),
+        "sidebar facts started overlapping process inspection"
+    )
+}
+
 private func checkVendorPermissionStateIsNotInferredFromTerminalText() throws {
     let directory = try temporaryDirectory()
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
@@ -957,6 +1310,11 @@ private func checkInAppHelpGuideCoverage() throws {
         "command-shift-a", "last explicit ask target",
         "command-shift-j", "pane attention ring", "permission reported",
         "start fresh session", "vendor-owned resume", "resume requested",
+        "target signal", "advisory only", "neither blocks nor authorizes",
+        "exact working directory", "bounded listen ports", "owning process tree",
+        "latest authoritative attention reason", "none of these facts comes from terminal scraping",
+        "parley done current --file", "compact completion receipt", "returned delegation files",
+        "review, not delivery",
         "pane focus strip", "native terminal", "macos clipboard", "mouse-aware", "shift",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
@@ -3455,6 +3813,71 @@ private func checkPaneAttentionProjectionIsAuthoritativeAndAged() throws {
     )
 }
 
+private func checkComposerSignalProvenanceIsExactAgedAndAdvisory() throws {
+    let now = Date(timeIntervalSinceReferenceDate: 1_000)
+    let target = WorkbenchPane(
+        id: "%target",
+        kind: .claude,
+        customName: "Reviewer",
+        terminalTitle: "",
+        cwd: "/tmp/project",
+        currentCommand: "claude",
+        isActive: false,
+        workspaceID: "workspace-a",
+        workspaceName: "Project",
+        vendorRuntimeState: .working,
+        vendorRuntimeSignal: .turnStarted,
+        vendorRuntimeSignaledAt: Date(timeIntervalSinceReferenceDate: 981),
+        isStarted: true
+    )
+    let advisory = try require(
+        HandoffComposerSignalProjection.advisory(for: target),
+        "an authenticated target hook signal disappeared from the composer projection"
+    )
+    try expect(
+        advisory.paneID == target.id
+            && advisory.paneName == target.displayName
+            && advisory.vendor == .claude
+            && advisory.signal == .turnStarted,
+        "composer signal provenance lost the exact emitting target pane or vendor hook"
+    )
+    try expect(advisory.sourceLabel == "CLAUDE HOOK · Reviewer", "composer signal source was not visible")
+    try expect(advisory.stateLabel == "WORKING REPORTED", "composer promoted or obscured the reported state")
+    try expect(advisory.signalLabel == "TURN STARTED", "composer hid the exact official hook event")
+    try expect(advisory.ageLabel(at: now) == "19s ago", "composer signal age was not derived from the hook timestamp")
+    try expect(!advisory.blocksDelivery, "an advisory hook signal became a delivery gate")
+    let explanation = advisory.accessibilityDescription(at: now).lowercased()
+    try expect(
+        explanation.contains("authenticated")
+            && explanation.contains("advisory only")
+            && explanation.contains("neither blocks nor authorizes"),
+        "composer signal guidance did not preserve its trust and delivery boundaries"
+    )
+
+    var unsupported = target
+    unsupported.kind = .agy
+    unsupported.vendorRuntimeState = .ready
+    unsupported.vendorRuntimeSignal = .turnEnded
+    try expect(
+        HandoffComposerSignalProjection.advisory(for: unsupported) == nil,
+        "an unsupported vendor fabricated authenticated composer provenance"
+    )
+
+    var dead = target
+    dead.isDead = true
+    try expect(
+        HandoffComposerSignalProjection.advisory(for: dead) == nil,
+        "a dead target retained a live official-hook advisory in the composer"
+    )
+
+    var unsigned = target
+    unsigned.vendorRuntimeSignal = nil
+    try expect(
+        HandoffComposerSignalProjection.advisory(for: unsigned) == nil,
+        "runtime state without its authenticated hook signal entered the composer"
+    )
+}
+
 private func checkWorkbenchKeyboardShortcuts() throws {
     try expect(
         WorkbenchKeyboardShortcut.resolve(
@@ -3648,7 +4071,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "12", "the shared protocol version drifted from the detached Ask recovery contract")
+    try expect(AgentProtocol.version == "14", "the shared protocol version drifted from reviewed delegation file results")
     try expect(
         AgentProtocol.text.contains("one minute") && AgentProtocol.text.contains("parley delegate"),
         "shared protocol did not steer longer work toward Delegate"
@@ -3662,9 +4085,14 @@ private func checkSharedProtocolLaunchAdapters() throws {
         AgentProtocol.text.lowercased().contains("same-vendor") && AgentProtocol.text.contains("different pane"),
         "shared protocol omitted the same-vendor, distinct-pane routing rule"
     )
-    for command in ["parley whoami", "parley panes", "parley events --since", "parley signal", "parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait", "parley cancel", "parley context draft", "parley context discard", "--context <draft-id>"] {
+    for command in ["parley whoami", "parley panes", "parley events --since", "parley signal", "parley ask-many", "parley delegate", "parley progress", "parley done", "parley fail", "parley status", "parley wait", "parley cancel", "parley context draft", "parley context discard", "--context <draft-id>"] {
         try expect(AgentProtocol.text.contains(command), "shared protocol omitted \(command)")
     }
+    try expect(
+        AgentProtocol.text.contains("parley done current --file <path>")
+            && AgentProtocol.text.contains("does not send or promote"),
+        "shared protocol omitted the reviewed delegation-file boundary"
+    )
     try expect(
         !AgentProtocol.text.contains("parley research"),
         "the shared protocol still exposes the retired Research Board namespace"
@@ -4065,7 +4493,9 @@ private func checkTrackedDelegationCompletesAndWaits() throws {
     try expect(submitted.value?.paneID == "%2" && submitted.value?.submit == true, "delegate was not submitted to the exact target")
     try expect(submitted.value?.text.contains("Planner delegated work:") == true, "delegate omitted source attribution")
     try expect(submitted.value?.text.contains("parley done current") == true, "delegate omitted its completion command")
+    try expect(submitted.value?.text.contains("parley done current --file <path>") == true, "delegate omitted its reviewed file-result command")
     try expect(submitted.value?.text.contains("parley fail current") == true, "delegate omitted its failure command")
+    try expect(submitted.value?.text.contains("parley progress current") == true, "delegate omitted its optional progress command")
 
     let statusesResponse = broker.delegationStatus(token: sourceToken)
     try expect(statusesResponse.status == 200, "the initiating pane could not inspect its delegations")
@@ -4116,6 +4546,209 @@ private func checkTrackedDelegationCompletesAndWaits() throws {
     try expect(duplicate.body.handoffID == handoffID && duplicate.body.state == .waiting, "idempotent delegate did not return its original receipt")
     try expect(submissionCount.value == 1, "idempotent delegate submitted work twice")
 }
+
+private func checkTrackedDelegationProgressIsBoundedOwnedAndDurable() throws {
+    let directory = try temporaryDirectory()
+    let historyFile = directory.appendingPathComponent("handoffs.jsonl")
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let targetToken = try credentials.token(for: "%2")
+    let foreignToken = try credentials.token(for: "%3")
+    let panes = [
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .claude, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Observer", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
+    ]
+    let journal = try RelayHandoffJournal(file: historyFile)
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        handoffJournal: journal
+    )
+
+    let delegated = broker.handleDelegate(
+        token: sourceToken,
+        target: "builder",
+        text: "Implement the parser fix.",
+        idempotencyKey: "delegate-progress-1"
+    )
+    let handoffID = try require(delegated.body.handoffID, "progress fixture returned no delegation id")
+    let before = try require(broker.handoffs().first(where: { $0.id == handoffID }), "progress fixture lost its handoff")
+    try expect(
+        broker.handleDelegationProgress(token: sourceToken, handoffID: handoffID, text: "Source must not report progress.").status == 403,
+        "the initiating pane reported progress for its target"
+    )
+    try expect(
+        broker.handleDelegationProgress(token: foreignToken, handoffID: handoffID, text: "Foreign progress.").status == 403,
+        "an unrelated pane reported delegation progress"
+    )
+    let first = broker.handleDelegationProgress(
+        token: targetToken,
+        handoffID: "current",
+        text: "Reviewing\tparser\nfixtures\u{7}"
+    )
+    try expect(first.status == 200, "the exact target could not report delegation progress")
+    let afterFirst = try require(broker.handoffs().first(where: { $0.id == handoffID }), "recorded progress disappeared")
+    try expect(afterFirst.progressNote == "Reviewing parser fixtures", "progress was not normalized to one control-free line")
+    try expect(afterFirst.progressUpdatedAt != nil, "progress did not record when the target reported it")
+    try expect(afterFirst.updatedAt == before.updatedAt, "progress changed the delegation lifecycle timestamp")
+    try expect(afterFirst.transitions == before.transitions, "progress invented a handoff lifecycle transition")
+
+    let maximumNote = String(repeating: "é", count: 100)
+    try expect(maximumNote.utf8.count == 200, "progress byte-bound fixture drifted")
+    try expect(
+        broker.handleDelegationProgress(token: targetToken, handoffID: handoffID, text: maximumNote).status == 200,
+        "a 200-byte progress note was refused"
+    )
+    let oversizedNote = String(repeating: "a", count: 199) + "é"
+    try expect(oversizedNote.utf8.count == 201, "oversized progress fixture drifted")
+    try expect(
+        broker.handleDelegationProgress(token: targetToken, handoffID: handoffID, text: oversizedNote).status == 400,
+        "a progress note over 200 UTF-8 bytes was accepted"
+    )
+    try expect(
+        broker.handoffs().first(where: { $0.id == handoffID })?.progressNote == maximumNote,
+        "a refused progress update replaced the last accepted note"
+    )
+
+    let statusResponse = broker.delegationStatus(token: sourceToken)
+    let statuses = try JSONDecoder().decode([RelayDelegationStatus].self, from: Data(statusResponse.text.utf8))
+    try expect(
+        statuses.first?.progressNote == maximumNote && statuses.first?.progressUpdatedAt != nil,
+        "the initiating pane's structured status omitted the latest progress note"
+    )
+    let reloaded = try RelayHandoffJournal(file: historyFile).handoffs()
+    try expect(
+        reloaded.first(where: { $0.id == handoffID })?.progressNote == maximumNote,
+        "the latest progress note did not survive journal replay"
+    )
+
+    try expect(
+        broker.handleDelegationResult(token: targetToken, handoffID: handoffID, text: "Implemented and verified.", succeeded: true).status == 200,
+        "progress fixture could not complete"
+    )
+    try expect(
+        broker.handleDelegationProgress(token: targetToken, handoffID: handoffID, text: "Too late.").status == 404,
+        "a terminal delegation accepted another progress update"
+    )
+    let completed = try require(broker.handoffs().first(where: { $0.id == handoffID }), "completed progress fixture disappeared")
+    try expect(completed.progressNote == maximumNote, "completion erased the last reported progress note")
+}
+
+private func checkDelegationFileResultsAreBoundedOwnedAndReviewed() throws {
+    let directory = try temporaryDirectory()
+    let outsideDirectory = try temporaryDirectory()
+    let handoffFile = directory.appendingPathComponent("handoffs.jsonl")
+    let reviewFile = directory.appendingPathComponent("context-reviews.json")
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let targetToken = try credentials.token(for: "%2")
+    let foreignToken = try credentials.token(for: "%3")
+    let panes = [
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .claude, customName: "Builder", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Observer", terminalTitle: "", cwd: directory.path, currentCommand: "agy", isActive: false, workspaceID: "@0"),
+    ]
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { panes },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        handoffJournal: try RelayHandoffJournal(file: handoffFile),
+        contextReviewStore: try AgentContextReviewStore(file: reviewFile)
+    )
+    let delegated = broker.handleDelegate(
+        token: sourceToken,
+        target: "builder",
+        text: "Produce the implementation report.",
+        idempotencyKey: "delegate-file-result-1"
+    )
+    let handoffID = try require(delegated.body.handoffID, "file-result fixture returned no delegation id")
+    let reportPath = directory.appendingPathComponent("reports/final.md").path
+    let outsidePath = outsideDirectory.appendingPathComponent("escaped.md").path
+    let report = "# Result\n\n    preserved indentation\n\n- 46 checks passed\n"
+
+    try expect(
+        broker.handleDelegationFileResult(token: foreignToken, handoffID: handoffID, path: reportPath, text: report).status == 403,
+        "an unrelated pane returned a delegation file"
+    )
+    try expect(
+        broker.handleDelegationFileResult(token: targetToken, handoffID: handoffID, path: outsidePath, text: report).status == 403,
+        "a delegation file outside the target pane folder was accepted"
+    )
+    try expect(
+        broker.handleDelegationFileResult(
+            token: targetToken,
+            handoffID: handoffID,
+            path: reportPath,
+            text: String(repeating: "x", count: ContextPackBuilder.defaultMaximumPartBytes + 1)
+        ).status == 413,
+        "an oversized delegation file was accepted"
+    )
+    try expect(broker.contextReviews().isEmpty, "a refused delegation file created a review")
+    try expect(
+        broker.handoffs().first(where: { $0.id == handoffID })?.state == .waiting,
+        "a refused delegation file completed the tracked work"
+    )
+
+    let accepted = broker.handleDelegationFileResult(
+        token: targetToken,
+        handoffID: "current",
+        path: reportPath,
+        text: report
+    )
+    try expect(
+        accepted.status == 200 && accepted.text.contains("staged for explicit review"),
+        "the exact target could not return a bounded file for review"
+    )
+    let completed = try require(
+        broker.handoffs().first(where: { $0.id == handoffID }),
+        "completed file-result delegation disappeared"
+    )
+    let reviewID = try require(completed.resultContextReviewID, "file result was not linked to its durable review")
+    try expect(completed.state == .completed, "reviewed file return did not complete the delegation")
+    try expect(
+        completed.resultText?.contains("final.md") == true
+            && completed.resultText?.contains(reviewID) == true
+            && completed.resultText?.contains("preserved indentation") == false,
+        "the delegation receipt did not stay compact and point to the exact review"
+    )
+    let review = try require(
+        broker.contextReviews().first(where: { $0.id == reviewID }),
+        "the linked delegation result review disappeared"
+    )
+    try expect(review.state == .draft, "a returned file skipped explicit human review")
+    try expect(review.sourcePaneID == "%2" && review.sourceFolder == directory.path, "the file review lost its authenticated pane provenance")
+    try expect(review.pack.parts.count == 1, "the file result created an unexpected context shape")
+    let part = try require(review.pack.parts.first, "the file result review has no part")
+    try expect(part.source.kind == .agentFileDraft, "the agent-returned file was promoted to trusted provenance")
+    try expect(part.source.referenceID == handoffID, "the file review lost its delegation lineage")
+    try expect(part.source.detail.contains(reportPath), "the file review omitted the contained canonical path")
+    try expect(part.capturedText == report && part.text == report, "the file review damaged multiline formatting")
+
+    let status = try JSONDecoder().decode(
+        [RelayDelegationStatus].self,
+        from: Data(broker.delegationStatus(token: sourceToken).text.utf8)
+    )
+    try expect(status.first?.resultContextReviewID == reviewID, "structured status omitted the linked result review")
+    let reloadedHandoff = try RelayHandoffJournal(file: handoffFile)
+        .handoffs()
+        .first(where: { $0.id == handoffID })
+    try expect(
+        reloadedHandoff?.resultContextReviewID == reviewID,
+        "the handoff journal lost the linked result review"
+    )
+    let reloadedReview = try AgentContextReviewStore(file: reviewFile)
+        .reviews()
+        .first(where: { $0.id == reviewID })
+    try expect(
+        reloadedReview?.pack.parts.first?.capturedText == report,
+        "the result review did not survive durable replay"
+    )
+}
+
 private func checkDetachedAskRecoveryIsDurableAndGenerationBound() throws {
     let directory = try temporaryDirectory()
     let journalFile = directory.appendingPathComponent("handoffs.jsonl")
@@ -4273,8 +4906,8 @@ private func checkDelegationShimRoundTrip() throws {
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: true, workspaceID: "@0"),
+        WorkbenchPane(id: "%2", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: false, workspaceID: "@0"),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -4282,7 +4915,10 @@ private func checkDelegationShimRoundTrip() throws {
         paste: { _, _ in },
         submit: { _, _ in },
         consultationTimeout: 3,
-        livenessPollInterval: 0.01
+        livenessPollInterval: 0.01,
+        contextReviewStore: try AgentContextReviewStore(
+            file: directory.appendingPathComponent("context-reviews.json")
+        )
     )
     let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
     let shimDirectory = try RelayShim.install(in: directory, transportDirectory: transportDirectory)
@@ -4322,6 +4958,28 @@ private func checkDelegationShimRoundTrip() throws {
     let statuses = try JSONDecoder().decode([RelayDelegationStatus].self, from: status.stdout)
     try expect(statuses.first?.id == handoffID && statuses.first?.state == .waiting, "parley status lost the tracked item")
 
+    let progress = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [executable, "progress", "current", "Implementation\nchecks are running."],
+        environment: targetEnvironment,
+        input: nil
+    )
+    try expect(
+        progress.status == 0 && progress.stdoutText.contains("Progress recorded"),
+        "parley progress did not reach the local broker: status \(progress.status), stdout \(progress.stdoutText), stderr \(progress.stderrText)"
+    )
+    let statusWithProgress = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [executable, "status"],
+        environment: sourceEnvironment,
+        input: nil
+    )
+    let progressStatuses = try JSONDecoder().decode([RelayDelegationStatus].self, from: statusWithProgress.stdout)
+    try expect(
+        progressStatuses.first?.progressNote == "Implementation checks are running.",
+        "parley status did not return progress recorded through the shim"
+    )
+
     let waited = LockedAskResult()
     DispatchQueue.global(qos: .utility).async {
         do {
@@ -4348,6 +5006,75 @@ private func checkDelegationShimRoundTrip() throws {
     try expect(done.status == 0 && done.stdoutText.contains("Completion returned"), "parley done did not reach the local broker")
     try expect(eventually { waited.value != nil }, "parley done did not release parley wait")
     try expect(waited.value == RelayTextResponse(status: 0, text: "Implemented and verified."), "shim wait returned the wrong report")
+
+    let fileDelegation = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [executable, "delegate", "claude", "Return the detailed report as a reviewed file."],
+        environment: sourceEnvironment.merging(["PARLEY_IDEMPOTENCY_KEY": "shim-delegate-file-1"]) { _, supplied in supplied },
+        input: nil
+    )
+    let fileReceipt = try JSONDecoder().decode(RelayResponseBody.self, from: fileDelegation.stdout)
+    let fileHandoffID = try require(fileReceipt.handoffID, "file delegation shim returned no handoff id")
+    let resultFile = directory.appendingPathComponent("delegation-result.md")
+    let resultText = "# Detailed result\n\n    formatting survives\n"
+    try resultText.write(to: resultFile, atomically: true, encoding: .utf8)
+    let invalidFileForm = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [executable, "done", "current", "--file", resultFile.path, "unexpected"],
+        environment: targetEnvironment,
+        input: nil
+    )
+    try expect(invalidFileForm.status == 2, "parley done --file accepted trailing report text")
+    let binaryFile = directory.appendingPathComponent("delegation-result.bin")
+    try Data([0xff, 0xfe, 0x00]).write(to: binaryFile)
+    let binaryResult = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [executable, "done", "current", "--file", binaryFile.path],
+        environment: targetEnvironment,
+        input: nil
+    )
+    try expect(binaryResult.status != 0, "parley done --file accepted non-UTF-8 bytes")
+    try expect(
+        broker.handoffs().first(where: { $0.id == fileHandoffID })?.state == .waiting,
+        "a rejected binary file completed the delegation"
+    )
+    let doneFile = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [executable, "done", "current", "--file", resultFile.path],
+        environment: targetEnvironment,
+        input: nil
+    )
+    try expect(
+        doneFile.status == 0 && doneFile.stdoutText.contains("staged for explicit review"),
+        "parley done --file did not reach the local broker: status \(doneFile.status), stdout \(doneFile.stdoutText), stderr \(doneFile.stderrText)"
+    )
+    let fileHandoff = try require(
+        broker.handoffs().first(where: { $0.id == fileHandoffID }),
+        "shim file-result handoff disappeared"
+    )
+    let fileReviewID = try require(fileHandoff.resultContextReviewID, "shim file result was not linked to review")
+    let fileReview = try require(
+        broker.contextReviews().first(where: { $0.id == fileReviewID }),
+        "shim did not create the returned-file review"
+    )
+    try expect(
+        fileReview.state == .draft
+            && fileReview.pack.parts.first?.capturedText == resultText
+            && fileReview.pack.parts.first?.source.kind == .agentFileDraft,
+        "shim file result bypassed review or changed its source"
+    )
+    let waitedFile = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: [executable, "wait", fileHandoffID],
+        environment: sourceEnvironment,
+        input: nil
+    )
+    try expect(
+        waitedFile.status == 0
+            && waitedFile.stdoutText.contains(fileReviewID)
+            && !waitedFile.stdoutText.contains("formatting survives"),
+        "parley wait did not return the compact linked review receipt"
+    )
 
     let cancellable = try runner.run(
         executable: URL(fileURLWithPath: "/bin/sh"),
@@ -9648,7 +10375,10 @@ private func checkRealGhosttySixPaneInputIsolation() throws {
 }
 
 let checks: [(String, () throws -> Void)] = [
+    ("complete native Settings sections", checkApplicationSettingsSectionsAreComplete),
+    ("Production-only signed opt-in automatic updates", checkAutomaticUpdatesAreProductionSignedAndOptIn),
     ("bounded safe terminal font preference", checkTerminalFontPreferenceIsBoundedAndSafe),
+    ("strictly allowlisted Ghostty appearance import", checkGhosttyAppearanceImportIsStrictlyAllowlisted),
     ("pane state uses durable workspace and Ghostty input identity", checkPaneStateUsesDurableWorkspaceAndGhosttyInputIdentity),
     ("native tracked Ask preserves formatting intent", checkNativeAskRequestCarriesFormattingIntent),
     ("Ghostty app-resident lifecycle", checkGhosttyAppResidentLifecycleContract),
@@ -9663,6 +10393,12 @@ let checks: [(String, () throws -> Void)] = [
     ("useful copyable build information", checkBuildInformationIsUsefulAndCopyable),
     ("vendor-neutral local permission profiles", checkPermissionProfilesAreVendorNeutralAndLocal),
     ("pane-owned truthful Task Manager projection", checkTaskManagerProjectionIsPaneOwnedAndTruthful),
+    ("owned bounded throttled sidebar workspace facts", checkSidebarWorkspaceFactsAreOwnedBoundedAndThrottled),
+    ("pane root resolver owns only marked app-owned launch trees", checkPaneRootResolverOwnsOnlyMarkedLaunchTrees),
+    ("pane anchor fallback feeds Task Manager and ports", checkPaneAnchorFallbackFeedsTaskManagerAndPorts),
+    ("listening-port sampling is honest about failures", checkListeningPortSamplingIsHonestAboutFailures),
+    ("listening-port refresh state retains and forces", checkListeningPortRefreshStateRetainsAndForces),
+    ("soak pane evidence fails closed", checkSoakPaneEvidenceFailsClosed),
     ("vendor permission state is never inferred from terminal text", checkVendorPermissionStateIsNotInferredFromTerminalText),
     ("runtime UI lease refuses duplicate owners", checkRuntimeUILeaseRefusesDuplicateOwners),
     ("child process cannot retain runtime UI lease", checkChildProcessCannotRetainRuntimeUILease),
@@ -9698,6 +10434,7 @@ let checks: [(String, () throws -> Void)] = [
     ("native workspace layout tree", checkNativeWorkspaceLayoutTree),
     ("window and split geometry recovery", checkWindowAndSplitGeometryRecovery),
     ("pane attention is authoritative and aged", checkPaneAttentionProjectionIsAuthoritativeAndAged),
+    ("composer signal provenance is exact, aged and advisory", checkComposerSignalProvenanceIsExactAgedAndAdvisory),
     ("workbench keyboard shortcut routing", checkWorkbenchKeyboardShortcuts),
     ("idle agent reaper gates", checkIdleAgentReaperGates),
     ("vendor-owned resume plans are explicit and safe", checkVendorOwnedResumePlansAreExplicitAndSafe),
@@ -9709,6 +10446,8 @@ let checks: [(String, () throws -> Void)] = [
     ("smart orchestration modes and safety boundaries", checkSmartOrchestrationModesAndBoundaries),
     ("supervised lead workflow policy and cancellation", checkSupervisedLeadWorkflowPolicyAndCancellation),
     ("tracked delegation completion and wait", checkTrackedDelegationCompletesAndWaits),
+    ("bounded target-owned delegation progress", checkTrackedDelegationProgressIsBoundedOwnedAndDurable),
+    ("bounded owned reviewed delegation file results", checkDelegationFileResultsAreBoundedOwnedAndReviewed),
     ("detached Ask recovery is durable and generation-bound", checkDetachedAskRecoveryIsDurableAndGenerationBound),
     ("tracked delegation failure and liveness", checkTrackedDelegationFailureAndLiveness),
     ("tracked delegation shim round trip", checkDelegationShimRoundTrip),
@@ -9788,6 +10527,13 @@ if ProcessInfo.processInfo.environment["PARLEY_COMMAND_IO_FIXTURE"] == "1" {
     exit(23)
 }
 
+if ProcessInfo.processInfo.environment["PARLEY_ANCHOR_SLEEP_CHILD"] == "1" {
+    // A long-lived, non-platform child for the pane anchor checks: platform
+    // binaries such as /bin/sleep hide their environment from other processes.
+    sleep(120)
+    exit(0)
+}
+
 if ProcessInfo.processInfo.environment["PARLEY_DELAYED_OUTPUT_CHILD"] == "1" {
     usleep(50_000)
     _ = "daemon-ready".withCString { pointer in
@@ -9832,8 +10578,13 @@ if let resultPath = ProcessInfo.processInfo.environment["PARLEY_COMMAND_CAPTURE_
     exit(FileManager.default.fileExists(atPath: resultPath) ? 0 : 1)
 }
 
+// `--only <substring>` runs the matching checks alone during local iteration.
+let onlyFilter = argument(named: "--only")?.lowercased()
+let selectedChecks = checks.filter { name, _ in
+    onlyFilter.map { name.lowercased().contains($0) } ?? true
+}
 var failureCount = 0
-for (name, check) in checks {
+for (name, check) in selectedChecks {
     do {
         try check()
         print("PASS \(name)")
@@ -9847,4 +10598,4 @@ guard failureCount == 0 else {
     print("\(failureCount) native check(s) failed")
     exit(1)
 }
-print("All \(checks.count) native checks passed")
+print("All \(selectedChecks.count) native checks passed")

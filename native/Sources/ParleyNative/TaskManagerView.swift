@@ -49,10 +49,11 @@ struct TaskManagerView: View {
             Toggle("Auto Refresh", isOn: $autoRefresh)
                 .toggleStyle(.checkbox)
             Button {
-                model.refreshTaskManager()
+                model.refreshTaskManagerManually()
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
+            .help("Resample pane processes now and refresh sidebar listeners immediately")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
@@ -365,7 +366,12 @@ struct TaskManagerView: View {
         if let ttyName = pane.ttyName {
             return "\(pane.kind.label) · \(folder) · \(URL(fileURLWithPath: ttyName).lastPathComponent)"
         }
-        return "\(pane.kind.label) · \(folder)"
+        switch pane.anchorSource {
+        case .paneMarker:
+            return "\(pane.kind.label) · \(folder) · anchored by pane marker"
+        case .ghostty, .unavailable:
+            return "\(pane.kind.label) · \(folder)"
+        }
     }
 
     private func paneIcon(_ kind: PaneKind) -> String {

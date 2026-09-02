@@ -51,6 +51,13 @@ public struct TerminalFontPreference: Codable, Equatable, Sendable {
         self.size = size
     }
 
+    public func resolving(imported appearance: GhosttyAppearanceImport?) throws -> TerminalFontPreference {
+        try TerminalFontPreference(
+            family: family ?? appearance?.fontFamily,
+            size: size ?? appearance?.fontSize
+        )
+    }
+
     private enum CodingKeys: String, CodingKey {
         case family
         case size

@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyTerminal
+import GhosttyTheme
 import ParleyCore
 
 struct GhosttyPaneProcessAnchor {
@@ -76,20 +77,86 @@ final class GhosttyPaneRegistry {
         self.workbench = workbench
     }
 
-    func applyTerminalFont(_ preference: TerminalFontPreference) throws {
+    func loadGhosttyAppearanceImport() throws -> GhosttyAppearanceImport {
+        try GhosttyAppearanceImporter.load(
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            environment: ProcessInfo.processInfo.environment,
+            builtInTheme: { name in
+                guard let theme = GhosttyThemeCatalog.theme(named: name) else { return nil }
+                return GhosttyAppearanceColors(
+                    background: theme.background,
+                    foreground: theme.foreground,
+                    cursorColor: theme.cursorColor,
+                    cursorText: theme.cursorText,
+                    selectionBackground: theme.selectionBackground,
+                    selectionForeground: theme.selectionForeground,
+                    palette: theme.palette
+                )
+            }
+        )
+    }
+
+    func applyTerminalAppearance(
+        font preference: TerminalFontPreference,
+        imported appearance: GhosttyAppearanceImport?
+    ) throws {
+        let resolvedFont = try preference.resolving(imported: appearance)
         var configuration = TerminalConfiguration()
-        if let family = preference.family {
+        if let family = resolvedFont.family {
             configuration = configuration.fontFamily(family)
         }
-        if let size = preference.size {
+        if let size = resolvedFont.size {
             configuration = configuration.fontSize(Float(size))
         }
-        guard terminalController.terminalConfiguration != configuration else { return }
-        guard terminalController.setTerminalConfiguration(configuration) else {
+
+        let theme: TerminalTheme
+        if let appearance {
+            theme = TerminalTheme(
+                light: Self.configuration(for: appearance.light),
+                dark: Self.configuration(for: appearance.dark)
+            )
+        } else {
+            theme = .default
+        }
+
+        let previousConfiguration = terminalController.terminalConfiguration
+        let previousTheme = terminalController.theme
+        if configuration != previousConfiguration,
+           !terminalController.setTerminalConfiguration(configuration)
+        {
             throw ParleyWorkbenchError.commandFailed(
                 terminalController.lastConfigurationIssue
                     ?? "Ghostty could not apply the terminal font configuration."
             )
+        }
+        if theme != previousTheme, !terminalController.setTheme(theme) {
+            if configuration != previousConfiguration {
+                _ = terminalController.setTerminalConfiguration(previousConfiguration)
+            }
+            throw ParleyWorkbenchError.commandFailed(
+                terminalController.lastConfigurationIssue
+                    ?? "Ghostty could not apply the imported terminal colours."
+            )
+        }
+    }
+
+    func applyTerminalFont(_ preference: TerminalFontPreference) throws {
+        try applyTerminalAppearance(font: preference, imported: nil)
+    }
+
+    private static func configuration(for colors: GhosttyAppearanceColors) -> TerminalConfiguration {
+        TerminalConfiguration { builder in
+            if let value = colors.background { builder.withBackground(value) }
+            if let value = colors.foreground { builder.withForeground(value) }
+            if let value = colors.cursorColor { builder.withCursorColor(value) }
+            if let value = colors.cursorText { builder.withCursorText(value) }
+            if let value = colors.selectionBackground { builder.withSelectionBackground(value) }
+            if let value = colors.selectionForeground { builder.withSelectionForeground(value) }
+            if let value = colors.boldColor { builder.withBoldColor(value) }
+            for index in colors.palette.keys.sorted() {
+                guard let color = colors.palette[index] else { continue }
+                builder.withPalette(index, color: color)
+            }
         }
     }
 

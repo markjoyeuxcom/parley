@@ -14,12 +14,20 @@ private struct GhosttySoakReport: Codable {
     let deliveredInputs: Int
     let hiddenPaneInputs: Int
     let paneProcessesTerminated: Bool
+    /// How each pane's shell was proven live: the pid the shell wrote itself,
+    /// checked against kernel liveness and a distinct controlling TTY.
+    let paneAnchorEvidence: String
+    /// Whether the pinned Ghostty reported any foreground PID or TTY name. It
+    /// is recorded, never required, so a future pin that adds the process-info
+    /// API is noticed without weakening the gate today.
+    let ghosttyProcessAPIAvailable: Bool
 
     var passed: Bool {
         paneCount == 8
             && deliveredInputs == paneCount * rounds
             && hiddenPaneInputs == paneCount
             && paneProcessesTerminated
+            && paneAnchorEvidence == "shell-pid-file"
     }
 }
 
@@ -99,22 +107,15 @@ private enum ParleyGhosttySoak {
             windows.append(window)
         }
 
-        guard pump(until: {
-            terminals.allSatisfy { $0.foregroundPid != nil && $0.ttyName != nil }
-        }, timeout: 8) else {
-            let pidCount = terminals.count(where: { $0.foregroundPid != nil })
-            let ttyCount = terminals.count(where: { $0.ttyName != nil })
-            throw GhosttySoakError.failed(
-                "one or more Ghostty shells did not expose a live PTY (PID \(pidCount)/\(paneCount), TTY \(ttyCount)/\(paneCount))"
-            )
-        }
-
+        // The pinned Ghostty compiles its foreground-PID and TTY-name functions
+        // as stubs, so readiness rests on evidence each shell writes itself: its
+        // own pid, which the kernel must then show alive on a distinct TTY.
         for index in terminals.indices {
             _ = terminals[index].acquireProgrammaticFocus()
             let ready = directory.appendingPathComponent("pane-\(index)-ready")
-            guard terminals[index].paste(
-                text: GhosttyLaunchCommand.render(["/usr/bin/touch", ready.path])
-            ), terminals[index].sendKey(.enter) else {
+            let shellPID = directory.appendingPathComponent("pane-\(index)-shell-pid")
+            let probe = "echo $$ > \(GhosttyLaunchCommand.render([shellPID.path])); /usr/bin/touch \(GhosttyLaunchCommand.render([ready.path]))"
+            guard terminals[index].paste(text: probe), terminals[index].sendKey(.enter) else {
                 throw GhosttySoakError.failed("pane \(index) refused its readiness probe")
             }
         }
@@ -126,6 +127,25 @@ private enum ParleyGhosttySoak {
             }
         }, timeout: 8) else {
             throw GhosttySoakError.failed("one or more Ghostty shells did not become input-ready")
+        }
+        let observations = (0..<paneCount).map { index -> SoakPaneObservation in
+            let text = (try? String(
+                contentsOf: directory.appendingPathComponent("pane-\(index)-shell-pid"),
+                encoding: .utf8
+            ))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let pid = Int32(text)
+            return SoakPaneObservation(
+                index: index,
+                pid: pid,
+                isAlive: pid.map(ProcessKernelFacts.isAlive) ?? false,
+                ttyDevice: pid.flatMap(ProcessKernelFacts.ttyDevice(forProcess:))
+            )
+        }
+        if case let .failed(reason) = SoakPaneEvidence.evaluate(observations, expectedPanes: paneCount) {
+            throw GhosttySoakError.failed("Ghostty shells did not prove live PTYs: \(reason)")
+        }
+        let ghosttyProcessAPIAvailable = terminals.contains {
+            $0.foregroundPid != nil || $0.ttyName != nil
         }
 
         var delivered = 0
@@ -197,7 +217,7 @@ private enum ParleyGhosttySoak {
 
         let completedAt = Date()
         return GhosttySoakReport(
-            schemaVersion: 3,
+            schemaVersion: 4,
             startedAt: startedAt,
             completedAt: completedAt,
             durationMilliseconds: Int64(
@@ -207,7 +227,9 @@ private enum ParleyGhosttySoak {
             rounds: rounds,
             deliveredInputs: delivered,
             hiddenPaneInputs: paneCount,
-            paneProcessesTerminated: terminated
+            paneProcessesTerminated: terminated,
+            paneAnchorEvidence: "shell-pid-file",
+            ghosttyProcessAPIAvailable: ghosttyProcessAPIAvailable
         )
     }
 

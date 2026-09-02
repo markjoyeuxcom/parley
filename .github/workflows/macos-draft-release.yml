@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   draft:
-    name: Verify and create draft
+    name: Verify, notarize and create draft
     runs-on: macos-latest
     steps:
       - name: Check out the exact tag
@@ -38,9 +38,40 @@ jobs:
           mkdir -p dist
           npm run package:vscode
 
-      - name: Prepare and verify unnotarized release assets
+      - name: Import Developer ID identity and notary credentials
+        env:
+          PARLEY_SIGNING_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          PARLEY_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          PARLEY_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+        run: |
+          keychain="$RUNNER_TEMP/parley-signing.keychain-db"
+          certificate="$RUNNER_TEMP/parley-developer-id.p12"
+          notary_key="$RUNNER_TEMP/parley-notary-key.p8"
+          keychain_password="$(openssl rand -hex 24)"
+          test -n "$PARLEY_SIGNING_P12_BASE64"
+          test -n "$PARLEY_SIGNING_P12_PASSWORD"
+          test -n "$PARLEY_NOTARY_KEY_BASE64"
+          printf '%s' "$PARLEY_SIGNING_P12_BASE64" | base64 --decode > "$certificate"
+          printf '%s' "$PARLEY_NOTARY_KEY_BASE64" | base64 --decode > "$notary_key"
+          chmod 600 "$certificate" "$notary_key"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$PARLEY_SIGNING_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          echo "PARLEY_TEMP_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "PARLEY_SIGNING_P12=$certificate" >> "$GITHUB_ENV"
+          echo "PARLEY_NOTARY_KEY=$notary_key" >> "$GITHUB_ENV"
+
+      - name: Prepare, notarize and verify release assets
         env:
           PARLEY_RELEASE_TAG: ${{ inputs.tag }}
+          PARLEY_CODESIGN_IDENTITY: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
+          PARLEY_SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+          PARLEY_SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+          PARLEY_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          PARLEY_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
         run: npm run release:mac
 
       - name: Add companion and soak report to the verified checksum set
@@ -67,9 +98,24 @@ jobs:
             "$base.release.json" \
             "$base.SHA256SUMS" \
             "${base}-INSTALL.txt" \
+            "dist/appcast.xml" \
+            "dist/parley.rb" \
             "dist/Parley-Companion-0.1.0.vsix" \
             "dist/Parley-Ghostty-soak.json" \
             --verify-tag \
             --draft \
-            --title "Parley v${version} — unnotarized beta" \
+            --title "Parley v${version}" \
             --notes-file "$notes"
+
+      - name: Remove temporary signing material
+        if: always()
+        run: |
+          if test -n "${PARLEY_TEMP_KEYCHAIN:-}"; then
+            security delete-keychain "$PARLEY_TEMP_KEYCHAIN" || true
+          fi
+          if test -n "${PARLEY_SIGNING_P12:-}"; then
+            rm -f "$PARLEY_SIGNING_P12"
+          fi
+          if test -n "${PARLEY_NOTARY_KEY:-}"; then
+            rm -f "$PARLEY_NOTARY_KEY"
+          fi

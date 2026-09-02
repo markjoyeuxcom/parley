@@ -1,0 +1,63 @@
+name: Propose Homebrew cask update
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  cask:
+    name: Validate and propose cask
+    runs-on: macos-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PARLEY_RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download the cask generated with the notarized release
+        run: |
+          case "$PARLEY_RELEASE_TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "Release tag is not a Parley semantic version" >&2; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/parley-cask" Casks
+          gh release download "$PARLEY_RELEASE_TAG" --pattern parley.rb --dir "$RUNNER_TEMP/parley-cask"
+          cp "$RUNNER_TEMP/parley-cask/parley.rb" Casks/parley.rb
+          grep -F "version \"${PARLEY_RELEASE_TAG#v}\"" Casks/parley.rb
+
+      - name: Validate the cask and public repository boundary
+        run: |
+          brew style --cask Casks/parley.rb
+          if rg -n 'AKIA[0-9A-Z]{16}|BEGIN [A-Z ]*PRIVATE KEY|password[[:space:]]*[:=]|token[[:space:]]*[:=]' Casks/parley.rb; then
+            echo "Refusing to stage a cask containing a secret-like value" >&2
+            exit 1
+          fi
+          npm run scan:public
+
+      - name: Open a cask update pull request
+        run: |
+          git add Casks/parley.rb
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "Cask already matches $PARLEY_RELEASE_TAG"
+            exit 0
+          fi
+          branch="automation/homebrew-cask-${PARLEY_RELEASE_TAG#v}-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -m "chore: update Homebrew cask for $PARLEY_RELEASE_TAG" -m "Co-Authored-By: Claude <noreply@anthropic.com>"
+          git push origin "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "chore: update Homebrew cask for $PARLEY_RELEASE_TAG" \
+            --body "Updates the Parley cask from the signed asset generated with $PARLEY_RELEASE_TAG. Review and merge to publish it through the repository tap."

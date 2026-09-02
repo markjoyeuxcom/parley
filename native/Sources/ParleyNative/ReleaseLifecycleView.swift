@@ -126,8 +126,40 @@ struct ReleaseLifecycleView: View {
     private var updates: some View {
         VStack(alignment: .leading, spacing: 18) {
             lifecycleHeading(
-                "GitHub Releases",
-                detail: "Parley checks only its public GitHub Releases page when you press Check. It never downloads, installs or restarts silently."
+                "Signed stable updates",
+                detail: "Installed notarized builds use Sparkle with a fixed HTTPS feed, Ed25519-signed feed and archive, and Developer ID verification. Automatic checking is opt-in; download, replacement and restart are never silent."
+            )
+            GroupBox {
+                VStack(alignment: .leading, spacing: 10) {
+                    if model.automaticUpdatesAvailable {
+                        HStack {
+                            Toggle(
+                                "Check for stable updates automatically",
+                                isOn: Binding(
+                                    get: { model.automaticUpdateChecksEnabled },
+                                    set: { model.setAutomaticUpdateChecksEnabled($0) }
+                                )
+                            )
+                            Spacer()
+                            Button("Check Now…") { model.checkForStableAutomaticUpdate() }
+                                .disabled(!model.automaticUpdateCanCheck)
+                        }
+                    } else {
+                        Label("Automatic update channel unavailable", systemImage: "lock.shield")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    Text(model.automaticUpdateDetail)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+            }
+
+            Divider()
+            lifecycleHeading(
+                "Manual release browser",
+                detail: "Use this explicit GitHub path for beta releases or to save a stable DMG after Parley verifies its published manifest and SHA-256. It never installs or restarts the app."
             )
             HStack(spacing: 12) {
                 Picker("Channel", selection: Binding(
@@ -160,7 +192,7 @@ struct ReleaseLifecycleView: View {
                 )
                 .frame(maxWidth: .infinity, minHeight: 220)
             }
-            Text("The automatic check uses no GitHub credential. A private releases repository is therefore invisible to it; Open Releases uses your signed-in browser instead.")
+            Text("The manual GitHub check uses no credential. A private releases repository is therefore invisible to it; Open Releases uses your signed-in browser instead.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }

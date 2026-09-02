@@ -80,7 +80,9 @@ native/
       AgentProcessBoundary.swift       per-agent Seatbelt boundary
       AppResidentPaneLifecycle.swift   explicit window/quit lifetime policy
       CommandRunner.swift              bounded argv process execution
+      AutomaticUpdateConfiguration.swift signed Production update boundary
       CoreService.swift                authenticated UI control client/types
+      GhosttyAppearanceImport.swift    bounded appearance-only config parser
       Models.swift                     pane/workspace vocabulary
       Relay.swift                      credentials and consultations
       RelayHTTPServer.swift            authenticated Unix-socket broker
@@ -92,6 +94,7 @@ native/
       ContentView.swift                workbench, pane and relay UI
       GhosttyPaneRegistry.swift        retained surfaces and input delivery
       NativeTerminalHost.swift         SwiftUI/AppKit Ghostty bridge
+      ParleyAutomaticUpdater.swift     Production-only Sparkle bridge
       ParleyNativeApp.swift
     ParleyCoreChecks/main.swift
     ParleySoak/ParleySoak.swift
@@ -131,6 +134,14 @@ transport, consultations and durable records. There is no separate core
 executable, login item or background process. `core.pid` contains the app PID
 while coordination is live.
 
+Sparkle.framework is the sole application-update mechanism. Its bundled helper
+processes may run transiently only during an explicit update check or
+person-approved installation; they are not a Parley daemon, coordination core
+or login item. Development must never start Sparkle or receive the Production
+feed. Production automatic checking is opt-in, background installation is
+disabled and updater-initiated termination must pass through the ordinary
+pane-aware quit confirmation.
+
 A workspace is durable identity independent of folders. It may have zero or
 more explicit folder attachments used for opening and search, plus an optional
 independently mutable New Pane Folder. Existing panes retain their live folders;
@@ -158,7 +169,13 @@ a different source identity.
 - `parley ask <target> <question>` submits and blocks for one exact answer.
 - `parley answer <id> <answer>` completes that waiting consultation.
 - `parley delegate <target> <task>` creates tracked asynchronous work.
+- `parley progress <id|current> <note>` lets the exact delegated target replace
+  one bounded, control-stripped, agent-declared progress note. It is never a
+  lifecycle transition and never counts as completion.
 - `parley done|fail <id|current> <report>` records the exact result.
+- `parley done <id|current> --file <path>` completes a delegation only after
+  a contained, bounded UTF-8 file is durably staged as an agent-provided draft
+  for explicit human review. It never forwards the file automatically.
 - `parley status` returns the caller's initiated work as JSON.
 - `parley wait <id|current>` waits for one exact result.
 
@@ -185,6 +202,13 @@ delegation per target.
 Human Ask and Return submit only after an editable preview. A real current
 Ghostty selection may prefill it; otherwise it starts empty. Never capture
 scrollback or a whole conversation implicitly.
+
+Ghostty appearance import is an explicit person action. Parse only bounded
+font family, font size, theme, palette and hex colour values from the documented
+XDG and macOS locations. Never load a raw Ghostty config into a terminal, follow
+`config-file` or retain commands, keybindings, shell integration and behavioral
+options. Custom theme files receive the same allowlist. Parley's explicit font
+family and size overrides win over imported values.
 Challenge and Verify are native-control-only actions over one selected returned
 Ask or Delegate. They use the original ready source, one person-selected ready
 target, an editable preview and the normal correlated Ask lifecycle. Store
@@ -196,6 +220,19 @@ and note, using the exact handoff revision shown in Status Center. Pane
 credentials have no review-mutation route. Context Packs, search and Markdown
 export preserve this metadata on the existing handoff; do not create a separate
 evidence or review database.
+
+Cross-vendor review loop practice (guidance, not a required sequence): a lead
+pane delegates with a request for milestone progress, the target posts
+`parley progress` at milestones and returns with `parley done` or
+`parley done --file`, a different vendor reviews the shared diff, corrections
+go back as a fresh attributed delegation whose text explicitly names the
+original handoff id (protocol v14 links only Ask children through Challenge
+and Verify; a linked `requestChanges` Delegate child is roadmap item 12 and is
+not implemented yet), and the reviewer verifies independently. Parley records
+each step as an ordinary attributed handoff. It must not add a workflow state
+machine, automatic transitions, an executor that verifies agent claims,
+streamed progress or any completion estimate; agent-supplied progress and
+evidence remain labelled claims.
 
 Multiline payloads travel through Ghostty paste as one text operation.
 Submission is a separate Enter key event after paste succeeds. Never send raw
@@ -354,7 +391,12 @@ macOS with complete Git history for the public scan.
 
 The manual draft-release workflow must pass the 25-round eight-pane soak, write
 its standalone JSON report, include it in SHA256SUMS and attach it to the draft.
-A missing, malformed or failing soak must fail the release closed.
+It must also Developer ID-sign nested Sparkle code inside-out, notarize and
+staple the app and DMG, pass Gatekeeper assessment, and generate a matching
+Ed25519-signed appcast and SHA-256-pinned cask. Missing credentials, signatures,
+notarization, appcast signing or soak evidence must fail the release closed.
+Publishing a release may propose the generated cask through a branch and pull
+request; release automation must never push it directly to main.
 
 ## Version policy
 
@@ -365,6 +407,11 @@ release API; for mise-managed tools use `mise latest <tool>`.
 Before changing Ghostty's exact wrapper pin, verify the current
 `Lakr233/libghostty-spm` release, confirm the embedded upstream Ghostty release
 and inspect relevant release notes. Keep `Package.swift`, `Package.resolved` and
+`THIRD_PARTY_NOTICES.md` consistent.
+
+Before changing Sparkle's exact pin, verify the current official GitHub release
+and its Swift Package Manager artifact digest, inspect its security and release
+notes, and keep `Package.swift`, `Package.resolved` and
 `THIRD_PARTY_NOTICES.md` consistent.
 
 ## Repository safety

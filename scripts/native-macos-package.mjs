@@ -26,11 +26,15 @@ export const BUNDLE_IDENTIFIER = 'com.markjoyeux.parley'
 export const MINIMUM_SYSTEM_VERSION = '14.0'
 export const UTF8_FALLBACK_LOCALE = 'C.UTF-8'
 export const GHOSTTY_RESOURCE_BUNDLE = 'GhosttyKit_GhosttyTerminal.bundle'
+export const SPARKLE_FRAMEWORK = 'Sparkle.framework'
+export const SPARKLE_FEED_URL =
+  'https://github.com/markjoyeuxcom/parley/releases/latest/download/appcast.xml'
 const GHOSTTY_RUNTIME_RESOURCES_SOURCE =
   'Sources/GhosttyTerminal/Configuration/GhosttyRuntimeResources.swift'
 export const requiredBundlePaths = [
   'Contents/Info.plist',
   'Contents/MacOS/parley-native',
+  `Contents/Frameworks/${SPARKLE_FRAMEWORK}/Versions/B/Sparkle`,
   `Contents/Resources/${GHOSTTY_RESOURCE_BUNDLE}/Ghostty`,
   `Contents/Resources/${GHOSTTY_RESOURCE_BUNDLE}/terminfo`,
   'Contents/Resources/Parley.icns',
@@ -57,7 +61,37 @@ export function renderInfoPlist({
   sourceCommit = 'unknown',
   sourceBranch = 'unknown',
   sourceDirty = false,
+  sparklePublicKey,
 }) {
+  let sparkleConfiguration = ''
+  if (sparklePublicKey !== undefined) {
+    let decoded
+    try {
+      decoded = Buffer.from(sparklePublicKey, 'base64')
+    } catch {
+      decoded = Buffer.alloc(0)
+    }
+    if (decoded.length !== 32 || decoded.toString('base64') !== sparklePublicKey) {
+      throw new Error('PARLEY_SPARKLE_PUBLIC_ED_KEY must be a canonical 32-byte base64 Ed25519 public key')
+    }
+    sparkleConfiguration = `  <key>SUFeedURL</key>
+  <string>${xml(SPARKLE_FEED_URL)}</string>
+  <key>SUPublicEDKey</key>
+  <string>${xml(sparklePublicKey)}</string>
+  <key>SURequireSignedFeed</key>
+  <true/>
+  <key>SUVerifyUpdateBeforeExtraction</key>
+  <true/>
+  <key>SUAllowsAutomaticUpdates</key>
+  <false/>
+  <key>SUEnableAutomaticChecks</key>
+  <false/>
+  <key>SUAutomaticallyUpdate</key>
+  <false/>
+  <key>SUEnableSystemProfiling</key>
+  <false/>
+`
+  }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -151,7 +185,7 @@ export function renderInfoPlist({
   <string>${xml(sourceBranch)}</string>
   <key>ParleySourceDirty</key>
   ${sourceDirty ? '<true/>' : '<false/>'}
-  <key>LSApplicationCategoryType</key>
+${sparkleConfiguration}  <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>
   <string>${MINIMUM_SYSTEM_VERSION}</string>
@@ -259,6 +293,7 @@ function swiftReleaseBinPath() {
     'parley-native',
     '--package-path',
     'native',
+    '--disable-sandbox',
   ]
   run('node', buildArguments)
   const bin = run('node', [
@@ -269,6 +304,7 @@ function swiftReleaseBinPath() {
     '--show-bin-path',
     '--package-path',
     'native',
+    '--disable-sandbox',
   ], { capture: true })
   const runtimeResources = join(
     repositoryRoot,
@@ -285,11 +321,28 @@ function swiftReleaseBinPath() {
   return bin
 }
 
-function sign(path, identity) {
+function sign(path, identity, { preserveEntitlements = false } = {}) {
   const args = ['--force', '--sign', identity, '--options', 'runtime']
   if (identity !== '-') args.push('--timestamp')
+  if (preserveEntitlements) args.push('--preserve-metadata=entitlements')
   args.push(path)
   run('codesign', args)
+}
+
+function signSparkleFramework(framework, identity) {
+  const nested = [
+    { path: 'Versions/B/XPCServices/Installer.xpc' },
+    { path: 'Versions/B/XPCServices/Downloader.xpc', preserveEntitlements: true },
+    { path: 'Versions/B/Autoupdate' },
+    { path: 'Versions/B/Updater.app' },
+  ]
+  for (const item of nested) {
+    const path = join(framework, item.path)
+    if (existsSync(path)) {
+      sign(path, identity, { preserveEntitlements: item.preserveEntitlements ?? false })
+    }
+  }
+  sign(framework, identity)
 }
 
 function verifyArchitecture(executable) {
@@ -388,6 +441,46 @@ export function copyGhosttyResourceBundle({ bin, resources }) {
   makeTreeOwnerWritable(destination)
 }
 
+export function copySparkleFramework({ bin, frameworks }) {
+  const source = join(bin, SPARKLE_FRAMEWORK)
+  if (!existsSync(source)) throw new Error(`SwiftPM output is missing ${SPARKLE_FRAMEWORK}`)
+  cpSync(source, join(frameworks, SPARKLE_FRAMEWORK), {
+    recursive: true,
+    errorOnExist: true,
+    verbatimSymlinks: true,
+  })
+}
+
+export function createNativeMacOSArchives({ bundle, zip, dmg, distributionReadme }) {
+  const archiveRoot = mkdtempSync(join(tmpdir(), 'parley-archives-'))
+  try {
+    rmSync(zip, { force: true })
+    run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', bundle, zip])
+
+    const dmgRoot = join(archiveRoot, 'dmg')
+    mkdirSync(dmgRoot)
+    run('ditto', [bundle, join(dmgRoot, 'Parley.app')])
+    symlinkSync('/Applications', join(dmgRoot, 'Applications'))
+    if (distributionReadme) {
+      writeFileSync(join(dmgRoot, 'READ ME FIRST.txt'), distributionReadme, { mode: 0o644 })
+    }
+    rmSync(dmg, { force: true })
+    run('hdiutil', [
+      'create',
+      '-volname',
+      'Parley',
+      '-srcfolder',
+      dmgRoot,
+      '-ov',
+      '-format',
+      'UDZO',
+      dmg,
+    ])
+  } finally {
+    rmSync(archiveRoot, { recursive: true, force: true })
+  }
+}
+
 export function packageNativeMacOS({ distributionReadme } = {}) {
   if (process.platform !== 'darwin') {
     throw new Error('Native macOS packaging must run on macOS')
@@ -408,13 +501,17 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
   const bundle = join(stagingRoot, 'Parley.app')
   const contents = join(bundle, 'Contents')
   const macOS = join(contents, 'MacOS')
+  const frameworks = join(contents, 'Frameworks')
   const resources = join(contents, 'Resources')
   mkdirSync(macOS, { recursive: true })
+  mkdirSync(frameworks, { recursive: true })
   mkdirSync(resources, { recursive: true })
 
   const appExecutable = join(macOS, 'parley-native')
   copyFileSync(join(bin, 'parley-native'), appExecutable)
   chmodSync(appExecutable, 0o755)
+  run('install_name_tool', ['-add_rpath', '@executable_path/../Frameworks', appExecutable])
+  copySparkleFramework({ bin, frameworks })
   copyGhosttyResourceBundle({ bin, resources })
   copyFileSync(join(repositoryRoot, 'resources/icon.icns'), join(resources, 'Parley.icns'))
   copyFileSync(join(repositoryRoot, 'LICENSE'), join(resources, 'LICENSE'))
@@ -432,6 +529,7 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
       sourceCommit: source.commit,
       sourceBranch: source.branch,
       sourceDirty: source.dirty,
+      sparklePublicKey: process.env.PARLEY_SPARKLE_PUBLIC_ED_KEY,
     }),
     { mode: 0o644 },
   )
@@ -443,33 +541,18 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
 
   run('xattr', ['-cr', bundle])
   const identity = process.env.PARLEY_CODESIGN_IDENTITY || '-'
+  signSparkleFramework(join(frameworks, SPARKLE_FRAMEWORK), identity)
   sign(appExecutable, identity)
   sign(bundle, identity)
   run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', bundle])
 
   replacePath(bundle, finalBundle)
-  rmSync(finalZip, { force: true })
-  run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', finalBundle, finalZip])
-
-  const dmgRoot = join(stagingRoot, 'dmg')
-  mkdirSync(dmgRoot)
-  run('ditto', [finalBundle, join(dmgRoot, 'Parley.app')])
-  symlinkSync('/Applications', join(dmgRoot, 'Applications'))
-  if (distributionReadme) {
-    writeFileSync(join(dmgRoot, 'READ ME FIRST.txt'), distributionReadme, { mode: 0o644 })
-  }
-  rmSync(finalDMG, { force: true })
-  run('hdiutil', [
-    'create',
-    '-volname',
-    'Parley',
-    '-srcfolder',
-    dmgRoot,
-    '-ov',
-    '-format',
-    'UDZO',
-    finalDMG,
-  ])
+  createNativeMacOSArchives({
+    bundle: finalBundle,
+    zip: finalZip,
+    dmg: finalDMG,
+    distributionReadme,
+  })
 
   rmSync(stagingRoot, { recursive: true, force: true })
   process.stdout.write(`Packaged ${basename(finalBundle)} ${version} (${build})\n`)
