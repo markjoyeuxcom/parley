@@ -110,6 +110,7 @@ struct ActiveWorkspaceBriefDraft: Identifiable, Equatable {
 enum PanePermissionAction: Equatable {
     case create(SplitDirection)
     case restart(String)
+    case resume(paneID: String, replacingRunningProcess: Bool)
     case start(String)
     case folderAccess(String)
 }
@@ -127,6 +128,7 @@ struct PanePermissionRequest: Identifiable, Equatable {
         switch action {
         case .create: "Start Pane"
         case .restart: "Restart Pane"
+        case .resume: VendorResumeAdapter.plan(for: kind)?.confirmationLabel ?? "Resume"
         case .start: "Start Pane"
         case .folderAccess: "Restart with Access"
         }
@@ -135,14 +137,21 @@ struct PanePermissionRequest: Identifiable, Equatable {
     var isFolderAccessReview: Bool {
         if case .folderAccess = action { true } else { false }
     }
+
+    var resumeDetail: String? {
+        guard case .resume = action else { return nil }
+        return VendorResumeAdapter.plan(for: kind)?.detail
+    }
 }
 
 struct HandoffComposerDraft: Identifiable, Equatable {
     let id: UUID
     let sourcePaneID: String
     let sourceName: String
+    let sourceKind: PaneKind
     let targetPaneID: String
     let targetName: String
+    let targetKind: PaneKind
     let inReplyToHandoffID: String?
     let relationship: RelayHandoffRelationship?
     var text: String
@@ -151,8 +160,10 @@ struct HandoffComposerDraft: Identifiable, Equatable {
     init(
         sourcePaneID: String,
         sourceName: String,
+        sourceKind: PaneKind,
         targetPaneID: String,
         targetName: String,
+        targetKind: PaneKind,
         text: String,
         includesTerminalSelection: Bool,
         inReplyToHandoffID: String? = nil,
@@ -161,8 +172,10 @@ struct HandoffComposerDraft: Identifiable, Equatable {
         id = UUID()
         self.sourcePaneID = sourcePaneID
         self.sourceName = sourceName
+        self.sourceKind = sourceKind
         self.targetPaneID = targetPaneID
         self.targetName = targetName
+        self.targetKind = targetKind
         self.inReplyToHandoffID = inReplyToHandoffID
         self.relationship = relationship
         self.text = text
@@ -311,6 +324,8 @@ final class AppModel: ObservableObject {
     private var lastExternalEditorCapabilitiesPublishedAt = Date.distantPast
     private var periodicRefreshTimer: Timer?
     private let taskManagerSampler = TaskManagerSampler()
+    private var quickRelayTargetHistory = QuickRelayTargetHistory()
+    private var attentionCycleCursorID: String?
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
     private static let workspaceIdentityRecentResetKey = "parley.workspaceIdentityRecentResetV1"
     private static let workspaceContinuityKey = "parley.workspaceContinuity"
@@ -1933,6 +1948,53 @@ final class AppModel: ObservableObject {
         return latest
     }
 
+    var paneAttentionItems: [PaneAttentionItem] {
+        var byID: [String: RelayHandoff] = [:]
+        for handoff in unreadHandoffs + statusHandoffs + handoffs {
+            byID[handoff.id] = handoff
+        }
+        return PaneAttentionProjection.items(
+            panes: panes,
+            handoffs: Array(byID.values)
+        )
+    }
+
+    func paneAttention(for paneID: String) -> PaneAttentionItem? {
+        PaneAttentionProjection.primary(forPaneID: paneID, in: paneAttentionItems)
+    }
+
+    /// Returns true when the Status Center should be presented for the item.
+    @discardableResult
+    func focusNextAttention() -> Bool {
+        let items = paneAttentionItems
+        guard !items.isEmpty else {
+            attentionCycleCursorID = nil
+            return false
+        }
+        let nextIndex: Int
+        if let cursor = attentionCycleCursorID,
+           let currentIndex = items.firstIndex(where: { $0.id == cursor }) {
+            nextIndex = items.index(after: currentIndex) == items.endIndex
+                ? items.startIndex
+                : items.index(after: currentIndex)
+        } else {
+            nextIndex = items.startIndex
+        }
+        let item = items[nextIndex]
+        attentionCycleCursorID = item.id
+
+        if item.reason == .permissionRequest, canFocus(item.paneID) {
+            _ = openExternalNavigation(.pane(item.paneID))
+            return false
+        }
+        if let handoffID = item.handoffID {
+            return openExternalNavigation(.handoff(handoffID))
+        }
+        if canFocus(item.paneID) {
+            _ = openExternalNavigation(.pane(item.paneID))
+        }
+        return false
+    }
     func unreadResultCount(forPane paneID: String) -> Int {
         unreadHandoffs.count { $0.sourcePaneID == paneID }
     }
@@ -2781,6 +2843,38 @@ final class AppModel: ObservableObject {
                         detail: "\(pane.kind.label) pane restarted with \(definition.name) permissions."
                     ))
                 }
+            case let .resume(paneID, replacingRunningProcess):
+                guard let pane = panes.first(where: { $0.id == paneID }) else {
+                    throw RelayUIError.message("That pane no longer exists.")
+                }
+                guard pane.isStarted == replacingRunningProcess else {
+                    throw RelayUIError.message("That pane's running state changed. Reopen Resume and review it again.")
+                }
+                guard let plan = VendorResumeAdapter.plan(for: pane.kind) else {
+                    throw RelayUIError.message("That pane does not support vendor session resume.")
+                }
+                if replacingRunningProcess {
+                    try controller.restartPane(
+                        paneID,
+                        permissionProfile: effective,
+                        launchMode: .resume
+                    )
+                } else {
+                    try controller.startPane(
+                        paneID,
+                        permissionProfile: effective,
+                        launchMode: .resume
+                    )
+                }
+                try recordSuccessfulActivity(RelayActivityEventRequest(
+                    kind: .paneResumeRequested,
+                    workspaceID: pane.workspaceID,
+                    workspaceName: pane.workspaceName ?? pane.workspaceID,
+                    paneID: pane.id,
+                    paneName: pane.displayName,
+                    paneKind: pane.kind,
+                    detail: "\(plan.detail) Launched with \(definition.name) permissions."
+                ))
             case let .folderAccess(paneID):
                 guard let pane = panes.first(where: { $0.id == paneID }) else {
                     throw RelayUIError.message("That pane no longer exists.")
@@ -2944,15 +3038,68 @@ final class AppModel: ObservableObject {
     }
 
     func ask(_ target: WorkbenchPane) {
-        guard let source = activePane else { return }
-        let selection = terminalHandle.selectedText
+        guard let source = activePane,
+              askTargets.contains(where: { $0.id == target.id }) else { return }
+        let selection = RelayDraft.initialText(selection: terminalHandle.selectedText)
+        quickRelayTargetHistory.record(sourcePaneID: source.id, targetPaneID: target.id)
         handoffComposerDraft = HandoffComposerDraft(
             sourcePaneID: source.id,
             sourceName: source.displayName,
+            sourceKind: source.kind,
             targetPaneID: target.id,
             targetName: target.displayName,
-            text: RelayDraft.initialText(selection: selection),
-            includesTerminalSelection: selection != nil
+            targetKind: target.kind,
+            text: selection,
+            includesTerminalSelection: !selection.isEmpty
+        )
+    }
+
+    var quickRelayTarget: WorkbenchPane? {
+        guard let source = activePane else { return nil }
+        let eligibleTargets = askTargets
+        guard let targetPaneID = quickRelayTargetHistory.targetPaneID(
+            for: source.id,
+            eligibleTargetPaneIDs: Set(eligibleTargets.map(\.id))
+        ) else { return nil }
+        return eligibleTargets.first { $0.id == targetPaneID }
+    }
+
+    var canQuickRelaySelection: Bool {
+        handoffComposerDraft == nil
+            && !submittingHandoffComposer
+            && quickRelayTarget != nil
+    }
+
+    func quickRelaySelection() {
+        guard handoffComposerDraft == nil, !submittingHandoffComposer else { return }
+        guard let source = activePane, let target = quickRelayTarget else {
+            let alert = NSAlert()
+            alert.messageText = "No Previous Ask Target"
+            alert.informativeText = "Choose an explicit target from the Ask menu for this pane first. Nothing was sent."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+
+        let selection = RelayDraft.initialText(selection: terminalHandle.selectedText)
+        guard !selection.isEmpty else {
+            let alert = NSAlert()
+            alert.messageText = "Select Terminal Text First"
+            alert.informativeText = "Select the exact text in \(source.displayName), then press Command-Shift-A again. Parley never captures scrollback implicitly."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+
+        handoffComposerDraft = HandoffComposerDraft(
+            sourcePaneID: source.id,
+            sourceName: source.displayName,
+            sourceKind: source.kind,
+            targetPaneID: target.id,
+            targetName: target.displayName,
+            targetKind: target.kind,
+            text: selection,
+            includesTerminalSelection: true
         )
     }
 
@@ -3046,8 +3193,10 @@ final class AppModel: ObservableObject {
         handoffComposerDraft = HandoffComposerDraft(
             sourcePaneID: source.id,
             sourceName: source.displayName,
+            sourceKind: source.kind,
             targetPaneID: target.id,
             targetName: target.displayName,
+            targetKind: target.kind,
             text: text,
             includesTerminalSelection: false,
             inReplyToHandoffID: handoff.id,
@@ -5252,7 +5401,9 @@ final class AppModel: ObservableObject {
     func restart(_ pane: WorkbenchPane) {
         let alert = NSAlert()
         alert.messageText = "Restart \(pane.displayName)?"
-        alert.informativeText = "The current process in this pane will be stopped and relaunched."
+        alert.informativeText = pane.kind.isAgent
+            ? "The current process will stop and a fresh \(pane.kind.label) session will start. Restart never restores vendor conversation history; choose Resume instead if you want the vendor to offer its saved sessions."
+            : "The current process in this pane will be stopped and relaunched."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Restart")
         alert.addButton(withTitle: "Cancel")
@@ -5283,6 +5434,63 @@ final class AppModel: ObservableObject {
             ))
             try refresh()
         }
+    }
+
+    func resume(_ pane: WorkbenchPane) {
+        guard let plan = VendorResumeAdapter.plan(for: pane.kind) else { return }
+
+        let alert = NSAlert()
+        alert.messageText = pane.isStarted
+            ? "Replace \(pane.displayName) with \(plan.menuLabel.dropLast())?"
+            : "\(plan.menuLabel.dropLast()) in \(pane.displayName)?"
+        let explanation: [String?] = [
+            pane.isStarted ? "The current process in this pane will stop." : nil,
+            plan.detail,
+            "Parley keeps this pane's working folder and reviews permissions before launch. If no saved conversation is suitable, cancel or exit the vendor UI and use Restart for a fresh session.",
+        ]
+        alert.informativeText = explanation.compactMap { $0 }.joined(separator: " ")
+        alert.alertStyle = pane.isStarted ? .warning : .informational
+        alert.addButton(withTitle: "Review Permissions")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let workspace = workspaces.first { $0.workspaceID == pane.workspaceID }
+        if !pane.isStarted, workspace?.isFolderless == true, workspace?.newPaneFolder == nil {
+            let panel = NSOpenPanel()
+            panel.title = "Choose a working folder for \(pane.displayName)"
+            panel.message = "Resume remains vendor-owned. This folder scopes the stopped pane and its permission review; it is not attached to the workspace."
+            panel.prompt = "Continue"
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.directoryURL = URL(fileURLWithPath: pane.cwd)
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            let folder = url.standardizedFileURL.path
+            do {
+                try controller?.setStoppedPaneFolder(pane.id, folder: folder)
+                try refresh()
+                rememberFolder(folder)
+                panePermissionRequest = PanePermissionRequest(
+                    kind: pane.kind,
+                    folder: folder,
+                    workspaceName: workspace?.name ?? pane.workspaceName ?? "Workspace",
+                    workspaceFolders: workspace?.attachedFolders ?? [],
+                    action: .resume(paneID: pane.id, replacingRunningProcess: false),
+                    existingSelection: nil
+                )
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+            return
+        }
+        panePermissionRequest = PanePermissionRequest(
+            kind: pane.kind,
+            folder: pane.cwd,
+            workspaceName: workspace?.name ?? pane.workspaceName ?? "Workspace",
+            workspaceFolders: workspace?.attachedFolders ?? [],
+            action: .resume(paneID: pane.id, replacingRunningProcess: pane.isStarted),
+            existingSelection: pane.permissionSelection
+        )
     }
 
     func start(_ pane: WorkbenchPane) {

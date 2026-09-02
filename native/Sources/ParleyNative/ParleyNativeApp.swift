@@ -295,6 +295,11 @@ struct ParleyNativeApp: App {
                         case .toggleFocusCanvas: model.toggleFocusCanvas()
                         case .focusActiveTerminal: model.focusActiveTerminal()
                         case .toggleCollaborationDock: model.toggleCollaborationDock()
+                        case .quickRelaySelection: model.quickRelaySelection()
+                        case .nextAttention:
+                            if model.focusNextAttention() {
+                                openWindow(id: "status-center")
+                            }
                         }
                     }
                     appDelegate.bindExternalRequestHandler { request in
@@ -340,6 +345,11 @@ struct ParleyNativeApp: App {
                 Button("Previous Pane") { model.selectAdjacentPane(by: -1) }
                     .keyboardShortcut(.leftArrow, modifiers: [.control, .option])
                     .disabled(!model.canNavigatePanes)
+                Button("Next Attention Item") {
+                    if model.focusNextAttention() { openWindow(id: "status-center") }
+                }
+                    .keyboardShortcut("j", modifiers: [.command, .shift])
+                    .disabled(model.paneAttentionItems.isEmpty)
                 Divider()
                 Button("Focus Pane 1") { model.selectPane(at: 0) }
                     .keyboardShortcut("1", modifiers: [.command])
@@ -429,6 +439,13 @@ struct ParleyNativeApp: App {
                     .keyboardShortcut("4", modifiers: [.command, .shift])
                 Button("New Copilot Pane") { model.create(.copilot, direction: .horizontal) }
                     .keyboardShortcut("5", modifiers: [.command, .shift])
+                Divider()
+                Button(model.quickRelayTarget.map { "Ask \($0.displayName) with Selection…" } ?? "Ask Last Target with Selection…") {
+                    model.quickRelaySelection()
+                }
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .disabled(!model.canQuickRelaySelection)
+                    .help("Open the active pane's exact terminal selection in the reviewed Ask composer")
                 Divider()
                 Button("Return Answer") { model.returnAnswer() }
                     .keyboardShortcut(.return, modifiers: [.command, .shift])

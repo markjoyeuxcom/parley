@@ -12,7 +12,9 @@ public enum WorkbenchKeyboardShortcut: Equatable, Sendable {
     case toggleFocusCanvas
     case focusActiveTerminal
     case toggleCollaborationDock
+    case quickRelaySelection
 
+    case nextAttention
     public static func resolve(
         key: String,
         command: Bool,
@@ -38,6 +40,8 @@ public enum WorkbenchKeyboardShortcut: Equatable, Sendable {
         if command, shift, !option, !control {
             if key == "f" { return .toggleFocusCanvas }
             if key == "d" { return .toggleCollaborationDock }
+            if key == "a" { return .quickRelaySelection }
+            if key == "j" { return .nextAttention }
         }
         if command, option, !shift, !control, key == "t" {
             return .focusActiveTerminal

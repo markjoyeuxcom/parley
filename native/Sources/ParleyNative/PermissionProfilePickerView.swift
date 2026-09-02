@@ -41,6 +41,13 @@ struct PermissionProfilePickerView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let resumeDetail = request.resumeDetail {
+                    Text(resumeDetail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 5)
+                }
             }
             .padding(20)
 

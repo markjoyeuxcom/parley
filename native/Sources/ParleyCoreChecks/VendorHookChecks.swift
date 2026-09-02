@@ -42,7 +42,7 @@ private func hookPane(
 }
 
 func checkOfficialVendorHookAdaptersAndSignals() throws {
-    try hookExpect(AgentProtocol.version == "11", "official hook semantics did not receive a protocol version")
+    try hookExpect(AgentProtocol.version == "12", "official hook semantics did not receive the detached Ask recovery protocol")
 
     let directory = try hookCheckDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

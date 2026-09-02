@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "11"
+    public static let version = "12"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -26,9 +26,13 @@ public enum AgentProtocol {
       report content-free lifecycle facts. This command is reserved for those
       generated adapters: never invoke it yourself or treat it as a substitute
       for `done`, `fail`, `answer`, or a person-visible permission prompt.
-    - To ask another agent pane a question and continue this same turn with its
-      answer, run `parley ask <target> "<question>"` and wait. It submits the
-      question; its stdout is the correlated answer. Use this for consultation.
+    - To ask another agent pane a focused question likely to finish in one minute
+      and continue this same turn with its answer, run
+      `parley ask <target> "<question>"` and wait. After submission, stderr
+      prints `Parley Ask ID: <id>` while stdout remains the exact correlated
+      answer. If the calling shell disconnects, only the same still-running
+      source pane generation may recover that answer with `parley wait <id>`.
+      Use Delegate instead when the requested work is likely to take longer.
     - To compare independent answers, run
       `parley ask-many <target-a,target-b> "<question>"`. Targets are explicit,
       receive the same question concurrently, and never see one another's
@@ -54,9 +58,10 @@ public enum AgentProtocol {
     - To assign asynchronous work to another agent pane, run
       `parley delegate <target> "<task>"`. It returns a tracked id immediately.
       Inspect work you initiated with `parley status`, or block for one result
-      with `parley wait <id>` (use `current` only when exactly one is active).
-      Cancel only your own active tracking with `parley cancel <id>`; this never
-      interrupts the target CLI.
+      with `parley wait <id>`. An explicit id may also recover a completed Ask
+      answer from the same source pane generation; `current` resolves only when
+      exactly one active delegation exists. Cancel only your own active tracking
+      with `parley cancel <id>`; this never interrupts the target CLI.
     - When delegated work reaches a terminal outcome, run
       `parley done current "<report>"` or `parley fail current "<reason>"`.
       Do not only print the result locally; the initiating pane owns the status.
@@ -86,8 +91,12 @@ public enum AgentProtocol {
         return directory
     }
 
-    public static func command(for kind: PaneKind, protocolDirectory: URL) -> [String] {
-        switch kind {
+    public static func command(
+        for kind: PaneKind,
+        protocolDirectory: URL,
+        launchMode: AgentLaunchMode = .fresh
+    ) -> [String] {
+        let freshCommand: [String] = switch kind {
         case .shell:
             []
         case .claude:
@@ -106,6 +115,11 @@ public enum AgentProtocol {
             ["copilot", "--allow-tool=shell(parley)"]
                 + VendorHookAdapter.launchArguments(for: kind, protocolDirectory: protocolDirectory)
         }
+        return VendorResumeAdapter.command(
+            freshCommand: freshCommand,
+            for: kind,
+            launchMode: launchMode
+        )
     }
 
     /// Extra launch environment needed by instruction systems that do not

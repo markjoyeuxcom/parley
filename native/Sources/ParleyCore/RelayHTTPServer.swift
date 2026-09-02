@@ -590,7 +590,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 write(broker.delegationStatus(token: token), to: client)
             case let path where path.hasPrefix("/wait/"):
                 let handoffID = String(path.dropFirst("/wait/".count))
-                write(broker.waitForDelegation(token: token, handoffID: handoffID), to: client)
+                write(broker.waitForTrackedWork(token: token, handoffID: handoffID), to: client)
             case let path where path.hasPrefix("/done/"):
                 let handoffID = String(path.dropFirst("/done/".count))
                 write(broker.handleDelegationResult(
