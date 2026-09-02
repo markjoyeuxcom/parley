@@ -10,6 +10,10 @@ public struct WorkspaceBrief: Identifiable, Codable, Equatable, Sendable {
     public var goal: String
     public var constraints: String
     public var decisions: String
+    public var conclusions: String
+    public var rationale: String
+    public var confidence: String
+    public var openQuestions: String
     public let createdAt: Date
     public var updatedAt: Date
 
@@ -20,6 +24,10 @@ public struct WorkspaceBrief: Identifiable, Codable, Equatable, Sendable {
         goal: String,
         constraints: String,
         decisions: String,
+        conclusions: String = "",
+        rationale: String = "",
+        confidence: String = "",
+        openQuestions: String = "",
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -29,21 +37,75 @@ public struct WorkspaceBrief: Identifiable, Codable, Equatable, Sendable {
         self.goal = goal
         self.constraints = constraints
         self.decisions = decisions
+        self.conclusions = conclusions
+        self.rationale = rationale
+        self.confidence = confidence
+        self.openQuestions = openQuestions
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case workspaceID
+        case workspaceName
+        case goal
+        case constraints
+        case decisions
+        case conclusions
+        case rationale
+        case confidence
+        case openQuestions
+        case createdAt
+        case updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        workspaceID = try container.decode(String.self, forKey: .workspaceID)
+        workspaceName = try container.decode(String.self, forKey: .workspaceName)
+        goal = try container.decode(String.self, forKey: .goal)
+        constraints = try container.decode(String.self, forKey: .constraints)
+        decisions = try container.decode(String.self, forKey: .decisions)
+        conclusions = try container.decodeIfPresent(String.self, forKey: .conclusions) ?? ""
+        rationale = try container.decodeIfPresent(String.self, forKey: .rationale) ?? ""
+        confidence = try container.decodeIfPresent(String.self, forKey: .confidence) ?? ""
+        openQuestions = try container.decodeIfPresent(String.self, forKey: .openQuestions) ?? ""
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(workspaceID, forKey: .workspaceID)
+        try container.encode(workspaceName, forKey: .workspaceName)
+        try container.encode(goal, forKey: .goal)
+        try container.encode(constraints, forKey: .constraints)
+        try container.encode(decisions, forKey: .decisions)
+        try container.encode(conclusions, forKey: .conclusions)
+        try container.encode(rationale, forKey: .rationale)
+        try container.encode(confidence, forKey: .confidence)
+        try container.encode(openQuestions, forKey: .openQuestions)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+    }
 
     public var renderedText: String {
-        ContextPackText.normalize("""
-        Current goal:
-        \(goal)
-
-        Constraints:
-        \(constraints.isEmpty ? "(none recorded)" : constraints)
-
-        Important decisions:
-        \(decisions.isEmpty ? "(none recorded)" : decisions)
-        """)
+        var sections = [
+            "Current goal:\n\(goal)",
+            "Constraints:\n\(constraints.isEmpty ? "(none recorded)" : constraints)",
+            "Important decisions:\n\(decisions.isEmpty ? "(none recorded)" : decisions)",
+        ]
+        for (label, value) in [
+            ("Investigation conclusions", conclusions),
+            ("Rationale", rationale),
+            ("Confidence (person-authored)", confidence),
+            ("Open questions", openQuestions),
+        ] where !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections.append("\(label):\n\(value)")
+        }
+        return ContextPackText.normalize(sections.joined(separator: "\n\n"))
     }
 }
 
@@ -101,6 +163,10 @@ public final class WorkspaceBriefStore: @unchecked Sendable {
         goal: String,
         constraints: String,
         decisions: String,
+        conclusions: String = "",
+        rationale: String = "",
+        confidence: String = "",
+        openQuestions: String = "",
         now: Date = Date()
     ) throws -> WorkspaceBrief {
         try lock.withLock {
@@ -109,13 +175,25 @@ public final class WorkspaceBriefStore: @unchecked Sendable {
             let goal = ContextPackText.normalize(goal)
             let constraints = ContextPackText.normalize(constraints)
             let decisions = ContextPackText.normalize(decisions)
+            let conclusions = ContextPackText.normalize(conclusions)
+            let rationale = ContextPackText.normalize(rationale)
+            let confidence = ContextPackText.normalize(confidence)
+            let openQuestions = ContextPackText.normalize(openQuestions)
             guard !workspaceID.isEmpty, !workspaceName.isEmpty else {
                 throw WorkspaceBriefError.invalid("A workspace brief needs a workspace id and name.")
             }
             guard !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw WorkspaceBriefError.invalid("A workspace brief needs a current goal.")
             }
-            let contentBytes = goal.utf8.count + constraints.utf8.count + decisions.utf8.count
+            let contentBytes = [
+                goal,
+                constraints,
+                decisions,
+                conclusions,
+                rationale,
+                confidence,
+                openQuestions,
+            ].reduce(0) { $0 + $1.utf8.count }
             guard contentBytes <= Self.maximumContentBytes else {
                 throw WorkspaceBriefError.invalid(
                     "This workspace brief is \(contentBytes) bytes. Reduce it to \(Self.maximumContentBytes) bytes before saving."
@@ -129,6 +207,10 @@ public final class WorkspaceBriefStore: @unchecked Sendable {
                 current[index].goal = goal
                 current[index].constraints = constraints
                 current[index].decisions = decisions
+                current[index].conclusions = conclusions
+                current[index].rationale = rationale
+                current[index].confidence = confidence
+                current[index].openQuestions = openQuestions
                 current[index].updatedAt = now
                 saved = current[index]
             } else {
@@ -143,6 +225,10 @@ public final class WorkspaceBriefStore: @unchecked Sendable {
                     goal: goal,
                     constraints: constraints,
                     decisions: decisions,
+                    conclusions: conclusions,
+                    rationale: rationale,
+                    confidence: confidence,
+                    openQuestions: openQuestions,
                     createdAt: now,
                     updatedAt: now
                 )

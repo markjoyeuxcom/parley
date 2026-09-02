@@ -38,6 +38,11 @@ test('GitHub release automation is manual and can create only a draft', () => {
   assert.match(workflow, /npm ci --prefix vscode-extension/)
   assert.match(workflow, /npm run package:vscode/)
   assert.match(workflow, /Parley-Companion-0\.1\.0\.vsix/)
+  assert.match(
+    workflow,
+    /npm run test:soak -- --rounds 25 --output dist\/Parley-Ghostty-soak\.json/,
+  )
+  assert.equal(workflow.match(/Parley-Ghostty-soak\.json/g)?.length, 3)
 })
 
 test('release source must be clean and an optional tag must match package version', () => {

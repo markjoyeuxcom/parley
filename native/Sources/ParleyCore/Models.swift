@@ -202,6 +202,9 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
     /// Whether the retained Ghostty surface is attached and can accept input.
     /// This is not a claim that the vendor is idle or at its prompt.
     public var inputAvailable: Bool
+    public var vendorRuntimeState: VendorRuntimeState?
+    public var vendorRuntimeSignal: VendorHookSignal?
+    public var vendorRuntimeSignaledAt: Date?
     public var isDead: Bool
     public var exitStatus: Int?
     public var isStarted: Bool
@@ -230,6 +233,9 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         protocolVersion: String? = nil,
         workspaceName: String? = nil,
         inputAvailable: Bool = false,
+        vendorRuntimeState: VendorRuntimeState? = nil,
+        vendorRuntimeSignal: VendorHookSignal? = nil,
+        vendorRuntimeSignaledAt: Date? = nil,
         isDead: Bool = false,
         exitStatus: Int? = nil,
         isStarted: Bool = true,
@@ -252,6 +258,9 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         self.protocolVersion = protocolVersion
         self.workspaceName = workspaceName
         self.inputAvailable = inputAvailable
+        self.vendorRuntimeState = vendorRuntimeState
+        self.vendorRuntimeSignal = vendorRuntimeSignal
+        self.vendorRuntimeSignaledAt = vendorRuntimeSignaledAt
         self.isDead = isDead
         self.exitStatus = exitStatus
         self.isStarted = isStarted
@@ -275,6 +284,9 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         case protocolVersion
         case workspaceName
         case inputAvailable
+        case vendorRuntimeState
+        case vendorRuntimeSignal
+        case vendorRuntimeSignaledAt
         case isDead
         case exitStatus
         case isStarted
@@ -304,6 +316,9 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         protocolVersion = try values.decodeIfPresent(String.self, forKey: .protocolVersion)
         workspaceName = try values.decodeIfPresent(String.self, forKey: .workspaceName)
         inputAvailable = try values.decodeIfPresent(Bool.self, forKey: .inputAvailable) ?? false
+        vendorRuntimeState = try values.decodeIfPresent(VendorRuntimeState.self, forKey: .vendorRuntimeState)
+        vendorRuntimeSignal = try values.decodeIfPresent(VendorHookSignal.self, forKey: .vendorRuntimeSignal)
+        vendorRuntimeSignaledAt = try values.decodeIfPresent(Date.self, forKey: .vendorRuntimeSignaledAt)
         isDead = try values.decodeIfPresent(Bool.self, forKey: .isDead) ?? false
         exitStatus = try values.decodeIfPresent(Int.self, forKey: .exitStatus)
         isStarted = try values.decodeIfPresent(Bool.self, forKey: .isStarted) ?? true
@@ -340,6 +355,9 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         try values.encodeIfPresent(protocolVersion, forKey: .protocolVersion)
         try values.encodeIfPresent(workspaceName, forKey: .workspaceName)
         try values.encode(inputAvailable, forKey: .inputAvailable)
+        try values.encodeIfPresent(vendorRuntimeState, forKey: .vendorRuntimeState)
+        try values.encodeIfPresent(vendorRuntimeSignal, forKey: .vendorRuntimeSignal)
+        try values.encodeIfPresent(vendorRuntimeSignaledAt, forKey: .vendorRuntimeSignaledAt)
         try values.encode(isDead, forKey: .isDead)
         try values.encodeIfPresent(exitStatus, forKey: .exitStatus)
         try values.encode(isStarted, forKey: .isStarted)

@@ -293,6 +293,34 @@ public enum RelayHandoffKind: String, Codable, Equatable, Sendable {
     case delegate
 }
 
+public enum RelayHandoffRelationship: String, CaseIterable, Codable, Equatable, Sendable {
+    case challenge
+    case verify
+
+    public var label: String {
+        switch self {
+        case .challenge: "Challenge"
+        case .verify: "Verify"
+        }
+    }
+}
+
+public enum RelayHandoffVerdict: String, CaseIterable, Codable, Equatable, Sendable {
+    case accepted
+    case needsChanges
+    case rejected
+    case inconclusive
+
+    public var label: String {
+        switch self {
+        case .accepted: "Accepted"
+        case .needsChanges: "Needs Changes"
+        case .rejected: "Rejected"
+        case .inconclusive: "Inconclusive"
+        }
+    }
+}
+
 public enum RelayHandoffState: String, Codable, Equatable, Sendable {
     case created
     case delivered
@@ -333,6 +361,12 @@ public enum RelayActivityEventKind: String, Codable, Equatable, Sendable {
     case recipeSubmitted
     case recipeInterrupted
     case comparisonForwarded
+    case vendorSessionStarted
+    case vendorTurnStarted
+    case vendorTurnEnded
+    case vendorAwaitingPermission
+    case vendorNotification
+    case vendorSessionEnded
 }
 
 /// A successful operation initiated from Parley's native controls. These are
@@ -451,6 +485,12 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
     public let targetWorkspaceName: String?
     public let text: String
     public let submitted: Bool
+    public var inReplyToHandoffID: String? = nil
+    public var relationship: RelayHandoffRelationship? = nil
+    public var humanVerdict: RelayHandoffVerdict? = nil
+    public var humanReviewNote: String? = nil
+    public var reviewedAt: Date? = nil
+    public var reviewRevision: Int? = nil
     public var resultText: String?
     public var readAt: Date? = nil
     public var state: RelayHandoffState
@@ -472,6 +512,25 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
 
     public var hasUnreadResult: Bool {
         hasReturnedResult && readAt == nil
+    }
+}
+
+public struct RelayHandoffReviewUpdate: Codable, Equatable, Sendable {
+    public let handoffID: String
+    public let expectedReviewRevision: Int
+    public let verdict: RelayHandoffVerdict?
+    public let note: String
+
+    public init(
+        handoffID: String,
+        expectedReviewRevision: Int,
+        verdict: RelayHandoffVerdict?,
+        note: String
+    ) {
+        self.handoffID = handoffID
+        self.expectedReviewRevision = expectedReviewRevision
+        self.verdict = verdict
+        self.note = note
     }
 }
 
@@ -529,8 +588,12 @@ public final class RelayBroker: @unchecked Sendable {
     public typealias Submit = (_ paneID: String, _ text: String) throws -> Void
     public typealias DirectContextSubmit = (_ sourcePaneID: String, _ targetPaneID: String, _ text: String) throws -> Void
     public typealias SelectedText = (_ paneID: String) throws -> String
+    public typealias VendorSignal = (_ paneID: String, _ signal: VendorHookSignal, _ occurredAt: Date) throws -> Void
+    public typealias Clock = () -> Date
 
     private static let abandonedContextDraftLifetime: TimeInterval = 7 * 24 * 60 * 60
+    private static let maximumTransientVendorEvents = 512
+    private let agentEventEpoch = UUID().uuidString.lowercased()
 
     private let credentials: RelayCredentials
     private let panes: Panes
@@ -539,6 +602,8 @@ public final class RelayBroker: @unchecked Sendable {
     private let contextSubmit: Submit
     private let directContextSubmit: DirectContextSubmit
     private let selectedText: SelectedText?
+    private let vendorSignal: VendorSignal
+    private let clock: Clock
     private let consultationTimeout: TimeInterval
     private let livenessPollInterval: TimeInterval
     private let handoffJournal: RelayHandoffJournal?
@@ -558,6 +623,9 @@ public final class RelayBroker: @unchecked Sendable {
     private var delegationResponses: [String: RelayTextResponse] = [:]
     private var handoffRecords: [String: RelayHandoff] = [:]
     private var activityRecords: [String: RelayActivityEvent] = [:]
+    private var transientVendorEventRecords: [String: RelayActivityEvent] = [:]
+    private var agentEventSequenceByID: [String: UInt64] = [:]
+    private var nextAgentEventSequence: UInt64 = 0
     private var historyRetentionPolicy: CollaborationHistoryRetentionPolicy
     private var contextReviewRecords: [String: AgentContextReview] = [:]
     private var idempotencyRecords: [IdempotencyScope: IdempotencyRecord] = [:]
@@ -570,6 +638,8 @@ public final class RelayBroker: @unchecked Sendable {
         contextSubmit: Submit? = nil,
         directContextSubmit: DirectContextSubmit? = nil,
         selectedText: SelectedText? = nil,
+        vendorSignal: VendorSignal? = nil,
+        clock: @escaping Clock = Date.init,
         consultationTimeout: TimeInterval = 30 * 60,
         livenessPollInterval: TimeInterval = 0.5,
         handoffJournal: RelayHandoffJournal? = nil,
@@ -588,6 +658,8 @@ public final class RelayBroker: @unchecked Sendable {
             try (contextSubmit ?? submit)(targetPaneID, text)
         }
         self.selectedText = selectedText
+        self.vendorSignal = vendorSignal ?? { _, _, _ in }
+        self.clock = clock
         self.consultationTimeout = consultationTimeout
         self.livenessPollInterval = max(0.01, livenessPollInterval)
         self.handoffJournal = handoffJournal
@@ -609,7 +681,19 @@ public final class RelayBroker: @unchecked Sendable {
             handoffJournal?.record(handoff)
         }
         handoffRecords = recovered
-        activityRecords = Dictionary(uniqueKeysWithValues: (activityJournal?.events() ?? []).map { ($0.id, $0) })
+        let loadedActivities = activityJournal?.events() ?? []
+        let obsoleteTransientIDs: Set<String> = Set(loadedActivities.compactMap { event in
+            guard let signal = VendorHookSignal(activityKind: event.kind), !signal.isDurableActivity else {
+                return nil
+            }
+            return event.id
+        })
+        if !obsoleteTransientIDs.isEmpty {
+            _ = try? activityJournal?.removeEvents(ids: obsoleteTransientIDs)
+        }
+        activityRecords = Dictionary(uniqueKeysWithValues: loadedActivities.compactMap { event in
+            obsoleteTransientIDs.contains(event.id) ? nil : (event.id, event)
+        })
         var recoveredContext = Dictionary(
             uniqueKeysWithValues: (contextReviewStore?.reviews() ?? []).map { ($0.id, $0) }
         )
@@ -1706,6 +1790,170 @@ public final class RelayBroker: @unchecked Sendable {
         )
     }
 
+    /// Accepts only one allowlisted, content-free lifecycle fact from the
+    /// authenticated pane capability. The generated vendor adapters own this
+    /// ingress; no request field can select or impersonate another pane.
+    public func handleVendorSignal(token: String, signal suppliedSignal: String) -> RelayTextResponse {
+        do {
+            let sender = try authenticatedSender(token: token)
+            guard sender.isStarted, !sender.isDead, sender.relayEnabled, sender.hasCurrentProtocol else {
+                throw BrokerFailure(status: 409, message: "vendor lifecycle signal came from an inactive pane")
+            }
+            guard let signal = VendorHookSignal(rawValue: suppliedSignal) else {
+                throw BrokerFailure(status: 400, message: "unknown vendor lifecycle signal")
+            }
+            guard VendorHookAdapter.supportedSignals(for: sender.kind).contains(signal) else {
+                throw BrokerFailure(
+                    status: 409,
+                    message: "\(sender.kind.label) has no supported Parley hook for \(signal.rawValue)"
+                )
+            }
+
+            let occurredAt = clock()
+            try vendorSignal(sender.id, signal, occurredAt)
+            let event = RelayActivityEvent(
+                kind: signal.activityKind,
+                occurredAt: occurredAt,
+                workspaceID: sender.workspaceID,
+                workspaceName: sender.workspaceName ?? sender.workspaceID,
+                paneID: sender.id,
+                paneName: sender.displayName,
+                paneKind: sender.kind,
+                detail: nil,
+                origin: .automation
+            )
+            if signal.isDurableActivity {
+                try activityJournal?.record(event)
+            }
+            consultationCondition.lock()
+            if signal.isDurableActivity {
+                activityRecords[event.id] = event
+                if let retainedIDs = activityJournal.map({ Set($0.events().map(\.id)) }) {
+                    activityRecords = activityRecords.filter { retainedIDs.contains($0.key) }
+                } else {
+                    pruneActivityRecordsLocked()
+                }
+            } else {
+                transientVendorEventRecords[event.id] = event
+                pruneTransientVendorEventsLocked()
+            }
+            consultationCondition.broadcast()
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 200, text: "")
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(
+                status: 500,
+                text: "Parley could not record the vendor lifecycle signal: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    public func agentIdentity(token: String) -> RelayTextResponse {
+        do {
+            return encodeAgentValue(RelayAgentIdentity(pane: try authenticatedSender(token: token)))
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func agentPanes(token: String) -> RelayTextResponse {
+        do {
+            let sender = try authenticatedSender(token: token)
+            reconcileDelegations()
+            let candidates = try panes()
+                .filter { $0.kind.isAgent && $0.id != sender.id }
+                .sorted {
+                    let leftLocal = $0.workspaceID == sender.workspaceID
+                    let rightLocal = $1.workspaceID == sender.workspaceID
+                    if leftLocal != rightLocal { return leftLocal }
+                    let leftWorkspace = ($0.workspaceName ?? $0.workspaceID).lowercased()
+                    let rightWorkspace = ($1.workspaceName ?? $1.workspaceID).lowercased()
+                    if leftWorkspace != rightWorkspace { return leftWorkspace < rightWorkspace }
+                    let leftName = $0.displayName.lowercased()
+                    let rightName = $1.displayName.lowercased()
+                    if leftName != rightName { return leftName < rightName }
+                    return $0.id < $1.id
+                }
+            consultationCondition.lock()
+            let busy = Set(candidates.filter { targetHasTrackedWorkLocked($0.id) }.map(\.id))
+            consultationCondition.unlock()
+            let visible = candidates.prefix(RelayAgentPaneList.maximumPanes).map {
+                RelayAgentPane(pane: $0, hasActiveHandoff: busy.contains($0.id))
+            }
+            return encodeAgentValue(RelayAgentPaneList(
+                panes: Array(visible),
+                truncated: candidates.count > RelayAgentPaneList.maximumPanes
+            ))
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func agentEvents(token: String, since suppliedCursor: String) -> RelayTextResponse {
+        do {
+            _ = try authenticatedSender(token: token)
+            let cursor = suppliedCursor.trimmingCharacters(in: .whitespacesAndNewlines)
+            let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_:.")
+            guard !cursor.isEmpty,
+                  cursor.utf8.count <= 128,
+                  cursor.unicodeScalars.allSatisfy(allowed.contains) else {
+                throw BrokerFailure(status: 400, message: "events needs a valid cursor from an earlier response, 'beginning', or 'now'")
+            }
+
+            reconcileDelegations()
+            consultationCondition.lock()
+            let handoffs = Array(handoffRecords.values)
+            let activities = Array(activityRecords.values) + Array(transientVendorEventRecords.values)
+            let events = orderedAgentEventsLocked(handoffs: handoffs, activities: activities)
+            consultationCondition.unlock()
+
+            let start: Int
+            switch cursor {
+            case "beginning":
+                start = 0
+            case "now":
+                start = events.count
+            default:
+                guard let index = events.firstIndex(where: { $0.cursor == cursor }) else {
+                    throw BrokerFailure(
+                        status: 410,
+                        message: "that event cursor is no longer retained; restart from 'beginning' or 'now'"
+                    )
+                }
+                start = events.index(after: index)
+            }
+
+            let end = min(events.count, start + RelayAgentEventPage.maximumEvents)
+            let pageEvents = start < end ? Array(events[start..<end]) : []
+            let nextCursor = pageEvents.last?.cursor
+                ?? (cursor == "now" ? events.last?.cursor ?? "beginning" : cursor)
+            return encodeAgentValue(RelayAgentEventPage(
+                events: pageEvents,
+                nextCursor: nextCursor,
+                hasMore: end < events.count
+            ))
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    private func encodeAgentValue<T: Encodable>(_ value: T) -> RelayTextResponse {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(value) else {
+            return RelayTextResponse(status: 500, text: "could not encode agent discovery response")
+        }
+        return RelayTextResponse(status: 200, text: String(decoding: data, as: UTF8.self))
+    }
+
     public func delegationStatus(token: String) -> RelayTextResponse {
         guard let sourceID = credentials.paneID(for: token) else {
             return RelayTextResponse(status: 401, text: "bad token")
@@ -1800,6 +2048,8 @@ public final class RelayBroker: @unchecked Sendable {
         humanInitiated: Bool,
         preserveFormatting: Bool,
         transitionOrigin: RelayTransitionOrigin? = nil,
+        inReplyToHandoffID: String? = nil,
+        relationship: RelayHandoffRelationship? = nil,
         onSubmitted: (() -> Void)? = nil
     ) -> RelayTextResponse {
         let recordedOrigin = transitionOrigin ?? (humanInitiated ? .human : nil)
@@ -1829,9 +2079,25 @@ public final class RelayBroker: @unchecked Sendable {
         }
 
         let scope = IdempotencyScope(senderPaneID: sender.id, key: idempotencyKey)
-        let signature = [RelayHandoffKind.ask.rawValue, target.id, cleaned].joined(separator: "\u{1f}")
+        let signature = [RelayHandoffKind.ask.rawValue, target.id, cleaned, inReplyToHandoffID ?? "", relationship?.rawValue ?? ""].joined(separator: "\u{1f}")
 
         consultationCondition.lock()
+        if inReplyToHandoffID != nil || relationship != nil {
+            guard humanInitiated,
+                  let parentID = inReplyToHandoffID,
+                  relationship != nil else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 400, text: "review lineage requires one human-authorized parent and purpose")
+            }
+            guard let parent = handoffRecords[parentID] else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 404, text: "unknown parent handoff")
+            }
+            guard parent.hasReturnedResult else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: "Challenge and Verify require a returned Ask or Delegate result")
+            }
+        }
         if let existing = idempotencyRecords[scope] {
             guard existing.signature == signature else {
                 consultationCondition.unlock()
@@ -1863,6 +2129,8 @@ public final class RelayBroker: @unchecked Sendable {
             kind: .ask,
             sender: sender,
             target: target,
+            inReplyToHandoffID: inReplyToHandoffID,
+            relationship: relationship,
             text: cleaned,
             submitted: true,
             origin: recordedOrigin
@@ -2097,6 +2365,48 @@ public final class RelayBroker: @unchecked Sendable {
             humanInitiated: true,
             preserveFormatting: preserveFormatting,
             transitionOrigin: origin
+        )
+    }
+
+    /// Creates one normal correlated Ask linked to one completed result. This
+    /// route is native-control-only; pane credentials cannot manufacture review
+    /// lineage or choose a parent on their own.
+    public func handleReviewAskFromUI(
+        sourcePaneID: String,
+        targetPaneID: String,
+        text: String,
+        idempotencyKey: String,
+        inReplyToHandoffID: String,
+        relationship: RelayHandoffRelationship
+    ) -> RelayTextResponse {
+        let livePanes: [WorkbenchPane]
+        do {
+            livePanes = try panes()
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+        guard let source = livePanes.first(where: { $0.id == sourcePaneID }), source.kind.isAgent else {
+            return RelayTextResponse(status: 400, text: "unknown source agent pane")
+        }
+        let sourceToken: String
+        do {
+            sourceToken = try credentials.token(for: source.id)
+        } catch {
+            return RelayTextResponse(
+                status: 409,
+                text: "could not resolve the source pane credential: \(error.localizedDescription)"
+            )
+        }
+        return handleAsk(
+            token: sourceToken,
+            target: targetPaneID,
+            text: text,
+            idempotencyKey: idempotencyKey,
+            humanInitiated: true,
+            preserveFormatting: true,
+            transitionOrigin: .human,
+            inReplyToHandoffID: inReplyToHandoffID,
+            relationship: relationship
         )
     }
 
@@ -2425,6 +2735,7 @@ public final class RelayBroker: @unchecked Sendable {
         guard !workspaceID.isEmpty, !workspaceName.isEmpty else { throw RelayActivityError.invalidEvent }
         let event = RelayActivityEvent(
             kind: request.kind,
+            occurredAt: clock(),
             workspaceID: workspaceID,
             workspaceName: workspaceName,
             paneID: request.paneID,
@@ -2491,6 +2802,46 @@ public final class RelayBroker: @unchecked Sendable {
             removedHandoffs: durableHandoffRemoval ?? inMemoryHandoffRemoval,
             removedActivityEvents: durableActivityRemoval ?? inMemoryActivityRemoval
         )
+    }
+
+    /// Saves a person's review of one returned result. The core-control route
+    /// supplies the exact revision shown in Status Center so an older inspector
+    /// cannot overwrite a newer verdict or note.
+    public func updateHandoffReview(_ request: RelayHandoffReviewUpdate) -> RelayTextResponse {
+        let note = ContextPackText.normalize(request.note)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard note.count <= 4_000 else {
+            return RelayTextResponse(status: 400, text: "human review note is too long")
+        }
+
+        consultationCondition.lock()
+        guard var handoff = handoffRecords[request.handoffID] else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 404, text: "unknown handoff")
+        }
+        guard handoff.hasReturnedResult else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: "only a returned Ask or Delegate result can be reviewed")
+        }
+        guard (handoff.reviewRevision ?? 0) == request.expectedReviewRevision else {
+            consultationCondition.unlock()
+            return RelayTextResponse(
+                status: 409,
+                text: "this handoff changed after the review editor opened; review the current record and try again"
+            )
+        }
+
+        handoff.humanVerdict = request.verdict
+        handoff.humanReviewNote = note.isEmpty ? nil : note
+        let hasReview = handoff.humanVerdict != nil || handoff.humanReviewNote != nil
+        let now = Date()
+        handoff.reviewedAt = hasReview ? now : nil
+        handoff.reviewRevision = (handoff.reviewRevision ?? 0) + 1
+        handoffRecords[handoff.id] = handoff
+        handoffJournal?.record(handoff)
+        consultationCondition.broadcast()
+        consultationCondition.unlock()
+        return RelayTextResponse(status: 200, text: hasReview ? "Human review saved." : "Human review cleared.")
     }
 
     /// Records that a person viewed a returned Ask or Delegate result. This is
@@ -2565,6 +2916,13 @@ public final class RelayBroker: @unchecked Sendable {
         idempotencyRecords = idempotencyRecords.filter { !removalIDs.contains($0.value.handoffID) }
         delegationResponses = delegationResponses.filter { !removalIDs.contains($0.key) }
         activityRecords = activityRecords.filter { !activityRemovalIDs.contains($0.key) }
+        transientVendorEventRecords = transientVendorEventRecords.filter { _, event in
+            let idMatches = !requestedID.isEmpty && event.workspaceID == requestedID
+            let nameMatches = requestedID.isEmpty
+                && !requestedName.isEmpty
+                && event.workspaceName.caseInsensitiveCompare(requestedName) == .orderedSame
+            return !idMatches && !nameMatches
+        }
         consultationCondition.unlock()
 
         let removedCount = removalIDs.count + activityRemovalIDs.count
@@ -3207,6 +3565,8 @@ public final class RelayBroker: @unchecked Sendable {
         kind: RelayHandoffKind,
         sender: WorkbenchPane,
         target: WorkbenchPane,
+        inReplyToHandoffID: String? = nil,
+        relationship: RelayHandoffRelationship? = nil,
         text: String,
         submitted: Bool,
         origin: RelayTransitionOrigin? = nil
@@ -3228,6 +3588,8 @@ public final class RelayBroker: @unchecked Sendable {
             targetWorkspaceName: target.workspaceName,
             text: text,
             submitted: submitted,
+            inReplyToHandoffID: inReplyToHandoffID,
+            relationship: relationship,
             resultText: nil,
             state: .created,
             updatedAt: now,
@@ -3310,6 +3672,40 @@ public final class RelayBroker: @unchecked Sendable {
         handoffRecords = handoffRecords.filter { !removalIDs.contains($0.key) }
         idempotencyRecords = idempotencyRecords.filter { !removalIDs.contains($0.value.handoffID) }
         delegationResponses = delegationResponses.filter { !removalIDs.contains($0.key) }
+    }
+
+    private func orderedAgentEventsLocked(
+        handoffs: [RelayHandoff],
+        activities: [RelayActivityEvent]
+    ) -> [RelayAgentEvent] {
+        var events = RelayAgentEvent.project(handoffs: handoffs, activities: activities)
+        let retainedIDs = Set(events.map(\.id))
+        agentEventSequenceByID = agentEventSequenceByID.filter { retainedIDs.contains($0.key) }
+        for event in events where agentEventSequenceByID[event.id] == nil {
+            nextAgentEventSequence &+= 1
+            agentEventSequenceByID[event.id] = nextAgentEventSequence
+        }
+        events.sort {
+            let left = agentEventSequenceByID[$0.id] ?? 0
+            let right = agentEventSequenceByID[$1.id] ?? 0
+            if left == right { return $0.id < $1.id }
+            return left < right
+        }
+        for index in events.indices {
+            let sequence = agentEventSequenceByID[events[index].id] ?? 0
+            events[index].cursor = "v2:\(agentEventEpoch):\(sequence)"
+        }
+        return events
+    }
+
+    private func pruneTransientVendorEventsLocked() {
+        let excess = transientVendorEventRecords.count - Self.maximumTransientVendorEvents
+        guard excess > 0 else { return }
+        let removalIDs = transientVendorEventRecords.values.sorted {
+            if $0.occurredAt == $1.occurredAt { return $0.id < $1.id }
+            return $0.occurredAt < $1.occurredAt
+        }.prefix(excess).map(\.id)
+        for id in removalIDs { transientVendorEventRecords.removeValue(forKey: id) }
     }
 
     private func pruneActivityRecordsLocked() {
@@ -3668,6 +4064,47 @@ public enum RelayShim {
         esac
         shift 2
         ;;
+      signal)
+        item="${2:-}"
+        case "$item" in
+          session-started|turn-started|turn-ended|awaiting-permission|notification|session-ended) ;;
+          *)
+            echo "invalid Parley vendor lifecycle signal" >&2
+            exit 2
+            ;;
+        esac
+        shift 2
+        if [ "$#" -ne 0 ]; then
+          echo "parley signal accepts exactly one lifecycle event" >&2
+          exit 2
+        fi
+        ;;
+      whoami|panes)
+        shift
+        if [ "$#" -ne 0 ]; then
+          echo "usage: parley $command" >&2
+          exit 2
+        fi
+        ;;
+      events)
+        shift
+        if [ "$#" -ne 2 ] || [ "${1:-}" != "--since" ]; then
+          echo "usage: parley events --since <beginning|now|cursor>" >&2
+          exit 2
+        fi
+        item="$2"
+        case "$item" in
+          *[!a-zA-Z0-9_:.-]*|"")
+            echo "events needs a valid cursor" >&2
+            exit 2
+            ;;
+        esac
+        if [ "${#item}" -gt 128 ]; then
+          echo "events cursor is too long" >&2
+          exit 2
+        fi
+        shift 2
+        ;;
       status)
         shift
         ;;
@@ -3676,6 +4113,9 @@ public enum RelayShim {
           echo "Parley relay [$runtime_marker]" >&2
         fi
         echo "usage:" >&2
+        echo "  parley whoami                    show this pane's authenticated identity" >&2
+        echo "  parley panes                     list explicit agent targets and lifecycle facts" >&2
+        echo "  parley events --since <cursor>   read bounded content-minimal coordination events" >&2
         echo "  parley open <folder>             open or focus a workspace in the installed app" >&2
         echo "  parley relay <pane> [text...]   submit an attributed message" >&2
         echo "  parley paste <pane> [text...]   paste without sending" >&2
@@ -3697,7 +4137,7 @@ public enum RelayShim {
     esac
 
     case "$command" in
-      status|wait|cancel|context-list|context-show|context-discard|context-draft|context-add) ;;
+      whoami|panes|events|signal|status|wait|cancel|context-list|context-show|context-discard|context-draft|context-add) ;;
       *)
         if [ "$#" -eq 0 ] && [ -t 0 ]; then
           echo "nothing to $command: give the text as arguments or pipe it in" >&2
@@ -3827,7 +4267,7 @@ public enum RelayShim {
           /bin/cat
         fi | post
         ;;
-      status)
+      whoami|panes|events|signal|status)
         printf '' | post
         ;;
       wait)

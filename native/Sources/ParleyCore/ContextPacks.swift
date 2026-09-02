@@ -27,6 +27,7 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
     case commandResult
     case agentFileDraft
     case workspaceBrief
+    case handoffResult
     case pinnedSnippet
     case editorSelection
     case editorDiagnostics
@@ -43,6 +44,7 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
         case .commandResult: "Command result"
         case .agentFileDraft: "Agent-provided file draft"
         case .workspaceBrief: "Workspace brief"
+        case .handoffResult: "Selected handoff result"
         case .pinnedSnippet: "Pinned snippet"
         case .editorSelection: "Editor selection"
         case .editorDiagnostics: "Editor diagnostics"
@@ -482,6 +484,59 @@ public final class ContextPackBuilder: @unchecked Sendable {
                 kind: .visibleTerminal,
                 label: paneName,
                 detail: "Selected terminal text from \(paneName) (\(paneID))"
+            ),
+            text: text
+        )
+    }
+    public func handoffResult(_ handoff: RelayHandoff) throws -> ContextPackPart {
+        guard handoff.hasReturnedResult, let returnedResult = handoff.resultText else {
+            throw ContextPackError.invalidEvidence(
+                "Only a selected Ask or Delegate with a returned result can enter a context pack."
+            )
+        }
+        let sourceWorkspace = handoff.sourceWorkspaceName ?? handoff.sourceWorkspaceID
+        let targetWorkspace = handoff.targetWorkspaceName ?? handoff.targetWorkspaceID
+        let sourceVendor = handoff.sourceKind.map { " · \($0.label)" } ?? ""
+        let targetVendor = handoff.targetKind.map { " · \($0.label)" } ?? ""
+        let route = "\(handoff.sourceName) (\(handoff.sourcePaneID)) → \(handoff.targetName) (\(handoff.targetPaneID))"
+        var reviewLines: [String] = []
+        if let parentID = handoff.inReplyToHandoffID {
+            reviewLines.append("In reply to: \(parentID)")
+        }
+        if let relationship = handoff.relationship {
+            reviewLines.append("Relationship: \(relationship.rawValue)")
+        }
+        if let verdict = handoff.humanVerdict {
+            reviewLines.append("Human verdict: \(verdict.rawValue)")
+        }
+        if let reviewedAt = handoff.reviewedAt {
+            reviewLines.append("Reviewed at: \(reviewedAt.formatted(.iso8601))")
+        }
+        let reviewMetadata = reviewLines.isEmpty ? "" : reviewLines.joined(separator: "\n") + "\n"
+        let reviewNote = handoff.humanReviewNote.map { "\nHuman review note:\n\($0)\n" } ?? ""
+
+        let text = """
+        Handoff ID: \(handoff.id)
+        Route: \(route)
+        Source workspace: \(sourceWorkspace) (\(handoff.sourceWorkspaceID))\(sourceVendor)
+        Target workspace: \(targetWorkspace) (\(handoff.targetWorkspaceID))\(targetVendor)
+        Kind: \(handoff.kind.rawValue)
+        State: \(handoff.state.rawValue)
+
+        \(reviewMetadata)
+        \(reviewNote)
+        Question or instruction:
+        \(handoff.text)
+
+        Returned result:
+        \(returnedResult)
+        """
+        return try part(
+            source: ContextPackSource(
+                kind: .handoffResult,
+                label: "\(handoff.sourceName) → \(handoff.targetName)",
+                detail: "\(route) · handoff \(handoff.id)",
+                referenceID: handoff.id
             ),
             text: text
         )

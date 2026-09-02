@@ -6,6 +6,10 @@ struct WorkspaceBriefView: View {
     @State private var goal: String
     @State private var constraints: String
     @State private var decisions: String
+    @State private var conclusions: String
+    @State private var rationale: String
+    @State private var confidence: String
+    @State private var openQuestions: String
 
     init(model: AppModel) {
         self.model = model
@@ -13,6 +17,10 @@ struct WorkspaceBriefView: View {
         _goal = State(initialValue: draft?.goal ?? "")
         _constraints = State(initialValue: draft?.constraints ?? "")
         _decisions = State(initialValue: draft?.decisions ?? "")
+        _conclusions = State(initialValue: draft?.conclusions ?? "")
+        _rationale = State(initialValue: draft?.rationale ?? "")
+        _confidence = State(initialValue: draft?.confidence ?? "")
+        _openQuestions = State(initialValue: draft?.openQuestions ?? "")
     }
 
     var body: some View {
@@ -22,24 +30,65 @@ struct WorkspaceBriefView: View {
             notice
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 16) {
                     editor(
                         "CURRENT GOAL",
                         help: "The outcome agents should work toward now.",
                         text: $goal,
-                        minimumHeight: 110
+                        minimumHeight: 90
                     )
+                    HStack(alignment: .top, spacing: 16) {
+                        editor(
+                            "CONSTRAINTS",
+                            help: "Boundaries, non-goals, safety rules and compatibility requirements.",
+                            text: $constraints,
+                            minimumHeight: 120
+                        )
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        editor(
+                            "IMPORTANT DECISIONS",
+                            help: "Decisions already made that should not be silently reopened.",
+                            text: $decisions,
+                            minimumHeight: 120
+                        )
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                    Divider()
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("INVESTIGATION RECORD")
+                            .font(.caption.monospaced().weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text("Durable person-owned findings for this workspace. Empty fields remain explicitly unrecorded.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     editor(
-                        "CONSTRAINTS",
-                        help: "Boundaries, non-goals, safety rules and compatibility requirements.",
-                        text: $constraints,
-                        minimumHeight: 150
+                        "INVESTIGATION CONCLUSIONS",
+                        help: "Findings the person has accepted from completed cross-vendor work.",
+                        text: $conclusions,
+                        minimumHeight: 120
                     )
+                    HStack(alignment: .top, spacing: 16) {
+                        editor(
+                            "RATIONALE",
+                            help: "Why those conclusions or decisions were accepted.",
+                            text: $rationale,
+                            minimumHeight: 120
+                        )
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        editor(
+                            "OPEN QUESTIONS",
+                            help: "Unknowns or unresolved issues that future work should preserve.",
+                            text: $openQuestions,
+                            minimumHeight: 120
+                        )
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
                     editor(
-                        "IMPORTANT DECISIONS",
-                        help: "Decisions already made that should not be silently reopened.",
-                        text: $decisions,
-                        minimumHeight: 170
+                        "PERSON-AUTHORED CONFIDENCE",
+                        help: "The person's confidence and its basis; Parley never calculates this.",
+                        text: $confidence,
+                        minimumHeight: 70
                     )
                 }
                 .padding(18)
@@ -47,7 +96,7 @@ struct WorkspaceBriefView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 760, idealWidth: 880, minHeight: 650, idealHeight: 760)
+        .frame(minWidth: 820, idealWidth: 940, minHeight: 700, idealHeight: 820)
     }
 
     private var header: some View {
@@ -75,7 +124,7 @@ struct WorkspaceBriefView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("NEVER ATTACHED AUTOMATICALLY")
                     .font(.caption.monospaced().weight(.semibold))
-                Text("Saving the brief does not contact an agent or alter any agent session. Attach it only from an editable Context Pack preview. Do not store vendor credentials, tokens or other secrets here.")
+                Text("Saving this person-authored record does not contact an agent or alter any agent session. Parley never infers its conclusions or confidence. Attach it only from an editable Context Pack preview, and do not store credentials, tokens or other secrets here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -132,7 +181,11 @@ struct WorkspaceBriefView: View {
                 model.saveWorkspaceBrief(
                     goal: goal,
                     constraints: constraints,
-                    decisions: decisions
+                    decisions: decisions,
+                    conclusions: conclusions,
+                    rationale: rationale,
+                    confidence: confidence,
+                    openQuestions: openQuestions
                 )
             }
             .keyboardShortcut(.defaultAction)
@@ -142,9 +195,15 @@ struct WorkspaceBriefView: View {
     }
 
     private var contentBytes: Int {
-        ContextPackText.normalize(goal).utf8.count
-            + ContextPackText.normalize(constraints).utf8.count
-            + ContextPackText.normalize(decisions).utf8.count
+        [
+            goal,
+            constraints,
+            decisions,
+            conclusions,
+            rationale,
+            confidence,
+            openQuestions,
+        ].reduce(0) { $0 + ContextPackText.normalize($1).utf8.count }
     }
 
     private var isSaveable: Bool {

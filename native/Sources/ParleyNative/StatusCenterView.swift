@@ -65,6 +65,22 @@ struct StatusCenterView: View {
             workspaceID: workspaceID.isEmpty ? nil : workspaceID
         )
     }
+    private var selectedHandoffResultsForContextPack: [RelayHandoff] {
+        selectedHistoryForExport.filter(\.hasReturnedResult)
+    }
+
+    private var contextPackPromotionHelp: String {
+        if selectedHandoffResultsForContextPack.isEmpty {
+            return "Select at least one returned Ask or Delegate result."
+        }
+        if selectedHandoffResultsForContextPack.count > ContextPackBuilder.maximumParts {
+            return "Choose at most \(ContextPackBuilder.maximumParts) returned results for one Context Pack."
+        }
+        if !model.canCreateContextPack {
+            return "Select a running relay-ready agent pane to own the editable Context Pack draft."
+        }
+        return "Open the selected results as attributed, editable sources. Nothing is submitted."
+    }
 
     private var runtimeLifecycle: RuntimeLifecycleSnapshot {
         RuntimeLifecycleProjection.snapshot(
@@ -421,6 +437,16 @@ struct StatusCenterView: View {
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 4) {
+                    if let relationship = handoff.relationship {
+                        Text(relationship.rawValue.uppercased())
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    if let verdict = handoff.humanVerdict {
+                        Text(verdict.label.uppercased())
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(verdictColor(verdict))
+                    }
                     Text(handoff.kind.rawValue.uppercased())
                         .font(.system(size: 8, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -499,13 +525,20 @@ struct StatusCenterView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Select Results") {
-                        historyExportSelection.formUnion(filteredHistory.map(\.id))
+                        historyExportSelection.formUnion(
+                            filteredHistory.filter(\.hasReturnedResult).map(\.id)
+                        )
                     }
-                    .disabled(filteredHistory.isEmpty)
+                    .disabled(!filteredHistory.contains(where: \.hasReturnedResult))
                     Button("Clear Selection") {
                         historyExportSelection.removeAll()
                     }
                     .disabled(selectedHistoryForExport.isEmpty)
+                    Button("Context Pack from Selected Results…") {
+                        model.promoteHandoffResultsToContextPack(selectedHandoffResultsForContextPack)
+                    }
+                    .disabled(!model.canPromoteHandoffResultsToContextPack(selectedHandoffResultsForContextPack))
+                    .help(contextPackPromotionHelp)
                     Button("Export Selected…") {
                         model.exportCollaborationHistory(
                             selectedHistoryForExport,
@@ -535,7 +568,7 @@ struct StatusCenterView: View {
     private func historyRow(_ handoff: RelayHandoff) -> some View {
         HStack(spacing: 8) {
             Toggle(
-                "Select \(handoff.sourceName) to \(handoff.targetName) for export",
+                "Select \(handoff.sourceName) to \(handoff.targetName) for export or Context Pack review",
                 isOn: Binding(
                     get: { historyExportSelection.contains(handoff.id) },
                     set: { selected in
@@ -562,6 +595,16 @@ struct StatusCenterView: View {
                             .lineLimit(1)
                     }
                     Spacer(minLength: 8)
+                    if let relationship = handoff.relationship {
+                        Text(relationship.rawValue.uppercased())
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    if let verdict = handoff.humanVerdict {
+                        Text(verdict.label.uppercased())
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(verdictColor(verdict))
+                    }
                     Text(handoff.kind.rawValue.uppercased())
                         .font(.system(size: 8, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -967,6 +1010,12 @@ struct StatusCenterView: View {
                         HStack(spacing: 7) {
                             statusChip(handoff.kind.rawValue.uppercased(), color: .secondary)
                             statusChip(handoff.state.rawValue.uppercased(), color: stateColor(handoff))
+                            if let relationship = handoff.relationship {
+                                statusChip(relationship.rawValue.uppercased(), color: .accentColor)
+                            }
+                            if let verdict = handoff.humanVerdict {
+                                statusChip(verdict.label.uppercased(), color: verdictColor(verdict))
+                            }
                             if handoff.attention != nil {
                                 statusChip("ATTENTION", color: .orange)
                             }
@@ -986,9 +1035,16 @@ struct StatusCenterView: View {
 
                     actionControls(handoff)
 
+                    if handoff.inReplyToHandoffID != nil {
+                        lineageSection(handoff)
+                    }
                     inspectorSection(handoff.kind == .delegate ? "INSTRUCTION" : "QUESTION OR MESSAGE", handoff.text)
                     if let result = handoff.resultText, !result.isEmpty {
                         inspectorSection("RETURNED RESULT", result)
+                    }
+                    if handoff.hasReturnedResult {
+                        HandoffHumanReviewEditor(model: model, handoff: handoff)
+                            .id("\(handoff.id)-review-\(handoff.reviewRevision ?? 0)")
                     }
 
                     VStack(alignment: .leading, spacing: 7) {
@@ -1138,6 +1194,12 @@ struct StatusCenterView: View {
                 Button("Focus Target") { model.focus(handoff, target: true) }
                     .disabled(!model.canFocus(handoff.targetPaneID))
             }
+            if handoff.hasReturnedResult {
+                HStack {
+                    handoffReviewMenu(.challenge, handoff: handoff)
+                    handoffReviewMenu(.verify, handoff: handoff)
+                }
+            }
             HStack {
                 if let consultation = model.consultation(for: handoff) {
                     Button("Return Manually…") { model.returnConsultation(consultation) }
@@ -1190,6 +1252,72 @@ struct StatusCenterView: View {
             }
         }
         .controlSize(.small)
+    }
+
+    private func handoffReviewMenu(
+        _ relationship: RelayHandoffRelationship,
+        handoff: RelayHandoff
+    ) -> some View {
+        let source = model.handoffReviewSource(for: handoff)
+        let targets = model.handoffReviewTargets(for: handoff)
+        return Menu("\(relationship.label)...") {
+            Section {
+                if targets.isEmpty {
+                    Text("No other relay-ready agent panes")
+                } else {
+                    ForEach(targets) { target in
+                        let busy = model.handoffReviewTargetIsBusy(target)
+                        Button(
+                            "\(target.displayName) - \(target.kind.label)\(busy ? " (busy)" : "")"
+                        ) {
+                            model.beginHandoffReview(
+                                relationship,
+                                of: handoff,
+                                with: target
+                            )
+                            openWindow(id: "main")
+                        }
+                        .disabled(busy)
+                    }
+                }
+            } header: {
+                Text(source.map { "From \($0.displayName)" } ?? "No relay-ready source pane")
+            }
+        }
+        .disabled(!model.canOfferHandoffReview(handoff))
+        .help(
+            model.canOfferHandoffReview(handoff)
+                ? "Choose one explicit reviewer pane, then edit the linked Ask before sending"
+                : "A source pane and at least one other agent pane must be relay-ready, with no other handoff draft open"
+        )
+    }
+
+    private func lineageSection(_ handoff: RelayHandoff) -> some View {
+        let parent = snapshot.handoffs.first {
+            $0.id == handoff.inReplyToHandoffID
+        }
+        return VStack(alignment: .leading, spacing: 7) {
+            Text("LINKED REVIEW")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+            HStack {
+                if let relationship = handoff.relationship {
+                    statusChip(relationship.label.uppercased(), color: .accentColor)
+                }
+                Text("Parent \(String((handoff.inReplyToHandoffID ?? "").prefix(12)))")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Open Parent") {
+                    if let parent { select(parent) }
+                }
+                .disabled(parent == nil)
+            }
+            .padding(9)
+            .background(Color.secondary.opacity(0.055))
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+        }
     }
 
 
@@ -1374,6 +1502,15 @@ struct StatusCenterView: View {
         }
     }
 
+    private func verdictColor(_ verdict: RelayHandoffVerdict) -> Color {
+        switch verdict {
+        case .accepted: .green
+        case .needsChanges: .orange
+        case .rejected: .red
+        case .inconclusive: .secondary
+        }
+    }
+
     private func readiness(_ pane: WorkbenchPane) -> String {
         switch WorkbenchStateProjection.pane(pane) {
         case .empty: return "NO PANE"
@@ -1499,5 +1636,95 @@ struct StatusCenterView: View {
     private func select(_ draft: ReviewedBusyDraft) {
         selectedHandoffID = nil
         selectedBusyDraftID = draft.id
+    }
+}
+
+private struct HandoffHumanReviewEditor: View {
+    @ObservedObject var model: AppModel
+    let handoff: RelayHandoff
+    @State private var verdictValue: String
+    @State private var note: String
+
+    init(model: AppModel, handoff: RelayHandoff) {
+        self.model = model
+        self.handoff = handoff
+        _verdictValue = State(initialValue: handoff.humanVerdict?.rawValue ?? "")
+        _note = State(initialValue: handoff.humanReviewNote ?? "")
+    }
+
+    private var verdict: RelayHandoffVerdict? {
+        RelayHandoffVerdict(rawValue: verdictValue)
+    }
+
+    private var normalizedNote: String {
+        note.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isDirty: Bool {
+        verdictValue != (handoff.humanVerdict?.rawValue ?? "")
+            || normalizedNote != (handoff.humanReviewNote ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("HUMAN REVIEW")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                if let reviewedAt = handoff.reviewedAt {
+                    Text("Saved \(reviewedAt.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Picker("Verdict", selection: $verdictValue) {
+                Text("No verdict").tag("")
+                ForEach(RelayHandoffVerdict.allCases, id: \.rawValue) { verdict in
+                    Text(verdict.label).tag(verdict.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(maxWidth: 250, alignment: .leading)
+
+            TextEditor(text: $note)
+                .font(.system(size: 10))
+                .scrollContentBackground(.hidden)
+                .padding(5)
+                .frame(minHeight: 64, maxHeight: 100)
+                .background(Color(nsColor: .textBackgroundColor))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+                }
+                .accessibilityLabel("Human review note")
+
+            HStack {
+                Text("\(note.count) / 4000")
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(note.count > 4_000 ? Color.red : Color.secondary)
+                Text("Native control only; agent panes cannot set this review.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Clear Review") {
+                    verdictValue = ""
+                    note = ""
+                    model.saveHandoffReview(handoff, verdict: nil, note: "")
+                }
+                .disabled(handoff.humanVerdict == nil && handoff.humanReviewNote == nil)
+                Button("Save Review") {
+                    model.saveHandoffReview(handoff, verdict: verdict, note: note)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!isDirty || note.count > 4_000)
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.055))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 }

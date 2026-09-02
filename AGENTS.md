@@ -41,9 +41,10 @@ Breaking any of these changes the product.
    backend. Vendor CLIs contact their own services normally.
 7. **One embedded terminal stack.** Ghostty is the terminal renderer and PTY
    owner. Do not add another multiplexer, renderer or hidden terminal client.
-8. **One shared protocol.** `AgentProtocol.text` solely defines `relay`,
-   `paste`, `ask`, `answer`, `delegate`, `done`, `fail`, `status` and `wait`.
-   Launch adapters may change delivery mechanics, never wording.
+8. **One shared protocol.** `AgentProtocol.text` solely defines the agent-facing
+   identity, discovery, event, Relay/Paste, Ask/Answer, delegation, status,
+   cancellation and reviewed-context commands. Launch adapters may change
+   delivery mechanics, never wording.
 9. **Honest state.** Do not infer thinking, token use, context limits, cost,
    permission state or completion from terminal text.
 10. **macOS-native restraint.** Use system fonts, hairline rules, small radii,
@@ -148,6 +149,11 @@ durable random credential establishing its real sender. A caller cannot choose
 a different source identity.
 
 - `parley relay <target> <text>` submits one attributed message.
+- `parley whoami` returns the caller's authenticated content-free identity.
+- `parley panes` returns bounded explicit non-self agent targets and lifecycle facts.
+- `parley events --since <cursor>` returns bounded resumable content-minimal events.
+- `parley signal <event>` is reserved for generated vendor hook adapters and
+  records one authenticated, content-free allowlisted lifecycle fact.
 - `parley paste <target> <text>` places attributed text without Enter.
 - `parley ask <target> <question>` submits and blocks for one exact answer.
 - `parley answer <id> <answer>` completes that waiting consultation.
@@ -155,6 +161,20 @@ a different source identity.
 - `parley done|fail <id|current> <report>` records the exact result.
 - `parley status` returns the caller's initiated work as JSON.
 - `parley wait <id|current>` waits for one exact result.
+
+Discovery is read-only and uses the same pane capability boundary as delivery.
+`whoami` and `panes` never expose credentials, folders, commands, prompts or
+terminal text. `events` returns at most 100 monotonically ordered handoff transitions
+and native activity records per page and omits question, result and
+activity-detail bodies. A cursor removed by retention fails explicitly; it
+never silently skips forward.
+
+Generated vendor adapters ignore hook input bodies and submit only one fixed
+event name through the pane's existing capability. The emitting identity comes
+from that capability, never request data. Claude, Codex and Copilot receive
+session-scoped adapters; Agy remains Unknown because its documented hook
+configuration is persistent user or workspace state. Agents must never invoke
+`parley signal` themselves.
 
 Immediate Relay is intentional. `paste` is review-before-send. Targets resolve
 by exact pane id, explicit role, or vendor only when unique. Refuse ambiguous,
@@ -165,6 +185,17 @@ delegation per target.
 Human Ask and Return submit only after an editable preview. A real current
 Ghostty selection may prefill it; otherwise it starts empty. Never capture
 scrollback or a whole conversation implicitly.
+Challenge and Verify are native-control-only actions over one selected returned
+Ask or Delegate. They use the original ready source, one person-selected ready
+target, an editable preview and the normal correlated Ask lifecycle. Store
+`inReplyToHandoffID` and relationship on the child handoff. Never put linked
+reviews in the ordinary busy queue because that would discard lineage.
+
+Only the authenticated native control route may set or clear a human verdict
+and note, using the exact handoff revision shown in Status Center. Pane
+credentials have no review-mutation route. Context Packs, search and Markdown
+export preserve this metadata on the existing handoff; do not create a separate
+evidence or review database.
 
 Multiline payloads travel through Ghostty paste as one text operation.
 Submission is a separate Enter key event after paste succeeds. Never send raw
@@ -277,12 +308,16 @@ Increment `AgentProtocol.version` whenever canonical semantics change. A live
 pane with a mismatched stamp shows **RESTART FOR PROTOCOL**. UI remounting cannot
 alter an existing model context.
 
-- Claude Code appends the protocol with `--append-system-prompt`.
-- Codex receives it through `developer_instructions`.
-- Agy receives generated `agent-protocol/AGENTS.md` through `--add-dir`.
-- Copilot receives the same directory through
-  `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` and permits only `shell(parley)` without
-  an extra tool confirmation.
+- Claude Code appends the protocol with `--append-system-prompt` and receives
+  generated lifecycle hooks through an additional `--settings` file.
+- Codex receives the protocol through `developer_instructions` and generated
+  lifecycle hooks through fixed inline `-c` values.
+- Agy receives generated `agent-protocol/AGENTS.md` through `--add-dir`; no
+  lifecycle adapter is installed because Agy has no verified per-launch path.
+- Copilot receives the same instructions through
+  `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, permits only `shell(parley)` without an
+  extra tool confirmation and loads generated lifecycle hooks through
+  `--plugin-dir`.
 
 Do not maintain separate handwritten protocol wording per vendor.
 
@@ -316,6 +351,10 @@ For terminal/lifetime changes also run the Ghostty soak. Checks must not launch
 a vendor CLI, spend subscription quota, mutate unrelated user processes or
 depend on network access. CI runs deterministic checks and the native build on
 macOS with complete Git history for the public scan.
+
+The manual draft-release workflow must pass the 25-round eight-pane soak, write
+its standalone JSON report, include it in SHA256SUMS and attach it to the draft.
+A missing, malformed or failing soak must fail the release closed.
 
 ## Version policy
 

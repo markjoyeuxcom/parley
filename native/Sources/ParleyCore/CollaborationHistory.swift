@@ -151,6 +151,11 @@ public enum CollaborationHistoryProjection {
             handoff.resultText ?? "",
             handoff.attention?.rawValue ?? "",
             handoff.retryDisposition?.rawValue ?? "",
+            handoff.inReplyToHandoffID ?? "",
+            handoff.relationship?.rawValue ?? "",
+            handoff.humanVerdict?.rawValue ?? "",
+            handoff.humanReviewNote ?? "",
+            handoff.reviewedAt.map(String.init(describing:)) ?? "",
         ]
         fields.append(contentsOf: handoff.transitions.compactMap(\.detail))
         return fields.joined(separator: "\n")
@@ -232,6 +237,21 @@ public enum CollaborationHistoryMarkdown {
             ])
             if let attention = handoff.attention {
                 lines.append("- Attention: \(attention.rawValue)")
+            }
+            if let parentID = handoff.inReplyToHandoffID {
+                lines.append("- In reply to: `\(inlineCode(parentID))`")
+            }
+            if let relationship = handoff.relationship {
+                lines.append("- Relationship: \(relationship.rawValue)")
+            }
+            if let verdict = handoff.humanVerdict {
+                lines.append("- Human verdict: \(verdict.rawValue)")
+            }
+            if let reviewedAt = handoff.reviewedAt {
+                lines.append("- Reviewed: \(timestamp(reviewedAt))")
+            }
+            if let note = handoff.humanReviewNote, !note.isEmpty {
+                lines.append(contentsOf: ["", "### Human review note", "", fencedBlock(note)])
             }
             lines.append(contentsOf: [
                 "",

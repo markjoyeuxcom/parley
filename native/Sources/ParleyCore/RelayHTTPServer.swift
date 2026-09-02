@@ -419,6 +419,39 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     preserveFormatting: ask.preserveFormatting ?? false,
                     origin: ask.origin ?? .human
                 ), to: client)
+            case "/ui/review-ask":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let review = try? JSONDecoder().decode(
+                    RelayUIReviewAskRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid native review Ask request"), to: client)
+                    return
+                }
+                write(broker.handleReviewAskFromUI(
+                    sourcePaneID: review.sourcePaneID,
+                    targetPaneID: review.targetPaneID,
+                    text: review.text,
+                    idempotencyKey: review.idempotencyKey,
+                    inReplyToHandoffID: review.inReplyToHandoffID,
+                    relationship: review.relationship
+                ), to: client)
+            case "/ui/handoff-review":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let update = try? JSONDecoder().decode(
+                    RelayHandoffReviewUpdate.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid handoff review update"), to: client)
+                    return
+                }
+                write(broker.updateHandoffReview(update), to: client)
             case "/ui/ask-many":
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)

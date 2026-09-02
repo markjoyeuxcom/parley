@@ -25,6 +25,33 @@ public struct RelayUIAskRequest: Codable, Equatable, Sendable {
     }
 }
 
+/// Native-control-only request for one correlated Ask linked to a selected
+/// returned result. Pane credentials cannot submit this shape.
+public struct RelayUIReviewAskRequest: Codable, Equatable, Sendable {
+    public let sourcePaneID: String
+    public let targetPaneID: String
+    public let text: String
+    public let idempotencyKey: String
+    public let inReplyToHandoffID: String
+    public let relationship: RelayHandoffRelationship
+
+    public init(
+        sourcePaneID: String,
+        targetPaneID: String,
+        text: String,
+        idempotencyKey: String,
+        inReplyToHandoffID: String,
+        relationship: RelayHandoffRelationship
+    ) {
+        self.sourcePaneID = sourcePaneID
+        self.targetPaneID = targetPaneID
+        self.text = text
+        self.idempotencyKey = idempotencyKey
+        self.inReplyToHandoffID = inReplyToHandoffID
+        self.relationship = relationship
+    }
+}
+
 public struct RelayUIAskManyRequest: Codable, Equatable, Sendable {
     public let sourcePaneID: String
     public let targetPaneIDs: [String]

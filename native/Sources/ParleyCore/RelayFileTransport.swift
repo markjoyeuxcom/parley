@@ -177,6 +177,14 @@ public final class RelayFileTransport: @unchecked Sendable {
 
     private func route(_ request: FileRequest) -> FileResponse {
         switch request.command {
+        case "whoami":
+            return encode(broker.agentIdentity(token: request.token))
+        case "panes":
+            return encode(broker.agentPanes(token: request.token))
+        case "events":
+            return encode(broker.agentEvents(token: request.token, since: request.item))
+        case "signal":
+            return encode(broker.handleVendorSignal(token: request.token, signal: request.item))
         case "relay":
             return encode(broker.handle(
                 token: request.token,
@@ -288,7 +296,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         try validateDirectory(directory)
         let command = try readField("command", from: directory, maximumBytes: 32)
         let allowed = [
-            "relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "done", "fail", "cancel",
+            "whoami", "panes", "events", "signal", "relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "done", "fail", "cancel",
             "context-draft", "context-add", "context-list", "context-show", "context-discard", "context-ask",
         ]
         guard allowed.contains(command) else { throw RelayFileTransportError.runtime("unknown command") }

@@ -99,6 +99,10 @@ struct ActiveWorkspaceBriefDraft: Identifiable, Equatable {
     let goal: String
     let constraints: String
     let decisions: String
+    let conclusions: String
+    let rationale: String
+    let confidence: String
+    let openQuestions: String
 
     var id: String { workspaceID }
 }
@@ -139,6 +143,8 @@ struct HandoffComposerDraft: Identifiable, Equatable {
     let sourceName: String
     let targetPaneID: String
     let targetName: String
+    let inReplyToHandoffID: String?
+    let relationship: RelayHandoffRelationship?
     var text: String
     var includesTerminalSelection: Bool
 
@@ -148,13 +154,17 @@ struct HandoffComposerDraft: Identifiable, Equatable {
         targetPaneID: String,
         targetName: String,
         text: String,
-        includesTerminalSelection: Bool
+        includesTerminalSelection: Bool,
+        inReplyToHandoffID: String? = nil,
+        relationship: RelayHandoffRelationship? = nil
     ) {
         id = UUID()
         self.sourcePaneID = sourcePaneID
         self.sourceName = sourceName
         self.targetPaneID = targetPaneID
         self.targetName = targetName
+        self.inReplyToHandoffID = inReplyToHandoffID
+        self.relationship = relationship
         self.text = text
         self.includesTerminalSelection = includesTerminalSelection
     }
@@ -228,6 +238,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var diagnosticsExporting = false
     @Published private(set) var repeatingAskHandoffID: String?
     @Published private(set) var sendingReviewedBusyDraftID: String?
+    @Published private(set) var submittingHandoffComposer = false
     @Published private(set) var historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy
     @Published private(set) var terminalFontPreference = TerminalFontPreference.ghosttyDefault
     @Published private(set) var taskManagerSnapshot: TaskManagerSnapshot?
@@ -1166,9 +1177,14 @@ final class AppModel: ObservableObject {
             return
         }
         var history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        var activity = statusActivityEvents
         if let relayClient, let refreshed = try? relayClient.handoffs(limit: 500) {
             history = refreshed
             if refreshed != statusHandoffs { statusHandoffs = refreshed }
+        }
+        if let relayClient, let refreshed = try? relayClient.activityEvents(limit: 500) {
+            activity = refreshed
+            if refreshed != statusActivityEvents { statusActivityEvents = refreshed }
         }
         let information = ParleyBuildInformation.current(runtime: runtime)
         betaFeedbackBundle = BetaFeedbackBundleBuilder.build(
@@ -1180,7 +1196,7 @@ final class AppModel: ObservableObject {
             ),
             updateChannel: releaseChannel,
             compatibility: compatibility,
-            diagnostics: makeDiagnosticsReport(handoffs: history)
+            diagnostics: makeDiagnosticsReport(handoffs: history, activityEvents: activity)
         )
         betaFeedbackPresented = true
     }
@@ -1232,11 +1248,16 @@ final class AppModel: ObservableObject {
         guard panel.runModal() == .OK, let destination = panel.url else { return }
 
         var history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        var activity = statusActivityEvents
         if let relayClient, let refreshed = try? relayClient.handoffs(limit: 500) {
             history = refreshed
             if refreshed != statusHandoffs { statusHandoffs = refreshed }
         }
-        let report = makeDiagnosticsReport(handoffs: history)
+        if let relayClient, let refreshed = try? relayClient.activityEvents(limit: 500) {
+            activity = refreshed
+            if refreshed != statusActivityEvents { statusActivityEvents = refreshed }
+        }
+        let report = makeDiagnosticsReport(handoffs: history, activityEvents: activity)
         diagnosticsExporting = true
         Task { [weak self] in
             do {
@@ -1258,7 +1279,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func makeDiagnosticsReport(handoffs: [RelayHandoff]) -> DiagnosticsReport {
+    private func makeDiagnosticsReport(
+        handoffs: [RelayHandoff],
+        activityEvents: [RelayActivityEvent]
+    ) -> DiagnosticsReport {
         let info = Bundle.main.infoDictionary ?? [:]
         let application = DiagnosticsApplication(
             bundleIdentifier: Bundle.main.bundleIdentifier ?? "unbundled-development-build",
@@ -1285,6 +1309,7 @@ final class AppModel: ObservableObject {
             workspaceCount: workspaces.count,
             panes: panes,
             handoffs: handoffs,
+            activityEvents: activityEvents,
             readiness: runtimeReadiness
         )
     }
@@ -2952,15 +2977,138 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func handoffReviewSource(for handoff: RelayHandoff) -> WorkbenchPane? {
+        guard handoff.hasReturnedResult else { return nil }
+        if let original = panes.first(where: {
+            $0.id == handoff.sourcePaneID && isReviewReadyAgent($0)
+        }) {
+            return original
+        }
+        guard let activePane, isReviewReadyAgent(activePane) else { return nil }
+        return activePane
+    }
+
+    func handoffReviewTargets(for handoff: RelayHandoff) -> [WorkbenchPane] {
+        guard let source = handoffReviewSource(for: handoff) else { return [] }
+        return panes
+            .filter { $0.id != source.id && isReviewReadyAgent($0) }
+            .sorted {
+                let left = ($0.workspaceName ?? "", $0.displayName, $0.id)
+                let right = ($1.workspaceName ?? "", $1.displayName, $1.id)
+                return left < right
+            }
+    }
+
+    func handoffReviewTargetIsBusy(_ pane: WorkbenchPane) -> Bool {
+        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+        let knownHistory = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        return knownHistory.contains {
+            $0.targetPaneID == pane.id && activeStates.contains($0.state)
+        }
+    }
+
+    func canOfferHandoffReview(_ handoff: RelayHandoff) -> Bool {
+        relayClient != nil
+            && handoffComposerDraft == nil
+            && !submittingHandoffComposer
+            && handoffReviewSource(for: handoff) != nil
+            && !handoffReviewTargets(for: handoff).isEmpty
+    }
+
+    func beginHandoffReview(
+        _ relationship: RelayHandoffRelationship,
+        of handoff: RelayHandoff,
+        with target: WorkbenchPane
+    ) {
+        guard let source = handoffReviewSource(for: handoff),
+              handoffReviewTargets(for: handoff).contains(where: { $0.id == target.id }) else {
+            NSAlert(error: RelayUIError.message(
+                "The selected result no longer has a relay-ready source and explicit reviewer pane. Nothing was sent."
+            )).runModal()
+            return
+        }
+        guard !handoffReviewTargetIsBusy(target) else {
+            NSAlert(error: RelayUIError.message(
+                "\(target.displayName) already has tracked work. Finish or cancel it before starting this linked review."
+            )).runModal()
+            return
+        }
+        let text = Self.linkedReviewDraftText(
+            relationship: relationship,
+            handoff: handoff
+        )
+        guard text.count <= RelayText.maximumCharacters else {
+            NSAlert(error: RelayUIError.message(
+                "This result is too large for one linked Ask. Add the selected result to a Context Pack and review its visible sources instead."
+            )).runModal()
+            return
+        }
+        handoffComposerDraft = HandoffComposerDraft(
+            sourcePaneID: source.id,
+            sourceName: source.displayName,
+            targetPaneID: target.id,
+            targetName: target.displayName,
+            text: text,
+            includesTerminalSelection: false,
+            inReplyToHandoffID: handoff.id,
+            relationship: relationship
+        )
+    }
+
+    func saveHandoffReview(
+        _ handoff: RelayHandoff,
+        verdict: RelayHandoffVerdict?,
+        note: String
+    ) {
+        perform {
+            guard let relayClient else {
+                throw RelayUIError.message("The app-resident coordination core is unavailable.")
+            }
+            let response = try relayClient.updateHandoffReview(RelayHandoffReviewUpdate(
+                handoffID: handoff.id,
+                expectedReviewRevision: handoff.reviewRevision ?? 0,
+                verdict: verdict,
+                note: note
+            ))
+            guard response.status == 200 else {
+                refreshStatusCenterQuietly()
+                throw RelayUIError.message(response.text)
+            }
+            refreshStatusCenterQuietly()
+        }
+    }
+
     func cancelHandoffComposer() {
+        guard !submittingHandoffComposer else { return }
         handoffComposerDraft = nil
         terminalHandle.focus()
     }
 
     func submitHandoffComposer() {
-        guard let draft = handoffComposerDraft else { return }
-        let edited = RelayText.clean(draft.text)
-        guard !edited.isEmpty else { return }
+        guard !submittingHandoffComposer, let draft = handoffComposerDraft else { return }
+        let isLinkedReview = draft.inReplyToHandoffID != nil && draft.relationship != nil
+        let edited = isLinkedReview
+            ? ContextPackText.normalize(draft.text)
+            : RelayText.clean(draft.text)
+        guard !edited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        if let parentID = draft.inReplyToHandoffID,
+           let relationship = draft.relationship {
+            submitLinkedReviewAsk(
+                draft: draft,
+                text: edited,
+                parentID: parentID,
+                relationship: relationship
+            )
+            return
+        }
+        guard draft.inReplyToHandoffID == nil, draft.relationship == nil else {
+            NSAlert(error: RelayUIError.message(
+                "The linked review draft is incomplete. Nothing was sent."
+            )).runModal()
+            return
+        }
+
         perform {
             guard let source = panes.first(where: {
                 $0.id == draft.sourcePaneID && $0.kind.isAgent && $0.isStarted && !$0.isDead
@@ -2982,6 +3130,101 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func submitLinkedReviewAsk(
+        draft: HandoffComposerDraft,
+        text: String,
+        parentID: String,
+        relationship: RelayHandoffRelationship
+    ) {
+        guard let relayClient,
+              let source = panes.first(where: {
+                  $0.id == draft.sourcePaneID && isReviewReadyAgent($0)
+              }),
+              let target = panes.first(where: {
+                  $0.id == draft.targetPaneID && isReviewReadyAgent($0)
+              }),
+              source.id != target.id else {
+            NSAlert(error: RelayUIError.message(
+                "The reviewed source or target pane is no longer relay-ready. Nothing was sent."
+            )).runModal()
+            return
+        }
+        guard !handoffReviewTargetIsBusy(target) else {
+            NSAlert(error: RelayUIError.message(
+                "\(target.displayName) already has tracked work. Linked reviews are never placed in the ordinary busy queue because that would lose their parent relationship."
+            )).runModal()
+            return
+        }
+
+        let draftID = draft.id
+        let idempotencyKey = UUID().uuidString.lowercased()
+        submittingHandoffComposer = true
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.reviewAskFromUI(
+                        sourcePaneID: source.id,
+                        targetPaneID: target.id,
+                        text: text,
+                        idempotencyKey: idempotencyKey,
+                        inReplyToHandoffID: parentID,
+                        relationship: relationship
+                    )
+                }.value
+                self.submittingHandoffComposer = false
+                self.refreshStatusCenterQuietly()
+                guard response.status == 200 else {
+                    throw RelayUIError.message(response.text)
+                }
+                if self.handoffComposerDraft?.id == draftID {
+                    self.handoffComposerDraft = nil
+                    self.terminalHandle.clearSelection()
+                    self.terminalHandle.focus()
+                }
+            } catch {
+                self.submittingHandoffComposer = false
+                self.refreshStatusCenterQuietly()
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    private func isReviewReadyAgent(_ pane: WorkbenchPane) -> Bool {
+        pane.kind.isAgent
+            && pane.isStarted
+            && !pane.isDead
+            && pane.relayEnabled
+            && pane.hasCurrentProtocol
+            && pane.inputAvailable
+    }
+
+    private static func linkedReviewDraftText(
+        relationship: RelayHandoffRelationship,
+        handoff: RelayHandoff
+    ) -> String {
+        let request: String
+        switch relationship {
+        case .challenge:
+            request = "Challenge this returned result. Identify unsupported assumptions, concrete failures, and the corrections required before it should be accepted."
+        case .verify:
+            request = "Verify this returned result against the stated task. Identify the evidence that supports or contradicts it, then give a clear conclusion."
+        }
+        let originalLabel = handoff.kind == .delegate ? "Original instruction" : "Original question or message"
+        return """
+        \(request)
+
+        Linked Parley handoff: \(handoff.id)
+        Original route: \(handoff.sourceName) to \(handoff.targetName)
+
+        \(originalLabel):
+        \(handoff.text)
+
+        Returned result:
+        \(handoff.resultText ?? "")
+        """
+    }
+
     func editWorkspaceBrief() {
         guard let workspace = activeWorkspace else { return }
         let aliases = workspaceAliases(for: workspace.workspaceID)
@@ -2992,7 +3235,11 @@ final class AppModel: ObservableObject {
             existingBriefID: existing?.id,
             goal: existing?.goal ?? "",
             constraints: existing?.constraints ?? "",
-            decisions: existing?.decisions ?? ""
+            decisions: existing?.decisions ?? "",
+            conclusions: existing?.conclusions ?? "",
+            rationale: existing?.rationale ?? "",
+            confidence: existing?.confidence ?? "",
+            openQuestions: existing?.openQuestions ?? ""
         )
         workspaceBriefPresented = true
     }
@@ -3035,7 +3282,15 @@ final class AppModel: ObservableObject {
         terminalHandle.focus()
     }
 
-    func saveWorkspaceBrief(goal: String, constraints: String, decisions: String) {
+    func saveWorkspaceBrief(
+        goal: String,
+        constraints: String,
+        decisions: String,
+        conclusions: String,
+        rationale: String,
+        confidence: String,
+        openQuestions: String
+    ) {
         do {
             guard let draft = workspaceBriefDraft else { return }
             _ = try workspaceBriefStore.save(
@@ -3043,7 +3298,11 @@ final class AppModel: ObservableObject {
                 workspaceName: draft.workspaceName,
                 goal: goal,
                 constraints: constraints,
-                decisions: decisions
+                decisions: decisions,
+                conclusions: conclusions,
+                rationale: rationale,
+                confidence: confidence,
+                openQuestions: openQuestions
             )
             try reloadWorkspaceBriefs()
             workspaceBriefPresented = false
@@ -3109,6 +3368,58 @@ final class AppModel: ObservableObject {
         updateContextPackMeasurement(&draft)
         contextPackDraft = draft
         contextPackPresented = true
+    }
+    func canPromoteHandoffResultsToContextPack(_ handoffs: [RelayHandoff]) -> Bool {
+        canCreateContextPack
+            && !handoffs.isEmpty
+            && handoffs.count <= ContextPackBuilder.maximumParts
+            && Set(handoffs.map(\.id)).count == handoffs.count
+            && handoffs.allSatisfy(\.hasReturnedResult)
+    }
+
+    func promoteHandoffResultsToContextPack(_ handoffs: [RelayHandoff]) {
+        perform {
+            guard canPromoteHandoffResultsToContextPack(handoffs),
+                  let source = activePane,
+                  let contextPackBuilder else {
+                throw RelayUIError.message(
+                    "Select a running relay-ready agent pane, then choose between 1 and \(ContextPackBuilder.maximumParts) returned Ask or Delegate results."
+                )
+            }
+            let parts = try handoffs.map(contextPackBuilder.handoffResult)
+            let pack = ContextPack(
+                name: handoffs.count == 1 ? "Selected handoff result" : "Selected handoff results",
+                note: "Review these person-selected cross-vendor results. Edit or remove any part before choosing a receiving pane.",
+                parts: parts
+            )
+            _ = try contextPackBuilder.render(pack)
+
+            if let existing = contextPackDraft, !existing.pack.parts.isEmpty {
+                let alert = NSAlert()
+                alert.messageText = "Replace the current context pack?"
+                alert.informativeText = "The current pack has \(existing.pack.parts.count) explicit source\(existing.pack.parts.count == 1 ? "" : "s"). Replace it with \(handoffs.count) selected handoff result\(handoffs.count == 1 ? "" : "s")? Nothing will be submitted."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Replace Draft")
+                alert.addButton(withTitle: "Cancel")
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+            }
+
+            var draft = ActiveContextPack(
+                id: UUID().uuidString.lowercased(),
+                sourcePaneID: source.id,
+                sourcePaneKind: source.kind,
+                sourcePaneName: source.displayName,
+                sourceFolder: source.cwd,
+                pack: pack,
+                reviewID: nil,
+                reviewState: nil,
+                requestedTargetPaneID: nil,
+                reviewUpdatedAt: nil
+            )
+            updateContextPackMeasurement(&draft)
+            contextPackDraft = draft
+            contextPackPresented = true
+        }
     }
 
     func presentContextPack() {
@@ -3362,6 +3673,10 @@ final class AppModel: ObservableObject {
                 goal: savedBrief.goal,
                 constraints: savedBrief.constraints,
                 decisions: savedBrief.decisions,
+                conclusions: savedBrief.conclusions,
+                rationale: savedBrief.rationale,
+                confidence: savedBrief.confidence,
+                openQuestions: savedBrief.openQuestions,
                 createdAt: savedBrief.createdAt,
                 updatedAt: savedBrief.updatedAt
             )
