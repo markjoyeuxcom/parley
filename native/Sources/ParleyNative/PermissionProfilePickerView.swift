@@ -18,15 +18,26 @@ struct PermissionProfilePickerView: View {
         let restoredRoots = request.existingSelection?.profileID == selected
             ? request.existingSelection?.approvedRoots
             : nil
-        _approvedRoots = State(initialValue: restoredRoots ?? [request.folder])
+        var initialRoots = restoredRoots ?? [request.folder]
+        let paneRoot = URL(fileURLWithPath: request.folder).resolvingSymlinksInPath().standardizedFileURL.path
+        if !initialRoots.contains(where: {
+            URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path == paneRoot
+        }) {
+            initialRoots.insert(request.folder, at: 0)
+        }
+        _approvedRoots = State(initialValue: initialRoots)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("Permissions for \(request.kind.label)")
+                Text(request.isFolderAccessReview
+                    ? "Folder Access for \(request.kind.label)"
+                    : "Permissions for \(request.kind.label)")
                     .font(.title2.weight(.semibold))
-                Text("Choose what this pane should be prepared to do. The vendor CLI still owns every confirmation it cannot express at launch.")
+                Text(request.isFolderAccessReview
+                    ? "Review the exact folders this pane receives at launch. Applying a change restarts the vendor session; its working folder does not change."
+                    : "Choose what this pane should be prepared to do. The vendor CLI still owns every confirmation it cannot express at launch.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -52,6 +63,11 @@ struct PermissionProfilePickerView: View {
             HStack {
                 Button("Cancel") { model.cancelPermissionProfileSelection() }
                     .keyboardShortcut(.cancelAction)
+                if request.isFolderAccessReview, !hasChanges {
+                    Text("No access changes")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button(request.actionLabel) {
                     model.applyPermissionProfile(
@@ -142,45 +158,106 @@ struct PermissionProfilePickerView: View {
 
     @ViewBuilder
     private func rootScope(_ profile: PermissionProfileDefinition) -> some View {
+        let projection = accessProjection(for: profile)
+        let attachedAlternatives = projection.workspaceFolders.filter { !$0.isPaneFolder }
+
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(profile.rootMode == .paneFolder ? "PANE ROOT" : "EXACT APPROVED ROOTS")
+                Text("FOLDER ACCESS")
                     .permissionSectionLabel()
                 Spacer()
                 if profile.rootMode == .exactApprovedRoots {
-                    Button("Add Folder…", action: addRoot)
+                    Button("Add Other Folder…", action: addRoot)
                         .controlSize(.small)
                 }
             }
 
-            if profile.rootMode == .paneFolder {
-                rootLabel(request.folder)
+            folderAccessLabel(
+                request.folder,
+                badge: "WORKING FOLDER",
+                checked: true
+            )
+
+            if !attachedAlternatives.isEmpty {
+                Text("ATTACHED TO \(request.workspaceName.uppercased())")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 3)
+                ForEach(attachedAlternatives) { option in
+                    Toggle(isOn: approvedRootBinding(option.path)) {
+                        folderAccessLabel(
+                            option.path,
+                            badge: option.isApproved && profile.rootMode == .exactApprovedRoots ? "APPROVED" : nil,
+                            checked: option.isApproved && profile.rootMode == .exactApprovedRoots
+                        )
+                    }
+                    .toggleStyle(.checkbox)
+                    .disabled(profile.rootMode != .exactApprovedRoots)
+                }
+                if profile.rootMode != .exactApprovedRoots {
+                    Text("Choose Workspace folders or Broad workspace above to grant additional attached folders.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else {
-                ForEach(approvedRoots, id: \.self) { root in
+                Text("No other folders are attached to this workspace.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if profile.rootMode == .exactApprovedRoots, !projection.otherApprovedRoots.isEmpty {
+                Text("OTHER REVIEWED ROOTS")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 3)
+                ForEach(projection.otherApprovedRoots, id: \.self) { root in
                     HStack(spacing: 8) {
-                        rootLabel(root)
+                        folderAccessLabel(root, badge: nil, checked: true)
                         Spacer(minLength: 8)
-                        if canonical(root) != canonical(request.folder) {
-                            Button("Remove") { approvedRoots.removeAll(where: { $0 == root }) }
-                                .buttonStyle(.borderless)
-                                .controlSize(.small)
-                        } else {
-                            Text("PANE FOLDER")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(.secondary)
+                        Button("Remove") {
+                            approvedRoots.removeAll { canonical($0) == canonical(root) }
                         }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
                     }
                 }
             }
+
+            Text(profile.rootMode == .paneFolder
+                ? "This profile is limited to the pane's working folder. Workspace attachments remain metadata only."
+                : "Only checked or manually reviewed roots are passed to the vendor CLI. Attaching another folder later does not grant it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private func rootLabel(_ root: String) -> some View {
-        Text(root)
-            .font(.system(size: 11, design: .monospaced))
-            .textSelection(.enabled)
-            .lineLimit(2)
-            .truncationMode(.middle)
+    private func folderAccessLabel(_ root: String, badge: String?, checked: Bool) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: "folder")
+                .font(.system(size: 10))
+                .foregroundStyle(checked ? Color.accentColor : Color.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(WorkspaceFolderIdentity.displayName(for: root))
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let badge {
+                        Text(badge)
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(checked ? Color.accentColor : Color.secondary)
+                    }
+                }
+                Text((WorkspaceFolderIdentity.normalized(root) as NSString).abbreviatingWithTildeInPath)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .textSelection(.enabled)
     }
 
     @ViewBuilder
@@ -233,7 +310,36 @@ struct PermissionProfilePickerView: View {
 
     private var canContinue: Bool {
         guard let effectiveProfile else { return false }
-        return effectiveProfile.approvedRoots.contains(canonical(request.folder))
+        guard effectiveProfile.approvedRoots.contains(canonical(request.folder)) else { return false }
+        return !request.isFolderAccessReview || hasChanges
+    }
+
+    private var hasChanges: Bool {
+        guard let effectiveProfile else { return false }
+        return effectiveProfile.selection != request.existingSelection
+    }
+
+    private func accessProjection(for profile: PermissionProfileDefinition) -> WorkspaceFolderAccessSnapshot {
+        WorkspaceFolderAccessProjection.project(
+            paneFolder: request.folder,
+            workspaceFolders: request.workspaceFolders,
+            approvedRoots: profile.rootMode == .exactApprovedRoots ? approvedRoots : [request.folder]
+        )
+    }
+
+    private func approvedRootBinding(_ root: String) -> Binding<Bool> {
+        Binding(
+            get: { approvedRoots.contains { canonical($0) == canonical(root) } },
+            set: { approved in
+                if approved {
+                    if !approvedRoots.contains(where: { canonical($0) == canonical(root) }) {
+                        approvedRoots.append(WorkspaceFolderIdentity.normalized(root))
+                    }
+                } else {
+                    approvedRoots.removeAll { canonical($0) == canonical(root) }
+                }
+            }
+        )
     }
 
     private func addRoot() {

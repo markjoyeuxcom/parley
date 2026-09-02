@@ -24,10 +24,14 @@ or bypass a vendor's approval flow.
   modes. Auto advances only from correlated answers and always stops for the
   person's final completion decision.
 - Durable local handoff history and Status Center recovery actions.
+- A native Task Manager with truthful app and pane CPU/RSS sampling, exact
+  Ghostty TTY process attribution, workspace hierarchy and confirmed pane-level
+  controls.
 - Folder-backed workspaces, favourites, saved layouts, portable team
   templates, stable roles, workspace leads, pane move and configuration clone.
 - Reviewed context packs, workspace briefs, pinned snippets, Git diff/file
-  capture and VS Code context import.
+  capture and a VS Code companion with an explicit source composer, in-memory
+  Context Basket, collaboration sidebar and correlated preview acknowledgement.
 - Production and Development runtime isolation.
 - Pane-scoped relay capabilities and a macOS Seatbelt boundary around every
   vendor process tree.
@@ -83,7 +87,32 @@ Parley never infers thinking, token use, cost, context limits, permission state
 or completion from terminal text. Status contains only facts Parley owns or
 structured values a vendor exposes authoritatively.
 
+## Product direction
+
+Parley's official direction is a vendor-driven, cross-vendor coordination
+layer. Vendor CLIs own reasoning, research, browser tools, plans, tasks,
+subagents, memory and model-specific integrations. Parley owns retained panes,
+authenticated identities and handoffs, durable receipts, human review,
+lineage, recovery and authoritative lifecycle events.
+
+The unreleased Research Board experiment and the separate Handoff Chains
+surface have been retired. Their independent models and UI are removed;
+ordinary broker handoff history, receipts, recovery controls and Workspace
+Briefs remain. Useful primitives—human verdicts and notes,
+verification/challenge lineage and reviewed multi-result Context Pack
+promotion—will move onto handoffs in Status Center. Any legacy
+`research-board.json` or `handoff-chains.json` file is left untouched but is
+not loaded by the app; neither file is a stable format or protocol to integrate
+with.
+
+The committed phases, migration guarantees and explicit non-goals are in the
+[roadmap](ROADMAP.md#official-direction-vendor-driven-parley-coordinated).
+
 ## Smart orchestration
+
+The existing bounded recipe remains available, but expansion of first-class
+workflow windows and Smart Auto is frozen until Parley's authenticated target
+discovery and authoritative vendor-event layer are proven.
 
 Mark one ready agent pane as the workspace lead, then open **Recipes → Smart
 Orchestration → New Plan → Review → Implement → Verify**. Choose explicit
@@ -123,6 +152,13 @@ metadata changes never grant filesystem permission. Several workspaces may
 intentionally attach the same folder. Opening a folder focuses one match, asks
 when several match, or creates a normal folder-backed shell workspace when none
 exists.
+
+Agent folder access is pane-specific and reviewed. The **Workspace folders**
+permission profile can grant selected workspace attachments as exact roots when
+an agent starts. For a running agent, **Folder Access…** shows its working folder,
+checked attachments and any other reviewed roots; applying a change explicitly
+restarts that vendor session while preserving the pane and working folder.
+Attaching or detaching workspace metadata never mutates a running pane's access.
 
 Move transfers the exact retained pane, process, terminal state, credential and
 folder. Clone copies visible configuration only and never copies a process,

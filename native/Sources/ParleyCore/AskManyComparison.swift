@@ -31,19 +31,22 @@ public struct RelayUIAskManyRequest: Codable, Equatable, Sendable {
     public let text: String
     public let idempotencyKey: String
     public let preserveFormatting: Bool?
+    public let origin: RelayTransitionOrigin?
 
     public init(
         sourcePaneID: String,
         targetPaneIDs: [String],
         text: String,
         idempotencyKey: String,
-        preserveFormatting: Bool = false
+        preserveFormatting: Bool = false,
+        origin: RelayTransitionOrigin = .human
     ) {
         self.sourcePaneID = sourcePaneID
         self.targetPaneIDs = targetPaneIDs
         self.text = text
         self.idempotencyKey = idempotencyKey
         self.preserveFormatting = preserveFormatting
+        self.origin = origin
     }
 }
 

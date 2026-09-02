@@ -6,7 +6,6 @@ struct StatusCenterView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var workspaceID = ""
     @State private var selectedHandoffID: String?
-    @State private var selectedChainID: String?
     @State private var selectedBusyDraftID: String?
     @State private var showDismissed = false
     @State private var historyQuery = ""
@@ -28,7 +27,7 @@ struct StatusCenterView: View {
     }
 
     private var selectedHandoff: RelayHandoff? {
-        guard selectedChainID == nil, selectedBusyDraftID == nil else { return nil }
+        guard selectedBusyDraftID == nil else { return nil }
         return snapshot.handoffs.first(where: { $0.id == selectedHandoffID })
     }
 
@@ -41,14 +40,6 @@ struct StatusCenterView: View {
         return scopedBusyDrafts.first(where: { $0.id == selectedBusyDraftID })
     }
 
-    private var scopedChains: [HandoffChain] {
-        model.statusHandoffChains(workspaceID: workspaceID.isEmpty ? nil : workspaceID)
-    }
-
-    private var selectedChain: HandoffChain? {
-        guard let selectedChainID else { return nil }
-        return scopedChains.first(where: { $0.id == selectedChainID })
-    }
 
     private var filteredHistory: [RelayHandoff] {
         CollaborationHistoryProjection.filter(
@@ -102,7 +93,6 @@ struct StatusCenterView: View {
                             liveCollaboration
                             returnedResults
                             collaborationHistory
-                            handoffChains
                             agents
                             recovery
                             coreHealth
@@ -144,14 +134,12 @@ struct StatusCenterView: View {
         }
         .onChange(of: workspaceID) { _, _ in
             selectedHandoffID = nil
-            selectedChainID = nil
             selectedBusyDraftID = nil
             historyExportSelection.removeAll()
             ensureSelection()
         }
         .onChange(of: showDismissed) { _, _ in
             selectedHandoffID = nil
-            selectedChainID = nil
             selectedBusyDraftID = nil
             historyExportSelection.formIntersection(snapshot.handoffs.map(\.id))
             applyExternalSelection()
@@ -181,6 +169,16 @@ struct StatusCenterView: View {
                 Text("Status Center condition. \(conditionTitle). \(conditionDetail)")
             }
             Spacer()
+            Button {
+                openWindow(id: "task-manager")
+            } label: {
+                Image(systemName: "gauge.with.dots.needle.50percent")
+            }
+            .buttonStyle(.borderless)
+            .fixedSize()
+            .accessibilityLabel("Open Task Manager")
+            .accessibilityHint("Inspect Parley-owned workspace, pane and process resource use")
+            .help("Open Task Manager")
             Button {
                 model.exportDiagnostics()
             } label: {
@@ -594,49 +592,6 @@ struct StatusCenterView: View {
         return model.workspaces.first(where: { $0.id == workspaceID })?.name ?? workspaceID
     }
 
-    private var handoffChains: some View {
-        statusGroup("HANDOFF CHAINS") {
-            if scopedChains.isEmpty {
-                emptyRow("No curated handoff chains in this scope")
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(scopedChains) { chain in
-                        Button {
-                            select(chain)
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: "link")
-                                    .foregroundStyle(.secondary)
-                                    .accessibilityHidden(true)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(chain.title)
-                                        .font(.system(size: 11, weight: .medium))
-                                        .lineLimit(1)
-                                    Text("\(chain.entries.count) handoff\(chain.entries.count == 1 ? "" : "s") · \(chain.bookmarks.count) bookmark\(chain.bookmarks.count == 1 ? "" : "s")")
-                                        .font(.system(size: 9, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer(minLength: 8)
-                                Text(chain.updatedAt, style: .relative)
-                                    .font(.system(size: 9, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(9)
-                            .contentShape(Rectangle())
-                            .background(
-                                RoundedRectangle(cornerRadius: 5)
-                                    .fill(selectedChainID == chain.id ? Color.accentColor.opacity(0.10) : Color.clear)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Handoff chain \(chain.title), \(chain.entries.count) handoffs, \(chain.bookmarks.count) bookmarks")
-                        .accessibilityValue(selectedChainID == chain.id ? "Selected" : "Not selected")
-                        if chain.id != scopedChains.last?.id { Divider() }
-                    }
-                }
-            }
-        }
-    }
 
     private var agents: some View {
         statusGroup("AGENTS") {
@@ -1000,8 +955,6 @@ struct StatusCenterView: View {
     private var inspector: some View {
         if let draft = selectedBusyDraft {
             reviewedBusyDraftInspector(draft)
-        } else if let chain = selectedChain {
-            chainInspector(chain)
         } else if let handoff = selectedHandoff {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -1186,45 +1139,6 @@ struct StatusCenterView: View {
                     .disabled(!model.canFocus(handoff.targetPaneID))
             }
             HStack {
-                Menu("Add to Chain") {
-                    Button("Start New Chain…") {
-                        if let chain = model.createHandoffChain(from: handoff) {
-                            select(chain)
-                        }
-                    }
-                    let accepting = model.chainsAccepting(handoff)
-                    if !accepting.isEmpty {
-                        Divider()
-                        ForEach(accepting) { chain in
-                            Button(chain.title) {
-                                model.addHandoff(handoff, to: chain)
-                                select(chain)
-                            }
-                        }
-                    }
-                }
-                if handoff.hasReturnedResult {
-                    let containing = model.chains(containing: handoff)
-                    Menu("Bookmark Result") {
-                        if containing.isEmpty {
-                            Text("Add this handoff to a chain first")
-                        } else {
-                            ForEach(containing) { chain in
-                                Menu(chain.title) {
-                                    Button("As Answer") {
-                                        model.bookmarkResult(from: handoff, in: chain, as: .answer)
-                                        select(chain)
-                                    }
-                                    Button("As Objection") {
-                                        model.bookmarkResult(from: handoff, in: chain, as: .objection)
-                                        select(chain)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    .disabled(containing.isEmpty)
-                }
                 if let consultation = model.consultation(for: handoff) {
                     Button("Return Manually…") { model.returnConsultation(consultation) }
                     Button("Cancel Wait…", role: .destructive) { model.cancel(consultation) }
@@ -1278,121 +1192,6 @@ struct StatusCenterView: View {
         .controlSize(.small)
     }
 
-    private func chainInspector(_ chain: HandoffChain) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("HANDOFF CHAIN")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                    Text(chain.title)
-                        .font(.system(size: 16, weight: .semibold))
-                    Text("\(chain.workspaceName) · person curated · no inferred verdict")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack {
-                    Button("Add Human Decision…") {
-                        model.addDecision(to: chain)
-                        if let refreshed = model.handoffChains.first(where: { $0.id == chain.id }) {
-                            select(refreshed)
-                        }
-                    }
-                    Button("Delete Chain…", role: .destructive) {
-                        if model.deleteHandoffChain(chain) {
-                            selectedChainID = nil
-                            ensureSelection()
-                        }
-                    }
-                }
-                .controlSize(.small)
-
-                VStack(alignment: .leading, spacing: 9) {
-                    Text("RELATED HANDOFFS")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .accessibilityAddTraits(.isHeader)
-                    ForEach(Array(chain.entries.enumerated()), id: \.element.id) { index, entry in
-                        VStack(alignment: .leading, spacing: 7) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("\(index + 1)")
-                                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                Text("\(entry.sourceName) → \(entry.targetName)")
-                                    .font(.system(size: 11, weight: .medium))
-                                Spacer()
-                                statusChip(entry.kind.rawValue.uppercased(), color: .secondary)
-                                statusChip(entry.state.rawValue.uppercased(), color: .secondary)
-                            }
-                            chainText("QUESTION OR INSTRUCTION", entry.prompt)
-                            if let result = entry.result, !result.isEmpty {
-                                chainText("RETURNED RESULT", result)
-                            }
-                        }
-                        .padding(10)
-                        .background(Color.secondary.opacity(0.055))
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 9) {
-                    Text("BOOKMARKED EVIDENCE AND DECISIONS")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .accessibilityAddTraits(.isHeader)
-                    if chain.bookmarks.isEmpty {
-                        Text("No answers, objections or human decisions bookmarked yet.")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(chain.bookmarks) { bookmark in
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text(bookmark.kind.label.uppercased())
-                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                    if bookmark.origin == .human {
-                                        Text("HUMAN")
-                                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                                            .foregroundStyle(Color.accentColor)
-                                    } else if let entryID = bookmark.entryID,
-                                              let entry = chain.entries.first(where: { $0.id == entryID }) {
-                                        Text(entry.targetName.uppercased())
-                                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Text(bookmark.createdAt.formatted(date: .abbreviated, time: .shortened))
-                                        .font(.system(size: 8, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Text(bookmark.text)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .padding(10)
-                            .background(Color.secondary.opacity(0.055))
-                            .clipShape(RoundedRectangle(cornerRadius: 5))
-                        }
-                    }
-                }
-            }
-            .padding(16)
-        }
-    }
-
-    private func chainText(_ title: String, _ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.secondary)
-            Text(text)
-                .font(.system(size: 9, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
 
     private func inspectorSection(_ title: String, _ text: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1663,10 +1462,6 @@ struct StatusCenterView: View {
            scopedBusyDrafts.contains(where: { $0.id == selectedBusyDraftID }) {
             return
         }
-        if let selectedChainID,
-           scopedChains.contains(where: { $0.id == selectedChainID }) {
-            return
-        }
         if let selectedHandoffID,
            let selected = snapshot.handoffs.first(where: { $0.id == selectedHandoffID }) {
             if selected.hasUnreadResult { model.markRead(selected) }
@@ -1695,21 +1490,14 @@ struct StatusCenterView: View {
     }
 
     private func select(_ handoff: RelayHandoff) {
-        selectedChainID = nil
         selectedBusyDraftID = nil
         selectedHandoffID = handoff.id
         if handoff.hasUnreadResult { model.markRead(handoff) }
     }
 
-    private func select(_ chain: HandoffChain) {
-        selectedHandoffID = nil
-        selectedBusyDraftID = nil
-        selectedChainID = chain.id
-    }
 
     private func select(_ draft: ReviewedBusyDraft) {
         selectedHandoffID = nil
-        selectedChainID = nil
         selectedBusyDraftID = draft.id
     }
 }

@@ -241,18 +241,25 @@ public enum ParleyHelpGuide {
                     id: "workspaces-vscode-companion",
                     title: "VS Code Companion",
                     paragraphs: [
-                        "The Parley Companion is a thin local VS Code desktop extension. Its commands can open or focus the current workspace, or place an explicit selection, saved current file, current-file diagnostics, Git diff, or selection plus Git diff into Parley's normal editable context preview.",
-                        "Current files and Git diffs are recaptured by Parley from the local workspace. Selections and diagnostics are editor-provided captures and stay labelled that way. Inspect the source, byte count and editable text in Parley before deciding whether to send it.",
+                        "The Parley Companion is a thin local VS Code desktop extension. Its one multi-select composer can combine every explicit editor selection, saved files, current-file diagnostics, selected Explorer files, whole Git scopes and selected staged or working-tree SCM resources in Parley's normal editable context preview.",
+                        "Current files and Git diffs are recaptured by Parley from the local workspace. Selections and diagnostics are editor-provided captures and stay labelled that way. The composer shows the resulting source count and known byte estimate before staging anything.",
+                        "Its native Collaboration views show content-free attention, durable Production workspaces and exact live agent panes. The in-memory Context Basket can collect several explicit sources before one preview without persisting their bodies.",
                     ],
                     items: [
                         "The extension refuses VS Code for the Web and remote workspaces. Its first release uses the local macOS UI extension host and the installed Production app only.",
                         "Each context action uses one private, owner-only, one-shot manifest. Parley consumes it from its fixed integration inbox; the file cannot carry a pane target, vendor, prompt, permission or submit action.",
+                        "A current capability heartbeat must advertise a compatible import and acknowledgement contract. LaunchServices success is never presented as preview acceptance.",
+                        "Parley returns one correlated accepted, rejected or expired acknowledgement through a fixed private outbox. Responses contain no source text, folder, prompt, result, credential or replay authority.",
+                        "A Context Basket is local to one VS Code window and canonical workspace folder. It clears automatically only after the matching preview is accepted; cancellation and rejection preserve it for correction.",
                         "A ready agent pane in the workspace is required as the eventual source. The extension never starts one implicitly.",
                         "Opening the preview sends nothing. Parley's existing human confirmation is still required to Ask one vendor or compare several independently.",
                     ],
                     commands: [
                         ParleyHelpCommand("Parley: Open or Focus Workspace", "Bring the matching local workspace forward without starting an agent."),
-                        ParleyHelpCommand("Parley: Open Selection and Git Diff in Context Preview", "Stage two explicit sources in one editable preview; nothing is sent."),
+                        ParleyHelpCommand("Parley: Build Context Pack…", "Choose several explicit editor and Git sources for one editable preview; nothing is sent."),
+                        ParleyHelpCommand("Parley: Open Collaboration View", "See content-free attention, Production workspaces, live panes and the in-memory Context Basket."),
+                        ParleyHelpCommand("Parley: Review Context Basket…", "Open one bounded editable preview from the explicit sources collected in this VS Code window."),
+                        ParleyHelpCommand("Parley: Diagnose Companion", "Inspect content-free runtime, compatibility and heartbeat state."),
                     ]
                 ),
                 ParleyHelpSection(
@@ -354,7 +361,7 @@ public enum ParleyHelpGuide {
             sections: [
                 ParleyHelpSection(
                     id: "context-model-scopes",
-                    title: "Four separate scopes",
+                    title: "Five separate scopes",
                     paragraphs: [
                         "Parley keeps different kinds of context separate so a useful note does not silently become an instruction to every agent. The scope determines where material lives and whether it survives a window.",
                     ],
@@ -504,22 +511,37 @@ public enum ParleyHelpGuide {
             sections: [
                 ParleyHelpSection(
                     id: "vscode-companion-context",
-                    title: "Open editor context for review",
+                    title: "Build editor context for review",
                     paragraphs: [
-                        "The optional Parley Companion runs in VS Code's local macOS UI extension host. Its Command Palette and editor menus can open the current workspace or place a selection, saved file, diagnostics, Git diff, or selection plus diff into Parley's ordinary editable Context Pack preview.",
-                        "Parley recaptures files and Git diffs from disk. Selection and diagnostic text remain visibly labelled as editor-provided. A ready source pane is required, but the companion never starts an agent or sends the pack.",
+                        "The optional Parley Companion runs in VS Code's local macOS UI extension host. Parley: Build Context Pack… opens one multi-select source composer for editor selections, saved files, diagnostics, selected Explorer files and whole or path-scoped Git changes.",
+                        "Parley recaptures files and Git diffs from disk. Selection and diagnostic text remain visibly labelled as editor-provided. The composer shows source count and known bytes; a ready source pane is required, but the companion never starts an agent or sends the pack.",
+                        "For context gathered across several files or source-control actions, the per-window Context Basket groups explicit sources by canonical workspace folder. Re-adding the same source slot refreshes it; the extension does not persist basket contents.",
                     ],
                     items: [
                         "Web and remote VS Code hosts are refused; a remote path is never treated as a local Mac path.",
                         "The one-shot owner-only manifest cannot name a target pane, vendor, permission, prompt or submit action.",
+                        "The companion verifies Parley's current capability heartbeat before staging, then waits for Parley's correlated one-shot acknowledgement before reporting success.",
+                        "Selected SCM resources are recaptured by Parley with an explicit relative file after Git's option separator.",
+                        "Basket entries clear automatically only after the exact accepted acknowledgement. A rejected, cancelled or expired request remains available for correction and retry.",
                         "Review every attributed source in Parley, edit the request, then choose the normal Ask or Compare action yourself.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "vscode-companion-diagnostics",
+                    title: "Diagnose the local bridge",
+                    paragraphs: [
+                        "Parley: Diagnose Companion opens a compact VS Code output report covering the local extension host, installed app, compatible contracts, limits and attention heartbeat.",
+                    ],
+                    items: [
+                        "The report omits workspace paths, selected content, prompts, results, terminal output and credentials.",
+                        "A missing or stale capability file means unavailable, not assumed compatibility.",
                     ]
                 ),
                 ParleyHelpSection(
                     id: "vscode-companion-attention",
                     title: "Attention and focus",
                     paragraphs: [
-                        "The VS Code status bar shows the installed Production app's current attention count. Select it, or run Parley: Show Attention and Panes, to open one durable Status Center handoff or focus one exact live agent pane.",
+                        "The VS Code status bar, Parley: Show Attention and Panes command and native Collaboration views show the installed Production app's current attention count, durable workspaces and exact live agent panes. Select one item to open its authoritative Status Center record or focus that pane.",
                     ],
                     items: [
                         "The local snapshot contains human labels, counts and opaque pane or handoff ids only. It never contains prompts, answers, terminal output, commands, folders or pane credentials.",
@@ -608,7 +630,9 @@ public enum ParleyHelpGuide {
                         "Review only supports project reads and Git inspection without project mutation.",
                         "Default keeps routine reads available while writes and execution remain vendor decisions.",
                         "Flexible prepares project-local reads, writes, tests and builds; network, external folders and consequential actions stay explicit.",
+                        "Workspace folders keeps Flexible-style project capabilities but can pass several exact, checked workspace attachments to one pane. Right-click a running agent and choose Folder Access to review changes; applying them explicitly restarts that vendor session without changing its working folder.",
                         "Broad workspace applies only to its exact approved roots and is session-scoped by default. It is never host-wide access and never becomes the next pane's default silently.",
+                        "Attaching a folder never grants it. A pane keeps its reviewed roots until the person changes them, and adding another attachment later has no effect on a running process.",
                         "Enforced, Partially enforced and Guidance only describe the installed CLI's real launch controls. Model instructions are not a security boundary, and later vendor prompts remain authoritative.",
                         "Clone a built-in to make an editable local custom profile. Built-ins and Parley's hard boundary remain immutable.",
                     ]
@@ -760,7 +784,7 @@ public enum ParleyHelpGuide {
                     items: [
                         "Tick individual records, or use Select Results for the current search. Export Selected writes only that explicit selection to a local owner-only Markdown file.",
                         "With one workspace selected in Status Center, the archive menu can export every retained handoff involving that workspace, including dismissed records. The export contains handoff bodies and receipts, not lifecycle activity. The neighbouring Delete History action removes eligible handoffs and lifecycle activity only after a workspace-specific destructive confirmation; active work remains.",
-                        "Local retention is core-owned and separate for Production and Development. Choose a bound of 100, 250 or 500 for both handoffs and lifecycle events. Lowering it immediately and irreversibly removes the oldest eligible records; active handoffs and curated handoff chains are preserved, and increasing it later cannot restore deleted history.",
+                        "Local retention is core-owned and separate for Production and Development. Choose a bound of 100, 250 or 500 for both handoffs and lifecycle events. Lowering it immediately and irreversibly removes the oldest eligible records; active handoffs are preserved, and increasing it later cannot restore deleted history.",
                         "The Markdown export deliberately contains complete question, instruction and returned-result bodies plus identities and delivery receipts. Review it before sharing; it is different from Parley's privacy-bounded diagnostics export.",
                         "Ask This Again is available only after an Ask has ended and its original cross-vendor source and target panes are still running, relay-ready and on the current protocol.",
                         "Repeating always opens the recorded question in an editable preview. Ask Again creates a fresh tracked handoff identity and leaves the historical record unchanged; Parley never silently replays it.",
@@ -786,20 +810,11 @@ public enum ParleyHelpGuide {
                     title: "Diagnostics",
                     paragraphs: [
                         "Tools → Export Diagnostics creates a privacy-bounded local archive for troubleshooting. Review it before sharing it. Environment Check verifies local executables and runtime readiness without submitting prompts or spending model quota.",
-                    ]
-                ),
-                ParleyHelpSection(
-                    id: "status-chains",
-                    title: "Curate a handoff chain",
-                    paragraphs: [
-                        "A handoff chain is a readable, person-curated evidence trail. It groups exact snapshots of related Ask, Relay, Paste and Delegate records without creating a task board, contacting an agent or inventing a consensus.",
                     ],
                     items: [
-                        "Select a handoff in Status Center, then use Add to Chain to start a named chain or append it to an existing chain in the same workspace scope.",
-                        "For a returned Ask or Delegate result, use Bookmark Result to preserve the complete answer verbatim as either an Answer or an Objection.",
-                        "Open a chain and choose Add Human Decision to record what you decided. The decision is explicitly labelled HUMAN and is never attributed to an agent.",
-                        "Chains store exact local snapshots, so curated evidence remains readable after Parley's bounded ordinary handoff journal prunes an old record.",
-                        "Deleting a chain removes only that curated copy. It never deletes the broker handoff, changes terminal state or interrupts a pane.",
+                        "Tools → Task Manager shows Parley's application process and only the processes attributed to live Ghostty panes. It groups resource use by program, workspace and pane; it is not a system-wide Activity Monitor.",
+                        "CPU is calculated from two consecutive samples, so the first sample truthfully shows an unavailable value. App RSS and Pane RSS are separate because summing resident memory can count shared pages more than once.",
+                        "Process rows are read-only. Focus, diagnostic copy, Control-C, restart and close operate on the owning pane; interruption, restart and close keep their normal confirmations.",
                     ]
                 ),
             ]
@@ -926,7 +941,7 @@ public enum ParleyHelpGuide {
                     title: "Find a command or record",
                     items: [
                         "Use the command palette to search actions, workspaces, panes and the durable local record.",
-                        "Use Status Center for the complete handoff chain and safe recovery controls.",
+                        "Use Status Center for complete handoff history and safe recovery controls.",
                         "Use Export Diagnostics when the UI cannot explain a repeated core or delivery failure.",
                     ]
                 ),

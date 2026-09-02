@@ -1,17 +1,42 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
-const CONTRACT_VERSION = 1
+const CONTRACT_VERSION = 2
 const MAXIMUM_MANIFEST_BYTES = 200_000
 const MAXIMUM_ITEMS = 16
-const IMPORT_KINDS = new Set(['selection', 'currentFile', 'diagnostics', 'gitDiff'])
+const IMPORT_KINDS = new Set([
+  'selection',
+  'currentFile',
+  'diagnostics',
+  'gitDiff',
+  'gitWorkingDiff',
+  'gitStagedDiff',
+])
+const BRIDGE_CAPABILITIES_VERSION = 1
+const ACKNOWLEDGEMENT_VERSION = 1
+const MAXIMUM_CAPABILITIES_BYTES = 16_000
+const MAXIMUM_ACKNOWLEDGEMENT_BYTES = 4_096
+const MAXIMUM_CAPABILITIES_AGE_MS = 30_000
+const REQUEST_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/
+const DURABLE_WORKSPACE_ID = /^(?:workspace-[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}|@[0-9]{1,15})$/
+const ACKNOWLEDGEMENT_STATES = new Set(['accepted', 'rejected', 'expired'])
+const ACKNOWLEDGEMENT_CODES = new Set([
+  'invalidRequest',
+  'unsupportedVersion',
+  'invalidSource',
+  'contextUnavailable',
+  'noReadyAgent',
+  'declinedReplacement',
+  'requestExpired',
+  'internalError',
+])
 const ATTENTION_SNAPSHOT_VERSION = 1
 const MAXIMUM_ATTENTION_BYTES = 128_000
 const MAXIMUM_ATTENTION_AGE_MS = 30_000
 const AGENT_KINDS = new Set(['claude', 'codex', 'agy', 'copilot'])
 const ATTENTION_REASONS = new Set(['returnedResult', 'humanInputRequired', 'interrupted'])
 const PANE_ID = /^%[0-9]{1,15}$/
-const WORKSPACE_ID = /^@[0-9]{1,15}$/
+const WORKSPACE_ID = DURABLE_WORKSPACE_ID
 const HANDOFF_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/
 
 function assertLocalDesktopRuntime({ platform, remoteName, web = false }) {
@@ -51,12 +76,66 @@ function buildManifest(folder, items) {
 
 function cleanItem(item) {
   if (!item || !IMPORT_KINDS.has(item.kind)) throw new Error('Unsupported Parley editor context source.')
-  const clean = { kind: item.kind }
-  if (item.file !== undefined) clean.file = boundedString(item.file, 'file', 4_096)
-  if (item.startLine !== undefined) clean.startLine = positiveInteger(item.startLine, 'start line')
-  if (item.endLine !== undefined) clean.endLine = positiveInteger(item.endLine, 'end line')
-  if (item.text !== undefined) clean.text = boundedString(item.text, 'text', MAXIMUM_MANIFEST_BYTES)
-  return clean
+  switch (item.kind) {
+  case 'selection': {
+    exactObject(item, ['kind', 'file', 'startLine', 'endLine', 'text'], 'editor context selection')
+    const startLine = positiveInteger(item.startLine, 'start line')
+    const endLine = positiveInteger(item.endLine, 'end line')
+    if (endLine < startLine) throw new Error('Invalid editor context line range.')
+    return {
+      kind: item.kind,
+      file: relativeFileString(item.file),
+      startLine,
+      endLine,
+      text: boundedString(item.text, 'text', MAXIMUM_MANIFEST_BYTES),
+    }
+  }
+  case 'currentFile':
+    exactObject(item, ['kind', 'file'], 'editor context file')
+    return { kind: item.kind, file: relativeFileString(item.file) }
+  case 'diagnostics':
+    exactObject(item, ['kind', 'file', 'text'], 'editor context diagnostics')
+    return {
+      kind: item.kind,
+      file: relativeFileString(item.file),
+      text: boundedString(item.text, 'text', MAXIMUM_MANIFEST_BYTES),
+    }
+  case 'gitDiff':
+    exactObject(item, ['kind'], 'editor context Git diff')
+    return { kind: item.kind }
+  case 'gitWorkingDiff':
+  case 'gitStagedDiff': {
+    const keys = item.file === undefined ? ['kind'] : ['kind', 'file']
+    exactObject(item, keys, 'editor context scoped Git diff')
+    return item.file === undefined
+      ? { kind: item.kind }
+      : { kind: item.kind, file: relativeFileString(item.file) }
+  }
+  default:
+    throw new Error('Unsupported Parley editor context source.')
+  }
+}
+
+function relativeFileString(value) {
+  const file = boundedString(value, 'file', 4_096)
+  if (!file || path.isAbsolute(file) || file.split('/').some((component) => component === '..')) {
+    throw new Error('Invalid editor context file.')
+  }
+  return file
+}
+
+function buildSelectionItems(relativeFile, selections) {
+  const file = relativeFileString(relativeFile)
+  if (!Array.isArray(selections)) throw new Error('Invalid editor selections.')
+  return selections
+    .filter((selection) => typeof selection?.text === 'string' && selection.text.trim())
+    .map((selection) => cleanItem({
+      kind: 'selection',
+      file,
+      startLine: selection.startLine,
+      endLine: selection.endLine,
+      text: selection.text,
+    }))
 }
 
 function boundedString(value, label, maximumBytes) {
@@ -101,7 +180,7 @@ function stageManifest(manifest, { home, randomUUID }) {
   }
   fs.chmodSync(inbox, 0o700)
   const identifier = String(randomUUID()).toLowerCase()
-  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(identifier)) {
+  if (!REQUEST_ID.test(identifier)) {
     throw new Error('Parley could not create a context import identifier.')
   }
   const file = path.join(inbox, `${identifier}.parleycontext`)
@@ -111,7 +190,180 @@ function stageManifest(manifest, { home, randomUUID }) {
   }
   fs.writeFileSync(file, data, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
   fs.chmodSync(file, 0o600)
-  return file
+  return {
+    requestID: identifier,
+    file,
+    acknowledgementFile: path.join(
+      home,
+      'Library',
+      'Application Support',
+      'Parley Native',
+      'external-context-outbox',
+      `${identifier}.json`,
+    ),
+  }
+}
+
+function parseBridgeCapabilities(value, { now = new Date() } = {}) {
+  exactObject(value, ['version', 'generatedAt', 'contextImport'], 'editor bridge capabilities')
+  if (value.version !== BRIDGE_CAPABILITIES_VERSION) {
+    throw new Error('Unsupported Parley editor bridge capabilities version.')
+  }
+  const generatedAt = currentTimestamp(value.generatedAt, now, 'editor bridge capabilities')
+  exactObject(
+    value.contextImport,
+    [
+      'versions',
+      'kinds',
+      'maximumManifestBytes',
+      'maximumItems',
+      'acknowledgementVersion',
+      'requestLifetimeSeconds',
+    ],
+    'editor context capabilities',
+  )
+  if (!Array.isArray(value.contextImport.versions) || value.contextImport.versions.length === 0 || value.contextImport.versions.length > 8) {
+    throw new Error('Invalid Parley editor context contract versions.')
+  }
+  const versions = value.contextImport.versions.map((version) => positiveInteger(version, 'contract version'))
+  if (new Set(versions).size !== versions.length) throw new Error('Invalid Parley editor context contract versions.')
+  if (!Array.isArray(value.contextImport.kinds) || value.contextImport.kinds.length === 0 || value.contextImport.kinds.length > 32) {
+    throw new Error('Invalid Parley editor context source capabilities.')
+  }
+  const kinds = value.contextImport.kinds.map((kind) => boundedString(kind, 'source capability', 64))
+  if (new Set(kinds).size !== kinds.length) throw new Error('Invalid Parley editor context source capabilities.')
+  const maximumManifestBytes = positiveInteger(value.contextImport.maximumManifestBytes, 'maximum manifest bytes')
+  const maximumItems = positiveInteger(value.contextImport.maximumItems, 'maximum items')
+  const acknowledgementVersion = positiveInteger(value.contextImport.acknowledgementVersion, 'acknowledgement version')
+  const requestLifetimeSeconds = positiveInteger(value.contextImport.requestLifetimeSeconds, 'request lifetime')
+  if (maximumManifestBytes > MAXIMUM_MANIFEST_BYTES || maximumItems > MAXIMUM_ITEMS || requestLifetimeSeconds > 3_600) {
+    throw new Error('Invalid Parley editor context capability bounds.')
+  }
+  return {
+    version: value.version,
+    generatedAt,
+    contextImport: {
+      versions,
+      kinds,
+      maximumManifestBytes,
+      maximumItems,
+      acknowledgementVersion,
+      requestLifetimeSeconds,
+    },
+  }
+}
+
+function assertCompatibleCapabilities(capabilities, items) {
+  if (!capabilities?.contextImport?.versions?.includes(CONTRACT_VERSION)) {
+    throw new Error(`The installed Parley app does not support editor context contract version ${CONTRACT_VERSION}. Update Parley and the companion together.`)
+  }
+  if (capabilities.contextImport.acknowledgementVersion !== ACKNOWLEDGEMENT_VERSION) {
+    throw new Error('The installed Parley app uses an incompatible context acknowledgement contract. Update Parley and the companion together.')
+  }
+  const unsupported = (items || []).find((item) => !capabilities.contextImport.kinds.includes(item.kind))
+  if (unsupported) {
+    throw new Error(`The installed Parley app does not support the ${unsupported.kind} editor source.`)
+  }
+  if ((items || []).length > capabilities.contextImport.maximumItems) {
+    throw new Error(`The installed Parley app accepts at most ${capabilities.contextImport.maximumItems} editor sources.`)
+  }
+}
+
+function readBridgeCapabilities({ home, now = new Date() }) {
+  const application = applicationDirectory(home)
+  const file = path.join(application, 'external-editor-capabilities.json')
+  if (!fs.existsSync(file)) return null
+  const value = readPrivateJSON({ application, file, maximumBytes: MAXIMUM_CAPABILITIES_BYTES, label: 'editor bridge capabilities' })
+  return parseBridgeCapabilities(value, { now })
+}
+
+function parseAcknowledgement(value, { requestID }) {
+  const expectedID = matchingString(String(requestID).toLowerCase(), REQUEST_ID, 'context request id')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid Parley context acknowledgement.')
+  }
+  const state = boundedString(value.state, 'acknowledgement state', 32)
+  if (!ACKNOWLEDGEMENT_STATES.has(state)) throw new Error('Invalid Parley context acknowledgement state.')
+  const accepted = state === 'accepted'
+  exactObject(
+    value,
+    accepted
+      ? ['version', 'requestID', 'state', 'acknowledgedAt', 'workspaceID', 'sourceCount']
+      : ['version', 'requestID', 'state', 'acknowledgedAt', 'code', 'message'],
+    'context acknowledgement',
+  )
+  if (value.version !== ACKNOWLEDGEMENT_VERSION) throw new Error('Unsupported Parley context acknowledgement version.')
+  const actualID = matchingString(value.requestID, REQUEST_ID, 'context request id')
+  if (actualID !== expectedID) throw new Error('Parley returned an acknowledgement for a different request.')
+  const acknowledgedAt = validTimestamp(value.acknowledgedAt, 'context acknowledgement')
+  if (accepted) {
+    return {
+      version: value.version,
+      requestID: actualID,
+      state,
+      acknowledgedAt,
+      workspaceID: matchingString(value.workspaceID, DURABLE_WORKSPACE_ID, 'workspace id'),
+      sourceCount: boundedCount(value.sourceCount, 'source count', MAXIMUM_ITEMS),
+    }
+  }
+  const code = boundedString(value.code, 'acknowledgement code', 64)
+  if (!ACKNOWLEDGEMENT_CODES.has(code)) throw new Error('Invalid Parley context acknowledgement code.')
+  return {
+    version: value.version,
+    requestID: actualID,
+    state,
+    acknowledgedAt,
+    code,
+    message: singleLine(value.message, 'acknowledgement message', 512),
+  }
+}
+
+function consumeAcknowledgement({ home, requestID }) {
+  const identifier = matchingString(String(requestID).toLowerCase(), REQUEST_ID, 'context request id')
+  const application = applicationDirectory(home)
+  const outbox = path.join(application, 'external-context-outbox')
+  const file = path.join(outbox, `${identifier}.json`)
+  if (!fs.existsSync(file)) return null
+  requirePrivatePath(application, true, 'Parley application directory')
+  requirePrivatePath(outbox, true, 'Parley context outbox')
+  const value = readPrivateJSON({ application, file, maximumBytes: MAXIMUM_ACKNOWLEDGEMENT_BYTES, label: 'context acknowledgement' })
+  const acknowledgement = parseAcknowledgement(value, { requestID: identifier })
+  fs.rmSync(file, { force: true })
+  return acknowledgement
+}
+
+function applicationDirectory(home) {
+  if (!path.isAbsolute(home)) throw new Error('Parley could not resolve the local home directory.')
+  return path.join(home, 'Library', 'Application Support', 'Parley Native')
+}
+
+function readPrivateJSON({ application, file, maximumBytes, label }) {
+  requirePrivatePath(application, true, 'Parley application directory')
+  requirePrivatePath(file, false, `Parley ${label}`)
+  const size = fs.statSync(file).size
+  if (size <= 0 || size > maximumBytes) throw new Error(`The Parley ${label} is too large.`)
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch {
+    throw new Error(`The Parley ${label} is malformed.`)
+  }
+}
+
+function currentTimestamp(value, now, label) {
+  const timestamp = validTimestamp(value, label)
+  const generatedTime = Date.parse(timestamp)
+  const nowTime = now instanceof Date ? now.getTime() : NaN
+  if (!Number.isFinite(nowTime)) throw new Error(`Invalid Parley ${label} timestamp.`)
+  const age = nowTime - generatedTime
+  if (age > MAXIMUM_CAPABILITIES_AGE_MS) throw new Error(`The Parley ${label} is stale.`)
+  if (age < -5_000) throw new Error(`The Parley ${label} timestamp is in the future.`)
+  return timestamp
+}
+
+function validTimestamp(value, label) {
+  const timestamp = boundedString(value, `${label} timestamp`, 64)
+  if (!Number.isFinite(Date.parse(timestamp))) throw new Error(`Invalid Parley ${label} timestamp.`)
+  return timestamp
 }
 
 function parseAttentionSnapshot(value, { now = new Date() } = {}) {
@@ -225,22 +477,30 @@ function matchingString(value, pattern, label) {
   return bounded
 }
 
-function singleLine(value, label) {
-  const bounded = boundedString(value, label, 256)
+function singleLine(value, label, maximumBytes = 256) {
+  const bounded = boundedString(value, label, maximumBytes)
   if (!bounded.trim() || /[\r\n\t]/.test(bounded)) throw new Error(`Invalid Parley ${label}.`)
   return bounded
 }
 
 module.exports = {
+  ACKNOWLEDGEMENT_VERSION,
   ATTENTION_SNAPSHOT_VERSION,
+  BRIDGE_CAPABILITIES_VERSION,
   CONTRACT_VERSION,
   MAXIMUM_MANIFEST_BYTES,
   assertLocalDesktopRuntime,
+  assertCompatibleCapabilities,
+  buildSelectionItems,
   buildManifest,
+  consumeAcknowledgement,
   formatDiagnostics,
+  parseAcknowledgement,
   parseAttentionSnapshot,
+  parseBridgeCapabilities,
   parleyFocusURL,
   readAttentionSnapshot,
+  readBridgeCapabilities,
   relativeWorkspaceFile,
   stageManifest,
 }

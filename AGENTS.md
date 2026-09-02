@@ -249,6 +249,21 @@ choose a vendor, start an agent or inject terminal input.
 VS Code context import consumes one bounded mode-0600 `.parleycontext` manifest
 from Production's private inbox and deletes it after one read. It names one
 workspace and explicit sources only. Imports always stop at editable preview.
+Production publishes a content-free, heartbeat-bound capability contract before
+the companion may stage a request. Parley then writes one bounded correlated
+accepted, rejected or expired acknowledgement to its fixed private outbox. The
+companion must not treat LaunchServices success as preview acceptance. Neither
+surface may contain source text, folders, prompts, results, credentials or
+replayable delivery authority.
+
+The companion's Collaboration views may render only the content-free attention
+snapshot. Exact pane and handoff navigation remains bounded to one opaque live
+id. Its Context Basket is process-memory-only, scoped by canonical local folder
+and validated as one bounded manifest before mutation. It may hold explicit
+selection or diagnostic text only until that VS Code window closes or the
+person clears it; never persist basket contents. Review always stops at the
+native editable preview, and clear automatically only after Parley returns the
+matching accepted acknowledgement.
 
 Production alone publishes a bounded, content-free attention snapshot with a
 10-second heartbeat. It may contain labels, counts and opaque ids, never

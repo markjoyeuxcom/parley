@@ -1,7 +1,7 @@
 {
   "name": "parley-companion",
   "displayName": "Parley Companion",
-  "description": "Open local workspaces and explicit editor context in Parley's supervised cross-vendor preview.",
+  "description": "Collect explicit editor context and navigate Parley's supervised cross-vendor collaboration.",
   "version": "0.1.0",
   "publisher": "markjoyeuxcom",
   "license": "Apache-2.0",
@@ -21,18 +21,20 @@
   ],
   "main": "./extension.cjs",
   "scripts": {
-    "test": "node --test test/contracts.test.cjs && node --check extension.cjs",
+    "test": "node --test test/contracts.test.cjs test/context-basket.test.cjs test/extension-host.test.cjs && node --check extension.cjs && node --check companion-model.cjs",
     "package": "vsce package --out ../dist/Parley-Companion-0.1.0.vsix"
   },
   "activationEvents": [
     "onStartupFinished",
+    "onView:parley.attention",
+    "onView:parley.workspaces",
+    "onView:parley.contextBasket",
     "onCommand:parley.openWorkspace",
     "onCommand:parley.showAttention",
-    "onCommand:parley.stageSelection",
-    "onCommand:parley.stageCurrentFile",
-    "onCommand:parley.stageDiagnostics",
-    "onCommand:parley.stageGitDiff",
-    "onCommand:parley.stageSelectionAndGitDiff"
+    "onCommand:parley.buildContextPack",
+    "onCommand:parley.buildWorkingTreeContext",
+    "onCommand:parley.buildStagedContext",
+    "onCommand:parley.diagnoseCompanion"
   ],
   "contributes": {
     "commands": [
@@ -45,62 +47,292 @@
         "title": "Parley: Show Attention and Panes"
       },
       {
-        "command": "parley.stageSelection",
-        "title": "Parley: Open Selection in Context Preview"
+        "command": "parley.buildContextPack",
+        "title": "Parley: Build Context Pack…"
       },
       {
-        "command": "parley.stageCurrentFile",
-        "title": "Parley: Open Current File in Context Preview"
+        "command": "parley.buildWorkingTreeContext",
+        "title": "Parley: Build Context Pack from Working Change…"
       },
       {
-        "command": "parley.stageDiagnostics",
-        "title": "Parley: Open Current File Diagnostics in Context Preview"
+        "command": "parley.buildStagedContext",
+        "title": "Parley: Build Context Pack from Staged Change…"
       },
       {
-        "command": "parley.stageGitDiff",
-        "title": "Parley: Open Git Diff in Context Preview"
+        "command": "parley.diagnoseCompanion",
+        "title": "Parley: Diagnose Companion"
       },
       {
-        "command": "parley.stageSelectionAndGitDiff",
-        "title": "Parley: Open Selection and Git Diff in Context Preview"
+        "command": "parley.openCollaboration",
+        "title": "Parley: Open Collaboration View",
+        "icon": "$(organization)"
+      },
+      {
+        "command": "parley.openApplication",
+        "title": "Parley: Open Production App",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "parley.refreshCollaboration",
+        "title": "Refresh Parley Collaboration",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "parley.focusPane",
+        "title": "Focus Pane in Parley",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "parley.openHandoff",
+        "title": "Open Handoff in Parley",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "parley.addSelectionToBasket",
+        "title": "Parley: Add Selection to Context Basket"
+      },
+      {
+        "command": "parley.addFilesToBasket",
+        "title": "Parley: Add File to Context Basket"
+      },
+      {
+        "command": "parley.addDiagnosticsToBasket",
+        "title": "Parley: Add Diagnostics to Context Basket"
+      },
+      {
+        "command": "parley.addWorkingChangeToBasket",
+        "title": "Add Working Change to Parley Context Basket"
+      },
+      {
+        "command": "parley.addStagedChangeToBasket",
+        "title": "Add Staged Change to Parley Context Basket"
+      },
+      {
+        "command": "parley.reviewContextBasket",
+        "title": "Parley: Review Context Basket…",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "parley.clearContextBasket",
+        "title": "Parley: Clear Context Basket",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "parley.removeContextBasketItem",
+        "title": "Remove from Context Basket",
+        "icon": "$(close)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "parley",
+          "title": "Parley",
+          "icon": "media/parley.svg"
+        }
+      ]
+    },
+    "views": {
+      "parley": [
+        {
+          "id": "parley.attention",
+          "name": "Attention",
+          "icon": "media/attention.svg",
+          "contextualTitle": "Parley Attention"
+        },
+        {
+          "id": "parley.workspaces",
+          "name": "Workspaces and Panes",
+          "icon": "media/workspaces.svg",
+          "contextualTitle": "Parley Workspaces"
+        },
+        {
+          "id": "parley.contextBasket",
+          "name": "Context Basket",
+          "icon": "media/context.svg",
+          "contextualTitle": "Parley Context Basket"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "parley.attention",
+        "contents": "No current Parley attention items.\n[Open Parley](command:parley.openApplication)"
+      },
+      {
+        "view": "parley.workspaces",
+        "contents": "Open the installed Production app to see its content-free workspace and live-pane snapshot.\n[Open Parley](command:parley.openApplication)"
+      },
+      {
+        "view": "parley.contextBasket",
+        "contents": "Collect explicit editor sources here, then open one editable Parley preview. Basket contents stay only in this VS Code window.\n[Build Context Pack](command:parley.buildContextPack)"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "command": "parley.stageSelection",
-          "when": "editorHasSelection && resourceScheme == file",
+          "command": "parley.buildContextPack",
+          "when": "resourceScheme == file",
           "group": "parley@1"
         },
         {
-          "command": "parley.stageSelectionAndGitDiff",
+          "command": "parley.addSelectionToBasket",
           "when": "editorHasSelection && resourceScheme == file",
           "group": "parley@2"
         },
         {
-          "command": "parley.stageCurrentFile",
+          "command": "parley.addFilesToBasket",
           "when": "resourceScheme == file",
           "group": "parley@3"
         },
         {
-          "command": "parley.stageDiagnostics",
+          "command": "parley.addDiagnosticsToBasket",
           "when": "resourceScheme == file",
           "group": "parley@4"
         }
       ],
       "explorer/context": [
         {
-          "command": "parley.stageCurrentFile",
+          "command": "parley.buildContextPack",
           "when": "resourceScheme == file && !explorerResourceIsFolder",
           "group": "parley@1"
         },
         {
+          "command": "parley.addFilesToBasket",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "parley@2"
+        },
+        {
           "command": "parley.openWorkspace",
           "when": "resourceScheme == file",
+          "group": "parley@3"
+        }
+      ],
+      "scm/resourceState/context": [
+        {
+          "command": "parley.buildWorkingTreeContext",
+          "when": "scmProvider == git && scmResourceGroup == workingTree",
+          "group": "parley@1"
+        },
+        {
+          "command": "parley.buildStagedContext",
+          "when": "scmProvider == git && scmResourceGroup == index",
+          "group": "parley@1"
+        },
+        {
+          "command": "parley.addWorkingChangeToBasket",
+          "when": "scmProvider == git && scmResourceGroup == workingTree",
+          "group": "parley@2"
+        },
+        {
+          "command": "parley.addStagedChangeToBasket",
+          "when": "scmProvider == git && scmResourceGroup == index",
           "group": "parley@2"
         }
+      ],
+      "view/title": [
+        {
+          "command": "parley.openApplication",
+          "when": "view == parley.attention || view == parley.workspaces",
+          "group": "navigation@1"
+        },
+        {
+          "command": "parley.refreshCollaboration",
+          "when": "view == parley.attention || view == parley.workspaces",
+          "group": "navigation@2"
+        },
+        {
+          "command": "parley.reviewContextBasket",
+          "when": "view == parley.contextBasket && parley.contextBasketHasItems",
+          "group": "navigation@1"
+        },
+        {
+          "command": "parley.clearContextBasket",
+          "when": "view == parley.contextBasket && parley.contextBasketHasItems",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "parley.focusPane",
+          "when": "viewItem == parleyPane",
+          "group": "inline"
+        },
+        {
+          "command": "parley.openHandoff",
+          "when": "viewItem == parleyAttention",
+          "group": "inline"
+        },
+        {
+          "command": "parley.removeContextBasketItem",
+          "when": "viewItem == parleyBasketItem",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "parley.buildWorkingTreeContext",
+          "when": "false"
+        },
+        {
+          "command": "parley.buildStagedContext",
+          "when": "false"
+        },
+        {
+          "command": "parley.focusPane",
+          "when": "false"
+        },
+        {
+          "command": "parley.openHandoff",
+          "when": "false"
+        },
+        {
+          "command": "parley.addWorkingChangeToBasket",
+          "when": "false"
+        },
+        {
+          "command": "parley.addStagedChangeToBasket",
+          "when": "false"
+        },
+        {
+          "command": "parley.removeContextBasketItem",
+          "when": "false"
+        }
       ]
-    }
+    },
+    "walkthroughs": [
+      {
+        "id": "parley.gettingStarted",
+        "title": "Coordinate AI CLIs with Parley",
+        "description": "Connect VS Code to the installed Production app without moving vendor sessions or approval flows into the editor.",
+        "steps": [
+          {
+            "id": "parley.checkBridge",
+            "title": "Verify the local bridge",
+            "description": "Run [Parley: Diagnose Companion](command:parley.diagnoseCompanion) to verify the installed app, compatible preview contract and current heartbeat.",
+            "completionEvents": [
+              "onCommand:parley.diagnoseCompanion"
+            ]
+          },
+          {
+            "id": "parley.openCollaboration",
+            "title": "See collaboration state",
+            "description": "Open the [Parley Collaboration view](command:parley.openCollaboration) for content-free attention, workspaces and exact live-pane navigation.",
+            "completionEvents": [
+              "onCommand:parley.openCollaboration"
+            ]
+          },
+          {
+            "id": "parley.buildContext",
+            "title": "Build reviewed context",
+            "description": "Use [Build Context Pack](command:parley.buildContextPack) for one immediate preview, or collect explicit sources in the in-memory Context Basket first.",
+            "completionEvents": [
+              "onCommand:parley.buildContextPack"
+            ]
+          }
+        ]
+      }
+    ]
   },
   "devDependencies": {
     "@vscode/vsce": "3.9.2"

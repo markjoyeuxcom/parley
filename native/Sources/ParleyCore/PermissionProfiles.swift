@@ -133,6 +133,20 @@ public struct PermissionProfileDefinition: Identifiable, Codable, Equatable, Sen
             ])
         ),
         PermissionProfileDefinition(
+            id: "workspace-folders",
+            name: "Workspace folders",
+            summary: "Project reads, writes, tests and builds across exact folders chosen from this workspace.",
+            isBuiltIn: true,
+            rootMode: .exactApprovedRoots,
+            defaultLifetime: .session,
+            rules: completeRules([
+                .projectRead: .allow,
+                .repositoryInspection: .allow,
+                .projectWrite: .allow,
+                .projectToolExecution: .allow,
+            ])
+        ),
+        PermissionProfileDefinition(
             id: "broad-workspace",
             name: "Broad workspace",
             summary: "Broad local work inside exact approved roots; external and consequential actions remain explicit.",
@@ -185,6 +199,77 @@ public struct PermissionProfileSelection: Codable, Equatable, Sendable {
             return nil
         }
         self = decoded
+    }
+}
+
+public struct WorkspaceFolderAccessOption: Identifiable, Equatable, Sendable {
+    public let path: String
+    public let isPaneFolder: Bool
+    public let isApproved: Bool
+
+    public var id: String { path }
+
+    public init(path: String, isPaneFolder: Bool, isApproved: Bool) {
+        self.path = path
+        self.isPaneFolder = isPaneFolder
+        self.isApproved = isApproved
+    }
+}
+
+public struct WorkspaceFolderAccessSnapshot: Equatable, Sendable {
+    public let workspaceFolders: [WorkspaceFolderAccessOption]
+    public let otherApprovedRoots: [String]
+
+    public init(workspaceFolders: [WorkspaceFolderAccessOption], otherApprovedRoots: [String]) {
+        self.workspaceFolders = workspaceFolders
+        self.otherApprovedRoots = otherApprovedRoots
+    }
+}
+
+/// Projects a pane's reviewed permission roots onto the workspace's current
+/// attachment list. Attachments are descriptive until their exact paths occur
+/// in the pane selection; manually chosen roots remain visible separately.
+public enum WorkspaceFolderAccessProjection {
+    public static func project(
+        paneFolder: String,
+        workspaceFolders: [String],
+        approvedRoots: [String]
+    ) -> WorkspaceFolderAccessSnapshot {
+        let normalizedPaneFolder = WorkspaceFolderIdentity.normalized(paneFolder)
+        let normalizedApprovedRoots = normalizedUnique(approvedRoots)
+        let normalizedWorkspaceFolders = normalizedUnique(workspaceFolders)
+
+        let options = normalizedWorkspaceFolders.map { folder in
+            let isPaneFolder = WorkspaceFolderIdentity.matches(folder, normalizedPaneFolder)
+            return WorkspaceFolderAccessOption(
+                path: folder,
+                isPaneFolder: isPaneFolder,
+                isApproved: isPaneFolder || normalizedApprovedRoots.contains {
+                    WorkspaceFolderIdentity.matches($0, folder)
+                }
+            )
+        }
+        let otherRoots = normalizedApprovedRoots.filter { root in
+            !WorkspaceFolderIdentity.matches(root, normalizedPaneFolder)
+                && !normalizedWorkspaceFolders.contains {
+                    WorkspaceFolderIdentity.matches($0, root)
+                }
+        }
+        return WorkspaceFolderAccessSnapshot(
+            workspaceFolders: options,
+            otherApprovedRoots: otherRoots
+        )
+    }
+
+    private static func normalizedUnique(_ folders: [String]) -> [String] {
+        var seen: Set<String> = []
+        return folders.compactMap { folder in
+            guard folder.hasPrefix("/") else { return nil }
+            let normalized = WorkspaceFolderIdentity.normalized(folder)
+            let key = WorkspaceFolderIdentity.matchingKey(normalized)
+            guard seen.insert(key).inserted else { return nil }
+            return normalized
+        }
     }
 }
 
