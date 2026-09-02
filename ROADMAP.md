@@ -158,24 +158,42 @@ opportunities in priority order. They remain subject to the product boundary:
 each must improve visible, safe or recoverable cross-vendor coordination
 without replacing vendor-owned reasoning or terminal workflows.
 
-1. [ ] **Two-keystroke selection relay** — Open the existing reviewed composer
-   with the current Ghostty selection and last explicit target, then require a
-   second confirmation to submit. Keep the target name and vendor prominent and
-   never auto-submit. **Effort:** small.
-2. [ ] **Detached Ask recovery and Delegate steering** — Print an Ask handoff
+1. [x] **Two-keystroke selection relay** — Command-Shift-A opens the active
+   pane's exact Ghostty selection in the existing reviewed Ask composer using
+   that source pane's last explicit eligible target. The source, target and both
+   vendors remain prominent; Command-Return is a separate confirmation and
+   nothing auto-submits. Target memory is bounded, source-specific and
+   session-local. **Effort:** small.
+2. [x] **Detached Ask recovery and Delegate steering** — Print an Ask handoff
    id at submission, allow `parley wait <id>` to recover its durable completed
    answer for the original source credential generation, and guide work likely
    to exceed one minute toward Delegate. **Effort:** small.
-3. [ ] **Pane attention ring and jump-to-attention shortcut** — Highlight
+   Protocol v12 now prints the accepted Ask id once on stderr while preserving
+   stdout for the exact answer. Explicit Wait accepts Ask or Delegate ids,
+   enforces the original source pane launch generation and reloads completed
+   answers from the durable handoff journal. `current` remains delegation-only,
+   and shared guidance directs work likely to exceed one minute to Delegate.
+3. [x] **Pane attention ring and jump-to-attention shortcut** — Highlight
    authoritative permission requests, returned results and interrupted
    handoffs, then cycle those items through the existing attention model. Show
    signal age so stale hook state is never presented as current fact.
    **Effort:** small to medium.
-4. [ ] **Explicit restart and vendor-owned resume** — Offer Restart and Resume
+   Pane leaves now use an orange permission, accent result or red interrupted
+   outer ring while a separately inset accent line preserves selected-pane
+   identity. Headers show a live age; official hook state says **PERMISSION
+   REPORTED** rather than claiming the prompt is still waiting. Command-Shift-J
+   cycles newest-first, focusing a live permission pane or opening the exact
+   durable result/interruption in Status Center.
+4. [x] **Explicit restart and vendor-owned resume** — Offer Restart and Resume
    per pane using only a vendor's documented continuation mechanism, with plain
    restart as fallback. State clearly that the vendor decides whether its
    conversation can resume; Parley never claims the session survived.
    **Effort:** small to medium.
+   Agent menus now separate fresh Start/Restart from Resume. Claude, Codex and
+   Copilot open their vendor-owned pickers; Agy attempts its documented most
+   recent conversation in the pane working directory. Every Resume retains the
+   pane folder, repeats permission review and is launch-generation scoped.
+   Status Center records **RESUME REQUESTED** rather than claiming restoration.
 5. [ ] **Signal provenance and age in the composer** — Show which authenticated
    pane hook capability reported the advisory state and when, without using it
    as a delivery refusal or inferring readiness. **Effort:** small.

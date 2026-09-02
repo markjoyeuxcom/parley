@@ -260,6 +260,7 @@ public enum DiagnosticsReportBuilder {
                         && event.occurredAt >= handoff.updatedAt
                         && (
                             event.kind == .paneRestarted
+                                || event.kind == .paneResumeRequested
                                 || event.kind == .vendorSessionStarted
                         )
                 }

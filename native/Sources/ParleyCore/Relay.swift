@@ -354,6 +354,7 @@ public enum RelayTransitionOrigin: String, Codable, Equatable, Sendable {
 
 public enum RelayActivityEventKind: String, Codable, Equatable, Sendable {
     case paneRestarted
+    case paneResumeRequested
     case paneReaped
     case workspaceCreated
     case workspaceClosed
@@ -475,6 +476,7 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
     public let kind: RelayHandoffKind
     public let sourcePaneID: String
     public let sourceName: String
+    public let sourceLaunchGeneration: Int?
     public let sourceKind: PaneKind?
     public let sourceWorkspaceID: String
     public let sourceWorkspaceName: String?
@@ -1061,7 +1063,8 @@ public final class RelayBroker: @unchecked Sendable {
         draftID: String,
         target requestedTarget: String,
         text: String,
-        idempotencyKey suppliedIdempotencyKey: String? = nil
+        idempotencyKey suppliedIdempotencyKey: String? = nil,
+        onAccepted: ((String) -> Void)? = nil
     ) -> RelayTextResponse {
 
         let sender: WorkbenchPane
@@ -1152,7 +1155,8 @@ public final class RelayBroker: @unchecked Sendable {
                 text: rendered,
                 idempotencyKey: idempotencyKey,
                 humanInitiated: true,
-                preserveFormatting: true
+                preserveFormatting: true,
+                onAccepted: onAccepted
             )
             finishContextReview(draftID, response: response)
             return response
@@ -1973,15 +1977,30 @@ public final class RelayBroker: @unchecked Sendable {
         return RelayTextResponse(status: 200, text: String(decoding: data, as: UTF8.self))
     }
 
+    /// Compatibility entry point retained for native callers. Agent transport
+    /// uses the broader tracked-work name because explicit ids may now name a
+    /// Delegate or a recoverable Ask.
     public func waitForDelegation(token: String, handoffID requestedHandoffID: String) -> RelayTextResponse {
-        guard let sourceID = credentials.paneID(for: token) else {
-            return RelayTextResponse(status: 401, text: "bad token")
+        waitForTrackedWork(token: token, handoffID: requestedHandoffID)
+    }
+
+    public func waitForTrackedWork(token: String, handoffID requestedHandoffID: String) -> RelayTextResponse {
+        let source: WorkbenchPane
+        do {
+            source = try authenticatedSender(token: token)
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
         }
 
         consultationCondition.lock()
         let handoffID: String
         if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
-            let matches = delegationRecords.keys.filter { handoffRecords[$0]?.sourcePaneID == sourceID }
+            let matches = delegationRecords.keys.filter {
+                handoffRecords[$0]?.sourcePaneID == source.id
+                    && handoffRecords[$0]?.sourceLaunchGeneration == source.launchGeneration
+            }
             guard matches.count == 1, let match = matches.first else {
                 consultationCondition.unlock()
                 return RelayTextResponse(
@@ -1995,24 +2014,42 @@ public final class RelayBroker: @unchecked Sendable {
         } else {
             handoffID = requestedHandoffID
         }
-        guard let original = handoffRecords[handoffID], original.kind == .delegate else {
+        guard let original = handoffRecords[handoffID],
+              original.kind == .ask || original.kind == .delegate else {
             consultationCondition.unlock()
-            return RelayTextResponse(status: 404, text: "unknown delegation")
+            return RelayTextResponse(status: 404, text: "unknown tracked Ask or delegation")
         }
-        guard original.sourcePaneID == sourceID else {
+        guard original.sourcePaneID == source.id else {
             consultationCondition.unlock()
-            return RelayTextResponse(status: 403, text: "only the initiating pane can wait for this delegation")
+            return RelayTextResponse(status: 403, text: "only the initiating pane can wait for this tracked work")
+        }
+        guard let originalGeneration = original.sourceLaunchGeneration else {
+            consultationCondition.unlock()
+            return RelayTextResponse(
+                status: 409,
+                text: "this tracked item predates generation-bound recovery and cannot be recovered by an agent"
+            )
+        }
+        guard originalGeneration == source.launchGeneration else {
+            consultationCondition.unlock()
+            return RelayTextResponse(
+                status: 409,
+                text: "this tracked item belongs to an earlier run of the initiating pane"
+            )
         }
         consultationCondition.unlock()
 
         while true {
-            reconcileDelegation(handoffID)
+            if original.kind == .delegate {
+                reconcileDelegation(handoffID)
+            }
             consultationCondition.lock()
             guard let handoff = handoffRecords[handoffID] else {
                 consultationCondition.unlock()
-                return RelayTextResponse(status: 404, text: "unknown delegation")
+                return RelayTextResponse(status: 404, text: "unknown tracked Ask or delegation")
             }
-            if let response = delegationResponses[handoffID] ?? delegationWaitResponse(for: handoff) {
+            let liveDelegationResponse = handoff.kind == .delegate ? delegationResponses[handoffID] : nil
+            if let response = liveDelegationResponse ?? trackedWaitResponse(for: handoff) {
                 consultationCondition.unlock()
                 return response
             }
@@ -2027,7 +2064,8 @@ public final class RelayBroker: @unchecked Sendable {
         token: String,
         target requestedTarget: String,
         text: String,
-        idempotencyKey suppliedIdempotencyKey: String? = nil
+        idempotencyKey suppliedIdempotencyKey: String? = nil,
+        onAccepted: ((String) -> Void)? = nil
     ) -> RelayTextResponse {
         handleAsk(
             token: token,
@@ -2036,7 +2074,8 @@ public final class RelayBroker: @unchecked Sendable {
             idempotencyKey: suppliedIdempotencyKey,
             humanInitiated: false,
             preserveFormatting: false,
-            transitionOrigin: nil
+            transitionOrigin: nil,
+            onAccepted: onAccepted
         )
     }
 
@@ -2050,7 +2089,8 @@ public final class RelayBroker: @unchecked Sendable {
         transitionOrigin: RelayTransitionOrigin? = nil,
         inReplyToHandoffID: String? = nil,
         relationship: RelayHandoffRelationship? = nil,
-        onSubmitted: (() -> Void)? = nil
+        onSubmitted: (() -> Void)? = nil,
+        onAccepted: ((String) -> Void)? = nil
     ) -> RelayTextResponse {
         let recordedOrigin = transitionOrigin ?? (humanInitiated ? .human : nil)
         let sender: WorkbenchPane
@@ -2105,6 +2145,7 @@ public final class RelayBroker: @unchecked Sendable {
             }
             let handoffID = existing.handoffID
             consultationCondition.unlock()
+            onAccepted?(handoffID)
             return waitForAskResponse(scope: scope, handoffID: handoffID, targetName: target.displayName)
         }
         if consultationRecords.values.contains(where: {
@@ -2171,6 +2212,7 @@ public final class RelayBroker: @unchecked Sendable {
             onSubmitted?()
             consultationCondition.broadcast()
             consultationCondition.unlock()
+            onAccepted?(handoff.id)
         } catch {
             let response = RelayTextResponse(
                 status: 409,
@@ -3522,14 +3564,20 @@ public final class RelayBroker: @unchecked Sendable {
         consultationCondition.broadcast()
     }
 
-    private func delegationWaitResponse(for handoff: RelayHandoff) -> RelayTextResponse? {
+    private func trackedWaitResponse(for handoff: RelayHandoff) -> RelayTextResponse? {
         switch handoff.state {
         case .completed:
-            return RelayTextResponse(status: 200, text: handoff.resultText ?? "Delegated work completed.")
+            let fallback = handoff.kind == .ask
+                ? "The Ask completed without a retained answer."
+                : "Delegated work completed."
+            return RelayTextResponse(status: 200, text: handoff.resultText ?? fallback)
         case .cancelled, .failed, .interrupted:
+            let fallback = handoff.kind == .ask
+                ? "The Ask ended without an answer."
+                : "Delegated work ended without a completion report."
             return RelayTextResponse(
                 status: 409,
-                text: handoff.resultText ?? handoff.transitions.last?.detail ?? "Delegated work ended without a completion report."
+                text: handoff.resultText ?? handoff.transitions.last?.detail ?? fallback
             )
         case .created, .delivered, .waiting, .answered:
             return nil
@@ -3578,6 +3626,7 @@ public final class RelayBroker: @unchecked Sendable {
             kind: kind,
             sourcePaneID: sender.id,
             sourceName: sender.displayName,
+            sourceLaunchGeneration: sender.launchGeneration,
             sourceKind: sender.kind,
             sourceWorkspaceID: sender.workspaceID,
             sourceWorkspaceName: sender.workspaceName,
@@ -4119,7 +4168,7 @@ public enum RelayShim {
         echo "  parley open <folder>             open or focus a workspace in the installed app" >&2
         echo "  parley relay <pane> [text...]   submit an attributed message" >&2
         echo "  parley paste <pane> [text...]   paste without sending" >&2
-        echo "  parley ask <pane> [question...] wait for its correlated answer" >&2
+        echo "  parley ask <pane> [question...] focused Ask; recovery id on stderr" >&2
         echo "  parley ask-many <a,b> [question...] ask explicit panes independently" >&2
         echo "  parley context draft --file <path> stage explicit context for review" >&2
         echo "  parley context discard <draft>     discard your staged context" >&2
@@ -4127,7 +4176,7 @@ public enum RelayShim {
         echo "  parley answer current [text...] answer this pane's waiting question" >&2
         echo "  parley delegate <pane> [task...] start tracked asynchronous work" >&2
         echo "  parley status                    list work initiated by this pane as JSON" >&2
-        echo "  parley wait <id|current>         wait for one delegated result" >&2
+        echo "  parley wait <id|current>         wait for an Ask or delegated result" >&2
         echo "  parley done current [report...]  complete this pane's delegated work" >&2
         echo "  parley fail current [reason...]  fail this pane's delegated work" >&2
         echo "  parley cancel <id|current>       cancel tracking for work this pane initiated" >&2
@@ -4190,7 +4239,7 @@ public enum RelayShim {
         "$inbox"/*|"$outbox"/*) ;;
         *) return 0 ;;
       esac
-      for field in command target item idempotency-key token body status ready; do
+      for field in command target item idempotency-key token body handoff-id accepted status ready; do
         /bin/rm -f "$directory/$field" 2>/dev/null || true
       done
       /bin/rmdir "$directory" 2>/dev/null || true
@@ -4222,8 +4271,25 @@ public enum RelayShim {
       /bin/cat > "$request_dir/body"
       /usr/bin/printf '%s' ready > "$request_dir/ready"
 
+      ask_id_reported=0
       checks=0
       while :; do
+        if [ "$ask_id_reported" -eq 0 ] \
+          && { [ "$command" = "ask" ] || [ "$command" = "context-ask" ]; } \
+          && protected_directory "$response_dir" \
+          && [ -f "$response_dir/accepted" ] && [ ! -L "$response_dir/accepted" ] \
+          && [ -f "$response_dir/handoff-id" ] && [ ! -L "$response_dir/handoff-id" ]; then
+          handoff_id="$(/bin/cat "$response_dir/handoff-id")"
+          case "$handoff_id" in
+            *[!a-f0-9-]*|"") ;;
+            *)
+              if [ "${#handoff_id}" -eq 36 ]; then
+                echo "Parley Ask ID: $handoff_id" >&2
+                ask_id_reported=1
+              fi
+              ;;
+          esac
+        fi
         if [ -f "$response_dir/ready" ] && [ ! -L "$response_dir" ] && [ ! -L "$response_dir/ready" ] \
           && [ -f "$response_dir/status" ] && [ ! -L "$response_dir/status" ] \
           && [ -f "$response_dir/body" ] && [ ! -L "$response_dir/body" ]; then

@@ -658,8 +658,17 @@ struct ContentView: View {
                 }
             }
         }
-        if pane.kind.isAgent && !pane.isStarted {
-            Button("Start") { model.start(pane) }
+        Divider()
+        if pane.kind.isAgent {
+            if !pane.isStarted {
+                Button("Start Fresh Session") { model.start(pane) }
+            }
+            if let plan = VendorResumeAdapter.plan(for: pane.kind) {
+                Button(plan.menuLabel) { model.resume(pane) }
+            }
+            if pane.isStarted {
+                Button("Restart Fresh Session…") { model.restart(pane) }
+            }
         } else {
             Button("Restart…") { model.restart(pane) }
         }
@@ -800,7 +809,9 @@ struct ContentView: View {
         }
         let lead = pane.isWorkspaceLead ? ", workspace lead" : ""
         let role = pane.role.map { ", routing role \($0)" } ?? ""
-        return "\(state)\(lead)\(role), \(folder)"
+        let attention = model.paneAttention(for: pane.id)
+            .map { ", \($0.accessibilityDescription())" } ?? ""
+        return "\(state)\(lead)\(role)\(attention), \(folder)"
     }
 
     @ViewBuilder
@@ -1017,6 +1028,16 @@ struct ContentView: View {
 
     private var askMenu: some View {
         Menu {
+            if let target = model.quickRelayTarget {
+                Section("Last Explicit Target") {
+                    Button("Ask \(target.displayName) · \(target.kind.label) with Selection…") {
+                        model.quickRelaySelection()
+                    }
+                    .disabled(!model.canQuickRelaySelection)
+                    .help("Command-Shift-A")
+                }
+                Divider()
+            }
             if model.askTargets.isEmpty {
                 Text("Focus an agent pane with another vendor open")
             } else {
@@ -1825,6 +1846,13 @@ struct ContentView: View {
         case .relayUnavailable: ("RELAY OFF", .orange)
         }
     }
+    private func paneAttentionColor(_ attention: PaneAttentionItem) -> Color {
+        switch attention.reason {
+        case .permissionRequest: .orange
+        case .returnedResult: .accentColor
+        case .interruptedHandoff: .red
+        }
+    }
 
     private func paneFocusColor(_ kind: PaneKind) -> Color {
         switch kind {
@@ -1837,11 +1865,15 @@ struct ContentView: View {
     }
 
     private func paneFocusHelp(_ pane: WorkbenchPane) -> String {
-        [
+        var details = [
             "Focus in the native pane layout",
             pane.cwd,
             "Drag to select and release to copy; scroll normally inside the vendor terminal",
-        ].joined(separator: "\n")
+        ]
+        if let attention = model.paneAttention(for: pane.id) {
+            details.insert(attention.accessibilityDescription(), at: 1)
+        }
+        return details.joined(separator: "\n")
     }
 
     @ViewBuilder
@@ -1897,6 +1929,7 @@ struct ContentView: View {
         if let paneSurface = model.nativePaneSurfaces.first(where: {
             $0.representativePaneID == representativePaneID
         }), let pane = model.visiblePanes.first(where: { $0.id == representativePaneID }) {
+            let attention = model.paneAttention(for: pane.id)
             VStack(spacing: 0) {
                 paneChromeHeader(pane)
                 nativeTerminalLeaf(paneSurface)
@@ -1905,17 +1938,31 @@ struct ContentView: View {
             .background(Color(nsColor: NSColor(white: 0.075, alpha: 1)))
             .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .strokeBorder(
-                        paneSurface.containsActivePane
-                            ? Color.accentColor
-                            : Color(nsColor: .separatorColor).opacity(0.9),
-                        lineWidth: paneSurface.containsActivePane ? 2 : 1
-                    )
+                if let attention {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .strokeBorder(paneAttentionColor(attention), lineWidth: 2)
+                        if paneSurface.containsActivePane {
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .strokeBorder(Color.accentColor, lineWidth: 1)
+                                .padding(3)
+                        }
+                    }
                     .allowsHitTesting(false)
+                } else {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .strokeBorder(
+                            paneSurface.containsActivePane
+                                ? Color.accentColor
+                                : Color(nsColor: .separatorColor).opacity(0.9),
+                            lineWidth: paneSurface.containsActivePane ? 2 : 1
+                        )
+                        .allowsHitTesting(false)
+                }
             }
             .shadow(
-                color: paneSurface.containsActivePane ? Color.accentColor.opacity(0.22) : Color.clear,
+                color: attention.map { paneAttentionColor($0).opacity(0.28) }
+                    ?? (paneSurface.containsActivePane ? Color.accentColor.opacity(0.22) : Color.clear),
                 radius: 4
             )
             .padding(4)
@@ -1949,6 +1996,16 @@ struct ContentView: View {
                 EmptyView()
             }
             Spacer(minLength: 4)
+            if let attention = model.paneAttention(for: pane.id) {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(attention.label(at: context.date))
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundStyle(paneAttentionColor(attention))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .help(attention.accessibilityDescription())
+            }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) {
                     Text(WorkbenchChromeProjection.processLabel(pane))
@@ -1997,7 +2054,7 @@ struct ContentView: View {
         .accessibilityLabel("Focus \(pane.displayName), \(pane.kind.label) pane")
         .accessibilityValue(paneAccessibilityValue(pane))
         .accessibilityHint("Select this terminal; double-click to toggle Focus Canvas")
-        .help("\(pane.displayName) · \(pane.cwd)\nClick to select; double-click to toggle Focus Canvas")
+        .help(paneFocusHelp(pane))
     }
 
     private func paneProcessColor(_ pane: WorkbenchPane) -> Color {

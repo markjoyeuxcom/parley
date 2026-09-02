@@ -270,8 +270,10 @@ public enum ParleyHelpGuide {
                         "Make or remove a Workspace Lead.",
                         "Set or clear a stable workspace-scoped routing role.",
                         "Move the exact pane or clone only its visible configuration into another workspace.",
-                        "Start a restored placeholder, restart an exited session, or close the pane deliberately.",
-                        "An exited process remains visible with its final scrollback until you close or restart it.",
+                        "Start Fresh Session and Restart Fresh Session never restore vendor history.",
+                        "Resume asks Claude, Codex or Copilot to open its own saved-session picker. Agy instead attempts its documented most recent conversation for this pane's working directory.",
+                        "Vendor-owned Resume keeps the pane folder and repeats permission review, but Parley cannot guarantee that a previous conversation resumes. Status Center records RESUME REQUESTED rather than claiming restoration.",
+                        "An exited process remains visible with its final scrollback until you close, start fresh or ask the vendor to resume it.",
                     ]
                 ),
             ]
@@ -304,13 +306,14 @@ public enum ParleyHelpGuide {
                     id: "handoffs-difference",
                     title: "The important difference",
                     items: [
-                        "Ask submits a question, blocks the requesting agent's command, and returns the exact correlated answer to that same turn.",
+                        "Ask is for a focused question likely to finish within one minute. It submits, blocks the requesting command and returns the exact correlated answer to that same turn.",
+                        "After submission, Ask prints its handoff id on stderr. If the calling shell disconnects, parley wait with that explicit id recovers the durable answer only from the same still-running source pane generation.",
                         "Relay submits one attributed message immediately but does not wait for a correlated result.",
                         "Paste places an attributed draft in the target prompt without Enter, so you can inspect or edit it first.",
                         "The native menus let you preview and edit captured text before it crosses to another pane.",
                     ],
                     commands: [
-                        ParleyHelpCommand("parley ask codex \"Review this plan and return your concerns.\"", "Submit a correlated question and wait for Codex's returned answer."),
+                        ParleyHelpCommand("parley ask codex \"Review this plan and return your concerns.\"", "Submit a focused correlated question, print its recovery id on stderr and wait for Codex's exact answer."),
                         ParleyHelpCommand("parley answer current \"The reviewed answer\"", "Return an answer from the receiving pane to its one waiting Ask."),
                         ParleyHelpCommand("parley relay claude \"The build is ready for review.\"", "Submit an attributed one-way message now."),
                         ParleyHelpCommand("parley paste agy \"Please check this before I send it.\"", "Leave an attributed draft without submitting it."),
@@ -358,12 +361,14 @@ public enum ParleyHelpGuide {
                     id: "coordination-delegate",
                     title: "Tracked delegation",
                     paragraphs: [
-                        "Delegate starts asynchronous agent-to-agent work and immediately returns a tracking id. The receiving agent must report a terminal result through Parley; merely printing the result in its pane does not complete the tracking relationship.",
+                        "Delegate starts asynchronous agent-to-agent work and immediately returns a tracking id. Use it instead of Ask when work is likely to exceed one minute.",
+                        "The receiving agent must report a terminal result through Parley; merely printing the result in its pane does not complete the tracking relationship.",
                     ],
                     commands: [
                         ParleyHelpCommand("parley delegate codex \"Implement the reviewed fix and verify it.\"", "Assign one bounded task to another vendor."),
                         ParleyHelpCommand("parley status", "List work initiated by this pane as machine-readable JSON."),
-                        ParleyHelpCommand("parley wait current", "Wait for the result when exactly one delegation is active."),
+                        ParleyHelpCommand("parley wait <id>", "Wait for one explicit delegation or recover a completed Ask from the same source pane generation."),
+                        ParleyHelpCommand("parley wait current", "Wait only when exactly one delegation is active; current never selects a completed Ask."),
                         ParleyHelpCommand("parley done current \"Implemented; tests pass.\"", "Complete work from the delegated target pane."),
                         ParleyHelpCommand("parley fail current \"Blocked by a missing fixture.\"", "Return an explicit failed result from the delegated target pane."),
                         ParleyHelpCommand("parley cancel current", "Cancel only tracking initiated by this pane; the target CLI is not interrupted."),
@@ -772,6 +777,9 @@ public enum ParleyHelpGuide {
                     ],
                     items: [
                         "Filter by workspace and inspect active or completed handoffs.",
+                        "A pane attention ring marks authoritative permission requests, unread returned results and failed or interrupted handoffs without interpreting terminal text.",
+                        "Pane headers show signal age. Official hook state says PERMISSION REPORTED so an old report is never presented as a current fact.",
+                        "Command-Shift-J cycles newest-first: it focuses a live permission pane or opens the exact durable result or interruption in Status Center.",
                         "Focus the source or target pane for a selected event.",
                         "Return manually, cancel tracking, interrupt with confirmation, or retry only when the record says retry is safe.",
                         "Dismissed notifications hide locally without deleting the durable handoff record.",
@@ -907,6 +915,7 @@ public enum ParleyHelpGuide {
                         "Command-K — open the command palette.",
                         "Control-Tab / Control-Shift-Tab — next / previous workspace.",
                         "Control-Option-Right / Control-Option-Left — next / previous pane.",
+                        "Command-Shift-J — cycle authoritative permission, result and interruption attention.",
                         "Command-? — open this detailed help window.",
                     ]
                 ),
@@ -920,6 +929,7 @@ public enum ParleyHelpGuide {
                         "Command-Shift-3 — new Agy pane.",
                         "Command-Shift-4 — new shell pane.",
                         "Command-Shift-5 — new Copilot pane.",
+                        "Command-Shift-A — open the exact terminal selection for this source pane's last explicit Ask target; Command-Return remains the separate send confirmation.",
                         "Command-Shift-Return — return an answer through the native pane route.",
                     ]
                 ),
@@ -939,6 +949,7 @@ public enum ParleyHelpGuide {
                         "Use Status Center to confirm whether delivery was submitted, waiting, completed or failed.",
                         "If the target answered after an Ask was cancelled or timed out, answer current may report an unknown consultation. Start a new Ask only after the pane is back at its prompt.",
                         "Do not repeatedly resend a long consultation; inspect the durable handoff before retrying.",
+                        "If the original Ask shell disconnected, use the handoff id it printed on stderr with parley wait from that same still-running pane generation.",
                     ]
                 ),
                 ParleyHelpSection(

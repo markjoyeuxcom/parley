@@ -275,6 +275,7 @@ public enum StatusCenterProjection {
             .filter { event in workspaceID == nil || workspaceAliases.contains(event.workspaceID) }
             .map { event in
                 let isPane = event.kind == .paneRestarted
+                    || event.kind == .paneResumeRequested
                     || event.kind == .paneReaped
                     || event.kind == .recipeSubmitted
                     || event.kind == .recipeInterrupted
@@ -283,6 +284,7 @@ public enum StatusCenterProjection {
                 let action: String
                 switch event.kind {
                 case .paneRestarted: action = "RESTARTED"
+                case .paneResumeRequested: action = "RESUME REQUESTED"
                 case .paneReaped: action = "REAPED IDLE"
                 case .workspaceCreated: action = "CREATED"
                 case .workspaceClosed: action = "CLOSED"

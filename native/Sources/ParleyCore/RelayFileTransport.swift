@@ -171,11 +171,17 @@ public final class RelayFileTransport: @unchecked Sendable {
         // Credentials and request text leave the filesystem before a blocking
         // Ask or wait begins. The worker retains only its in-memory value.
         try? fileManager.removeItem(at: directory)
-        let response = route(request)
+        let response = route(request) { [weak self] handoffID in
+            try? self?.writeAskAcceptance(
+                handoffID: handoffID,
+                requestID: requestID,
+                endpoint: endpoint
+            )
+        }
         try? writeResponse(response, requestID: requestID, endpoint: endpoint)
     }
 
-    private func route(_ request: FileRequest) -> FileResponse {
+    private func route(_ request: FileRequest, onAskAccepted: @escaping (String) -> Void) -> FileResponse {
         switch request.command {
         case "whoami":
             return encode(broker.agentIdentity(token: request.token))
@@ -204,7 +210,8 @@ public final class RelayFileTransport: @unchecked Sendable {
                 token: request.token,
                 target: request.target,
                 text: request.body,
-                idempotencyKey: request.idempotencyKey
+                idempotencyKey: request.idempotencyKey,
+                onAccepted: onAskAccepted
             ))
         case "ask-many":
             return encode(broker.handleAskMany(
@@ -239,7 +246,8 @@ public final class RelayFileTransport: @unchecked Sendable {
                 draftID: request.item,
                 target: request.target,
                 text: request.body,
-                idempotencyKey: request.idempotencyKey
+                idempotencyKey: request.idempotencyKey,
+                onAccepted: onAskAccepted
             ))
         case "answer":
             return encode(broker.handleAnswer(
@@ -257,7 +265,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         case "status":
             return encode(broker.delegationStatus(token: request.token))
         case "wait":
-            return encode(broker.waitForDelegation(token: request.token, handoffID: request.item))
+            return encode(broker.waitForTrackedWork(token: request.token, handoffID: request.item))
         case "done":
             return encode(broker.handleDelegationResult(
                 token: request.token,
@@ -334,15 +342,37 @@ public final class RelayFileTransport: @unchecked Sendable {
         return text
     }
 
+    private func writeAskAcceptance(handoffID: String, requestID: String, endpoint: URL) throws {
+        guard Self.isRequestID(requestID), Self.isRequestID(handoffID) else { return }
+        let directory = try responseDirectory(requestID: requestID, endpoint: endpoint)
+        guard !fileManager.fileExists(atPath: directory.appendingPathComponent("ready").path) else { return }
+        try writeProtected(handoffID, to: directory.appendingPathComponent("handoff-id"))
+        try writeProtected("accepted", to: directory.appendingPathComponent("accepted"))
+    }
+
     private func writeResponse(_ response: FileResponse, requestID: String, endpoint: URL) throws {
         guard Self.isRequestID(requestID) else { return }
-        let outbox = endpoint.appendingPathComponent("outbox", isDirectory: true)
-        let directory = outbox.appendingPathComponent(requestID, isDirectory: true)
-        guard !fileManager.fileExists(atPath: directory.path) else { return }
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let directory = try responseDirectory(requestID: requestID, endpoint: endpoint)
+        guard !fileManager.fileExists(atPath: directory.appendingPathComponent("ready").path) else { return }
         try writeProtected(String(response.status), to: directory.appendingPathComponent("status"))
         try writeProtected(response.body, to: directory.appendingPathComponent("body"))
         try writeProtected("ready", to: directory.appendingPathComponent("ready"))
+    }
+
+    private func responseDirectory(requestID: String, endpoint: URL) throws -> URL {
+        let outbox = endpoint.appendingPathComponent("outbox", isDirectory: true)
+        let directory = outbox.appendingPathComponent(requestID, isDirectory: true)
+        if fileManager.fileExists(atPath: directory.path) {
+            try validateDirectory(directory)
+        } else {
+            try fileManager.createDirectory(
+                at: directory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try validateDirectory(directory)
+        }
+        return directory
     }
 
     private static func prepareDirectory(

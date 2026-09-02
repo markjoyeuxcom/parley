@@ -59,6 +59,11 @@ public final class WorkbenchController: @unchecked Sendable {
         var activity: [String: Date]
         var ownerPID: Int32
     }
+    private struct AgentLaunchRequest {
+        let generation: Int
+        let mode: AgentLaunchMode
+    }
+
 
     public let applicationDirectory: URL
     public let protocolDirectory: URL
@@ -71,6 +76,7 @@ public final class WorkbenchController: @unchecked Sendable {
     private var document: Document
     private var relayRuntime: RelayRuntime?
     private var terminalTransport: PaneTerminalTransport?
+    private var agentLaunchRequests: [String: AgentLaunchRequest] = [:]
 
     public init(
         applicationDirectory: URL? = nil,
@@ -418,7 +424,8 @@ public final class WorkbenchController: @unchecked Sendable {
 
     public func restartPane(
         _ paneID: String,
-        permissionProfile: EffectivePermissionProfile? = nil
+        permissionProfile: EffectivePermissionProfile? = nil,
+        launchMode: AgentLaunchMode = .fresh
     ) throws {
         try lock.withLock {
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
@@ -435,13 +442,22 @@ public final class WorkbenchController: @unchecked Sendable {
             )
             terminalTransport?.terminate(paneID)
             markStartedLocked(index: index, profile: profile)
+            if document.panes[index].kind.isAgent {
+                agentLaunchRequests[paneID] = AgentLaunchRequest(
+                    generation: document.panes[index].launchGeneration,
+                    mode: launchMode
+                )
+            } else {
+                agentLaunchRequests[paneID] = nil
+            }
             try persistLocked()
         }
     }
 
     public func startPane(
         _ paneID: String,
-        permissionProfile: EffectivePermissionProfile? = nil
+        permissionProfile: EffectivePermissionProfile? = nil,
+        launchMode: AgentLaunchMode = .fresh
     ) throws {
         try lock.withLock {
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
@@ -455,6 +471,10 @@ public final class WorkbenchController: @unchecked Sendable {
                 selection: document.panes[index].permissionSelection
             )
             markStartedLocked(index: index, profile: profile)
+            agentLaunchRequests[paneID] = AgentLaunchRequest(
+                generation: document.panes[index].launchGeneration,
+                mode: launchMode
+            )
             try persistLocked()
         }
     }
@@ -486,6 +506,7 @@ public final class WorkbenchController: @unchecked Sendable {
             }
             guard document.panes[index].kind.isAgent, document.panes[index].isStarted else { return }
             terminalTransport?.terminate(paneID)
+            agentLaunchRequests[paneID] = nil
             document.panes[index].launchGeneration &+= 1
             document.panes[index].isStarted = false
             document.panes[index].isDead = false
@@ -509,6 +530,7 @@ public final class WorkbenchController: @unchecked Sendable {
             guard document.panes.count > 1 else { throw ParleyWorkbenchError.cannotCloseLastPane }
             let workspaceID = document.panes[index].workspaceID
             terminalTransport?.terminate(paneID)
+            agentLaunchRequests[paneID] = nil
             document.panes.remove(at: index)
             document.activity[paneID] = nil
             try relayRuntime?.credentials.forget(paneID)
@@ -527,6 +549,7 @@ public final class WorkbenchController: @unchecked Sendable {
             let paneIDs = document.panes.filter { $0.workspaceID == workspace.workspaceID }.map(\.id)
             for paneID in paneIDs {
                 terminalTransport?.terminate(paneID)
+                agentLaunchRequests[paneID] = nil
                 try relayRuntime?.credentials.forget(paneID)
                 document.activity[paneID] = nil
             }
@@ -541,6 +564,7 @@ public final class WorkbenchController: @unchecked Sendable {
         try lock.withLock {
             for pane in document.panes { try relayRuntime?.credentials.forget(pane.id) }
             terminalTransport?.terminateAll()
+            agentLaunchRequests.removeAll()
             for index in document.panes.indices {
                 document.panes[index].launchGeneration &+= 1
                 document.panes[index].isStarted = false
@@ -711,7 +735,11 @@ public final class WorkbenchController: @unchecked Sendable {
             }
             if let replacement {
                 let oldIDs = document.panes.filter { $0.workspaceID == replacement.workspaceID }.map(\.id)
-                for id in oldIDs { terminalTransport?.terminate(id); try relayRuntime?.credentials.forget(id) }
+                for id in oldIDs {
+                    terminalTransport?.terminate(id)
+                    agentLaunchRequests[id] = nil
+                    try relayRuntime?.credentials.forget(id)
+                }
                 document.panes.removeAll(where: { $0.workspaceID == replacement.workspaceID })
                 document.workspaces.removeAll(where: { $0.workspaceID == replacement.workspaceID })
             }
@@ -763,7 +791,14 @@ public final class WorkbenchController: @unchecked Sendable {
                     fileManager: fileManager
                 )
                 argv = boundary.arguments + ["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE"]
-                var command = AgentProtocol.command(for: pane.kind, protocolDirectory: protocolDirectory)
+                let launchMode = agentLaunchRequests[pane.id].flatMap {
+                    $0.generation == pane.launchGeneration ? $0.mode : nil
+                } ?? .fresh
+                var command = AgentProtocol.command(
+                    for: pane.kind,
+                    protocolDirectory: protocolDirectory,
+                    launchMode: launchMode
+                )
                 if let profile = try effectivePermissionProfile(
                     for: pane.kind,
                     cwd: pane.cwd,

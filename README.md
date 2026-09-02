@@ -18,8 +18,8 @@ or bypass a vendor's approval flow.
   scroll behavior.
 - Explicit cross-vendor Relay, Paste, Ask, Answer, Delegate, Done, Fail, Status
   and Wait commands.
-- Human Ask and Return previews, correlated answers and tracked delegation
-  receipts.
+- Human Ask and Return previews, correlated answers, recoverable Ask ids and
+  tracked delegation receipts.
 - Smart Plan → Review → Implement → Verify orchestration in Supervised and Auto
   modes. Auto advances only from correlated answers and always stops for the
   person's final completion decision.
@@ -113,6 +113,30 @@ Targets are explicit pane ids, unique vendors or stable roles such as
 same-pane, shell and busy targets. Same-vendor routing is allowed only between
 distinct panes.
 
+After choosing an explicit target from **Ask**, Command-Shift-A opens the active
+pane's exact Ghostty selection in the reviewed Ask composer for that same
+source-target route. Parley remembers at most one last target per source pane
+for the current application session, shows both vendors in the route, and still
+requires Command-Return or the visible Send Ask button before submission. It
+never captures scrollback or sends merely because the shortcut was pressed.
+
+Actionable panes carry a semantic attention ring without replacing the inset
+accent line that identifies the selected terminal. Orange is a permission
+request, the app accent is an unread returned result and red is a failed or
+interrupted handoff. Pane headers include the signal age. Official vendor hook
+state is labelled **PERMISSION REPORTED** with that age, never asserted as a
+current prompt from terminal text. Command-Shift-J cycles the newest attention
+items, focusing a live permission pane or opening the exact durable handoff in
+Status Center.
+
+Agent-initiated Ask is for a focused consultation likely to finish within one
+minute. Once terminal submission succeeds, the managed command prints
+`Parley Ask ID: <id>` on stderr and reserves stdout for the exact answer. If
+that calling shell disconnects, `parley wait <id>` recovers the durable answer
+only from the same still-running source pane generation. Use Delegate for work
+likely to take longer; `parley wait current` remains shorthand only for one
+active delegation.
+
 `relay` submits immediately because that is the capability the person selected.
 `paste` is the explicit review-before-send route. Multiline content is passed
 through Ghostty paste as one payload; submission is a separate Enter event, so
@@ -199,6 +223,14 @@ an agent starts. For a running agent, **Folder Access…** shows its working fol
 checked attachments and any other reviewed roots; applying a change explicitly
 restarts that vendor session while preserving the pane and working folder.
 Attaching or detaching workspace metadata never mutates a running pane's access.
+
+Agent pane menus distinguish **Start Fresh Session**, **Restart Fresh Session**
+and vendor-owned **Resume**. Claude, Codex and Copilot open their own session
+pickers; Agy attempts its documented most recent conversation for that working
+directory. Resume keeps the pane folder and repeats Parley's permission review,
+but the vendor alone decides which history is available and whether a
+conversation resumes. Parley records **RESUME REQUESTED**, never that a prior
+session survived.
 
 Move transfers the exact retained pane, process, terminal state, credential and
 folder. Clone copies visible configuration only and never copies a process,

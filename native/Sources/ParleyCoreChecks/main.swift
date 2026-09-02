@@ -87,6 +87,19 @@ private final class LockedAskResult: @unchecked Sendable {
         lock.withLock { storage = value }
     }
 }
+private final class LockedString: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: String?
+
+    var value: String? {
+        lock.withLock { storage }
+    }
+
+    func set(_ value: String) {
+        lock.withLock { storage = value }
+    }
+}
+
 
 private final class LockedRelayResponses: @unchecked Sendable {
     private let lock = NSLock()
@@ -941,6 +954,9 @@ private func checkInAppHelpGuideCoverage() throws {
         "stable selects published non-prereleases", "sha256sums", "download and verify",
         "does not install", "review beta feedback", "nothing is uploaded automatically",
         "app-resident panes", "excluded by structure",
+        "command-shift-a", "last explicit ask target",
+        "command-shift-j", "pane attention ring", "permission reported",
+        "start fresh session", "vendor-owned resume", "resume requested",
         "pane focus strip", "native terminal", "macos clipboard", "mouse-aware", "shift",
     ] {
         try expect(searchable.contains(concept), "the in-app guide omitted \(concept)")
@@ -3344,7 +3360,114 @@ private func checkWindowAndSplitGeometryRecovery() throws {
     )
 }
 
+private func checkPaneAttentionProjectionIsAuthoritativeAndAged() throws {
+    let now = Date(timeIntervalSinceReferenceDate: 1_000)
+    let hookPane = WorkbenchPane(
+        id: "%hook",
+        kind: .claude,
+        customName: "Implementer",
+        terminalTitle: "",
+        cwd: "/tmp/project",
+        currentCommand: "claude",
+        isActive: true,
+        workspaceID: "workspace-a",
+        workspaceName: "Project",
+        inputAvailable: true,
+        vendorRuntimeState: .awaitingPermission,
+        vendorRuntimeSignal: .awaitingPermission,
+        vendorRuntimeSignaledAt: Date(timeIntervalSinceReferenceDate: 905)
+    )
+    let deadHookPane = WorkbenchPane(
+        id: "%dead",
+        kind: .codex,
+        customName: "Stopped Reviewer",
+        terminalTitle: "",
+        cwd: "/tmp/project",
+        currentCommand: "codex",
+        isActive: false,
+        workspaceID: "workspace-a",
+        vendorRuntimeState: .awaitingPermission,
+        vendorRuntimeSignal: .awaitingPermission,
+        vendorRuntimeSignaledAt: Date(timeIntervalSinceReferenceDate: 990),
+        isDead: true
+    )
+    let result = try statusHandoff(
+        id: "11111111-1111-4111-8111-111111111111",
+        kind: .ask,
+        state: .completed,
+        sourceWorkspaceID: "workspace-a",
+        targetWorkspaceID: "workspace-b",
+        occurredAt: 940,
+        resultText: "A reviewed answer"
+    )
+    let permission = try statusHandoff(
+        id: "22222222-2222-4222-8222-222222222222",
+        kind: .relay,
+        state: .failed,
+        sourceWorkspaceID: "workspace-a",
+        targetWorkspaceID: "workspace-b",
+        occurredAt: 960,
+        attention: .permissionRequired
+    )
+    let interrupted = try statusHandoff(
+        id: "33333333-3333-4333-8333-333333333333",
+        kind: .delegate,
+        state: .interrupted,
+        sourceWorkspaceID: "workspace-a",
+        targetWorkspaceID: "workspace-b",
+        occurredAt: 970
+    )
+    let viewed = try statusHandoff(
+        id: "44444444-4444-4444-8444-444444444444",
+        kind: .ask,
+        state: .completed,
+        sourceWorkspaceID: "workspace-a",
+        targetWorkspaceID: "workspace-b",
+        occurredAt: 980,
+        resultText: "Already reviewed",
+        readAt: 990
+    )
+
+    let items = PaneAttentionProjection.items(
+        panes: [hookPane, deadHookPane],
+        handoffs: [result, permission, interrupted, viewed],
+        now: now
+    )
+    try expect(
+        items.map(\.reason) == [.interruptedHandoff, .permissionRequest, .returnedResult, .permissionRequest],
+        "pane attention did not retain newest-first authoritative reasons"
+    )
+    try expect(items[0].paneID == interrupted.sourcePaneID, "interrupted work did not return attention to its source pane")
+    try expect(items[1].paneID == permission.targetPaneID, "permission attention did not focus its target pane")
+    try expect(items[2].paneID == result.sourcePaneID, "a returned result did not focus its source pane")
+    try expect(items[3].paneID == hookPane.id, "an official permission hook did not focus its emitting pane")
+    try expect(items[3].source == .vendorOfficialHook, "hook attention lost its authoritative source")
+    try expect(
+        items[3].label(at: now) == "PERMISSION REPORTED · 1m ago",
+        "an aged hook report was presented as a current permission fact"
+    )
+    try expect(items[2].label(at: now) == "RESULT · 1m ago", "returned-result attention lost its age")
+    try expect(!items.contains { $0.paneID == deadHookPane.id }, "a dead pane retained live hook attention")
+    try expect(!items.contains { $0.handoffID == viewed.id }, "a reviewed result remained in pane attention")
+    try expect(
+        PaneAttentionProjection.primary(forPaneID: permission.targetPaneID, in: items)?.handoffID == permission.id,
+        "pane attention could not resolve the primary ring item"
+    )
+}
+
 private func checkWorkbenchKeyboardShortcuts() throws {
+    try expect(
+        WorkbenchKeyboardShortcut.resolve(
+            key: "j", command: true, shift: true, option: false, control: false
+        ) == .nextAttention,
+        "Command-Shift-J did not resolve to the next attention item"
+    )
+    try expect(
+        WorkbenchKeyboardShortcut.resolve(
+            key: "a", command: true, shift: true, option: false, control: false
+        ) == .quickRelaySelection,
+        "Command-Shift-A did not resolve to the reviewed selection handoff"
+    )
     try expect(
         WorkbenchKeyboardShortcut.resolve(
             key: "f", command: true, shift: true, option: false, control: false
@@ -3374,6 +3497,39 @@ private func checkWorkbenchKeyboardShortcuts() throws {
             key: "c", command: true, shift: false, option: false, control: false
         ) == nil,
         "a standard terminal copy shortcut was stolen by application navigation"
+    )
+
+    var history = QuickRelayTargetHistory()
+    history.record(sourcePaneID: "%1", targetPaneID: "%2")
+    history.record(sourcePaneID: "%3", targetPaneID: "%4")
+    try expect(
+        history.targetPaneID(for: "%1", eligibleTargetPaneIDs: ["%2", "%4"]) == "%2",
+        "quick relay did not retain the last explicit target for the source pane"
+    )
+    try expect(
+        history.targetPaneID(for: "%3", eligibleTargetPaneIDs: ["%2", "%4"]) == "%4",
+        "quick relay target history leaked between source panes"
+    )
+    try expect(
+        history.targetPaneID(for: "%1", eligibleTargetPaneIDs: ["%4"]) == nil,
+        "quick relay reused a target that is no longer eligible"
+    )
+    history.record(sourcePaneID: "%1", targetPaneID: "%1")
+    try expect(
+        history.targetPaneID(for: "%1", eligibleTargetPaneIDs: ["%2"]) == "%2",
+        "a refused self-target overwrote the last valid quick relay route"
+    )
+
+    for index in 0 ... 128 {
+        history.record(sourcePaneID: "source-\(index)", targetPaneID: "target-\(index)")
+    }
+    try expect(
+        history.targetPaneID(for: "source-0", eligibleTargetPaneIDs: ["target-0"]) == nil,
+        "quick relay target history exceeded its 128-source session bound"
+    )
+    try expect(
+        history.targetPaneID(for: "source-128", eligibleTargetPaneIDs: ["target-128"]) == "target-128",
+        "quick relay target history evicted the newest route instead of the oldest"
     )
 }
 
@@ -3412,13 +3568,95 @@ private func checkIdleAgentReaperGates() throws {
     }
 }
 
+private func checkVendorOwnedResumePlansAreExplicitAndSafe() throws {
+    let directory = try temporaryDirectory()
+    let protocolDirectory = try AgentProtocol.install(in: directory)
+
+    let claudePlan = try require(VendorResumeAdapter.plan(for: .claude), "Claude resume support disappeared")
+    let codexPlan = try require(VendorResumeAdapter.plan(for: .codex), "Codex resume support disappeared")
+    let agyPlan = try require(VendorResumeAdapter.plan(for: .agy), "Agy resume support disappeared")
+    let copilotPlan = try require(VendorResumeAdapter.plan(for: .copilot), "Copilot resume support disappeared")
+    try expect(claudePlan.selection == .vendorPicker, "Claude resume did not remain vendor-selected")
+    try expect(codexPlan.selection == .vendorPicker, "Codex resume did not remain vendor-selected")
+    try expect(copilotPlan.selection == .vendorPicker, "Copilot resume did not remain vendor-selected")
+    try expect(agyPlan.selection == .mostRecentInWorkingDirectory, "Agy resume invented a picker it does not launch with")
+    try expect(VendorResumeAdapter.plan(for: .shell) == nil, "a human shell was offered agent-session resume")
+
+    let claude = AgentProtocol.command(
+        for: .claude,
+        protocolDirectory: protocolDirectory,
+        launchMode: .resume
+    )
+    try expect(claude.last == "--resume", "Claude resume omitted its documented interactive picker")
+
+    let codex = AgentProtocol.command(
+        for: .codex,
+        protocolDirectory: protocolDirectory,
+        launchMode: .resume
+    )
+    try expect(Array(codex.prefix(2)) == ["codex", "resume"], "Codex resume used the wrong subcommand order")
+    try expect(
+        codex.contains(where: { $0.hasPrefix("developer_instructions=") }),
+        "Codex resume lost the canonical Parley protocol"
+    )
+
+    let agy = AgentProtocol.command(
+        for: .agy,
+        protocolDirectory: protocolDirectory,
+        launchMode: .resume
+    )
+    try expect(agy.last == "--continue", "Agy resume omitted its documented directory-scoped continuation")
+
+    let copilot = AgentProtocol.command(
+        for: .copilot,
+        protocolDirectory: protocolDirectory,
+        launchMode: .resume
+    )
+    try expect(copilot.last == "--resume", "Copilot resume omitted its documented interactive picker")
+    try expect(copilot.contains("--plugin-dir"), "Copilot resume lost Parley's official hook adapter")
+
+    let fresh = PaneKind.allCases.map {
+        AgentProtocol.command(for: $0, protocolDirectory: protocolDirectory, launchMode: .fresh)
+    }
+    try expect(
+        !fresh.contains(where: { command in
+            command.last == "--resume" || command.last == "--continue"
+                || Array(command.prefix(2)) == ["codex", "resume"]
+        }),
+        "an ordinary pane launch silently resumed vendor history"
+    )
+
+    let resumeCommands = [claude, codex, agy, copilot].flatMap { $0 }
+    try expect(
+        !resumeCommands.contains(where: {
+            $0.contains("dangerously") || $0 == "--allow-all" || $0 == "--yolo"
+        }),
+        "vendor resume introduced an approval bypass"
+    )
+    try expect(
+        [claudePlan, codexPlan, agyPlan, copilotPlan].allSatisfy {
+            $0.detail.lowercased().contains("vendor")
+                && $0.detail.lowercased().contains("cannot guarantee")
+        },
+        "resume guidance did not state the vendor-owned recovery boundary"
+    )
+}
+
 private func checkSharedProtocolLaunchAdapters() throws {
     let directory = try temporaryDirectory()
     let protocolDirectory = try AgentProtocol.install(in: directory)
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "11", "the shared protocol version drifted from the Phase 3 hook contract")
+    try expect(AgentProtocol.version == "12", "the shared protocol version drifted from the detached Ask recovery contract")
+    try expect(
+        AgentProtocol.text.contains("one minute") && AgentProtocol.text.contains("parley delegate"),
+        "shared protocol did not steer longer work toward Delegate"
+    )
+    try expect(
+        AgentProtocol.text.contains("stderr") && AgentProtocol.text.contains("parley wait <id>"),
+        "shared protocol omitted the recoverable Ask receipt"
+    )
     try expect(AgentProtocol.text.contains("@reviewer"), "shared protocol omitted explicit stable-role addressing")
     try expect(
         AgentProtocol.text.lowercased().contains("same-vendor") && AgentProtocol.text.contains("different pane"),
@@ -3877,6 +4115,103 @@ private func checkTrackedDelegationCompletesAndWaits() throws {
     )
     try expect(duplicate.body.handoffID == handoffID && duplicate.body.state == .waiting, "idempotent delegate did not return its original receipt")
     try expect(submissionCount.value == 1, "idempotent delegate submitted work twice")
+}
+private func checkDetachedAskRecoveryIsDurableAndGenerationBound() throws {
+    let directory = try temporaryDirectory()
+    let journalFile = directory.appendingPathComponent("handoffs.jsonl")
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "%1")
+    let targetToken = try credentials.token(for: "%2")
+    let foreignToken = try credentials.token(for: "%3")
+    let source = WorkbenchPane(
+        id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp/api",
+        currentCommand: "codex", isActive: true, workspaceID: "@0", launchGeneration: 4
+    )
+    let target = WorkbenchPane(
+        id: "%2", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp/api",
+        currentCommand: "claude", isActive: false, workspaceID: "@0", launchGeneration: 2
+    )
+    let foreign = WorkbenchPane(
+        id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/api",
+        currentCommand: "agy", isActive: false, workspaceID: "@0", launchGeneration: 1
+    )
+    let livePanes = LockedPanes([source, target, foreign])
+    let journal = try RelayHandoffJournal(file: journalFile)
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { livePanes.value },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        consultationTimeout: 2,
+        livenessPollInterval: 0.01,
+        handoffJournal: journal
+    )
+
+    let acceptedID = LockedString()
+    let askResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        askResult.set(broker.handleAsk(
+            token: sourceToken,
+            target: "reviewer",
+            text: "Which failure path is missing?",
+            idempotencyKey: "recoverable-ask-1",
+            onAccepted: { acceptedID.set($0) }
+        ))
+    }
+    try expect(eventually { acceptedID.value != nil }, "Ask did not publish its handoff id after submission")
+    let handoffID = try require(acceptedID.value, "submitted Ask published no handoff id")
+    try expect(broker.consultations().first?.id == handoffID, "the early Ask receipt did not name the live consultation")
+
+    let waitingRecovery = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        waitingRecovery.set(broker.waitForTrackedWork(token: sourceToken, handoffID: handoffID))
+    }
+    Thread.sleep(forTimeInterval: 0.05)
+    try expect(waitingRecovery.value == nil, "detached Ask recovery returned before the exact answer")
+
+    let answer = "The interrupted-source recovery path needs a generation check."
+    try expect(
+        broker.handleAnswer(token: targetToken, consultationID: handoffID, text: answer).status == 200,
+        "the exact Ask target could not return its answer"
+    )
+    try expect(eventually { askResult.value?.text == answer }, "the original Ask command did not receive its answer")
+    try expect(eventually { waitingRecovery.value?.text == answer }, "parley wait did not recover the completed Ask answer")
+    let completed = try require(
+        broker.handoffs().first(where: { $0.id == handoffID }),
+        "recoverable Ask disappeared"
+    )
+    try expect(completed.sourceLaunchGeneration == 4, "Ask did not retain its source credential generation")
+
+    let recoveredBroker = RelayBroker(
+        credentials: credentials,
+        panes: { livePanes.value },
+        paste: { _, _ in },
+        submit: { _, _ in },
+        handoffJournal: try RelayHandoffJournal(file: journalFile)
+    )
+    try expect(
+        recoveredBroker.waitForTrackedWork(token: sourceToken, handoffID: handoffID)
+            == RelayTextResponse(status: 200, text: answer),
+        "a reloaded broker could not recover the durable completed Ask answer"
+    )
+    try expect(
+        recoveredBroker.waitForTrackedWork(token: foreignToken, handoffID: handoffID).status == 403,
+        "a foreign pane recovered another pane's Ask answer"
+    )
+    try expect(
+        recoveredBroker.waitForTrackedWork(token: sourceToken, handoffID: "current").status == 404,
+        "wait current selected a completed Ask instead of remaining delegation-only"
+    )
+
+    let restartedToken = try credentials.rotate("%1")
+    var restartedSource = source
+    restartedSource.launchGeneration += 1
+    livePanes.set([restartedSource, target, foreign])
+    let restartedRecovery = recoveredBroker.waitForTrackedWork(token: restartedToken, handoffID: handoffID)
+    try expect(
+        restartedRecovery.status == 409 && restartedRecovery.text.contains("earlier run"),
+        "a restarted source generation recovered an older Ask answer"
+    )
 }
 
 private func checkTrackedDelegationFailureAndLiveness() throws {
@@ -5021,6 +5356,29 @@ private func checkStatusCenterProjectionUsesOnlyAuthoritativeState() throws {
         coreAvailable: true
     )
     try expect(returned.condition == .resultsAvailable, "an unread returned result was shown as all clear")
+    let resumeActivity = RelayActivityEvent(
+        id: "resume-requested",
+        kind: .paneResumeRequested,
+        occurredAt: Date(timeIntervalSince1970: 70),
+        workspaceID: "@0",
+        workspaceName: "a",
+        paneID: "%1",
+        paneName: "Lead",
+        paneKind: .codex,
+        detail: "Codex owns the session picker."
+    )
+    let resumed = StatusCenterProjection.snapshot(
+        panes: panes,
+        handoffs: [],
+        activityEvents: [resumeActivity],
+        workspaceID: "@0",
+        coreAvailable: true
+    )
+    try expect(
+        resumed.timeline.first?.category == "PANE"
+            && resumed.timeline.first?.action == "RESUME REQUESTED",
+        "Status Center claimed vendor-owned Resume had restored a conversation"
+    )
 
     try expect(StatusCenterVisibility.isDismissible(handoffs[3]), "an ordinary completed handoff could not be dismissed locally")
     try expect(!StatusCenterVisibility.isDismissible(handoffs[0]), "active work could be hidden by local dismissal")
@@ -7664,6 +8022,7 @@ private func checkConsultationShimRoundTrip() throws {
     }
 
     let askResult = LockedAskResult()
+    let askStderr = LockedString()
     DispatchQueue.global(qos: .utility).async {
         do {
             let output = try ProcessCommandRunner(timeout: 5).run(
@@ -7675,6 +8034,7 @@ private func checkConsultationShimRoundTrip() throws {
                 input: nil
             )
             askResult.set(RelayTextResponse(status: Int(output.status), text: output.stdoutText))
+            askStderr.set(output.stderrText)
         } catch {
             askResult.set(RelayTextResponse(status: -1, text: error.localizedDescription))
         }
@@ -7683,6 +8043,26 @@ private func checkConsultationShimRoundTrip() throws {
     try expect(eventually { broker.consultations().count == 1 }, "parley ask did not reach the local broker")
     let consultation = try require(broker.consultations().first, "shim consultation disappeared")
     try expect(consultation.state == .awaitingAnswer, "shim Ask was not submitted automatically")
+    let outbox = transportDirectory
+        .appendingPathComponent(sourceToken, isDirectory: true)
+        .appendingPathComponent("outbox", isDirectory: true)
+    func earlyReceiptID() -> String? {
+        guard let responses = try? FileManager.default.contentsOfDirectory(
+            at: outbox,
+            includingPropertiesForKeys: nil
+        ) else { return nil }
+        for response in responses {
+            let receipt = response.appendingPathComponent("handoff-id")
+            if let value = try? String(contentsOf: receipt, encoding: .utf8) {
+                return value
+            }
+        }
+        return nil
+    }
+    try expect(
+        eventually { earlyReceiptID() == consultation.id },
+        "filesystem transport did not publish the Ask id before the answer"
+    )
     let answerOutput = try ProcessCommandRunner(timeout: 5).run(
         executable: URL(fileURLWithPath: "/bin/sh"),
         arguments: [shimDirectory.appendingPathComponent("parley").path, "answer", "current", "Move the rules engine first."],
@@ -7695,6 +8075,10 @@ private func checkConsultationShimRoundTrip() throws {
     try expect(eventually { askResult.value != nil }, "parley ask stayed blocked after parley answer")
     try expect(askResult.value?.status == 0, "parley ask command exited unsuccessfully")
     try expect(askResult.value?.text == "Move the rules engine first.", "parley ask stdout did not become the target's exact answer")
+    try expect(
+        askStderr.value == "Parley Ask ID: \(consultation.id)\n",
+        "parley ask did not print its recoverable id once on stderr"
+    )
 }
 
 private func checkAskManyShimRoundTrip() throws {
@@ -9053,6 +9437,41 @@ private func checkAppResidentWorkbenchRelayAndShutdown() throws {
     try expect(recorder.terminations == [codex.id], "restart did not terminate exactly the selected pane surface")
     let tokenAfterRestart = try credentials.token(for: codex.id)
     try expect(tokenAfterRestart != tokenBeforeRestart, "restart did not rotate the pane relay identity")
+    let freshLaunch = try controller.launchConfiguration(for: codex.id)
+    try expect(!freshLaunch.command.contains("'codex' 'resume'"), "plain restart silently resumed a Codex session")
+
+    try controller.restartPane(codex.id, launchMode: .resume)
+    let resumeLaunch = try controller.launchConfiguration(for: codex.id)
+    try expect(
+        resumeLaunch.command.contains("'codex' 'resume'"),
+        "controller restart did not carry Resume into the replacement Ghostty generation"
+    )
+    try expect(
+        resumeLaunch.generation == restarted.launchGeneration + 1,
+        "Resume did not create a distinct replacement surface generation"
+    )
+
+    try controller.restartPane(codex.id)
+    let freshAgain = try controller.launchConfiguration(for: codex.id)
+    try expect(
+        !freshAgain.command.contains("'codex' 'resume'"),
+        "a later plain restart inherited stale Resume intent"
+    )
+    try controller.stopPaneProcess(codex.id)
+    try controller.startPane(codex.id, launchMode: .resume)
+    let stoppedResumeLaunch = try controller.launchConfiguration(for: codex.id)
+    try expect(
+        stoppedResumeLaunch.command.contains("'codex' 'resume'"),
+        "a stopped placeholder could not launch the vendor-owned Resume path"
+    )
+
+    try controller.stopPaneProcess(codex.id)
+    try controller.startPane(codex.id)
+    let stoppedFreshLaunch = try controller.launchConfiguration(for: codex.id)
+    try expect(
+        !stoppedFreshLaunch.command.contains("'codex' 'resume'"),
+        "a fresh start inherited stale Resume intent from an earlier generation"
+    )
 
     try controller.shutdown()
     try expect(recorder.didTerminateAll, "full shutdown did not terminate every retained Ghostty surface")
@@ -9278,8 +9697,10 @@ let checks: [(String, () throws -> Void)] = [
     ("mandatory pane-scoped agent process boundary", checkAgentProcessBoundaryIsMandatoryAndPaneScoped),
     ("native workspace layout tree", checkNativeWorkspaceLayoutTree),
     ("window and split geometry recovery", checkWindowAndSplitGeometryRecovery),
+    ("pane attention is authoritative and aged", checkPaneAttentionProjectionIsAuthoritativeAndAged),
     ("workbench keyboard shortcut routing", checkWorkbenchKeyboardShortcuts),
     ("idle agent reaper gates", checkIdleAgentReaperGates),
+    ("vendor-owned resume plans are explicit and safe", checkVendorOwnedResumePlansAreExplicitAndSafe),
     ("shared protocol launch adapters", checkSharedProtocolLaunchAdapters),
     ("authenticated agent discovery and resumable events", checkAuthenticatedAgentDiscoveryAndResumableEvents),
     ("official vendor hook adapters and authenticated signals", checkOfficialVendorHookAdaptersAndSignals),
@@ -9288,6 +9709,7 @@ let checks: [(String, () throws -> Void)] = [
     ("smart orchestration modes and safety boundaries", checkSmartOrchestrationModesAndBoundaries),
     ("supervised lead workflow policy and cancellation", checkSupervisedLeadWorkflowPolicyAndCancellation),
     ("tracked delegation completion and wait", checkTrackedDelegationCompletesAndWaits),
+    ("detached Ask recovery is durable and generation-bound", checkDetachedAskRecoveryIsDurableAndGenerationBound),
     ("tracked delegation failure and liveness", checkTrackedDelegationFailureAndLiveness),
     ("tracked delegation shim round trip", checkDelegationShimRoundTrip),
     ("relay cleaning", checkRelayCleaning),
