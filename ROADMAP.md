@@ -42,7 +42,7 @@ Parley owns:
 - workspaces, roles, leads and reviewed folder/capability boundaries;
 - authenticated Relay, Ask and Delegate delivery with durable receipts;
 - handoff review, reply lineage, recovery and reviewed Context Pack promotion;
-- normalized, authoritative vendor events where official hooks exist;
+- normalized vendor events reported through authenticated pane capabilities;
 - local attention, lifecycle, discovery and Task Manager facts.
 
 Vendor CLIs own their reasoning interfaces, plans, research and browser tools,
@@ -58,9 +58,10 @@ but it must not reinterpret terminal text or replace the vendor workflow.
   until the discovery and event layer is proven.
 - [x] Retire the unreleased Research Board model, window, menu, help topic,
   Status Center actions, checks and `parley research` protocol namespace.
-- [x] Confirm the experiment never entered a tracked release. Its v10 protocol
-  bump existed only in the dirty development tree, so removal restores the
-  released canonical v9 contract instead of manufacturing v11.
+- [x] Confirm the experiment never entered a tracked release. Its temporary
+  protocol bump existed only in the dirty development tree, so removal first
+  restored the released canonical v9 contract. Phase 2 then assigned v10 to
+  authenticated discovery and events; Phase 3 assigned v11 to vendor hooks.
 - [x] Require no production migration because no Research Board build shipped.
   Leave any local development `research-board.json` untouched rather than
   silently deleting a person's experimental data.
@@ -69,58 +70,137 @@ but it must not reinterpret terminal text or replace the vendor workflow.
   data. Leave any legacy `handoff-chains.json` untouched and unloaded rather
   than silently deleting a person's data; reviewed handoff attributes and
   lineage remain explicit future work.
-- [ ] Move durable investigation conclusions, rationale, confidence and open
-  questions into the owning Workspace Brief.
-- [ ] Preserve reviewed Context Pack promotion as a Status Center action over
-  selected handoffs.
+- [x] Move durable person-authored investigation conclusions, rationale,
+  confidence and open questions into the owning Workspace Brief. Legacy v1
+  briefs load with these fields empty rather than inferred.
+- [x] Preserve review-gated Context Pack promotion as a Status Center action
+  over 1 to 16 explicitly selected returned Ask or Delegate handoffs. The draft
+  retains exact handoff ids, routes, workspaces, questions and results, and no
+  new handoff is submitted automatically.
 
 #### Phase 2 — authenticated discovery and events
 
-- [ ] Add `parley whoami` for the caller's authenticated pane, workspace,
+- [x] Add `parley whoami` for the caller's authenticated pane, workspace,
   vendor and role identity without revealing credentials.
-- [ ] Add `parley panes` for bounded discovery of valid explicit targets and
-  authoritative pane lifecycle facts.
-- [ ] Add `parley events --since <cursor>` for local, ordered, resumable and
-  bounded cross-vendor lifecycle/handoff events.
-- [ ] Keep event payloads content-minimal, runtime-local and protected by the
-  existing pane capability boundary.
+- [x] Add `parley panes` for bounded discovery of explicit non-self agent
+  targets and authoritative pane lifecycle and input-path facts.
+- [x] Add `parley events --since <cursor>` for local, monotonically ordered,
+  resumable cross-vendor lifecycle and handoff events, bounded to 100 per page.
+- [x] Keep discovery and event payloads content-minimal, runtime-local and
+  protected by the existing pane capability boundary. They omit credentials,
+  folders, terminal text, questions, results and native activity details.
 
 #### Phase 3 — official vendor hook adapters
 
-- [ ] Add `parley signal <event>` as the authenticated ingress used only by
+- [x] Add `parley signal <event>` as the authenticated ingress reserved for
   Parley-managed vendor hook adapters.
-- [ ] Normalize official structured hooks, where available, to a deliberately
+- [x] Normalize official structured hooks, where available, to a deliberately
   small vocabulary: `session-started`, `turn-started`, `turn-ended`,
   `awaiting-permission`, `notification` and `session-ended`.
-- [ ] Record the emitting pane and vendor as owned identity; never allow a hook
+- [x] Record the emitting pane and vendor as owned identity; never allow a hook
   payload to choose another sender.
-- [ ] Report **Unknown** when a vendor lacks an authoritative hook. Do not fill
+- [x] Report **Unknown** when a vendor lacks an authoritative hook. Do not fill
   gaps with prompt scraping, terminal heuristics or guessed completion.
-- [ ] Verify each vendor's current official hook contract at implementation
+- [x] Keep high-frequency turn and notification signals out of durable human
+  activity. They update live pane state and a separate bounded in-memory event
+  ring; only session boundaries and awaiting-permission remain durable for
+  supervision and recovery diagnostics.
+- [x] Verify each vendor's current official hook contract at implementation
   time and keep adapters independent of the canonical protocol wording.
+  Verification on 2 September 2026 confirmed session-scoped hook execution for
+  Claude Code and Codex and confirmed Copilot `--plugin-dir` attachment. Copilot
+  remains Unknown until its CLI executes the attached hook. Agy documents hooks
+  only in persistent user or workspace configuration, so Parley intentionally
+  installs no Agy adapter.
 
 #### Phase 4 — review primitives in Status Center
 
-- [ ] Add **Challenge** and **Verify** actions that create one correlated
+- [x] Add **Challenge** and **Verify** actions that create one correlated
   handoff to one explicit pane and retain `inReplyTo` lineage.
-- [ ] Add person-owned verdict and note fields to completed handoffs. Agents may
+- [x] Add person-owned verdict and note fields to completed handoffs. Agents may
   propose evidence but cannot mark their own result reviewed.
-- [ ] Support side-by-side and multi-select review without creating a separate
+- [x] Support side-by-side and multi-select review without creating a separate
   evidence entity or hidden synthesis step.
-- [ ] Promote selected reviewed results into an editable Context Pack with
-  source pane, route, relationship and review state preserved.
-- [ ] Keep source selection explicit and stop at human review before any new
+- [x] Extend selected-result Context Pack promotion so relationship, verdict
+  and review state are preserved with the existing source pane and route
+  attribution.
+- [x] Keep source selection explicit and stop at human review before any new
   vendor submission.
+
+  Implementation verified on 2 September 2026 with deterministic broker,
+  journal, legacy decoding, Context Pack, Markdown export and authenticated
+  native-control transport checks. Linked reviews use the ordinary correlated
+  Ask lifecycle; human verdict mutation has no pane-capability route.
 
 #### Phase 5 — prove the runtime, then prune
 
-- [ ] Add local-only product diagnostics for which coordination primitives are
+- [x] Add local-only product diagnostics for which coordination primitives are
   used, without collecting prompts, results, terminal content or telemetry.
 - [ ] Measure delivery correctness, event loss/replay, recovery time and
   long-running pane stability before expanding automation.
-- [ ] Remove unused duplicate surfaces after their durable data has migrated.
-- [ ] Make runtime soak quality and exact teardown a release gate for this
+- [x] Remove unused duplicate surfaces after their durable data has migrated.
+- [x] Make runtime soak quality and exact teardown a release gate for this
   direction.
+
+  Schema 3 diagnostics now record content-free primitive usage, typed delivery
+  outcomes, the retained event window and authoritative failure-to-session
+  recovery timings. The retired Research Board and separate Handoff Chains
+  surfaces were removed before this phase. Draft releases now fail closed on a
+  25-round, eight-pane Ghostty soak and attach its checksummed JSON report.
+  A passing long-running pane-stability measurement remains open: the managed
+  development harness used on 2 September 2026 denied every Ghostty child shell
+  (0/8 PIDs and 0/8 TTYs), so it could not produce a valid passing report here.
+
+## Ranked product improvements
+
+**Claude review recorded 2 September 2026.** These are the next product
+opportunities in priority order. They remain subject to the product boundary:
+each must improve visible, safe or recoverable cross-vendor coordination
+without replacing vendor-owned reasoning or terminal workflows.
+
+1. [ ] **Two-keystroke selection relay** — Open the existing reviewed composer
+   with the current Ghostty selection and last explicit target, then require a
+   second confirmation to submit. Keep the target name and vendor prominent and
+   never auto-submit. **Effort:** small.
+2. [ ] **Detached Ask recovery and Delegate steering** — Print an Ask handoff
+   id at submission, allow `parley wait <id>` to recover its durable completed
+   answer for the original source credential generation, and guide work likely
+   to exceed one minute toward Delegate. **Effort:** small.
+3. [ ] **Pane attention ring and jump-to-attention shortcut** — Highlight
+   authoritative permission requests, returned results and interrupted
+   handoffs, then cycle those items through the existing attention model. Show
+   signal age so stale hook state is never presented as current fact.
+   **Effort:** small to medium.
+4. [ ] **Explicit restart and vendor-owned resume** — Offer Restart and Resume
+   per pane using only a vendor's documented continuation mechanism, with plain
+   restart as fallback. State clearly that the vendor decides whether its
+   conversation can resume; Parley never claims the session survived.
+   **Effort:** small to medium.
+5. [ ] **Signal provenance and age in the composer** — Show which authenticated
+   pane hook capability reported the advisory state and when, without using it
+   as a delivery refusal or inferring readiness. **Effort:** small.
+6. [ ] **Bounded delegation progress notes** — Add one latest 200-byte,
+   control-stripped, agent-declared progress note to each active delegation and
+   show it in the existing handoff inspector rather than creating an event
+   stream or workflow window. **Effort:** small to medium.
+7. [ ] **Owned workspace facts in the sidebar** — Add pane cwd, Git branch,
+   attributed listening ports and last authoritative attention reason using
+   throttled fixed-argument process inspection, never terminal scraping.
+   **Effort:** medium.
+8. [ ] **Reviewed `parley done --file <path>` results** — Reuse the bounded
+   `agentFileDraft` path so a delegation can return a substantial file for
+   explicit human review and optional Context Pack promotion. Preserve existing
+   path containment, provenance and 90 KB limits. **Effort:** small to medium.
+9. [ ] **Allowlisted Ghostty appearance import** — Reuse appearance-only font,
+   theme and palette settings from the person's Ghostty configuration while
+   excluding commands, key bindings and all behavioral options. Parley's own
+   terminal preference remains the explicit override. **Effort:** small to
+   medium.
+10. [ ] **Notarized automatic updates and Homebrew cask** — After Developer ID
+    notarization, publish a signed update feed from the release workflow and a
+    cask for straightforward installation. Protect the update channel with
+    signed entries and local verification before replacement. **Effort:**
+    medium to large.
 
 ## Current baseline
 
@@ -292,7 +372,7 @@ but it must not reinterpret terminal text or replace the vendor workflow.
 
 ### Release confidence
 
-- [ ] Run the full Ghostty soak on each release candidate and retain the JSON
+- [x] Run the full Ghostty soak on each release candidate and retain the JSON
   report as a local release artifact.
 - [ ] Add packaged-app UI automation for window close/reopen and confirmed quit
   once it can run deterministically on the macOS CI runner.

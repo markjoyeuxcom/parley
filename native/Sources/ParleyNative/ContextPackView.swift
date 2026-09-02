@@ -351,6 +351,7 @@ struct ContextPackView: View {
         case .commandResult: "terminal"
         case .agentFileDraft: "person.crop.circle.badge.questionmark"
         case .workspaceBrief: "doc.text"
+        case .handoffResult: "arrow.trianglehead.branch"
         case .pinnedSnippet: "pin"
         case .editorSelection: "selection.pin.in.out"
         case .editorDiagnostics: "exclamationmark.bubble"

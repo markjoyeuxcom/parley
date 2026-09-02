@@ -340,6 +340,57 @@ public struct RelayCoreClient: Sendable {
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
 
+    public func reviewAskFromUI(
+        sourcePaneID: String,
+        targetPaneID: String,
+        text: String,
+        idempotencyKey: String,
+        inReplyToHandoffID: String,
+        relationship: RelayHandoffRelationship
+    ) throws -> RelayTextResponse {
+        let body = try JSONEncoder().encode(RelayUIReviewAskRequest(
+            sourcePaneID: sourcePaneID,
+            targetPaneID: targetPaneID,
+            text: text,
+            idempotencyKey: idempotencyKey,
+            inReplyToHandoffID: inReplyToHandoffID,
+            relationship: relationship
+        ))
+        let response = try request(
+            method: "POST",
+            path: "/ui/review-ask",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body,
+            receiveTimeout: RelayCoreTransportLimits.trackedResponseTimeout
+        )
+        return RelayTextResponse(
+            status: response.status,
+            text: String(decoding: response.body, as: UTF8.self)
+        )
+    }
+
+    public func updateHandoffReview(
+        _ update: RelayHandoffReviewUpdate
+    ) throws -> RelayTextResponse {
+        let body = try JSONEncoder().encode(update)
+        let response = try request(
+            method: "POST",
+            path: "/ui/handoff-review",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body
+        )
+        return RelayTextResponse(
+            status: response.status,
+            text: String(decoding: response.body, as: UTF8.self)
+        )
+    }
+
     public func askManyFromUI(
         sourcePaneID: String,
         targetPaneIDs: [String],

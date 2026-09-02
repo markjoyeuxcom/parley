@@ -107,7 +107,7 @@ struct ReleaseLifecycleView: View {
                     Divider()
                     lifecycleHeading(
                         "Existing pane runtime signals",
-                        detail: "Ready, working and awaiting-permission are shown only from official structured vendor hooks. Current vendors expose no such hook, so a running pane remains Unknown. Parley can state an exit because it owns the process lifecycle."
+                        detail: "Ready, working and awaiting-permission appear only after a pane capability reports a structured signal. Claude and Codex have session-scoped adapters. Copilot attachment is configured, but remains Unknown unless its CLI actually executes the plugin hook. Agy has no verified per-launch hook path. Parley can state an exit because it owns the process lifecycle."
                     )
                     VStack(spacing: 7) {
                         ForEach(snapshot.runtimeSignals) { signal in
@@ -260,6 +260,11 @@ struct ReleaseLifecycleView: View {
                 Text(signal.detail)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+                if let reportedAt = signal.reportedAt {
+                    Text("Reported \(reportedAt.formatted(date: .abbreviated, time: .standard))")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(10)

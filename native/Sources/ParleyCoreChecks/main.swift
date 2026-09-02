@@ -899,6 +899,7 @@ private func checkInAppHelpGuideCoverage() throws {
 
     let searchable = topics.map(\.searchableText).joined(separator: "\n").lowercased()
     for command in [
+        "parley whoami", "parley panes", "parley events --since beginning",
         "parley ask", "parley answer", "parley relay", "parley paste",
         "parley ask-many", "parley delegate", "parley status", "parley wait",
         "parley done", "parley fail", "parley cancel",
@@ -910,6 +911,10 @@ private func checkInAppHelpGuideCoverage() throws {
         "saved layout", "command palette", "subscription", "compare independently",
         "edited synthesis", "context pack", "utf-8 bytes", "absolute executable",
         "workspace brief", "pinned context", "never attached automatically",
+        "investigation conclusions", "person-authored confidence",
+        "authenticated identity", "content-minimal coordination events",
+        "cursor removed by retention",
+        "context pack from selected results", "no handoff is submitted automatically",
         "human decision", "team template",
         "routing role", "stopped placeholders", "move to workspace",
         "clone configuration", "active handoffs", "parley open",
@@ -3413,13 +3418,13 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "9", "the shared protocol version drifted from the released contract")
+    try expect(AgentProtocol.version == "11", "the shared protocol version drifted from the Phase 3 hook contract")
     try expect(AgentProtocol.text.contains("@reviewer"), "shared protocol omitted explicit stable-role addressing")
     try expect(
         AgentProtocol.text.lowercased().contains("same-vendor") && AgentProtocol.text.contains("different pane"),
         "shared protocol omitted the same-vendor, distinct-pane routing rule"
     )
-    for command in ["parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait", "parley cancel", "parley context draft", "parley context discard", "--context <draft-id>"] {
+    for command in ["parley whoami", "parley panes", "parley events --since", "parley signal", "parley ask-many", "parley delegate", "parley done", "parley fail", "parley status", "parley wait", "parley cancel", "parley context draft", "parley context discard", "--context <draft-id>"] {
         try expect(AgentProtocol.text.contains(command), "shared protocol omitted \(command)")
     }
     try expect(
@@ -3435,12 +3440,22 @@ private func checkSharedProtocolLaunchAdapters() throws {
     try expect(AgentProtocol.text.contains("workspace lead"), "shared protocol omitted lead routing")
 
     let claude = AgentProtocol.command(for: .claude, protocolDirectory: protocolDirectory)
-    try expect(claude == ["claude", "--append-system-prompt", AgentProtocol.text], "Claude launch adapter changed the shared protocol")
+    try expect(
+        Array(claude.prefix(3)) == ["claude", "--append-system-prompt", AgentProtocol.text],
+        "Claude launch adapter changed the shared protocol"
+    )
+    try expect(claude.contains("--settings"), "Claude launch adapter omitted its generated hook settings")
 
     let codex = AgentProtocol.command(for: .codex, protocolDirectory: protocolDirectory)
     try expect(codex.first == "codex" && codex.dropFirst().first == "-c", "Codex launch adapter omitted its config override")
-    try expect(codex.last?.hasPrefix("developer_instructions=") == true, "Codex launch adapter omitted developer instructions")
-    let codexValue = try require(codex.last?.split(separator: "=", maxSplits: 1).last.map(String.init), "Codex protocol value disappeared")
+    let codexProtocolArgument = try require(
+        codex.first(where: { $0.hasPrefix("developer_instructions=") }),
+        "Codex launch adapter omitted developer instructions"
+    )
+    let codexValue = try require(
+        codexProtocolArgument.split(separator: "=", maxSplits: 1).last.map(String.init),
+        "Codex protocol value disappeared"
+    )
     let decodedCodex = try JSONDecoder().decode(String.self, from: Data(codexValue.utf8))
     try expect(decodedCodex == AgentProtocol.text, "Codex launch adapter changed the shared protocol")
 
@@ -3449,9 +3464,10 @@ private func checkSharedProtocolLaunchAdapters() throws {
 
     let copilot = AgentProtocol.command(for: .copilot, protocolDirectory: protocolDirectory)
     try expect(
-        copilot == ["copilot", "--allow-tool=shell(parley)"],
+        copilot.contains("--allow-tool=shell(parley)"),
         "Copilot launch adapter did not limit automatic approval to Parley's shim"
     )
+    try expect(copilot.contains("--plugin-dir"), "Copilot launch adapter omitted its generated hook plugin")
     let copilotEnvironment = AgentProtocol.environment(
         for: .copilot,
         protocolDirectory: protocolDirectory,
@@ -4175,6 +4191,30 @@ private func checkContextPacksAreExplicitBoundedAndAttributed() throws {
     )
     try expect(terminal.source.kind == .visibleTerminal, "terminal-selection context lost its source kind")
     try expect(terminal.source.detail.contains("%7") && terminal.text == "Only the selected terminal text", "terminal-selection context changed its explicit capture")
+    let reviewedHandoff = try statusHandoff(
+        id: "reviewed-result",
+        kind: .ask,
+        state: .completed,
+        sourceWorkspaceID: "@source",
+        targetWorkspaceID: "@target",
+        occurredAt: 80,
+        text: "Review the exact cancellation behavior.",
+        resultText: "Cancellation remains distinct from interruption.",
+        sourceName: "Claude",
+        targetName: "Codex"
+    )
+    let handoffResult = try builder.handoffResult(reviewedHandoff)
+    try expect(handoffResult.source.kind == .handoffResult, "a selected handoff result lost its provenance kind")
+    try expect(handoffResult.source.referenceID == reviewedHandoff.id, "a selected handoff result lost its durable handoff identity")
+    try expect(
+        handoffResult.source.detail.contains("Claude") && handoffResult.source.detail.contains("Codex"),
+        "a selected handoff result lost its exact route"
+    )
+    try expect(
+        handoffResult.text.contains(reviewedHandoff.text)
+            && handoffResult.text.contains(reviewedHandoff.resultText ?? ""),
+        "a selected handoff result omitted its question or returned result"
+    )
 
     let command = try builder.commandResult(
         executablePath: "/usr/bin/printf",
@@ -4465,9 +4505,28 @@ private func checkWorkspaceBriefsAreDurableAndExplicitlyAttached() throws {
         goal: "Ship reviewed cross-vendor context.",
         constraints: "No API keys.\nNo implicit agent dispatch.",
         decisions: "Every attachment opens as editable context.",
+        conclusions: "The authenticated handoff is the durable evidence primitive.",
+        rationale: "It preserves the real source, target and lifecycle without a parallel board.",
+        confidence: "High, based on the completed cross-vendor checks.",
+        openQuestions: "How should official vendor hooks report turn completion?",
         now: createdAt
     )
     try expect(brief.createdAt == createdAt && brief.updatedAt == createdAt, "workspace brief timestamps were not stable")
+
+    let concise = WorkspaceBrief(
+        workspaceID: "@concise",
+        workspaceName: "concise",
+        goal: "Keep attached briefs focused.",
+        constraints: "",
+        decisions: ""
+    ).renderedText
+    try expect(
+        !concise.contains("Investigation conclusions:")
+            && !concise.contains("Rationale:")
+            && !concise.contains("Confidence (person-authored):")
+            && !concise.contains("Open questions:"),
+        "empty investigation fields added noise to a concise workspace brief"
+    )
 
     let builder = ContextPackBuilder()
     let ordinary = try builder.terminalSelection(paneID: "%1", paneName: "Claude", text: "Selected output only")
@@ -4488,6 +4547,14 @@ private func checkWorkspaceBriefsAreDurableAndExplicitlyAttached() throws {
     ))
     try expect(withBrief.contains("Current goal") && withBrief.contains(brief.goal), "explicitly attached workspace brief was omitted")
     try expect(withBrief.contains("No API keys.\nNo implicit agent dispatch."), "workspace brief formatting was flattened")
+    try expect(
+        withBrief.contains("Investigation conclusions")
+            && withBrief.contains(brief.conclusions)
+            && withBrief.contains(brief.rationale)
+            && withBrief.contains(brief.confidence)
+            && withBrief.contains(brief.openQuestions),
+        "an explicitly attached workspace brief omitted its durable investigation record"
+    )
     let editedAttachment = attached.replacingText("Edited only for this receiving vendor.")
     try expect(editedAttachment.isEdited, "editing an attached brief was not visible in the preview")
     let unchangedBrief = try store.brief(workspaceID: "@1")
@@ -4499,11 +4566,32 @@ private func checkWorkspaceBriefsAreDurableAndExplicitlyAttached() throws {
         goal: "Finish the workspace brief flow.",
         constraints: brief.constraints,
         decisions: brief.decisions,
+        conclusions: brief.conclusions,
+        rationale: brief.rationale,
+        confidence: brief.confidence,
+        openQuestions: brief.openQuestions,
         now: Date(timeIntervalSince1970: 120)
     )
     try expect(updated.id == brief.id && updated.createdAt == createdAt, "updating a workspace brief created a second identity")
     let updatedBriefs = try store.briefs()
     try expect(updatedBriefs.count == 1, "one workspace acquired multiple briefs")
+    let legacyFile = directory.appendingPathComponent("legacy-workspace-briefs.json")
+    let legacyJSON = """
+    {"version":1,"briefs":[{"id":"legacy","workspaceID":"@legacy","workspaceName":"Legacy","goal":"Keep the old brief readable.","constraints":"","decisions":"Existing decision.","createdAt":0,"updatedAt":0}]}
+    """
+    try Data(legacyJSON.utf8).write(to: legacyFile, options: .atomic)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: legacyFile.path)
+    let legacy = try require(
+        try WorkspaceBriefStore(file: legacyFile).brief(workspaceID: "@legacy"),
+        "a legacy workspace brief did not survive the investigation-field migration"
+    )
+    try expect(
+        legacy.conclusions.isEmpty
+            && legacy.rationale.isEmpty
+            && legacy.confidence.isEmpty
+            && legacy.openQuestions.isEmpty,
+        "missing investigation fields were invented while loading a legacy workspace brief"
+    )
     let other = try store.save(
         workspaceID: "@2",
         workspaceName: "consumer",
@@ -4665,7 +4753,7 @@ private func checkDiagnosticsExportIsUsefulAndPrivacyBounded() throws {
         "READINESS_SECRET_6EF4",
         "RECOVERY_SECRET_F6A0",
     ]
-    let handoff = try statusHandoff(
+    var handoff = try statusHandoff(
         id: "diagnostic-failure",
         kind: .ask,
         state: .failed,
@@ -4673,12 +4761,39 @@ private func checkDiagnosticsExportIsUsefulAndPrivacyBounded() throws {
         targetWorkspaceID: "@1",
         occurredAt: 100,
         text: secrets[0],
-        resultText: secrets[1],
+        resultText: nil,
         attention: .targetUnavailable,
         sourceName: secrets[2],
         targetName: secrets[3],
         transitionDetail: secrets[4],
         transitionCount: 25
+    )
+    handoff.retryDisposition = .safe
+    var reviewed = try statusHandoff(
+        id: "diagnostic-review",
+        kind: .ask,
+        state: .completed,
+        sourceWorkspaceID: "@0",
+        targetWorkspaceID: "@1",
+        occurredAt: 105,
+        text: "PRIVATE_REVIEW_QUESTION",
+        resultText: secrets[1]
+    )
+    reviewed.inReplyToHandoffID = handoff.id
+    reviewed.relationship = .challenge
+    reviewed.humanVerdict = .accepted
+    reviewed.humanReviewNote = secrets[4]
+    reviewed.reviewedAt = Date(timeIntervalSince1970: 108)
+    let recoverySignal = RelayActivityEvent(
+        kind: .vendorSessionStarted,
+        occurredAt: Date(timeIntervalSinceReferenceDate: 110),
+        workspaceID: "@1",
+        workspaceName: secrets[5],
+        paneID: handoff.targetPaneID,
+        paneName: secrets[3],
+        paneKind: .claude,
+        detail: secrets[9],
+        origin: .automation
     )
     let pane = WorkbenchPane(
         id: "%77",
@@ -4725,7 +4840,8 @@ private func checkDiagnosticsExportIsUsefulAndPrivacyBounded() throws {
         coreAvailable: false,
         workspaceCount: 2,
         panes: [pane],
-        handoffs: [handoff],
+        handoffs: [handoff, reviewed],
+        activityEvents: [recoverySignal],
         readiness: readiness
     )
     let encoded = try DiagnosticsReportEncoder.encode(report)
@@ -4744,6 +4860,33 @@ private func checkDiagnosticsExportIsUsefulAndPrivacyBounded() throws {
         "diagnostics did not bound a pathological failure transition trail"
     )
     try expect(report.panes.count == 1, "diagnostics omitted the pane process state")
+    try expect(report.schemaVersion == 3, "coordination diagnostics did not advance their schema")
+    try expect(report.coordination.usage.askHandoffs == 2, "diagnostics lost Ask usage")
+    try expect(report.coordination.usage.challengeHandoffs == 1, "diagnostics lost Challenge usage")
+    try expect(report.coordination.usage.verifyHandoffs == 0, "diagnostics invented Verify usage")
+    try expect(report.coordination.usage.reviewedResults == 1, "diagnostics lost person-owned review usage")
+    try expect(report.coordination.usage.vendorSignals == 1, "diagnostics lost authoritative vendor signals")
+    try expect(report.coordination.delivery.totalHandoffs == 2, "delivery quality used the wrong population")
+    try expect(report.coordination.delivery.preDeliveryFailures == 1, "delivery quality lost a safe failed attempt")
+    try expect(report.coordination.delivery.returnedResults == 1, "delivery quality miscounted returned results")
+    try expect(
+        report.coordination.eventReplay.retainedHandoffTransitions == 26
+            && report.coordination.eventReplay.retainedActivityEvents == 1
+            && report.coordination.eventReplay.retainedVendorSignals == 1,
+        "diagnostics did not measure the content-free replay window"
+    )
+    try expect(
+        report.coordination.recovery.authoritativeSamples == 1
+            && report.coordination.recovery.medianMilliseconds == 10_000
+            && report.coordination.recovery.maximumMilliseconds == 10_000,
+        "diagnostics did not measure authoritative failure-to-session recovery"
+    )
+    try expect(
+        report.coordination.eventReplay.oldestEventAt == Date(timeIntervalSinceReferenceDate: 100)
+            && report.coordination.eventReplay.newestEventAt == Date(timeIntervalSinceReferenceDate: 124),
+        "diagnostics reported the wrong retained replay window"
+    )
+
 
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("parley-diagnostics-check-\(UUID().uuidString)", isDirectory: true)
@@ -9138,6 +9281,9 @@ let checks: [(String, () throws -> Void)] = [
     ("workbench keyboard shortcut routing", checkWorkbenchKeyboardShortcuts),
     ("idle agent reaper gates", checkIdleAgentReaperGates),
     ("shared protocol launch adapters", checkSharedProtocolLaunchAdapters),
+    ("authenticated agent discovery and resumable events", checkAuthenticatedAgentDiscoveryAndResumableEvents),
+    ("official vendor hook adapters and authenticated signals", checkOfficialVendorHookAdaptersAndSignals),
+    ("linked handoff review primitives", checkLinkedHandoffReviewPrimitives),
     ("bounded supervised workflow lifecycle", checkBoundedSupervisedWorkflowLifecycle),
     ("smart orchestration modes and safety boundaries", checkSmartOrchestrationModesAndBoundaries),
     ("supervised lead workflow policy and cancellation", checkSupervisedLeadWorkflowPolicyAndCancellation),

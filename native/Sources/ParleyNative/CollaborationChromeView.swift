@@ -45,7 +45,7 @@ struct HandoffComposerView: View {
         if let draft = model.handoffComposerDraft {
             VStack(spacing: 8) {
                 HStack(spacing: 7) {
-                    Text("REVIEWED HANDOFF")
+                    Text(draft.relationship == nil ? "REVIEWED HANDOFF" : "LINKED REVIEW")
                         .font(.system(size: 8, weight: .bold, design: .monospaced))
                         .foregroundStyle(Color.accentColor)
                     Text(draft.sourceName)
@@ -55,7 +55,7 @@ struct HandoffComposerView: View {
                         .foregroundStyle(.secondary)
                     Text(draft.targetName)
                         .font(.system(size: 10, weight: .semibold))
-                    Text("ASK")
+                    Text(draft.relationship?.rawValue.uppercased() ?? "ASK")
                         .font(.system(size: 8, weight: .bold, design: .monospaced))
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -65,6 +65,7 @@ struct HandoffComposerView: View {
                         Image(systemName: "xmark")
                     }
                     .buttonStyle(.plain)
+                    .disabled(model.submittingHandoffComposer)
                     .accessibilityLabel("Cancel reviewed handoff")
                 }
 
@@ -81,11 +82,19 @@ struct HandoffComposerView: View {
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
                 }
+                .disabled(model.submittingHandoffComposer)
                 .accessibilityLabel("Message to \(draft.targetName)")
 
                 HStack(spacing: 8) {
                     if draft.includesTerminalSelection {
                         Label("Terminal selection included", systemImage: "text.viewfinder")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    } else if let parentID = draft.inReplyToHandoffID {
+                        Label(
+                            "Linked to \(String(parentID.prefix(8)))",
+                            systemImage: "arrow.triangle.branch"
+                        )
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
                     } else {
@@ -96,10 +105,18 @@ struct HandoffComposerView: View {
                     Spacer()
                     Button("Insert Selection") { model.insertSelectionInHandoffComposer() }
                         .help("Insert only the text currently selected in \(draft.sourceName)")
+                        .disabled(model.submittingHandoffComposer)
                     Button("Cancel") { model.cancelHandoffComposer() }
-                    Button("Send Ask") { model.submitHandoffComposer() }
+                        .disabled(model.submittingHandoffComposer)
+                    Button(
+                        model.submittingHandoffComposer
+                            ? "Waiting on \(draft.relationship?.label ?? "Ask")..."
+                            : "Send \(draft.relationship?.label ?? "Ask")"
+                    ) { model.submitHandoffComposer() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(RelayText.clean(draft.text).isEmpty)
+                        .disabled(
+                            RelayText.clean(draft.text).isEmpty || model.submittingHandoffComposer
+                        )
                         .keyboardShortcut(.return, modifiers: [.command])
                 }
                 .buttonStyle(.bordered)

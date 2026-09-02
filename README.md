@@ -23,15 +23,23 @@ or bypass a vendor's approval flow.
 - Smart Plan → Review → Implement → Verify orchestration in Supervised and Auto
   modes. Auto advances only from correlated answers and always stops for the
   person's final completion decision.
-- Durable local handoff history and Status Center recovery actions.
+- Durable local handoff history, Status Center recovery actions and explicit
+  multi-select promotion of returned Ask or Delegate results into an editable
+  Context Pack draft.
 - A native Task Manager with truthful app and pane CPU/RSS sampling, exact
   Ghostty TTY process attribution, workspace hierarchy and confirmed pane-level
   controls.
 - Folder-backed workspaces, favourites, saved layouts, portable team
   templates, stable roles, workspace leads, pane move and configuration clone.
-- Reviewed context packs, workspace briefs, pinned snippets, Git diff/file
-  capture and a VS Code companion with an explicit source composer, in-memory
-  Context Basket, collaboration sidebar and correlated preview acknowledgement.
+- Reviewed context packs; workspace briefs with goals, decisions,
+  person-authored investigation conclusions, rationale, confidence and open
+  questions; pinned snippets; Git diff/file capture; and a VS Code companion
+  with an explicit source composer, in-memory Context Basket, collaboration
+  sidebar and correlated preview acknowledgement.
+- Generated, session-scoped lifecycle hooks for Claude Code and Codex, plus a
+  Copilot plugin attachment. Runtime state changes only after the pane capability
+  reports a real signal; Copilot and unsupported vendors otherwise remain visibly
+  Unknown rather than being inferred from terminal text.
 - Production and Development runtime isolation.
 - Pane-scoped relay capabilities and a macOS Seatbelt boundary around every
   vendor process tree.
@@ -62,6 +70,9 @@ identity and the shared `parley` command. A caller cannot claim to be another
 pane.
 
 ```text
+parley whoami
+parley panes
+parley events --since <beginning|now|cursor>
 parley relay <target> <text>
 parley paste <target> <text>
 parley ask <target> <question>
@@ -72,6 +83,30 @@ parley fail <id|current> <report>
 parley status
 parley wait <id|current>
 ```
+
+`whoami` reports the authenticated caller's pane, vendor, workspace, role and
+app-owned lifecycle state. `panes` lists at most 128 explicit non-self agent
+targets with authoritative process, protocol, relay and Ghostty input-path
+facts. `events` returns at most 100 monotonically ordered handoff transitions and
+native lifecycle records per page; continue with its `nextCursor`. These JSON
+responses never contain credentials, folders, terminal text, questions,
+results or activity-detail content.
+
+High-frequency turn and notification signals update live pane state and a
+separate bounded in-memory event ring. They never consume durable human-history
+retention or appear in the Status Center timeline. Session start/end and
+awaiting-permission signals remain in the small durable coordination journal
+because they support supervision and recovery diagnostics.
+
+Parley generates per-launch hook configuration for Claude Code and Codex and a
+plugin attachment for Copilot. Those adapters report only an allowlisted
+lifecycle event through the pane's existing authenticated capability; they
+ignore vendor hook input and cannot choose another sender. Copilot remains
+Unknown unless its CLI actually executes the attached plugin hook. The reserved
+`parley signal <event>` ingress is
+not an agent coordination command. Agy remains Unknown because its documented
+hooks require persistent user or workspace configuration rather than a safe
+per-launch attachment.
 
 Targets are explicit pane ids, unique vendors or stable roles such as
 `@reviewer` and `workspace/@reviewer`. Parley refuses missing, ambiguous,
@@ -97,13 +132,18 @@ lineage, recovery and authoritative lifecycle events.
 
 The unreleased Research Board experiment and the separate Handoff Chains
 surface have been retired. Their independent models and UI are removed;
-ordinary broker handoff history, receipts, recovery controls and Workspace
-Briefs remain. Useful primitives—human verdicts and notes,
-verification/challenge lineage and reviewed multi-result Context Pack
-promotion—will move onto handoffs in Status Center. Any legacy
-`research-board.json` or `handoff-chains.json` file is left untouched but is
-not loaded by the app; neither file is a stable format or protocol to integrate
-with.
+ordinary broker handoff history, receipts and recovery controls remain.
+Workspace Briefs now hold person-authored investigation conclusions,
+rationale, confidence and open questions. Status Center can inspect results
+beside the multi-select history, launch Challenge or Verify as one editable
+correlated Ask to one explicit reviewer, and save a person-owned verdict and
+note. It can also promote 1 to 16 explicitly selected returned Ask or Delegate
+handoffs into an editable, attributed Context Pack draft without submitting a
+new handoff. Linked-review lineage and human review metadata remain attached to
+the existing durable handoff and are preserved in Context Packs and exports.
+Any legacy `research-board.json` or `handoff-chains.json` file is left
+untouched but is not loaded by the app; neither file is a stable format or
+protocol to integrate with.
 
 The committed phases, migration guarantees and explicit non-goals are in the
 [roadmap](ROADMAP.md#official-direction-vendor-driven-parley-coordinated).
@@ -248,6 +288,18 @@ The deterministic checks do not launch a vendor CLI or spend subscription
 quota. The Ghostty checks and soak use real local shells, exercise more than
 four panes, verify per-pane input isolation, hide the UI while input continues,
 then verify every exact child PID ends at teardown.
+
+Tools > Export Diagnostics writes a local schema-3 report with aggregate counts
+for Relay, Paste, Ask, Delegate, Challenge, Verify, human reviews and retained
+durable vendor signals. It also measures typed delivery outcomes, the
+bounded content-free event projection available to Status Center and
+failure-to-restart/session recovery times. High-frequency vendor turn signals
+are excluded from the durable human-history count. Prompts, results, terminal
+content, names, folders and raw event bodies
+are excluded, and nothing is uploaded.
+
+The manual GitHub draft workflow must pass the 25-round eight-pane Ghostty soak.
+Its standalone JSON report is checksummed and attached to the draft release.
 
 ## Package and release
 

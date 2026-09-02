@@ -283,6 +283,24 @@ public enum ParleyHelpGuide {
             symbol: "arrow.left.arrow.right",
             sections: [
                 ParleyHelpSection(
+                    id: "handoffs-discovery",
+                    title: "Discover identity, panes and events",
+                    paragraphs: [
+                        "The managed command authenticates from the calling pane's capability. These read-only commands cannot choose another sender, inject input, start a pane or control a vendor.",
+                    ],
+                    items: [
+                        "Whoami returns this pane's id, vendor, workspace, canonical role, lead flag and app-owned lifecycle facts. It never returns a credential, folder, command, prompt or terminal text.",
+                        "Panes returns at most 128 explicit non-self agent targets. Running, stopped, exited, protocol-restart, relay and Ghostty input-path fields report only facts Parley owns; they do not claim a vendor is thinking, idle or ready at its prompt.",
+                        "Events returns at most 100 monotonically ordered handoff transitions and native activity records. It omits question, result, terminal and activity-detail content.",
+                        "Begin with beginning to replay retained events or now to start at the current edge. Continue with nextCursor while hasMore is true. A cursor removed by retention fails explicitly instead of silently skipping records.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand("parley whoami", "Show the authenticated identity of this exact agent pane as JSON."),
+                        ParleyHelpCommand("parley panes", "List bounded explicit agent targets and authoritative lifecycle facts as JSON."),
+                        ParleyHelpCommand("parley events --since beginning", "Read the first bounded page of retained content-minimal coordination events."),
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "handoffs-difference",
                     title: "The important difference",
                     items: [
@@ -367,7 +385,7 @@ public enum ParleyHelpGuide {
                     ],
                     items: [
                         "Pinned Snippet — durable, application-wide reusable context such as architecture rules, test instructions and review criteria.",
-                        "Workspace Brief — durable context for one live workspace: its current goal, constraints and important decisions.",
+                        "Workspace Brief — durable person-owned context for one live workspace: its current goal, constraints, decisions, investigation conclusions, rationale, confidence and open questions.",
                         "Vendor pane — the conversation and session history owned by that vendor CLI. Parley does not manufacture or merge this memory.",
                         "Context Pack — an ephemeral, editable bundle for one handoff. Files, diffs, terminal output and saved references enter as separately attributed snapshots.",
                     ]
@@ -403,7 +421,7 @@ public enum ParleyHelpGuide {
                     id: "context-model-choose",
                     title: "Choose the smallest useful scope",
                     items: [
-                        "Use a Workspace Brief for the current project goal, boundaries and decisions that should not be silently reopened.",
+                        "Use a Workspace Brief for the current project goal, boundaries, decisions, investigation conclusions, rationale, person-authored confidence and open questions that should survive later handoffs.",
                         "Use a Pinned Snippet for guidance you expect to reuse across repositories or workspaces.",
                         "Use a Context Pack for the exact evidence and request another vendor needs for one implementation, review or comparison.",
                         "Continue in the same vendor pane when the new instruction depends on that CLI's existing conversation; start another pane when it does not.",
@@ -477,7 +495,7 @@ public enum ParleyHelpGuide {
                     id: "context-packs-workspace-brief",
                     title: "Maintain a workspace brief",
                     paragraphs: [
-                        "Open Context and choose Create Workspace Brief or Edit Workspace Brief. Record the current goal, constraints and important decisions once for that live workspace. Saving is local and does not contact an agent.",
+                        "Open Context and choose Create Workspace Brief or Edit Workspace Brief. Record the current goal, constraints and important decisions plus person-owned investigation conclusions, rationale, person-authored confidence and open questions for that live workspace. Empty investigation fields remain unrecorded; Parley never infers them. Saving is local and does not contact an agent.",
                         "A workspace brief is never attached automatically. Choose New Context Pack with Workspace Brief, or add it from an open pack, then inspect and edit the attributed snapshot before sending.",
                     ],
                     items: [
@@ -776,13 +794,18 @@ public enum ParleyHelpGuide {
                 ),
                 ParleyHelpSection(
                     id: "status-history-controls",
-                    title: "Search, select, export, or ask again",
+                    title: "Search, select, review, export, or ask again",
                     paragraphs: [
                         "Collaboration History searches the bounded local handoff snapshot already loaded by Status Center. It creates no remote index and sends no search text anywhere. Multiple search words are literal, case-insensitive AND terms: every word must appear somewhere in the same handoff's participants, workspaces, question, returned result, status, attention state or delivery details.",
                         "Kind and outcome filters compose with workspace scope and Show Dismissed. They change only this view; counts, durable handoffs and agent sessions are unchanged.",
                     ],
                     items: [
                         "Tick individual records, or use Select Results for the current search. Export Selected writes only that explicit selection to a local owner-only Markdown file.",
+                        "Context Pack from Selected Results opens 1–16 explicitly selected returned Ask or Delegate results as separately attributed, editable sources. Each source keeps its handoff id, route, workspaces, question and exact returned result. No handoff is submitted automatically; choosing a receiving pane remains a later human action in the existing Context Pack preview.",
+                        "Challenge and Verify are available on a returned Ask or Delegate. Each menu names the original ready source and requires one explicit relay-ready reviewer pane; a busy reviewer cannot be selected.",
+                        "The chosen result opens in the main workbench as a complete editable linked-review Ask. Nothing is submitted until Send Challenge or Send Verify, and the resulting handoff retains its parent id and purpose.",
+                        "The Human Review editor stores an optional person-owned verdict and note on the same handoff. Agent panes have no command or capability route that can set this state.",
+                        "Relationship, verdict, note and review time are searchable and remain visible in selected-result Context Packs and Markdown exports.",
                         "With one workspace selected in Status Center, the archive menu can export every retained handoff involving that workspace, including dismissed records. The export contains handoff bodies and receipts, not lifecycle activity. The neighbouring Delete History action removes eligible handoffs and lifecycle activity only after a workspace-specific destructive confirmation; active work remains.",
                         "Local retention is core-owned and separate for Production and Development. Choose a bound of 100, 250 or 500 for both handoffs and lifecycle events. Lowering it immediately and irreversibly removes the oldest eligible records; active handoffs are preserved, and increasing it later cannot restore deleted history.",
                         "The Markdown export deliberately contains complete question, instruction and returned-result bodies plus identities and delivery receipts. Review it before sharing; it is different from Parley's privacy-bounded diagnostics export.",
@@ -815,6 +838,7 @@ public enum ParleyHelpGuide {
                         "Tools → Task Manager shows Parley's application process and only the processes attributed to live Ghostty panes. It groups resource use by program, workspace and pane; it is not a system-wide Activity Monitor.",
                         "CPU is calculated from two consecutive samples, so the first sample truthfully shows an unavailable value. App RSS and Pane RSS are separate because summing resident memory can count shared pages more than once.",
                         "Process rows are read-only. Focus, diagnostic copy, Control-C, restart and close operate on the owning pane; interruption, restart and close keep their normal confirmations.",
+                        "The diagnostics report contains aggregate coordination usage, typed delivery outcomes, retained event-window bounds and authoritative recovery timings. It excludes prompts, results, terminal content, names, folders and raw event bodies, and Parley never uploads it.",
                     ]
                 ),
             ]
@@ -837,7 +861,8 @@ public enum ParleyHelpGuide {
                     id: "release-runtime-hooks",
                     title: "Runtime state stays Unknown without evidence",
                     paragraphs: [
-                        "Parley shows Ready, Working or Awaiting Permission only if a vendor supplies a trustworthy structured per-session hook. Current vendors do not, so a running pane is Unknown. Terminal prose, silence, animation and elapsed time never become runtime facts.",
+                        "Parley installs generated, session-scoped hook adapters for Claude and Codex and attaches a generated plugin for Copilot. State changes only after the pane's authenticated capability reports a fixed content-free event. Copilot remains Unknown unless its CLI executes the attached plugin hook; Agy remains Unknown because its documented hooks require persistent user or workspace configuration. Terminal prose, silence, animation and elapsed time never become runtime facts.",
+                        "Turn and notification signals update live pane state and a separate bounded in-memory event ring. They do not consume durable human-history retention or appear in the Status Center timeline. Session boundaries and awaiting-permission remain durable for supervision and recovery diagnostics.",
                         "Exited is different: Parley owns the process lifecycle and can report an observed exit and status without reading terminal content.",
                     ]
                 ),

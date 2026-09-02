@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "9"
+    public static let version = "11"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -11,6 +11,21 @@ public enum AgentProtocol {
     You are running inside a Parley agent pane. Follow this protocol even when
     older conversation text describes different relay behaviour.
 
+    - Inspect this pane's authenticated identity with `parley whoami`. Its JSON
+      contains app-owned pane, vendor, workspace, role and lifecycle fields, never
+      a credential, folder, prompt or terminal text.
+    - Discover explicit non-self agent targets with `parley panes`. Treat its
+      lifecycle and input-path fields as Parley-owned facts, not as a claim that
+      a vendor is thinking, idle or ready at its prompt.
+    - Read bounded local coordination events with
+      `parley events --since beginning`, `parley events --since now`, or the
+      `nextCursor` returned by an earlier page. Events contain identities and
+      lifecycle transitions only; fetch another page when `hasMore` is true.
+
+    - Parley-owned vendor hook adapters may invoke `parley signal <event>` to
+      report content-free lifecycle facts. This command is reserved for those
+      generated adapters: never invoke it yourself or treat it as a substitute
+      for `done`, `fail`, `answer`, or a person-visible permission prompt.
     - To ask another agent pane a question and continue this same turn with its
       answer, run `parley ask <target> "<question>"` and wait. It submits the
       question; its stdout is the correlated answer. Use this for consultation.
@@ -67,6 +82,7 @@ public enum AgentProtocol {
         let rules = directory.appendingPathComponent("AGENTS.md")
         try text.write(to: rules, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rules.path)
+        try VendorHookAdapter.install(in: directory, fileManager: fileManager)
         return directory
     }
 
@@ -76,8 +92,10 @@ public enum AgentProtocol {
             []
         case .claude:
             ["claude", "--append-system-prompt", text]
+                + VendorHookAdapter.launchArguments(for: kind, protocolDirectory: protocolDirectory)
         case .codex:
             ["codex", "-c", "developer_instructions=\(tomlString(text))"]
+                + VendorHookAdapter.launchArguments(for: kind, protocolDirectory: protocolDirectory)
         case .agy:
             ["agy", "--add-dir", protocolDirectory.path]
         case .copilot:
@@ -86,6 +104,7 @@ public enum AgentProtocol {
             // person approving it; all filesystem and other shell tools retain
             // Copilot's normal confirmation flow.
             ["copilot", "--allow-tool=shell(parley)"]
+                + VendorHookAdapter.launchArguments(for: kind, protocolDirectory: protocolDirectory)
         }
     }
 

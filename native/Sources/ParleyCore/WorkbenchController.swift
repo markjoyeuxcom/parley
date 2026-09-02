@@ -127,6 +127,9 @@ public final class WorkbenchController: @unchecked Sendable {
                         document.panes[index].relayEnabled = false
                         document.panes[index].protocolVersion = nil
                         document.panes[index].currentCommand = "stopped"
+                        document.panes[index].vendorRuntimeState = nil
+                        document.panes[index].vendorRuntimeSignal = nil
+                        document.panes[index].vendorRuntimeSignaledAt = nil
                     } else {
                         document.panes[index].isStarted = true
                         document.panes[index].currentCommand = loginShellExecutable().lastPathComponent
@@ -490,6 +493,9 @@ public final class WorkbenchController: @unchecked Sendable {
             document.panes[index].relayEnabled = false
             document.panes[index].protocolVersion = nil
             document.panes[index].currentCommand = "stopped"
+            document.panes[index].vendorRuntimeState = nil
+            document.panes[index].vendorRuntimeSignal = nil
+            document.panes[index].vendorRuntimeSignaledAt = nil
             try relayRuntime?.credentials.forget(paneID)
             try persistLocked()
         }
@@ -542,6 +548,9 @@ public final class WorkbenchController: @unchecked Sendable {
                 document.panes[index].relayEnabled = false
                 document.panes[index].protocolVersion = nil
                 document.panes[index].currentCommand = "stopped"
+                document.panes[index].vendorRuntimeState = nil
+                document.panes[index].vendorRuntimeSignal = nil
+                document.panes[index].vendorRuntimeSignaledAt = nil
             }
             document.ownerPID = 0
             try persistLocked()
@@ -647,6 +656,9 @@ public final class WorkbenchController: @unchecked Sendable {
                 clone.relayEnabled = false
                 clone.protocolVersion = nil
                 clone.currentCommand = "stopped"
+                clone.vendorRuntimeState = nil
+                clone.vendorRuntimeSignal = nil
+                clone.vendorRuntimeSignaledAt = nil
             }
             document.panes.append(clone)
             document.activity[clone.id] = Date()
@@ -784,6 +796,36 @@ public final class WorkbenchController: @unchecked Sendable {
         try updatePaneRuntime(paneID: paneID) { $0.cwd = path }
     }
 
+    public func recordVendorSignal(
+        paneID: String,
+        signal: VendorHookSignal,
+        occurredAt: Date
+    ) throws {
+        try lock.withLock {
+            guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
+                throw ParleyWorkbenchError.paneNotFound(paneID)
+            }
+            let pane = document.panes[index]
+            guard pane.kind.isAgent, pane.isStarted, !pane.isDead,
+                  pane.relayEnabled, pane.hasCurrentProtocol else {
+                throw ParleyWorkbenchError.commandFailed(
+                    "Parley refused a lifecycle signal from an inactive agent pane."
+                )
+            }
+            guard VendorHookAdapter.supportedSignals(for: pane.kind).contains(signal) else {
+                throw ParleyWorkbenchError.commandFailed(
+                    "\(pane.kind.label) has no supported Parley hook for \(signal.rawValue)."
+                )
+            }
+            document.panes[index].vendorRuntimeState = signal.runtimeState(
+                after: document.panes[index].vendorRuntimeState
+            )
+            document.panes[index].vendorRuntimeSignal = signal
+            document.panes[index].vendorRuntimeSignaledAt = occurredAt
+            document.activity[paneID] = occurredAt
+        }
+    }
+
     public func terminalDidAttach(paneID: String) throws {
         try updatePaneRuntime(paneID: paneID) {
             $0.inputAvailable = $0.isStarted && !$0.isDead
@@ -802,6 +844,9 @@ public final class WorkbenchController: @unchecked Sendable {
             if !processAlive {
                 $0.inputAvailable = false
                 $0.currentCommand = "exited"
+                $0.vendorRuntimeState = nil
+                $0.vendorRuntimeSignal = nil
+                $0.vendorRuntimeSignaledAt = nil
             }
         }
     }
@@ -926,6 +971,9 @@ public final class WorkbenchController: @unchecked Sendable {
         document.panes[index].protocolVersion = document.panes[index].kind.isAgent ? AgentProtocol.version : nil
         document.panes[index].currentCommand = document.panes[index].kind.rawValue
         document.panes[index].permissionSelection = profile?.selection
+        document.panes[index].vendorRuntimeState = nil
+        document.panes[index].vendorRuntimeSignal = nil
+        document.panes[index].vendorRuntimeSignaledAt = nil
         document.panes[index].permissionEnforcement = profile.map {
             PermissionProfileAdapter.launchPlan(for: document.panes[index].kind, profile: $0).enforcement
         }

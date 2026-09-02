@@ -6,6 +6,9 @@ import ParleyCore
 
 private struct GhosttySoakReport: Codable {
     let schemaVersion: Int
+    let startedAt: Date
+    let completedAt: Date
+    let durationMilliseconds: Int64
     let paneCount: Int
     let rounds: Int
     let deliveredInputs: Int
@@ -33,11 +36,21 @@ private enum ParleyGhosttySoak {
     @MainActor
     static func main() {
         do {
+            if CommandLine.arguments.contains("--debug") {
+                TerminalDebugLog.enable([.lifecycle, .input, .actions])
+            }
             let report = try run()
             let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            FileHandle.standardOutput.write(try encoder.encode(report))
-            FileHandle.standardOutput.write(Data("\n".utf8))
+            var encoded = try encoder.encode(report)
+            encoded.append(Data("\n".utf8))
+            if let output = try requestedOutputURL() {
+                try encoded.write(to: output, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: output.path)
+            } else {
+                FileHandle.standardOutput.write(encoded)
+            }
             if !report.passed { Darwin.exit(1) }
         } catch {
             FileHandle.standardError.write(Data("Ghostty soak failed: \(error.localizedDescription)\n".utf8))
@@ -47,6 +60,7 @@ private enum ParleyGhosttySoak {
 
     @MainActor
     private static func run() throws -> GhosttySoakReport {
+        let startedAt = Date()
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("parley-ghostty-soak-\(UUID().uuidString)", isDirectory: true)
@@ -68,7 +82,7 @@ private enum ParleyGhosttySoak {
             terminal.configuration = TerminalSurfaceOptions(
                 backend: .exec,
                 workingDirectory: directory.path,
-                command: GhosttyLaunchCommand.render(["/bin/zsh", "-f"]),
+                command: GhosttyLaunchCommand.render(["/bin/zsh", "-f", "-i"]),
                 waitAfterCommand: true,
                 resizeThrottleMilliseconds: 64
             )
@@ -85,7 +99,18 @@ private enum ParleyGhosttySoak {
             windows.append(window)
         }
 
+        guard pump(until: {
+            terminals.allSatisfy { $0.foregroundPid != nil && $0.ttyName != nil }
+        }, timeout: 8) else {
+            let pidCount = terminals.count(where: { $0.foregroundPid != nil })
+            let ttyCount = terminals.count(where: { $0.ttyName != nil })
+            throw GhosttySoakError.failed(
+                "one or more Ghostty shells did not expose a live PTY (PID \(pidCount)/\(paneCount), TTY \(ttyCount)/\(paneCount))"
+            )
+        }
+
         for index in terminals.indices {
+            _ = terminals[index].acquireProgrammaticFocus()
             let ready = directory.appendingPathComponent("pane-\(index)-ready")
             guard terminals[index].paste(
                 text: GhosttyLaunchCommand.render(["/usr/bin/touch", ready.path])
@@ -106,6 +131,7 @@ private enum ParleyGhosttySoak {
         var delivered = 0
         for round in 0..<rounds {
             for index in terminals.indices {
+                _ = terminals[index].acquireProgrammaticFocus()
                 let marker = directory.appendingPathComponent("pane-\(index)-round-\(round)")
                 let pidFile = directory.appendingPathComponent("pane-\(index)-pid")
                 let payload = "echo $$ > \(GhosttyLaunchCommand.render([pidFile.path])); printf 'pane=\(index) round=\(round) %0800d\\n' 0; /usr/bin/touch \(GhosttyLaunchCommand.render([marker.path]))"
@@ -145,6 +171,7 @@ private enum ParleyGhosttySoak {
 
         for window in windows { window.orderOut(nil) }
         for index in terminals.indices {
+            _ = terminals[index].acquireProgrammaticFocus()
             let marker = directory.appendingPathComponent("pane-\(index)-hidden")
             guard terminals[index].paste(text: "/usr/bin/touch \(GhosttyLaunchCommand.render([marker.path]))"),
                   terminals[index].sendKey(.enter) else {
@@ -168,14 +195,32 @@ private enum ParleyGhosttySoak {
         }, timeout: 8)
         for window in windows { window.close() }
 
+        let completedAt = Date()
         return GhosttySoakReport(
-            schemaVersion: 2,
+            schemaVersion: 3,
+            startedAt: startedAt,
+            completedAt: completedAt,
+            durationMilliseconds: Int64(
+                max(0, completedAt.timeIntervalSince(startedAt) * 1_000).rounded()
+            ),
             paneCount: paneCount,
             rounds: rounds,
             deliveredInputs: delivered,
             hiddenPaneInputs: paneCount,
             paneProcessesTerminated: terminated
         )
+    }
+
+    private static func requestedOutputURL() throws -> URL? {
+        guard let index = CommandLine.arguments.firstIndex(of: "--output") else { return nil }
+        guard CommandLine.arguments.indices.contains(index + 1) else {
+            throw GhosttySoakError.failed("--output requires a file path")
+        }
+        let path = CommandLine.arguments[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            throw GhosttySoakError.failed("--output requires a non-empty file path")
+        }
+        return URL(fileURLWithPath: path).standardizedFileURL
     }
 
     private static func requestedRounds() -> Int {

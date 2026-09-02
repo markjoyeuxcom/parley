@@ -279,6 +279,7 @@ public enum StatusCenterProjection {
                     || event.kind == .recipeSubmitted
                     || event.kind == .recipeInterrupted
                     || event.kind == .comparisonForwarded
+                    || VendorHookSignal(activityKind: event.kind) != nil
                 let action: String
                 switch event.kind {
                 case .paneRestarted: action = "RESTARTED"
@@ -289,6 +290,12 @@ public enum StatusCenterProjection {
                 case .recipeSubmitted: action = "RECIPE SUBMITTED"
                 case .recipeInterrupted: action = "RECIPE INTERRUPTED"
                 case .comparisonForwarded: action = "COMPARISON FORWARDED"
+                case .vendorSessionStarted: action = "SESSION STARTED"
+                case .vendorTurnStarted: action = "TURN STARTED"
+                case .vendorTurnEnded: action = "TURN ENDED"
+                case .vendorAwaitingPermission: action = "AWAITING PERMISSION"
+                case .vendorNotification: action = "NOTIFICATION"
+                case .vendorSessionEnded: action = "SESSION ENDED"
                 }
                 return StatusTimelineEvent(
                     id: "activity:\(event.id)",

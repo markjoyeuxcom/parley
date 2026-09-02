@@ -44,6 +44,54 @@ public struct DiagnosticsHealth: Codable, Equatable, Sendable {
     public let counts: DiagnosticsCounts
 }
 
+public struct DiagnosticsCoordinationUsage: Codable, Equatable, Sendable {
+    public let relayHandoffs: Int
+    public let pasteHandoffs: Int
+    public let askHandoffs: Int
+    public let delegateHandoffs: Int
+    public let challengeHandoffs: Int
+    public let verifyHandoffs: Int
+    public let reviewedResults: Int
+    public let vendorSignals: Int
+}
+
+public struct DiagnosticsDeliveryQuality: Codable, Equatable, Sendable {
+    public let totalHandoffs: Int
+    public let submittedHandoffs: Int
+    public let deliveredHandoffs: Int
+    public let completedHandoffs: Int
+    public let returnedResults: Int
+    public let preDeliveryFailures: Int
+    public let uncertainDeliveryFailures: Int
+    public let interruptedHandoffs: Int
+    public let cancelledHandoffs: Int
+    public let medianTerminalDurationMilliseconds: Int64?
+}
+
+/// Counts and timestamps describe the retained content-free source window.
+/// They do not claim that a particular external consumer received every event.
+public struct DiagnosticsEventReplayWindow: Codable, Equatable, Sendable {
+    public let retainedHandoffTransitions: Int
+    public let retainedActivityEvents: Int
+    public let retainedVendorSignals: Int
+    public let oldestEventAt: Date?
+    public let newestEventAt: Date?
+}
+
+/// Recovery is measured only when a failed or interrupted target later emits
+/// an authoritative pane-restarted or vendor-session-started event.
+public struct DiagnosticsRecoveryQuality: Codable, Equatable, Sendable {
+    public let authoritativeSamples: Int
+    public let medianMilliseconds: Int64?
+    public let maximumMilliseconds: Int64?
+}
+
+public struct DiagnosticsCoordination: Codable, Equatable, Sendable {
+    public let usage: DiagnosticsCoordinationUsage
+    public let delivery: DiagnosticsDeliveryQuality
+    public let eventReplay: DiagnosticsEventReplayWindow
+    public let recovery: DiagnosticsRecoveryQuality
+}
 /// A process-state projection which deliberately excludes every string drawn
 /// from terminal content or human naming: no cwd, command, title, pane name,
 /// workspace name, return route, or terminal buffer content is represented.
@@ -101,13 +149,14 @@ public struct DiagnosticsReport: Codable, Equatable, Sendable {
     public let system: DiagnosticsSystem
     public let memory: DiagnosticsMemory
     public let health: DiagnosticsHealth
+    public let coordination: DiagnosticsCoordination
     public let panes: [DiagnosticsPane]
     public let failures: [DiagnosticsFailure]
     public let readiness: DiagnosticsReadiness?
 }
 
 public enum DiagnosticsReportBuilder {
-    public static let schemaVersion = 2
+    public static let schemaVersion = 3
     public static let maximumTransitionsPerFailure = 20
 
     public static func build(
@@ -122,6 +171,7 @@ public enum DiagnosticsReportBuilder {
         workspaceCount: Int,
         panes: [WorkbenchPane],
         handoffs: [RelayHandoff],
+        activityEvents: [RelayActivityEvent] = [],
         readiness: RuntimeReadinessSnapshot?,
         maximumFailures: Int = 50
     ) -> DiagnosticsReport {
@@ -188,6 +238,76 @@ public enum DiagnosticsReportBuilder {
                 }
             )
         }
+        let vendorSignalCount = activityEvents.reduce(into: 0) { count, event in
+            if VendorHookSignal(activityKind: event.kind) != nil { count += 1 }
+        }
+        let terminalDurations = handoffs.compactMap { handoff -> Int64? in
+            guard isTerminal(handoff.state),
+                  let first = handoff.transitions.map(\.occurredAt).min(),
+                  let last = handoff.transitions
+                    .filter({ isTerminal($0.state) })
+                    .map(\.occurredAt)
+                    .max() else { return nil }
+            return milliseconds(last.timeIntervalSince(first))
+        }
+        var eventDates = handoffs.flatMap { $0.transitions.map(\.occurredAt) }
+        eventDates.append(contentsOf: activityEvents.map(\.occurredAt))
+        let recoveryDurations = handoffs
+            .filter { $0.state == .failed || $0.state == .interrupted }
+            .compactMap { handoff -> Int64? in
+                let recoveryEvents = activityEvents.filter { event in
+                    event.paneID == handoff.targetPaneID
+                        && event.occurredAt >= handoff.updatedAt
+                        && (
+                            event.kind == .paneRestarted
+                                || event.kind == .vendorSessionStarted
+                        )
+                }
+                guard let recoveredAt = recoveryEvents.map(\.occurredAt).min() else { return nil }
+                return milliseconds(recoveredAt.timeIntervalSince(handoff.updatedAt))
+            }
+        let coordination = DiagnosticsCoordination(
+            usage: DiagnosticsCoordinationUsage(
+                relayHandoffs: handoffs.count(where: { $0.kind == .relay }),
+                pasteHandoffs: handoffs.count(where: { $0.kind == .paste }),
+                askHandoffs: handoffs.count(where: { $0.kind == .ask }),
+                delegateHandoffs: handoffs.count(where: { $0.kind == .delegate }),
+                challengeHandoffs: handoffs.count(where: { $0.relationship == .challenge }),
+                verifyHandoffs: handoffs.count(where: { $0.relationship == .verify }),
+                reviewedResults: handoffs.count(where: { $0.reviewedAt != nil }),
+                vendorSignals: vendorSignalCount
+            ),
+            delivery: DiagnosticsDeliveryQuality(
+                totalHandoffs: handoffs.count,
+                submittedHandoffs: handoffs.count(where: \.submitted),
+                deliveredHandoffs: handoffs.count(where: {
+                    $0.transitions.contains(where: { $0.state == .delivered })
+                }),
+                completedHandoffs: handoffs.count(where: { $0.state == .completed }),
+                returnedResults: handoffs.count(where: \.hasReturnedResult),
+                preDeliveryFailures: handoffs.count(where: {
+                    $0.state == .failed && $0.retryDisposition == .safe
+                }),
+                uncertainDeliveryFailures: handoffs.count(where: {
+                    $0.state == .failed && $0.retryDisposition == .uncertain
+                }),
+                interruptedHandoffs: handoffs.count(where: { $0.state == .interrupted }),
+                cancelledHandoffs: handoffs.count(where: { $0.state == .cancelled }),
+                medianTerminalDurationMilliseconds: median(terminalDurations)
+            ),
+            eventReplay: DiagnosticsEventReplayWindow(
+                retainedHandoffTransitions: handoffs.reduce(0) { $0 + $1.transitions.count },
+                retainedActivityEvents: activityEvents.count,
+                retainedVendorSignals: vendorSignalCount,
+                oldestEventAt: eventDates.min(),
+                newestEventAt: eventDates.max()
+            ),
+            recovery: DiagnosticsRecoveryQuality(
+                authoritativeSamples: recoveryDurations.count,
+                medianMilliseconds: median(recoveryDurations),
+                maximumMilliseconds: recoveryDurations.max()
+            )
+        )
 
         return DiagnosticsReport(
             schemaVersion: schemaVersion,
@@ -217,10 +337,36 @@ public enum DiagnosticsReportBuilder {
                     unreadResults: status.counts.unreadResults
                 )
             ),
+            coordination: coordination,
             panes: safePanes,
             failures: safeFailures,
             readiness: safeReadiness
         )
+    }
+
+    private static func isTerminal(_ state: RelayHandoffState) -> Bool {
+        switch state {
+        case .completed, .cancelled, .failed, .interrupted:
+            true
+        case .created, .delivered, .waiting, .answered:
+            false
+        }
+    }
+
+    private static func milliseconds(_ interval: TimeInterval) -> Int64? {
+        guard interval.isFinite, interval >= 0 else { return nil }
+        let value = interval * 1_000
+        guard value <= Double(Int64.max) else { return nil }
+        return Int64(value.rounded())
+    }
+
+    private static func median(_ values: [Int64]) -> Int64? {
+        guard !values.isEmpty else { return nil }
+        let ordered = values.sorted()
+        let midpoint = ordered.count / 2
+        guard ordered.count.isMultiple(of: 2) else { return ordered[midpoint] }
+        let lower = ordered[midpoint - 1]
+        return lower + ((ordered[midpoint] - lower) / 2)
     }
 }
 
@@ -335,7 +481,9 @@ public final class DiagnosticsArchiveWriter: @unchecked Sendable {
 
     Pane and handoff identifiers are ephemeral local correlation values. Recent
     failures contain only typed states, timestamps, and structured recovery flags.
-    The report keeps at most 50 recent failures and 20 transitions per failure.
+    Coordination usage, delivery, replay-window, and recovery sections contain
+    aggregate counts and timings only, never event bodies. The report keeps at
+    most 50 recent failures and 20 transitions per failure.
     """
 }
 

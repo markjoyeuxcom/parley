@@ -78,6 +78,9 @@ final class AppResidentCoordinationCore {
                 try controller.pasteExplicitContext(text, into: targetPaneID, submit: true)
             },
             selectedText: { paneID in try controller.capturePane(paneID) },
+            vendorSignal: { paneID, signal, occurredAt in
+                try controller.recordVendorSignal(paneID: paneID, signal: signal, occurredAt: occurredAt)
+            },
             handoffJournal: handoffJournal,
             activityJournal: activityJournal,
             historyRetentionPolicy: historyRetentionPolicy,

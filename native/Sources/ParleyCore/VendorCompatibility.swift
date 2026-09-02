@@ -129,6 +129,7 @@ public struct VendorRuntimeSignal: Codable, Equatable, Identifiable, Sendable {
     public let vendor: PaneKind
     public let state: VendorRuntimeState
     public let source: VendorRuntimeSignalSource
+    public let reportedAt: Date?
     public let detail: String
 
     public var id: String { paneID }
@@ -138,20 +139,22 @@ public struct VendorRuntimeSignal: Codable, Equatable, Identifiable, Sendable {
         vendor: PaneKind,
         state: VendorRuntimeState,
         source: VendorRuntimeSignalSource,
+        reportedAt: Date? = nil,
         detail: String
     ) {
         self.paneID = paneID
         self.vendor = vendor
         self.state = state
         self.source = source
+        self.reportedAt = reportedAt
         self.detail = detail
     }
 }
 
 /// A pane's terminal title, current command, visible text, silence and timing
-/// never enter this projection. Until a vendor exposes a structured per-session
-/// hook, a running pane is Unknown. Parley can state an exit because it owns the
-/// process lifecycle, not because it inferred meaning from the TUI.
+/// never enter this projection. Only a supported structured per-session hook
+/// may move a running pane out of Unknown. Parley can state an exit because it
+/// owns the process lifecycle, not because it inferred meaning from the TUI.
 public enum VendorRuntimeSignalProjection {
     public static func signal(for pane: WorkbenchPane) -> VendorRuntimeSignal? {
         guard pane.kind.isAgent else { return nil }
@@ -174,12 +177,25 @@ public enum VendorRuntimeSignalProjection {
                 detail: "The pane is stopped; no vendor runtime exists to inspect."
             )
         }
+        if let state = pane.vendorRuntimeState,
+           let signal = pane.vendorRuntimeSignal,
+           let reportedAt = pane.vendorRuntimeSignaledAt,
+           VendorHookAdapter.supportedSignals(for: pane.kind).contains(signal) {
+            return VendorRuntimeSignal(
+                paneID: pane.id,
+                vendor: pane.kind,
+                state: state,
+                source: .vendorOfficialHook,
+                reportedAt: reportedAt,
+                detail: "Reported through this pane's \(pane.kind.label) hook capability: \(signal.rawValue)."
+            )
+        }
         return VendorRuntimeSignal(
             paneID: pane.id,
             vendor: pane.kind,
             state: .unknown,
             source: .unavailable,
-            detail: "This vendor exposes no trustworthy structured readiness hook for an existing pane. Terminal text and timing are not evidence."
+            detail: "No supported official hook has reported runtime state for this pane. Terminal text and timing are not evidence."
         )
     }
 }
