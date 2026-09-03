@@ -21,6 +21,7 @@ import { spawnSync } from 'node:child_process'
 import {
   BUNDLE_IDENTIFIER,
   MINIMUM_SYSTEM_VERSION,
+  createNativeMacOSArchives,
   packageNativeMacOS,
   validateBundleStructure,
 } from './native-macos-package.mjs'
@@ -66,7 +67,63 @@ export function artifactNames(version) {
     manifest: `${base}.release.json`,
     checksums: `${base}.SHA256SUMS`,
     installGuide: `${base}-INSTALL.txt`,
+    appcast: 'appcast.xml',
+    cask: 'parley.rb',
   }
+}
+
+function requiredEnvironment(environment, name) {
+  const value = environment[name]
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${name} is required for a notarized release`)
+  }
+  return value.trim()
+}
+
+export function assertNotarizationConfiguration(environment) {
+  const codesignIdentity = requiredEnvironment(environment, 'PARLEY_CODESIGN_IDENTITY')
+  if (!codesignIdentity.startsWith('Developer ID Application:')) {
+    throw new Error('PARLEY_CODESIGN_IDENTITY must name a Developer ID Application identity')
+  }
+  const sparklePublicKey = requiredEnvironment(environment, 'PARLEY_SPARKLE_PUBLIC_ED_KEY')
+  const publicKeyBytes = Buffer.from(sparklePublicKey, 'base64')
+  if (publicKeyBytes.length !== 32 || publicKeyBytes.toString('base64') !== sparklePublicKey) {
+    throw new Error('PARLEY_SPARKLE_PUBLIC_ED_KEY must be a canonical 32-byte base64 Ed25519 public key')
+  }
+  return {
+    codesignIdentity,
+    sparklePublicKey,
+    sparklePrivateKey: requiredEnvironment(environment, 'PARLEY_SPARKLE_PRIVATE_ED_KEY'),
+    notaryKeyID: requiredEnvironment(environment, 'PARLEY_NOTARY_KEY_ID'),
+    notaryIssuerID: requiredEnvironment(environment, 'PARLEY_NOTARY_ISSUER_ID'),
+    notaryKey: requiredEnvironment(environment, 'PARLEY_NOTARY_KEY'),
+  }
+}
+
+export function renderHomebrewCask({ version, sha256 }) {
+  artifactNames(version)
+  if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error('Homebrew cask requires a lowercase SHA-256')
+  return `cask "parley" do
+  version "${version}"
+  sha256 "${sha256}"
+
+  url "${SOURCE_REPOSITORY}/releases/download/v#{version}/Parley-#{version}-mac-arm64.dmg"
+  name "Parley"
+  desc "Native workbench for supervised cross-vendor AI CLI collaboration"
+  homepage "${SOURCE_REPOSITORY}"
+
+  auto_updates true
+  depends_on arch: :arm64
+  depends_on macos: ">= :sonoma"
+
+  app "Parley.app"
+
+  zap trash: [
+    "~/Library/Application Support/Parley Native",
+    "~/Library/Preferences/${BUNDLE_IDENTIFIER}.plist",
+  ]
+end
+`
 }
 
 function plainFilename(value) {
@@ -143,6 +200,15 @@ export function renderInstallGuide({ version, notarized }) {
   const firstLaunch = notarized
     ? 'Open Parley normally from Applications.'
     : `macOS will identify this as software from an unidentified developer. After trying to open Parley once, open System Settings → Privacy & Security and choose Open Anyway only if you obtained the files from the expected Parley release.`
+  const updateInstructions = notarized
+    ? `Automatic updates
+- In Parley, open Tools → Compatibility & Releases → Updates.
+- Stable update checks are off until you opt in. Sparkle verifies the signed feed, the Ed25519 archive signature and the Developer ID signature before replacement.
+- Installing an update asks Parley to quit; the normal quit confirmation remains authoritative and active panes are never ended silently.
+
+Homebrew cask
+- The release includes parley.rb for a Parley-maintained tap. The cask installs the same notarized DMG and verifies its SHA-256.`
+    : 'Automatic replacement and a Homebrew cask are intentionally unavailable for this unnotarized local beta.'
   return `PARLEY ${version} — ${trustHeading}
 
 Install
@@ -161,6 +227,8 @@ Installed footprint
 
 Verify
 Compare every downloaded artifact with its matching entry in SHA256SUMS before opening or installing it.
+
+${updateInstructions}
 
 Optional VS Code companion
 The GitHub release also carries a matching Parley-Companion VSIX. In VS Code,
@@ -312,13 +380,27 @@ async function prepareRelease({ tag }) {
   assertReleaseSource({ version, status, tag })
   const commit = run('git', ['rev-parse', 'HEAD'], { capture: true })
   verifyReleaseTag(tag, commit)
+  const signing = assertNotarizationConfiguration(process.env)
 
-  const notarized = false
+  const notarized = true
   const installGuide = renderInstallGuide({ version, notarized })
   const packaged = packageNativeMacOS({ distributionReadme: installGuide })
+  if (packaged.signing.kind !== 'developer-id'
+      || packaged.signing.identity !== signing.codesignIdentity) {
+    throw new Error('release packaging did not use the configured Developer ID identity')
+  }
   const names = artifactNames(version)
   const dist = join(repositoryRoot, 'dist')
-  const artifacts = [packaged.dmg, packaged.zip].map((path) => ({
+  notarizeAndStaple({ packaged, signing, installGuide })
+  const appcastPath = generateSignedAppcast({
+    version,
+    archive: packaged.zip,
+    privateKey: signing.sparklePrivateKey,
+    output: join(dist, names.appcast),
+  })
+  const caskPath = join(dist, names.cask)
+  writeFileSync(caskPath, renderHomebrewCask({ version, sha256: sha256(packaged.dmg) }))
+  const artifacts = [packaged.dmg, packaged.zip, appcastPath, caskPath].map((path) => ({
     file: basename(path),
     bytes: statSync(path).size,
     sha256: sha256(path),
@@ -350,11 +432,87 @@ async function prepareRelease({ tag }) {
   await verifyDMGAndLifecycle({ dmg: packaged.dmg, installGuide })
 
   process.stdout.write(`Prepared Parley ${version} (${packaged.build}) from ${commit}\n`)
-  process.stdout.write(`Trust: ${packaged.signing.kind} signed, unnotarized local beta\n`)
-  for (const path of [packaged.dmg, packaged.zip, manifestPath, checksumsPath, guidePath]) {
+  process.stdout.write('Trust: Developer ID signed, Apple notarized and Sparkle Ed25519 signed\n')
+  for (const path of [
+    packaged.dmg,
+    packaged.zip,
+    appcastPath,
+    caskPath,
+    manifestPath,
+    checksumsPath,
+    guidePath,
+  ]) {
     process.stdout.write(`${path}\n`)
   }
   process.stdout.write('Release gate: ZIP, DMG, isolated install, upgrade, uninstall and explicit data purge passed\n')
+}
+
+function notarizeAndStaple({ packaged, signing, installGuide }) {
+  const notaryArguments = (path) => [
+    'notarytool',
+    'submit',
+    path,
+    '--key',
+    signing.notaryKey,
+    '--key-id',
+    signing.notaryKeyID,
+    '--issuer',
+    signing.notaryIssuerID,
+    '--wait',
+  ]
+  run('xcrun', notaryArguments(packaged.zip))
+  run('xcrun', ['stapler', 'staple', packaged.bundle])
+  run('xcrun', ['stapler', 'validate', packaged.bundle])
+  createNativeMacOSArchives({
+    bundle: packaged.bundle,
+    zip: packaged.zip,
+    dmg: packaged.dmg,
+    distributionReadme: installGuide,
+  })
+  run('xcrun', notaryArguments(packaged.dmg))
+  run('xcrun', ['stapler', 'staple', packaged.dmg])
+  run('xcrun', ['stapler', 'validate', packaged.dmg])
+  run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', packaged.bundle])
+  run('spctl', ['--assess', '--type', 'execute', '--verbose=2', packaged.bundle])
+  run('spctl', ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=2', packaged.dmg])
+}
+
+function generateSignedAppcast({ version, archive, privateKey, output }) {
+  const tool = join(
+    repositoryRoot,
+    'native/.build/artifacts/sparkle/Sparkle/bin/generate_appcast',
+  )
+  if (!existsSync(tool)) throw new Error('resolved Sparkle generate_appcast tool is missing')
+  const root = mkdtempSync(join(tmpdir(), 'parley-appcast-'))
+  const key = join(root, 'sparkle-private-key')
+  const archives = join(root, 'archives')
+  mkdirSync(archives)
+  try {
+    writeFileSync(key, privateKey, { mode: 0o600 })
+    cpSync(archive, join(archives, basename(archive)))
+    rmSync(output, { force: true })
+    run(tool, [
+      '--ed-key-file',
+      key,
+      '--download-url-prefix',
+      `${SOURCE_REPOSITORY}/releases/download/v${version}/`,
+      '--maximum-versions',
+      '1',
+      '--maximum-deltas',
+      '0',
+      '-o',
+      output,
+      archives,
+    ])
+    const appcast = readFileSync(output, 'utf8')
+    if (!/sparkle:edSignature="[A-Za-z0-9+/=]+"/.test(appcast)
+        || !/<!-- sparkle-signatures:\s*edSignature: [A-Za-z0-9+/=]+/.test(appcast)) {
+      throw new Error('Sparkle did not produce both a signed enclosure and a signed feed')
+    }
+    return output
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 }
 
 export function installApplicationBundle({
@@ -381,7 +539,12 @@ export function installApplicationBundle({
   const stagedBundle = join(stagingRoot, 'Parley.app')
   let backup
   try {
-    cpSync(source, stagedBundle, { recursive: true, force: false, preserveTimestamps: true })
+    cpSync(source, stagedBundle, {
+      recursive: true,
+      force: false,
+      preserveTimestamps: true,
+      verbatimSymlinks: true,
+    })
     verifyBundle(stagedBundle)
     if (existsSync(destination)) {
       backup = join(parent, `.Parley.backup-${randomUUID()}.app`)

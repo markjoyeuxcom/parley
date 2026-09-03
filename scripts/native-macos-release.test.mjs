@@ -3,8 +3,10 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readlinkSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -13,12 +15,14 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import {
+  assertNotarizationConfiguration,
   assertReleaseSource,
   assertSafeApplicationDestination,
   artifactNames,
   installApplicationBundle,
   renderChecksumFile,
   renderInstallGuide,
+  renderHomebrewCask,
   renderReleaseManifest,
   uninstallApplicationBundle,
 } from './native-macos-release.mjs'
@@ -34,6 +38,15 @@ test('GitHub release automation is manual and can create only a draft', () => {
     /actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\.0\.1/,
   )
   assert.match(workflow, /gh release create[\s\S]*--draft/)
+  assert.match(workflow, /PARLEY_CODESIGN_IDENTITY/)
+  assert.match(workflow, /PARLEY_SPARKLE_PUBLIC_ED_KEY/)
+  assert.match(workflow, /PARLEY_SPARKLE_PRIVATE_ED_KEY/)
+  assert.match(workflow, /PARLEY_NOTARY_KEY_ID/)
+  assert.match(workflow, /PARLEY_NOTARY_ISSUER_ID/)
+  assert.match(workflow, /PARLEY_NOTARY_KEY/)
+  assert.match(workflow, /security create-keychain/)
+  assert.match(workflow, /appcast\.xml/)
+  assert.match(workflow, /parley\.rb/)
   assert.match(workflow, /PARLEY_RELEASE_TAG/)
   assert.match(workflow, /npm ci --prefix vscode-extension/)
   assert.match(workflow, /npm run package:vscode/)
@@ -43,6 +56,17 @@ test('GitHub release automation is manual and can create only a draft', () => {
     /npm run test:soak -- --rounds 25 --output dist\/Parley-Ghostty-soak\.json/,
   )
   assert.equal(workflow.match(/Parley-Ghostty-soak\.json/g)?.length, 3)
+})
+
+test('published releases open a reviewed cask update pull request', () => {
+  const workflow = readFileSync(join(repositoryRoot, '.github/workflows/update-homebrew-cask.yml'), 'utf8')
+  assert.match(workflow, /release:\s*\n\s*types: \[published\]/)
+  assert.match(workflow, /gh release download/)
+  assert.match(workflow, /Casks\/parley\.rb/)
+  assert.match(workflow, /brew style --cask Casks\/parley\.rb/)
+  assert.match(workflow, /npm run scan:public/)
+  assert.match(workflow, /gh pr create/)
+  assert.doesNotMatch(workflow, /git push origin main/)
 })
 
 test('release source must be clean and an optional tag must match package version', () => {
@@ -67,8 +91,53 @@ test('release assets have stable GitHub-safe names', () => {
     manifest: 'Parley-1.2.3-mac-arm64.release.json',
     checksums: 'Parley-1.2.3-mac-arm64.SHA256SUMS',
     installGuide: 'Parley-1.2.3-mac-arm64-INSTALL.txt',
+    appcast: 'appcast.xml',
+    cask: 'parley.rb',
   })
   assert.throws(() => artifactNames('../bad'), /numeric semantic version/)
+})
+
+test('notarized release configuration fails closed before packaging', () => {
+  const valid = {
+    PARLEY_CODESIGN_IDENTITY: 'Developer ID Application: Parley Example (ABCDE12345)',
+    PARLEY_SPARKLE_PUBLIC_ED_KEY: Buffer.alloc(32, 9).toString('base64'),
+    PARLEY_SPARKLE_PRIVATE_ED_KEY: 'sparkle-private-key',
+    PARLEY_NOTARY_KEY_ID: 'AB12CD34EF',
+    PARLEY_NOTARY_ISSUER_ID: '00000000-1111-2222-3333-444444444444',
+    PARLEY_NOTARY_KEY: '/private/tmp/AuthKey_AB12CD34EF.p8',
+  }
+  assert.deepEqual(assertNotarizationConfiguration(valid), {
+    codesignIdentity: valid.PARLEY_CODESIGN_IDENTITY,
+    sparklePublicKey: valid.PARLEY_SPARKLE_PUBLIC_ED_KEY,
+    sparklePrivateKey: valid.PARLEY_SPARKLE_PRIVATE_ED_KEY,
+    notaryKeyID: valid.PARLEY_NOTARY_KEY_ID,
+    notaryIssuerID: valid.PARLEY_NOTARY_ISSUER_ID,
+    notaryKey: valid.PARLEY_NOTARY_KEY,
+  })
+  for (const key of Object.keys(valid)) {
+    const missing = { ...valid }
+    delete missing[key]
+    assert.throws(() => assertNotarizationConfiguration(missing), new RegExp(key))
+  }
+  assert.throws(
+    () => assertNotarizationConfiguration({ ...valid, PARLEY_CODESIGN_IDENTITY: '-' }),
+    /Developer ID Application/,
+  )
+})
+
+test('Homebrew cask installs the notarized arm64 app and declares real auto-updates', () => {
+  const cask = renderHomebrewCask({
+    version: '1.2.3',
+    sha256: 'a'.repeat(64),
+  })
+  assert.match(cask, /cask "parley" do/)
+  assert.match(cask, /version "1\.2\.3"/)
+  assert.match(cask, new RegExp(`sha256 "${'a'.repeat(64)}"`))
+  assert.match(cask, /url "https:\/\/github\.com\/markjoyeuxcom\/parley\/releases\/download\/v#\{version\}\/Parley-#\{version\}-mac-arm64\.dmg"/)
+  assert.match(cask, /auto_updates true/)
+  assert.match(cask, /depends_on macos: ">= :sonoma"/)
+  assert.match(cask, /depends_on arch: :arm64/)
+  assert.match(cask, /app "Parley\.app"/)
 })
 
 test('checksum output is deterministic and rejects unsafe filenames', () => {
@@ -187,6 +256,24 @@ test('install, upgrade and uninstall are atomic and preserve user data by defaul
     confirmPurge: 'DELETE PARLEY DATA',
   })
   assert.equal(existsSync(dataDirectory), false)
+})
+
+test('application installation preserves relative framework symlinks exactly', (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'parley-framework-install-'))
+  context.after(() => rmSync(root, { recursive: true, force: true }))
+  const source = join(root, 'source/Parley.app')
+  const destination = join(root, 'Applications/Parley.app')
+  const framework = join(source, 'Contents/Frameworks/Sparkle.framework')
+  mkdirSync(join(framework, 'Versions/B'), { recursive: true })
+  writeFileSync(join(framework, 'Versions/B/Sparkle'), 'framework')
+  symlinkSync('B', join(framework, 'Versions/Current'))
+  symlinkSync('Versions/Current/Sparkle', join(framework, 'Sparkle'))
+
+  installApplicationBundle({ source, destination, verifyBundle: () => {} })
+
+  const installedFramework = join(destination, 'Contents/Frameworks/Sparkle.framework')
+  assert.equal(readlinkSync(join(installedFramework, 'Versions/Current')), 'B')
+  assert.equal(readlinkSync(join(installedFramework, 'Sparkle')), 'Versions/Current/Sparkle')
 })
 
 test('application destinations are narrowly scoped', () => {

@@ -58,6 +58,7 @@ public struct TaskManagerPaneDescriptor: Equatable, Sendable {
     public let foregroundPID: Int32?
     public let ttyName: String?
     public let ttyDevice: UInt64?
+    public let anchorSource: PaneProcessAnchorSource
 
     public init(
         paneID: String,
@@ -70,7 +71,8 @@ public struct TaskManagerPaneDescriptor: Equatable, Sendable {
         isStarted: Bool,
         foregroundPID: Int32?,
         ttyName: String?,
-        ttyDevice: UInt64?
+        ttyDevice: UInt64?,
+        anchorSource: PaneProcessAnchorSource? = nil
     ) {
         self.paneID = paneID
         self.workspaceID = workspaceID
@@ -83,6 +85,8 @@ public struct TaskManagerPaneDescriptor: Equatable, Sendable {
         self.foregroundPID = foregroundPID
         self.ttyName = ttyName
         self.ttyDevice = ttyDevice
+        self.anchorSource = anchorSource
+            ?? ((foregroundPID != nil || ttyDevice != nil) ? .ghostty : .unavailable)
     }
 }
 
@@ -118,6 +122,7 @@ public struct TaskManagerPaneSnapshot: Equatable, Identifiable, Sendable {
     public let isStarted: Bool
     public let ttyName: String?
     public let foregroundPID: Int32?
+    public let anchorSource: PaneProcessAnchorSource
     public let processes: [TaskManagerProcessSample]
     public let residentBytes: UInt64
     public let cpuPercent: Double?
@@ -167,6 +172,11 @@ public enum TaskManagerProjection {
         sampledAt: Date
     ) -> TaskManagerSnapshot {
         let rawByPID = Dictionary(uniqueKeysWithValues: rawProcesses.map { ($0.pid, $0) })
+        let ownedProcessesByPaneID = ownedProcessesByPaneID(
+            applicationPID: applicationPID,
+            paneDescriptors: paneDescriptors,
+            rawProcesses: rawProcesses
+        )
         let applicationRaw = rawByPID[applicationPID]
         let application = applicationRaw.map { process in
             TaskManagerApplicationSnapshot(
@@ -181,23 +191,11 @@ public enum TaskManagerProjection {
             )
         }
 
-        var claimedPIDs: Set<Int32> = []
         var paneSnapshots: [TaskManagerPaneSnapshot] = []
         paneSnapshots.reserveCapacity(paneDescriptors.count)
 
         for descriptor in paneDescriptors {
-            let owned: [TaskManagerRawProcess]
-            if descriptor.isStarted {
-                let exactTTY = descriptor.ttyDevice.map { tty in
-                    rawProcesses.filter { $0.pid != applicationPID && $0.ttyDevice == tty }
-                } ?? []
-                let candidates = exactTTY.isEmpty
-                    ? fallbackProcesses(for: descriptor, rawProcesses: rawProcesses, applicationPID: applicationPID)
-                    : exactTTY
-                owned = candidates.filter { claimedPIDs.insert($0.pid).inserted }
-            } else {
-                owned = []
-            }
+            let owned = ownedProcessesByPaneID[descriptor.paneID] ?? []
 
             let ordered = hierarchyOrder(owned)
             let processSamples = ordered.map { process, depth in
@@ -226,6 +224,7 @@ public enum TaskManagerProjection {
                 isStarted: descriptor.isStarted,
                 ttyName: descriptor.ttyName,
                 foregroundPID: descriptor.foregroundPID,
+                anchorSource: descriptor.anchorSource,
                 processes: processSamples,
                 residentBytes: processSamples.reduce(0) { $0 + $1.residentBytes },
                 cpuPercent: sumCPU(processSamples.map(\.cpuPercent))
@@ -273,6 +272,59 @@ public enum TaskManagerProjection {
             programTotals: programTotals,
             totalCPUPercent: totalCPU
         )
+    }
+
+    public static func ownedProcesses(
+        applicationPID: Int32,
+        paneDescriptors: [TaskManagerPaneDescriptor],
+        rawProcesses: [TaskManagerRawProcess]
+    ) -> [String: [TaskManagerRawProcess]] {
+        ownedProcessesByPaneID(
+            applicationPID: applicationPID,
+            paneDescriptors: paneDescriptors,
+            rawProcesses: rawProcesses
+        )
+    }
+
+    public static func ownedProcessIDs(
+        applicationPID: Int32,
+        paneDescriptors: [TaskManagerPaneDescriptor],
+        rawProcesses: [TaskManagerRawProcess]
+    ) -> [String: Set<Int32>] {
+        ownedProcessesByPaneID(
+            applicationPID: applicationPID,
+            paneDescriptors: paneDescriptors,
+            rawProcesses: rawProcesses
+        ).mapValues { Set($0.map(\.pid)) }
+    }
+
+    private static func ownedProcessesByPaneID(
+        applicationPID: Int32,
+        paneDescriptors: [TaskManagerPaneDescriptor],
+        rawProcesses: [TaskManagerRawProcess]
+    ) -> [String: [TaskManagerRawProcess]] {
+        var claimedPIDs: Set<Int32> = []
+        var result: [String: [TaskManagerRawProcess]] = [:]
+        for descriptor in paneDescriptors {
+            guard descriptor.isStarted else {
+                result[descriptor.paneID] = []
+                continue
+            }
+            let exactTTY = descriptor.ttyDevice.map { tty in
+                rawProcesses.filter { $0.pid != applicationPID && $0.ttyDevice == tty }
+            } ?? []
+            let candidates = exactTTY.isEmpty
+                ? fallbackProcesses(
+                    for: descriptor,
+                    rawProcesses: rawProcesses,
+                    applicationPID: applicationPID
+                )
+                : exactTTY
+            result[descriptor.paneID] = candidates.filter {
+                claimedPIDs.insert($0.pid).inserted
+            }
+        }
+        return result
     }
 
     private static func fallbackProcesses(
@@ -349,8 +401,11 @@ public enum TaskManagerTTY {
 public final class TaskManagerSampler {
     private var previousCPUTimeByProcess: [TaskManagerProcessIdentity: UInt64] = [:]
     private var previousSampledAt: Date?
+    private let anchorResolver: PaneProcessAnchorResolver
 
-    public init() {}
+    public init(anchorResolver: PaneProcessAnchorResolver = PaneProcessAnchorResolver()) {
+        self.anchorResolver = anchorResolver
+    }
 
     public func sample(
         applicationPID: Int32,
@@ -359,9 +414,14 @@ public final class TaskManagerSampler {
     ) -> TaskManagerSnapshot {
         let rawProcesses = TaskManagerProcessReader.readAll()
         let elapsed = previousSampledAt.map { sampledAt.timeIntervalSince($0) }
+        let anchoredDescriptors = anchorResolver.anchored(
+            paneDescriptors,
+            applicationPID: applicationPID,
+            rawProcesses: rawProcesses
+        )
         let snapshot = TaskManagerProjection.project(
             applicationPID: applicationPID,
-            paneDescriptors: paneDescriptors,
+            paneDescriptors: anchoredDescriptors,
             rawProcesses: rawProcesses,
             previousCPUTimeByProcess: previousCPUTimeByProcess,
             elapsedSeconds: elapsed,
@@ -376,7 +436,7 @@ public final class TaskManagerSampler {
     }
 }
 
-private enum TaskManagerProcessReader {
+enum TaskManagerProcessReader {
     static func readAll() -> [TaskManagerRawProcess] {
         let capacity = max(64, Int(proc_listallpids(nil, 0)))
         var pids = [Int32](repeating: 0, count: capacity)

@@ -16,8 +16,11 @@ or bypass a vendor's approval flow.
 - Independent shell, Claude Code, Codex, Agy and Copilot panes.
 - Clear selected-pane borders and direct Ghostty mouse selection, copy and
   scroll behavior.
-- Explicit cross-vendor Relay, Paste, Ask, Answer, Delegate, Done, Fail, Status
-  and Wait commands.
+- One shared terminal appearance for every shell and agent pane, with explicit
+  Parley font overrides and an allowlisted import of Ghostty fonts, themes,
+  palettes and colours.
+- Explicit cross-vendor Relay, Paste, Ask, Answer, Delegate, Progress, Done,
+  Fail, Status and Wait commands.
 - Human Ask and Return previews, correlated answers, recoverable Ask ids and
   tracked delegation receipts.
 - Smart Plan → Review → Implement → Verify orchestration in Supervised and Auto
@@ -26,9 +29,14 @@ or bypass a vendor's approval flow.
 - Durable local handoff history, Status Center recovery actions and explicit
   multi-select promotion of returned Ask or Delegate results into an editable
   Context Pack draft.
-- A native Task Manager with truthful app and pane CPU/RSS sampling, exact
-  Ghostty TTY process attribution, workspace hierarchy and confirmed pane-level
-  controls.
+- A native Task Manager with truthful app and pane CPU/RSS sampling, pane
+  process attribution anchored on Ghostty's TTY when the pinned terminal
+  reports it or otherwise on the `PARLEY_PANE_ID` launch marker of the pane's
+  own root process, workspace hierarchy and confirmed pane-level controls.
+- Compact pane sidebar facts: exact working directory, fixed-argument Git
+  branch state, bounded TCP listeners attributed to the pane-owned process tree
+  and the latest official-hook or durable-handoff attention reason. Parley
+  never derives these facts from terminal text.
 - Folder-backed workspaces, favourites, saved layouts, portable team
   templates, stable roles, workspace leads, pane move and configuration clone.
 - Reviewed context packs; workspace briefs with goals, decisions,
@@ -43,6 +51,9 @@ or bypass a vendor's approval flow.
 - Production and Development runtime isolation.
 - Pane-scoped relay capabilities and a macOS Seatbelt boundary around every
   vendor process tree.
+- Production-only signed stable update checks with explicit opt-in, visible
+  installation and the normal pane-aware quit confirmation. Development never
+  connects to the update feed.
 
 ## Lifetime contract
 
@@ -63,6 +74,24 @@ application level rather than tying them to one SwiftUI view mount.
 There is no separate background coordination executable and no external
 terminal multiplexer. The application is the process-lifetime boundary.
 
+## Terminal appearance
+
+Open **Terminal Appearance…** from the app or pane menu, or from the command
+palette. A Parley font family or size is an explicit global override for every
+current and future shell and agent pane; changing it does not restart the pane
+or its vendor session.
+
+**Import…** reads Ghostty's standard XDG and macOS configuration files in
+Ghostty's documented order. It copies only bounded font family, font size,
+theme, palette and hex colour values through typed Ghostty configuration APIs.
+Built-in themes, named themes under the XDG Ghostty themes folder and explicit
+absolute theme files are supported. Parley deliberately ignores `command`,
+`keybind`, `config-file`, shell integration, opacity, cursor behavior and every
+other option; raw Ghostty configuration text is never retained or passed to a
+terminal. The Terminal Appearance panel in Settings reports both imported and
+ignored setting counts before **Apply**. The sanitized snapshot is stored in the active Production or
+Development preference namespace, and Parley overrides continue to win.
+
 ## Cross-vendor collaboration
 
 Each agent pane receives one durable random credential for its real sender
@@ -78,7 +107,9 @@ parley paste <target> <text>
 parley ask <target> <question>
 parley answer <id> <answer>
 parley delegate <target> <task>
+parley progress <id|current> <note>
 parley done <id|current> <report>
+parley done <id|current> --file <path>
 parley fail <id|current> <report>
 parley status
 parley wait <id|current>
@@ -120,6 +151,13 @@ for the current application session, shows both vendors in the route, and still
 requires Command-Return or the visible Send Ask button before submission. It
 never captures scrollback or sends merely because the shortcut was pressed.
 
+When that composer targets a pane with a supported authenticated vendor hook
+report, a compact **TARGET SIGNAL** strip names the exact pane and vendor hook,
+reported state, official event and live age. It is labelled **ADVISORY ONLY**:
+the signal neither blocks nor authorizes Send. No strip means Parley has no
+supported official target signal; terminal text and elapsed time are never used
+as a substitute.
+
 Actionable panes carry a semantic attention ring without replacing the inset
 accent line that identifies the selected terminal. Orange is a permission
 request, the app accent is an unread returned result and red is a failed or
@@ -136,6 +174,24 @@ that calling shell disconnects, `parley wait <id>` recovers the durable answer
 only from the same still-running source pane generation. Use Delegate for work
 likely to take longer; `parley wait current` remains shorthand only for one
 active delegation.
+
+The exact target of active delegated work may run
+`parley progress current "<note>"` to replace one control-stripped,
+200-byte progress note. The initiating pane sees it in structured
+`parley status`, and the person sees it in the existing Status Center
+inspector. It is explicitly agent-declared and never counts as activity,
+completion or failure; terminal work still requires `parley done` or
+`parley fail`.
+
+For a substantial UTF-8 result, the exact delegated target can run
+`parley done current --file <path>`. The path must remain inside that pane's
+working folder. Parley preserves formatting within the existing 60 KB source
+and 90 KB rendered Context Pack limits, completes the tracked work only after
+the agent-provided draft is durable, and returns a compact linked receipt to
+the initiator. The file appears in the Context menu and its handoff inspector
+for explicit review, editing, discard or optional Context Pack delivery.
+Nothing is forwarded automatically, and agent-provided provenance is never
+silently promoted to person-selected evidence.
 
 `relay` submits immediately because that is the capability the person selected.
 `paste` is the explicit review-before-send route. Multiline content is passed
@@ -266,8 +322,9 @@ native/Sources/
   ParleySoak/        eight-pane Ghostty input/lifetime soak
 ```
 
-The package links `GhosttyTerminal` through `libghostty-spm`. `Package.swift`
-and `Package.resolved` are the authoritative dependency pins.
+The package links `GhosttyTerminal` through `libghostty-spm` and embeds Sparkle
+only for the installed app's signed update path. `Package.swift` and
+`Package.resolved` are the authoritative dependency pins.
 
 ## Security boundary
 
@@ -341,13 +398,32 @@ npm run verify:package:mac
 npm run release:mac
 ```
 
-The app bundle contains one executable: `parley-native`. Ghostty and the
-app-resident coordination core are linked into it. Packaging emits an app, ZIP
-and DMG, validates the one-executable contract, signs the bundle and includes
-the project and third-party licences. Ghostty's runtime bundle is installed in
-`Contents/Resources`; release builds apply a guarded temporary overlay to the
-official wrapper's resource resolver, restore the checkout after compilation
-and fail closed if the expected upstream source shape changes.
+The app bundle has one Parley executable: `parley-native`. Ghostty and the
+app-resident coordination core are linked into it. Sparkle.framework contributes
+its standard transient update helpers; Parley adds no coordination daemon,
+login item or always-running helper. Packaging emits an app, ZIP and DMG,
+validates the embedded framework and resources, signs nested code inside-out
+and includes the project and third-party licences. Ghostty's runtime bundle is
+installed in `Contents/Resources`; release builds apply a guarded temporary
+overlay to the official wrapper's resource resolver, restore the checkout after
+compilation and fail closed if the expected upstream source shape changes.
+
+`npm run package:mac` and `npm run verify:package:mac` remain local ad-hoc
+package checks. `npm run release:mac` now fails closed unless the Developer ID,
+Apple notary and Sparkle Ed25519 configuration is present. The manual GitHub
+workflow notarizes and staples the app and DMG, verifies Gatekeeper, generates
+an Ed25519-signed stable appcast and a SHA-256-pinned `parley.rb`, and creates
+only an unpublished draft. Publishing that reviewed release opens a separate
+pull request to update `Casks/parley.rb`; it never pushes directly to main. See
+[RELEASING.md](RELEASING.md).
+
+After the first notarized cask update has been merged, Homebrew users can add
+this repository as an explicit tap and install the same notarized DMG:
+
+```bash
+brew tap markjoyeuxcom/parley https://github.com/markjoyeuxcom/parley
+brew install --cask markjoyeuxcom/parley/parley
+```
 
 `Prepare to Uninstall…` refuses active Ask or delegated work, ends every pane
 and coordination endpoint, and quits. It leaves workspace definitions and

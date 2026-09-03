@@ -1,8 +1,9 @@
 # Installation footprint
 
-Parley is distributed as a drag-to-install DMG. It does not run an installer,
-request administrator access, install a privileged helper or install a
-background service.
+Parley is distributed as a notarized drag-to-install DMG. It does not run a
+package installer, install a login item or install a background coordination
+service. Sparkle uses its standard transient installer helpers only while a
+person-approved application update is being installed.
 
 ## Application bundle
 
@@ -13,8 +14,8 @@ Dragging the app to Applications normally creates:
 /Applications/Parley.app
 ```
 
-The bundle contains one native Swift executable, the embedded Ghostty terminal
-library, the icon and legal notices. SwiftUI owns the application surface;
+The bundle contains one Parley Swift executable, the embedded Ghostty terminal
+library, Sparkle.framework, the icon and legal notices. SwiftUI owns the application surface;
 Ghostty owns each interactive PTY and its shell or vendor process. There is no
 separate coordination executable, login item, terminal multiplexer or vendor
 credential store in the bundle.
@@ -76,9 +77,25 @@ and the coordination core. A later launch restores workspace definitions;
 shells may restart and agent panes return as stopped placeholders. Parley does
 not claim that a vendor conversation survived application exit.
 
-For an upgrade, quit Parley, replace the application bundle and reopen it.
-Application Support, preferences and collaboration history remain. Starting a
-restored agent placeholder injects the protocol from the new build.
+In an installed notarized build, **Tools → Compatibility & Releases → Updates**
+offers a stable signed update check. Automatic checking is off until enabled by
+the person. The feed and ZIP are Ed25519-signed, the replacement must retain the
+Developer ID chain, and Parley never enables silent background installation.
+Choosing an offered update still reaches Parley's ordinary quit confirmation;
+canceling quit preserves the running panes.
+
+Manual upgrades remain supported: quit Parley, replace the application bundle
+and reopen it. Application Support, preferences and collaboration history
+remain. Starting a restored agent placeholder injects the protocol from the new
+build. Development builds never attach to the Production update channel.
+
+After a notarized release publishes its cask update, the repository can be used
+as an explicit Homebrew tap:
+
+```bash
+brew tap markjoyeuxcom/parley https://github.com/markjoyeuxcom/parley
+brew install --cask markjoyeuxcom/parley/parley
+```
 
 ## Uninstall
 

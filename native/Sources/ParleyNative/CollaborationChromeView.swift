@@ -68,6 +68,46 @@ struct HandoffComposerView: View {
                     .disabled(model.submittingHandoffComposer)
                     .accessibilityLabel("Cancel reviewed handoff")
                 }
+                if let advisory = model.handoffComposerSignalAdvisory {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.shield")
+                                .foregroundStyle(Color.accentColor)
+                            Text("TARGET SIGNAL")
+                                .fontWeight(.bold)
+                                .foregroundStyle(Color.accentColor)
+                            Text(advisory.sourceLabel)
+                                .fontWeight(.semibold)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .layoutPriority(1)
+                            Text("·")
+                                .foregroundStyle(.tertiary)
+                            Text(advisory.stateLabel)
+                                .fontWeight(.semibold)
+                            Text("· \(advisory.signalLabel)")
+                            Text("· \(advisory.ageLabel(at: context.date))")
+                            Spacer(minLength: 8)
+                            Text("ADVISORY ONLY")
+                                .fontWeight(.bold)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .layoutPriority(2)
+                        }
+                        .font(.system(size: 8, design: .monospaced))
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: 24)
+                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+                        }
+                        .help(advisory.accessibilityDescription(at: context.date))
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(advisory.accessibilityDescription(at: context.date))
+                    }
+                }
 
                 TextEditor(text: Binding(
                     get: { model.handoffComposerDraft?.text ?? "" },

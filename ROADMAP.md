@@ -194,31 +194,193 @@ without replacing vendor-owned reasoning or terminal workflows.
    recent conversation in the pane working directory. Every Resume retains the
    pane folder, repeats permission review and is launch-generation scoped.
    Status Center records **RESUME REQUESTED** rather than claiming restoration.
-5. [ ] **Signal provenance and age in the composer** — Show which authenticated
+5. [x] **Signal provenance and age in the composer** — Show which authenticated
    pane hook capability reported the advisory state and when, without using it
    as a delivery refusal or inferring readiness. **Effort:** small.
-6. [ ] **Bounded delegation progress notes** — Add one latest 200-byte,
+   The reviewed handoff composer now shows the exact target pane and vendor
+   hook, reported state, official event and live age. Unsupported, unsigned,
+   stopped and dead targets produce no signal claim. The strip is explicitly
+   **ADVISORY ONLY** and neither blocks nor authorizes submission.
+6. [x] **Bounded delegation progress notes** — Add one latest 200-byte,
    control-stripped, agent-declared progress note to each active delegation and
    show it in the existing handoff inspector rather than creating an event
    stream or workflow window. **Effort:** small to medium.
-7. [ ] **Owned workspace facts in the sidebar** — Add pane cwd, Git branch,
+   Protocol v13 adds target-owned `parley progress current "<note>"`. The
+   broker normalizes it to one control-free line, enforces the UTF-8 byte bound,
+   durably replaces one latest note without inventing a lifecycle transition,
+   exposes it only through the initiator's structured status and labels it
+   **AGENT-DECLARED** in the existing Status Center inspector.
+7. [x] **Owned workspace facts in the sidebar** — Add pane cwd, Git branch,
    attributed listening ports and last authoritative attention reason using
    throttled fixed-argument process inspection, never terminal scraping.
    **Effort:** medium.
-8. [ ] **Reviewed `parley done --file <path>` results** — Reuse the bounded
+   Pane rows now show the exact abbreviated cwd and existing bounded Git
+   snapshot, plus a second compact line for process state, up to eight
+   deduplicated TCP listeners and the latest exact-pane attention reason.
+   Listener discovery runs at most every ten seconds, or immediately when the
+   Task Manager's Refresh button forces it, and invokes `/usr/sbin/lsof` once
+   with a bounded newest-first PID argv after Task Manager's TTY/process-tree
+   attribution. The one-second refresh signature contains only Ghostty and
+   pane-lifecycle facts, so a change in the marker anchor alone waits for the
+   next ten-second or manual refresh. The pane anchor comes from Ghostty when
+   the pinned terminal reports a foreground PID or TTY; otherwise the resolver
+   reads the `PARLEY_PANE_ID` marker from app-owned launch roots (a visible
+   process whose parent is the app, or whose parent is exactly one verified
+   invisible intermediate such as `login` that the app owns) and, only when a
+   platform root hides its environment, from a bounded set of that root's own
+   descendants. Nothing read is persisted. lsof stdout is used on exit status
+   0, and on exit status 1 only when it carries process records; a failed,
+   empty-status-1 or timed-out inspection keeps the previous snapshot and its
+   freshness. Unrelated host processes and terminal bytes never enter the
+   projection.
+8. [x] **Reviewed `parley done --file <path>` results** — Reuse the bounded
    `agentFileDraft` path so a delegation can return a substantial file for
    explicit human review and optional Context Pack promotion. Preserve existing
    path containment, provenance and 90 KB limits. **Effort:** small to medium.
-9. [ ] **Allowlisted Ghostty appearance import** — Reuse appearance-only font,
+   Protocol v14 adds `parley done <id|current> --file <path>` for one UTF-8
+   file contained by the authenticated target pane's working folder. Completion
+   is recorded only after the existing 60 KB part/90 KB rendered Context Pack
+   boundary accepts and durably stores an `agentFileDraft`; failures leave the
+   delegation waiting. The initiator receives a compact receipt linked to the
+   review rather than the file body. Status Center opens the exact editable
+   review for optional delivery, while unrelated panes, stale credentials,
+   oversized files and implicit provenance promotion remain refused.
+9. [x] **Allowlisted Ghostty appearance import** — Reuse appearance-only font,
    theme and palette settings from the person's Ghostty configuration while
    excluding commands, key bindings and all behavioral options. Parley's own
    terminal preference remains the explicit override. **Effort:** small to
    medium.
+   Terminal Appearance now imports Ghostty's standard XDG and macOS config
+   locations in documented precedence order, plus built-in, XDG-named or
+   explicit absolute theme files. A dependency-free 256 KB/4,096-line parser
+   retains only bounded font family, font size, palette and hex colour fields;
+   it never follows `config-file`, retains raw text or admits commands,
+   keybindings, shell integration, cursor behavior or other settings. The UI
+   previews the sanitized result, reports imported and ignored counts, applies
+   it to every retained and future pane through typed Ghostty theme commands
+   and keeps Parley's independently optional family and size as higher-priority
+   overrides. Sanitized preferences remain isolated by runtime. Protocol v14
+   is unchanged because no agent-facing semantics changed.
 10. [ ] **Notarized automatic updates and Homebrew cask** — After Developer ID
     notarization, publish a signed update feed from the release workflow and a
     cask for straightforward installation. Protect the update channel with
     signed entries and local verification before replacement. **Effort:**
     medium to large.
+
+    The implementation now pins and embeds Sparkle, exposes a Production-only
+    opt-in stable checker, forbids silent background installation and preserves
+    Parley's pane-aware quit confirmation. Release automation fails closed on
+    missing Developer ID, notary or Ed25519 material; signs Sparkle helpers
+    inside-out; notarizes and staples the app and DMG; verifies Gatekeeper; and
+    emits a signed appcast plus SHA-256-pinned cask. Publishing opens a separate
+    reviewed cask pull request and never writes directly to main. This item
+    remains open until repository secrets are configured and one real draft is
+    notarized, installed on a clean Mac, updated through Sparkle and published
+    with its cask PR verified.
+
+## Cross-vendor delegation loop
+
+**Recorded 3 September 2026** after the first real end-to-end loop: Claude
+investigated and implemented the macOS pane process-attribution fix under a
+Codex delegation of roughly twenty minutes, Codex reviewed the shared diff and
+found three weaknesses, Claude corrected them, and Codex verified the result
+independently. The loop produced correct work. Its one real weakness was
+visibility while the delegation ran, not the duration.
+
+The decisive fact for planning: **protocol v14 already provides
+`parley progress current "<note>"`** (item 6 above), and the delegated pane
+never called it. The delegation asked for a result rather than milestones, and
+nothing in Status Center made the silence visible. Visibility is therefore an
+adoption and presentation problem before it is a protocol problem, and every
+item below is ordered on that basis.
+
+Already built (no roadmap work): one latest 200-byte AGENT-DECLARED progress
+note per active delegation with its age in the inspector (protocol v13/v14);
+`parley done --file` for substantial results (protocol v14); Challenge and
+Verify lineage for Ask children (`inReplyToHandoffID`, relationship); target
+hook signal provenance and age (Phase 3, item 5).
+
+Guardrails that apply to every item in this section:
+
+- No progress, readiness or completion is ever inferred from terminal text.
+- No estimate of completion, remaining time or "thinking" is shown.
+- Progress stays one bounded latest note, never a stream or a transition.
+- No daemon, background executor or Parley-run verification of agent claims.
+- Every agent-supplied field is labelled **AGENT-DECLARED** and shown as a
+  claim; Parley-owned facts are limited to timestamps, Git revision and paths.
+- Any new agent-facing command lands in one batched protocol bump (v15) so
+  live panes see **RESTART FOR PROTOCOL** once; presentation, Git facts and
+  conventions need no bump.
+
+11. [ ] **Delegation visibility from owned facts** — For each active or
+    recently returned delegation, show elapsed time since delivery, the latest
+    AGENT-DECLARED progress note with its age, the target's last authenticated
+    hook signal with its age, and the factual state **No explicit update for
+    10 minutes** once no progress note or hook signal has arrived in that
+    window. Change the Delegate composer's default guidance to ask the target
+    to post `parley progress current` at each milestone and to use
+    `parley done --file` for substantial results. **Effort:** small.
+    **Depends on:** nothing; no protocol change. **Acceptance:** a projection
+    check computes elapsed, note age, signal age and the ten-minute state from
+    timestamps alone and yields no state when no timestamps exist; the row and
+    inspector never show an estimate or a "thinking" label; the ten-minute
+    state is styled as information, not failure; the default Delegate text
+    contains the milestone request and remains fully editable; a real
+    delegation shows all three facts within one refresh tick.
+12. [ ] **Request Changes as a linked child delegation** — Add a native
+    **Request Changes…** action on a returned Delegate result and a lead-pane
+    form of `parley delegate` that names the parent, creating one Delegate
+    child with `inReplyToHandoffID` and relationship `requestChanges`. Status
+    Center will render the thread Delegation → Result → Request Changes →
+    Revised Result on the existing handoffs, and the Markdown export will
+    preserve it.
+    Human verdicts stay native-control-only; a vendor's request for changes is
+    a linked delegation, never a verdict. **Effort:** medium. **Depends on:**
+    item 11 for presentation; this is the one item that needs the batched
+    protocol v15 bump. **Acceptance:** a pane credential cannot forge lineage
+    or name a parent it did not initiate or receive; the parent must be a
+    Delegate with a returned result; the child inherits target busy rules and
+    is never queued as a busy draft; deterministic checks cover forged parent,
+    missing parent, parent without result, thread ordering and export; no new
+    store, window, state or assignee field is introduced.
+13. [ ] **Bounded informational Git facts per delegation** — At delegate
+    creation and again at done or fail, record the target pane cwd's `HEAD`
+    revision and dirty path list (paths only, at most about 200, read with the
+    existing fixed-argument Git capture) and show **N paths changed since
+    delegated** with the list. Label it **shared worktree: not attribution**,
+    because other panes and the person edit the same tree. **Effort:** small
+    to medium. **Depends on:** item 11 for placement; no protocol change.
+    **Acceptance:** file contents and diffs are never captured; the list is
+    capped and labelled; a mismatch or an unreadable repository is
+    informational and never a failure state; a non-Git cwd records nothing;
+    checks cover the cap, the label, a clean tree and a detached HEAD.
+14. [ ] **Completion-evidence convention in `done --file`** — Document a
+    plain Markdown template with the sections **Implemented**, **Tested**
+    (each command and its outcome) and **Unable to test** (with the reason).
+    Status Center will render those headings as a **COMPLETION EVIDENCE**
+    section labelled AGENT-DECLARED and fall back to plain text for any other
+    shape.
+    No schema and no automatic executor; Parley never runs a command to check
+    a claim. **Effort:** small. **Depends on:** item 12 so a Request Changes
+    child can refer to evidence items; no protocol change. **Acceptance:** the
+    renderer accepts the three headings in any order, ignores unknown
+    headings, never marks anything verified, and a file without the headings
+    renders exactly as today; a structured JSON shape is considered only after
+    the existing diagnostics counts show the convention is used.
+15. [ ] **Lead practice and a Review and correct recipe** — Document the
+    sequence Delegate → Progress → Result → Cross-vendor review →
+    Corrections → Independent verification as practice in the engineering
+    guide, and add one built-in Recipe whose text asks the target for milestone
+    progress and the completion-evidence sections. **Explicitly rejected:** a
+    mandatory workflow state machine, a workflow window or automatic
+    transitions; this loop ran end to end with none of them, which is the
+    evidence it does not need them. **Effort:** small. **Depends on:** items
+    11 and 14 for the text it references. **Acceptance:** the recipe is a
+    prompt template only, carries no state and no automation, and the guide
+    names the practice as guidance rather than a required sequence.
+
+Minimal implementation order: 11, then 12 with the single v15 bump, then 13,
+then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 
 ## Current baseline
 
@@ -412,6 +574,9 @@ without replacing vendor-owned reasoning or terminal workflows.
   subagent, memory, MCP or tool interfaces.
 - Treating terminal text, raw keystroke control or an unauthenticated external
   socket as authoritative coordination state.
+- A mandatory delegation workflow state machine, a background executor that
+  runs commands to verify agent claims, streamed progress, or estimates of
+  completion.
 
 ## Success measures
 
@@ -433,5 +598,8 @@ without replacing vendor-owned reasoning or terminal workflows.
   terminal output.
 - Failed, interrupted and completed work remains distinguishable without
   reading or guessing from terminal text.
+- During a long delegation the person can see elapsed time, the latest
+  agent-declared progress note and its age, and the target's last authenticated
+  signal without Parley estimating completion or inferring activity.
 - Deterministic checks, native build, Ghostty soak, packaging checks and public
   repository scan all pass before release.

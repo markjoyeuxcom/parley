@@ -493,7 +493,10 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
     public var humanReviewNote: String? = nil
     public var reviewedAt: Date? = nil
     public var reviewRevision: Int? = nil
+    public var progressNote: String? = nil
+    public var progressUpdatedAt: Date? = nil
     public var resultText: String?
+    public var resultContextReviewID: String? = nil
     public var readAt: Date? = nil
     public var state: RelayHandoffState
     public var updatedAt: Date
@@ -566,7 +569,10 @@ public struct RelayDelegationStatus: Identifiable, Codable, Equatable, Sendable 
     public let targetName: String
     public let task: String
     public let state: RelayHandoffState
+    public let progressNote: String?
+    public let progressUpdatedAt: Date?
     public let resultText: String?
+    public let resultContextReviewID: String?
     public let createdAt: Date
     public let updatedAt: Date
 
@@ -578,7 +584,10 @@ public struct RelayDelegationStatus: Identifiable, Codable, Equatable, Sendable 
         targetName = handoff.targetName
         task = handoff.text
         state = handoff.state
+        progressNote = handoff.progressNote
+        progressUpdatedAt = handoff.progressUpdatedAt
         resultText = handoff.resultText
+        resultContextReviewID = handoff.resultContextReviewID
         createdAt = handoff.transitions.first?.occurredAt ?? handoff.updatedAt
         updatedAt = handoff.updatedAt
     }
@@ -733,23 +742,10 @@ public final class RelayBroker: @unchecked Sendable {
             let sender = try authenticatedSender(token: token)
             let name = suppliedName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard name.count <= 80 else { throw BrokerFailure(status: 400, message: "context name is too long") }
-            let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.cwd)
-            let normalized = ContextPackText.normalize(text)
-            guard !normalized.isEmpty else { throw BrokerFailure(status: 400, message: "the context file is empty") }
-            guard normalized.utf8.count <= ContextPackBuilder.defaultMaximumPartBytes else {
-                throw BrokerFailure(status: 413, message: "the context file is too large")
-            }
-            let part = ContextPackPart(
-                source: ContextPackSource(
-                    kind: .agentFileDraft,
-                    label: URL(fileURLWithPath: path).lastPathComponent,
-                    detail: "\(path) · provided by \(sender.displayName); not independently read by Parley"
-                ),
-                capturedText: normalized
-            )
+            let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, text: text)
             let pack = ContextPack(
                 name: name.isEmpty ? "\(sender.displayName) context" : name,
-                parts: [part]
+                parts: [staged.part]
             )
             _ = try contextPackBuilder.render(pack)
             let review = AgentContextReview(
@@ -776,12 +772,7 @@ public final class RelayBroker: @unchecked Sendable {
     ) -> RelayTextResponse {
         do {
             let sender = try authenticatedSender(token: token)
-            let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.cwd)
-            let normalized = ContextPackText.normalize(text)
-            guard !normalized.isEmpty else { throw BrokerFailure(status: 400, message: "the context file is empty") }
-            guard normalized.utf8.count <= ContextPackBuilder.defaultMaximumPartBytes else {
-                throw BrokerFailure(status: 413, message: "the context file is too large")
-            }
+            let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, text: text)
             consultationCondition.lock()
             guard var review = contextReviewRecords[draftID],
                   review.sourcePaneID == sender.id,
@@ -789,14 +780,7 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 throw BrokerFailure(status: 404, message: "no editable context draft named \(draftID)")
             }
-            review.pack.parts.append(ContextPackPart(
-                source: ContextPackSource(
-                    kind: .agentFileDraft,
-                    label: URL(fileURLWithPath: path).lastPathComponent,
-                    detail: "\(path) · provided by \(sender.displayName); not independently read by Parley"
-                ),
-                capturedText: normalized
-            ))
+            review.pack.parts.append(staged.part)
             do {
                 _ = try contextPackBuilder.render(review.pack)
                 review.updatedAt = Date()
@@ -1457,6 +1441,35 @@ public final class RelayBroker: @unchecked Sendable {
         return candidate.path
     }
 
+    private func agentFileDraftPart(
+        sender: WorkbenchPane,
+        suppliedPath: String,
+        text: String,
+        referenceID: String? = nil
+    ) throws -> (path: String, part: ContextPackPart) {
+        let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.cwd)
+        let normalized = ContextPackText.normalize(text)
+        guard !normalized.isEmpty else {
+            throw BrokerFailure(status: 400, message: "the context file is empty")
+        }
+        guard normalized.utf8.count <= ContextPackBuilder.defaultMaximumPartBytes else {
+            throw BrokerFailure(status: 413, message: "the context file is too large")
+        }
+        let lineage = referenceID.map { " · returned from delegation \($0)" } ?? ""
+        return (
+            path,
+            ContextPackPart(
+                source: ContextPackSource(
+                    kind: .agentFileDraft,
+                    label: URL(fileURLWithPath: path).lastPathComponent,
+                    detail: "\(path) · provided by \(sender.displayName)\(lineage); not independently read by Parley",
+                    referenceID: referenceID
+                ),
+                capturedText: normalized
+            )
+        )
+    }
+
     public func handle(
         token: String,
         target requestedTarget: String,
@@ -1792,6 +1805,176 @@ public final class RelayBroker: @unchecked Sendable {
                 ? "Completion returned to \(handoff.sourceName)."
                 : "Failure returned to \(handoff.sourceName)."
         )
+    }
+
+    /// Completes one tracked delegation with a substantial UTF-8 file while
+    /// retaining its bytes as an agent-provided claim until a person reviews
+    /// the editable Context Pack draft. No content is sent to another pane.
+    public func handleDelegationFileResult(
+        token: String,
+        handoffID requestedHandoffID: String,
+        path suppliedPath: String,
+        text: String
+    ) -> RelayTextResponse {
+        do {
+            guard contextReviewStore != nil else {
+                throw BrokerFailure(status: 503, message: "context review storage is unavailable")
+            }
+            let sender = try authenticatedSender(token: token)
+            let normalized = ContextPackText.normalize(text)
+            guard !normalized.isEmpty else {
+                throw BrokerFailure(status: 400, message: "the completion file is empty")
+            }
+            guard normalized.utf8.count <= ContextPackBuilder.defaultMaximumPartBytes else {
+                throw BrokerFailure(status: 413, message: "the completion file is too large")
+            }
+            let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.cwd)
+
+            consultationCondition.lock()
+            let handoffID: String
+            if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
+                let matches = delegationRecords.keys.filter { handoffRecords[$0]?.targetPaneID == sender.id }
+                guard matches.count == 1, let match = matches.first else {
+                    consultationCondition.unlock()
+                    return RelayTextResponse(
+                        status: matches.isEmpty ? 404 : 409,
+                        text: matches.isEmpty
+                            ? "this pane has no delegated work awaiting a result"
+                            : "this pane has more than one delegated item awaiting a result"
+                    )
+                }
+                handoffID = match
+            } else {
+                handoffID = requestedHandoffID
+            }
+            guard let record = delegationRecords[handoffID], let handoff = handoffRecords[handoffID] else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 404, text: "unknown active delegation")
+            }
+            guard handoff.targetPaneID == sender.id else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 403, text: "only the delegated target pane can report this result")
+            }
+            guard record.targetCredential == token else {
+                consultationCondition.unlock()
+                return RelayTextResponse(status: 409, text: "this delegation belongs to an earlier run of the target pane")
+            }
+
+            let staged: (path: String, part: ContextPackPart)
+            do {
+                staged = try agentFileDraftPart(
+                    sender: sender,
+                    suppliedPath: path,
+                    text: normalized,
+                    referenceID: handoffID
+                )
+            } catch {
+                consultationCondition.unlock()
+                throw error
+            }
+            let review = AgentContextReview(
+                sourcePaneID: sender.id,
+                sourcePaneName: sender.displayName,
+                sourcePaneKind: sender.kind,
+                sourceFolder: sender.cwd,
+                pack: ContextPack(
+                    name: "Delegation result from \(sender.displayName)",
+                    parts: [staged.part]
+                ),
+                detail: "Returned from tracked delegation \(handoffID); awaiting explicit human review."
+            )
+            do {
+                _ = try contextPackBuilder.render(review.pack)
+                try contextReviewStore?.record(review)
+            } catch {
+                consultationCondition.unlock()
+                throw error
+            }
+            contextReviewRecords[review.id] = review
+
+            let filename = URL(fileURLWithPath: staged.path).lastPathComponent
+            let receipt = "\(sender.displayName) returned \(filename) (\(normalized.utf8.count) UTF-8 bytes) for explicit review. Context review ID: \(review.id)."
+            if var updated = handoffRecords[handoffID] {
+                updated.resultText = receipt
+                updated.resultContextReviewID = review.id
+                handoffRecords[handoffID] = updated
+            }
+            transitionHandoffLocked(handoffID, to: .completed, detail: receipt)
+            delegationResponses[handoffID] = RelayTextResponse(status: 200, text: receipt)
+            delegationRecords.removeValue(forKey: handoffID)
+            pruneHandoffsLocked()
+            consultationCondition.broadcast()
+            consultationCondition.unlock()
+            return RelayTextResponse(
+                status: 200,
+                text: "Completion file staged for explicit review and returned to \(handoff.sourceName)."
+            )
+        } catch let error as BrokerFailure {
+            return RelayTextResponse(status: error.status, text: error.message)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    /// Replaces the one compact, target-authored note attached to an active
+    /// delegation. This is deliberately not a state transition: it neither
+    /// proves activity nor changes the meaning of waiting, done, or failed.
+    public func handleDelegationProgress(
+        token: String,
+        handoffID requestedHandoffID: String,
+        text: String
+    ) -> RelayTextResponse {
+        guard let senderID = credentials.paneID(for: token) else {
+            return RelayTextResponse(status: 401, text: "bad token")
+        }
+        let cleaned = DelegationProgressText.normalize(text)
+        guard !cleaned.isEmpty else {
+            return RelayTextResponse(status: 400, text: "nothing to report as progress")
+        }
+        guard cleaned.utf8.count <= DelegationProgressText.maximumBytes else {
+            return RelayTextResponse(
+                status: 400,
+                text: "delegation progress note exceeds \(DelegationProgressText.maximumBytes) UTF-8 bytes"
+            )
+        }
+
+        consultationCondition.lock()
+        let handoffID: String
+        if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
+            let matches = delegationRecords.keys.filter { handoffRecords[$0]?.targetPaneID == senderID }
+            guard matches.count == 1, let match = matches.first else {
+                consultationCondition.unlock()
+                return RelayTextResponse(
+                    status: matches.isEmpty ? 404 : 409,
+                    text: matches.isEmpty
+                        ? "this pane has no delegated work awaiting progress"
+                        : "this pane has more than one delegated item awaiting progress"
+                )
+            }
+            handoffID = match
+        } else {
+            handoffID = requestedHandoffID
+        }
+        guard let record = delegationRecords[handoffID], var handoff = handoffRecords[handoffID] else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 404, text: "unknown active delegation")
+        }
+        guard handoff.targetPaneID == senderID else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 403, text: "only the delegated target pane can report progress")
+        }
+        guard record.targetCredential == token else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: "this delegation belongs to an earlier run of the target pane")
+        }
+
+        handoff.progressNote = cleaned
+        handoff.progressUpdatedAt = clock()
+        handoffRecords[handoffID] = handoff
+        handoffJournal?.record(handoff)
+        consultationCondition.broadcast()
+        consultationCondition.unlock()
+        return RelayTextResponse(status: 200, text: "Progress recorded for \(handoff.sourceName).")
     }
 
     /// Accepts only one allowlisted, content-free lifecycle fact from the
@@ -3467,10 +3650,16 @@ public final class RelayBroker: @unchecked Sendable {
         When the work is complete, return a concise completion report to \(handoff.sourceName) by running:
         parley done current "your completion report"
 
+        For a substantial UTF-8 result file inside this pane's working folder, stage it for explicit human review by running:
+        parley done current --file <path>
+
+        You may replace the one compact, agent-declared progress note visible to \(handoff.sourceName) by running:
+        parley progress current "what changed"
+
         If the work cannot be completed, return the blocking reason by running:
         parley fail current "why the work failed"
 
-        For a multiline report, pipe the text to `parley done current` or `parley fail current`. Parley identifies this tracked item from the pane credential. Do not only print the result in this pane; the initiating agent may use `parley wait` for the structured outcome.
+        For a multiline report, pipe the text to `parley done current` or `parley fail current`. A returned file is not forwarded automatically. Parley identifies this tracked item from the pane credential. Do not only print the result in this pane; the initiating agent may use `parley wait` for the structured outcome.
         """
     }
 
@@ -4098,7 +4287,35 @@ public enum RelayShim {
           shift 2
         fi
         ;;
-      answer|done|fail|wait|cancel)
+      done)
+        item="${2:-}"
+        case "$item" in
+          "")
+            echo "$command needs 'current' or a tracked item id" >&2
+            exit 2
+            ;;
+          current) ;;
+          *[!a-f0-9-]*)
+            echo "$command needs 'current' or a tracked item id" >&2
+            exit 2
+            ;;
+        esac
+        shift 2
+        if [ "${1:-}" = "--file" ]; then
+          [ "$#" -eq 2 ] || {
+            echo "usage: parley done <id|current> --file <path>" >&2
+            exit 2
+          }
+          target="$2"
+          [ -n "$target" ] || {
+            echo "usage: parley done <id|current> --file <path>" >&2
+            exit 2
+          }
+          command="done-file"
+          shift 2
+        fi
+        ;;
+      answer|progress|fail|wait|cancel)
         item="${2:-}"
         case "$item" in
           "")
@@ -4177,7 +4394,9 @@ public enum RelayShim {
         echo "  parley delegate <pane> [task...] start tracked asynchronous work" >&2
         echo "  parley status                    list work initiated by this pane as JSON" >&2
         echo "  parley wait <id|current>         wait for an Ask or delegated result" >&2
+        echo "  parley progress current [note...] replace this pane's latest progress note" >&2
         echo "  parley done current [report...]  complete this pane's delegated work" >&2
+        echo "  parley done current --file <path> stage a substantial result for human review" >&2
         echo "  parley fail current [reason...]  fail this pane's delegated work" >&2
         echo "  parley cancel <id|current>       cancel tracking for work this pane initiated" >&2
         echo "text may also come on stdin" >&2
@@ -4186,7 +4405,7 @@ public enum RelayShim {
     esac
 
     case "$command" in
-      whoami|panes|events|signal|status|wait|cancel|context-list|context-show|context-discard|context-draft|context-add) ;;
+      whoami|panes|events|signal|status|wait|cancel|context-list|context-show|context-discard|context-draft|context-add|done-file) ;;
       *)
         if [ "$#" -eq 0 ] && [ -t 0 ]; then
           echo "nothing to $command: give the text as arguments or pipe it in" >&2
@@ -4326,7 +4545,7 @@ public enum RelayShim {
           /bin/cat
         fi | post
         ;;
-      done|fail)
+      progress|done|fail)
         if [ "$#" -gt 0 ]; then
           printf '%s' "$*"
         else
@@ -4345,7 +4564,15 @@ public enum RelayShim {
       context-list|context-show|context-discard)
         printf '' | post
         ;;
-      context-draft|context-add)
+      context-draft|context-add|done-file)
+        case "$target" in
+          /*) ;;
+          *) target="$PWD/$target" ;;
+        esac
+        if [ ! -f "$target" ]; then
+          echo "Parley can stage only a readable file: $target" >&2
+          exit 2
+        fi
         /bin/cat -- "$target" | post
         ;;
     esac

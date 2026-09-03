@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "12"
+    public static let version = "14"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -62,8 +62,17 @@ public enum AgentProtocol {
       answer from the same source pane generation; `current` resolves only when
       exactly one active delegation exists. Cancel only your own active tracking
       with `parley cancel <id>`; this never interrupts the target CLI.
+    - While delegated work is active, its exact target may replace one compact,
+      agent-declared note with `parley progress current "<note>"`. Progress is
+      not proof of activity or completion; use `done` or `fail` for the
+      terminal outcome.
     - When delegated work reaches a terminal outcome, run
       `parley done current "<report>"` or `parley fail current "<reason>"`.
+      For a substantial UTF-8 result file, use
+      `parley done current --file <path>`. The file must remain inside this
+      pane's working folder. Parley completes the tracked work only after it
+      durably stages the bounded file as agent-provided content for explicit
+      human review; it does not send or promote the file automatically.
       Do not only print the result locally; the initiating pane owns the status.
     - Name one agent pane by vendor, pane name or pane id. Same-vendor routes
       are allowed only when source and target are different panes; self-targeting

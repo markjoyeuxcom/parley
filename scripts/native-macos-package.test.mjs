@@ -56,10 +56,39 @@ test('Info.plist describes the native foreground application', () => {
   assert.match(plist, /<key>public\.filename-extension<\/key>\s*<array>\s*<string>parleycontext<\/string>/)
 })
 
-test('bundle contract contains one executable and the runtime/legal resources', () => {
+test('production Info.plist enables only a signed opt-in Sparkle update channel', () => {
+  const publicKey = Buffer.alloc(32, 7).toString('base64')
+  const plist = renderInfoPlist({
+    version: '1.2.3',
+    build: '45',
+    sparklePublicKey: publicKey,
+  })
+
+  assert.match(plist, /<key>SUFeedURL<\/key>\s*<string>https:\/\/github\.com\/markjoyeuxcom\/parley\/releases\/latest\/download\/appcast\.xml<\/string>/)
+  assert.match(plist, new RegExp(`<key>SUPublicEDKey<\\/key>\\s*<string>${publicKey}<\\/string>`))
+  assert.match(plist, /<key>SURequireSignedFeed<\/key>\s*<true\/>/)
+  assert.match(plist, /<key>SUVerifyUpdateBeforeExtraction<\/key>\s*<true\/>/)
+  assert.match(plist, /<key>SUAllowsAutomaticUpdates<\/key>\s*<false\/>/)
+  assert.match(plist, /<key>SUEnableAutomaticChecks<\/key>\s*<false\/>/)
+  assert.match(plist, /<key>SUAutomaticallyUpdate<\/key>\s*<false\/>/)
+  assert.match(plist, /<key>SUEnableSystemProfiling<\/key>\s*<false\/>/)
+
+  assert.throws(
+    () => renderInfoPlist({ version: '1.2.3', build: '45', sparklePublicKey: 'not-a-key' }),
+    /32-byte base64 Ed25519 public key/,
+  )
+})
+
+test('development Info.plist contains no inert or unsigned Sparkle configuration', () => {
+  const plist = renderInfoPlist({ version: '1.2.3', build: '45' })
+  assert.doesNotMatch(plist, /SUFeedURL|SUPublicEDKey|SUEnableAutomaticChecks/)
+})
+
+test('bundle contract contains the Parley executable, Sparkle and runtime/legal resources', () => {
   assert.deepEqual(requiredBundlePaths, [
     'Contents/Info.plist',
     'Contents/MacOS/parley-native',
+    'Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle',
     'Contents/Resources/GhosttyKit_GhosttyTerminal.bundle/Ghostty',
     'Contents/Resources/GhosttyKit_GhosttyTerminal.bundle/terminfo',
     'Contents/Resources/Parley.icns',
@@ -171,10 +200,20 @@ test('repository carries notices for Ghostty, its Swift wrapper, theme data and 
   assert.match(notice, /Ghostty/)
   assert.match(notice, /libghostty-spm/)
   assert.match(notice, /MSDisplayLink/)
+  assert.match(notice, /Sparkle/)
   assert.match(notice, /Color scheme data sourced from iTerm2-Color-Schemes/)
   assert.match(notice, /Permission is hereby granted, free of charge/)
   assert.match(notice, /THE SOFTWARE IS PROVIDED "AS IS"/)
   assert.doesNotMatch(notice, /SwiftTerm/)
+})
+
+test('native package pins the registry-verified Sparkle release exactly', () => {
+  const manifest = readFileSync(new URL('../native/Package.swift', import.meta.url), 'utf8')
+  assert.match(
+    manifest,
+    /\.package\(url: "https:\/\/github\.com\/sparkle-project\/Sparkle", exact: "2\.9\.6"\)/,
+  )
+  assert.match(manifest, /\.product\(name: "Sparkle", package: "Sparkle"\)/)
 })
 
 test('repository and VS Code companion carry the same Apache-2.0 licence', () => {
@@ -202,6 +241,7 @@ test('bundle structure rejects a non-executable app and missing legal resources'
 
   assert.deepEqual(validateBundleStructure(bundle), [
     'Contents/MacOS/parley-native is not executable',
+    'Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle is missing',
     'Contents/Resources/GhosttyKit_GhosttyTerminal.bundle/Ghostty is missing',
     'Contents/Resources/GhosttyKit_GhosttyTerminal.bundle/terminfo is missing',
     'Contents/Resources/LICENSE is missing',
@@ -215,5 +255,7 @@ test('bundle structure rejects a non-executable app and missing legal resources'
   writeFileSync(join(bundle, 'Contents/Resources/THIRD_PARTY_NOTICES.md'), 'notice')
   mkdirSync(join(bundle, 'Contents/Resources/GhosttyKit_GhosttyTerminal.bundle/Ghostty'), { recursive: true })
   mkdirSync(join(bundle, 'Contents/Resources/GhosttyKit_GhosttyTerminal.bundle/terminfo'), { recursive: true })
+  mkdirSync(join(bundle, 'Contents/Frameworks/Sparkle.framework/Versions/B'), { recursive: true })
+  writeFileSync(join(bundle, 'Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle'), 'framework')
   assert.deepEqual(validateBundleStructure(bundle), [])
 })

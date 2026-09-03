@@ -19,8 +19,10 @@ implementation.
   repeated independent input, hidden-window continuity and exact child-PID
   teardown verification.
 
-`GhosttyTerminal` from `libghostty-spm` is the terminal dependency. Exact
-revisions are locked by `Package.swift` and `Package.resolved`.
+`GhosttyTerminal` from `libghostty-spm` is the terminal dependency. Sparkle is
+the Production app's signed update installer; it is never started by an
+unbundled Development runtime. Exact revisions are locked by `Package.swift`
+and `Package.resolved`.
 
 ## Run and verify
 

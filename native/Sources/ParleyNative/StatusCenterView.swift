@@ -73,6 +73,9 @@ struct StatusCenterView: View {
         if selectedHandoffResultsForContextPack.isEmpty {
             return "Select at least one returned Ask or Delegate result."
         }
+        if selectedHandoffResultsForContextPack.contains(where: { $0.resultContextReviewID != nil }) {
+            return "A selected file result has its own agent-provided review. Open it from that handoff's inspector."
+        }
         if selectedHandoffResultsForContextPack.count > ContextPackBuilder.maximumParts {
             return "Choose at most \(ContextPackBuilder.maximumParts) returned results for one Context Pack."
         }
@@ -1039,8 +1042,14 @@ struct StatusCenterView: View {
                         lineageSection(handoff)
                     }
                     inspectorSection(handoff.kind == .delegate ? "INSTRUCTION" : "QUESTION OR MESSAGE", handoff.text)
+                    if let progress = handoff.progressNote, !progress.isEmpty {
+                        delegationProgressSection(handoff, progress: progress)
+                    }
                     if let result = handoff.resultText, !result.isEmpty {
                         inspectorSection("RETURNED RESULT", result)
+                    }
+                    if let review = model.returnedFileReview(for: handoff) {
+                        returnedFileReviewSection(review)
                     }
                     if handoff.hasReturnedResult {
                         HandoffHumanReviewEditor(model: model, handoff: handoff)
@@ -1335,6 +1344,70 @@ struct StatusCenterView: View {
                 .background(Color.secondary.opacity(0.055))
                 .clipShape(RoundedRectangle(cornerRadius: 5))
         }
+    }
+
+    private func delegationProgressSection(_ handoff: RelayHandoff, progress: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("LATEST PROGRESS")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                statusChip("AGENT-DECLARED", color: .secondary)
+                Spacer()
+                if let reportedAt = handoff.progressUpdatedAt {
+                    Text(reportedAt, style: .relative)
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text(progress)
+                .font(.system(size: 10, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(9)
+                .background(Color.secondary.opacity(0.055))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+            Text("Not a completion claim. The target must still report done or failed.")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func returnedFileReviewSection(_ review: AgentContextReview) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text("RETURNED FILE REVIEW")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                statusChip("AGENT-PROVIDED", color: .secondary)
+                statusChip(review.state.rawValue.uppercased(), color: review.state.needsHumanReview ? .orange : .secondary)
+                Spacer()
+            }
+            Text("\(review.pack.parts.count) source · \(review.pack.sourceByteCount.formatted()) UTF-8 bytes")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Text("Parley has not independently verified or forwarded this file. Review and edit the visible source before choosing whether to send it as a Context Pack.")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if review.state.needsHumanReview {
+                Button("Review Returned File…") {
+                    model.presentContextReview(review)
+                    openWindow(id: "main")
+                }
+                .help("Open the agent-provided file as an editable Context Pack; nothing is sent automatically")
+            } else {
+                Text(review.detail ?? "This returned-file review has been resolved.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(9)
+        .background(Color.secondary.opacity(0.055))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .accessibilityElement(children: .contain)
     }
 
     private var timeline: some View {

@@ -312,6 +312,7 @@ struct ParleyNativeApp: App {
                             }
                         }
                     }
+                    model.startAutomaticUpdater()
                 }
         }
         .defaultSize(width: 1_300, height: 820)
@@ -417,6 +418,8 @@ struct ParleyNativeApp: App {
                 Divider()
                 Button("Environment Check…") { model.showEnvironmentCheck() }
                 Button("Compatibility & Releases…") { model.showReleaseLifecycle() }
+                Button("Check for Stable Updates…") { model.checkForStableAutomaticUpdate() }
+                    .disabled(!model.automaticUpdateCanCheck)
                 Toggle(
                     "Reap Idle Agents After 30 Minutes",
                     isOn: Binding(
@@ -452,8 +455,12 @@ struct ParleyNativeApp: App {
                     .disabled(!model.canReturn)
                 Button("Balance Panes") { model.balance() }
                 Divider()
-                Button("Terminal Font…") { model.showTerminalFontSettings() }
+                Button("Terminal Appearance…") { model.showTerminalFontSettings() }
             }
+        }
+
+        Settings {
+            ParleySettingsView(model: model)
         }
 
         MenuBarExtra {

@@ -127,6 +127,7 @@ public enum ParleyHelpGuide {
                     title: "Pane focus, selection and scrollback",
                     paragraphs: [
                         "The left sidebar is Parley's rich pane navigator: it keeps status, permissions, recovery actions and context menus visible. When you hide the sidebar, a compact pane focus strip remains above the terminals. Every visible leaf has a clear border, and the selected leaf uses the app accent. Clicking a leaf or its focus-strip item makes that exact pane authoritative for typing and actions.",
+                        "Each pane row shows its exact working directory and fixed-argument Git branch snapshot. A throttled process inspection may add bounded LISTEN ports only after Parley attributes the owning process tree to that Ghostty pane. The final fact is the latest authoritative attention reason from an official vendor hook or durable handoff. None of these facts comes from terminal scraping.",
                         "SwiftUI owns the visible split tree and each leaf is one retained Ghostty surface. Ghostty owns the real PTY, process, vendor TUI, selection, scrollback and terminal state; Parley's app-resident coordination core owns relay delivery.",
                         "Hiding or closing the main window does not destroy its terminal surfaces. Quitting Parley is the explicit lifetime boundary and ends every pane process and the coordination core.",
                     ],
@@ -311,6 +312,8 @@ public enum ParleyHelpGuide {
                         "Relay submits one attributed message immediately but does not wait for a correlated result.",
                         "Paste places an attributed draft in the target prompt without Enter, so you can inspect or edit it first.",
                         "The native menus let you preview and edit captured text before it crosses to another pane.",
+                        "When the exact target pane has a supported authenticated vendor hook report, the reviewed composer shows TARGET SIGNAL with its pane and vendor hook provenance, reported state, official event and live age.",
+                        "TARGET SIGNAL is ADVISORY ONLY: it neither blocks nor authorizes Send. A missing strip means no supported official target signal was reported; Parley never fills that gap from terminal text or timing.",
                     ],
                     commands: [
                         ParleyHelpCommand("parley ask codex \"Review this plan and return your concerns.\"", "Submit a focused correlated question, print its recovery id on stderr and wait for Codex's exact answer."),
@@ -363,13 +366,16 @@ public enum ParleyHelpGuide {
                     paragraphs: [
                         "Delegate starts asynchronous agent-to-agent work and immediately returns a tracking id. Use it instead of Ask when work is likely to exceed one minute.",
                         "The receiving agent must report a terminal result through Parley; merely printing the result in its pane does not complete the tracking relationship.",
+                        "A substantial UTF-8 result may be returned with `parley done current --file <path>`. The file must stay inside the target pane's working folder. Parley completes the delegation only after a bounded, agent-provided Context Pack draft is durable; it does not forward the file automatically.",
                     ],
                     commands: [
                         ParleyHelpCommand("parley delegate codex \"Implement the reviewed fix and verify it.\"", "Assign one bounded task to another vendor."),
                         ParleyHelpCommand("parley status", "List work initiated by this pane as machine-readable JSON."),
                         ParleyHelpCommand("parley wait <id>", "Wait for one explicit delegation or recover a completed Ask from the same source pane generation."),
                         ParleyHelpCommand("parley wait current", "Wait only when exactly one delegation is active; current never selects a completed Ask."),
+                        ParleyHelpCommand("parley progress current \"Parser checks are running.\"", "Replace the active delegation's one 200-byte agent-declared progress note; this does not complete the work."),
                         ParleyHelpCommand("parley done current \"Implemented; tests pass.\"", "Complete work from the delegated target pane."),
+                        ParleyHelpCommand("parley done current --file reports/result.md", "Complete work with a substantial file staged for explicit human review."),
                         ParleyHelpCommand("parley fail current \"Blocked by a missing fixture.\"", "Return an explicit failed result from the delegated target pane."),
                         ParleyHelpCommand("parley cancel current", "Cancel only tracking initiated by this pane; the target CLI is not interrupted."),
                     ]
@@ -464,6 +470,7 @@ public enum ParleyHelpGuide {
                         "Command capture requires an absolute executable and treats each non-empty line as one literal argument. It never invokes a shell, expands variables, pipes or redirects.",
                         "Both command stdout and stderr plus the exit status are retained. Time and output bounds prevent a noisy process from creating an unbounded preview.",
                         "A pane agent can stage repository files with `parley context draft --name \"Review\" --file path`, append with `parley context add <draft> --file path`, and abandon its own draft with `parley context discard <draft>`. These files must remain under that pane's working folder and are visibly labelled agent-provided because Parley did not independently capture them.",
+                        "A file returned through `parley done current --file <path>` follows the same agent-provided boundary and appears both in the Context menu and on its completed handoff. The person may edit or discard it, add separately captured trusted sources, or choose whether to send the reviewed pack. Its compact completion receipt is never substituted for the file.",
                         "While reviewing an agent draft, a person may add Files, Git Diff, Selection or Capture Command. The app-resident core performs that separate capture, labels its real provenance and retains the original bytes; the agent-provided parts remain claims.",
                     ]
                 ),
@@ -478,6 +485,7 @@ public enum ParleyHelpGuide {
                         "An oversized source or pack stays visibly invalid and cannot be sent; Parley never silently clips the editable preview.",
                         "Person-created context packs remain local in-memory drafts. Agent-staged review records are owner-only and durable so closing the UI cannot silently approve or lose a waiting checkpoint. A workspace-brief attachment is a snapshot: editing it in the pack never rewrites the saved brief.",
                         "The Context menu lists every pending agent review separately. Discard Draft ends an unsubmitted staged draft; Decline Ask releases a pane already blocked in `ask --context`. Abandoned editable agent drafts are discarded after seven days so they cannot permanently consume the bounded review queue.",
+                        "Returned delegation files retain their exact handoff lineage, canonical contained path and captured bytes. Opening one from Status Center is review, not delivery; nothing reaches another pane until the person selects a target and confirms the normal Context Pack send.",
                         "`parley ask <vendor> --context <draft> \"question\"` blocks at a visible human-review checkpoint. The Context menu shows the waiting draft; approval sends the edited pack and returns the correlated answer, while Decline submits nothing and releases the waiting pane with an explicit refusal.",
                     ]
                 ),
