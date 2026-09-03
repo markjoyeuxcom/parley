@@ -10261,13 +10261,19 @@ private func checkRealGhosttyAppResidentPaneLifecycle() throws {
             "Ghostty refused its process-id probe"
         )
         try expect(terminal.sendKey(.enter), "Ghostty refused the process-id probe Enter")
+        var reportedProcessID: pid_t?
         try expect(
-            pump(until: { FileManager.default.fileExists(atPath: processFile.path) }),
-            "the Ghostty shell did not report its process id"
+            pump(until: {
+                guard let text = try? String(contentsOf: processFile, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                      let processID = pid_t(text),
+                      processID > 0 else { return false }
+                reportedProcessID = processID
+                return true
+            }),
+            "the Ghostty shell did not report a valid process id"
         )
-        let processText = try String(contentsOf: processFile, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let processID = try require(pid_t(processText), "the Ghostty shell reported an invalid process id")
+        let processID = try require(reportedProcessID, "the Ghostty shell reported an invalid process id")
 
         window.orderOut(nil)
         try expect(terminal.window === window, "hiding the window detached the retained Ghostty surface")

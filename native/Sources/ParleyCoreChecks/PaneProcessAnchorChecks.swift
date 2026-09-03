@@ -144,13 +144,14 @@ private func sampleUntilAnchored(
     applicationPID: Int32,
     descriptors: [TaskManagerPaneDescriptor],
     expecting paneIDs: Set<String>,
+    additionallyReady: (TaskManagerSnapshot) -> Bool = { _ in true },
     timeout: TimeInterval = 5
 ) -> TaskManagerSnapshot {
     let deadline = Date().addingTimeInterval(timeout)
     var sample = sampler.sample(applicationPID: applicationPID, paneDescriptors: descriptors)
     while Date() < deadline {
         let anchored = Set(sample.workspaces.flatMap(\.panes).filter { $0.anchorSource == .paneMarker }.map(\.paneID))
-        if paneIDs.isSubset(of: anchored) { return sample }
+        if paneIDs.isSubset(of: anchored), additionallyReady(sample) { return sample }
         Thread.sleep(forTimeInterval: 0.05)
         sample = sampler.sample(applicationPID: applicationPID, paneDescriptors: descriptors)
     }
@@ -256,7 +257,12 @@ func checkPaneRootResolverOwnsOnlyMarkedLaunchTrees() throws {
         TaskManagerSampler(),
         applicationPID: me,
         descriptors: [paneDescriptor("%live"), paneDescriptor("%shell"), paneDescriptor("%dup"), paneDescriptor("%absent")],
-        expecting: ["%live", "%shell"]
+        expecting: ["%live", "%shell"],
+        additionallyReady: { snapshot in
+            paneSnapshot("%shell", in: snapshot)?.processes.contains(where: {
+                $0.parentPID == hidden.pid
+            }) == true
+        }
     )
     let livePane = try anchorRequire(paneSnapshot("%live", in: sample), "the readable pane disappeared from Task Manager")
     try anchorExpect(livePane.anchorSource == .paneMarker && livePane.processes.contains(where: { $0.pid == readable.pid }), "a readable marked root was not attributed by the live resolver")
