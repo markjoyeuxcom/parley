@@ -1,0 +1,76 @@
+name: Prepare unnotarized macOS test beta
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag, for example v0.1.14
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    name: Verify and create unnotarized test beta
+    runs-on: macos-latest
+    steps:
+      - name: Check out the exact tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Install the locked VS Code companion toolchain
+        run: npm ci --prefix vscode-extension
+
+      - name: Run deterministic checks
+        run: npm test
+
+      - name: Run Ghostty runtime release gate
+        run: |
+          mkdir -p dist
+          npm run test:soak -- --rounds 25 --output dist/Parley-Ghostty-soak.json
+
+      - name: Package the VS Code companion
+        run: |
+          mkdir -p dist
+          npm run package:vscode
+
+      - name: Prepare and verify unnotarized test-beta assets
+        env:
+          PARLEY_RELEASE_TAG: ${{ inputs.tag }}
+        run: npm run release:mac:beta
+
+      - name: Add companion and soak report to the verified checksum set
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          checksums="dist/Parley-${version}-mac-arm64.SHA256SUMS"
+          (cd dist && shasum -a 256 "Parley-Companion-0.1.0.vsix" >> "$(basename "$checksums")")
+          (cd dist && shasum -a 256 "Parley-Ghostty-soak.json" >> "$(basename "$checksums")")
+          LC_ALL=C sort -o "$checksums" "$checksums"
+          (cd dist && shasum -a 256 -c "$(basename "$checksums")")
+
+      - name: Create an unpublished GitHub test-beta draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PARLEY_RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          base="dist/Parley-${version}-mac-arm64"
+          notes=".github/release-notes/${PARLEY_RELEASE_TAG}.md"
+          test -f "$notes"
+          gh release create "$PARLEY_RELEASE_TAG" \
+            "$base.dmg" \
+            "$base.zip" \
+            "$base.release.json" \
+            "$base.SHA256SUMS" \
+            "${base}-INSTALL.txt" \
+            "dist/Parley-Companion-0.1.0.vsix" \
+            "dist/Parley-Ghostty-soak.json" \
+            --verify-tag \
+            --draft \
+            --prerelease \
+            --title "Parley v${version} — unnotarized test beta" \
+            --notes-file "$notes"

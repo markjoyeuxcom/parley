@@ -280,21 +280,25 @@ function packageVersion() {
   return value
 }
 
-function parseCLI(arguments_) {
-  let tag = process.env.PARLEY_RELEASE_TAG
+export function parseReleaseCLI(arguments_, environment = process.env) {
+  let tag = environment.PARLEY_RELEASE_TAG
   let lifecycleOnly = false
+  let unnotarizedBeta = false
   for (let index = 0; index < arguments_.length; index += 1) {
     if (arguments_[index] === '--tag' && arguments_[index + 1]) {
       tag = arguments_[index + 1]
       index += 1
     } else if (arguments_[index] === '--lifecycle-only') {
       lifecycleOnly = true
+    } else if (arguments_[index] === '--unnotarized-beta') {
+      unnotarizedBeta = true
     } else {
       throw new Error(`unknown release argument: ${arguments_[index]}`)
     }
   }
   if (lifecycleOnly && tag) throw new Error('--lifecycle-only cannot publish tag provenance')
-  return { tag, lifecycleOnly }
+  if (lifecycleOnly && unnotarizedBeta) throw new Error('--lifecycle-only and --unnotarized-beta cannot be combined')
+  return { tag, lifecycleOnly, unnotarizedBeta }
 }
 
 function verifyReleaseTag(tag, commit) {
@@ -586,11 +590,67 @@ export function uninstallApplicationBundle({
   if (existsSync(dataDirectory)) rmSync(dataDirectory, { recursive: true, force: false })
 }
 
+async function prepareUnnotarizedBeta({ tag }) {
+  if (process.platform !== 'darwin') throw new Error('macOS releases must be prepared on macOS')
+  const version = packageVersion()
+  const status = run('git', ['status', '--porcelain=v1', '--untracked-files=all'], { capture: true })
+  assertReleaseSource({ version, status, tag })
+  const commit = run('git', ['rev-parse', 'HEAD'], { capture: true })
+  verifyReleaseTag(tag, commit)
+
+  const notarized = false
+  const installGuide = renderInstallGuide({ version, notarized })
+  const packaged = packageNativeMacOS({ distributionReadme: installGuide })
+  if (packaged.signing.kind !== 'ad-hoc') {
+    throw new Error('an unnotarized test beta must use ad-hoc signing')
+  }
+  const names = artifactNames(version)
+  const dist = join(repositoryRoot, 'dist')
+  const artifacts = [packaged.dmg, packaged.zip].map((path) => ({
+    file: basename(path),
+    bytes: statSync(path).size,
+    sha256: sha256(path),
+  }))
+  const manifestPath = join(dist, names.manifest)
+  const guidePath = join(dist, names.installGuide)
+  writeFileSync(guidePath, installGuide)
+  writeFileSync(manifestPath, renderReleaseManifest({
+    version,
+    build: packaged.build,
+    commit,
+    signing: { kind: packaged.signing.kind, notarized },
+    artifacts,
+  }))
+  const checksumEntries = [...artifacts, manifestPath, guidePath].map((entry) => {
+    const path = typeof entry === 'string' ? entry : join(dist, entry.file)
+    return { file: basename(path), sha256: sha256(path) }
+  })
+  const checksumsPath = join(dist, names.checksums)
+  writeFileSync(checksumsPath, renderChecksumFile(checksumEntries))
+  run('shasum', ['-a', '256', '-c', names.checksums], { cwd: dist })
+
+  const verificationRoot = mkdtempSync(join(tmpdir(), 'parley-beta-archives-'))
+  try {
+    verifyZip(packaged.zip, verificationRoot)
+  } finally {
+    rmSync(verificationRoot, { recursive: true, force: true })
+  }
+  await verifyDMGAndLifecycle({ dmg: packaged.dmg, installGuide })
+
+  process.stdout.write(`Prepared Parley ${version} (${packaged.build}) from ${commit}\n`)
+  process.stdout.write('Trust: ad-hoc signed, unnotarized test beta\n')
+  for (const path of [packaged.dmg, packaged.zip, manifestPath, checksumsPath, guidePath]) {
+    process.stdout.write(`${path}\n`)
+  }
+  process.stdout.write('Test-beta gate: ZIP, DMG, isolated install, upgrade, uninstall and explicit data purge passed\n')
+}
+
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : ''
 if (invokedPath === import.meta.url) {
   try {
-    const options = parseCLI(process.argv.slice(2))
+    const options = parseReleaseCLI(process.argv.slice(2))
     if (options.lifecycleOnly) await verifyDevelopmentPackage()
+    else if (options.unnotarizedBeta) await prepareUnnotarizedBeta(options)
     else await prepareRelease(options)
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : error}\n`)

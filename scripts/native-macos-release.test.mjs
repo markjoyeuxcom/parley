@@ -20,6 +20,7 @@ import {
   assertSafeApplicationDestination,
   artifactNames,
   installApplicationBundle,
+  parseReleaseCLI,
   renderChecksumFile,
   renderInstallGuide,
   renderHomebrewCask,
@@ -56,6 +57,35 @@ test('GitHub release automation is manual and can create only a draft', () => {
     /npm run test:soak -- --rounds 25 --output dist\/Parley-Ghostty-soak\.json/,
   )
   assert.equal(workflow.match(/Parley-Ghostty-soak\.json/g)?.length, 3)
+})
+
+test('unnotarized test beta is explicit and cannot weaken the signed release path', () => {
+  assert.deepEqual(parseReleaseCLI([]), {
+    tag: undefined,
+    lifecycleOnly: false,
+    unnotarizedBeta: false,
+  })
+  assert.deepEqual(parseReleaseCLI(['--unnotarized-beta'], { PARLEY_RELEASE_TAG: 'v1.2.3' }), {
+    tag: 'v1.2.3',
+    lifecycleOnly: false,
+    unnotarizedBeta: true,
+  })
+  assert.throws(
+    () => parseReleaseCLI(['--lifecycle-only', '--unnotarized-beta']),
+    /cannot be combined/,
+  )
+
+  const workflow = readFileSync(join(repositoryRoot, '.github/workflows/macos-test-beta-release.yml'), 'utf8')
+  assert.match(workflow, /name: Prepare unnotarized macOS test beta/)
+  assert.match(workflow, /workflow_dispatch:/)
+  assert.doesNotMatch(workflow, /^\s+push:/m)
+  assert.match(workflow, /npm run release:mac:beta/)
+  assert.match(workflow, /npm run test:soak -- --rounds 25 --output dist\/Parley-Ghostty-soak\.json/)
+  assert.match(workflow, /gh release create[\s\S]*--draft[\s\S]*--prerelease/)
+  assert.doesNotMatch(workflow, /PARLEY_CODESIGN_IDENTITY/)
+  assert.doesNotMatch(workflow, /SPARKLE_PRIVATE/)
+  assert.doesNotMatch(workflow, /appcast\.xml/)
+  assert.doesNotMatch(workflow, /parley\.rb/)
 })
 
 test('published releases open a reviewed cask update pull request', () => {
