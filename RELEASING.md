@@ -56,6 +56,25 @@ directory, imports the certificate into an ephemeral keychain and removes both
 after the job. The release script passes private material to fixed-argument
 Apple and Sparkle tools; no key is written into an artifact.
 
+## Unnotarized test betas
+
+When current features need installation testing before Developer ID credentials
+are configured, use the separate **Prepare unnotarized macOS test beta**
+workflow. It is an explicit exception for prerelease testing, not a fallback
+from failed notarization.
+
+The workflow requires an existing matching version tag, runs the deterministic
+checks and real Ghostty soak, builds the VS Code companion, invokes
+`npm run release:mac:beta`, verifies the ZIP, DMG, upgrade and uninstall
+lifecycle, and creates an unpublished draft marked as a prerelease. Its
+manifest and install guide state that the app is ad-hoc signed and not
+notarized. It never emits an appcast or Homebrew cask and cannot enter the
+stable automatic-update channel.
+
+Review the draft checksums, soak report and install guide before publishing.
+Install it only from the expected GitHub release and follow the documented
+Privacy & Security **Open Anyway** flow; never disable Gatekeeper globally.
+
 ## Prepare a draft
 
 1. Ensure `package.json` has the intended version, the matching
