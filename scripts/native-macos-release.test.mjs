@@ -96,10 +96,10 @@ test('packaged launch check rejects an early dyld-style exit and stops a live ap
     verifyExecutableLaunch({
       executable: process.execPath,
       arguments: ['-e', 'process.stderr.write("Library not loaded: Sparkle\\n"); process.exit(134)'],
-      settleMilliseconds: 100,
+      settleMilliseconds: 1_000,
       shutdownMilliseconds: 500,
     }),
-    /exited before the 100 ms launch window.*Library not loaded: Sparkle/s,
+    /exited before the 1000 ms launch window.*Library not loaded: Sparkle/s,
   )
 
   await assert.doesNotReject(
