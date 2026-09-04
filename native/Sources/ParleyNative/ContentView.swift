@@ -1,5 +1,6 @@
 import AppKit
 import ParleyCore
+import ParleyUI
 import SwiftUI
 
 struct ContentView: View {
@@ -648,6 +649,9 @@ struct ContentView: View {
                 Button(plan.menuLabel) { model.resume(pane) }
             }
             if pane.isStarted {
+                if pane.kind == .copilot && !pane.isDead {
+                    Button("Confirm Copilot Folder Trust…") { model.confirmCopilotFolderTrust(pane) }
+                }
                 Button("Restart Fresh Session…") { model.restart(pane) }
             }
         } else {
@@ -999,14 +1003,16 @@ struct ContentView: View {
     }
 
     private var newPaneMenu: some View {
-        Menu {
-            ForEach(PaneKind.allCases, id: \.rawValue) { kind in
-                Menu(kind.label) {
-                    paneCreationItems(kind: kind)
-                }
+        PaneCreationMenu(
+            offersActivePaneFolder: model.activePane.map {
+                !WorkspaceFolderIdentity.matches($0.cwd, model.defaultFolder)
+            } ?? false
+        ) { kind, direction, folder in
+            switch folder {
+            case .newPane: model.create(kind, direction: direction)
+            case .activePane: model.createInActivePaneFolder(kind, direction: direction)
+            case .chosen: model.createInChosenFolder(kind, direction: direction)
             }
-        } label: {
-            Label("Pane", systemImage: "plus")
         }
         .accessibilityLabel("New pane")
         .help("Open a new agent or shell pane")
@@ -1870,45 +1876,6 @@ struct ContentView: View {
         .id(
             "native-terminal-\(paneSurface.representativePaneID)-\(model.panes.first(where: { $0.id == paneSurface.representativePaneID })?.launchGeneration ?? 0)"
         )
-    }
-
-    private func paneMenu(kind: PaneKind) -> some View {
-        Menu {
-            paneCreationItems(kind: kind)
-        } label: {
-            Label(kind.label, systemImage: kind == .shell ? "terminal" : "bubble.left.and.text.bubble.right")
-        }
-        .accessibilityLabel("New \(kind.label) pane")
-        .accessibilityHint("Choose a split direction and folder")
-    }
-
-    @ViewBuilder
-    private func paneCreationItems(kind: PaneKind) -> some View {
-        Section("New Pane Folder") {
-            Button("Split Right") { model.create(kind, direction: .horizontal) }
-            Button("Split Below") { model.create(kind, direction: .vertical) }
-        }
-        if let activePane = model.activePane,
-           !WorkspaceFolderIdentity.matches(activePane.cwd, model.defaultFolder) {
-            Divider()
-            Section("Active Pane Folder") {
-                Button("Split Right Here") {
-                    model.createInActivePaneFolder(kind, direction: .horizontal)
-                }
-                Button("Split Below Here") {
-                    model.createInActivePaneFolder(kind, direction: .vertical)
-                }
-            }
-        }
-        Divider()
-        Section("Another Folder") {
-            Button("Split Right in Folder…") {
-                model.createInChosenFolder(kind, direction: .horizontal)
-            }
-            Button("Split Below in Folder…") {
-                model.createInChosenFolder(kind, direction: .vertical)
-            }
-        }
     }
 
     @ViewBuilder

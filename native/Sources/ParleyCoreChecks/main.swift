@@ -4071,7 +4071,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "15", "the shared protocol version drifted from linked Request Changes delegation")
+    try expect(AgentProtocol.version == "16", "the shared protocol version drifted from linked Request Changes delegation")
     try expect(
         AgentProtocol.text.contains("parley delegate <target> --parent <handoff-id>")
             && AgentProtocol.text.contains("requestChanges")
@@ -10462,6 +10462,7 @@ let checks: [(String, () throws -> Void)] = [
     ("review and correct requires two targets from different vendors", checkReviewAndCorrectRequiresTwoTargetsFromDifferentVendors),
     ("adjacent navigation order", checkAdjacentNavigationOrder),
     ("menu-safe periodic refresh", checkMenuTrackingRefreshPolicy),
+    ("Pane menu remains stable during live updates", checkPaneMenuSurvivesUpdatesWhileTracking),
     ("detailed in-app help coverage", checkInAppHelpGuideCoverage),
     ("workbench state projection", checkWorkbenchStateProjection),
     ("Precision Grid chrome uses owned state", checkPrecisionGridChromeUsesOwnedState),
@@ -10621,7 +10622,7 @@ if let resultPath = ProcessInfo.processInfo.environment["PARLEY_COMMAND_CAPTURE_
 
 // `--only <substring>` runs the matching checks alone during local iteration.
 let onlyFilter = argument(named: "--only")?.lowercased()
-let selectedChecks = checks.filter { name, _ in
+let selectedChecks = (checks + reviewRegressionChecks).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var failureCount = 0

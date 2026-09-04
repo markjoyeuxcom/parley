@@ -356,3 +356,10 @@ test('focus links can carry only an opaque pane or handoff id', () => {
   assert.throws(() => parleyFocusURL({ handoffID: 'current' }), /handoff/i)
   assert.throws(() => parleyFocusURL({ paneID: '%1', handoffID: '11111111-1111-4111-8111-111111111111' }), /one/i)
 })
+
+test('current native pane identifiers round-trip through external focus URLs', () => {
+  const { parleyFocusURL } = require('../contracts.cjs')
+  const paneID = 'pane-11111111-1111-4111-8111-111111111111'
+  assert.equal(new URL(parleyFocusURL({ paneID })).searchParams.get('pane'), paneID)
+  assert.throws(() => parleyFocusURL({ paneID: paneID + '/escape' }))
+})

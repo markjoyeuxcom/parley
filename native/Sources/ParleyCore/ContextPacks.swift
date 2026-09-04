@@ -338,6 +338,10 @@ public final class ContextPackBuilder: @unchecked Sendable {
     ) {
         self.gitExecutable = gitExecutable
         var captureEnvironment = environment
+        captureEnvironment["GIT_LITERAL_PATHSPECS"] = nil
+        captureEnvironment["GIT_GLOB_PATHSPECS"] = nil
+        captureEnvironment["GIT_NOGLOB_PATHSPECS"] = nil
+        captureEnvironment["GIT_ICASE_PATHSPECS"] = nil
         captureEnvironment["GIT_OPTIONAL_LOCKS"] = "0"
         captureEnvironment["GIT_PAGER"] = "cat"
         captureEnvironment["PAGER"] = "cat"
@@ -885,7 +889,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
     private func git(in folder: String, _ arguments: [String]) throws -> String {
         let output = try gitRunner.run(
             executable: gitExecutable,
-            arguments: ["-C", folder, "-c", "core.fsmonitor=false"] + arguments,
+            arguments: ["--literal-pathspecs", "-C", folder, "-c", "core.fsmonitor=false"] + arguments,
             environment: environment,
             input: nil
         )

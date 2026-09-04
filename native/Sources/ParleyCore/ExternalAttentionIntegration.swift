@@ -369,9 +369,11 @@ public enum ExternalNavigation {
     }
 
     private static func validPaneID(_ value: String) -> Bool {
-        value.count >= 2
-            && value.count <= 16
-            && value.first == "%"
+        if value.hasPrefix("pane-") {
+            return validHandoffID(String(value.dropFirst(5)))
+        }
+        // Retain navigation to legacy IDs in existing metadata.
+        return value.count >= 2 && value.count <= 16 && value.first == "%"
             && value.dropFirst().utf8.allSatisfy { (48...57).contains($0) }
     }
 

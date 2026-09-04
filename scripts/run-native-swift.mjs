@@ -2,7 +2,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -15,6 +15,15 @@ const environment = {
   CLANG_MODULE_CACHE_PATH: join(cacheRoot, 'clang'),
   SWIFTPM_MODULECACHE_OVERRIDE: join(cacheRoot, 'swiftpm'),
 }
+
+// A development app must never inherit its launching agent's relay capability.
+for (const key of Object.keys(environment)) {
+  if (key.startsWith('PARLEY_') || key === 'TMUX' || key === 'TMUX_PANE') delete environment[key]
+}
+const managedBins = new Set(['Parley Native', 'Parley Native Development']
+  .map(name => join(homedir(), 'Library/Application Support', name, 'bin')))
+environment.PATH = (environment.PATH || '/usr/bin:/bin').split(':')
+  .filter(entry => !managedBins.has(entry)).join(':')
 
 function output(command, args, cwd) {
   const result = spawnSync(command, args, { encoding: 'utf8', env: environment, cwd })

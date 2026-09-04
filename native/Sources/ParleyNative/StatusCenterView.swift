@@ -101,6 +101,14 @@ struct StatusCenterView: View {
             RuntimeBanner(runtime: model.runtime)
             if model.runtime.visibleMarker != nil { Divider() }
             header
+            if let error = model.historyPersistenceError {
+                Text("History could not be saved. \(error) Delivered messages may already have reached their target; do not resend them to repair history.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+            }
             Divider()
             countStrip
             Divider()

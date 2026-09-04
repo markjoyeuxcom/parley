@@ -63,7 +63,7 @@ test('context basket clears after accepted preview acknowledgement and survives 
 
   assert.equal(basket.accept('/tmp/project', { state: 'rejected' }), 0)
   assert.equal(basket.entries('/tmp/project').length, 1)
-  assert.equal(basket.accept('/tmp/project', { state: 'accepted' }), 1)
+  assert.equal(basket.accept('/tmp/project', { state: 'accepted' }, basket.entries('/tmp/project')), 1)
   assert.equal(basket.entries('/tmp/project').length, 0)
 })
 
@@ -113,4 +113,15 @@ test('content-free collaboration rows group exact panes and attention without in
   ])
   assert.equal(JSON.stringify(workspaceRows(snapshot)).includes('working'), false)
   assert.equal(JSON.stringify(workspaceRows(snapshot)).includes('prompt'), false)
+})
+
+test('accepted preview removes only the exact entries submitted, preserving concurrent additions and replacements', () => {
+  const basket = new ContextBasket({ randomID: identifierSequence() })
+  const folder = '/tmp/project'
+  basket.add(folder, [{ kind: 'currentFile', file: 'a.txt' }, { kind: 'selection', file: 'b.txt', startLine: 1, endLine: 1, text: 'old' }])
+  const submitted = basket.entries(folder)
+  basket.add(folder, [{ kind: 'currentFile', file: 'c.txt' }, { kind: 'selection', file: 'b.txt', startLine: 1, endLine: 1, text: 'new' }])
+  assert.equal(basket.accept(folder, { state: 'accepted' }, submitted), 1)
+  assert.deepEqual(basket.entries(folder).map(e => e.item.file), ['b.txt', 'c.txt'])
+  assert.equal(basket.entries(folder)[0].item.text, 'new')
 })

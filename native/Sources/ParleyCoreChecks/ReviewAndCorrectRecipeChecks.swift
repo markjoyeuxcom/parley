@@ -189,7 +189,7 @@ func checkReviewAndCorrectGuidanceIsDocumentedAsPractice() throws {
     for banned in ["state machine", "automatic transition", "executor"] {
         try recipeExpect(!recipeText.contains(banned) || recipeText.contains("no \(banned)") || recipeText.contains("not "), "recipe help describes automation: \(banned)")
     }
-    try recipeExpect(AgentProtocol.version == "15", "item 15 changed the protocol version")
+    try recipeExpect(AgentProtocol.version == "16", "item 15 changed the protocol version")
 }
 
 private func targetPane(_ id: String, _ kind: PaneKind, _ name: String) -> WorkbenchPane {
@@ -263,5 +263,5 @@ func checkReviewAndCorrectRequiresTwoTargetsFromDifferentVendors() throws {
     try recipeExpect(HandoffRecipeTargeting.unavailableMessage(for: reviewAndCorrect).lowercased().contains("different vendors"), "the unavailable copy does not explain the two-vendor rule")
     try recipeExpect(HandoffRecipeTargeting.unavailableMessage(for: compare) == "Open at least two ready agent panes other than the lead.", "Compare unavailable copy changed")
     try recipeExpect(HandoffRecipeTargeting.unavailableMessage(for: bugHunt) == "Open a ready agent pane other than the lead.", "single-select unavailable copy changed")
-    try recipeExpect(AgentProtocol.version == "15", "targeting rules changed the protocol version")
+    try recipeExpect(AgentProtocol.version == "16", "targeting rules changed the protocol version")
 }
