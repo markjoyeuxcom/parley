@@ -367,7 +367,11 @@ public enum ParleyHelpGuide {
                         "Delegate starts asynchronous agent-to-agent work and immediately returns a tracking id. Use it instead of Ask when work is likely to exceed one minute.",
                         "The receiving agent must report a terminal result through Parley; merely printing the result in its pane does not complete the tracking relationship.",
                         "A substantial UTF-8 result may be returned with `parley done current --file <path>`. The file must stay inside the target pane's working folder. Parley completes the delegation only after a bounded, agent-provided Context Pack draft is durable; it does not forward the file automatically.",
+                        "Status Center and the Collaboration dock show three owned facts for each active or recently returned delegation: time since the recorded delivery, the age of the latest agent-declared progress note, and the age of the target pane's last authenticated hook signal. After ten minutes without a note or signal the row states No explicit update for 10 minutes as information only; nothing is inferred from silence.",
+                        "Each delegation also records bounded Git facts about the target pane's working folder at delegation and again at done or fail: the HEAD revision, the branch or detached state, and up to 200 dirty paths, read with one fixed-argument git status and never file contents or diffs. The inspector and the Markdown export show N paths changed since delegated under the label shared worktree: not attribution, because other panes and the person edit the same tree. A non-Git folder records nothing, and a missing folder or failed read is informational only.",
+                        "A returned file may follow the completion-evidence convention: plain Markdown with the ATX headings ## Implemented, ## Tested (each command and the outcome you observed) and ## Unable to test (with the reason), in any order. Status Center shows those sections as one COMPLETION EVIDENCE block labelled AGENT-DECLARED; unknown headings are ignored, the first occurrence of a duplicate heading wins, an empty recognised heading is shown as declaring nothing, and a file without the headings is shown exactly as before. Parley never runs a command to check a claim and stores no new schema. Copy the template below into the returned file:",
                     ],
+                    items: CompletionEvidenceProjection.template.split(separator: "\n").map(String.init),
                     commands: [
                         ParleyHelpCommand("parley delegate codex \"Implement the reviewed fix and verify it.\"", "Assign one bounded task to another vendor."),
                         ParleyHelpCommand("parley status", "List work initiated by this pane as machine-readable JSON."),
@@ -378,6 +382,7 @@ public enum ParleyHelpGuide {
                         ParleyHelpCommand("parley done current --file reports/result.md", "Complete work with a substantial file staged for explicit human review."),
                         ParleyHelpCommand("parley fail current \"Blocked by a missing fixture.\"", "Return an explicit failed result from the delegated target pane."),
                         ParleyHelpCommand("parley cancel current", "Cancel only tracking initiated by this pane; the target CLI is not interrupted."),
+                        ParleyHelpCommand("parley delegate claude --parent <handoff-id> \"Revise: add the recovery check.\"", "Request changes on a returned Delegate this pane initiated or received; Parley records one linked requestChanges child, never a verdict."),
                     ]
                 ),
             ]
@@ -605,8 +610,9 @@ public enum ParleyHelpGuide {
                     id: "lead-recipes",
                     title: "Run a recipe",
                     paragraphs: [
-                        "Open Recipes in the toolbar, choose Plan Review, Implementation Review, Adversarial Bug Hunt or Compare Recommendations, select explicit targets, then review the final instruction before Run with Lead.",
+                        "Open Recipes in the toolbar, choose Plan Review, Implementation Review, Adversarial Bug Hunt, Compare Recommendations or Review and Correct, select explicit targets, then review the final instruction before Run with Lead.",
                         "A recipe sends one visible instruction to the lead. The lead remains responsible for judging advice and deciding what to adopt; Parley supplies transport and records activity.",
+                        "Review and Correct is a prompt template only. It guides the lead through the practice Delegate → milestone Progress → returned Result → review by a different vendor → linked Request Changes → independent verification, and asks the implementer for the completion-evidence headings ## Implemented, ## Tested and ## Unable to test. The practice is guidance, not a required sequence: nothing moves on its own, no phase or workflow record is kept, and every returned note, evidence section and review remains an agent-declared claim for the lead and the person to judge.",
                     ],
                     items: [
                         "Edit Recipes changes the reusable local instruction text. Keep {{targets}} in each template.",
@@ -820,6 +826,8 @@ public enum ParleyHelpGuide {
                         "Context Pack from Selected Results opens 1–16 explicitly selected returned Ask or Delegate results as separately attributed, editable sources. Each source keeps its handoff id, route, workspaces, question and exact returned result. No handoff is submitted automatically; choosing a receiving pane remains a later human action in the existing Context Pack preview.",
                         "Challenge and Verify are available on a returned Ask or Delegate. Each menu names the original ready source and requires one explicit relay-ready reviewer pane; a busy reviewer cannot be selected.",
                         "The chosen result opens in the main workbench as a complete editable linked-review Ask. Nothing is submitted until Send Challenge or Send Verify, and the resulting handoff retains its parent id and purpose.",
+                        "Request Changes is available on a returned Delegate result. It opens one editable linked delegation to an explicit relay-ready pane, marking the original implementer; a busy pane cannot be chosen and the child is never queued. Its handoff carries the parent id and relationship requestChanges. It is a linked delegation, never a human verdict.",
+                        "The inspector renders the thread Delegation → Result → Request changes → Revised result from the existing handoffs' receipts, and the Markdown export preserves the same thread and linked children.",
                         "The Human Review editor stores an optional person-owned verdict and note on the same handoff. Agent panes have no command or capability route that can set this state.",
                         "Relationship, verdict, note and review time are searchable and remain visible in selected-result Context Packs and Markdown exports.",
                         "With one workspace selected in Status Center, the archive menu can export every retained handoff involving that workspace, including dismissed records. The export contains handoff bodies and receipts, not lifecycle activity. The neighbouring Delete History action removes eligible handoffs and lifecycle activity only after a workspace-specific destructive confirmation; active work remains.",

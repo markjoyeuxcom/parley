@@ -224,15 +224,38 @@ evidence or review database.
 Cross-vendor review loop practice (guidance, not a required sequence): a lead
 pane delegates with a request for milestone progress, the target posts
 `parley progress` at milestones and returns with `parley done` or
-`parley done --file`, a different vendor reviews the shared diff, corrections
-go back as a fresh attributed delegation whose text explicitly names the
-original handoff id (protocol v14 links only Ask children through Challenge
-and Verify; a linked `requestChanges` Delegate child is roadmap item 12 and is
-not implemented yet), and the reviewer verifies independently. Parley records
+`parley done --file` using the completion-evidence headings below, a
+different vendor reviews the shared diff, corrections go back as one linked
+`requestChanges` Delegate child (`parley delegate <target> --parent
+<handoff-id>`; protocol v15 also links Ask children through Challenge and
+Verify, and none of these is ever a verdict), and the reviewer verifies
+independently. The built-in **Review and correct** recipe is this practice as
+an editable prompt template for the lead and nothing more. Parley records
 each step as an ordinary attributed handoff. It must not add a workflow state
 machine, automatic transitions, an executor that verifies agent claims,
 streamed progress or any completion estimate; agent-supplied progress and
 evidence remain labelled claims.
+
+Completion-evidence convention (agent-declared, presentation only): a
+substantial result returned with `parley done current --file <path>` may use
+the plain Markdown template below. Status Center recognises the three ATX
+headings, in any order, as one **COMPLETION EVIDENCE** block labelled
+AGENT-DECLARED and shows every body as an unchecked claim. Unknown headings
+and their bodies are ignored, the first occurrence of a duplicate heading
+wins, an empty recognised heading is shown as declaring nothing, and a file
+without the headings renders exactly as before. Parley never runs a command
+to check a claim, adds no schema and never rewrites the staged file.
+
+```markdown
+## Implemented
+- What changed, one bullet per change.
+
+## Tested
+- `command` — the outcome you observed, one line per command you ran.
+
+## Unable to test
+- What was not run — the reason.
+```
 
 Multiline payloads travel through Ghostty paste as one text operation.
 Submission is a separate Enter key event after paste succeeds. Never send raw

@@ -244,6 +244,14 @@ public enum CollaborationHistoryMarkdown {
             if let relationship = handoff.relationship {
                 lines.append("- Relationship: \(relationship.rawValue)")
             }
+            if HandoffThreadProjection.members(containing: handoff.id, in: handoffs).count > 1 {
+                let thread = HandoffThreadProjection.thread(containing: handoff.id, in: handoffs)
+                lines.append("- Thread: \(HandoffThreadProjection.summary(thread))")
+            }
+            let children = HandoffThreadProjection.children(of: handoff.id, in: handoffs)
+            if !children.isEmpty {
+                lines.append("- Linked children: \(children.map { "`\(inlineCode($0.id))`" }.joined(separator: ", "))")
+            }
             if let verdict = handoff.humanVerdict {
                 lines.append("- Human verdict: \(verdict.rawValue)")
             }
@@ -267,6 +275,28 @@ public enum CollaborationHistoryMarkdown {
                     "",
                     fencedBlock(result),
                 ])
+            }
+            if handoff.gitFactsAtDelegation != nil || handoff.gitFactsAtReturn != nil {
+                lines.append(contentsOf: ["", "### Git facts (shared worktree: not attribution)", ""])
+                if let facts = handoff.gitFactsAtDelegation {
+                    lines.append("- At delegation: \(inline(facts.summary))")
+                }
+                if let facts = handoff.gitFactsAtReturn {
+                    lines.append("- At return: \(inline(facts.summary))")
+                }
+                if let comparison = DelegationGitFacts.compare(
+                    delegation: handoff.gitFactsAtDelegation,
+                    returned: handoff.gitFactsAtReturn
+                ) {
+                    lines.append("- \(comparison.title)")
+                    for path in comparison.displayPaths {
+                        lines.append("  - `\(inlineCode(path))`")
+                    }
+                    if let detail = comparison.detail {
+                        lines.append("- \(detail)")
+                    }
+                }
+                lines.append("- Paths only. Other panes and the person edit this tree; nothing here says who changed a file.")
             }
             lines.append(contentsOf: ["", "### Delivery receipts", ""])
             for transition in handoff.transitions {

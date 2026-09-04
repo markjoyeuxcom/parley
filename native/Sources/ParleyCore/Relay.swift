@@ -296,11 +296,13 @@ public enum RelayHandoffKind: String, Codable, Equatable, Sendable {
 public enum RelayHandoffRelationship: String, CaseIterable, Codable, Equatable, Sendable {
     case challenge
     case verify
+    case requestChanges
 
     public var label: String {
         switch self {
         case .challenge: "Challenge"
         case .verify: "Verify"
+        case .requestChanges: "Request Changes"
         }
     }
 }
@@ -495,6 +497,11 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
     public var reviewRevision: Int? = nil
     public var progressNote: String? = nil
     public var progressUpdatedAt: Date? = nil
+    /// Bounded, informational Git facts about the target pane's working
+    /// folder: paths only, never content, and never attribution, because
+    /// other panes and the person edit the same tree.
+    public var gitFactsAtDelegation: DelegationGitSnapshot? = nil
+    public var gitFactsAtReturn: DelegationGitSnapshot? = nil
     public var resultText: String?
     public var resultContextReviewID: String? = nil
     public var readAt: Date? = nil
@@ -573,6 +580,8 @@ public struct RelayDelegationStatus: Identifiable, Codable, Equatable, Sendable 
     public let progressUpdatedAt: Date?
     public let resultText: String?
     public let resultContextReviewID: String?
+    public let inReplyToHandoffID: String?
+    public let relationship: RelayHandoffRelationship?
     public let createdAt: Date
     public let updatedAt: Date
 
@@ -588,6 +597,8 @@ public struct RelayDelegationStatus: Identifiable, Codable, Equatable, Sendable 
         progressUpdatedAt = handoff.progressUpdatedAt
         resultText = handoff.resultText
         resultContextReviewID = handoff.resultContextReviewID
+        inReplyToHandoffID = handoff.inReplyToHandoffID
+        relationship = handoff.relationship
         createdAt = handoff.transitions.first?.occurredAt ?? handoff.updatedAt
         updatedAt = handoff.updatedAt
     }
@@ -601,6 +612,9 @@ public final class RelayBroker: @unchecked Sendable {
     public typealias SelectedText = (_ paneID: String) throws -> String
     public typealias VendorSignal = (_ paneID: String, _ signal: VendorHookSignal, _ occurredAt: Date) throws -> Void
     public typealias Clock = () -> Date
+    /// Bounded Git facts for one working folder; nil when the folder is not a
+    /// Git repository. Always invoked outside the coordination lock.
+    public typealias GitFacts = (_ folder: String) -> DelegationGitSnapshot?
 
     private static let abandonedContextDraftLifetime: TimeInterval = 7 * 24 * 60 * 60
     private static let maximumTransientVendorEvents = 512
@@ -614,6 +628,7 @@ public final class RelayBroker: @unchecked Sendable {
     private let directContextSubmit: DirectContextSubmit
     private let selectedText: SelectedText?
     private let vendorSignal: VendorSignal
+    private let gitFacts: GitFacts?
     private let clock: Clock
     private let consultationTimeout: TimeInterval
     private let livenessPollInterval: TimeInterval
@@ -650,6 +665,7 @@ public final class RelayBroker: @unchecked Sendable {
         directContextSubmit: DirectContextSubmit? = nil,
         selectedText: SelectedText? = nil,
         vendorSignal: VendorSignal? = nil,
+        gitFacts: GitFacts? = nil,
         clock: @escaping Clock = Date.init,
         consultationTimeout: TimeInterval = 30 * 60,
         livenessPollInterval: TimeInterval = 0.5,
@@ -670,6 +686,7 @@ public final class RelayBroker: @unchecked Sendable {
         }
         self.selectedText = selectedText
         self.vendorSignal = vendorSignal ?? { _, _, _ in }
+        self.gitFacts = gitFacts
         self.clock = clock
         self.consultationTimeout = consultationTimeout
         self.livenessPollInterval = max(0.01, livenessPollInterval)
@@ -1614,11 +1631,21 @@ public final class RelayBroker: @unchecked Sendable {
     /// Starts agent-to-agent work without blocking the initiating command. The
     /// exact target owns the terminal result, while status and wait remain
     /// scoped to the initiating pane's authenticated identity.
+    ///
+    /// With `inReplyToHandoffID` this is Request Changes: exactly one Delegate
+    /// child linked to a returned Delegate result with relationship
+    /// `requestChanges`. A pane credential may name only a parent it initiated
+    /// or received; the native route arrives human-authorized. Target
+    /// resolution and the busy rule are the ordinary ones, and nothing here
+    /// records a verdict.
     public func handleDelegate(
         token: String,
         target requestedTarget: String,
         text: String,
-        idempotencyKey suppliedIdempotencyKey: String? = nil
+        idempotencyKey suppliedIdempotencyKey: String? = nil,
+        inReplyToHandoffID: String? = nil,
+        humanInitiated: Bool = false,
+        preserveFormatting: Bool = false
     ) -> RelayResponse {
         let sender: WorkbenchPane
         let target: WorkbenchPane
@@ -1626,7 +1653,9 @@ public final class RelayBroker: @unchecked Sendable {
         let targetCredential: String
         do {
             (sender, target) = try route(token: token, requestedTarget: requestedTarget)
-            try authorize(.delegate, for: sender)
+            if !humanInitiated {
+                try authorize(.delegate, for: sender)
+            }
             idempotencyKey = try normalizeIdempotencyKey(suppliedIdempotencyKey)
             targetCredential = try credentials.token(for: target.id)
         } catch let error as BrokerFailure {
@@ -1635,16 +1664,34 @@ public final class RelayBroker: @unchecked Sendable {
             return failure(409, error.localizedDescription)
         }
 
-        let cleaned = RelayText.clean(text)
+        let cleaned = preserveFormatting ? ContextPackText.normalize(text) : RelayText.clean(text)
         guard !cleaned.isEmpty else { return failure(400, "nothing to delegate") }
         guard cleaned.count <= RelayText.maximumCharacters else {
             return failure(400, "delegated task too long")
         }
 
         let scope = IdempotencyScope(senderPaneID: sender.id, key: idempotencyKey)
-        let signature = [RelayHandoffKind.delegate.rawValue, target.id, cleaned].joined(separator: "\u{1f}")
+        let signature = [RelayHandoffKind.delegate.rawValue, target.id, cleaned, inReplyToHandoffID ?? ""].joined(separator: "\u{1f}")
 
         consultationCondition.lock()
+        if let parentID = inReplyToHandoffID {
+            guard let parent = handoffRecords[parentID] else {
+                consultationCondition.unlock()
+                return failure(404, "unknown parent handoff")
+            }
+            guard parent.kind == .delegate else {
+                consultationCondition.unlock()
+                return failure(409, "Request Changes links only a Delegate parent")
+            }
+            guard parent.hasReturnedResult else {
+                consultationCondition.unlock()
+                return failure(409, "Request Changes requires a returned Delegate result")
+            }
+            guard humanInitiated || sender.id == parent.sourcePaneID || sender.id == parent.targetPaneID else {
+                consultationCondition.unlock()
+                return failure(403, "this pane neither initiated nor received that delegation")
+            }
+        }
         if let existing = idempotencyRecords[scope] {
             guard existing.signature == signature else {
                 consultationCondition.unlock()
@@ -1669,8 +1716,11 @@ public final class RelayBroker: @unchecked Sendable {
             kind: .delegate,
             sender: sender,
             target: target,
+            inReplyToHandoffID: inReplyToHandoffID,
+            relationship: inReplyToHandoffID == nil ? nil : .requestChanges,
             text: cleaned,
-            submitted: true
+            submitted: true,
+            origin: humanInitiated ? .human : nil
         )
         handoffRecords[handoff.id] = handoff
         handoffJournal?.record(handoff)
@@ -1684,6 +1734,45 @@ public final class RelayBroker: @unchecked Sendable {
             targetCredential: targetCredential
         )
         consultationCondition.broadcast()
+        consultationCondition.unlock()
+
+        // Informational Git facts are read outside the coordination lock. They
+        // never gate delivery, and terminal input is never driven while the
+        // lock is held.
+        let gitAtDelegation = gitFacts?(target.cwd)
+
+        // Revalidate the same created, still-active delegation immediately
+        // before delivery. A cancellation or any other terminal transition
+        // during capture wins: nothing is submitted, the recorded history is
+        // left untouched, and the idempotent response settles on that
+        // terminal outcome so a replay can never deliver it later.
+        consultationCondition.lock()
+        guard delegationRecords[handoff.id] != nil,
+              let current = handoffRecords[handoff.id],
+              current.state == .created else {
+            let terminal = handoffRecords[handoff.id]
+            let response = failure(
+                409,
+                terminal.map { "the delegated task was \($0.state.rawValue) before delivery; nothing was submitted" }
+                    ?? "the delegated task was removed before delivery; nothing was submitted",
+                handoffID: handoff.id,
+                state: terminal?.state
+            )
+            idempotencyRecords[scope]?.response = .delivery(response)
+            consultationCondition.broadcast()
+            consultationCondition.unlock()
+            return response
+        }
+        // Attach the delegation-time facts to the still-created record and
+        // journal it now, so a target that reports before submit unwinds
+        // completes a record that already carries them. Delivery below never
+        // depends on this write.
+        if let gitAtDelegation {
+            var updated = current
+            updated.gitFactsAtDelegation = gitAtDelegation
+            handoffRecords[handoff.id] = updated
+            handoffJournal?.record(updated)
+        }
         consultationCondition.unlock()
 
         do {
@@ -1750,6 +1839,12 @@ public final class RelayBroker: @unchecked Sendable {
             return RelayTextResponse(status: 400, text: "delegation result too long")
         }
 
+        // Phase one, unlocked: informational Git facts for the reporting
+        // pane's working folder, read only when it has tracked work. Phase
+        // two revalidates the exact delegation under the lock; a failed or
+        // absent capture never changes the outcome recorded there.
+        let gitAtReturn = gitFactsForReportingPane(senderID)
+
         consultationCondition.lock()
         let handoffID: String
         if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
@@ -1781,6 +1876,7 @@ public final class RelayBroker: @unchecked Sendable {
         }
         if var updated = handoffRecords[handoffID] {
             updated.resultText = cleaned
+            if let gitAtReturn { updated.gitFactsAtReturn = gitAtReturn }
             handoffRecords[handoffID] = updated
         }
         if succeeded {
@@ -1829,6 +1925,7 @@ public final class RelayBroker: @unchecked Sendable {
                 throw BrokerFailure(status: 413, message: "the completion file is too large")
             }
             let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.cwd)
+            let gitAtReturn = gitFactsForReportingPane(sender.id)
 
             consultationCondition.lock()
             let handoffID: String
@@ -1897,6 +1994,7 @@ public final class RelayBroker: @unchecked Sendable {
             if var updated = handoffRecords[handoffID] {
                 updated.resultText = receipt
                 updated.resultContextReviewID = review.id
+                if let gitAtReturn { updated.gitFactsAtReturn = gitAtReturn }
                 handoffRecords[handoffID] = updated
             }
             transitionHandoffLocked(handoffID, to: .completed, detail: receipt)
@@ -2590,6 +2688,44 @@ public final class RelayBroker: @unchecked Sendable {
             humanInitiated: true,
             preserveFormatting: preserveFormatting,
             transitionOrigin: origin
+        )
+    }
+
+    /// Creates one Delegate child linked to a returned Delegate result from the
+    /// native Request Changes action. It is native-control-only and
+    /// human-authorized, uses the source pane's own credential through the
+    /// ordinary delegate path, and is subject to the same parent, target and
+    /// busy rules. It never records a verdict.
+    public func handleRequestChangesFromUI(
+        sourcePaneID: String,
+        targetPaneID: String,
+        text: String,
+        idempotencyKey: String,
+        inReplyToHandoffID: String
+    ) -> RelayResponse {
+        let livePanes: [WorkbenchPane]
+        do {
+            livePanes = try panes()
+        } catch {
+            return failure(409, error.localizedDescription)
+        }
+        guard let source = livePanes.first(where: { $0.id == sourcePaneID }), source.kind.isAgent else {
+            return failure(400, "unknown source agent pane")
+        }
+        let sourceToken: String
+        do {
+            sourceToken = try credentials.token(for: source.id)
+        } catch {
+            return failure(409, "could not resolve the source pane credential: \(error.localizedDescription)")
+        }
+        return handleDelegate(
+            token: sourceToken,
+            target: targetPaneID,
+            text: text,
+            idempotencyKey: idempotencyKey,
+            inReplyToHandoffID: inReplyToHandoffID,
+            humanInitiated: true,
+            preserveFormatting: true
         )
     }
 
@@ -3642,8 +3778,13 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     private func delegationPrompt(for handoff: RelayHandoff) -> String {
-        """
-        \(handoff.sourceName) delegated work:
+        let heading = if let parentID = handoff.inReplyToHandoffID, handoff.relationship == .requestChanges {
+            "\(handoff.sourceName) requested changes on an earlier delegation (Parley handoff \(parentID)):"
+        } else {
+            "\(handoff.sourceName) delegated work:"
+        }
+        return """
+        \(heading)
 
         \(handoff.text)
 
@@ -3652,8 +3793,9 @@ public final class RelayBroker: @unchecked Sendable {
 
         For a substantial UTF-8 result file inside this pane's working folder, stage it for explicit human review by running:
         parley done current --file <path>
+        In that file, plain Markdown headings ## Implemented, ## Tested (each command and its outcome) and ## Unable to test (with the reason) are shown to the person as agent-declared completion evidence; nothing in it is checked by Parley.
 
-        You may replace the one compact, agent-declared progress note visible to \(handoff.sourceName) by running:
+        At each milestone, replace the one compact, agent-declared progress note visible to \(handoff.sourceName) by running:
         parley progress current "what changed"
 
         If the work cannot be completed, return the blocking reason by running:
@@ -3734,6 +3876,19 @@ public final class RelayBroker: @unchecked Sendable {
             )
         }
         return nil
+    }
+
+    /// Reads Git facts for the pane reporting a result. Called without the
+    /// coordination lock; it takes the lock only briefly to learn whether the
+    /// pane has tracked work, so a bogus report never runs Git.
+    private func gitFactsForReportingPane(_ paneID: String) -> DelegationGitSnapshot? {
+        guard let gitFacts else { return nil }
+        consultationCondition.lock()
+        let hasTrackedWork = delegationRecords.keys.contains { handoffRecords[$0]?.targetPaneID == paneID }
+        consultationCondition.unlock()
+        guard hasTrackedWork,
+              let pane = (try? panes())?.first(where: { $0.id == paneID }) else { return nil }
+        return gitFacts(pane.cwd)
     }
 
     private func finishDelegationLocked(
@@ -4286,6 +4441,16 @@ public enum RelayShim {
           command="context-ask"
           shift 2
         fi
+        if [ "$command" = "delegate" ] && [ "${1:-}" = "--parent" ]; then
+          item="${2:-}"
+          case "$item" in
+            ""|*[!a-f0-9-]*)
+              echo "usage: parley delegate <pane> --parent <id> [task...]" >&2
+              exit 2
+              ;;
+          esac
+          shift 2
+        fi
         ;;
       done)
         item="${2:-}"
@@ -4392,6 +4557,7 @@ public enum RelayShim {
         echo "  parley ask <pane> --context <draft> [question...] wait for reviewed Ask" >&2
         echo "  parley answer current [text...] answer this pane's waiting question" >&2
         echo "  parley delegate <pane> [task...] start tracked asynchronous work" >&2
+        echo "  parley delegate <pane> --parent <id> [task...] request changes on a returned delegation" >&2
         echo "  parley status                    list work initiated by this pane as JSON" >&2
         echo "  parley wait <id|current>         wait for an Ask or delegated result" >&2
         echo "  parley progress current [note...] replace this pane's latest progress note" >&2

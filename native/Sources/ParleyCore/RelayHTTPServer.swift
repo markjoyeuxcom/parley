@@ -439,6 +439,25 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     inReplyToHandoffID: review.inReplyToHandoffID,
                     relationship: review.relationship
                 ), to: client)
+            case "/ui/request-changes":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let changes = try? JSONDecoder().decode(
+                    RelayUIRequestChangesRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid native Request Changes request"), to: client)
+                    return
+                }
+                write(broker.handleRequestChangesFromUI(
+                    sourcePaneID: changes.sourcePaneID,
+                    targetPaneID: changes.targetPaneID,
+                    text: changes.text,
+                    idempotencyKey: changes.idempotencyKey,
+                    inReplyToHandoffID: changes.inReplyToHandoffID
+                ), to: client)
             case "/ui/handoff-review":
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)

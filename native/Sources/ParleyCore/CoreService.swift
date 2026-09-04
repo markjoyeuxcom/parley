@@ -372,6 +372,39 @@ public struct RelayCoreClient: Sendable {
         )
     }
 
+    /// One linked Delegate child for a returned Delegate result. The status is
+    /// the broker's; the text is its error, or its receipt note on success.
+    public func requestChangesFromUI(
+        sourcePaneID: String,
+        targetPaneID: String,
+        text: String,
+        idempotencyKey: String,
+        inReplyToHandoffID: String
+    ) throws -> RelayTextResponse {
+        let body = try JSONEncoder().encode(RelayUIRequestChangesRequest(
+            sourcePaneID: sourcePaneID,
+            targetPaneID: targetPaneID,
+            text: text,
+            idempotencyKey: idempotencyKey,
+            inReplyToHandoffID: inReplyToHandoffID
+        ))
+        let response = try request(
+            method: "POST",
+            path: "/ui/request-changes",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body,
+            receiveTimeout: RelayCoreTransportLimits.trackedResponseTimeout
+        )
+        let raw = String(decoding: response.body, as: UTF8.self)
+        guard let receipt = try? JSONDecoder().decode(RelayResponseBody.self, from: response.body) else {
+            return RelayTextResponse(status: response.status, text: raw)
+        }
+        return RelayTextResponse(status: response.status, text: receipt.error ?? receipt.note ?? raw)
+    }
+
     public func updateHandoffReview(
         _ update: RelayHandoffReviewUpdate
     ) throws -> RelayTextResponse {

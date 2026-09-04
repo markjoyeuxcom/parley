@@ -52,6 +52,31 @@ public struct RelayUIReviewAskRequest: Codable, Equatable, Sendable {
     }
 }
 
+/// Native-control-only request for one Delegate child linked to a returned
+/// Delegate result. Pane credentials use `parley delegate --parent` instead and
+/// are bound to parents they initiated or received.
+public struct RelayUIRequestChangesRequest: Codable, Equatable, Sendable {
+    public let sourcePaneID: String
+    public let targetPaneID: String
+    public let text: String
+    public let idempotencyKey: String
+    public let inReplyToHandoffID: String
+
+    public init(
+        sourcePaneID: String,
+        targetPaneID: String,
+        text: String,
+        idempotencyKey: String,
+        inReplyToHandoffID: String
+    ) {
+        self.sourcePaneID = sourcePaneID
+        self.targetPaneID = targetPaneID
+        self.text = text
+        self.idempotencyKey = idempotencyKey
+        self.inReplyToHandoffID = inReplyToHandoffID
+    }
+}
+
 public struct RelayUIAskManyRequest: Codable, Equatable, Sendable {
     public let sourcePaneID: String
     public let targetPaneIDs: [String]
