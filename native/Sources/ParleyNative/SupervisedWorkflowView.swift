@@ -128,7 +128,7 @@ struct SupervisedWorkflowView: View {
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(role.uppercased())
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
                 Text(participant.name)
                     .font(.system(size: 11, weight: .medium))
@@ -192,7 +192,7 @@ struct SupervisedWorkflowView: View {
                         Text(transition.to.label)
                             .font(.system(size: 10, weight: .medium))
                         Text(transition.origin == .automation ? "AUTO" : "HUMAN")
-                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
                             .foregroundStyle(transition.origin == .automation ? Color.accentColor : Color.secondary)
                         if let detail = transition.detail {
                             Text(detail)

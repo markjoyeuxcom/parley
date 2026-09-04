@@ -26,8 +26,9 @@ struct ParleySettingsView: View {
                     .tag(ApplicationSettingsSection.general)
 
                 ScrollView {
-                    TerminalFontSettingsView(model: model, dismissAfterApply: false)
+                    TerminalFontSettingsView(model: model, dismissAfterApply: false, showsTitle: false)
                         .frame(maxWidth: .infinity)
+                        .padding(.top, 4)
                 }
                 .tabItem {
                     Label(
@@ -65,6 +66,8 @@ private struct GeneralSettingsView: View {
                         set: { model.idleAgentReaperEnabled = $0 }
                     )
                 )
+                .help("Close agent panes whose process has reported no activity for 30 minutes")
+                .accessibilityHint("Off by default; idleness comes from process facts, never terminal text")
                 Text("Off by default. Parley never infers that an agent is idle from terminal text.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -79,6 +82,7 @@ private struct GeneralSettingsView: View {
                             set: { model.setAutomaticUpdateChecksEnabled($0) }
                         )
                     )
+                    .help("Check the stable channel in the background; nothing installs without your confirmation")
                     HStack {
                         Text(model.automaticUpdateDetail)
                             .font(.caption)
@@ -86,6 +90,8 @@ private struct GeneralSettingsView: View {
                         Spacer()
                         Button("Check Now…") { model.checkForStableAutomaticUpdate() }
                             .disabled(!model.automaticUpdateCanCheck)
+                            .help("Check the stable channel for a newer Parley release now")
+                            .accessibilityLabel("Check for updates now")
                     }
                 } else {
                     Label("Automatic update channel unavailable", systemImage: "lock.shield")
@@ -106,6 +112,8 @@ private struct GeneralSettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .help("Which release channel manual update checks use")
+                .accessibilityLabel("Manual release channel")
 
                 Text(model.releaseChannel.detail)
                     .font(.caption)
@@ -135,12 +143,14 @@ private struct NotificationSettingsView: View {
                                 set: { model.setNotificationsEnabled($0, for: workspace) }
                             )
                         )
+                        .help("Send local notifications for \(workspace.name) when a result returns or attention is required")
+                        .accessibilityLabel("Notifications for \(workspace.name)")
                     }
                 }
             }
 
             Section {
-                Text("Parley sends local notifications only for enabled workspaces when results return or authoritative attention is required. Banners contain pane, workspace and event-state labels, never prompt, result or terminal content.")
+                Text("Parley sends local notifications only for enabled workspaces when results return or authoritative attention is required. Banners contain pane, workspace and event-state labels, never prompt, result or terminal content. The Status Center bell shows this setting and opens it here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

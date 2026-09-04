@@ -37,6 +37,18 @@ struct ContextPackView: View {
         .sheet(isPresented: $vendorEvidencePresented) {
             VendorToolEvidenceCaptureView(model: model)
         }
+        .sheet(item: paneChoiceRequest) { request in
+            PaneChoiceSheet(model: model, request: request)
+        }
+    }
+
+    /// While this window is presented it owns the pane choice sheet so the
+    /// choice appears over the pack being sent, not over the main window.
+    private var paneChoiceRequest: Binding<PaneChoiceRequest?> {
+        Binding(
+            get: { model.contextPackPresented ? model.paneChoiceRequest : nil },
+            set: { if $0 == nil { model.cancelPaneChoice() } }
+        )
     }
 
     private var agentDraftBanner: some View {
@@ -83,7 +95,9 @@ struct ContextPackView: View {
     private var sourceToolbar: some View {
         HStack(spacing: 10) {
             Button("Add Files…", systemImage: "doc.badge.plus") { model.addContextFiles() }
+                .help("Attach files you choose; each becomes an attributed, editable part")
             Button("Add Git Diff", systemImage: "arrow.triangle.branch") { model.addContextGitDiff() }
+                .help("Capture the source pane folder's current Git diff as a part")
             Button("Add Terminal Selection…", systemImage: "selection.pin.in.out") {
                 model.addVisibleTerminalContext()
             }
@@ -295,13 +309,18 @@ struct ContextPackView: View {
             }
             Button("Close") { model.dismissContextPack() }
                 .keyboardShortcut(.cancelAction)
+                .help("Close this pack without sending; the draft stays with its source pane")
             Button(
                 model.contextPackDraft?.reviewState == .awaitingReview ? "Approve and Ask…" : "Ask One Pane…"
             ) { model.askWithContextPack() }
                 .disabled(!model.contextPackIsSendable || model.contextPackAskTargets.isEmpty)
+                .help("Choose one target pane, then confirm before the attributed pack is submitted")
+                .accessibilityHint("Opens a pane choice followed by a confirmation")
             Button("Compare Panes…") { model.compareWithContextPack() }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!model.canCompareContextPack)
+                .help("Send the same pack to at least two panes independently and compare their answers")
+                .accessibilityHint("Opens a pane choice followed by a confirmation")
         }
         .padding(14)
     }

@@ -120,7 +120,7 @@ struct CommandPaletteView: View {
                 }
                 Spacer(minLength: 10)
                 Text(command.item.category.label)
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 14)

@@ -127,7 +127,7 @@ private struct WorktreeRow: View {
                     Text(worktree.shortIdentity)
                         .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     Text(worktree.locationKind.uppercased())
-                        .font(.system(size: 8, weight: .semibold))
+                        .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
                     if worktree.lockReason != nil {
                         stateChip("LOCKED", color: .orange)
@@ -160,7 +160,7 @@ private struct WorktreeRow: View {
 
     private func stateChip(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.system(size: 8, weight: .semibold))
+            .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(color)
     }
 }

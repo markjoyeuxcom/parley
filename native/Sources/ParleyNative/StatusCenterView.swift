@@ -5,6 +5,7 @@ struct StatusCenterView: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
     @State private var workspaceID = ""
+    @State private var segment: StatusCenterSegment = .live
     @State private var selectedHandoffID: String?
     @State private var selectedBusyDraftID: String?
     @State private var showDismissed = false
@@ -103,18 +104,14 @@ struct StatusCenterView: View {
             Divider()
             countStrip
             Divider()
+            segmentBar
+            Divider()
             HSplitView {
                 ScrollViewReader { reader in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
                             Color.clear.frame(height: 0).id("status-overview-top")
-                            reviewedBusyQueue
-                            liveCollaboration
-                            returnedResults
-                            collaborationHistory
-                            agents
-                            recovery
-                            coreHealth
+                            segmentContent
                         }
                         .padding(16)
                     }
@@ -126,17 +123,17 @@ struct StatusCenterView: View {
                     .onChange(of: workspaceID) { _, _ in
                         reader.scrollTo("status-overview-top", anchor: .top)
                     }
+                    .onChange(of: segment) { _, _ in
+                        reader.scrollTo("status-overview-top", anchor: .top)
+                    }
                 }
                 .frame(minWidth: 520, idealWidth: 650)
 
                 inspector
                     .frame(minWidth: 330, idealWidth: 430)
             }
-            Divider()
-            timeline
-                .frame(minHeight: 170, idealHeight: 220, maxHeight: 280)
         }
-        .frame(minWidth: 980, minHeight: 700)
+        .frame(minWidth: 980, minHeight: 640)
         .onAppear {
             model.refreshStatusCenterQuietly()
             model.refreshRuntimeReadiness()
@@ -215,27 +212,12 @@ struct StatusCenterView: View {
             .accessibilityLabel(model.diagnosticsExporting ? "Exporting diagnostics" : "Export diagnostics")
             .accessibilityHint("Save a local ZIP containing health and process state without prompts, answers, terminal contents, names, folders, credentials, journals, or logs")
             .help("Export privacy-bounded local diagnostics")
-            Menu {
-                if model.workspaces.isEmpty {
-                    Text("No workspaces")
-                } else {
-                    Section("Notify when a result returns or attention is required") {
-                        ForEach(model.workspaces) { workspace in
-                            Toggle(
-                                workspace.name,
-                                isOn: Binding(
-                                    get: { model.notificationsEnabled(for: workspace) },
-                                    set: { model.setNotificationsEnabled($0, for: workspace) }
-                                )
-                            )
-                        }
-                    }
-                }
+            Button {
+                model.showSettings(.notifications)
             } label: {
-                Image(systemName: model.notificationWorkspaceNames.isEmpty ? "bell" : "bell.badge")
+                Image(systemName: model.notificationWorkspaceNames.isEmpty ? "bell.slash" : "bell.badge")
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
+            .buttonStyle(.borderless)
             .fixedSize()
             .accessibilityLabel("Workspace notifications")
             .accessibilityValue(
@@ -243,8 +225,12 @@ struct StatusCenterView: View {
                     ? "Off for all workspaces"
                     : "On for \(model.notificationWorkspaceNames.joined(separator: ", "))"
             )
-            .help("Workspace notifications are off until you enable them here")
-            .accessibilityHint("Choose which workspaces may send local result and attention notifications")
+            .help(
+                model.notificationWorkspaceNames.isEmpty
+                    ? "Notifications are off for every workspace. Opens Settings › Notifications."
+                    : "Notifications on for \(model.notificationWorkspaceNames.joined(separator: ", ")). Opens Settings › Notifications."
+            )
+            .accessibilityHint("Opens the Notifications tab in Settings, where workspace notifications are enabled")
             Menu {
                 Toggle("Show Dismissed", isOn: $showDismissed)
                 Button("Restore All Dismissed") {
@@ -312,31 +298,106 @@ struct StatusCenterView: View {
 
     private var countStrip: some View {
         HStack(spacing: 1) {
-            countCell("RUNNING", snapshot.counts.runningAgents)
-            countCell("STOPPED", snapshot.counts.stoppedAgents)
-            countCell("QUESTIONS", snapshot.counts.outstandingQuestions)
-            countCell("DELEGATIONS", snapshot.counts.trackedDelegations)
-            countCell("RESULTS", snapshot.counts.unreadResults)
-            countCell("FAILURES", snapshot.counts.failures, warning: snapshot.counts.failures > 0)
+            countCell("Running", snapshot.counts.runningAgents, kind: .runningAgents)
+            countCell("Stopped", snapshot.counts.stoppedAgents, kind: .stoppedAgents)
+            countCell("Questions", snapshot.counts.outstandingQuestions, kind: .outstandingQuestions)
+            countCell("Delegations", snapshot.counts.trackedDelegations, kind: .trackedDelegations)
+            countCell("Results", snapshot.counts.unreadResults, kind: .unreadResults)
+            countCell("Failures", snapshot.counts.failures, kind: .failures, warning: snapshot.counts.failures > 0)
         }
         .background(Color.secondary.opacity(0.11))
         .frame(height: 58)
-        .accessibilityRepresentation {
-            Text("Status Center totals. \(WorkbenchAccessibility.counts(snapshot.counts))")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Status Center totals. \(WorkbenchAccessibility.counts(snapshot.counts))")
+    }
+
+    /// Every count opens the section that explains it; the strip is
+    /// navigation, not decoration.
+    private func countCell(
+        _ label: String,
+        _ value: Int,
+        kind: StatusCenterCountKind,
+        warning: Bool = false
+    ) -> some View {
+        let destination = StatusCenterSegmentProjection.segment(for: kind)
+        let isCurrent = segment == destination
+        return Button {
+            segment = destination
+        } label: {
+            VStack(spacing: 2) {
+                Text(value.formatted())
+                    .font(.system(size: 18, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(warning ? Color.red : Color.primary)
+                Text(label)
+                    .font(ChromeFont.secondary)
+                    .foregroundStyle(isCurrent ? Color.primary : Color.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(isCurrent ? Color.accentColor : Color.clear)
+                    .frame(height: 2)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Show \(destination.label)")
+        .accessibilityLabel("\(label): \(value.formatted())")
+        .accessibilityHint("Show the \(destination.label) section")
+        .accessibilityAddTraits(isCurrent ? [.isSelected] : [])
+    }
+
+    private var segmentBar: some View {
+        HStack(spacing: 12) {
+            Picker("Section", selection: $segment) {
+                ForEach(StatusCenterSegment.allCases) { candidate in
+                    Text(candidate.label).tag(candidate)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 440)
+            .accessibilityLabel("Status Center section")
+            .accessibilityHint("Switch between live work, unread results, history, agents, and health")
+            Spacer()
+            Text(segmentSummary)
+                .font(ChromeFont.secondary)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 38)
+    }
+
+    private var segmentSummary: String {
+        switch segment {
+        case .live: "Reviewed busy queue and active handoffs"
+        case .results: "Returned results that have not been viewed"
+        case .history: "Every recorded handoff in scope, with export"
+        case .agents: "Pane readiness, protocol and process facts"
+        case .health: "Recovery guidance, core lifecycle and the activity timeline"
         }
     }
 
-    private func countCell(_ label: String, _ value: Int, warning: Bool = false) -> some View {
-        VStack(spacing: 2) {
-            Text(value.formatted())
-                .font(.system(size: 18, weight: .semibold, design: .monospaced))
-                .foregroundStyle(warning ? Color.red : Color.primary)
-            Text(label)
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.secondary)
+    @ViewBuilder
+    private var segmentContent: some View {
+        switch segment {
+        case .live:
+            reviewedBusyQueue
+            liveCollaboration
+        case .results:
+            returnedResults
+        case .history:
+            collaborationHistory
+        case .agents:
+            agents
+        case .health:
+            recovery
+            coreHealth
+            timeline
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var reviewedBusyQueue: some View {
@@ -354,7 +415,7 @@ struct StatusCenterView: View {
                                     HStack(spacing: 5) {
                                         Text(draft.sourceName)
                                         Image(systemName: "arrow.right")
-                                            .font(.system(size: 8))
+                                            .font(.system(size: 9))
                                             .foregroundStyle(.tertiary)
                                         Text(draft.targetName)
                                     }
@@ -367,7 +428,7 @@ struct StatusCenterView: View {
                                 Spacer(minLength: 8)
                                 VStack(alignment: .trailing, spacing: 4) {
                                     Text("REVIEWED ASK")
-                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                         .foregroundStyle(.secondary)
                                     Text(
                                         draft.state == .dispatching
@@ -380,7 +441,7 @@ struct StatusCenterView: View {
                                                 ? Color.orange : Color.accentColor
                                         )
                                     Text(draft.createdAt.formatted(date: .omitted, time: .shortened))
-                                        .font(.system(size: 8, design: .monospaced))
+                                        .font(.system(size: 9, design: .monospaced))
                                         .foregroundStyle(.secondary)
                                 }
                             }
@@ -428,7 +489,7 @@ struct StatusCenterView: View {
                     HStack(spacing: 5) {
                         Text(handoff.sourceName)
                         Image(systemName: "arrow.right")
-                            .font(.system(size: 8))
+                            .font(.system(size: 9))
                             .foregroundStyle(.tertiary)
                         Text(handoff.targetName)
                     }
@@ -441,24 +502,20 @@ struct StatusCenterView: View {
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 4) {
                     if let relationship = handoff.relationship {
-                        Text(relationship.rawValue.uppercased())
-                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Color.accentColor)
+                        ChromeChip(relationship.label, color: .accentColor)
                     }
                     if let verdict = handoff.humanVerdict {
-                        Text(verdict.label.uppercased())
-                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(verdictColor(verdict))
+                        ChromeChip(verdict.label, color: verdictColor(verdict))
                     }
-                    Text(handoff.kind.rawValue.uppercased())
-                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                    Text(handoff.state.rawValue.uppercased())
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(stateColor(handoff))
+                    HStack(spacing: 5) {
+                        Text(handoff.kind.rawValue.capitalized)
+                            .font(ChromeFont.secondary)
+                            .foregroundStyle(.secondary)
+                        ChromeChip(handoff.state.rawValue.capitalized, color: stateColor(handoff))
+                    }
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         Text(activityTiming(handoff, at: context.date))
-                            .font(.system(size: 8, design: .monospaced))
+                            .font(ChromeFont.meta)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -599,23 +656,17 @@ struct StatusCenterView: View {
                     }
                     Spacer(minLength: 8)
                     if let relationship = handoff.relationship {
-                        Text(relationship.rawValue.uppercased())
-                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Color.accentColor)
+                        ChromeChip(relationship.label, color: .accentColor)
                     }
                     if let verdict = handoff.humanVerdict {
-                        Text(verdict.label.uppercased())
-                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(verdictColor(verdict))
+                        ChromeChip(verdict.label, color: verdictColor(verdict))
                     }
-                    Text(handoff.kind.rawValue.uppercased())
-                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    Text(handoff.kind.rawValue.capitalized)
+                        .font(ChromeFont.secondary)
                         .foregroundStyle(.secondary)
-                    Text(handoff.state.rawValue.uppercased())
-                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(stateColor(handoff))
+                    ChromeChip(handoff.state.rawValue.capitalized, color: stateColor(handoff))
                     Text(handoff.updatedAt, style: .relative)
-                        .font(.system(size: 8, design: .monospaced))
+                        .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
                 .contentShape(Rectangle())
@@ -667,17 +718,17 @@ struct StatusCenterView: View {
                     HStack(spacing: 6) {
                         Text(pane.displayName)
                             .font(.system(size: 11, weight: .medium))
-                        Text(pane.kind.label.uppercased())
-                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        Text(pane.kind.label)
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.secondary)
                         if let role = pane.role {
                             Text("@\(role)")
-                                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(Color.accentColor)
                         }
                         if attention != nil {
                             Text("ATTENTION")
-                                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
                                 .foregroundStyle(Color.orange)
                         }
                     }
@@ -689,15 +740,15 @@ struct StatusCenterView: View {
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 3) {
                     Text(processState(pane))
-                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
                     Text(pane.workspaceName ?? pane.workspaceID)
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
                     Text(protocolLabel(pane))
-                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
                         .foregroundStyle(protocolColor(pane))
                     Text(readiness(pane))
-                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
                         .foregroundStyle(readinessColor(pane))
                 }
             }
@@ -1066,11 +1117,11 @@ struct StatusCenterView: View {
                                 Text(transition.occurredAt.formatted(date: .omitted, time: .standard))
                                     .font(.system(size: 9, design: .monospaced))
                                     .foregroundStyle(.secondary)
-                                Text(transition.state.rawValue.uppercased())
+                                Text(transition.state.rawValue.capitalized)
                                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                 if let origin = transition.origin {
                                     Text(origin == .automation ? "AUTO" : "HUMAN")
-                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                         .foregroundStyle(Color.accentColor)
                                 }
                                 if let detail = transition.detail, !detail.isEmpty {
@@ -1357,7 +1408,7 @@ struct StatusCenterView: View {
                 Spacer()
                 if let reportedAt = handoff.progressUpdatedAt {
                     Text(reportedAt, style: .relative)
-                        .font(.system(size: 8, design: .monospaced))
+                        .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -1411,25 +1462,19 @@ struct StatusCenterView: View {
     }
 
     private var timeline: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("ACTIVITY")
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
-            if snapshot.timeline.isEmpty {
+        let events = Array(snapshot.timeline.prefix(150))
+        return statusGroup("ACTIVITY") {
+            if events.isEmpty {
                 emptyRow("No recorded activity in this scope")
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(snapshot.timeline.prefix(150)) { event in
-                            timelineRow(event)
-                            Divider()
-                        }
+                LazyVStack(spacing: 0) {
+                    ForEach(events) { event in
+                        timelineRow(event)
+                        if event.id != events.last?.id { Divider() }
                     }
                 }
             }
         }
-        .padding(12)
     }
 
     @ViewBuilder
@@ -1462,14 +1507,12 @@ struct StatusCenterView: View {
             Text(event.title)
                 .font(.system(size: 10, weight: .medium))
             Text(event.category)
-                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
             Text(event.action)
-                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
             if event.origin == .human {
-                Text("HUMAN")
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color.accentColor)
+                ChromeChip("Human", color: .accentColor)
             }
             if let detail = event.detail, !detail.isEmpty {
                 Text(detail)
@@ -1485,10 +1528,7 @@ struct StatusCenterView: View {
 
     private func statusGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(title)
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
+            ChromeHeading(title)
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.secondary.opacity(0.035))
@@ -1506,13 +1546,7 @@ struct StatusCenterView: View {
     }
 
     private func statusChip(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 8, weight: .semibold, design: .monospaced))
-            .foregroundStyle(color)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(color.opacity(0.09))
-            .clipShape(RoundedRectangle(cornerRadius: 4))
+        ChromeChip(text, color: color)
     }
 
     private var conditionTitle: String {
@@ -1558,7 +1592,7 @@ struct StatusCenterView: View {
 
     private var conditionColor: Color {
         switch snapshot.condition {
-        case .allClear: .green
+        case .allClear: .secondary
         case .resultsAvailable: .accentColor
         case .agentsWaiting: .accentColor
         case .humanInputRequired: .orange
@@ -1567,21 +1601,11 @@ struct StatusCenterView: View {
     }
 
     private func stateColor(_ handoff: RelayHandoff) -> Color {
-        if handoff.attention != nil { return .orange }
-        return switch handoff.state {
-        case .created, .delivered, .waiting, .answered: .accentColor
-        case .failed, .interrupted: .red
-        case .completed, .cancelled: .secondary
-        }
+        ChromeColor.handoff(handoff)
     }
 
     private func verdictColor(_ verdict: RelayHandoffVerdict) -> Color {
-        switch verdict {
-        case .accepted: .green
-        case .needsChanges: .orange
-        case .rejected: .red
-        case .inconclusive: .secondary
-        }
+        ChromeColor.verdict(verdict)
     }
 
     private func readiness(_ pane: WorkbenchPane) -> String {
@@ -1598,8 +1622,11 @@ struct StatusCenterView: View {
 
     private func readinessColor(_ pane: WorkbenchPane) -> Color {
         if pane.isDead { return .red }
-        return WorkbenchStateProjection.pane(pane) == .running && pane.inputAvailable
-            ? .green : .orange
+        switch WorkbenchStateProjection.pane(pane) {
+        case .protocolStale, .relayUnavailable: return .orange
+        case .running: return pane.inputAvailable ? .primary : .secondary
+        case .empty, .stopped, .exited: return .secondary
+        }
     }
 
     private func protocolLabel(_ pane: WorkbenchPane) -> String {
@@ -1695,6 +1722,11 @@ struct StatusCenterView: View {
                 includeDismissed: true
               ).handoffs.first(where: { $0.id == requested }) else { return }
         workspaceID = ""
+        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+        segment = StatusCenterSegmentProjection.segment(
+            isActive: activeStates.contains(handoff.state),
+            hasUnreadResult: handoff.hasUnreadResult
+        )
         select(handoff)
         model.consumeRequestedStatusHandoffID()
     }
@@ -1748,7 +1780,7 @@ private struct HandoffHumanReviewEditor: View {
                 Spacer()
                 if let reviewedAt = handoff.reviewedAt {
                     Text("Saved \(reviewedAt.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.system(size: 8, design: .monospaced))
+                        .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -1776,7 +1808,7 @@ private struct HandoffHumanReviewEditor: View {
 
             HStack {
                 Text("\(note.count) / 4000")
-                    .font(.system(size: 8, design: .monospaced))
+                    .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(note.count > 4_000 ? Color.red : Color.secondary)
                 Text("Native control only; agent panes cannot set this review.")
                     .font(.system(size: 9))

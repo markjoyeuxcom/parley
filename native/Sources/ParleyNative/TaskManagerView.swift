@@ -46,14 +46,19 @@ struct TaskManagerView: View {
             Spacer()
             Toggle("Processes", isOn: $showProcesses)
                 .toggleStyle(.checkbox)
+                .help("Show each pane's live process tree beneath its row")
+                .accessibilityLabel("Show process trees")
             Toggle("Auto Refresh", isOn: $autoRefresh)
                 .toggleStyle(.checkbox)
+                .help("Resample process facts on a timer while this window is open")
+                .accessibilityLabel("Refresh automatically")
             Button {
                 model.refreshTaskManagerManually()
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
             .help("Resample pane processes now and refresh sidebar listeners immediately")
+            .accessibilityLabel("Refresh now")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
@@ -257,6 +262,8 @@ struct TaskManagerView: View {
             }
             .menuStyle(.borderlessButton)
             .frame(width: 28)
+            .accessibilityLabel("Actions for \(pane.paneName)")
+            .help("Focus, copy diagnostics, interrupt, restart or close this pane")
         }
         .font(.system(.body, design: .default))
         .monospacedDigit()
