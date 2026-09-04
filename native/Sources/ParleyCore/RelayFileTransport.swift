@@ -260,7 +260,8 @@ public final class RelayFileTransport: @unchecked Sendable {
                 token: request.token,
                 target: request.target,
                 text: request.body,
-                idempotencyKey: request.idempotencyKey
+                idempotencyKey: request.idempotencyKey,
+                inReplyToHandoffID: request.item.isEmpty ? nil : request.item
             ))
         case "status":
             return encode(broker.delegationStatus(token: request.token))

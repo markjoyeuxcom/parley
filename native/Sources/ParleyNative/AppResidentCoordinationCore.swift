@@ -66,6 +66,7 @@ final class AppResidentCoordinationCore {
         let busyDraftStore = try ReviewedBusyDraftStore(
             file: applicationDirectory.appendingPathComponent("reviewed-busy-drafts.json")
         )
+        let gitFactsCapture = DelegationGitSnapshotCapture()
         let broker = RelayBroker(
             credentials: credentials,
             panes: { try controller.listPanes() },
@@ -81,6 +82,7 @@ final class AppResidentCoordinationCore {
             vendorSignal: { paneID, signal, occurredAt in
                 try controller.recordVendorSignal(paneID: paneID, signal: signal, occurredAt: occurredAt)
             },
+            gitFacts: { folder in gitFactsCapture.snapshot(in: folder) },
             handoffJournal: handoffJournal,
             activityJournal: activityJournal,
             historyRetentionPolicy: historyRetentionPolicy,

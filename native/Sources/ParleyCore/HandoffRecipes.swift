@@ -39,10 +39,12 @@ public struct HandoffRecipe: Identifiable, Codable, Equatable, Sendable {
         let cleanedTargets = targets
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        let minimum = kind == .askMany ? 2 : 1
-        guard cleanedTargets.count >= minimum else {
+        let requirements = targetRequirements
+        guard cleanedTargets.count >= requirements.minimumTargets else {
             throw HandoffRecipeError.invalid(
-                kind == .askMany ? "Compare needs at least two explicit targets." : "Choose one explicit target."
+                requirements.minimumDistinctVendors > 1
+                    ? "Review and correct needs at least two explicit targets from different vendors."
+                    : (kind == .askMany ? "Compare needs at least two explicit targets." : "Choose one explicit target.")
             )
         }
         let renderedTargets = cleanedTargets.joined(separator: ", ")
@@ -72,7 +74,7 @@ public struct HandoffRecipe: Identifiable, Codable, Equatable, Sendable {
             id: "adversarial-bug-hunt",
             name: "Adversarial bug hunt",
             kind: .delegate,
-            instructions: "Delegate a bounded adversarial bug hunt to {{targets}}. Require concrete file and line evidence, wait for the tracked result, assess every finding, and fix only confirmed issues."
+            instructions: "Delegate a bounded adversarial bug hunt to {{targets}}. Require concrete file and line evidence. Ask the target to post `parley progress current` at each milestone and to return a substantial report with `parley done current --file <path>`. Wait for the tracked result, assess every finding, and fix only confirmed issues."
         ),
         HandoffRecipe(
             id: "compare-recommendations",
@@ -80,7 +82,91 @@ public struct HandoffRecipe: Identifiable, Codable, Equatable, Sendable {
             kind: .askMany,
             instructions: "Ask {{targets}} independently for recommendations on the current decision using Parley's explicit fan-out. Compare the labelled answers, preserve dissent, choose a direction, and explain why."
         ),
+        HandoffRecipe(
+            id: "review-and-correct",
+            name: "Review and correct",
+            kind: .delegate,
+            instructions: "Follow the review-and-correct practice with {{targets}} as guidance, not a required sequence. Start with `parley delegate <implementer> \"<task>\"` to one of {{targets}}, asking it to post `parley progress current` at each milestone and to return its result with `parley done current` or `parley done current --file <path>` using the plain Markdown headings ## Implemented, ## Tested (each command and its claimed outcome) and ## Unable to test (the reason). When the result returns, ask a different vendor among {{targets}} to review the shared diff and name concrete file and line evidence. Send the agreed corrections back as one linked request for changes with `parley delegate <implementer> --parent <handoff-id> \"<changes>\"`, then have the reviewer verify the revised result independently. Treat every progress note, evidence section and review as an agent-declared claim and decide yourself what to accept."
+        ),
     ]
+}
+
+/// Target rules derived from a recipe's identity and kind. Nothing here is
+/// stored: the recipe schema stays id, name, kind and instructions.
+public struct HandoffRecipeTargetRequirements: Equatable, Sendable {
+    public let minimumTargets: Int
+    public let minimumDistinctVendors: Int
+    public var allowsMultiple: Bool { minimumTargets > 1 }
+
+    public init(minimumTargets: Int, minimumDistinctVendors: Int) {
+        self.minimumTargets = minimumTargets
+        self.minimumDistinctVendors = minimumDistinctVendors
+    }
+}
+
+public extension HandoffRecipe {
+    static let reviewAndCorrectID = "review-and-correct"
+
+    /// Review and correct names an implementer and a reviewer from a different
+    /// vendor, so it needs at least two explicit panes spanning at least two
+    /// vendors. Every other recipe keeps its kind's rule: Compare needs two
+    /// panes of any vendors, Consult and Delegate need exactly one.
+    var targetRequirements: HandoffRecipeTargetRequirements {
+        if id == Self.reviewAndCorrectID {
+            return HandoffRecipeTargetRequirements(minimumTargets: 2, minimumDistinctVendors: 2)
+        }
+        return HandoffRecipeTargetRequirements(minimumTargets: kind == .askMany ? 2 : 1, minimumDistinctVendors: 1)
+    }
+}
+
+/// The one place that decides whether panes satisfy a recipe, used by the
+/// Recipes menu, the target picker and the pure render bound alike. Callers
+/// pass candidates that already exclude the lead.
+public enum HandoffRecipeTargeting {
+    public static func canSatisfy(_ recipe: HandoffRecipe, with candidates: [WorkbenchPane]) -> Bool {
+        let requirements = recipe.targetRequirements
+        return candidates.count >= requirements.minimumTargets
+            && distinctVendorCount(candidates) >= requirements.minimumDistinctVendors
+    }
+
+    /// Nil when the selection satisfies the recipe; otherwise the exact reason
+    /// shown to the person. Nothing is sent when a reason is returned.
+    public static func rejection(for recipe: HandoffRecipe, selected: [WorkbenchPane]) -> String? {
+        let requirements = recipe.targetRequirements
+        if selected.count < requirements.minimumTargets {
+            if requirements.minimumDistinctVendors > 1 {
+                return "\(recipe.name) needs at least two explicit target panes: one to implement and a different vendor to review."
+            }
+            return recipe.kind == .askMany ? "Compare needs at least two selected panes." : "Choose one explicit target."
+        }
+        if distinctVendorCount(selected) < requirements.minimumDistinctVendors {
+            let vendors = Set(selected.map(\.kind.label)).sorted().joined(separator: ", ")
+            return "\(recipe.name) needs targets from at least two different vendors; the selected panes are all \(vendors)."
+        }
+        return nil
+    }
+
+    public static func pickerMessage(for recipe: HandoffRecipe) -> String {
+        if recipe.targetRequirements.minimumDistinctVendors > 1 {
+            return "Choose at least two explicit panes from different vendors: one implements and a different vendor reviews. The lead is excluded."
+        }
+        return recipe.kind == .askMany
+            ? "Choose at least two explicit panes. They will answer independently."
+            : "Choose the exact agent pane the lead should use."
+    }
+
+    public static func unavailableMessage(for recipe: HandoffRecipe) -> String {
+        if recipe.targetRequirements.minimumDistinctVendors > 1 {
+            return "Open at least two ready agent panes from different vendors, other than the lead."
+        }
+        return recipe.kind == .askMany
+            ? "Open at least two ready agent panes other than the lead."
+            : "Open a ready agent pane other than the lead."
+    }
+
+    private static func distinctVendorCount(_ panes: [WorkbenchPane]) -> Int {
+        Set(panes.map(\.kind)).count
+    }
 }
 
 public enum HandoffRecipeError: LocalizedError, Equatable {
@@ -99,6 +185,16 @@ public final class HandoffRecipeStore: @unchecked Sendable {
         let version: Int
         let recipes: [HandoffRecipe]
     }
+
+    /// Built-in identities per document version. A persisted document must
+    /// carry exactly the set for its own version; loading then backfills only
+    /// the built-ins added by later versions, so local edits survive a new
+    /// default while a genuinely incomplete document is still refused.
+    private static let currentVersion = 2
+    private static let builtInIDsByVersion: [Int: [String]] = [
+        1: ["plan-review", "implementation-review", "adversarial-bug-hunt", "compare-recommendations"],
+        2: HandoffRecipe.defaults.map(\.id),
+    ]
 
     private let file: URL
     private let fileManager: FileManager
@@ -134,14 +230,23 @@ public final class HandoffRecipeStore: @unchecked Sendable {
         do {
             try validateExistingFile()
             let document = try JSONDecoder().decode(Document.self, from: Data(contentsOf: file))
-            guard document.version == 1 else {
+            guard let expectedIDs = Self.builtInIDsByVersion[document.version] else {
                 throw HandoffRecipeError.unreadable("Unsupported handoff recipe version \(document.version).")
             }
             try document.recipes.forEach(validate)
-            guard Set(document.recipes.map(\.id)) == Set(HandoffRecipe.defaults.map(\.id)) else {
+            guard document.recipes.count == expectedIDs.count,
+                  Set(document.recipes.map(\.id)) == Set(expectedIDs) else {
                 throw HandoffRecipeError.unreadable("The handoff recipe set is incomplete.")
             }
-            return document.recipes
+            guard document.version < Self.currentVersion else { return document.recipes }
+            // Additive migration: every persisted recipe, edits included, in
+            // default order, plus the newer built-ins from their defaults. The
+            // rewrite is best effort; the migrated set is served either way.
+            let migrated = HandoffRecipe.defaults.map { definition in
+                document.recipes.first(where: { $0.id == definition.id }) ?? definition
+            }
+            try? writeLocked(migrated)
+            return migrated
         } catch let error as HandoffRecipeError {
             throw error
         } catch {
@@ -157,7 +262,7 @@ public final class HandoffRecipeStore: @unchecked Sendable {
         if fileManager.fileExists(atPath: file.path) { try validateExistingFile() }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(Document(version: 1, recipes: recipes)).write(to: file, options: .atomic)
+        try encoder.encode(Document(version: Self.currentVersion, recipes: recipes)).write(to: file, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 

@@ -10,7 +10,11 @@ struct HandoffComposerView: View {
         if let draft = model.handoffComposerDraft {
             VStack(spacing: 8) {
                 HStack(spacing: 7) {
-                    Text(draft.relationship == nil ? "Reviewed handoff" : "Linked review")
+                    Text(
+                        draft.relationship == nil
+                            ? "Reviewed handoff"
+                            : (draft.relationship == .requestChanges ? "Linked delegation" : "Linked review")
+                    )
                         .font(ChromeFont.secondaryMedium)
                         .foregroundStyle(Color.accentColor)
                         .accessibilityAddTraits(.isHeader)
@@ -346,13 +350,18 @@ struct CollaborationDockView: View {
                 .font(ChromeFont.secondary)
                 .lineLimit(3)
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                HStack(spacing: 6) {
-                    Text(handoff.kind.rawValue.capitalized)
-                        .font(ChromeFont.secondary)
-                    Spacer()
-                    Text(timing(handoff, at: context.date))
-                        .font(ChromeFont.meta)
-                    ChromeChip(stateLabel(handoff), color: ChromeColor.handoff(handoff))
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Text(handoff.kind.rawValue.capitalized)
+                            .font(ChromeFont.secondary)
+                        Spacer()
+                        Text(timing(handoff, at: context.date))
+                            .font(ChromeFont.meta)
+                        ChromeChip(stateLabel(handoff), color: ChromeColor.handoff(handoff))
+                    }
+                    if let facts = model.delegationVisibility(for: handoff, at: context.date) {
+                        delegationFacts(facts)
+                    }
                 }
                 .foregroundStyle(.secondary)
             }
@@ -360,6 +369,26 @@ struct CollaborationDockView: View {
         .padding(.horizontal, 11)
         .padding(.bottom, 12)
         .accessibilityElement(children: .contain)
+    }
+
+    private func delegationFacts(_ facts: DelegationVisibility) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Label(facts.elapsedLabel, systemImage: "clock")
+            Label(facts.targetSignalLabel, systemImage: "checkmark.shield")
+            Label(facts.progressSummary, systemImage: "text.bubble")
+                .lineLimit(2)
+                .truncationMode(.tail)
+            if let detail = facts.quietDetail {
+                Label(DelegationVisibility.quietTitle, systemImage: "info.circle")
+                    .help(detail)
+            }
+        }
+        .font(ChromeFont.meta)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .help(facts.accessibilityDescription)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(facts.accessibilityDescription)
     }
 
     private func fact(icon: String, label: String, value: String, color: Color) -> some View {

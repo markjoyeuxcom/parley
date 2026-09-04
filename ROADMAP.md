@@ -312,7 +312,7 @@ Guardrails that apply to every item in this section:
   live panes see **RESTART FOR PROTOCOL** once; presentation, Git facts and
   conventions need no bump.
 
-11. [ ] **Delegation visibility from owned facts** — For each active or
+11. [x] **Delegation visibility from owned facts** — For each active or
     recently returned delegation, show elapsed time since delivery, the latest
     AGENT-DECLARED progress note with its age, the target's last authenticated
     hook signal with its age, and the factual state **No explicit update for
@@ -327,7 +327,22 @@ Guardrails that apply to every item in this section:
     state is styled as information, not failure; the default Delegate text
     contains the milestone request and remains fully editable; a real
     delegation shows all three facts within one refresh tick.
-12. [ ] **Request Changes as a linked child delegation** — Add a native
+    The projection requires an exact delivered transition and derives, from
+    owned timestamps only, elapsed time since delivery, the bounded
+    **AGENT-DECLARED** progress note with its age, the exact target pane's
+    authenticated hook signal with its age, and the informational
+    **No explicit update for 10 minutes** state measured from the newest of
+    those timestamps; a never-delivered delegation yields no facts. Active
+    and unread-result rows, the Status Center inspector and the Collaboration
+    dock render the facts on one-second timelines without inferred activity
+    or completion. The editable default Delegate guidance now requests
+    milestone `parley progress current` notes and the complete
+    `parley done current --file <path>` form. Protocol remains v14.
+    Verification: 136 deterministic native checks pass; the two real-Ghostty
+    child-shell checks remain blocked by the installed managed-agent boundary;
+    58 Node and companion checks pass; the public scan passes; the native
+    build passes using the established no-nested-sandbox path.
+12. [x] **Request Changes as a linked child delegation** — Add a native
     **Request Changes…** action on a returned Delegate result and a lead-pane
     form of `parley delegate` that names the parent, creating one Delegate
     child with `inReplyToHandoffID` and relationship `requestChanges`. Status
@@ -343,7 +358,21 @@ Guardrails that apply to every item in this section:
     is never queued as a busy draft; deterministic checks cover forged parent,
     missing parent, parent without result, thread ordering and export; no new
     store, window, state or assignee field is introduced.
-13. [ ] **Bounded informational Git facts per delegation** — At delegate
+    Protocol v15 is the planned single bump. `parley delegate <target>
+    --parent <handoff-id>` and the native **Request Changes** action create
+    exactly one Delegate child with `inReplyToHandoffID` and relationship
+    `requestChanges` on the existing handoffs. The broker requires a parent
+    that exists, is a Delegate and has a returned result; a pane credential
+    may name only a parent it initiated or received; ordinary target
+    resolution and the busy refusal apply, and nothing is queued or drafted.
+    Human verdicts remain native-control-only. Status Center renders the
+    chronological Delegation → Result → Request changes → Revised result
+    thread from owned receipts, and the Markdown export carries the same
+    thread and linked children. Independent review reproduced 140 native
+    checks passing plus the two known managed-pane real-Ghostty failures, 58
+    Node checks passing, syntax passing, the public scan passing, the diff
+    check clean and the native build passing.
+13. [x] **Bounded informational Git facts per delegation** — At delegate
     creation and again at done or fail, record the target pane cwd's `HEAD`
     revision and dirty path list (paths only, at most about 200, read with the
     existing fixed-argument Git capture) and show **N paths changed since
@@ -354,12 +383,33 @@ Guardrails that apply to every item in this section:
     capped and labelled; a mismatch or an unreadable repository is
     informational and never a failure state; a non-Git cwd records nothing;
     checks cover the cap, the label, a clean tree and a detached HEAD.
-14. [ ] **Completion-evidence convention in `done --file`** — Document a
+    Existing handoff and journal records carry two optional snapshots of the
+    target pane's cwd, taken at delegation and again at done or fail. One
+    fixed `/usr/bin/git` argv captures the HEAD revision, the branch or
+    detached state, and a sorted, deduplicated dirty path list capped at 200
+    paths, never file contents, diffs or authorship. A non-Git cwd records
+    nothing; a missing folder, unreadable repository or timeout is recorded
+    as an informational reason only and never changes the outcome. The
+    comparison is the symmetric difference of the two dirty path lists,
+    calls out HEAD movement and truncation, and is labelled **shared
+    worktree: not attribution**. Git runs outside the coordination lock; the
+    broker revalidates the authoritative created record under the lock
+    before submit and journals the delegation-time facts before terminal
+    input, so a cancellation during capture can never submit and a target
+    that completes while submit unwinds retains both snapshots. Raw paths
+    stay exact for comparison while the inspector and the Markdown export
+    escape Unicode control and format characters and line and paragraph
+    separators. Protocol remains v15. Independent verification: 149 native
+    checks pass; the two known managed-pane real-Ghostty checks remain
+    environment-blocked; 58 Node and companion checks pass; syntax, the
+    public scan over 179 files, the diff check and the native build pass
+    using the established no-nested-sandbox path.
+14. [x] **Completion-evidence convention in `done --file`** — Document a
     plain Markdown template with the sections **Implemented**, **Tested**
     (each command and its outcome) and **Unable to test** (with the reason).
-    Status Center will render those headings as a **COMPLETION EVIDENCE**
-    section labelled AGENT-DECLARED and fall back to plain text for any other
-    shape.
+    Status Center renders those headings as a **COMPLETION EVIDENCE**
+    section labelled AGENT-DECLARED and falls back to plain text for any
+    other shape.
     No schema and no automatic executor; Parley never runs a command to check
     a claim. **Effort:** small. **Depends on:** item 12 so a Request Changes
     child can refer to evidence items; no protocol change. **Acceptance:** the
@@ -367,7 +417,14 @@ Guardrails that apply to every item in this section:
     headings, never marks anything verified, and a file without the headings
     renders exactly as today; a structured JSON shape is considered only after
     the existing diagnostics counts show the convention is used.
-15. [ ] **Lead practice and a Review and correct recipe** — Document the
+    Verification: the 5 focused completion-evidence checks pass; the full
+    native suite reports 154 passing with exactly the two known managed-pane
+    real-Ghostty failures (app-resident pane lifecycle and six-pane input
+    isolation); 58 Node and companion checks pass; the node syntax checks,
+    the public scan over 181 files, `git diff --check` and the native build
+    via the established `--disable-sandbox` path pass. AgentProtocol remains
+    v15 and is unchanged by item 14.
+15. [x] **Lead practice and a Review and correct recipe** — Document the
     sequence Delegate → Progress → Result → Cross-vendor review →
     Corrections → Independent verification as practice in the engineering
     guide, and add one built-in Recipe whose text asks the target for milestone
@@ -378,6 +435,26 @@ Guardrails that apply to every item in this section:
     11 and 14 for the text it references. **Acceptance:** the recipe is a
     prompt template only, carries no state and no automation, and the guide
     names the practice as guidance rather than a required sequence.
+    The engineering guide names the practice as guidance, not a required
+    sequence, and the built-in **Review and correct** recipe is that practice
+    as an editable prompt template only: it asks the lead to delegate with
+    milestone `parley progress` notes, to require the completion-evidence
+    headings, to have a different vendor review, to send corrections as one
+    linked Request Changes child and to verify independently. It carries no
+    phase, state or automation. The recipe requires at least two explicit
+    non-lead targets from different vendors, refuses a single target or a
+    same-vendor-only selection before anything is sent, and leaves ordinary
+    Delegate and Compare targeting unchanged. The recipe store migrates a
+    valid version 1 four-recipe file additively to version 2, keeping local
+    edits and backfilling only the new recipe, and still refuses an
+    incomplete set. AgentProtocol remains v15 and is unchanged by item 15.
+    Verification: the 3 focused Review and correct checks pass; all 3 recipe
+    and migration checks pass; the full native suite reports 158 passing with
+    exactly the two known managed-pane real-Ghostty failures (app-resident
+    pane lifecycle and six-pane input isolation); 58 Node and companion
+    checks pass; the node syntax checks, the public scan over 182 files,
+    `git diff --check` and the native build via the established
+    `--disable-sandbox` path pass.
 
 Minimal implementation order: 11, then 12 with the single v15 bump, then 13,
 then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.

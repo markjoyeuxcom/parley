@@ -2007,7 +2007,7 @@ final class AppModel: ObservableObject {
               lead.hasCurrentProtocol,
               lead.inputAvailable,
               recipe.kind.isAllowed(by: workspace.automationPolicy) else { return false }
-        return recipeTargets.count >= (recipe.kind == .askMany ? 2 : 1)
+        return HandoffRecipeTargeting.canSatisfy(recipe, with: recipeTargets)
     }
 
     var otherWorkspaceAskGroups: [WorkspaceAskGroup] {
@@ -2056,6 +2056,15 @@ final class AppModel: ObservableObject {
     var activeDelegations: [RelayHandoff] {
         let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting]
         return handoffs.filter { $0.kind == .delegate && activeStates.contains($0.state) }
+    }
+
+    /// Owned-timestamp facts for one delegation: elapsed since delivery, the
+    /// agent-declared note's age and the exact target pane's hook signal age.
+    /// Nil for non-delegations and for records without a recorded delivered transition.
+    func delegationVisibility(for handoff: RelayHandoff, at now: Date) -> DelegationVisibility? {
+        guard handoff.kind == .delegate else { return nil }
+        let target = panes.first { $0.id == handoff.targetPaneID }
+        return DelegationVisibilityProjection.facts(for: handoff, target: target, now: now)
     }
 
     func awaitingAnswerCount(for paneID: String) -> Int {
@@ -3372,14 +3381,12 @@ final class AppModel: ObservableObject {
     ) {
         guard let source = handoffReviewSource(for: handoff),
               handoffReviewTargets(for: handoff).contains(where: { $0.id == target.id }) else {
-            NSAlert(error: RelayUIError.message(
-                "The selected result no longer has a relay-ready source and explicit reviewer pane. Nothing was sent."
-            )).runModal()
+            NSAlert(error: RelayUIError.message(LinkedHandoffCopy.notRelayReady(relationship))).runModal()
             return
         }
         guard !handoffReviewTargetIsBusy(target) else {
             NSAlert(error: RelayUIError.message(
-                "\(target.displayName) already has tracked work. Finish or cancel it before starting this linked review."
+                LinkedHandoffCopy.targetBusy(relationship, targetName: target.displayName)
             )).runModal()
             return
         }
@@ -3388,9 +3395,7 @@ final class AppModel: ObservableObject {
             handoff: handoff
         )
         guard text.count <= RelayText.maximumCharacters else {
-            NSAlert(error: RelayUIError.message(
-                "This result is too large for one linked Ask. Add the selected result to a Context Pack and review its visible sources instead."
-            )).runModal()
+            NSAlert(error: RelayUIError.message(LinkedHandoffCopy.resultTooLarge(relationship))).runModal()
             return
         }
         handoffComposerDraft = HandoffComposerDraft(
@@ -3446,12 +3451,16 @@ final class AppModel: ObservableObject {
 
         if let parentID = draft.inReplyToHandoffID,
            let relationship = draft.relationship {
-            submitLinkedReviewAsk(
-                draft: draft,
-                text: edited,
-                parentID: parentID,
-                relationship: relationship
-            )
+            if relationship == .requestChanges {
+                submitRequestChangesDelegate(draft: draft, text: edited, parentID: parentID)
+            } else {
+                submitLinkedReviewAsk(
+                    draft: draft,
+                    text: edited,
+                    parentID: parentID,
+                    relationship: relationship
+                )
+            }
             return
         }
         guard draft.inReplyToHandoffID == nil, draft.relationship == nil else {
@@ -3542,6 +3551,67 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Request Changes is a linked Delegate child, never a verdict. It goes
+    /// through the native-control route directly: a busy target is refused,
+    /// and the draft never enters the reviewed busy queue.
+    private func submitRequestChangesDelegate(
+        draft: HandoffComposerDraft,
+        text: String,
+        parentID: String
+    ) {
+        guard let relayClient,
+              let source = panes.first(where: {
+                  $0.id == draft.sourcePaneID && isReviewReadyAgent($0)
+              }),
+              let target = panes.first(where: {
+                  $0.id == draft.targetPaneID && isReviewReadyAgent($0)
+              }),
+              source.id != target.id else {
+            NSAlert(error: RelayUIError.message(
+                "The reviewed source or target pane is no longer relay-ready. Nothing was sent."
+            )).runModal()
+            return
+        }
+        guard !handoffReviewTargetIsBusy(target) else {
+            NSAlert(error: RelayUIError.message(
+                "\(target.displayName) already has tracked work. A linked request for changes is never queued; finish or cancel that work first."
+            )).runModal()
+            return
+        }
+
+        let draftID = draft.id
+        let idempotencyKey = UUID().uuidString.lowercased()
+        submittingHandoffComposer = true
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.requestChangesFromUI(
+                        sourcePaneID: source.id,
+                        targetPaneID: target.id,
+                        text: text,
+                        idempotencyKey: idempotencyKey,
+                        inReplyToHandoffID: parentID
+                    )
+                }.value
+                self.submittingHandoffComposer = false
+                self.refreshStatusCenterQuietly()
+                guard response.status == 200 else {
+                    throw RelayUIError.message(response.text)
+                }
+                if self.handoffComposerDraft?.id == draftID {
+                    self.handoffComposerDraft = nil
+                    self.terminalHandle.clearSelection()
+                    self.terminalHandle.focus()
+                }
+            } catch {
+                self.submittingHandoffComposer = false
+                self.refreshStatusCenterQuietly()
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
     private func isReviewReadyAgent(_ pane: WorkbenchPane) -> Bool {
         pane.kind.isAgent
             && pane.isStarted
@@ -3561,6 +3631,8 @@ final class AppModel: ObservableObject {
             request = "Challenge this returned result. Identify unsupported assumptions, concrete failures, and the corrections required before it should be accepted."
         case .verify:
             request = "Verify this returned result against the stated task. Identify the evidence that supports or contradicts it, then give a clear conclusion."
+        case .requestChanges:
+            request = "Revise this returned result. Address the requested changes below, keep what is already correct, and return the revised result with `parley done current` or `parley done current --file <path>`.\n\nRequested changes:\n(describe the changes required before this result can be accepted)"
         }
         let originalLabel = handoff.kind == .delegate ? "Original instruction" : "Original question or message"
         return """
@@ -4975,7 +5047,7 @@ final class AppModel: ObservableObject {
     func restoreDefaultRecipes() {
         let alert = NSAlert()
         alert.messageText = "Restore default recipes?"
-        alert.informativeText = "This replaces edits to all four local handoff recipes. Running panes and collaboration history are unchanged."
+        alert.informativeText = "This replaces edits to all five local handoff recipes. Running panes and collaboration history are unchanged."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Restore Defaults")
         alert.addButton(withTitle: "Cancel")
@@ -5026,24 +5098,17 @@ final class AppModel: ObservableObject {
         for recipe: HandoffRecipe,
         candidates: [WorkbenchPane]
     ) throws -> [WorkbenchPane] {
-        let required = recipe.kind == .askMany ? 2 : 1
-        guard candidates.count >= required else {
-            throw RelayUIError.message(
-                required == 2
-                    ? "Open at least two ready agent panes other than the lead."
-                    : "Open a ready agent pane other than the lead."
-            )
+        guard HandoffRecipeTargeting.canSatisfy(recipe, with: candidates) else {
+            throw RelayUIError.message(HandoffRecipeTargeting.unavailableMessage(for: recipe))
         }
 
         let alert = NSAlert()
         alert.messageText = "Targets for \(recipe.name)"
-        alert.informativeText = recipe.kind == .askMany
-            ? "Choose at least two explicit panes. They will answer independently."
-            : "Choose the exact agent pane the lead should use."
+        alert.informativeText = HandoffRecipeTargeting.pickerMessage(for: recipe)
         alert.addButton(withTitle: "Continue")
         alert.addButton(withTitle: "Cancel")
 
-        if recipe.kind == .askMany {
+        if recipe.targetRequirements.allowsMultiple {
             let stack = NSStackView()
             stack.orientation = .vertical
             stack.alignment = .leading
@@ -5064,8 +5129,8 @@ final class AppModel: ObservableObject {
             let selected = zip(candidates, buttons).compactMap { pane, button in
                 button.state == .on ? pane : nil
             }
-            guard selected.count >= 2 else {
-                throw RelayUIError.message("Compare needs at least two selected panes.")
+            if let rejection = HandoffRecipeTargeting.rejection(for: recipe, selected: selected) {
+                throw RelayUIError.message(rejection)
             }
             return selected
         }

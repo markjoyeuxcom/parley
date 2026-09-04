@@ -53,7 +53,7 @@ private func inputs(
         workflow: workflow,
         focusCanvasActive: focusCanvas,
         dockVisible: dockVisible,
-        protocolVersion: "14"
+        protocolVersion: AgentProtocol.version
     )
 }
 

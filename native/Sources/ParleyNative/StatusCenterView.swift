@@ -498,6 +498,13 @@ struct StatusCenterView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    if handoff.kind == .delegate {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            if let facts = model.delegationVisibility(for: handoff, at: context.date) {
+                                delegationFactsLine(facts)
+                            }
+                        }
+                    }
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 4) {
@@ -529,12 +536,33 @@ struct StatusCenterView: View {
         }
         .buttonStyle(.plain)
         .accessibilityRepresentation {
-            Button(WorkbenchAccessibility.handoff(handoff)) {
+            Button(handoffAccessibilityLabel(handoff)) {
                 select(handoff)
             }
             .accessibilityValue(selectedHandoffID == handoff.id ? "Selected" : "Not selected")
             .accessibilityHint("Inspect this collaboration record")
         }
+    }
+
+    private func handoffAccessibilityLabel(_ handoff: RelayHandoff) -> String {
+        let base = WorkbenchAccessibility.handoff(handoff)
+        guard let facts = model.delegationVisibility(for: handoff, at: Date()) else { return base }
+        return "\(base). \(facts.accessibilityDescription)"
+    }
+
+    private func delegationFactsLine(_ facts: DelegationVisibility) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: facts.quiet == nil ? "clock" : "info.circle")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text(facts.summary)
+                .font(ChromeFont.meta)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .help(facts.accessibilityDescription)
     }
 
     private var returnedResults: some View {
@@ -1092,7 +1120,20 @@ struct StatusCenterView: View {
                     if handoff.inReplyToHandoffID != nil {
                         lineageSection(handoff)
                     }
+                    if threadMembers(handoff).count > 1 {
+                        threadSection(handoff)
+                    }
                     inspectorSection(handoff.kind == .delegate ? "INSTRUCTION" : "QUESTION OR MESSAGE", handoff.text)
+                    if handoff.kind == .delegate {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            if let facts = model.delegationVisibility(for: handoff, at: context.date) {
+                                delegationFactsSection(facts)
+                            }
+                        }
+                    }
+                    if handoff.gitFactsAtDelegation != nil || handoff.gitFactsAtReturn != nil {
+                        delegationGitSection(handoff)
+                    }
                     if let progress = handoff.progressNote, !progress.isEmpty {
                         delegationProgressSection(handoff, progress: progress)
                     }
@@ -1100,6 +1141,9 @@ struct StatusCenterView: View {
                         inspectorSection("RETURNED RESULT", result)
                     }
                     if let review = model.returnedFileReview(for: handoff) {
+                        if let evidence = CompletionEvidenceProjection.evidence(for: handoff, review: review) {
+                            completionEvidenceSection(evidence)
+                        }
                         returnedFileReviewSection(review)
                     }
                     if handoff.hasReturnedResult {
@@ -1258,6 +1302,9 @@ struct StatusCenterView: View {
                 HStack {
                     handoffReviewMenu(.challenge, handoff: handoff)
                     handoffReviewMenu(.verify, handoff: handoff)
+                    if handoff.kind == .delegate {
+                        handoffReviewMenu(.requestChanges, handoff: handoff)
+                    }
                 }
             }
             HStack {
@@ -1327,8 +1374,9 @@ struct StatusCenterView: View {
                 } else {
                     ForEach(targets) { target in
                         let busy = model.handoffReviewTargetIsBusy(target)
+                        let original = relationship == .requestChanges && target.id == handoff.targetPaneID
                         Button(
-                            "\(target.displayName) - \(target.kind.label)\(busy ? " (busy)" : "")"
+                            "\(target.displayName) - \(target.kind.label)\(original ? " (original)" : "")\(busy ? " (busy)" : "")"
                         ) {
                             model.beginHandoffReview(
                                 relationship,
@@ -1347,9 +1395,66 @@ struct StatusCenterView: View {
         .disabled(!model.canOfferHandoffReview(handoff))
         .help(
             model.canOfferHandoffReview(handoff)
-                ? "Choose one explicit reviewer pane, then edit the linked Ask before sending"
+                ? (relationship == .requestChanges
+                    ? "Choose the explicit pane that should revise this result, then edit the linked delegation before sending; it is never a verdict"
+                    : "Choose one explicit reviewer pane, then edit the linked Ask before sending")
                 : "A source pane and at least one other agent pane must be relay-ready, with no other handoff draft open"
         )
+    }
+
+    /// The full local history when Status Center has loaded it, so a dismissed
+    /// parent still anchors its thread; otherwise the visible snapshot.
+    private var threadHistory: [RelayHandoff] {
+        model.statusHandoffs.isEmpty ? snapshot.handoffs : model.statusHandoffs
+    }
+
+    private func threadMembers(_ handoff: RelayHandoff) -> [RelayHandoff] {
+        HandoffThreadProjection.members(containing: handoff.id, in: threadHistory)
+    }
+
+    private func threadSection(_ handoff: RelayHandoff) -> some View {
+        let history = threadHistory
+        let entries = HandoffThreadProjection.thread(containing: handoff.id, in: history)
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text("THREAD")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                statusChip("\(threadMembers(handoff).count) LINKED HANDOFFS", color: .secondary)
+                Spacer()
+            }
+            ForEach(entries) { entry in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(entry.occurredAt.formatted(date: .omitted, time: .standard))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    ChromeChip(entry.label, color: entry.handoffID == handoff.id ? .accentColor : .secondary)
+                    Text("\(entry.sourceName) → \(entry.targetName)")
+                        .font(.system(size: 9, weight: .medium))
+                    Text(subject(entry.text))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 6)
+                    if entry.handoffID != handoff.id {
+                        Button("Open") {
+                            if let member = history.first(where: { $0.id == entry.handoffID }) { select(member) }
+                        }
+                        .controlSize(.mini)
+                        .accessibilityLabel("Open the \(entry.label) handoff")
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
+            Text("Chronological receipts on the existing handoffs. A request for changes is a linked delegation, never a human verdict.")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+        }
+        .padding(9)
+        .background(Color.secondary.opacity(0.055))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 
     private func lineageSection(_ handoff: RelayHandoff) -> some View {
@@ -1423,6 +1528,178 @@ struct StatusCenterView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func delegationFactsSection(_ facts: DelegationVisibility) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text("DELEGATION FACTS")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                statusChip("OWNED TIMESTAMPS", color: .secondary)
+                Spacer()
+            }
+            delegationFact("clock", facts.elapsedLabel, at: facts.deliveredAt)
+            delegationFact(
+                "text.bubble",
+                facts.progressLabel,
+                at: facts.progress?.reportedAt,
+                chip: facts.progress == nil ? nil : "AGENT-DECLARED"
+            )
+            delegationFact("checkmark.shield", facts.targetSignalLabel, at: facts.targetSignal?.reportedAt)
+            if let detail = facts.quietDetail {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 11)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(DelegationVisibility.quietTitle)
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(detail)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            Text("Owned timestamps only; nothing is inferred from silence.")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+        }
+        .padding(9)
+        .background(Color.secondary.opacity(0.055))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(facts.accessibilityDescription)
+    }
+
+    private func delegationGitSection(_ handoff: RelayHandoff) -> some View {
+        let comparison = DelegationGitFacts.compare(
+            delegation: handoff.gitFactsAtDelegation,
+            returned: handoff.gitFactsAtReturn
+        )
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text("GIT FACTS")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                statusChip(DelegationGitSnapshot.label.uppercased(), color: .secondary)
+                Spacer()
+            }
+            if let facts = handoff.gitFactsAtDelegation {
+                delegationFact("arrow.triangle.branch", "At delegation · \(facts.summary)", at: facts.capturedAt)
+            }
+            if let facts = handoff.gitFactsAtReturn {
+                delegationFact("arrow.triangle.branch", "At return · \(facts.summary)", at: facts.capturedAt)
+            }
+            if let comparison {
+                Text(comparison.title)
+                    .font(.system(size: 10, weight: .semibold))
+                if !comparison.changedPaths.isEmpty {
+                    ScrollView {
+                        Text(comparison.displayPaths.joined(separator: "\n"))
+                            .font(.system(size: 9, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(7)
+                    }
+                    .frame(maxHeight: 160)
+                    .background(Color.secondary.opacity(0.055))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                }
+                if let detail = comparison.detail {
+                    Text(detail)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Text("Paths only. Other panes and the person edit this tree; nothing here says who changed a file.")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(9)
+        .background(Color.secondary.opacity(0.055))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func delegationFact(_ symbol: String, _ label: String, at time: Date?, chip: String? = nil) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol)
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .frame(width: 11)
+                .accessibilityHidden(true)
+            Text(label)
+                .font(.system(size: 10))
+            if let chip {
+                statusChip(chip, color: .secondary)
+            }
+            Spacer()
+            if let time {
+                Text(time.formatted(date: .omitted, time: .standard))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func completionEvidenceSection(_ evidence: CompletionEvidence) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text("COMPLETION EVIDENCE")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                statusChip(CompletionEvidence.label, color: .secondary)
+                Spacer()
+            }
+            ForEach(evidence.entries) { entry in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(entry.section.heading)
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("claimed")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                    if entry.body.isEmpty {
+                        Text("Nothing declared under this heading.")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(entry.body)
+                            .font(.system(size: 10, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(7)
+                            .background(Color.secondary.opacity(0.055))
+                            .clipShape(RoundedRectangle(cornerRadius: 5))
+                    }
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(entry.section.heading), agent-declared: \(entry.body.isEmpty ? "nothing declared" : entry.body)")
+            }
+            if !evidence.missing.isEmpty {
+                Text("Not declared: \(evidence.missing.map(\.heading).joined(separator: ", "))")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            Text(CompletionEvidence.disclaimer)
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(9)
+        .background(Color.secondary.opacity(0.055))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .accessibilityElement(children: .contain)
     }
 
     private func returnedFileReviewSection(_ review: AgentContextReview) -> some View {

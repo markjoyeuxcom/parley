@@ -4071,7 +4071,13 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "14", "the shared protocol version drifted from reviewed delegation file results")
+    try expect(AgentProtocol.version == "15", "the shared protocol version drifted from linked Request Changes delegation")
+    try expect(
+        AgentProtocol.text.contains("parley delegate <target> --parent <handoff-id>")
+            && AgentProtocol.text.contains("requestChanges")
+            && AgentProtocol.text.contains("never a verdict"),
+        "shared protocol did not describe the parent-naming Delegate form as a linked child, not a verdict"
+    )
     try expect(
         AgentProtocol.text.contains("one minute") && AgentProtocol.text.contains("parley delegate"),
         "shared protocol did not steer longer work toward Delegate"
@@ -10429,6 +10435,31 @@ let checks: [(String, () throws -> Void)] = [
     ("workbench notice lane is prioritised and never hides facts", checkWorkbenchNoticeLaneIsPrioritisedAndNeverHidesFacts),
     ("workbench notice lane represents every worktree collision", checkWorkbenchNoticeLaneRepresentsEveryWorktreeCollision),
     ("status center segments map handoffs and counts", checkStatusCenterSegmentsMapHandoffsAndCounts),
+    ("delegation visibility uses owned timestamps only", checkDelegationVisibilityIsComputedFromOwnedTimestampsOnly),
+    ("delegation visibility requires an exact delivered transition", checkDelegationVisibilityRequiresAnExactDeliveredTransition),
+    ("delegate recipe guidance requests milestones and file results", checkDelegateRecipeGuidanceRequestsMilestonesAndFileResults),
+    ("request changes is one linked delegate child", checkRequestChangesIsOneLinkedDelegateChild),
+    ("request changes shim form names its parent", checkRequestChangesShimFormNamesItsParent),
+    ("handoff thread projection orders lineage chronologically", checkHandoffThreadProjectionOrdersLineageChronologically),
+    ("request changes copy is title case and names a linked delegate", checkRequestChangesCopyIsTitleCaseAndNamesALinkedDelegate),
+    ("delegation git snapshot is bounded paths only", checkDelegationGitSnapshotIsBoundedPathsOnly),
+    ("delegation git capture failures are informational", checkDelegationGitCaptureFailuresAreInformational),
+    ("delegation git comparison derives changed paths honestly", checkDelegationGitComparisonDerivesChangedPathsHonestly),
+    ("delegation git facts are recorded without changing outcomes", checkDelegationGitFactsAreRecordedWithoutChangingOutcomes),
+    ("delegation git facts export preserves paths only", checkDelegationGitFactsExportPreservesPathsOnly),
+    ("delegation cancelled during git capture is never submitted", checkDelegationCancelledDuringGitCaptureIsNeverSubmitted),
+    ("delegation git path display escapes control characters", checkDelegationGitPathDisplayEscapesControlCharacters),
+    ("delegation git facts survive fast completion during submit", checkDelegationGitFactsSurviveFastCompletionDuringSubmit),
+    ("delegation git path display escapes unicode format controls", checkDelegationGitPathDisplayEscapesUnicodeFormatControls),
+    ("completion evidence parses three headings in any order", checkCompletionEvidenceParsesThreeHeadingsInAnyOrder),
+    ("completion evidence ignores unknown headings and preserves bodies", checkCompletionEvidenceIgnoresUnknownHeadingsAndPreservesBodies),
+    ("completion evidence duplicate empty missing and bounds", checkCompletionEvidenceDuplicateEmptyMissingAndBounds),
+    ("completion evidence only reads the exact returned file", checkCompletionEvidenceOnlyReadsTheExactReturnedFile),
+    ("completion evidence wording is agent-declared", checkCompletionEvidenceWordingIsAgentDeclared),
+    ("review and correct recipe is a prompt template only", checkReviewAndCorrectRecipeIsAPromptTemplateOnly),
+    ("handoff recipe store migrates older documents additively", checkHandoffRecipeStoreMigratesOlderDocumentsAdditively),
+    ("review and correct guidance is documented as practice", checkReviewAndCorrectGuidanceIsDocumentedAsPractice),
+    ("review and correct requires two targets from different vendors", checkReviewAndCorrectRequiresTwoTargetsFromDifferentVendors),
     ("adjacent navigation order", checkAdjacentNavigationOrder),
     ("menu-safe periodic refresh", checkMenuTrackingRefreshPolicy),
     ("detailed in-app help coverage", checkInAppHelpGuideCoverage),

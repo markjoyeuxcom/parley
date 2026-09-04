@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "14"
+    public static let version = "15"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -62,6 +62,12 @@ public enum AgentProtocol {
       answer from the same source pane generation; `current` resolves only when
       exactly one active delegation exists. Cancel only your own active tracking
       with `parley cancel <id>`; this never interrupts the target CLI.
+    - To request changes on a returned Delegate you initiated or received, run
+      `parley delegate <target> --parent <handoff-id> "<task>"`. Parley records
+      exactly one linked Delegate child with relationship `requestChanges` on
+      the existing handoffs. It is never a verdict; human verdicts remain
+      native-only. The parent must be a Delegate with a returned result, and a
+      busy target is refused rather than queued.
     - While delegated work is active, its exact target may replace one compact,
       agent-declared note with `parley progress current "<note>"`. Progress is
       not proof of activity or completion; use `done` or `fail` for the
