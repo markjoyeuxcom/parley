@@ -1,6 +1,6 @@
 {
   "name": "parley",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "private": true,
   "description": "A native macOS workbench for supervised cross-vendor AI CLI collaboration.",
   "license": "Apache-2.0",
@@ -15,6 +15,7 @@
     "package:mac": "node scripts/native-macos-package.mjs",
     "package:vscode": "npm --prefix vscode-extension run package",
     "verify:package:mac": "node scripts/native-macos-release.mjs --lifecycle-only",
+    "verify:launch:mac": "node scripts/verify-native-macos-launch.mjs dist/Parley.app",
     "release:mac:beta": "node scripts/native-macos-release.mjs --unnotarized-beta",
     "release:mac": "node scripts/native-macos-release.mjs"
   }

@@ -66,10 +66,12 @@ from failed notarization.
 The workflow requires an existing matching version tag, runs the deterministic
 checks and real Ghostty soak, builds the VS Code companion, invokes
 `npm run release:mac:beta`, verifies the ZIP, DMG, upgrade and uninstall
-lifecycle, and creates an unpublished draft marked as a prerelease. Its
-manifest and install guide state that the app is ad-hoc signed and not
-notarized. It never emits an appcast or Homebrew cask and cannot enter the
-stable automatic-update channel.
+lifecycle, proves the final bundled executable remains alive past dynamic
+library loading, and creates an unpublished draft marked as a prerelease. Its
+manifest and install guide state that the app is ad-hoc signed without the
+hardened runtime and is not notarized. Production Developer ID releases retain
+the hardened runtime. The beta workflow never emits an appcast or Homebrew cask
+and cannot enter the stable automatic-update channel.
 
 Review the draft checksums, soak report and install guide before publishing.
 Install it only from the expected GitHub release and follow the documented
@@ -86,6 +88,11 @@ Privacy & Security **Open Anyway** flow; never disable Gatekeeper globally.
 4. Do not publish unless every job is green and the draft contains the DMG,
    ZIP, release manifest, checksums, install guide, `appcast.xml`, `parley.rb`,
    VS Code companion and Ghostty soak report.
+
+Both release workflows launch the final packaged executable on the clean macOS
+runner and require it to remain alive for the smoke-test window. This catches
+dyld and embedded-framework signature failures that static `codesign` checks do
+not exercise.
 
 The release script submits the signed ZIP for notarization, staples the app,
 rebuilds the archives from that stapled app, notarizes and staples the DMG, then

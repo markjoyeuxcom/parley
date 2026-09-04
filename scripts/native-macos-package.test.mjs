@@ -8,6 +8,7 @@ import {
   BUNDLE_IDENTIFIER,
   GHOSTTY_RESOURCE_BUNDLE,
   MINIMUM_SYSTEM_VERSION,
+  codesignArguments,
   copyGhosttyResourceBundle,
   patchGhosttyRuntimeResourcesSource,
   requiredBundlePaths,
@@ -17,6 +18,25 @@ import {
 } from './native-macos-package.mjs'
 
 const packageJSON = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+
+test('ad-hoc beta signing avoids hardened library validation while Developer ID keeps it', () => {
+  const adHoc = codesignArguments('/tmp/Parley.app', '-')
+  assert.deepEqual(adHoc, ['--force', '--sign', '-', '/tmp/Parley.app'])
+
+  const developerID = codesignArguments(
+    '/tmp/Parley.app',
+    'Developer ID Application: Example (TEAMID)',
+  )
+  assert.deepEqual(developerID, [
+    '--force',
+    '--sign',
+    'Developer ID Application: Example (TEAMID)',
+    '--options',
+    'runtime',
+    '--timestamp',
+    '/tmp/Parley.app',
+  ])
+})
 
 test('development entry points always name the isolated Development runtime', () => {
   assert.match(packageJSON.scripts.dev, /--runtime development(?:\s|$)/)
