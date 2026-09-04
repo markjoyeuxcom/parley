@@ -91,6 +91,7 @@ test('unnotarized test beta is explicit and cannot weaken the signed release pat
 test('published releases open a reviewed cask update pull request', () => {
   const workflow = readFileSync(join(repositoryRoot, '.github/workflows/update-homebrew-cask.yml'), 'utf8')
   assert.match(workflow, /release:\s*\n\s*types: \[published\]/)
+  assert.match(workflow, /if: github\.event\.release\.prerelease == false/)
   assert.match(workflow, /gh release download/)
   assert.match(workflow, /Casks\/parley\.rb/)
   assert.match(workflow, /brew style --cask Casks\/parley\.rb/)

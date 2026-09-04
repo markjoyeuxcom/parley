@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   cask:
+    if: github.event.release.prerelease == false
     name: Validate and propose cask
     runs-on: macos-latest
     env:
