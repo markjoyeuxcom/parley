@@ -43,6 +43,9 @@ jobs:
           PARLEY_RELEASE_TAG: ${{ inputs.tag }}
         run: npm run release:mac:beta
 
+      - name: Prove the packaged application reaches its event loop
+        run: npm run verify:launch:mac
+
       - name: Add companion and soak report to the verified checksum set
         run: |
           version="$(node -p "require('./package.json').version")"

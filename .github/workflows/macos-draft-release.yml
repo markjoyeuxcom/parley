@@ -74,6 +74,9 @@ jobs:
           PARLEY_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
         run: npm run release:mac
 
+      - name: Prove the packaged application reaches its event loop
+        run: npm run verify:launch:mac
+
       - name: Add companion and soak report to the verified checksum set
         run: |
           version="$(node -p "require('./package.json').version")"

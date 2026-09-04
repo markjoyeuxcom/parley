@@ -321,11 +321,20 @@ function swiftReleaseBinPath() {
   return bin
 }
 
-function sign(path, identity, { preserveEntitlements = false } = {}) {
-  const args = ['--force', '--sign', identity, '--options', 'runtime']
-  if (identity !== '-') args.push('--timestamp')
+export function codesignArguments(path, identity, { preserveEntitlements = false } = {}) {
+  const args = ['--force', '--sign', identity]
+  // Ad-hoc signatures do not carry a Team ID. Enabling hardened-runtime
+  // library validation on that host makes dyld reject the likewise ad-hoc
+  // Sparkle framework even though codesign --verify succeeds. Test betas are
+  // explicitly unnotarized; production Developer ID builds remain hardened.
+  if (identity !== '-') args.push('--options', 'runtime', '--timestamp')
   if (preserveEntitlements) args.push('--preserve-metadata=entitlements')
   args.push(path)
+  return args
+}
+
+function sign(path, identity, options = {}) {
+  const args = codesignArguments(path, identity, options)
   run('codesign', args)
 }
 
@@ -558,7 +567,7 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
   process.stdout.write(`Packaged ${basename(finalBundle)} ${version} (${build})\n`)
   process.stdout.write(`${finalBundle}\n${finalZip}\n${finalDMG}\n`)
   if (identity === '-') {
-    process.stdout.write('Signing: local ad hoc hardened runtime (not notarized)\n')
+    process.stdout.write('Signing: local ad hoc test beta (not hardened or notarized)\n')
   } else {
     process.stdout.write(`Signing: ${identity} (notarization is a separate release step)\n`)
   }

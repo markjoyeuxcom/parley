@@ -27,6 +27,7 @@ import {
   renderReleaseManifest,
   uninstallApplicationBundle,
 } from './native-macos-release.mjs'
+import { verifyExecutableLaunch } from './verify-native-macos-launch.mjs'
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -57,6 +58,7 @@ test('GitHub release automation is manual and can create only a draft', () => {
     /npm run test:soak -- --rounds 25 --output dist\/Parley-Ghostty-soak\.json/,
   )
   assert.equal(workflow.match(/Parley-Ghostty-soak\.json/g)?.length, 3)
+  assert.match(workflow, /npm run verify:launch:mac/)
 })
 
 test('unnotarized test beta is explicit and cannot weaken the signed release path', () => {
@@ -80,12 +82,37 @@ test('unnotarized test beta is explicit and cannot weaken the signed release pat
   assert.match(workflow, /workflow_dispatch:/)
   assert.doesNotMatch(workflow, /^\s+push:/m)
   assert.match(workflow, /npm run release:mac:beta/)
+  assert.match(workflow, /npm run verify:launch:mac/)
   assert.match(workflow, /npm run test:soak -- --rounds 25 --output dist\/Parley-Ghostty-soak\.json/)
   assert.match(workflow, /gh release create[\s\S]*--draft[\s\S]*--prerelease/)
   assert.doesNotMatch(workflow, /PARLEY_CODESIGN_IDENTITY/)
   assert.doesNotMatch(workflow, /SPARKLE_PRIVATE/)
   assert.doesNotMatch(workflow, /appcast\.xml/)
   assert.doesNotMatch(workflow, /parley\.rb/)
+})
+
+test('packaged launch check rejects an early dyld-style exit and stops a live app', async () => {
+  await assert.rejects(
+    verifyExecutableLaunch({
+      executable: process.execPath,
+      arguments: ['-e', 'process.stderr.write("Library not loaded: Sparkle\\n"); process.exit(134)'],
+      settleMilliseconds: 100,
+      shutdownMilliseconds: 500,
+    }),
+    /exited before the 100 ms launch window.*Library not loaded: Sparkle/s,
+  )
+
+  await assert.doesNotReject(
+    verifyExecutableLaunch({
+      executable: process.execPath,
+      arguments: [
+        '-e',
+        'process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000)',
+      ],
+      settleMilliseconds: 100,
+      shutdownMilliseconds: 500,
+    }),
+  )
 })
 
 test('published releases open a reviewed cask update pull request', () => {
