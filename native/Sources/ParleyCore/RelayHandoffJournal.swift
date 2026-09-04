@@ -83,6 +83,28 @@ public final class RelayHandoffJournal: @unchecked Sendable {
         }
     }
 
+    /// Human review mutations acknowledge success only after the append is
+    /// synced. A failed save leaves the previous projection and revision intact.
+    public func recordDurably(_ handoff: RelayHandoff) throws {
+        try lock.withLock {
+            do {
+                try appendLocked(handoff)
+            } catch {
+                storedError = error.localizedDescription
+                throw error
+            }
+            byID[handoff.id] = handoff
+            _ = pruneLocked()
+            eventCount += 1
+            storedError = nil
+            // Compaction is maintenance: the appended record is already durable.
+            if eventCount > maximumHandoffs * 8 {
+                do { try compactLocked() }
+                catch { storedError = error.localizedDescription }
+            }
+        }
+    }
+
     /// Permanently removes complete snapshots and rewrites the bounded journal
     /// atomically. The caller decides which records are safe to remove; this
     /// type deliberately knows nothing about live broker state.

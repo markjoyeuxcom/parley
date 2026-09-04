@@ -2488,8 +2488,10 @@ public final class RelayBroker: @unchecked Sendable {
             let writer = preserveFormatting ? contextSubmit : submit
             try writer(target.id, consultationPrompt(for: consultation))
             consultationCondition.lock()
-            transitionHandoffLocked(handoff.id, to: .delivered, origin: recordedOrigin)
-            transitionHandoffLocked(handoff.id, to: .waiting, origin: recordedOrigin)
+            if let active = consultationRecords[handoff.id], active.completion == nil {
+                transitionHandoffLocked(handoff.id, to: .delivered, origin: recordedOrigin)
+                transitionHandoffLocked(handoff.id, to: .waiting, origin: recordedOrigin)
+            }
             onSubmitted?()
             consultationCondition.broadcast()
             consultationCondition.unlock()
@@ -2500,6 +2502,10 @@ public final class RelayBroker: @unchecked Sendable {
                 text: "Parley could not submit the question: \(error.localizedDescription)"
             )
             consultationCondition.lock()
+            if case let .ask(completed)? = idempotencyRecords[scope]?.response {
+                consultationCondition.unlock()
+                return completed
+            }
             transitionHandoffLocked(
                 handoff.id,
                 to: .failed,
@@ -3198,8 +3204,13 @@ public final class RelayBroker: @unchecked Sendable {
         let now = Date()
         handoff.reviewedAt = hasReview ? now : nil
         handoff.reviewRevision = (handoff.reviewRevision ?? 0) + 1
+        do {
+            try handoffJournal?.recordDurably(handoff)
+        } catch {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 500, text: "Human review could not be saved: \(error.localizedDescription)")
+        }
         handoffRecords[handoff.id] = handoff
-        handoffJournal?.record(handoff)
         consultationCondition.broadcast()
         consultationCondition.unlock()
         return RelayTextResponse(status: 200, text: hasReview ? "Human review saved." : "Human review cleared.")
@@ -3424,7 +3435,8 @@ public final class RelayBroker: @unchecked Sendable {
                 to: .failed,
                 detail: "The original source or target pane is no longer available.",
                 failure: RelayFailureAssessment(retryDisposition: .unsupported, attention: .targetUnavailable),
-                origin: .human
+                origin: .human,
+                allowsSafeRetry: true
             )
             consultationCondition.unlock()
             return RelayTextResponse(status: 409, text: "The original source or target pane is no longer available.")
@@ -3445,7 +3457,8 @@ public final class RelayBroker: @unchecked Sendable {
             handoffID,
             to: .created,
             detail: "Retry requested by the person using Parley.",
-            origin: .human
+            origin: .human,
+            allowsSafeRetry: true
         )
         consultationCondition.broadcast()
         consultationCondition.unlock()
@@ -3713,14 +3726,14 @@ public final class RelayBroker: @unchecked Sendable {
             return nil
         }
         let consultation = record.consultation
-        guard livePanes.contains(where: { $0.id == consultation.sourcePaneID }) else {
+        guard livePanes.contains(where: { $0.id == consultation.sourcePaneID && $0.isStarted && !$0.isDead }) else {
             return AskLivenessFailure(
                 state: .interrupted,
                 status: 409,
                 message: "The consultation stopped because the requesting pane closed."
             )
         }
-        guard livePanes.contains(where: { $0.id == consultation.targetPaneID }) else {
+        guard livePanes.contains(where: { $0.id == consultation.targetPaneID && $0.isStarted && !$0.isDead }) else {
             return AskLivenessFailure(
                 state: .failed,
                 status: 410,
@@ -3847,14 +3860,14 @@ public final class RelayBroker: @unchecked Sendable {
         handoff: RelayHandoff,
         livePanes: [WorkbenchPane]
     ) -> AskLivenessFailure? {
-        guard livePanes.contains(where: { $0.id == handoff.sourcePaneID }) else {
+        guard livePanes.contains(where: { $0.id == handoff.sourcePaneID && $0.isStarted && !$0.isDead }) else {
             return AskLivenessFailure(
                 state: .interrupted,
                 status: 409,
                 message: "The delegation stopped because the initiating pane closed."
             )
         }
-        guard livePanes.contains(where: { $0.id == handoff.targetPaneID }) else {
+        guard livePanes.contains(where: { $0.id == handoff.targetPaneID && $0.isStarted && !$0.isDead }) else {
             return AskLivenessFailure(
                 state: .failed,
                 status: 410,
@@ -3995,9 +4008,13 @@ public final class RelayBroker: @unchecked Sendable {
         to state: RelayHandoffState,
         detail: String? = nil,
         failure: RelayFailureAssessment? = nil,
-        origin: RelayTransitionOrigin? = nil
+        origin: RelayTransitionOrigin? = nil,
+        allowsSafeRetry: Bool = false
     ) {
         guard var handoff = handoffRecords[handoffID] else { return }
+        let explicitRetry = allowsSafeRetry && handoff.canRetrySafely
+            && handoff.state == .failed && [.created, .failed].contains(state)
+        guard explicitRetry || ![.completed, .cancelled, .failed, .interrupted].contains(handoff.state) else { return }
         let now = Date()
         handoff.state = state
         handoff.updatedAt = now

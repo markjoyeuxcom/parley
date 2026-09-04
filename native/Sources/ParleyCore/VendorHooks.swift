@@ -178,8 +178,8 @@ public enum VendorHookAdapter {
     ) -> [[String: Any]] {
         [[
             "type": "command",
-            "exec": shimExecutable,
-            "args": ["signal", signal.rawValue],
+            "exec": "/bin/sh",
+            "args": ["-c", hookCommand(shimExecutable: shimExecutable, signal: signal)],
             "timeoutSec": 3,
         ]]
     }
@@ -191,7 +191,7 @@ public enum VendorHookAdapter {
     }
 
     private static func hookCommand(shimExecutable: String, signal: VendorHookSignal) -> String {
-        "\(shellQuote(shimExecutable)) signal \(signal.rawValue)"
+        "\(shellQuote(shimExecutable)) signal \(signal.rawValue) </dev/null >/dev/null 2>&1 || true"
     }
 
     private static func shellQuote(_ value: String) -> String {

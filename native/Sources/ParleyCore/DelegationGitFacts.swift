@@ -206,7 +206,11 @@ public enum DelegationGitFacts {
         returned: DelegationGitSnapshot?
     ) -> DelegationGitComparison? {
         guard let delegation, let returned, delegation.isAvailable, returned.isAvailable else { return nil }
-        let changed = Set(delegation.dirtyPaths).symmetricDifference(Set(returned.dirtyPaths)).sorted()
+        let before = Set(delegation.dirtyPaths), after = Set(returned.dirtyPaths)
+        // Absence is evidence only when the opposite snapshot is complete.
+        let removed = returned.isTruncated ? Set<String>() : before.subtracting(after)
+        let added = delegation.isTruncated ? Set<String>() : after.subtracting(before)
+        let changed = removed.union(added).sorted()
         return DelegationGitComparison(
             changedPaths: Array(changed.prefix(DelegationGitSnapshot.maximumPaths)),
             changedPathCount: changed.count,

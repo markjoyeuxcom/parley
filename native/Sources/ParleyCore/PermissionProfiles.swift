@@ -342,7 +342,7 @@ public enum PermissionProfileAdapter {
         case .claude:
             let mode = switch write {
             case .allow: "acceptEdits"
-            case .requireApproval: "manual"
+            case .requireApproval: "default"
             case .deny: "plan"
             }
             arguments = ["--permission-mode", mode] + rootArguments

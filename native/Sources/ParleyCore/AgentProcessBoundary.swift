@@ -45,23 +45,26 @@ public struct AgentProcessBoundary: Sendable {
             fileManager: fileManager
         )
 
-        let application = Self.schemeLiteral(Self.canonical(applicationDirectory))
-        let rules = Self.schemeLiteral(Self.canonical(protocolDirectory))
-        let shim = Self.schemeLiteral(Self.canonical(shimDirectory))
-        let transport = Self.schemeLiteral(Self.canonical(transportDirectory))
-        let endpoint = Self.schemeLiteral(Self.canonical(endpointDirectory))
-        let controlDenial = protectedControlEndpoint.map {
-            "(deny network-outbound (literal \(Self.schemeLiteral(Self.canonical($0)))))"
-        } ?? ""
+        let applications = Set(([applicationDirectory] + ParleyRuntime.controlDirectories()).map { Self.canonical($0) })
+        let transports = Set(([transportDirectory] + applications.map {
+            RelayFileTransport.runtimeDirectory(applicationDirectory: URL(fileURLWithPath: $0))
+        }).map { Self.canonical($0) })
+        let controls = Set(applications.map { URL(fileURLWithPath: $0).appendingPathComponent("relay.sock").path }
+            + (protectedControlEndpoint.map { [Self.canonical($0)] } ?? []))
+        let fileDenials = applications.union(transports).sorted().map {
+            "(deny file-read* file-write* (subpath \(Self.schemeLiteral($0))))"
+        }.joined(separator: "\n")
+        let controlDenials = controls.sorted().map {
+            "(deny network-outbound (literal \(Self.schemeLiteral($0))))"
+        }.joined(separator: "\n")
         let profile = """
         (version 1)
         (allow default)
-        (deny file-read* file-write* (subpath \(application)))
-        (allow file-read* (subpath \(rules)))
-        (allow file-read* (subpath \(shim)))
-        \(controlDenial)
-        (deny file-read* file-write* (subpath \(transport)))
-        (allow file-read* file-write* (subpath \(endpoint)))
+        \(fileDenials)
+        \(controlDenials)
+        (allow file-read* (subpath \(Self.schemeLiteral(Self.canonical(protocolDirectory)))))
+        (allow file-read* (subpath \(Self.schemeLiteral(Self.canonical(shimDirectory)))))
+        (allow file-read* file-write* (subpath \(Self.schemeLiteral(Self.canonical(endpointDirectory)))))
         """
         arguments = [executable.path, "-p", profile]
     }

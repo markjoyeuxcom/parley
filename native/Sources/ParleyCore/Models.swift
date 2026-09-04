@@ -414,7 +414,7 @@ public enum ParleyWorkbenchError: LocalizedError, Equatable {
         case .cannotCloseLastWorkspace:
             "Keep one workspace open so the workbench remains available."
         case .copilotTrustRequired:
-            "Copilot needs folder trust before it can receive an Ask. Focus its pane, approve the folder if you trust it, then retry."
+            "Copilot needs folder trust before it can receive handoffs. Resolve its folder-trust prompt, then choose Confirm Copilot Folder Trust from the pane menu and retry."
         case let .unsafeRelayTarget(name):
             "\(name) is not ready for safe relay input. Focus it and wait for its prompt, or restart the pane if its Relay badge is stale."
         }

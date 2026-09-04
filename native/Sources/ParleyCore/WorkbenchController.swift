@@ -58,7 +58,10 @@ public final class WorkbenchController: @unchecked Sendable {
         var panes: [WorkbenchPane]
         var activity: [String: Date]
         var ownerPID: Int32
+        var ownerSessionID: String?
     }
+    private static let processSessionID = UUID().uuidString
+
     private struct AgentLaunchRequest {
         let generation: Int
         let mode: AgentLaunchMode
@@ -76,6 +79,7 @@ public final class WorkbenchController: @unchecked Sendable {
     private var document: Document
     private var relayRuntime: RelayRuntime?
     private var terminalTransport: PaneTerminalTransport?
+    private var copilotTrustConfirmations: [String: Int] = [:]
     private var agentLaunchRequests: [String: AgentLaunchRequest] = [:]
 
     public init(
@@ -119,7 +123,7 @@ public final class WorkbenchController: @unchecked Sendable {
         try requireDirectory(cwd)
         try lock.withLock {
             let currentPID = ProcessInfo.processInfo.processIdentifier
-            if document.ownerPID != currentPID {
+            if document.ownerPID != currentPID || document.ownerSessionID != Self.processSessionID {
                 // A previous app process cannot have surviving Ghostty
                 // surfaces. Preserve layout and identity, but never claim its
                 // agent sessions are still live.
@@ -142,6 +146,7 @@ public final class WorkbenchController: @unchecked Sendable {
                     }
                 }
                 document.ownerPID = currentPID
+                document.ownerSessionID = Self.processSessionID
             }
             // Surface attachment is process-local and can never be restored
             // from persisted metadata.
@@ -441,6 +446,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 selection: document.panes[index].permissionSelection
             )
             terminalTransport?.terminate(paneID)
+            copilotTrustConfirmations[paneID] = nil
             markStartedLocked(index: index, profile: profile)
             if document.panes[index].kind.isAgent {
                 agentLaunchRequests[paneID] = AgentLaunchRequest(
@@ -506,6 +512,7 @@ public final class WorkbenchController: @unchecked Sendable {
             }
             guard document.panes[index].kind.isAgent, document.panes[index].isStarted else { return }
             terminalTransport?.terminate(paneID)
+            copilotTrustConfirmations[paneID] = nil
             agentLaunchRequests[paneID] = nil
             document.panes[index].launchGeneration &+= 1
             document.panes[index].isStarted = false
@@ -530,6 +537,7 @@ public final class WorkbenchController: @unchecked Sendable {
             guard document.panes.count > 1 else { throw ParleyWorkbenchError.cannotCloseLastPane }
             let workspaceID = document.panes[index].workspaceID
             terminalTransport?.terminate(paneID)
+            copilotTrustConfirmations[paneID] = nil
             agentLaunchRequests[paneID] = nil
             document.panes.remove(at: index)
             document.activity[paneID] = nil
@@ -549,6 +557,7 @@ public final class WorkbenchController: @unchecked Sendable {
             let paneIDs = document.panes.filter { $0.workspaceID == workspace.workspaceID }.map(\.id)
             for paneID in paneIDs {
                 terminalTransport?.terminate(paneID)
+                copilotTrustConfirmations[paneID] = nil
                 agentLaunchRequests[paneID] = nil
                 try relayRuntime?.credentials.forget(paneID)
                 document.activity[paneID] = nil
@@ -565,6 +574,7 @@ public final class WorkbenchController: @unchecked Sendable {
             for pane in document.panes { try relayRuntime?.credentials.forget(pane.id) }
             terminalTransport?.terminateAll()
             agentLaunchRequests.removeAll()
+            copilotTrustConfirmations.removeAll()
             for index in document.panes.indices {
                 document.panes[index].launchGeneration &+= 1
                 document.panes[index].isStarted = false
@@ -577,6 +587,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 document.panes[index].vendorRuntimeSignaledAt = nil
             }
             document.ownerPID = 0
+            document.ownerSessionID = nil
             try persistLocked()
         }
     }
@@ -737,6 +748,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 let oldIDs = document.panes.filter { $0.workspaceID == replacement.workspaceID }.map(\.id)
                 for id in oldIDs {
                     terminalTransport?.terminate(id)
+                    copilotTrustConfirmations[id] = nil
                     agentLaunchRequests[id] = nil
                     try relayRuntime?.credentials.forget(id)
                 }
@@ -765,7 +777,16 @@ public final class WorkbenchController: @unchecked Sendable {
             ]
             var argv: [String]
             if pane.kind == .shell {
-                argv = [loginShellExecutable().path, "-l"]
+                // Ghostty overlays envVars on its process environment. Remove
+                // inherited authority before the login shell starts.
+                let metadataKeys = Set(launchEnvironment.keys)
+                let inheritedKeys = Set(ProcessInfo.processInfo.environment.keys.filter { $0.hasPrefix("PARLEY_") })
+                    .union(["PARLEY_RELAY_TOKEN", "PARLEY_PROTOCOL_VERSION", "PARLEY_RUNTIME", "TMUX", "TMUX_PANE"])
+                    .subtracting(metadataKeys)
+                argv = ["/usr/bin/env"] + inheritedKeys.sorted().flatMap { ["-u", $0] }
+                if let marker = relayRuntime?.runtimeMarker { argv += ["PARLEY_RUNTIME=\(marker)"] }
+                launchEnvironment["PATH"] = environment["PATH"] ?? "/usr/bin:/bin"
+                argv += [loginShellExecutable().path, "-l"]
             } else {
                 guard let relayRuntime else {
                     throw ParleyWorkbenchError.commandFailed(
@@ -786,6 +807,7 @@ public final class WorkbenchController: @unchecked Sendable {
                     applicationDirectory: applicationDirectory,
                     protocolDirectory: protocolDirectory,
                     shimDirectory: relayRuntime.shimDirectory,
+                    protectedControlEndpoint: applicationDirectory.appendingPathComponent("relay.sock"),
                     transportDirectory: relayRuntime.transportDirectory,
                     paneToken: token,
                     fileManager: fileManager
@@ -828,7 +850,12 @@ public final class WorkbenchController: @unchecked Sendable {
 
     public func terminalDidChangeWorkingDirectory(paneID: String, path: String) throws {
         guard path.hasPrefix("/") else { return }
-        try updatePaneRuntime(paneID: paneID) { $0.cwd = path }
+        try lock.withLock {
+            if document.panes.first(where: { $0.id == paneID })?.cwd != path {
+                copilotTrustConfirmations.removeValue(forKey: paneID)
+            }
+            try updatePaneRuntime(paneID: paneID) { $0.cwd = path }
+        }
     }
 
     public func recordVendorSignal(
@@ -852,6 +879,7 @@ public final class WorkbenchController: @unchecked Sendable {
                     "\(pane.kind.label) has no supported Parley hook for \(signal.rawValue)."
                 )
             }
+            if signal == .sessionEnded { copilotTrustConfirmations.removeValue(forKey: paneID) }
             document.panes[index].vendorRuntimeState = signal.runtimeState(
                 after: document.panes[index].vendorRuntimeState
             )
@@ -872,6 +900,7 @@ public final class WorkbenchController: @unchecked Sendable {
     }
 
     public func terminalDidClose(paneID: String, processAlive: Bool, exitStatus: Int? = nil) throws {
+        if !processAlive { lock.withLock { copilotTrustConfirmations[paneID] = nil } }
         try updatePaneRuntime(paneID: paneID) {
             $0.isDead = !processAlive
             $0.exitStatus = processAlive ? nil : exitStatus
@@ -904,6 +933,19 @@ public final class WorkbenchController: @unchecked Sendable {
         lock.withLock { document.activity[paneID] = Date() }
     }
 
+    /// Native UI only: confirms the person has resolved Copilot's own folder
+    /// trust prompt. Never grants vendor permissions or survives a new launch.
+    public func confirmCopilotFolderTrust(paneID: String, expectedGeneration: Int, expectedFolder: String) throws {
+        try lock.withLock {
+            guard let pane = document.panes.first(where: { $0.id == paneID }),
+                  pane.kind == .copilot, pane.isStarted, !pane.isDead,
+                  pane.launchGeneration == expectedGeneration, pane.cwd == expectedFolder else {
+                throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
+            }
+            copilotTrustConfirmations[paneID] = expectedGeneration
+        }
+    }
+
     private func requireRelayPane(_ paneID: String) throws -> WorkbenchPane {
         guard let pane = try listPanes().first(where: { $0.id == paneID }) else {
             throw ParleyWorkbenchError.paneNotFound(paneID)
@@ -911,6 +953,10 @@ public final class WorkbenchController: @unchecked Sendable {
         guard pane.kind.isAgent, pane.isStarted, !pane.isDead,
               pane.relayEnabled, pane.hasCurrentProtocol, pane.inputAvailable else {
             throw ParleyWorkbenchError.unsafeRelayTarget(pane.displayName)
+        }
+        if pane.kind == .copilot,
+           lock.withLock({ copilotTrustConfirmations[pane.id] }) != pane.launchGeneration {
+            throw ParleyWorkbenchError.copilotTrustRequired
         }
         return pane
     }
@@ -997,6 +1043,7 @@ public final class WorkbenchController: @unchecked Sendable {
     }
 
     private func markStartedLocked(index: Int, profile: EffectivePermissionProfile?) {
+        copilotTrustConfirmations[document.panes[index].id] = nil
         document.panes[index].launchGeneration &+= 1
         document.panes[index].isStarted = true
         document.panes[index].isDead = false
@@ -1105,6 +1152,11 @@ public final class WorkbenchController: @unchecked Sendable {
         var scrubbed = source
         for key in source.keys where key.hasPrefix("PARLEY_") {
             scrubbed[key] = nil
+        }
+        let managedBins = Set(ParleyRuntime.controlDirectories().map { $0.appendingPathComponent("bin").path })
+        if let path = scrubbed["PATH"] {
+            scrubbed["PATH"] = path.split(separator: ":", omittingEmptySubsequences: false)
+                .filter { !managedBins.contains(String($0)) }.joined(separator: ":")
         }
         scrubbed["TMUX"] = nil
         scrubbed["TMUX_PANE"] = nil

@@ -73,6 +73,11 @@ public struct ParleyRuntime: Equatable, Sendable {
         return make(mode: mode, homeDirectory: homeDirectory)
     }
 
+    /// Both runtimes remain protected even when only one currently exists.
+    public static func controlDirectories(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> [URL] {
+        ParleyRuntimeMode.allCases.map { make(mode: $0, homeDirectory: homeDirectory).applicationDirectory }
+    }
+
     public static func make(mode: ParleyRuntimeMode, homeDirectory: URL) -> ParleyRuntime {
         let support = homeDirectory
             .appendingPathComponent("Library/Application Support", isDirectory: true)

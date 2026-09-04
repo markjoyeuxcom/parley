@@ -35,7 +35,7 @@ const MAXIMUM_ATTENTION_BYTES = 128_000
 const MAXIMUM_ATTENTION_AGE_MS = 30_000
 const AGENT_KINDS = new Set(['claude', 'codex', 'agy', 'copilot'])
 const ATTENTION_REASONS = new Set(['returnedResult', 'humanInputRequired', 'interrupted'])
-const PANE_ID = /^%[0-9]{1,15}$/
+const PANE_ID = /^(?:%[0-9]{1,15}|pane-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/
 const WORKSPACE_ID = DURABLE_WORKSPACE_ID
 const HANDOFF_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/
 

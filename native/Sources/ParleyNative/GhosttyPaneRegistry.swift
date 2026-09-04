@@ -164,11 +164,14 @@ final class GhosttyPaneRegistry {
         guard let workbench else {
             throw ParleyWorkbenchError.commandFailed("Parley's Ghostty workbench is unavailable.")
         }
-        let launch = try workbench.launchConfiguration(for: paneID)
-        if let existing = entries[paneID], existing.generation == launch.generation {
+        guard let pane = try workbench.listPanes().first(where: { $0.id == paneID }) else {
+            throw ParleyWorkbenchError.paneNotFound(paneID)
+        }
+        if let existing = entries[paneID], existing.generation == pane.launchGeneration {
             existing.view.setSurfaceVisible(true)
             return existing.view
         }
+        let launch = try workbench.launchConfiguration(for: paneID)
         stop(paneID: paneID)
 
         let view = AppTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 420))

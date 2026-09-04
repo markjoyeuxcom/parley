@@ -261,7 +261,9 @@ Multiline payloads travel through Ghostty paste as one text operation.
 Submission is a separate Enter key event after paste succeeds. Never send raw
 newlines as key events. Copilot may require briefly focusing the target for
 paste/submit and restoring the person's previous pane; refuse delivery at its
-folder-trust prompt.
+folder-trust prompt. Copilot handoffs remain blocked until the person confirms
+**Confirm Copilot Folder Trust** in its pane menu for that launch. Hooks cannot
+grant this confirmation.
 
 ## Process and capability boundary
 

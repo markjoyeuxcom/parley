@@ -70,9 +70,16 @@ class ContextBasket {
     return entries.length
   }
 
-  accept(folder, acknowledgement) {
-    if (acknowledgement?.state !== 'accepted') return 0
-    return this.clear(folder)
+  accept(folder, acknowledgement, submittedEntries) {
+    if (acknowledgement?.state !== 'accepted' || !submittedEntries) return 0
+    // Entries are replaced, never mutated. Object identity is the exact
+    // in-memory capture revision submitted with this acknowledged request.
+    const submitted = new Set(submittedEntries)
+    const current = this.entries(folder)
+    const remaining = current.filter(entry => !submitted.has(entry))
+    if (remaining.length === 0) this.entriesByFolder.delete(folder)
+    else this.entriesByFolder.set(folder, remaining)
+    return current.length - remaining.length
   }
 }
 

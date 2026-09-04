@@ -235,6 +235,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var coreAvailable = false
     @Published private(set) var terminalAvailable = false
     @Published private(set) var coreError: String?
+    @Published private(set) var historyPersistenceError: String?
     @Published private(set) var terminalError: String?
     @Published private(set) var notificationWorkspaceNames: Set<String> = []
     @Published private(set) var dismissedHandoffIDs: Set<String> = []
@@ -2410,6 +2411,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshStatusCenterQuietly() {
+        historyPersistenceError = residentCore?.historyPersistenceError
         do {
             try refresh()
             guard let relayClient else { return }
@@ -5677,6 +5679,19 @@ final class AppModel: ObservableObject {
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    func confirmCopilotFolderTrust(_ pane: WorkbenchPane) {
+        let alert = NSAlert()
+        alert.messageText = "Has Copilot finished folder trust?"
+        alert.informativeText = "First resolve the folder-trust prompt in \(pane.displayName). Confirm only when Copilot is showing its normal input prompt for \(pane.cwd). This enables Parley handoffs for this session; Copilot still owns its permissions."
+        alert.addButton(withTitle: "Enable Handoffs")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try controller?.confirmCopilotFolderTrust(paneID: pane.id, expectedGeneration: pane.launchGeneration, expectedFolder: pane.cwd)
+            try refresh()
+        } catch { NSAlert(error: error).runModal() }
     }
 
     func restart(_ pane: WorkbenchPane) {

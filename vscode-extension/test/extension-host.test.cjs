@@ -24,7 +24,7 @@ test('extension host activation registers the unified bridge and privacy-safe di
     attentionCount: 1,
     workspaces: [{ id: 'workspace-11111111-1111-4111-8111-111111111111', name: 'Project', attentionCount: 1 }],
     panes: [{
-      id: '%2',
+      id: 'pane-11111111-1111-4111-8111-111111111111',
       name: 'Codex',
       kind: 'codex',
       workspaceID: 'workspace-11111111-1111-4111-8111-111111111111',
@@ -211,5 +211,40 @@ test('extension host activation registers the unified bridge and privacy-safe di
     delete require.cache[extensionPath]
     Module._load = originalLoad
     fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('saving selected files stays inside the selected canonical workspace', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'parley-save-roots-'))
+  const saved = []
+  const folders = ['a', 'b'].map(name => {
+    const folder = path.join(root, name)
+    fs.mkdirSync(folder)
+    fs.writeFileSync(path.join(folder, 'same.txt'), 'fixture')
+    return fs.realpathSync(folder)
+  })
+  const documents = folders.map(folder => ({
+    isDirty: true, uri: { scheme: 'file', fsPath: path.join(folder, 'same.txt') },
+    save: async () => { saved.push(folder); return true },
+  }))
+  const vscode = {
+    workspace: { textDocuments: documents, getWorkspaceFolder: uri => ({ uri: { scheme: 'file', fsPath: path.dirname(uri.fsPath) } }) },
+    window: { showWarningMessage: async () => 'Save and Continue' },
+  }
+  const filename = require.resolve('../extension.cjs')
+  const fixture = new Module(filename, module)
+  fixture.filename = filename
+  fixture.paths = module.paths
+  const originalLoad = Module._load
+  try {
+    Module._load = function(request, parent, isMain) {
+      return request === 'vscode' ? vscode : originalLoad.call(this, request, parent, isMain)
+    }
+    fixture._compile(fs.readFileSync(filename, 'utf8') + '\nmodule.exports.saveSelectedFiles = saveSelectedFiles\n', filename)
+    await fixture.exports.saveSelectedFiles([{ items: [{ kind: 'currentFile', file: 'same.txt' }] }], folders[0])
+    assert.deepEqual(saved, [folders[0]])
+  } finally {
+    Module._load = originalLoad
+    fs.rmSync(root, { recursive: true, force: true })
   }
 })

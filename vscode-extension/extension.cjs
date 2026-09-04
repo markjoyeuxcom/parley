@@ -245,7 +245,7 @@ async function buildContextPack(resource, selectedResources, options = {}) {
   applyPreferredCandidates(candidates, options.preferred)
   const selected = await chooseContextCandidates(candidates)
   if (!selected) return
-  await saveSelectedFiles(selected)
+  await saveSelectedFiles(selected, folder.uri.fsPath)
   await stageAndOpen(folder.uri.fsPath, selected.flatMap((candidate) => candidate.items))
 }
 
@@ -271,7 +271,7 @@ async function buildSCMContext(kind, resource, ...additionalResources) {
   }))
   const selected = await chooseContextCandidates(candidates)
   if (!selected) return
-  await saveSelectedFiles(selected)
+  await saveSelectedFiles(selected, folder.uri.fsPath)
   await stageAndOpen(folder.uri.fsPath, selected.flatMap((candidate) => candidate.items))
 }
 
@@ -350,9 +350,9 @@ async function reviewContextBasket(basket, refreshBasket) {
   const folder = await chooseBasketFolder(basket, 'Choose a Context Basket to review in Parley')
   if (!folder) return
   const entries = basket.entries(folder)
-  await saveSelectedFiles([{ items: entries.map((entry) => entry.item) }])
+  await saveSelectedFiles([{ items: entries.map((entry) => entry.item) }], folder)
   const acknowledgement = await stageAndOpen(folder, entries.map((entry) => entry.item))
-  basket.accept(folder, acknowledgement)
+  basket.accept(folder, acknowledgement, entries)
   refreshBasket()
 }
 
@@ -559,7 +559,8 @@ function chooseContextCandidates(candidates) {
   })
 }
 
-async function saveSelectedFiles(selected) {
+async function saveSelectedFiles(selected, folder) {
+  const canonicalFolder = fs.realpathSync(folder)
   const selectedFiles = new Set(
     selected.flatMap((candidate) => candidate.items)
       .filter((item) => item.kind === 'currentFile')
@@ -568,7 +569,8 @@ async function saveSelectedFiles(selected) {
   const dirty = vscode.workspace.textDocuments.filter((document) => {
     if (!document.isDirty || document.uri.scheme !== 'file') return false
     try {
-      return selectedFiles.has(localDocumentSource(document.uri).relativeFile)
+      const source = localDocumentSource(document.uri)
+      return source.folder === canonicalFolder && selectedFiles.has(source.relativeFile)
     } catch {
       return false
     }

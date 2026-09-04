@@ -20,7 +20,7 @@ launching a vendor CLI or spending subscription quota.
 
 | Finding | Current status |
 | --- | --- |
-| Agent access to Parley control authority | **Mitigated for vendor panes.** Every vendor process tree receives a deny-first Seatbelt profile and only its generated protocol files, managed shim and capability-named endpoint. Shell panes remain trusted, unsandboxed human shells. |
+| Agent access to Parley control authority | **Mitigated for vendor panes.** Every vendor process tree receives an allow-default Seatbelt profile with targeted file and socket denials for both runtimes; only its generated protocol files, managed shim and capability-named endpoint are reopened. Shell panes remain trusted, unsandboxed human shells. |
 | Sibling pane capability reuse | **Mitigated.** Each pane has a durable random credential, and the filesystem transport rejects a valid token presented through another pane's endpoint. |
 | Relayed model output can influence another model | **Accepted product risk.** Messages are attributed and targets are explicit, but model-authored content is untrusted. Permission prompts remain vendor-owned and `paste` allows review before submission. |
 | Terminal submission could merge multiline payloads with Enter events | **Fixed.** Ghostty paste carries the payload as one text operation. Submission is a distinct Enter event after paste succeeds. |
@@ -65,8 +65,9 @@ retained Ghostty surfaces without starting a vendor CLI.
 - Parley does not defend against root, the logged-in Mac owner deliberately
   reading local state, a compromised vendor binary or peer software with equal
   user authority.
-- Seatbelt contains Parley-launched vendor trees; it is not account-wide process
-  isolation.
+- Seatbelt applies to Parley-launched vendor trees; it is not account-wide process
+  isolation or complete hostile-code containment. Brokered processes launched
+  through other macOS services require a separate threat model.
 - Prompt injection cannot be eliminated by attribution. Keep vendor permission
   prompts enabled, use restrictive profiles and choose unsent paste when human
   review is required.

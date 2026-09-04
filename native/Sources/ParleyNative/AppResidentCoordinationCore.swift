@@ -15,6 +15,9 @@ private enum AppResidentCoordinationCoreError: LocalizedError {
 final class AppResidentCoordinationCore {
     let client: RelayCoreClient
 
+    private let handoffJournal: RelayHandoffJournal
+    var historyPersistenceError: String? { handoffJournal.lastError }
+
     private let server: RelayHTTPServer
     private let agentTransport: RelayFileTransport
     private let pidFile: URL
@@ -56,6 +59,7 @@ final class AppResidentCoordinationCore {
             file: applicationDirectory.appendingPathComponent("handoffs.jsonl"),
             maximumHandoffs: historyRetentionPolicy.maximumRecords
         )
+        self.handoffJournal = handoffJournal
         let activityJournal = try RelayActivityJournal(
             file: applicationDirectory.appendingPathComponent("activity-events.jsonl"),
             maximumEvents: historyRetentionPolicy.maximumRecords

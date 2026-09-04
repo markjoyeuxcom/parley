@@ -2,7 +2,7 @@
   "name": "parley-companion",
   "displayName": "Parley Companion",
   "description": "Collect explicit editor context and navigate Parley's supervised cross-vendor collaboration.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "markjoyeuxcom",
   "license": "Apache-2.0",
   "repository": {
@@ -22,7 +22,7 @@
   "main": "./extension.cjs",
   "scripts": {
     "test": "node --test test/contracts.test.cjs test/context-basket.test.cjs test/extension-host.test.cjs && node --check extension.cjs && node --check companion-model.cjs",
-    "package": "vsce package --out ../dist/Parley-Companion-0.1.0.vsix"
+    "package": "vsce package --out ../dist/Parley-Companion-0.1.1.vsix"
   },
   "activationEvents": [
     "onStartupFinished",

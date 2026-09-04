@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "15"
+    public static let version = "16"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -90,6 +90,10 @@ public enum AgentProtocol {
       automation policy is authoritative; never work around a refusal. Never
       start another Parley instance or attempt to control another pane except
       through the authenticated `parley` commands above.
+
+    Copilot delivery requires the person to resolve its folder-trust prompt and
+    confirm Copilot Folder Trust in its pane menu for the current session.
+    Hooks remain advisory and never grant this confirmation.
 
     The latest explicit user instruction controls whether a handoff is sent or
     left as a draft. Parley's command result is authoritative about what happened.

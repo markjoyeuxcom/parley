@@ -52,7 +52,10 @@ test('GitHub release automation is manual and can create only a draft', () => {
   assert.match(workflow, /PARLEY_RELEASE_TAG/)
   assert.match(workflow, /npm ci --prefix vscode-extension/)
   assert.match(workflow, /npm run package:vscode/)
-  assert.match(workflow, /Parley-Companion-0\.1\.0\.vsix/)
+  const companion = JSON.parse(readFileSync(new URL('../vscode-extension/package.json', import.meta.url), 'utf8'))
+  const companionAsset = `Parley-Companion-${companion.version}.vsix`
+  assert.ok(workflow.includes(companionAsset))
+  assert.ok(companion.scripts.package.endsWith(companionAsset))
   assert.match(
     workflow,
     /npm run test:soak -- --rounds 25 --output dist\/Parley-Ghostty-soak\.json/,
