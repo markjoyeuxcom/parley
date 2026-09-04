@@ -253,7 +253,7 @@ struct PermissionProfilePickerView: View {
                         .truncationMode(.middle)
                     if let badge {
                         Text(badge)
-                            .font(.system(size: 8, weight: .semibold))
+                            .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(checked ? Color.accentColor : Color.secondary)
                     }
                 }

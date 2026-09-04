@@ -27,32 +27,8 @@ struct ContentView: View {
                 }
                 toolbar
                 Divider()
-                if model.focusCanvasPaneID != nil {
-                    focusCanvasStrip
-                    Divider()
-                }
-                if let collision = model.activeWorktreeWriterCollisions.first {
-                    worktreeWriterNotice(collision, additional: model.activeWorktreeWriterCollisions.count - 1)
-                    Divider()
-                }
-                if model.connectionState == .coreDisconnected {
-                    connectionNotice
-                    Divider()
-                }
-                if model.terminalAvailable, model.activePaneState != .running, model.activePaneState != .empty {
-                    paneNotice
-                    Divider()
-                }
-                if let recipe = model.activeRecipeRun {
-                    recipeRunStrip(recipe)
-                    Divider()
-                }
-                if let workflow = model.activeSupervisedWorkflow {
-                    supervisedWorkflowStrip(workflow)
-                    Divider()
-                }
-                if let activity = model.primaryActivity {
-                    activityStrip(activity)
+                if let top = noticeLane.first {
+                    noticeLaneView(top: top, lane: noticeLane)
                     Divider()
                 }
                 if model.handoffComposerDraft != nil {
@@ -66,6 +42,9 @@ struct ContentView: View {
                 terminal
                 Divider()
                 workbenchStatusBar
+                    .sheet(item: paneChoiceRequest) { request in
+                        PaneChoiceSheet(model: model, request: request)
+                    }
             }
             if model.collaborationDockVisible {
                 collaborationDock
@@ -356,7 +335,7 @@ struct ContentView: View {
                         }
                     } label: {
                         Image(systemName: foldersExpanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 8, weight: .semibold))
+                            .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(.secondary)
                             .frame(width: 17, height: 22)
                     }
@@ -477,12 +456,12 @@ struct ContentView: View {
                         .truncationMode(.middle)
                     if isNewPaneFolder {
                         Text("NEW PANES")
-                            .font(.system(size: 7, weight: .semibold))
+                            .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(Color.accentColor)
                     }
                 }
                 Text(displayPath)
-                    .font(.system(size: 8))
+                    .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -1309,7 +1288,7 @@ struct ContentView: View {
                     .truncationMode(.middle)
                 if let marker = model.runtime.visibleMarker {
                     Text(marker)
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
                         .foregroundStyle(Color.orange)
                 }
             }
@@ -1323,20 +1302,21 @@ struct ContentView: View {
     private var workbenchStatusBar: some View {
         HStack(spacing: 10) {
             Circle()
-                .fill(connectionStatusColor)
+                .fill(ChromeColor.connection(model.connectionState))
                 .frame(width: 6, height: 6)
                 .accessibilityHidden(true)
             Text(WorkbenchChromeProjection.connectionLabel(model.connectionState))
-                .foregroundStyle(connectionStatusColor)
+                .foregroundStyle(model.connectionState == .connected ? Color.secondary : ChromeColor.connection(model.connectionState))
             Text("Protocol \(AgentProtocol.version)")
             Text("\(model.visiblePanes.count) pane\(model.visiblePanes.count == 1 ? "" : "s")")
             if let pane = model.activePane {
-                Rectangle()
-                    .fill(paneFocusColor(pane.kind))
-                    .frame(width: 3, height: 13)
+                Text(ChromeIdentity.monogram(pane.kind))
+                    .font(ChromeFont.chip)
                     .accessibilityHidden(true)
                 Text(pane.displayName)
                     .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 if let role = pane.role {
                     Text("@\(role)")
                         .foregroundStyle(Color.accentColor)
@@ -1345,91 +1325,23 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 6)
+            if !model.workspaceHandoffs.isEmpty {
+                activityHistoryMenu
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+            }
             Button("⌘K Actions", action: model.showCommandPalette)
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .help("Open the Command Palette")
                 .accessibilityLabel("Open Command Palette")
         }
-        .font(.system(size: 9, weight: .medium, design: .monospaced).monospacedDigit())
+        .font(ChromeFont.secondary.monospacedDigit())
+        .foregroundStyle(.secondary)
         .padding(.horizontal, 9)
         .frame(height: 25)
         .background(Color(nsColor: .controlBackgroundColor))
         .accessibilityElement(children: .contain)
-    }
-
-    private var connectionStatusColor: Color {
-        switch model.connectionState {
-        case .connected: .green
-        case .coreDisconnected: .orange
-        case .terminalDisconnected: .red
-        }
-    }
-
-    private func recipeRunStrip(_ run: ActiveRecipeRun) -> some View {
-        HStack(spacing: 8) {
-            Text("LEAD")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
-            Text("\(run.recipeName) → \(run.leadName)")
-                .font(.system(size: 10, weight: .medium))
-                .lineLimit(1)
-            Text("SUBMITTED")
-                .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                .foregroundStyle(Color.accentColor)
-            Spacer(minLength: 8)
-            Button("Stop…") { model.interruptActiveRecipeRun() }
-                .accessibilityLabel("Interrupt workspace lead")
-                .accessibilityHint("Send Control-C after explicit confirmation")
-            Button {
-                model.dismissActiveRecipeRun()
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .accessibilityLabel("Dismiss submitted recipe notice")
-        }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .padding(.horizontal, 12)
-        .frame(height: 31)
-        .background(Color.accentColor.opacity(0.055))
-        .help(run.instructions)
-        .accessibilityElement(children: .contain)
-    }
-
-    private func supervisedWorkflowStrip(_ run: SupervisedWorkflowRun) -> some View {
-        HStack(spacing: 8) {
-            Text("ORCHESTRATION")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
-            Text(run.mode.label.uppercased())
-                .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                .foregroundStyle(run.mode == .automatic ? Color.accentColor : Color.secondary)
-            Text(run.phase.label)
-                .font(.system(size: 10, weight: .medium))
-                .lineLimit(1)
-            if run.phase == .awaitingImplementationApproval || run.phase == .awaitingCompletionApproval {
-                Text("HUMAN CHECKPOINT")
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.orange)
-            }
-            Spacer(minLength: 8)
-            Button("Open") { model.presentSupervisedWorkflow() }
-            Button("End…", role: .destructive) { model.interruptSupervisedWorkflow() }
-        }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .padding(.horizontal, 12)
-        .frame(height: 31)
-        .background(Color.accentColor.opacity(0.055))
-        .help("\(run.name) · \(run.phase.label)")
-        .accessibilityElement(children: .contain)
-    }
-
-    private var focusCanvasStrip: some View {
-        FocusCanvasStrip(model: model)
     }
 
     private var handoffComposer: some View {
@@ -1442,109 +1354,177 @@ struct ContentView: View {
         }
     }
 
-    private func activityStrip(_ handoff: RelayHandoff) -> some View {
-        ViewThatFits(in: .horizontal) {
-            wideActivityStrip(handoff)
-            compactActivityStrip(handoff)
+    // MARK: Notice lane
+
+    /// The pane choice sheet belongs to the Context Pack window while that
+    /// window is presented, so the main window only presents it otherwise.
+    private var paneChoiceRequest: Binding<PaneChoiceRequest?> {
+        Binding(
+            get: { model.contextPackPresented ? nil : model.paneChoiceRequest },
+            set: { if $0 == nil { model.cancelPaneChoice() } }
+        )
+    }
+
+    private var noticeLane: [WorkbenchNotice] {
+        WorkbenchNoticeProjection.lane(noticeInputs)
+    }
+
+    private var noticeInputs: WorkbenchNoticeInputs {
+        let settled: Set<RelayHandoffState> = [.completed, .cancelled]
+        let attention = model.workspaceHandoffs.filter { $0.attention != nil && !settled.contains($0.state) }
+        return WorkbenchNoticeInputs(
+            activePane: model.activePane.map {
+                WorkbenchNoticePane(id: $0.id, name: $0.displayName, kindLabel: $0.kind.label)
+            },
+            activePaneState: model.terminalAvailable ? model.activePaneState : .empty,
+            connectionState: model.connectionState,
+            worktreeCollisions: model.activeWorktreeWriterCollisions.map { collision in
+                WorkbenchWorktreeNotice(
+                    path: collision.worktree.path,
+                    writerNames: collision.writers.map {
+                        "\($0.paneName) (\($0.permissionProfileName), \($0.enforcement?.label ?? "enforcement unknown"))"
+                    }
+                )
+            },
+            primaryActivity: model.primaryActivity.map(WorkbenchNoticeActivity.init(handoff:)),
+            attentionActivities: attention.map(WorkbenchNoticeActivity.init(handoff:)),
+            recipe: model.activeRecipeRun.map { WorkbenchRecipeNotice(name: $0.recipeName, leadName: $0.leadName) },
+            workflow: model.activeSupervisedWorkflow.map(WorkbenchWorkflowNotice.init(run:)),
+            focusCanvasActive: model.focusCanvasPaneID != nil,
+            dockVisible: model.collaborationDockVisible,
+            protocolVersion: AgentProtocol.version
+        )
+    }
+
+    private func noticeLaneView(top: WorkbenchNotice, lane: [WorkbenchNotice]) -> some View {
+        let tone = ChromeColor.tone(top.tone)
+        let rest = Array(lane.dropFirst())
+        return HStack(spacing: 10) {
+            Image(systemName: noticeSymbol(top.kind))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(tone)
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(top.title)
+                    .font(ChromeFont.bodySemibold)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(top.detail)
+                    .font(ChromeFont.secondary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(top.kind == .activity ? 1 : 2)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(top.title). \(top.detail)")
+            Spacer(minLength: 8)
+            if let label = top.actionLabel, let action = top.action {
+                Button(label) { perform(action) }
+                    .accessibilityHint(noticeActionHint(action))
+            }
+            if !rest.isEmpty {
+                Menu {
+                    ForEach(rest) { notice in
+                        Section {
+                            Text(notice.detail)
+                            if let label = notice.actionLabel, let action = notice.action {
+                                Button(label) { perform(action) }
+                            }
+                        } header: {
+                            Text(notice.title)
+                        }
+                    }
+                } label: {
+                    Text("+\(rest.count)")
+                        .font(ChromeFont.secondaryMedium.monospacedDigit())
+                }
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help(rest.map(\.title).joined(separator: "\n"))
+                .accessibilityLabel("\(rest.count) more notice\(rest.count == 1 ? "" : "s")")
+                .accessibilityHint("Open the remaining notices in priority order")
+            }
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.bordered)
         .controlSize(.small)
         .padding(.horizontal, 12)
-        .frame(height: 31)
-        .background(activityColor(handoff).opacity(0.065))
+        .padding(.vertical, 6)
+        .frame(minHeight: 34)
+        .background(tone.opacity(0.07))
         .overlay(alignment: .leading) {
             Rectangle()
-                .fill(activityColor(handoff))
+                .fill(tone)
                 .frame(width: 3)
                 .accessibilityHidden(true)
         }
+        .help(top.detail)
+        .accessibilityElement(children: .contain)
     }
 
-    private func wideActivityStrip(_ handoff: RelayHandoff) -> some View {
-        HStack(spacing: 7) {
-            Text("ACTIVITY")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
-
-            Button(handoff.sourceName) { model.focus(handoff, target: false) }
-                .accessibilityLabel("Focus source pane \(handoff.sourceName)")
-                .accessibilityHint("Move to the pane that initiated this \(handoff.kind.rawValue)")
-                .disabled(!model.canFocus(handoff.sourcePaneID))
-            Image(systemName: "arrow.right")
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-                .accessibilityHidden(true)
-            Button(handoff.targetName) { model.focus(handoff, target: true) }
-                .accessibilityLabel("Focus target pane \(handoff.targetName)")
-                .accessibilityHint("Move to the pane receiving this \(handoff.kind.rawValue)")
-                .disabled(!model.canFocus(handoff.targetPaneID))
-
-            HStack(spacing: 5) {
-                Text(handoff.kind.rawValue.uppercased())
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                Text(activitySubject(handoff.text))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .accessibilityRepresentation {
-                Text("\(handoff.kind.rawValue.capitalized): \(WorkbenchAccessibility.subject(handoff.text))")
-            }
-
-            Spacer(minLength: 8)
-
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                Text(activityTiming(handoff, at: context.date))
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Timing \(activityTiming(handoff, at: context.date))")
-            }
-            Text(activityStateLabel(handoff))
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .foregroundStyle(activityColor(handoff))
-                .accessibilityLabel("State \(activityStateLabel(handoff))")
-
-            activityHistoryMenu
+    private func noticeSymbol(_ kind: WorkbenchNoticeKind) -> String {
+        switch kind {
+        case .permission: "hand.raised"
+        case .humanCheckpoint: "person.crop.circle.badge.questionmark"
+        case .failure: "xmark.circle"
+        case .protocolStale: "arrow.triangle.2.circlepath.circle"
+        case .relayUnavailable: "link.badge.plus"
+        case .worktreeCollision: "exclamationmark.triangle"
+        case .connection: "bolt.horizontal.circle"
+        case .targetAttention: "exclamationmark.bubble"
+        case .paneStopped: "pause.circle"
+        case .activity: "arrow.triangle.branch"
+        case .workflow: "list.bullet.rectangle"
+        case .recipe: "text.badge.checkmark"
+        case .focusCanvas: "rectangle.inset.filled"
         }
     }
 
-    private func compactActivityStrip(_ handoff: RelayHandoff) -> some View {
-        HStack(spacing: 7) {
-            Text("ACTIVITY")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
-
-            Menu {
-                Text(activitySubject(handoff.text))
-                Divider()
-                Button("Focus \(handoff.sourceName)") { model.focus(handoff, target: false) }
-                    .disabled(!model.canFocus(handoff.sourcePaneID))
-                Button("Focus \(handoff.targetName)") { model.focus(handoff, target: true) }
-                    .disabled(!model.canFocus(handoff.targetPaneID))
-            } label: {
-                Text("\(handoff.sourceName) → \(handoff.targetName)")
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 150)
-            }
-            .accessibilityLabel(WorkbenchAccessibility.handoff(handoff))
-            .help(activitySubject(handoff.text))
-            .accessibilityHint("Open actions for this collaboration")
-
-            Spacer(minLength: 6)
-
-            Text(activityStateLabel(handoff))
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .foregroundStyle(activityColor(handoff))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .accessibilityLabel("State \(activityStateLabel(handoff))")
-
-            activityHistoryMenu
+    private func noticeActionHint(_ action: WorkbenchNoticeAction) -> String {
+        switch action {
+        case .focusPane: "Focus this pane"
+        case .focusHandoffTarget: "Move to the pane receiving this handoff"
+        case .focusHandoffSource: "Move to the pane that initiated this handoff"
+        case .restartPane: "Begin a new CLI process in the same pane and folder after confirmation"
+        case .startPane: "Start the subscription CLI in this pane"
+        case .retryDelivery: "Retry the original delivery after confirmation"
+        case .reconnect: "Reconnect to the local coordination core"
+        case .openWorktrees: "Open the worktree browser for this folder"
+        case .openWorkflow: "Open the supervised workflow window"
+        case .stopRecipe: "Send Control-C to the lead pane after confirmation"
+        case .exitFocusCanvas: "Return every visible pane to the grid"
         }
+    }
+
+    private func perform(_ action: WorkbenchNoticeAction) {
+        switch action {
+        case let .focusPane(paneID):
+            if let pane = model.panes.first(where: { $0.id == paneID }) { model.select(pane) }
+        case let .focusHandoffTarget(handoffID):
+            if let handoff = noticeHandoff(handoffID) { model.focus(handoff, target: true) }
+        case let .focusHandoffSource(handoffID):
+            if let handoff = noticeHandoff(handoffID) { model.focus(handoff, target: false) }
+        case let .restartPane(paneID):
+            if let pane = model.panes.first(where: { $0.id == paneID }) { model.restart(pane) }
+        case let .startPane(paneID):
+            if let pane = model.panes.first(where: { $0.id == paneID }) { model.start(pane) }
+        case let .retryDelivery(handoffID):
+            if let handoff = noticeHandoff(handoffID) { model.retry(handoff) }
+        case .reconnect:
+            model.retryConnections()
+        case let .openWorktrees(path):
+            model.showWorktreeBrowser(sourceFolder: path)
+        case .openWorkflow:
+            model.presentSupervisedWorkflow()
+        case .stopRecipe:
+            model.interruptActiveRecipeRun()
+        case .exitFocusCanvas:
+            model.exitFocusCanvas()
+        }
+    }
+
+    private func noticeHandoff(_ id: String) -> RelayHandoff? {
+        model.workspaceHandoffs.first(where: { $0.id == id })
+            ?? (model.primaryActivity?.id == id ? model.primaryActivity : nil)
     }
 
     private var activityHistoryMenu: some View {
@@ -1613,32 +1593,6 @@ struct ContentView: View {
         text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
     }
 
-    private func activityTiming(_ handoff: RelayHandoff, at now: Date) -> String {
-        let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
-        let origin = terminalStates.contains(handoff.state)
-            ? handoff.updatedAt
-            : handoff.transitions.first?.occurredAt ?? handoff.updatedAt
-        let seconds = max(0, Int(now.timeIntervalSince(origin)))
-        let amount: String
-        if seconds < 60 {
-            amount = "\(seconds)s"
-        } else if seconds < 3_600 {
-            amount = "\(seconds / 60)m"
-        } else {
-            amount = "\(seconds / 3_600)h"
-        }
-        return terminalStates.contains(handoff.state) ? "\(amount) ago" : "for \(amount)"
-    }
-
-    private func activityStateLabel(_ handoff: RelayHandoff) -> String {
-        switch handoff.attention {
-        case .permissionRequired: "PERMISSION REQUIRED"
-        case .targetNotReady: "TARGET NOT READY"
-        case .targetUnavailable: "TARGET UNAVAILABLE"
-        case nil: handoff.state.rawValue.uppercased()
-        }
-    }
-
     private func attentionActionLabel(_ handoff: RelayHandoff) -> String {
         switch handoff.attention {
         case .permissionRequired: "Resolve Permission in \(handoff.targetName)"
@@ -1648,137 +1602,9 @@ struct ContentView: View {
         }
     }
 
-    private func activityColor(_ handoff: RelayHandoff) -> Color {
-        if handoff.attention != nil { return .orange }
-        return switch handoff.state {
-        case .created, .delivered, .waiting, .answered:
-            .accentColor
-        case .failed, .interrupted:
-            .red
-        case .completed, .cancelled:
-            .secondary
-        }
-    }
-
-    private var connectionNotice: some View {
-        workbenchNotice(
-            icon: "bolt.horizontal.circle",
-            title: "Relay disconnected",
-            detail: "Terminal panes remain available. Ask, Return and agent-initiated handoffs are paused until the local core reconnects.",
-            color: .orange,
-            actionLabel: "Reconnect",
-            action: model.retryConnections
-        )
-        .help(model.coreError ?? "The local Parley core is unavailable.")
-    }
-
-    private func worktreeWriterNotice(
-        _ collision: WorktreeWriterCollision,
-        additional: Int
-    ) -> some View {
-        let writers = collision.writers.map {
-            let enforcement = $0.enforcement?.label ?? "enforcement unknown"
-            return "\($0.paneName) (\($0.permissionProfileName), \(enforcement))"
-        }.joined(separator: ", ")
-        let suffix = additional > 0 ? " · \(additional) more shared worktree\(additional == 1 ? "" : "s")" : ""
-        return workbenchNotice(
-            icon: "exclamationmark.triangle",
-            title: "Shared worktree writers\(suffix)",
-            detail: "\(writers) have profiles that explicitly allow project writes at \(collision.worktree.path). Permission evidence only; Parley has not inferred file activity.",
-            color: .orange,
-            actionLabel: "Worktrees…",
-            action: { model.showWorktreeBrowser(sourceFolder: collision.worktree.path) }
-        )
-        .help("Exact canonical worktree: \(collision.worktree.path)\nA quiet pane does not prove that concurrent writes are safe.")
-    }
-
-    @ViewBuilder
-    private var paneNotice: some View {
-        if let pane = model.activePane {
-            switch model.activePaneState {
-            case .empty, .running:
-                EmptyView()
-            case .stopped:
-                workbenchNotice(
-                    icon: "pause.circle",
-                    title: "\(pane.displayName) is stopped",
-                    detail: "This restored seat has not started a subscription CLI session.",
-                    color: .secondary,
-                    actionLabel: "Start \(pane.kind.label)",
-                    action: { model.start(pane) }
-                )
-            case let .exited(status):
-                workbenchNotice(
-                    icon: "xmark.circle",
-                    title: exitedTitle(pane: pane, status: status),
-                    detail: "Final terminal output is preserved below. Restarting begins a new CLI process in the same pane and folder.",
-                    color: status == 0 ? .secondary : .red,
-                    actionLabel: "Restart…",
-                    action: { model.restart(pane) }
-                )
-            case let .protocolStale(reportedVersion):
-                workbenchNotice(
-                    icon: "arrow.triangle.2.circlepath.circle",
-                    title: "\(pane.displayName) has an older relay protocol",
-                    detail: "This pane reports \(reportedVersion.map { "protocol v\($0)" } ?? "no protocol version"); Parley expects v\(AgentProtocol.version). Its terminal remains usable, but cross-vendor actions are disabled until restart.",
-                    color: .orange,
-                    actionLabel: "Restart…",
-                    action: { model.restart(pane) }
-                )
-            case .relayUnavailable:
-                workbenchNotice(
-                    icon: "link.badge.plus",
-                    title: "\(pane.displayName) is not connected to the relay",
-                    detail: "Its terminal remains usable, but cross-vendor Ask and Return are disabled until the pane is restarted with relay credentials.",
-                    color: .orange,
-                    actionLabel: "Restart…",
-                    action: { model.restart(pane) }
-                )
-            }
-        }
-    }
-
-    private func workbenchNotice(
-        icon: String,
-        title: String,
-        detail: String,
-        color: Color,
-        actionLabel: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .foregroundStyle(color)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .lineLimit(1)
-                Text(detail)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-            Spacer(minLength: 8)
-            Button(actionLabel, action: action)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .background(color.opacity(0.07))
-    }
-
-    private func exitedTitle(pane: WorkbenchPane, status: Int?) -> String {
-        guard let status else { return "\(pane.displayName) exited" }
-        return "\(pane.displayName) exited with status \(status)"
-    }
-
     private var paneFocusStrip: some View {
         HStack(spacing: 8) {
-            Text("PANES")
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
+            ChromeHeading("Panes")
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
@@ -1800,9 +1626,9 @@ struct ContentView: View {
             model.select(pane)
         } label: {
             HStack(spacing: 6) {
-                Rectangle()
-                    .fill(paneFocusColor(pane.kind))
-                    .frame(width: 3, height: 16)
+                Text(ChromeIdentity.monogram(pane.kind))
+                    .font(ChromeFont.chip)
+                    .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 Text(pane.displayName)
                     .font(.system(size: 10, weight: pane.isActive ? .semibold : .regular))
@@ -1810,13 +1636,11 @@ struct ContentView: View {
                     .truncationMode(.middle)
                 if let role = pane.role {
                     Text("@\(role)")
-                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .font(ChromeFont.meta)
                         .foregroundStyle(Color.accentColor)
                 }
                 if let state = paneFocusState(pane) {
-                    Text(state.label)
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundStyle(state.color)
+                    ChromeChip(state.label, color: state.color)
                 }
             }
             .foregroundStyle(pane.isActive ? .primary : .secondary)
@@ -1838,37 +1662,20 @@ struct ContentView: View {
 
     private func paneFocusState(_ pane: WorkbenchPane) -> (label: String, color: Color)? {
         if let failure = model.latestFailure(for: pane.id) {
-            return failure.attention == nil ? ("FAILED", .red) : ("ATTENTION", .orange)
+            return failure.attention == nil ? ("Failed", .red) : ("Attention", .orange)
         }
         let awaiting = model.awaitingAnswerCount(for: pane.id)
         if awaiting > 0 {
-            return (awaiting > 1 ? "RETURN \(awaiting)" : "RETURN", .accentColor)
+            return (awaiting > 1 ? "Return \(awaiting)" : "Return", .accentColor)
         }
         let unread = model.unreadResultCount(forPane: pane.id)
-        if unread > 0 { return (unread > 1 ? "RESULT \(unread)" : "RESULT", .accentColor) }
+        if unread > 0 { return (unread > 1 ? "Result \(unread)" : "Result", .accentColor) }
         return switch WorkbenchStateProjection.pane(pane) {
         case .empty, .running: nil
-        case .stopped: ("STOPPED", .secondary)
-        case let .exited(status): (status.map { "EXITED \($0)" } ?? "EXITED", .red)
-        case .protocolStale: ("PROTOCOL", .orange)
-        case .relayUnavailable: ("RELAY OFF", .orange)
-        }
-    }
-    private func paneAttentionColor(_ attention: PaneAttentionItem) -> Color {
-        switch attention.reason {
-        case .permissionRequest: .orange
-        case .returnedResult: .accentColor
-        case .interruptedHandoff: .red
-        }
-    }
-
-    private func paneFocusColor(_ kind: PaneKind) -> Color {
-        switch kind {
-        case .claude: .orange
-        case .codex: .blue
-        case .agy: .purple
-        case .copilot: .green
-        case .shell: .secondary
+        case .stopped: ("Stopped", .secondary)
+        case let .exited(status): (status.map { "Exited \($0)" } ?? "Exited", .red)
+        case .protocolStale: ("Protocol stale", .orange)
+        case .relayUnavailable: ("Relay off", .orange)
         }
     }
 
@@ -1949,7 +1756,7 @@ struct ContentView: View {
                 if let attention {
                     ZStack {
                         RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .strokeBorder(paneAttentionColor(attention), lineWidth: 2)
+                            .strokeBorder(ChromeColor.attention(attention.reason), lineWidth: 2)
                         if paneSurface.containsActivePane {
                             RoundedRectangle(cornerRadius: 3, style: .continuous)
                                 .strokeBorder(Color.accentColor, lineWidth: 1)
@@ -1969,7 +1776,7 @@ struct ContentView: View {
                 }
             }
             .shadow(
-                color: attention.map { paneAttentionColor($0).opacity(0.28) }
+                color: attention.map { ChromeColor.attention($0.reason).opacity(0.28) }
                     ?? (paneSurface.containsActivePane ? Color.accentColor.opacity(0.22) : Color.clear),
                 radius: 4
             )
@@ -1979,10 +1786,7 @@ struct ContentView: View {
 
     private func paneChromeHeader(_ pane: WorkbenchPane) -> some View {
         HStack(spacing: 7) {
-            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                .fill(paneFocusColor(pane.kind))
-                .frame(width: 3, height: 15)
-                .accessibilityHidden(true)
+            ChromeMonogram(kind: pane.kind, size: 17)
             Text(pane.displayName)
                 .font(.system(size: 10, weight: .semibold))
                 .lineLimit(1)
@@ -1990,7 +1794,7 @@ struct ContentView: View {
                 .layoutPriority(2)
             if let role = pane.role {
                 Text("@\(role)")
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .font(ChromeFont.meta)
                     .foregroundStyle(Color.accentColor)
                     .lineLimit(1)
                     .layoutPriority(1)
@@ -2006,32 +1810,23 @@ struct ContentView: View {
             Spacer(minLength: 4)
             if let attention = model.paneAttention(for: pane.id) {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(attention.label(at: context.date))
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundStyle(paneAttentionColor(attention))
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                    ChromeChip(attention.label(at: context.date), color: ChromeColor.attention(attention.reason))
                 }
                 .help(attention.accessibilityDescription())
+                .accessibilityLabel(attention.accessibilityDescription())
             }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) {
-                    Text(WorkbenchChromeProjection.processLabel(pane))
-                        .foregroundStyle(paneProcessColor(pane))
+                    ChromeChip(WorkbenchChromeProjection.processLabel(pane), color: ChromeColor.paneProcess(pane))
                     if let selection = WorkbenchChromeProjection.selectionLabel(pane) {
-                        Text(selection)
-                            .foregroundStyle(Color.accentColor)
+                        ChromeChip(selection, color: .accentColor)
                     }
                 }
                 if let selection = WorkbenchChromeProjection.selectionLabel(pane) {
-                    Text(selection)
-                        .foregroundStyle(Color.accentColor)
+                    ChromeChip(selection, color: .accentColor)
                 }
-                Text(WorkbenchChromeProjection.processLabel(pane))
-                    .foregroundStyle(paneProcessColor(pane))
+                ChromeChip(WorkbenchChromeProjection.processLabel(pane), color: ChromeColor.paneProcess(pane))
             }
-            .font(.system(size: 8, weight: .bold, design: .monospaced))
-            .lineLimit(1)
             Menu {
                 Button(model.focusCanvasPaneID == pane.id ? "Return to Grid" : "Focus Canvas") {
                     model.toggleFocusCanvas(paneID: pane.id)
@@ -2063,15 +1858,6 @@ struct ContentView: View {
         .accessibilityValue(paneAccessibilityValue(pane))
         .accessibilityHint("Select this terminal; double-click to toggle Focus Canvas")
         .help(paneFocusHelp(pane))
-    }
-
-    private func paneProcessColor(_ pane: WorkbenchPane) -> Color {
-        switch WorkbenchStateProjection.pane(pane) {
-        case .empty, .running: .secondary
-        case .stopped: .secondary
-        case .exited: .red
-        case .protocolStale, .relayUnavailable: .orange
-        }
     }
 
     @ViewBuilder
@@ -2319,22 +2105,9 @@ private struct PaneRow: View {
     let permissionProfileName: String?
 
     var body: some View {
-        HStack(spacing: 7) {
-            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                .fill(kindColor)
-                .frame(width: 3, height: 40)
-            ZStack {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.8), lineWidth: 1)
-                Text(monogram)
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(width: 24, height: 24)
-            .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 8) {
+            ChromeMonogram(kind: pane.kind, size: 24)
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
                     Text(pane.displayName)
                         .font(.system(size: 11, weight: pane.isActive ? .semibold : .medium))
@@ -2342,57 +2115,40 @@ private struct PaneRow: View {
                         .truncationMode(.middle)
                         .layoutPriority(1)
                     if pane.isWorkspaceLead {
-                        Text("LEAD")
-                            .font(.system(size: 8, weight: .bold))
+                        Text("Lead")
+                            .font(ChromeFont.meta)
                             .foregroundStyle(Color.accentColor)
                     }
                     if let role = pane.role {
                         Text("@\(role)")
-                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .font(ChromeFont.meta)
                             .foregroundStyle(Color.accentColor)
+                            .lineLimit(1)
                     }
-                    if let permissionProfileName {
-                        Text(permissionProfileName.uppercased())
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
+                    Spacer(minLength: 2)
                     if awaitingAnswerCount > 0 {
-                        Text(awaitingAnswerCount > 1 ? "RETURN \(awaitingAnswerCount)" : "RETURN")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(Color.accentColor)
+                        countBadge(awaitingAnswerCount, symbol: "arrow.uturn.left")
                     }
                     if unreadResultCount > 0 {
-                        Text(unreadResultCount > 1 ? "RESULT \(unreadResultCount)" : "RESULT")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(Color.accentColor)
+                        countBadge(unreadResultCount, symbol: "envelope")
                     }
-                    switch WorkbenchStateProjection.pane(pane) {
-                    case .empty, .running:
-                        EmptyView()
-                    case .stopped:
-                        stateLabel("STOPPED", color: .secondary)
-                    case let .exited(status):
-                        stateLabel(status.map { "EXITED \($0)" } ?? "EXITED", color: .red)
-                    case .protocolStale:
-                        stateLabel("PROTOCOL STALE", color: .orange)
-                    case .relayUnavailable:
-                        stateLabel("RELAY OFF", color: .orange)
-                    }
-                    if let latestFailure {
-                        Text(failureLabel(latestFailure))
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(latestFailure.attention != nil ? Color.orange : Color.red)
+                    if let state = primaryState {
+                        ChromeChip(state.label, color: state.color)
                     }
                 }
                 HStack(spacing: 4) {
                     Text(workingDirectoryLabel)
+                        .lineLimit(1)
+                        .truncationMode(.head)
                     if let projectContext = facts.gitContext {
                         Text("·")
                         Text(projectContext.branch)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                         if projectContext.isDirty {
-                            Text("DIRTY")
+                            Text("dirty")
                                 .fontWeight(.semibold)
-                                .foregroundStyle(Color.orange)
+                                .foregroundStyle(.primary)
                         }
                     }
                     if pane.kind.isAgent, let rootCount = pane.permissionSelection?.approvedRoots.count,
@@ -2402,67 +2158,76 @@ private struct PaneRow: View {
                             .fontWeight(.semibold)
                             .foregroundStyle(Color.accentColor)
                     }
-                }
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                HStack(spacing: 4) {
-                    Text(processLabel)
+                    if let permissionProfileName {
+                        Text("·")
+                        Text(permissionProfileName)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 2)
                     if !facts.listeningPorts.isEmpty {
-                        Text("·")
-                        Text("LISTEN \(listeningPortLabel)")
-                            .fontWeight(.semibold)
+                        Label(facts.listeningPorts.count.formatted(), systemImage: "antenna.radiowaves.left.and.right")
+                            .labelStyle(.titleAndIcon)
                             .foregroundStyle(Color.accentColor)
+                            .help(listeningPortHelp)
+                            .accessibilityLabel(listeningPortHelp)
                     }
-                    if let attention = facts.latestAttention {
-                        Text("·")
-                        Text(attentionReasonLabel(attention))
-                            .fontWeight(.semibold)
-                            .foregroundStyle(attentionColor(attention))
+                    if let attention = facts.latestAttention, primaryState?.source != .attention {
+                        Image(systemName: attentionSymbol(attention))
+                            .foregroundStyle(ChromeColor.attention(attention.reason))
+                            .help(attention.accessibilityDescription())
+                            .accessibilityLabel(attention.accessibilityDescription())
                     }
                 }
-                .font(.system(size: 8, design: .monospaced))
+                .font(ChromeFont.meta)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             }
-            Spacer(minLength: 0)
-            Circle()
-                .fill(processColor)
-                .frame(width: 6, height: 6)
-                .accessibilityHidden(true)
         }
         .contentShape(Rectangle())
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
         .help(paneHelp)
     }
 
-    private var monogram: String {
-        switch pane.kind {
-        case .claude: "CL"
-        case .codex: "CX"
-        case .agy: "AG"
-        case .copilot: "CP"
-        case .shell: "SH"
+    private enum StateSource { case failure, process, attention }
+
+    /// The single state that earns the row's chip, in the order a person
+    /// would want to know it: a failed or blocked handoff, then the process,
+    /// then the latest authoritative attention.
+    private var primaryState: (label: String, color: Color, source: StateSource)? {
+        if let latestFailure {
+            return (failureLabel(latestFailure), latestFailure.attention != nil ? .orange : .red, .failure)
         }
+        switch WorkbenchStateProjection.pane(pane) {
+        case .stopped: return ("Stopped", .secondary, .process)
+        case let .exited(status): return (status.map { "Exited \($0)" } ?? "Exited", .red, .process)
+        case .protocolStale: return ("Protocol stale", .orange, .process)
+        case .relayUnavailable: return ("Relay off", .orange, .process)
+        case .empty, .running: break
+        }
+        if let attention = facts.latestAttention {
+            return (attentionReasonLabel(attention), ChromeColor.attention(attention.reason), .attention)
+        }
+        return nil
     }
 
-    private var processColor: Color {
-        switch WorkbenchStateProjection.pane(pane) {
-        case .running: .green
-        case .empty, .stopped: .secondary
-        case .exited: .red
-        case .protocolStale, .relayUnavailable: .orange
+    private func countBadge(_ count: Int, symbol: String) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: symbol)
+                .font(.system(size: 9, weight: .semibold))
+            Text(count.formatted())
+                .font(ChromeFont.meta)
         }
+        .foregroundStyle(Color.accentColor)
+        .accessibilityHidden(true)
     }
 
     private var workingDirectoryLabel: String {
         (facts.workingDirectory as NSString).abbreviatingWithTildeInPath
     }
 
-    private var listeningPortLabel: String {
-        let visible = facts.listeningPorts.prefix(3).map(String.init)
-        let remainder = facts.listeningPorts.count - visible.count
-        return visible.joined(separator: ",") + (remainder > 0 ? " +\(remainder)" : "")
+    private var listeningPortHelp: String {
+        "Listening TCP ports attributed to this pane's process tree: "
+            + facts.listeningPorts.map(String.init).joined(separator: ", ")
     }
 
     private var processLabel: String {
@@ -2471,12 +2236,6 @@ private struct PaneRow: View {
         case let .exited(status): status.map { "exited \($0)" } ?? "exited"
         case .empty, .running, .protocolStale, .relayUnavailable: pane.currentCommand
         }
-    }
-
-    private func stateLabel(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 8, weight: .bold))
-            .foregroundStyle(color)
     }
 
     private var paneHelp: String {
@@ -2488,63 +2247,40 @@ private struct PaneRow: View {
             "Folder access (\(selection.approvedRoots.count)): \(selection.approvedRoots.joined(separator: ", "))"
         }
         let role = pane.role.map { "Routing role: \($0)" }
-        let listeners = facts.listeningPorts.isEmpty ? nil : [
-            "Listening TCP ports attributed to this pane's process tree",
-            facts.listeningPorts.map(String.init).joined(separator: ", "),
-        ].joined(separator: ": ")
+        let process = processLabel.isEmpty ? nil : "Process: \(processLabel)"
+        let listeners = facts.listeningPorts.isEmpty ? nil : listeningPortHelp
         let attention = facts.latestAttention.map {
             "Latest authoritative attention: \($0.accessibilityDescription())"
         }
-        guard let projectContext = facts.gitContext else {
-            return [facts.workingDirectory, listeners, attention, role, permission, folderAccess]
-                .compactMap { $0 }
-                .joined(separator: "\n")
-        }
-        let state = projectContext.isDirty ? "dirty" : "clean"
-        return [
-            facts.workingDirectory,
-            "Git: \(projectContext.branch) · \(state)",
-            listeners,
-            attention,
-            role,
-            permission,
-            folderAccess,
-        ].compactMap { $0 }.joined(separator: "\n")
+        let git = facts.gitContext.map { "Git: \($0.branch) · \($0.isDirty ? "dirty" : "clean")" }
+        return [facts.workingDirectory, git, process, listeners, attention, role, permission, folderAccess]
+            .compactMap { $0 }
+            .joined(separator: "\n")
     }
 
     private func attentionReasonLabel(_ attention: PaneAttentionItem) -> String {
         switch (attention.reason, attention.source) {
-        case (.permissionRequest, .vendorOfficialHook): "PERMISSION REPORTED"
-        case (.permissionRequest, .durableHandoff): "PERMISSION"
-        case (.returnedResult, _): "RESULT"
-        case (.interruptedHandoff, _): "INTERRUPTED"
+        case (.permissionRequest, .vendorOfficialHook): "Permission reported"
+        case (.permissionRequest, .durableHandoff): "Permission"
+        case (.returnedResult, _): "Result"
+        case (.interruptedHandoff, _): "Interrupted"
         }
     }
 
-    private func attentionColor(_ attention: PaneAttentionItem) -> Color {
+    private func attentionSymbol(_ attention: PaneAttentionItem) -> String {
         switch attention.reason {
-        case .permissionRequest: .orange
-        case .returnedResult: .accentColor
-        case .interruptedHandoff: .red
-        }
-    }
-
-    private var kindColor: Color {
-        switch pane.kind {
-        case .claude: .orange
-        case .codex: .blue
-        case .agy: .purple
-        case .copilot: .green
-        case .shell: .secondary
+        case .permissionRequest: "hand.raised"
+        case .returnedResult: "envelope"
+        case .interruptedHandoff: "bolt.horizontal"
         }
     }
 
     private func failureLabel(_ handoff: RelayHandoff) -> String {
         switch handoff.attention {
-        case .permissionRequired: "NEEDS PERMISSION"
-        case .targetNotReady: "NOT READY"
-        case .targetUnavailable: "UNAVAILABLE"
-        case nil: "DELIVERY FAILED"
+        case .permissionRequired: "Needs permission"
+        case .targetNotReady: "Not ready"
+        case .targetUnavailable: "Unavailable"
+        case nil: "Delivery failed"
         }
     }
 }

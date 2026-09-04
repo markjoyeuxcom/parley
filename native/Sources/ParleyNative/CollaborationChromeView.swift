@@ -2,41 +2,6 @@ import AppKit
 import ParleyCore
 import SwiftUI
 
-struct FocusCanvasStrip: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "rectangle.inset.filled")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-            if let pane = model.activePane {
-                Text("FOCUS CANVAS")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundStyle(Color.accentColor)
-                Text(pane.displayName)
-                    .font(.system(size: 10, weight: .semibold))
-                if let role = pane.role {
-                    Text("@\(role)")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-                Text("Peers remain live and selectable")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 8)
-            Button("Return to Grid") { model.exitFocusCanvas() }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 31)
-        .background(Color.accentColor.opacity(0.065))
-        .accessibilityElement(children: .contain)
-    }
-}
-
 struct HandoffComposerView: View {
     @ObservedObject var model: AppModel
 
@@ -45,19 +10,19 @@ struct HandoffComposerView: View {
         if let draft = model.handoffComposerDraft {
             VStack(spacing: 8) {
                 HStack(spacing: 7) {
-                    Text(draft.relationship == nil ? "REVIEWED HANDOFF" : "LINKED REVIEW")
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    Text(draft.relationship == nil ? "Reviewed handoff" : "Linked review")
+                        .font(ChromeFont.secondaryMedium)
                         .foregroundStyle(Color.accentColor)
+                        .accessibilityAddTraits(.isHeader)
                     Text("\(draft.sourceName) · \(draft.sourceKind.label)")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(ChromeFont.secondaryMedium)
                     Image(systemName: "arrow.right")
-                        .font(.system(size: 8))
+                        .font(.system(size: 9))
                         .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                     Text("\(draft.targetName) · \(draft.targetKind.label)")
-                        .font(.system(size: 10, weight: .semibold))
-                    Text(draft.relationship?.rawValue.uppercased() ?? "ASK")
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .font(ChromeFont.secondaryMedium)
+                    ChromeChip(draft.relationship?.label ?? "Ask", color: .secondary)
                     Spacer()
                     Button {
                         model.cancelHandoffComposer()
@@ -73,8 +38,8 @@ struct HandoffComposerView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "checkmark.shield")
                                 .foregroundStyle(Color.accentColor)
-                            Text("TARGET SIGNAL")
-                                .fontWeight(.bold)
+                            Text("Target signal")
+                                .fontWeight(.semibold)
                                 .foregroundStyle(Color.accentColor)
                             Text(advisory.sourceLabel)
                                 .fontWeight(.semibold)
@@ -88,13 +53,13 @@ struct HandoffComposerView: View {
                             Text("· \(advisory.signalLabel)")
                             Text("· \(advisory.ageLabel(at: context.date))")
                             Spacer(minLength: 8)
-                            Text("ADVISORY ONLY")
-                                .fontWeight(.bold)
+                            Text("Advisory only")
+                                .fontWeight(.semibold)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: true, vertical: false)
                                 .layoutPriority(2)
                         }
-                        .font(.system(size: 8, design: .monospaced))
+                        .font(ChromeFont.meta)
                         .lineLimit(1)
                         .padding(.horizontal, 8)
                         .frame(minHeight: 24)
@@ -116,7 +81,7 @@ struct HandoffComposerView: View {
                 .font(.system(size: 11, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .padding(5)
-                .frame(minHeight: 78, maxHeight: 118)
+                .frame(height: composerHeight(for: draft.text))
                 .background(Color(nsColor: .textBackgroundColor))
                 .overlay {
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
@@ -143,6 +108,11 @@ struct HandoffComposerView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Text(characterCountLabel(for: draft.text))
+                        .font(ChromeFont.meta)
+                        .foregroundStyle(exceedsLimit(draft.text) ? Color.red : Color.secondary)
+                        .help("Relay messages are limited to \(RelayText.maximumCharacters.formatted()) characters after trimming")
+                        .accessibilityLabel(characterCountAccessibilityLabel(for: draft.text))
                     Button("Insert Selection") { model.insertSelectionInHandoffComposer() }
                         .help("Insert only the text currently selected in \(draft.sourceName)")
                         .disabled(model.submittingHandoffComposer)
@@ -155,7 +125,9 @@ struct HandoffComposerView: View {
                     ) { model.submitHandoffComposer() }
                         .buttonStyle(.borderedProminent)
                         .disabled(
-                            RelayText.clean(draft.text).isEmpty || model.submittingHandoffComposer
+                            RelayText.clean(draft.text).isEmpty
+                                || exceedsLimit(draft.text)
+                                || model.submittingHandoffComposer
                         )
                         .keyboardShortcut(.return, modifiers: [.command])
                 }
@@ -167,6 +139,30 @@ struct HandoffComposerView: View {
             .background(Color.accentColor.opacity(0.045))
             .accessibilityElement(children: .contain)
         }
+    }
+
+    private static let minimumEditorHeight: CGFloat = 78
+    private static let maximumEditorHeight: CGFloat = 196
+    private static let editorLineHeight: CGFloat = 15
+
+    private func composerHeight(for text: String) -> CGFloat {
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).count
+        let wanted = CGFloat(lines) * Self.editorLineHeight + 22
+        return min(max(wanted, Self.minimumEditorHeight), Self.maximumEditorHeight)
+    }
+
+    private func exceedsLimit(_ text: String) -> Bool {
+        RelayText.clean(text).count > RelayText.maximumCharacters
+    }
+
+    private func characterCountLabel(for text: String) -> String {
+        "\(RelayText.clean(text).count.formatted()) / \(RelayText.maximumCharacters.formatted())"
+    }
+
+    private func characterCountAccessibilityLabel(for text: String) -> String {
+        let count = RelayText.clean(text).count
+        let base = "\(count) of \(RelayText.maximumCharacters) characters"
+        return exceedsLimit(text) ? "\(base), over the relay limit" : base
     }
 }
 
@@ -196,31 +192,41 @@ struct CollaborationDockView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    sectionTitle("ACTIVE HANDOFF")
+                    sectionTitle("Active handoff")
                     if let handoff = model.primaryActivity {
                         activeHandoff(handoff)
                     } else {
                         Text("No collaboration is currently waiting or in flight.")
-                            .font(.system(size: 10))
+                            .font(ChromeFont.secondary)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 11)
                             .padding(.bottom, 12)
                     }
+                    if let recipe = model.activeRecipeRun {
+                        Divider()
+                        sectionTitle("Recipe")
+                        recipeSection(recipe)
+                    }
+                    if let workflow = model.activeSupervisedWorkflow {
+                        Divider()
+                        sectionTitle("Workflow")
+                        workflowSection(workflow)
+                    }
                     Divider()
-                    sectionTitle("RUNTIME")
+                    sectionTitle("Runtime")
                     fact(
                         icon: "circle.fill",
                         label: "Coordination core",
                         value: WorkbenchChromeProjection.connectionLabel(model.connectionState),
-                        color: connectionStatusColor
+                        color: ChromeColor.connection(model.connectionState)
                     )
                     fact(icon: "bolt.horizontal", label: "Protocol", value: AgentProtocol.version, color: .secondary)
                     fact(icon: "rectangle.split.3x1", label: "Retained panes", value: "\(model.visiblePanes.count)", color: .secondary)
                     Divider().padding(.top, 10)
-                    sectionTitle("RECENT")
+                    sectionTitle("Recent")
                     if model.workspaceHandoffs.isEmpty {
                         Text("No handoffs recorded in this workspace.")
-                            .font(.system(size: 10))
+                            .font(ChromeFont.secondary)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 11)
                     } else {
@@ -247,22 +253,79 @@ struct CollaborationDockView: View {
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
-    private var connectionStatusColor: Color {
-        switch model.connectionState {
-        case .connected: .green
-        case .coreDisconnected: .orange
-        case .terminalDisconnected: .red
-        }
-    }
-
     private func sectionTitle(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 8, weight: .bold, design: .monospaced))
-            .foregroundStyle(.secondary)
+        ChromeHeading(title)
             .padding(.horizontal, 11)
             .padding(.top, 12)
             .padding(.bottom, 8)
-            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func recipeSection(_ recipe: ActiveRecipeRun) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Text("\(recipe.recipeName) → \(recipe.leadName)")
+                    .font(ChromeFont.bodyMedium)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                ChromeChip("Submitted", color: .secondary)
+            }
+            Text(recipe.instructions)
+                .font(ChromeFont.secondary)
+                .foregroundStyle(.secondary)
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Button("Stop…") { model.interruptActiveRecipeRun() }
+                    .accessibilityLabel("Interrupt workspace lead")
+                    .accessibilityHint("Send Control-C after explicit confirmation")
+                    .help("Interrupt the lead pane after explicit confirmation")
+                Button("Dismiss") { model.dismissActiveRecipeRun() }
+                    .accessibilityLabel("Dismiss submitted recipe notice")
+                    .help("Hide this notice; the lead pane keeps running")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 11)
+        .padding(.bottom, 12)
+        .help(recipe.instructions)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func workflowSection(_ run: SupervisedWorkflowRun) -> some View {
+        let checkpoint = run.phase == .awaitingImplementationApproval || run.phase == .awaitingCompletionApproval
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Text(run.name)
+                    .font(ChromeFont.bodyMedium)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                ChromeChip(run.mode.label, color: run.mode == .automatic ? .accentColor : .secondary)
+            }
+            HStack(spacing: 6) {
+                Text(run.phase.label)
+                    .font(ChromeFont.secondary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                if checkpoint {
+                    ChromeChip("Human checkpoint", color: .orange)
+                }
+            }
+            HStack(spacing: 6) {
+                Button("Open") { model.presentSupervisedWorkflow() }
+                    .help("Open the supervised workflow window")
+                Button("End…", role: .destructive) { model.interruptSupervisedWorkflow() }
+                    .help("End this supervised workflow after explicit confirmation")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 11)
+        .padding(.bottom, 12)
+        .help("\(run.name) · \(run.phase.label)")
+        .accessibilityElement(children: .contain)
     }
 
     private func activeHandoff(_ handoff: RelayHandoff) -> some View {
@@ -271,25 +334,26 @@ struct CollaborationDockView: View {
                 Button(handoff.sourceName) { model.focus(handoff, target: false) }
                     .disabled(!model.canFocus(handoff.sourcePaneID))
                 Image(systemName: "arrow.right")
-                    .font(.system(size: 8))
+                    .font(.system(size: 9))
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
                 Button(handoff.targetName) { model.focus(handoff, target: true) }
                     .disabled(!model.canFocus(handoff.targetPaneID))
             }
             .buttonStyle(.plain)
-            .font(.system(size: 10, weight: .semibold))
+            .font(ChromeFont.secondaryMedium)
             Text(subject(handoff.text))
-                .font(.system(size: 10))
+                .font(ChromeFont.secondary)
                 .lineLimit(3)
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                HStack {
-                    Text(handoff.kind.rawValue.uppercased())
+                HStack(spacing: 6) {
+                    Text(handoff.kind.rawValue.capitalized)
+                        .font(ChromeFont.secondary)
                     Spacer()
                     Text(timing(handoff, at: context.date))
-                    Text(stateLabel(handoff))
-                        .foregroundStyle(stateColor(handoff))
+                        .font(ChromeFont.meta)
+                    ChromeChip(stateLabel(handoff), color: ChromeColor.handoff(handoff))
                 }
-                .font(.system(size: 8, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
             }
         }
@@ -301,14 +365,15 @@ struct CollaborationDockView: View {
     private func fact(icon: String, label: String, value: String, color: Color) -> some View {
         HStack(spacing: 7) {
             Image(systemName: icon)
-                .font(.system(size: 8))
+                .font(.system(size: 9))
                 .foregroundStyle(color)
                 .frame(width: 11)
+                .accessibilityHidden(true)
             Text(label)
-                .font(.system(size: 9))
+                .font(ChromeFont.secondary)
             Spacer()
             Text(value)
-                .font(.system(size: 8, weight: .medium, design: .monospaced))
+                .font(ChromeFont.meta)
                 .foregroundStyle(color)
                 .lineLimit(1)
         }
@@ -323,15 +388,13 @@ struct CollaborationDockView: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     Text("\(handoff.sourceName) → \(handoff.targetName)")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(ChromeFont.secondaryMedium)
                         .lineLimit(1)
                     Spacer()
-                    Text(stateLabel(handoff))
-                        .font(.system(size: 7, weight: .bold, design: .monospaced))
-                        .foregroundStyle(stateColor(handoff))
+                    ChromeChip(stateLabel(handoff), color: ChromeColor.handoff(handoff))
                 }
                 Text(subject(handoff.text))
-                    .font(.system(size: 9))
+                    .font(ChromeFont.secondary)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -363,19 +426,10 @@ struct CollaborationDockView: View {
 
     private func stateLabel(_ handoff: RelayHandoff) -> String {
         switch handoff.attention {
-        case .permissionRequired: "PERMISSION"
-        case .targetNotReady: "NOT READY"
-        case .targetUnavailable: "UNAVAILABLE"
-        case nil: handoff.state.rawValue.uppercased()
-        }
-    }
-
-    private func stateColor(_ handoff: RelayHandoff) -> Color {
-        if handoff.attention != nil { return .orange }
-        return switch handoff.state {
-        case .created, .delivered, .waiting, .answered: .accentColor
-        case .failed, .interrupted: .red
-        case .completed, .cancelled: .secondary
+        case .permissionRequired: "Permission"
+        case .targetNotReady: "Not ready"
+        case .targetUnavailable: "Unavailable"
+        case nil: handoff.state.rawValue.capitalized
         }
     }
 }

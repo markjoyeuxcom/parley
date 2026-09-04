@@ -259,6 +259,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var repeatingAskHandoffID: String?
     @Published private(set) var sendingReviewedBusyDraftID: String?
     @Published private(set) var submittingHandoffComposer = false
+    /// One pending pane choice presented as a native sheet instead of a
+    /// picker inside an alert. Resolving it continues the original flow.
+    @Published var paneChoiceRequest: PaneChoiceRequest?
     @Published private(set) var historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy
     @Published private(set) var terminalFontPreference = TerminalFontPreference.ghosttyDefault
     @Published private(set) var terminalAppearanceImport: GhosttyAppearanceImport?
@@ -3920,9 +3923,26 @@ final class AppModel: ObservableObject {
     }
 
     func addVisibleTerminalContext() {
-        guard let draft = contextPackDraft else { return }
+        guard contextPackDraft != nil else { return }
         let candidates = panes.filter { $0.isStarted && !$0.isDead }
-        guard let pane = chooseContextPane(candidates: candidates) else { return }
+        guard !candidates.isEmpty else {
+            NSAlert(error: RelayUIError.message("There is no running pane from which selected text can be added.")).runModal()
+            return
+        }
+        requestPaneChoice(
+            title: "Use selection from which pane?",
+            message: "Select terminal text first. Parley reads only that pane's current selection; it never captures scrollback or a whole conversation implicitly.",
+            actionLabel: "Add Selection",
+            candidates: candidates,
+            selection: .single(preferredPaneID: activePane?.id)
+        ) { [weak self] selected in
+            guard let pane = selected.first else { return }
+            self?.addVisibleTerminalContext(from: pane)
+        }
+    }
+
+    private func addVisibleTerminalContext(from pane: WorkbenchPane) {
+        guard let draft = contextPackDraft else { return }
         perform {
             if let reviewID = draft.reviewID {
                 try captureTrustedContext(
@@ -4108,6 +4128,24 @@ final class AppModel: ObservableObject {
     }
 
     func askWithContextPack() {
+        guard let draft = contextPackDraft else { return }
+        guard !contextPackAskTargets.isEmpty else {
+            NSAlert(error: RelayUIError.message("Open a ready pane from another vendor before sending this context pack.")).runModal()
+            return
+        }
+        requestPaneChoice(
+            title: "Ask which vendor with this context?",
+            message: "The exact pack visible behind this sheet will be submitted through Parley's attributed Ask path after one more confirmation.",
+            actionLabel: "Continue",
+            candidates: contextPackAskTargets,
+            selection: .single(preferredPaneID: draft.requestedTargetPaneID)
+        ) { [weak self] selected in
+            guard let target = selected.first else { return }
+            self?.askWithContextPack(target: target)
+        }
+    }
+
+    private func askWithContextPack(target: WorkbenchPane) {
         perform {
             guard let draft = contextPackDraft,
                   let source = contextPackSourcePane,
@@ -4115,10 +4153,6 @@ final class AppModel: ObservableObject {
                 throw RelayUIError.message("The context pack's source pane is no longer ready.")
             }
             let rendered = try contextPackBuilder.render(draft.pack)
-            guard let target = chooseContextTarget(
-                candidates: contextPackAskTargets,
-                preferredPaneID: draft.requestedTargetPaneID
-            ) else { return }
             let isAwaitingAgent = draft.reviewID != nil && draft.reviewState == .awaitingReview
             guard confirmContextSend(
                 title: isAwaitingAgent
@@ -4182,6 +4216,23 @@ final class AppModel: ObservableObject {
     }
 
     func compareWithContextPack() {
+        guard canCompareContextPack, contextPackDraft != nil else {
+            NSAlert(error: RelayUIError.message("This context pack needs a ready source pane and at least two other target panes.")).runModal()
+            return
+        }
+        requestPaneChoice(
+            title: "Compare with which panes?",
+            message: "Choose at least two distinct panes. Every selected pane receives the same attributed pack independently.",
+            actionLabel: "Continue",
+            candidates: contextPackAskTargets,
+            selection: .multiple(minimum: 2)
+        ) { [weak self] targets in
+            guard targets.count >= 2 else { return }
+            self?.compareWithContextPack(targets: targets)
+        }
+    }
+
+    private func compareWithContextPack(targets: [WorkbenchPane]) {
         perform {
             guard canCompareContextPack,
                   let draft = contextPackDraft,
@@ -4190,7 +4241,6 @@ final class AppModel: ObservableObject {
                 throw RelayUIError.message("This context pack needs a ready source pane and at least two other target panes.")
             }
             let rendered = try contextPackBuilder.render(draft.pack)
-            guard let targets = chooseAskManyTargets(candidates: contextPackAskTargets) else { return }
             guard confirmContextSend(
                 title: "Compare this context across \(targets.count) panes?",
                 detail: "Every selected pane receives the same \(rendered.utf8.count)-byte attributed pack and none sees a peer answer.",
@@ -4211,7 +4261,19 @@ final class AppModel: ObservableObject {
     func compareAskMany() {
         guard canCompareAskMany,
               let source = activePane else { return }
-        guard let targets = chooseAskManyTargets(candidates: askTargets) else { return }
+        requestPaneChoice(
+            title: "Compare with which panes?",
+            message: "Choose at least two distinct panes. Every selected pane receives the same question independently.",
+            actionLabel: "Continue",
+            candidates: askTargets,
+            selection: .multiple(minimum: 2)
+        ) { [weak self] targets in
+            guard let self, targets.count >= 2 else { return }
+            self.compareAskMany(source: source, targets: targets)
+        }
+    }
+
+    private func compareAskMany(source: WorkbenchPane, targets: [WorkbenchPane]) {
         guard let question = editRelay(
             title: "Compare Independent Answers",
             message: "Only this exact question will be submitted to every selected pane. They answer concurrently and do not see one another's responses.",
@@ -5111,42 +5173,34 @@ final class AppModel: ObservableObject {
         pinnedContextSnippets = try pinnedContextSnippetStore.snippets()
     }
 
-    private func chooseAskManyTargets(candidates: [WorkbenchPane]) -> [WorkbenchPane]? {
-        let alert = NSAlert()
-        alert.messageText = "Compare with which panes?"
-        alert.informativeText = "Choose at least two distinct panes. Every selected pane receives the same question independently."
-        alert.addButton(withTitle: "Continue")
-        alert.addButton(withTitle: "Cancel")
+    private func requestPaneChoice(
+        title: String,
+        message: String,
+        actionLabel: String,
+        candidates: [WorkbenchPane],
+        selection: PaneChoiceRequest.Selection,
+        completion: @escaping ([WorkbenchPane]) -> Void
+    ) {
+        paneChoiceRequest = PaneChoiceRequest(
+            title: title,
+            message: message,
+            actionLabel: actionLabel,
+            candidates: candidates,
+            selection: selection,
+            completion: completion
+        )
+    }
 
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 6
-        let buttons = candidates.map { pane in
-            let location = pane.workspaceName.map { " · \($0)" } ?? ""
-            let button = NSButton(
-                checkboxWithTitle: "\(pane.displayName) · \(pane.kind.label)\(location) (\(pane.id))",
-                target: nil,
-                action: nil
-            )
-            button.state = .on
-            stack.addArrangedSubview(button)
-            return button
-        }
-        stack.frame = NSRect(x: 0, y: 0, width: 460, height: CGFloat(max(1, buttons.count)) * 26)
-        alert.accessoryView = stack
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+    /// Continues the flow that asked for a choice once the sheet has closed,
+    /// so any follow-up confirmation presents against a settled window.
+    func resolvePaneChoice(_ selected: [WorkbenchPane]) {
+        guard let request = paneChoiceRequest else { return }
+        paneChoiceRequest = nil
+        DispatchQueue.main.async { request.completion(selected) }
+    }
 
-        let selected = zip(candidates, buttons).compactMap { pane, button in
-            button.state == .on ? pane : nil
-        }
-        guard selected.count >= 2 else {
-            NSAlert(error: RelayUIError.message(
-                "Independent comparison needs at least two selected panes."
-            )).runModal()
-            return nil
-        }
-        return selected
+    func cancelPaneChoice() {
+        paneChoiceRequest = nil
     }
 
     private func appendContextPackParts(_ parts: [ContextPackPart], draftID: String) throws {
@@ -5211,50 +5265,6 @@ final class AppModel: ObservableObject {
         let measurement = contextPackBuilder.measure(draft.pack)
         draft.renderedByteCount = measurement.renderedByteCount
         draft.isValid = measurement.isValid
-    }
-
-    private func chooseContextPane(candidates: [WorkbenchPane]) -> WorkbenchPane? {
-        guard !candidates.isEmpty else {
-            NSAlert(error: RelayUIError.message("There is no running pane from which selected text can be added.")).runModal()
-            return nil
-        }
-        let alert = NSAlert()
-        alert.messageText = "Use selection from which pane?"
-        alert.informativeText = "Select terminal text first. Parley reads only that pane's current selection; it never captures scrollback or a whole conversation implicitly."
-        alert.addButton(withTitle: "Add Selection")
-        alert.addButton(withTitle: "Cancel")
-        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 460, height: 28))
-        picker.addItems(withTitles: candidates.map {
-            let workspace = $0.workspaceName.map { " · \($0)" } ?? ""
-            return "\($0.displayName) · \($0.kind.label)\(workspace) (\($0.id))"
-        })
-        alert.accessoryView = picker
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        return candidates[max(0, picker.indexOfSelectedItem)]
-    }
-
-    private func chooseContextTarget(candidates: [WorkbenchPane], preferredPaneID: String? = nil) -> WorkbenchPane? {
-        guard !candidates.isEmpty else {
-            NSAlert(error: RelayUIError.message("Open a ready pane from another vendor before sending this context pack.")).runModal()
-            return nil
-        }
-        let alert = NSAlert()
-        alert.messageText = "Ask which vendor with this context?"
-        alert.informativeText = "The exact pack visible behind this dialog will be submitted through Parley's attributed Ask path."
-        alert.addButton(withTitle: "Continue")
-        alert.addButton(withTitle: "Cancel")
-        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 460, height: 28))
-        picker.addItems(withTitles: candidates.map {
-            let workspace = $0.workspaceName.map { " · \($0)" } ?? ""
-            return "\($0.displayName) · \($0.kind.label)\(workspace) (\($0.id))"
-        })
-        if let preferredPaneID,
-           let preferredIndex = candidates.firstIndex(where: { $0.id == preferredPaneID }) {
-            picker.selectItem(at: preferredIndex)
-        }
-        alert.accessoryView = picker
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        return candidates[max(0, picker.indexOfSelectedItem)]
     }
 
     private func confirmContextSend(title: String, detail: String, action: String) -> Bool {

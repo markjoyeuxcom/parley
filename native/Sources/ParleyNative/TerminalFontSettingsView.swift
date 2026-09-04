@@ -14,10 +14,14 @@ struct TerminalFontSettingsView: View {
 
     private let availableFamilies: [String]
     private let dismissAfterApply: Bool
+    private let showsTitle: Bool
 
-    init(model: AppModel, dismissAfterApply: Bool = true) {
+    /// `showsTitle` is false when Settings already names the tab, so the
+    /// Appearance pane does not carry a second heading.
+    init(model: AppModel, dismissAfterApply: Bool = true, showsTitle: Bool = true) {
         self.model = model
         self.dismissAfterApply = dismissAfterApply
+        self.showsTitle = showsTitle
         _selectedFamily = State(initialValue: model.terminalFontPreference.family ?? "")
         _size = State(initialValue: model.terminalFontPreference.size ?? model.terminalAppearanceImport?.fontSize ?? 14)
         _overrideSize = State(initialValue: model.terminalFontPreference.size != nil)
@@ -28,8 +32,10 @@ struct TerminalFontSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Terminal Appearance")
-                    .font(.title2.weight(.semibold))
+                if showsTitle {
+                    Text("Terminal Appearance")
+                        .font(.title2.weight(.semibold))
+                }
                 Text("Applies to every current and future shell and agent pane. Running processes and vendor sessions remain unchanged.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
