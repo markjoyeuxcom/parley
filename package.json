@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "node scripts/run-native-swift.mjs dev --package-path native --runtime development --cwd .",
     "dev:restart-protocol": "node scripts/run-native-swift.mjs dev --package-path native --runtime development --cwd . --restart-stale-protocol",
-    "test": "node scripts/run-native-swift.mjs run --package-path native parley-native-checks && node --test scripts/github-security.test.mjs scripts/native-macos-package.test.mjs scripts/native-macos-release.test.mjs scripts/public-repository-scan.test.mjs vscode-extension/test/contracts.test.cjs vscode-extension/test/context-basket.test.cjs vscode-extension/test/extension-host.test.cjs && node --check vscode-extension/extension.cjs && node --check vscode-extension/companion-model.cjs && npm run scan:public",
+    "test": "node scripts/run-native-swift.mjs run --package-path native parley-native-checks && node --test scripts/run-native-swift.test.mjs scripts/github-security.test.mjs scripts/native-macos-package.test.mjs scripts/native-macos-release.test.mjs scripts/public-repository-scan.test.mjs vscode-extension/test/contracts.test.cjs vscode-extension/test/context-basket.test.cjs vscode-extension/test/extension-host.test.cjs && node --check vscode-extension/extension.cjs && node --check vscode-extension/companion-model.cjs && npm run scan:public",
     "scan:public": "node scripts/public-repository-scan.mjs",
     "test:soak": "node scripts/run-native-swift.mjs run --package-path native parley-native-soak",
     "build": "node scripts/run-native-swift.mjs build --package-path native",

@@ -286,6 +286,20 @@ public enum ParleyHelpGuide {
             symbol: "arrow.left.arrow.right",
             sections: [
                 ParleyHelpSection(
+                    id: "handoffs-agent-awareness",
+                    title: "Recover Parley's instructions in any project",
+                    paragraphs: [
+                        "Parley supplies one canonical protocol at agent launch, independently of the project folder. Help and protocol are local reference commands; they do not contact the broker, grant permissions or prove that a model absorbed the instructions.",
+                        "Every agent gets PARLEY_COMMAND for an absolute-path fallback if its shell rebuilds PATH. Vendor tool approval still applies. A pane marked RESTART FOR PROTOCOL needs an explicit restart to receive changed launch instructions.",
+                        "Agy is passed the generated instructions directory, but automatic loading from an added directory remains unverified. If its instructions are missing, ask it to run parley protocol. A fresh/resumed-session smoke check is required before claiming uptake.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand("parley help", "Show the complete command index, including reviewed context, progress and result files."),
+                        ParleyHelpCommand("parley protocol", "Read the exact canonical launch instructions and the map of native-only controls."),
+                        ParleyHelpCommand("\"$PARLEY_COMMAND\" protocol", "Reach the same runtime-local command when PATH has been rebuilt."),
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "handoffs-discovery",
                     title: "Discover identity, panes and events",
                     paragraphs: [
@@ -686,6 +700,15 @@ public enum ParleyHelpGuide {
                         "Is the operation read-only, a project-local write, code execution, network access or a system change?",
                         "Could the target contain a secret, credential, private key, token or unrelated personal data?",
                         "Choose the narrowest access and shortest duration that lets the task proceed.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "cli-permissions-swiftpm",
+                    title: "Swift package builds in agent panes",
+                    paragraphs: [
+                        SwiftPMCompatibility.explanation,
+                        "Enable this in Settings → General → Swift package builds, then explicitly restart an existing agent pane or start a new one. The setting is off by default and is stored separately for Production and Development.",
+                        "The runtime-local wrapper preserves your PATH-selected Swift toolchain, including mise. If a vendor rebuilds PATH, use the helper named by PARLEY_SWIFT_COMMAND. Absolute Swift paths and xcrun swift do not use the PATH wrapper. Tests that create their own sandbox may still need a human Shell pane.",
                     ]
                 ),
                 ParleyHelpSection(

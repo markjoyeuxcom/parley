@@ -1019,266 +1019,232 @@ struct ContentView: View {
         .accessibilityHint("Choose an agent or shell and where to split the active workspace")
     }
 
-    private var askMenu: some View {
-        Menu {
-            if let target = model.quickRelayTarget {
-                Section("Last Explicit Target") {
-                    Button("Ask \(target.displayName) · \(target.kind.label) with Selection…") {
-                        model.quickRelaySelection()
-                    }
-                    .disabled(!model.canQuickRelaySelection)
-                    .help("Command-Shift-A")
-                }
-                Divider()
-            }
-            if model.askTargets.isEmpty {
-                Text("Focus an agent pane with another vendor open")
-            } else {
-                if !model.localAskTargets.isEmpty {
-                    Section("This Workspace") {
-                        ForEach(model.localAskTargets) { target in
-                            Button("Ask \(target.displayName)") { model.ask(target) }
-                        }
-                    }
-                }
-                ForEach(model.otherWorkspaceAskGroups) { group in
-                    Menu(group.workspace.name) {
-                        ForEach(group.panes) { target in
-                            Button("Ask \(target.displayName)") { model.ask(target) }
-                        }
-                    }
-                }
-            }
-            if model.askManyComparisonRun != nil || model.canCompareAskMany {
-                Divider()
-                if let comparison = model.askManyComparisonRun {
-                    Button(comparison.isRunning ? "Open Active Comparison" : "Open Last Comparison") {
-                        model.presentAskManyComparison()
-                    }
-                }
-                Button("Compare Independently…") { model.compareAskMany() }
-                    .disabled(!model.canCompareAskMany)
-            }
-        } label: {
-            Label("Ask", systemImage: "arrow.turn.up.right")
+    private var askMenu: ToolbarActionMenu {
+        var items: [ToolbarMenuItem] = []
+        if let target = model.quickRelayTarget {
+            items += [
+                .heading("Last Explicit Target"),
+                .action(
+                    "Ask \(target.displayName) · \(target.kind.label) with Selection…",
+                    isEnabled: model.canQuickRelaySelection, help: "Command-Shift-A"
+                ) {
+                    guard model.quickRelayTarget?.id == target.id else { return }
+                    model.quickRelaySelection()
+                },
+                .separator
+            ]
         }
-        .accessibilityLabel("Ask another vendor")
-        .accessibilityValue("\(model.askTargets.count) available target\(model.askTargets.count == 1 ? "" : "s")")
-        .accessibilityHint("Choose another agent pane for a correlated question")
-        .disabled(model.askTargets.isEmpty && model.askManyComparisonRun == nil)
+        if model.askTargets.isEmpty {
+            items.append(.message("Focus an agent pane with another vendor open"))
+        } else {
+            if !model.localAskTargets.isEmpty {
+                items.append(.heading("This Workspace"))
+                items += model.localAskTargets.map { target in
+                    .action("Ask \(target.displayName)") { model.ask(target) }
+                }
+            }
+            items += model.otherWorkspaceAskGroups.map { group in
+                .submenu(group.workspace.name, items: group.panes.map { target in
+                    .action("Ask \(target.displayName)") { model.ask(target) }
+                })
+            }
+        }
+        if model.askManyComparisonRun != nil || model.canCompareAskMany {
+            items.append(.separator)
+            if let comparison = model.askManyComparisonRun {
+                items.append(.action(comparison.isRunning ? "Open Active Comparison" : "Open Last Comparison") {
+                    model.presentAskManyComparison()
+                })
+            }
+            items.append(.action("Compare Independently…", isEnabled: model.canCompareAskMany) {
+                model.compareAskMany()
+            })
+        }
+        return ToolbarActionMenu(
+            title: "Ask", systemImage: "arrow.turn.up.right",
+            isEnabled: !model.askTargets.isEmpty || model.askManyComparisonRun != nil,
+            accessibilityLabel: "Ask another vendor",
+            accessibilityValue: "\(model.askTargets.count) available target\(model.askTargets.count == 1 ? "" : "s")",
+            accessibilityHint: "Choose another agent pane for a correlated question",
+            items: items
+        )
     }
 
-    private var reviewMenu: some View {
-        Menu {
-            Menu("Current Changes") {
-                reviewTargetItems { model.reviewChanges(with: $0) }
-            }
-            Menu("Plan or File…") {
-                reviewTargetItems { model.reviewFile(with: $0) }
-            }
-        } label: {
-            Label("Review", systemImage: "doc.text.magnifyingglass")
-        }
-        .accessibilityLabel("Review with another vendor")
-        .disabled(model.askTargets.isEmpty)
-        .help("Preview repository changes or a selected file, then ask another vendor to review it")
-        .accessibilityHint("Preview current changes, a plan, or a file before asking another vendor")
+    private var reviewMenu: ToolbarActionMenu {
+        ToolbarActionMenu(
+            title: "Review", systemImage: "doc.text.magnifyingglass",
+            isEnabled: !model.askTargets.isEmpty,
+            accessibilityLabel: "Review with another vendor",
+            help: "Preview repository changes or a selected file, then ask another vendor to review it",
+            accessibilityHint: "Preview current changes, a plan, or a file before asking another vendor",
+            items: [
+                .submenu("Current Changes", items: reviewTargetItems { model.reviewChanges(with: $0) }),
+                .submenu("Plan or File…", items: reviewTargetItems { model.reviewFile(with: $0) })
+            ]
+        )
     }
 
-    private var contextPackMenu: some View {
-        Menu {
-            if !model.pendingContextReviews.isEmpty {
-                Section("Agent Drafts Awaiting Review") {
-                    ForEach(model.pendingContextReviews) { review in
-                        Button {
-                            model.presentContextReview(review)
-                        } label: {
-                            let target = review.requestedTargetName.map { " → \($0)" } ?? ""
-                            Label(
-                                "\(review.sourcePaneName)\(target) · \(review.state == .awaitingReview ? "awaiting review" : "draft")",
-                                systemImage: review.state == .awaitingReview ? "person.crop.circle.badge.clock" : "doc.badge.ellipsis"
-                            )
-                        }
-                    }
+    private var contextPackMenu: ToolbarActionMenu {
+        var items: [ToolbarMenuItem] = []
+        if !model.pendingContextReviews.isEmpty {
+            items.append(.heading("Agent Drafts Awaiting Review"))
+            items += model.pendingContextReviews.map { review in
+                let target = review.requestedTargetName.map { " → \($0)" } ?? ""
+                return .action(
+                    "\(review.sourcePaneName)\(target) · \(review.state == .awaitingReview ? "awaiting review" : "draft")",
+                    systemImage: review.state == .awaitingReview ? "person.crop.circle.badge.clock" : "doc.badge.ellipsis"
+                ) { model.presentContextReview(review) }
+            }
+            items.append(.separator)
+        }
+        if let draft = model.contextPackDraft {
+            items += [
+                .action("Open Context Pack “\(draft.pack.name)”") { model.presentContextPack() },
+                .separator
+            ]
+        }
+        items.append(.action("New Context Pack…", isEnabled: model.canCreateContextPack) { model.newContextPack() })
+        if model.activeWorkspace != nil {
+            items += [
+                .separator,
+                .heading("Workspace Brief"),
+                .action(model.activeWorkspaceBrief == nil ? "Create Workspace Brief…" : "Edit Workspace Brief…") {
+                    model.editWorkspaceBrief()
                 }
-                Divider()
+            ]
+            if model.activeWorkspaceBrief != nil {
+                items.append(.action("New Context Pack with Workspace Brief…", isEnabled: model.canCreateContextPack) {
+                    model.newContextPackWithWorkspaceBrief()
+                })
             }
-            if let draft = model.contextPackDraft {
-                Button("Open Context Pack “\(draft.pack.name)”") { model.presentContextPack() }
-                Divider()
-            }
-            Button("New Context Pack…") { model.newContextPack() }
-                .disabled(!model.canCreateContextPack)
-            if model.activeWorkspace != nil {
-                Divider()
-                Section("Workspace Brief") {
-                    Button(model.activeWorkspaceBrief == nil ? "Create Workspace Brief…" : "Edit Workspace Brief…") {
-                        model.editWorkspaceBrief()
-                    }
-                    if model.activeWorkspaceBrief != nil {
-                        Button("New Context Pack with Workspace Brief…") {
-                            model.newContextPackWithWorkspaceBrief()
-                        }
-                        .disabled(!model.canCreateContextPack)
-                    }
-                }
-            }
-            Divider()
-            Section("Reusable Context") {
-                Button("Manage Pinned Snippets…") {
-                    model.presentPinnedContextSnippets()
-                }
-            }
-            Divider()
-            Button {
+        }
+        items += [
+            .separator,
+            .heading("Reusable Context"),
+            .action("Manage Pinned Snippets…") { model.presentPinnedContextSnippets() },
+            .separator,
+            .action("How Context Works", systemImage: "questionmark.circle") {
                 model.requestHelp(topicID: "context-model")
                 openWindow(id: "help")
-            } label: {
-                Label("How Context Works", systemImage: "questionmark.circle")
             }
-        } label: {
-            Label(
-                model.pendingContextReviews.isEmpty ? "Context" : "Context \(model.pendingContextReviews.count)",
-                systemImage: model.pendingContextReviews.isEmpty ? "shippingbox" : "shippingbox.fill"
-            )
-        }
-        .accessibilityLabel("Context packs and references")
-        .accessibilityValue(
-            model.pendingContextReviews.isEmpty
+        ]
+        return ToolbarActionMenu(
+            title: model.pendingContextReviews.isEmpty ? "Context" : "Context \(model.pendingContextReviews.count)",
+            systemImage: model.pendingContextReviews.isEmpty ? "shippingbox" : "shippingbox.fill",
+            accessibilityLabel: "Context packs and references",
+            accessibilityValue: model.pendingContextReviews.isEmpty
                 ? (model.contextPackDraft.map { "\($0.pack.parts.count) sources" } ?? "No draft")
-                : "\(model.pendingContextReviews.count) agent draft\(model.pendingContextReviews.count == 1 ? "" : "s") awaiting review"
+                : "\(model.pendingContextReviews.count) agent draft\(model.pendingContextReviews.count == 1 ? "" : "s") awaiting review",
+            help: "Manage reusable context, edit the workspace brief or assemble explicit attributed sources before a cross-vendor handoff",
+            accessibilityHint: "Manage pinned context and the workspace brief, or open an editable attributed context pack",
+            items: items
         )
-        .help("Manage reusable context, edit the workspace brief or assemble explicit attributed sources before a cross-vendor handoff")
-        .accessibilityHint("Manage pinned context and the workspace brief, or open an editable attributed context pack")
     }
 
-    private var recipeMenu: some View {
-        Menu {
-            if model.workspaceLead == nil {
-                Text("Mark an agent pane as workspace lead")
-            }
-            Section("Run with Workspace Lead") {
-                ForEach(model.recipes) { recipe in
-                    Button(recipe.name) { model.run(recipe) }
-                        .disabled(!model.canRun(recipe))
-                }
-            }
-            Section("Smart Orchestration") {
-                if model.activeSupervisedWorkflow != nil {
-                    Button("Open Active Orchestration…") { model.presentSupervisedWorkflow() }
-                } else {
-                    Button("New Plan → Review → Implement → Verify…") {
-                        model.startSupervisedWorkflow()
-                    }
-                    .disabled(!model.canStartSupervisedWorkflow)
-                }
-                if !model.recentSupervisedWorkflows.isEmpty {
-                    Menu("Recent Orchestration") {
-                        ForEach(model.recentSupervisedWorkflows.prefix(8)) { run in
-                            Button {
-                                model.presentSupervisedWorkflow(run)
-                            } label: {
-                                Text("\(run.phase.label) · \(run.updatedAt.formatted(date: .abbreviated, time: .shortened))")
-                            }
-                        }
-                    }
-                }
-            }
-            Divider()
-            Menu("Edit Recipes") {
-                ForEach(model.recipes) { recipe in
-                    Button(recipe.name) { model.edit(recipe) }
-                }
-                Divider()
-                Button("Restore Defaults…") { model.restoreDefaultRecipes() }
-            }
-        } label: {
-            Label("Recipes", systemImage: "list.bullet.rectangle")
+    private var recipeMenu: ToolbarActionMenu {
+        var items: [ToolbarMenuItem] = []
+        if model.workspaceLead == nil {
+            items.append(.message("Mark an agent pane as workspace lead"))
         }
-        .accessibilityLabel("Recipes and smart orchestration")
-        .accessibilityValue(model.workspaceLead.map { "Lead: \($0.displayName)" } ?? "No workspace lead")
-        .help("Run a one-shot recipe or a bounded supervised or Auto cross-vendor sequence")
-        .accessibilityHint("Choose a recipe or configure smart Plan, Review, Implement, Verify orchestration")
+        items.append(.heading("Run with Workspace Lead"))
+        items += model.recipes.map { recipe in
+            .action(recipe.name, isEnabled: model.canRun(recipe)) { model.run(recipe) }
+        }
+        items += [.separator, .heading("Smart Orchestration")]
+        if model.activeSupervisedWorkflow != nil {
+            items.append(.action("Open Active Orchestration…") { model.presentSupervisedWorkflow() })
+        } else {
+            items.append(.action("New Plan → Review → Implement → Verify…", isEnabled: model.canStartSupervisedWorkflow) {
+                model.startSupervisedWorkflow()
+            })
+        }
+        if !model.recentSupervisedWorkflows.isEmpty {
+            items.append(.submenu("Recent Orchestration", items: model.recentSupervisedWorkflows.prefix(8).map { run in
+                .action("\(run.phase.label) · \(run.updatedAt.formatted(date: .abbreviated, time: .shortened))") {
+                    model.presentSupervisedWorkflow(run)
+                }
+            }))
+        }
+        var editItems: [ToolbarMenuItem] = model.recipes.map { recipe in
+            .action(recipe.name) { model.edit(recipe) }
+        }
+        editItems += [.separator, .action("Restore Defaults…") { model.restoreDefaultRecipes() }]
+        items += [.separator, .submenu("Edit Recipes", items: editItems)]
+        return ToolbarActionMenu(
+            title: "Recipes", systemImage: "list.bullet.rectangle",
+            accessibilityLabel: "Recipes and smart orchestration",
+            accessibilityValue: model.workspaceLead.map { "Lead: \($0.displayName)" } ?? "No workspace lead",
+            help: "Run a one-shot recipe or a bounded supervised or Auto cross-vendor sequence",
+            accessibilityHint: "Choose a recipe or configure smart Plan, Review, Implement, Verify orchestration",
+            items: items
+        )
     }
 
-    private var returnMenu: some View {
-        Menu {
-            ForEach(model.activePaneConsultations) { consultation in
-                Button("Answer \(consultation.sourceName)") {
-                    model.returnConsultation(consultation)
-                }
+    private var returnMenu: ToolbarActionMenu {
+        ToolbarActionMenu(
+            title: "Return", systemImage: "arrow.turn.down.left",
+            isEnabled: model.canReturn,
+            accessibilityLabel: "Return answer",
+            accessibilityValue: model.canReturn ? "Answer destination available" : "No answer destination",
+            accessibilityHint: "Return the active pane's answer to its waiting requester",
+            items: model.activePaneConsultations.map { consultation in
+                .action("Answer \(consultation.sourceName)") { model.returnConsultation(consultation) }
             }
-        } label: {
-            Label("Return", systemImage: "arrow.turn.down.left")
-        }
-        .accessibilityLabel("Return answer")
-        .accessibilityValue(model.canReturn ? "Answer destination available" : "No answer destination")
-        .accessibilityHint("Return the active pane's answer to its waiting requester")
-        .disabled(!model.canReturn)
+        )
     }
 
-    private var compactActionsMenu: some View {
-        Menu {
-            reviewMenu
-            contextPackMenu
-            recipeMenu
-            returnMenu
-            if hasWaitingWork {
-                waitingMenu
-            }
-            Divider()
-            Button("Balance Panes", action: model.balance)
-        } label: {
-            Label("Actions", systemImage: "ellipsis.circle")
-        }
-        .accessibilityLabel("Pane actions")
-        .accessibilityHint("Review, return, inspect waiting work, or balance panes")
+    private var compactActionsMenu: ToolbarActionMenu {
+        var items = [reviewMenu.asSubmenu, contextPackMenu.asSubmenu, recipeMenu.asSubmenu, returnMenu.asSubmenu]
+        if hasWaitingWork { items.append(waitingMenu.asSubmenu) }
+        items += [.separator, .action("Balance Panes", perform: model.balance)]
+        return ToolbarActionMenu(
+            title: "Actions", systemImage: "ellipsis.circle",
+            accessibilityLabel: "Pane actions",
+            accessibilityHint: "Review, return, inspect waiting work, or balance panes",
+            items: items
+        )
     }
 
     private var hasWaitingWork: Bool {
         !model.consultations.isEmpty || !model.activeDelegations.isEmpty
     }
 
-    private var waitingMenu: some View {
-        Menu {
-            if !model.consultations.isEmpty {
-                Section("Questions") {
-                    ForEach(model.consultations) { consultation in
-                        Button(
-                            "Cancel \(consultation.sourceName) → \(consultation.targetName)…",
-                            role: .destructive
-                        ) {
-                            model.cancel(consultation)
-                        }
-                    }
+    private var waitingMenu: ToolbarActionMenu {
+        var items: [ToolbarMenuItem] = []
+        if !model.consultations.isEmpty {
+            items.append(.heading("Questions"))
+            items += model.consultations.map { consultation in
+                .action("Cancel \(consultation.sourceName) → \(consultation.targetName)…", isDestructive: true) {
+                    model.cancel(consultation)
                 }
             }
-            if !model.activeDelegations.isEmpty {
-                Section("Delegated Work") {
-                    ForEach(model.activeDelegations) { handoff in
-                        Menu("\(handoff.sourceName) → \(handoff.targetName)") {
-                            Text(activitySubject(handoff.text))
-                            Divider()
-                            Button("Focus \(handoff.sourceName)") { model.focus(handoff, target: false) }
-                                .disabled(!model.canFocus(handoff.sourcePaneID))
-                            Button("Focus \(handoff.targetName)") { model.focus(handoff, target: true) }
-                                .disabled(!model.canFocus(handoff.targetPaneID))
-                            Divider()
-                            Button("Cancel Tracking…", role: .destructive) { model.cancel(handoff) }
-                        }
-                    }
-                }
-            }
-        } label: {
-            Label(
-                "Waiting \(model.consultations.count + model.activeDelegations.count)",
-                systemImage: "clock"
-            )
         }
-        .accessibilityLabel("Waiting collaboration")
-        .accessibilityValue("\(model.consultations.count) questions, \(model.activeDelegations.count) delegations")
-        .help("Inspect questions and delegated work awaiting a result")
-        .accessibilityHint("Inspect work awaiting an answer or completion")
+        if !model.activeDelegations.isEmpty {
+            if !items.isEmpty { items.append(.separator) }
+            items.append(.heading("Delegated Work"))
+            items += model.activeDelegations.map { handoff in
+                .submenu("\(handoff.sourceName) → \(handoff.targetName)", items: [
+                    .message(activitySubject(handoff.text)),
+                    .separator,
+                    .action("Focus \(handoff.sourceName)", isEnabled: model.canFocus(handoff.sourcePaneID)) {
+                        model.focus(handoff, target: false)
+                    },
+                    .action("Focus \(handoff.targetName)", isEnabled: model.canFocus(handoff.targetPaneID)) {
+                        model.focus(handoff, target: true)
+                    },
+                    .separator,
+                    .action("Cancel Tracking…", isDestructive: true) { model.cancel(handoff) }
+                ])
+            }
+        }
+        return ToolbarActionMenu(
+            title: "Waiting \(model.consultations.count + model.activeDelegations.count)", systemImage: "clock",
+            accessibilityLabel: "Waiting collaboration",
+            accessibilityValue: "\(model.consultations.count) questions, \(model.activeDelegations.count) delegations",
+            help: "Inspect questions and delegated work awaiting a result",
+            accessibilityHint: "Inspect work awaiting an answer or completion",
+            items: items
+        )
     }
 
     @ViewBuilder
@@ -1878,23 +1844,22 @@ struct ContentView: View {
         )
     }
 
-    @ViewBuilder
-    private func reviewTargetItems(action: @escaping (WorkbenchPane) -> Void) -> some View {
+    private func reviewTargetItems(action: @escaping (WorkbenchPane) -> Void) -> [ToolbarMenuItem] {
+        var items: [ToolbarMenuItem] = []
         if !model.localAskTargets.isEmpty {
-            Section("This Workspace") {
-                ForEach(model.localAskTargets) { target in
-                    Button(target.displayName) { action(target) }
-                }
+            items.append(.heading("This Workspace"))
+            items += model.localAskTargets.map { target in
+                .action(target.displayName) { action(target) }
             }
         }
-        ForEach(model.otherWorkspaceAskGroups) { group in
-            Menu(group.workspace.name) {
-                ForEach(group.panes) { target in
-                    Button(target.displayName) { action(target) }
-                }
-            }
+        items += model.otherWorkspaceAskGroups.map { group in
+            .submenu(group.workspace.name, items: group.panes.map { target in
+                .action(target.displayName) { action(target) }
+            })
         }
+        return items
     }
+
 }
 
 /// Renders a native layout tree: horizontal splits sit side by side,

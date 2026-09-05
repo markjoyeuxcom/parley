@@ -3786,6 +3786,8 @@ public final class RelayBroker: @unchecked Sendable {
         Return the answer to the waiting \(consultation.sourceName) turn by running:
         parley answer current "your answer"
 
+        If Parley's instructions are missing, run `parley protocol` (or `"$PARLEY_COMMAND" protocol` when PATH changed). Vendor tool approval still applies.
+
         For a multiline answer, pipe the text to `parley answer current`. Parley identifies the waiting question from this pane's credential, so do not copy or invent an id. Do not only print the answer in this pane; the requester is blocked waiting for that command.
         """
     }
@@ -3804,15 +3806,17 @@ public final class RelayBroker: @unchecked Sendable {
         When the work is complete, return a concise completion report to \(handoff.sourceName) by running:
         parley done current "your completion report"
 
-        For a substantial UTF-8 result file inside this pane's working folder, stage it for explicit human review by running:
+        For a substantial result file of at most \(ContextPackBuilder.defaultMaximumPartBytes) UTF-8 bytes inside this pane's working folder, stage it for explicit human review by running:
         parley done current --file <path>
         In that file, plain Markdown headings ## Implemented, ## Tested (each command and its outcome) and ## Unable to test (with the reason) are shown to the person as agent-declared completion evidence; nothing in it is checked by Parley.
 
-        At each milestone, replace the one compact, agent-declared progress note visible to \(handoff.sourceName) by running:
+        At each milestone, replace the one agent-declared progress note of at most \(DelegationProgressText.maximumBytes) UTF-8 bytes visible to \(handoff.sourceName) by running:
         parley progress current "what changed"
 
         If the work cannot be completed, return the blocking reason by running:
         parley fail current "why the work failed"
+
+        If Parley's instructions are missing, run `parley protocol` (or `"$PARLEY_COMMAND" protocol` when PATH changed). Vendor tool approval still applies.
 
         For a multiline report, pipe the text to `parley done current` or `parley fail current`. A returned file is not forwarded automatically. Parley identifies this tracked item from the pane credential. Do not only print the result in this pane; the initiating agent may use `parley wait` for the structured outcome.
         """
@@ -4323,6 +4327,12 @@ public enum RelayShim {
         ).replacingOccurrences(
             of: "__PARLEY_BUNDLE_IDENTIFIER__",
             with: shellLiteral(ParleyRuntime.productionBundleIdentifier)
+        ).replacingOccurrences(
+            of: "__PARLEY_COMMAND_HELP__",
+            with: shellLiteral(AgentProtocol.commandHelp)
+        ).replacingOccurrences(
+            of: "__PARLEY_PROTOCOL_TEXT__",
+            with: shellLiteral(AgentProtocol.text)
         )
     }
 
@@ -4337,6 +4347,13 @@ public enum RelayShim {
     set -eu
     umask 077
     runtime_marker=__PARLEY_RUNTIME_MARKER__
+
+    show_help() {
+      if [ -n "$runtime_marker" ]; then
+        echo "Parley relay [$runtime_marker]"
+      fi
+      printf '%s\\n' __PARLEY_COMMAND_HELP__
+    }
 
     command="${1:-}"
     target=""
@@ -4370,6 +4387,22 @@ public enum RelayShim {
       exit 0
     fi
     case "$command" in
+      help|--help|-h)
+        if [ "$#" -ne 1 ]; then
+          echo "usage: parley help" >&2
+          exit 2
+        fi
+        show_help
+        exit 0
+        ;;
+      protocol)
+        if [ "$#" -ne 1 ]; then
+          echo "usage: parley protocol" >&2
+          exit 2
+        fi
+        printf '%s' __PARLEY_PROTOCOL_TEXT__
+        exit 0
+        ;;
       context)
         subcommand="${2:-}"
         case "$subcommand" in
@@ -4557,32 +4590,7 @@ public enum RelayShim {
         shift
         ;;
       *)
-        if [ -n "$runtime_marker" ]; then
-          echo "Parley relay [$runtime_marker]" >&2
-        fi
-        echo "usage:" >&2
-        echo "  parley whoami                    show this pane's authenticated identity" >&2
-        echo "  parley panes                     list explicit agent targets and lifecycle facts" >&2
-        echo "  parley events --since <cursor>   read bounded content-minimal coordination events" >&2
-        echo "  parley open <folder>             open or focus a workspace in the installed app" >&2
-        echo "  parley relay <pane> [text...]   submit an attributed message" >&2
-        echo "  parley paste <pane> [text...]   paste without sending" >&2
-        echo "  parley ask <pane> [question...] focused Ask; recovery id on stderr" >&2
-        echo "  parley ask-many <a,b> [question...] ask explicit panes independently" >&2
-        echo "  parley context draft --file <path> stage explicit context for review" >&2
-        echo "  parley context discard <draft>     discard your staged context" >&2
-        echo "  parley ask <pane> --context <draft> [question...] wait for reviewed Ask" >&2
-        echo "  parley answer current [text...] answer this pane's waiting question" >&2
-        echo "  parley delegate <pane> [task...] start tracked asynchronous work" >&2
-        echo "  parley delegate <pane> --parent <id> [task...] request changes on a returned delegation" >&2
-        echo "  parley status                    list work initiated by this pane as JSON" >&2
-        echo "  parley wait <id|current>         wait for an Ask or delegated result" >&2
-        echo "  parley progress current [note...] replace this pane's latest progress note" >&2
-        echo "  parley done current [report...]  complete this pane's delegated work" >&2
-        echo "  parley done current --file <path> stage a substantial result for human review" >&2
-        echo "  parley fail current [reason...]  fail this pane's delegated work" >&2
-        echo "  parley cancel <id|current>       cancel tracking for work this pane initiated" >&2
-        echo "text may also come on stdin" >&2
+        show_help >&2
         exit 2
         ;;
     esac

@@ -42,7 +42,7 @@ private func hookPane(
 }
 
 func checkOfficialVendorHookAdaptersAndSignals() throws {
-    try hookExpect(AgentProtocol.version == "16", "official hook semantics did not receive linked Request Changes delegation")
+    try hookExpect(AgentProtocol.version == "18", "official hooks did not use the current shared protocol")
 
     let directory = try hookCheckDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

@@ -70,6 +70,9 @@ public final class WorkbenchController: @unchecked Sendable {
 
     public let applicationDirectory: URL
     public let protocolDirectory: URL
+    private let swiftPMDirectory: URL
+    private var swiftPMCompatibilityEnabled: Bool
+    private var swiftPMLaunches: [String: (generation: Int, enabled: Bool)] = [:]
     public let environment: [String: String]
 
     private let stateFile: URL
@@ -85,6 +88,7 @@ public final class WorkbenchController: @unchecked Sendable {
     public init(
         applicationDirectory: URL? = nil,
         environment: [String: String]? = nil,
+        swiftPMCompatibilityEnabled: Bool = false,
         fileManager: FileManager = .default
     ) throws {
         let directory = applicationDirectory ?? fileManager.homeDirectoryForCurrentUser
@@ -92,6 +96,7 @@ public final class WorkbenchController: @unchecked Sendable {
         self.applicationDirectory = directory
         self.environment = Self.scrubInheritedCapabilities(environment ?? EnvironmentResolver.resolved())
         self.fileManager = fileManager
+        self.swiftPMCompatibilityEnabled = swiftPMCompatibilityEnabled
         stateFile = directory.appendingPathComponent("workbench-state.json")
         permissionProfileStore = PermissionProfileStore(
             file: directory.appendingPathComponent("permission-profiles.json"),
@@ -101,6 +106,7 @@ public final class WorkbenchController: @unchecked Sendable {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         protocolDirectory = try AgentProtocol.install(in: directory, fileManager: fileManager)
+        swiftPMDirectory = try SwiftPMCompatibility.install(in: directory, fileManager: fileManager)
 
         if fileManager.fileExists(atPath: stateFile.path) {
             let decoder = JSONDecoder()
@@ -109,6 +115,11 @@ public final class WorkbenchController: @unchecked Sendable {
         } else {
             document = Document(workspaces: [], panes: [], activity: [:], ownerPID: 0)
         }
+    }
+
+    /// A native preference affects future launches, never a retained process.
+    public func setSwiftPMCompatibilityEnabled(_ enabled: Bool) {
+        lock.withLock { swiftPMCompatibilityEnabled = enabled }
     }
 
     public func configureRelay(_ runtime: RelayRuntime) {
@@ -781,7 +792,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 // inherited authority before the login shell starts.
                 let metadataKeys = Set(launchEnvironment.keys)
                 let inheritedKeys = Set(ProcessInfo.processInfo.environment.keys.filter { $0.hasPrefix("PARLEY_") })
-                    .union(["PARLEY_RELAY_TOKEN", "PARLEY_PROTOCOL_VERSION", "PARLEY_RUNTIME", "TMUX", "TMUX_PANE"])
+                    .union(["PARLEY_RELAY_TOKEN", "PARLEY_PROTOCOL_VERSION", "PARLEY_COMMAND", "PARLEY_RUNTIME", "PARLEY_SWIFT_COMMAND", "PARLEY_SWIFTPM_COMPATIBILITY", "TMUX", "TMUX_PANE"])
                     .subtracting(metadataKeys)
                 argv = ["/usr/bin/env"] + inheritedKeys.sorted().flatMap { ["-u", $0] }
                 if let marker = relayRuntime?.runtimeMarker { argv += ["PARLEY_RUNTIME=\(marker)"] }
@@ -796,11 +807,21 @@ public final class WorkbenchController: @unchecked Sendable {
                 let token = try relayRuntime.credentials.token(for: pane.id)
                 launchEnvironment["PARLEY_RELAY_TOKEN"] = token
                 launchEnvironment["PARLEY_PROTOCOL_VERSION"] = AgentProtocol.version
-                launchEnvironment["PATH"] = "\(relayRuntime.shimDirectory.path):\(environment["PATH"] ?? "/usr/bin:/bin")"
+                if swiftPMLaunches[pane.id]?.generation != pane.launchGeneration {
+                    let liveIDs = Set(document.panes.map(\.id))
+                    swiftPMLaunches = swiftPMLaunches.filter { liveIDs.contains($0.key) }
+                    swiftPMLaunches[pane.id] = (pane.launchGeneration, swiftPMCompatibilityEnabled)
+                }
+                let swiftPMEnabled = swiftPMLaunches[pane.id]?.enabled == true
+                launchEnvironment["PARLEY_SWIFT_COMMAND"] = swiftPMDirectory.appendingPathComponent("swift").path
+                launchEnvironment["PARLEY_SWIFTPM_COMPATIBILITY"] = swiftPMEnabled ? "1" : "0"
+                let swiftPMPath = swiftPMEnabled ? "\(swiftPMDirectory.path):" : ""
+                launchEnvironment["PATH"] = "\(relayRuntime.shimDirectory.path):\(swiftPMPath)\(environment["PATH"] ?? "/usr/bin:/bin")"
                 if let marker = relayRuntime.runtimeMarker { launchEnvironment["PARLEY_RUNTIME"] = marker }
                 for (key, value) in AgentProtocol.environment(
                     for: pane.kind,
                     protocolDirectory: protocolDirectory,
+                    commandPath: relayRuntime.shimDirectory.appendingPathComponent("parley"),
                     inherited: environment
                 ) { launchEnvironment[key] = value }
                 let boundary = try AgentProcessBoundary(
@@ -1153,7 +1174,12 @@ public final class WorkbenchController: @unchecked Sendable {
         for key in source.keys where key.hasPrefix("PARLEY_") {
             scrubbed[key] = nil
         }
-        let managedBins = Set(ParleyRuntime.controlDirectories().map { $0.appendingPathComponent("bin").path })
+        var managedBins = Set(ParleyRuntime.controlDirectories().flatMap {
+            [$0.appendingPathComponent("bin").path, SwiftPMCompatibility.directory(in: $0).path]
+        })
+        if let helper = source["PARLEY_SWIFT_COMMAND"], helper.hasSuffix("/agent-protocol/swiftpm-bin/swift") {
+            managedBins.insert(URL(fileURLWithPath: helper).deletingLastPathComponent().path)
+        }
         if let path = scrubbed["PATH"] {
             scrubbed["PATH"] = path.split(separator: ":", omittingEmptySubsequences: false)
                 .filter { !managedBins.contains(String($0)) }.joined(separator: ":")

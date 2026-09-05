@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "16"
+    public static let version = "18"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -11,9 +11,19 @@ public enum AgentProtocol {
     You are running inside a Parley agent pane. Follow this protocol even when
     older conversation text describes different relay behaviour.
 
-    - Inspect this pane's authenticated identity with `parley whoami`. Its JSON
-      contains app-owned pane, vendor, workspace, role and lifecycle fields, never
+    - At the start of a session, inspect this pane's authenticated identity with
+      `parley whoami`. Its JSON contains app-owned pane, vendor, workspace, role
+      and lifecycle fields, never
       a credential, folder, prompt or terminal text.
+    - Use `parley help` for the complete command index and `parley protocol`
+      to recover this exact canonical reference after context loss. Both are
+      local, read-only and work from any project folder without a live broker.
+      If your shell rebuilds PATH, use `"$PARLEY_COMMAND" help` or
+      `"$PARLEY_COMMAND" protocol`; the app supplies this absolute command path.
+      Absolute-path invocation may still require the vendor's normal tool approval.
+      These commands do not prove that a vendor loaded or retained instructions.
+      A pane marked RESTART FOR PROTOCOL needs an explicit person-authorized
+      restart to receive changed launch instructions; do not restart it silently.
     - Discover explicit non-self agent targets with `parley panes`. Treat its
       lifecycle and input-path fields as Parley-owned facts, not as a claim that
       a vendor is thinking, idle or ready at its prompt.
@@ -69,8 +79,9 @@ public enum AgentProtocol {
       native-only. The parent must be a Delegate with a returned result, and a
       busy target is refused rather than queued.
     - While delegated work is active, its exact target may replace one compact,
-      agent-declared note with `parley progress current "<note>"`. Progress is
-      not proof of activity or completion; use `done` or `fail` for the
+      agent-declared note of at most \(DelegationProgressText.maximumBytes) UTF-8 bytes with
+      `parley progress current "<note>"`. Progress is not proof of activity or
+      completion; use `done` or `fail` for the
       terminal outcome.
     - When delegated work reaches a terminal outcome, run
       `parley done current "<report>"` or `parley fail current "<reason>"`.
@@ -80,6 +91,9 @@ public enum AgentProtocol {
       durably stages the bounded file as agent-provided content for explicit
       human review; it does not send or promote the file automatically.
       Do not only print the result locally; the initiating pane owns the status.
+      A result file may use `## Implemented`, `## Tested` and
+      `## Unable to test` headings. These are agent-declared completion
+      evidence shown as unchecked claims, never verification or a human verdict.
     - Name one agent pane by vendor, pane name or pane id. Same-vendor routes
       are allowed only when source and target are different panes; self-targeting
       is refused. A stable workspace role is explicit: use `@reviewer`, or
@@ -91,12 +105,99 @@ public enum AgentProtocol {
       start another Parley instance or attempt to control another pane except
       through the authenticated `parley` commands above.
 
+    - SwiftPM compatibility is an explicit setting for new agent panes. When
+      `PARLEY_SWIFTPM_COMPATIBILITY=1`, Parley's runtime-local `swift` wrapper
+      adds `--disable-sandbox` only to SwiftPM build, test, run and package
+      commands. Manifests and plugins then use the agent's existing permissions;
+      Parley's outer boundary and vendor tool approvals remain active.
+      If your shell rebuilds PATH, use `"$PARLEY_SWIFT_COMMAND" build ...`
+      (or test, run, package) to reach the same wrapper and selected toolchain.
+      The setting is off by default and is controlled in the native UI at
+      Settings > General > Swift package builds. If SwiftPM reports
+      `sandbox_apply: Operation not permitted`, explain this option to the
+      person; enabling it applies to newly started or explicitly restarted panes.
+      Do not set `PARLEY_SWIFTPM_COMPATIBILITY=1` or pass `--disable-sandbox`
+      without the person's authorization. A per-command
+      `PARLEY_SWIFTPM_COMPATIBILITY=0` restores SwiftPM's normal behaviour.
+
+    Features in the native UI are person-controlled, not additional agent commands:
+    - Pane and workspace menus manage splits, folders, Focus Canvas, moving and
+      cloning panes, team templates, roles and the workspace lead.
+    - Ask, Review and Return provide editable handoff previews. Context manages
+      attributed Context Packs, workspace briefs, pinned snippets and reviewed
+      editor imports. Human captures keep their provenance; agent drafts remain
+      claims. Independent Compare keeps its targets' answers separate.
+    - Recipes and smart orchestration coordinate visible cross-vendor work under
+      the workspace's policy. Status Center shows handoffs, progress, results
+      and attention; Challenge and Verify link reviews to a returned handoff.
+      Only the person can set a verdict, change permissions or approve context.
+      History search/export, the Collaboration Dock and Help make this work
+      inspectable. Suggest the appropriate native UI action when needed; do not
+      invent CLI commands or control another pane through a separate channel.
+
     Copilot delivery requires the person to resolve its folder-trust prompt and
     confirm Copilot Folder Trust in its pane menu for the current session.
     Hooks remain advisory and never grant this confirmation.
 
     The latest explicit user instruction controls whether a handoff is sent or
     left as a draft. Parley's command result is authoritative about what happened.
+    """
+
+    /// The CLI index is generated from the same authority as launch instructions.
+    /// It is local reference text, not a broker request or a permission grant.
+    public static let commandHelp = """
+    Parley commands — protocol v\(version)
+
+    Local reference (no broker or pane credential required):
+      parley help                       show this index; also --help or -h
+      parley protocol                   print the exact canonical launch protocol
+
+    Authenticated discovery:
+      parley whoami                     show this pane's identity and protocol stamp
+      parley panes                      list explicit non-self agent targets
+      parley events --since <beginning|now|cursor>
+                                        read bounded content-minimal coordination events
+
+    Questions and delivery:
+      parley relay <target> [text...]    submit an attributed message immediately
+      parley paste <target> [text...]    place a draft without sending
+      parley ask <target> [question...]  wait for one answer; recovery id on stderr
+      parley ask-many <a,b> [question...] compare explicit targets independently
+      parley answer <id|current> [text...] answer a waiting consultation
+
+    Reviewed context:
+      parley context draft [--name <name>] --file <path>
+      parley context add <draft-id> --file <path>
+      parley context list
+      parley context show <draft-id>
+      parley context discard <draft-id>
+      parley ask <target> --context <draft-id> [question...]
+                                        wait for human review before submitting
+
+    Delegated work:
+      parley delegate <target> [task...] create tracked asynchronous work
+      parley delegate <target> --parent <handoff-id> [task...]
+                                        request changes on a returned Delegate
+      parley progress <id|current> [note...] replace one \(DelegationProgressText.maximumBytes)-byte UTF-8 progress note
+      parley done <id|current> [report...] complete delegated work
+      parley done <id|current> --file <path> stage a result for human review
+      parley fail <id|current> [reason...] report failure
+      parley status                     list work this pane initiated as JSON
+      parley wait <id|current>           wait for an Ask or delegated result
+      parley cancel <id|current>         cancel owned tracking, not the target CLI
+
+    Reserved entry points:
+      parley signal <event>             reserved for generated vendor hook adapters
+      parley open <folder>              person-only workspace opening; refused in agent panes
+
+    Text payloads may also come on stdin. Use the exact id supplied by a received
+    Ask or Delegate. 'current' must resolve unambiguously; Ask recovery after a
+    disconnected shell requires the same source pane generation.
+    Targets are explicit pane ids, unambiguous pane/vendor names, @roles,
+    workspace/@roles, or lead. Self-targeting and ambiguity are refused.
+    Staged files stay inside this pane's working folder and remain agent-provided.
+    Native UI previews, Challenge/Verify, verdicts and permission decisions are
+    person-controlled. Run parley protocol for the complete rules and UI map.
     """
 
     public static func install(in applicationDirectory: URL, fileManager: FileManager = .default) throws -> URL {
@@ -141,15 +242,18 @@ public enum AgentProtocol {
         )
     }
 
-    /// Extra launch environment needed by instruction systems that do not
-    /// expose a direct system/developer-prompt argument. The canonical text
-    /// still lives in the same generated AGENTS.md used by every adapter.
+    /// Every agent gets PATH-independent command recovery. Copilot also needs
+    /// its canonical instructions directory in the vendor-owned environment.
     public static func environment(
         for kind: PaneKind,
         protocolDirectory: URL,
+        commandPath: URL? = nil,
         inherited: [String: String] = [:]
     ) -> [String: String] {
-        guard kind == .copilot else { return [:] }
+        guard kind.isAgent else { return [:] }
+        let command = commandPath ?? protocolDirectory.deletingLastPathComponent().appendingPathComponent("bin/parley")
+        var result = ["PARLEY_COMMAND": command.path]
+        guard kind == .copilot else { return result }
 
         let key = "COPILOT_CUSTOM_INSTRUCTIONS_DIRS"
         var directories = [protocolDirectory.path]
@@ -158,7 +262,8 @@ public enum AgentProtocol {
                 if !directories.contains(directory) { directories.append(directory) }
             }
         }
-        return [key: directories.joined(separator: ",")]
+        result[key] = directories.joined(separator: ",")
+        return result
     }
 
     public static func stalePaneIDs(in panes: [WorkbenchPane]) -> [String] {
