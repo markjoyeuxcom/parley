@@ -214,6 +214,14 @@ final class AppModel: ObservableObject {
     private var pendingCommandRunIDs: [String] {
         commandRuns.filter { $0.state == .pending }.map(\.id)
     }
+    @Published private(set) var teamSessions: [TeamSession] = []
+    @Published private(set) var teamSessionError: String?
+    @Published private(set) var teamSessionsPresented = false
+    @Published private(set) var selectedTeamSessionID: String?
+    private var teamSessionAttention = ReviewedCommandRunAttention()
+    private var pendingTeamSessionIDs: [String] {
+        teamSessions.filter { $0.state == .pending }.map(\.id)
+    }
     @Published private(set) var consultations: [RelayConsultation] = []
     @Published private(set) var handoffs: [RelayHandoff] = []
     @Published private(set) var unreadHandoffs: [RelayHandoff] = []
@@ -587,7 +595,8 @@ final class AppModel: ObservableObject {
                     controller: controller,
                     credentials: credentials,
                     applicationDirectory: controller.applicationDirectory,
-                    transportDirectory: agentTransportDirectory
+                    transportDirectory: agentTransportDirectory,
+                    permissionProfiles: { [permissionProfileStore] in try permissionProfileStore.profiles() }
                 )
                 residentCore = core
                 relayClient = core.client
@@ -2262,7 +2271,7 @@ final class AppModel: ObservableObject {
         let mainWindow = NSApp.windows.first { $0.identifier?.rawValue == "main" || $0.title == "Parley" }
         // Include requested sheets that SwiftUI has not mounted yet. Keep
         // menus, native alerts, settings and other windows' edits undisturbed.
-        let anotherPresentation = commandPalettePresented || setupPresented
+        let anotherPresentation = commandPalettePresented || setupPresented || teamSessionsPresented
             || panePermissionRequest != nil || paneChoiceRequest != nil
             || askManyComparisonPresented || contextPackPresented
             || workspaceBriefPresented || pinnedContextSnippetsPresented
@@ -2333,8 +2342,197 @@ final class AppModel: ObservableObject {
     }
 
 
+    private func refreshTeamSessions() {
+        guard let core = residentCore, let controller else { return }
+        let coordinator = core.teamSessions
+        coordinator.reconcile()
+        let mainWindow = NSApp.windows.first { $0.identifier?.rawValue == "main" || $0.title == "Parley" }
+        // The Team Sessions sheet is the monitoring surface and never blocks
+        // creation. Any other sheet, a modal or a hidden window does, and a
+        // visible window is never activated or reordered for a creation.
+        let allowed = TeamProvisioningPresentation.allowsCreation(
+            teamSheetPresented: teamSessionsPresented,
+            commandRunsPresented: commandRunsPresented,
+            otherSheetAttached: mainWindow?.attachedSheet != nil,
+            modalWindowPresent: NSApp.modalWindow != nil,
+            mainWindowVisible: mainWindow?.isVisible == true && mainWindow?.isMiniaturized == false
+        )
+        if allowed, !coordinator.pendingProvisions().isEmpty {
+            coordinator.fulfilProvisions(create: { session, grant, provision in
+                // Resolve from the approved snapshot, never from a newer store.
+                let profile = try PermissionProfileResolver.resolve(
+                    definition: grant.approvedProfile,
+                    paneFolder: grant.folder,
+                    approvedRoots: grant.approvedRoots
+                )
+                return try controller.createTeamPane(session: session, grant: grant, provision: provision, permissionProfile: profile)
+            }, mount: { session, created in
+                // Ownership is already recorded; these steps only present the pane.
+                focusCanvasPaneID = nil
+                recordNativeSplit(created: created, target: panes.first { $0.id == session.source.id }, direction: .vertical)
+                panes = try controller.listPanes()
+                workspaces = try controller.listWorkspaces()
+                _ = try ghosttyRegistry.view(for: created.id)
+                ghosttyRegistry.select(paneID: created.id)
+                rememberFolder(created.cwd)
+            })
+        }
+        let sessions = coordinator.sessions()
+        if sessions != teamSessions { teamSessions = sessions }
+        teamSessionError = coordinator.lastError
+        refreshTeamSessionAttention()
+    }
+
+    private func refreshTeamSessionAttention() {
+        let mainWindow = NSApp.windows.first { $0.identifier?.rawValue == "main" || $0.title == "Parley" }
+        let anotherPresentation = commandPalettePresented || setupPresented || commandRunsPresented
+            || panePermissionRequest != nil || paneChoiceRequest != nil
+            || askManyComparisonPresented || contextPackPresented
+            || workspaceBriefPresented || pinnedContextSnippetsPresented
+            || supervisedWorkflowPresented || worktreeBrowserPresented
+            || releaseLifecyclePresented || betaFeedbackPresented
+            || handoffComposerDraft != nil || startupError != nil
+        let canPresent = mainWindow?.isKeyWindow == true
+            && mainWindow?.isVisible == true && mainWindow?.isMiniaturized == false
+            && NSApp.modalWindow == nil && !anotherPresentation
+            && !NSApp.windows.contains(where: { $0.attachedSheet != nil })
+            && RunLoop.main.currentMode != .eventTracking
+        let decision = teamSessionAttention.update(
+            pendingIDs: pendingTeamSessionIDs, reviewPresented: teamSessionsPresented,
+            canPresent: canPresent, applicationActive: NSApp.isActive
+        )
+        if decision.requestDockAttention {
+            _ = NSApp.requestUserAttention(.informationalRequest)
+        }
+        if let id = decision.presentRunID {
+            selectedTeamSessionID = id
+            teamSessionsPresented = true
+        }
+    }
+
+    func reviewTeamSessions() {
+        if let session = teamSessions.first(where: { $0.state == .pending })
+            ?? teamSessions.first(where: { $0.state == .active }) ?? teamSessions.first {
+            selectTeamSession(session)
+        }
+        teamSessionsPresented = true
+    }
+
+    func selectTeamSession(_ session: TeamSession) {
+        selectedTeamSessionID = session.id
+        if session.state == .pending { teamSessionAttention.didPresent(runID: session.id) }
+    }
+
+    func dismissTeamSessionReview() {
+        guard teamSessionsPresented else { return }
+        teamSessionAttention.didDismiss(pendingIDs: pendingTeamSessionIDs)
+        teamSessionsPresented = false
+    }
+
+    func approveTeamSession(_ session: TeamSession, objective: String, folder: String, allowedVendors: [PaneKind],
+                            permissionProfileID: String, paneLimit: Int, hours: Int) throws {
+        guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
+        try core.teamSessions.approve(id: session.id, revision: session.revision, objective: objective, folder: folder,
+            allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours)
+        teamSessions = core.teamSessions.sessions()
+        selectedTeamSessionID = session.id
+    }
+
+    func rejectTeamSession(_ session: TeamSession) {
+        perform {
+            guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
+            try core.teamSessions.reject(id: session.id, revision: session.revision)
+            teamSessions = core.teamSessions.sessions()
+            try refresh()
+        }
+    }
+
+    /// Stops only the panes this session created and still owns (same pane id
+    /// and created generation); the lead and unrelated panes keep running.
+    /// The disclosure names exactly that before the click.
+    func stopTeamSession(_ session: TeamSession) {
+        let alert = NSAlert()
+        alert.messageText = "Stop team session?"
+        alert.informativeText = TeamSessionDisclosure.stop
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Stop Session")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        perform {
+            guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
+            let members = try core.teamSessions.stop(id: session.id, reason: "Stopped by the person")
+            try finishStoppingTeamPanes(sessionID: session.id, members: members)
+        }
+    }
+
+    /// After provisioning authority ended (expiry, interruption or an earlier
+    /// Stop with failures), the person can still stop surviving owned panes.
+    /// Provisioning stays revoked; this never re-creates authority.
+    func stopTeamPanes(_ session: TeamSession) {
+        let alert = NSAlert()
+        alert.messageText = "Stop team panes?"
+        alert.informativeText = TeamSessionDisclosure.stop
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Stop Team Panes")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        perform {
+            guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
+            let members = try core.teamSessions.ownedMembers(id: session.id)
+            try finishStoppingTeamPanes(sessionID: session.id, members: members)
+        }
+    }
+
+    private func finishStoppingTeamPanes(sessionID: String, members: [TeamSessionMember]) throws {
+        guard let core = residentCore, let controller else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
+        var stopped: [String] = []
+        var skipped: [String] = []
+        var failed: [String] = []
+        for member in members {
+            guard let pane = panes.first(where: { $0.id == member.paneID }) else {
+                skipped.append("\(member.name): already closed")
+                continue
+            }
+            guard member.owns(pane) else {
+                skipped.append("\(member.name): restarted by you since creation, no longer team-owned")
+                continue
+            }
+            guard pane.kind.isAgent, pane.isStarted else {
+                skipped.append("\(member.name): already stopped")
+                continue
+            }
+            do {
+                try controller.stopPaneProcess(pane.id)
+                stopped.append(member.name)
+                try? recordSuccessfulActivity(RelayActivityEventRequest(
+                    kind: .teamSessionEnded,
+                    workspaceID: pane.workspaceID,
+                    workspaceName: pane.workspaceName ?? pane.workspaceID,
+                    paneID: pane.id,
+                    paneName: pane.displayName,
+                    paneKind: pane.kind,
+                    detail: "Stopped by the person through the team session; the pane remains as a stopped placeholder."
+                ))
+            } catch {
+                failed.append("\(member.name): \(error.localizedDescription)")
+            }
+        }
+        var parts: [String] = []
+        if !stopped.isEmpty { parts.append("Stopped: " + stopped.joined(separator: ", ")) }
+        if !skipped.isEmpty { parts.append("Skipped: " + skipped.joined(separator: "; ")) }
+        if !failed.isEmpty { parts.append("Could not stop: " + failed.joined(separator: "; ") + ". Use Stop team panes to retry.") }
+        if parts.isEmpty { parts.append("No team panes needed stopping.") }
+        core.teamSessions.recordStopOutcome(id: sessionID, outcome: parts.joined(separator: ". "))
+        teamSessions = core.teamSessions.sessions()
+        try refresh()
+        if !failed.isEmpty {
+            throw RelayUIError.message("Some team panes could not be stopped:\n" + failed.joined(separator: "\n") + "\n\nThe session shows the outcome and offers Stop team panes to retry.")
+        }
+    }
+
     func refresh() throws {
         refreshCommandRuns()
+        refreshTeamSessions()
         var firstError: Error?
         if let controller {
             do {
@@ -2454,7 +2652,8 @@ final class AppModel: ObservableObject {
                     applicationDirectory: controller.applicationDirectory,
                     transportDirectory: RelayFileTransport.runtimeDirectory(
                         applicationDirectory: controller.applicationDirectory
-                    )
+                    ),
+                    permissionProfiles: { [permissionProfileStore] in try permissionProfileStore.profiles() }
                 )
                 residentCore = core
                 relayClient = core.client

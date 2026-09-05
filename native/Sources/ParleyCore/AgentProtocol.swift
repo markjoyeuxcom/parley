@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "19"
+    public static let version = "20"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -96,6 +96,34 @@ public enum AgentProtocol {
       command runs or Status Center; Stop Everything and quit also end tracked runs
       and revoke grants. The completed pane remains an ordinary human Shell.
       This reviewed path grants no general agent-to-shell input route.
+    - To assemble a bounded team for one objective, run
+      `parley team request --folder <absolute-folder> [--template <name>] [--panes <n>] [--hours <n>] "<objective>"`
+      and wait. The folder must be inside this pane's working folder and the
+      workspace policy must allow delegation. Parley shows the person an
+      editable preview of the objective, folder, allowed vendors, permission
+      profile, pane limit (at most 8) and provisioning deadline (at most 128
+      hours); nothing is authorized until they approve. stderr reports a
+      Parley Team Session ID; stdout returns the approved session as JSON or
+      an explicit refusal. While the session is active, only this lead pane
+      may run
+      `parley team add --vendor <claude|codex|agy|copilot> [--name <name>] [--role <role>]`,
+      one pane at a time, to create a new started agent pane in this
+      workspace bound to the approved folder and profile. stderr reports a
+      Parley Pane Request ID; stdout returns the new pane id as JSON, after
+      which ordinary Ask and Delegate apply. If the calling shell
+      disconnects, `parley wait <id>` recovers either result only from this
+      same live pane generation. The limit counts every pane the session
+      created, including closed ones. Team members cannot add panes or
+      request nested sessions. `parley team status` returns this pane's
+      session as JSON. Each new pane keeps its vendor's own permission
+      prompts; Parley never answers or skips them and never restarts a pane
+      for you. The grant is memory-only and ends at the provisioning
+      deadline, on the person's Stop, on Stop Everything or quit, when this
+      pane restarts, moves, changes folder or its workspace policy changes,
+      and when the approved permission profile is edited or removed. The
+      deadline bounds provisioning only; it never stops running work. Only
+      the person stops panes, and Stop affects only panes the session
+      created that they have not restarted since.
 
     - To request changes on a returned Delegate you initiated or received, run
       `parley delegate <target> --parent <handoff-id> "<task>"`. Parley records
@@ -216,6 +244,17 @@ public enum AgentProtocol {
                                         request a new Shell and wait for captured output/exit
       parley wait <run-id>              recover a run from the same source generation
                                         Cancel and session trust are native-only
+
+    Team sessions (native approval; bounded provisioning for one objective):
+      parley team request --folder <absolute-folder> [--template <name>] [--panes <n>] [--hours <n>] [objective...]
+                                        wait for the person's editable approval
+      parley team add --vendor <claude|codex|agy|copilot> [--name <name>] [--role <role>]
+                                        lead only: create one approved pane; request id on stderr
+      parley team status                this pane's session as JSON
+      parley wait <session-or-pane-request-id>
+                                        recover a decision from the same source generation
+                                        Stop and grant revocation are native-only;
+                                        the deadline bounds provisioning, not work
 
     Reserved entry points:
       parley signal <event>             reserved for generated vendor hook adapters

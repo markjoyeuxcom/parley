@@ -4072,7 +4072,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "19", "the shared protocol version drifted from cross-project agent awareness")
+    try expect(AgentProtocol.version == "20", "the shared protocol version drifted from cross-project agent awareness")
     try expect(
         AgentProtocol.text.contains("parley delegate <target> --parent <handoff-id>")
             && AgentProtocol.text.contains("requestChanges")
@@ -10725,7 +10725,7 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == ApprovedComma
 
 // `--only <substring>` runs the matching checks alone during local iteration.
 let onlyFilter = argument(named: "--only")?.lowercased()
-let selectedChecks = (checks + reviewRegressionChecks + reviewedCommandRunChecks).filter { name, _ in
+let selectedChecks = (checks + reviewRegressionChecks + reviewedCommandRunChecks + teamSessionChecks).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var failureCount = 0
