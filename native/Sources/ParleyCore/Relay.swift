@@ -291,6 +291,17 @@ public enum RelayHandoffKind: String, Codable, Equatable, Sendable {
     case paste
     case ask
     case delegate
+    case commandRun
+
+    public var label: String {
+        switch self {
+        case .relay: "Relay"
+        case .paste: "Paste"
+        case .ask: "Ask"
+        case .delegate: "Delegate"
+        case .commandRun: "Command run"
+        }
+    }
 }
 
 public enum RelayHandoffRelationship: String, CaseIterable, Codable, Equatable, Sendable {
@@ -503,6 +514,7 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
     public var gitFactsAtDelegation: DelegationGitSnapshot? = nil
     public var gitFactsAtReturn: DelegationGitSnapshot? = nil
     public var resultText: String?
+    public var commandRun: ReviewedCommandRun? = nil
     public var resultContextReviewID: String? = nil
     public var readAt: Date? = nil
     public var state: RelayHandoffState
@@ -518,7 +530,7 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
     }
 
     public var hasReturnedResult: Bool {
-        (kind == .ask || kind == .delegate)
+        (kind == .ask || kind == .delegate || kind == .commandRun)
             && !(resultText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
     }
 
@@ -703,6 +715,10 @@ public final class RelayBroker: @unchecked Sendable {
             let now = Date()
             let reason = "Parley core restarted before this handoff reached a terminal state."
             handoff.state = .interrupted
+            handoff.commandRun?.state = .interrupted
+            handoff.commandRun?.workerStillRunning = false
+            handoff.commandRun?.detail = reason
+            handoff.commandRun?.updatedAt = now
             handoff.updatedAt = now
             handoff.transitions.append(RelayHandoffTransition(state: .interrupted, occurredAt: now, detail: reason))
             recovered[id] = handoff
@@ -1683,7 +1699,7 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 return failure(409, "Request Changes links only a Delegate parent")
             }
-            guard parent.hasReturnedResult else {
+            guard (parent.kind == .ask || parent.kind == .delegate), parent.hasReturnedResult else {
                 consultationCondition.unlock()
                 return failure(409, "Request Changes requires a returned Delegate result")
             }
@@ -2265,16 +2281,83 @@ public final class RelayBroker: @unchecked Sendable {
         waitForTrackedWork(token: token, handoffID: requestedHandoffID)
     }
 
-    public func waitForTrackedWork(token: String, handoffID requestedHandoffID: String) -> RelayTextResponse {
-        let source: WorkbenchPane
+
+    public private(set) var commandRuns: ReviewedCommandRunCoordinator?
+    /// Installed once by the native core before either transport starts.
+    public func enableReviewedCommandRuns() {
+        guard commandRuns == nil else { return }
+        commandRuns = ReviewedCommandRunCoordinator(
+            authenticate: { [credentials] in credentials.paneID(for: $0) },
+            panes: panes,
+            record: { [weak self] run in try self?.recordReviewedCommandRun(run) })
+    }
+
+    private func recordReviewedCommandRun(_ run: ReviewedCommandRun) throws {
+        consultationCondition.lock()
+        defer { consultationCondition.unlock() }
+        let state: RelayHandoffState = switch run.state {
+        case .pending, .approved: .created
+        case .running: .waiting
+        case .completed: .completed
+        case .rejected, .cancelled: .cancelled
+        case .interrupted: .interrupted
+        case .failed: .failed
+        }
+        let previous = handoffRecords[run.id]
+        // Every launched run was recorded before execution. A missing record
+        // now was cleared or pruned; a late capture must not recreate history.
+        // The coordinator retains the owned result and replay protection.
+        guard previous != nil || run.launchedAt == nil else { return }
+        var handoff = RelayHandoff(id: run.id, idempotencyKey: run.idempotencyKey,
+            kind: .commandRun, sourcePaneID: run.source.id, sourceName: run.source.displayName,
+            sourceLaunchGeneration: run.source.launchGeneration, sourceKind: run.source.kind,
+            sourceWorkspaceID: run.source.workspaceID, sourceWorkspaceName: run.source.workspaceName,
+            targetPaneID: run.shellPaneID, targetName: "New Shell for approved run", targetKind: .shell,
+            targetWorkspaceID: run.source.workspaceID, targetWorkspaceName: run.source.workspaceName,
+            text: "REQUESTED COMMAND RUN\nArgv: \(run.command.display)\nFolder: \(run.command.folder)\n\(ReviewedCommandRunCoordinator.trustDisclosure)",
+            submitted: run.launchedAt != nil,
+            resultText: run.result?.text, state: state, updatedAt: run.updatedAt,
+            transitions: previous?.transitions ?? [])
+        handoff.commandRun = run
+        handoff.attention = run.state == .pending ? .permissionRequired : nil
+        handoff.readAt = previous?.readAt
+        handoff.transitions.append(RelayHandoffTransition(state: state, occurredAt: run.updatedAt, detail: run.detail))
+        try handoffJournal?.recordDurably(handoff)
+        handoffRecords[run.id] = handoff
+        pruneHandoffsLocked()
+        consultationCondition.broadcast()
+
+    }
+
+
+    public func handleCommandRun(token: String, folder: String, body: String, idempotencyKey: String,
+                                 onAccepted: (String) -> Void) -> RelayTextResponse {
         do {
-            source = try authenticatedSender(token: token)
-        } catch let error as BrokerFailure {
-            return RelayTextResponse(status: error.status, text: error.message)
+            guard let commandRuns else { throw ReviewedCommandRunError.invalid("The native command-run service is unavailable.") }
+            let sender = try authenticatedSender(token: token)
+            consultationCondition.lock()
+            let previous = handoffRecords.values.first {
+                $0.kind == .commandRun && $0.sourcePaneID == sender.id
+                    && $0.sourceLaunchGeneration == sender.launchGeneration && $0.idempotencyKey == idempotencyKey
+            }
+            consultationCondition.unlock()
+            if let previous, !commandRuns.owns(id: previous.id) {
+                return RelayTextResponse(status: 409, text: "This request already exists in history. It will not be executed again; inspect its recorded result.")
+            }
+            let run = try commandRuns.request(token: token, argv: ReviewedCommand.decodeArguments(body),
+                folder: folder, idempotencyKey: idempotencyKey)
+            onAccepted(run.id)
+            return commandRuns.wait(token: token, id: run.id)
         } catch {
             return RelayTextResponse(status: 409, text: error.localizedDescription)
         }
+    }
 
+    public func waitForTrackedWork(token: String, handoffID requestedHandoffID: String) -> RelayTextResponse {
+        if let commandRuns, commandRuns.owns(id: requestedHandoffID) { return commandRuns.wait(token: token, id: requestedHandoffID) }
+        let source: WorkbenchPane
+        do { source = try authenticatedSender(token: token) }
+        catch { return RelayTextResponse(status: 403, text: error.localizedDescription) }
         consultationCondition.lock()
         let handoffID: String
         if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
@@ -2414,7 +2497,7 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 return RelayTextResponse(status: 404, text: "unknown parent handoff")
             }
-            guard parent.hasReturnedResult else {
+            guard (parent.kind == .ask || parent.kind == .delegate), parent.hasReturnedResult else {
                 consultationCondition.unlock()
                 return RelayTextResponse(status: 409, text: "Challenge and Verify require a returned Ask or Delegate result")
             }
@@ -3186,7 +3269,7 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.unlock()
             return RelayTextResponse(status: 404, text: "unknown handoff")
         }
-        guard handoff.hasReturnedResult else {
+        guard (handoff.kind == .ask || handoff.kind == .delegate), handoff.hasReturnedResult else {
             consultationCondition.unlock()
             return RelayTextResponse(status: 409, text: "only a returned Ask or Delegate result can be reviewed")
         }
@@ -3239,9 +3322,14 @@ public final class RelayBroker: @unchecked Sendable {
         return RelayTextResponse(status: 200, text: "Result marked read.")
     }
 
-    /// Deletes only terminal collaboration history involving one workspace.
-    /// Active Ask and Delegate records remain authoritative and are never
-    /// removed by history maintenance.
+    /// Explicit native control action; an empty workspace identifier never
+    /// means All Workspaces on the separate workspace-scoped route.
+    public func deleteAllHistory() -> RelayTextResponse {
+        deleteHistory(workspaceID: nil, workspaceName: nil)
+    }
+
+    /// Clears terminal history involving one exact workspace. Active work is
+    /// preserved, and a supplied stable id takes precedence over display names.
     public func deleteWorkspaceHistory(
         workspaceID: String,
         workspaceName: String? = nil
@@ -3251,55 +3339,57 @@ public final class RelayBroker: @unchecked Sendable {
         guard !requestedID.isEmpty || !requestedName.isEmpty else {
             return RelayTextResponse(status: 400, text: "workspace id or name is required")
         }
+        return deleteHistory(workspaceID: requestedID, workspaceName: requestedName)
+    }
 
+    private func deleteHistory(workspaceID: String?, workspaceName: String?) -> RelayTextResponse {
+        // Read the coordinator before taking the broker lock: coordinator
+        // recording acquires these locks in that order. Cancellation can end
+        // tracking while its owned worker is still running.
+        let activeCommandRunIDs = Set((commandRuns?.runs() ?? []).filter {
+            !$0.state.isTerminal || $0.workerStillRunning
+        }.map(\.id))
+        func matches(_ id: String, _ name: String?) -> Bool {
+            guard let workspaceID else { return true }
+            if !workspaceID.isEmpty { return id == workspaceID }
+            return name?.caseInsensitiveCompare(workspaceName ?? "") == .orderedSame
+        }
         let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
         consultationCondition.lock()
+        defer { consultationCondition.unlock() }
         let removalIDs = Set(handoffRecords.values.lazy.filter { handoff in
-            guard terminalStates.contains(handoff.state) else { return false }
-            let idMatches = !requestedID.isEmpty
-                && (handoff.sourceWorkspaceID == requestedID || handoff.targetWorkspaceID == requestedID)
-            let nameMatches = requestedID.isEmpty
-                && !requestedName.isEmpty
-                && [handoff.sourceWorkspaceName, handoff.targetWorkspaceName]
-                .compactMap { $0 }
-                .contains { $0.caseInsensitiveCompare(requestedName) == .orderedSame }
-            return idMatches || nameMatches
+            terminalStates.contains(handoff.state)
+                && !activeCommandRunIDs.contains(handoff.id)
+                && (matches(handoff.sourceWorkspaceID, handoff.sourceWorkspaceName)
+                    || matches(handoff.targetWorkspaceID, handoff.targetWorkspaceName))
         }.map(\.id))
-
-        let activityRemovalIDs = Set(activityRecords.values.lazy.filter { event in
-            let idMatches = !requestedID.isEmpty && event.workspaceID == requestedID
-            let nameMatches = requestedID.isEmpty
-                && !requestedName.isEmpty
-                && event.workspaceName.caseInsensitiveCompare(requestedName) == .orderedSame
-            return idMatches || nameMatches
+        let activityRemovalIDs = Set(activityRecords.values.lazy.filter {
+            matches($0.workspaceID, $0.workspaceName)
         }.map(\.id))
 
         do {
             try handoffJournal?.removeHandoffs(ids: removalIDs)
-            try activityJournal?.removeEvents(ids: activityRemovalIDs)
         } catch {
-            consultationCondition.unlock()
-            return RelayTextResponse(
-                status: 500,
-                text: "Parley could not delete workspace history: \(error.localizedDescription)"
-            )
+            return RelayTextResponse(status: 500, text: "Parley could not clear collaboration history: \(error.localizedDescription)")
         }
+        // Reflect each successful journal compaction immediately. If clearing
+        // activity fails next, the already-cleared handoffs must not reappear.
         handoffRecords = handoffRecords.filter { !removalIDs.contains($0.key) }
         idempotencyRecords = idempotencyRecords.filter { !removalIDs.contains($0.value.handoffID) }
         delegationResponses = delegationResponses.filter { !removalIDs.contains($0.key) }
+        do {
+            try activityJournal?.removeEvents(ids: activityRemovalIDs)
+        } catch {
+            return RelayTextResponse(status: 500,
+                text: "Cleared \(removalIDs.count) collaboration records, but activity history could not be cleared: \(error.localizedDescription). Active work was preserved.")
+        }
         activityRecords = activityRecords.filter { !activityRemovalIDs.contains($0.key) }
         transientVendorEventRecords = transientVendorEventRecords.filter { _, event in
-            let idMatches = !requestedID.isEmpty && event.workspaceID == requestedID
-            let nameMatches = requestedID.isEmpty
-                && !requestedName.isEmpty
-                && event.workspaceName.caseInsensitiveCompare(requestedName) == .orderedSame
-            return !idMatches && !nameMatches
+            !matches(event.workspaceID, event.workspaceName)
         }
-        consultationCondition.unlock()
-
         let removedCount = removalIDs.count + activityRemovalIDs.count
-        let noun = removedCount == 1 ? "record" : "records"
-        return RelayTextResponse(status: 200, text: "Deleted \(removedCount) workspace history \(noun).")
+        return RelayTextResponse(status: 200,
+            text: "Cleared \(removedCount) history record\(removedCount == 1 ? "" : "s"). Active work was preserved.")
     }
 
     /// Human control-token cancellation. This ends Parley's tracking only; the
@@ -3367,6 +3457,11 @@ public final class RelayBroker: @unchecked Sendable {
             return RelayTextResponse(status: 404, text: "unknown handoff")
         }
         switch handoff.kind {
+        case .commandRun:
+            consultationCondition.unlock()
+            guard origin != nil else { return RelayTextResponse(status: 403, text: "Command runs can be cancelled by the person in Parley.") }
+            do { try commandRuns?.cancel(id: handoffID, reason: message); return RelayTextResponse(status: 200, text: "Cancellation requested for the owned command.") }
+            catch { return RelayTextResponse(status: 409, text: error.localizedDescription) }
         case .ask:
             guard consultationRecords[handoffID] != nil else {
                 consultationCondition.unlock()
@@ -3419,6 +3514,8 @@ public final class RelayBroker: @unchecked Sendable {
         guard handoff.canRetrySafely else {
             consultationCondition.unlock()
             let reason = switch handoff.kind {
+            case .commandRun:
+                "An approved command cannot be replayed from history. Submit a new request for approval."
             case .ask:
                 "Ask cannot be retried from activity because its requesting command already returned."
             case .delegate:
@@ -3519,6 +3616,7 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     public func cancelAll(reason: String = "Parley stopped before the consultation completed.") {
+        commandRuns?.stop(reason: reason, permanently: false)
         consultationCondition.lock()
         let response = RelayTextResponse(status: 409, text: reason)
         for id in Array(consultationRecords.keys) {
@@ -3578,6 +3676,7 @@ public final class RelayBroker: @unchecked Sendable {
             case .paste: "paste"
             case .ask: "Ask/Answer"
             case .delegate: "tracked delegation"
+            case .commandRun: "reviewed command requests"
             }
             throw BrokerFailure(
                 status: 403,
@@ -4062,7 +4161,7 @@ public final class RelayBroker: @unchecked Sendable {
         let retryDisposition: RelayRetryDisposition = switch kind {
         case .relay, .paste:
             deliveryWasNotStarted ? .safe : .uncertain
-        case .ask, .delegate:
+        case .ask, .delegate, .commandRun:
             .unsupported
         }
         return RelayFailureAssessment(retryDisposition: retryDisposition, attention: attention)
@@ -4403,6 +4502,17 @@ public enum RelayShim {
         printf '%s' __PARLEY_PROTOCOL_TEXT__
         exit 0
         ;;
+      request-run)
+        shift
+        if [ "$#" -lt 4 ] || [ "${1:-}" != "--cwd" ] || [ "${3:-}" != "--" ]; then
+          echo "usage: parley request-run --cwd <absolute-folder> -- <absolute-executable> [args...]" >&2
+          exit 2
+        fi
+        target="$2"
+        shift 3
+        case "$target" in /*) ;; *) echo "--cwd must be absolute" >&2; exit 2 ;; esac
+        case "$1" in /*) ;; *) echo "the executable must be absolute" >&2; exit 2 ;; esac
+        ;;
       context)
         subcommand="${2:-}"
         case "$subcommand" in
@@ -4685,7 +4795,7 @@ public enum RelayShim {
       checks=0
       while :; do
         if [ "$ask_id_reported" -eq 0 ] \
-          && { [ "$command" = "ask" ] || [ "$command" = "context-ask" ]; } \
+          && { [ "$command" = "ask" ] || [ "$command" = "context-ask" ] || [ "$command" = "request-run" ]; } \
           && protected_directory "$response_dir" \
           && [ -f "$response_dir/accepted" ] && [ ! -L "$response_dir/accepted" ] \
           && [ -f "$response_dir/handoff-id" ] && [ ! -L "$response_dir/handoff-id" ]; then
@@ -4694,7 +4804,11 @@ public enum RelayShim {
             *[!a-f0-9-]*|"") ;;
             *)
               if [ "${#handoff_id}" -eq 36 ]; then
-                echo "Parley Ask ID: $handoff_id" >&2
+                if [ "$command" = "request-run" ]; then
+                  echo "Parley Run ID: $handoff_id" >&2
+                else
+                  echo "Parley Ask ID: $handoff_id" >&2
+                fi
                 ask_id_reported=1
               fi
               ;;
@@ -4722,6 +4836,9 @@ public enum RelayShim {
     }
 
     case "$command" in
+      request-run)
+        printf '%s\\0' "$@" | post
+        ;;
       relay|paste|ask|ask-many|delegate|context-ask)
         if [ "$#" -gt 0 ]; then
           printf '%s' "$*"

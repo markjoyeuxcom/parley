@@ -330,6 +330,16 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 } catch {
                     write(RelayTextResponse(status: 500, text: error.localizedDescription), to: client)
                 }
+            case "/ui/history/delete-all":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard request.body.isEmpty else {
+                    write(RelayTextResponse(status: 400, text: "all-workspace history deletion accepts no arguments"), to: client)
+                    return
+                }
+                write(broker.deleteAllHistory(), to: client)
             case "/ui/history/delete-workspace":
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)

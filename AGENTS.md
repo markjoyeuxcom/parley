@@ -34,7 +34,9 @@ Breaking any of these changes the product.
    `danger-full-access` or an equivalent bypass.
 4. **Cross-vendor first, pane-explicit.** Automatic targets are explicit agent
    panes other than the sender. Same-vendor routes require distinct panes.
-   Never broadcast implicitly, target a shell or guess between ambiguities.
+   Never broadcast implicitly, target a shell through Relay/Paste/Ask, or guess
+   between ambiguities. The person-approved request-run path below is the sole
+   explicit exception for new human Shell execution.
 5. **Visible and interruptible.** The person can see every participant and
    handoff, focus either side and stop tracked work.
 6. **Local coordination.** No hosted service, sync, telemetry or remote-control
@@ -295,6 +297,27 @@ locale.
 Strip parent multiplexer marker variables from vendor environments so a
 development launch cannot accidentally bind an agent to a parent terminal
 session.
+
+## Reviewed command runs
+
+The person-authorized `parley request-run --cwd <absolute-folder> --
+<absolute-executable> [args...]` path proposes exact argv and a contained
+canonical folder. Native editable approval opens one NEW visible Ghostty
+Shell pane; a fixed worker spawns argv directly, captures bounded stdout/stderr
+and real exit status, then execs an ordinary human Shell. Never interpolate
+agent content into a shell string, send input to an existing Shell, or present
+captured output as verification. This is explicitly outside the agent boundary
+and vendor tool enforcement; normal vendor launches retain their boundary.
+
+Per-run approval is the default. Optional exact-command session trust is native,
+off by default, memory-only, revocable and visibly disclosed. It keys exact argv,
+canonical folder and source generation and includes mutable code with human file
+and credential access. Cross-vendor attribution cannot be guaranteed while it is
+granted. Restart/move/folder/policy changes, Stop Everything and quit invalidate
+it. Do not restore execution authority from the handoff journal. One active run
+per requester; native cancellation stops its owned process group. Result recovery
+requires the same live source generation. Reuse the existing journal and 90 KB
+rendered/200 KB transport bounds; agent commands never create their own approval.
 
 ## SwiftPM inside agent panes
 

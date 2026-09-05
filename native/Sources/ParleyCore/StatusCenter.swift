@@ -263,7 +263,7 @@ public enum StatusCenterProjection {
                     id: "\(handoff.id):\(index)",
                     handoffID: handoff.id,
                     title: "\(handoff.sourceName) → \(handoff.targetName)",
-                    category: handoff.kind.rawValue.uppercased(),
+                    category: handoff.kind.label.uppercased(),
                     action: transition.state.rawValue.uppercased(),
                     occurredAt: transition.occurredAt,
                     detail: transition.detail,

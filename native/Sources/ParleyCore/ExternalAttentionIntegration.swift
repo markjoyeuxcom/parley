@@ -176,15 +176,17 @@ public enum ExternalAttentionProjection {
             reason = .returnedResult
             workspaceID = handoff.sourceWorkspaceID
             workspaceName = handoff.sourceWorkspaceName ?? handoff.sourceWorkspaceID
-            label = handoff.kind == .delegate
-                ? "\(handoff.targetName) completed a delegation"
-                : "\(handoff.targetName) returned an answer"
+            label = switch handoff.kind {
+            case .delegate: "\(handoff.targetName) completed a delegation"
+            case .commandRun: "\(handoff.targetName) returned a captured command result"
+            default: "\(handoff.targetName) returned an answer"
+            }
         } else if let attention = handoff.attention {
             reason = .humanInputRequired
             workspaceID = handoff.targetWorkspaceID
             workspaceName = handoff.targetWorkspaceName ?? handoff.targetWorkspaceID
             label = switch attention {
-            case .permissionRequired: "\(handoff.targetName) needs permission review"
+            case .permissionRequired: handoff.kind == .commandRun ? "\(handoff.sourceName) requests command approval" : "\(handoff.targetName) needs permission review"
             case .targetNotReady: "\(handoff.targetName) is not ready"
             case .targetUnavailable: "\(handoff.targetName) is unavailable"
             }

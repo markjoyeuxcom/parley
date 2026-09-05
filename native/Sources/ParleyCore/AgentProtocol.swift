@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "18"
+    public static let version = "19"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -72,6 +72,31 @@ public enum AgentProtocol {
       answer from the same source pane generation; `current` resolves only when
       exactly one active delegation exists. Cancel only your own active tracking
       with `parley cancel <id>`; this never interrupts the target CLI.
+    - For a noninteractive test command requiring a human Shell's permissions,
+      use `parley request-run --cwd <absolute-folder> -- <absolute-executable> [args...]`.
+      The canonical folder must be inside this pane's working folder. Arguments
+      remain literal; quote each argument in your vendor's tool invocation.
+      Parley waits for a native editable argv/folder preview and opens a NEW
+      visible Shell pane for each approved run. It never types into an existing
+      Shell. The command runs as the person outside the agent boundary and
+      outside vendor tool enforcement; stdin is closed, output uses pipes.
+      Requesting a run does not itself approve execution. Per-run approval is
+      the default. Only the person may grant or revoke exact-command session
+      trust in the native UI. That trust includes mutable project code and access
+      to the person's files and other pane credentials; cross-vendor attribution
+      cannot be guaranteed while it is granted. Never grant it yourself or
+      describe exact argv as a code boundary.
+      One active request is allowed per source pane. The command returns JSON
+      with approvedCommand (argv/folder after human edits), bounded stdout/stderr,
+      exitStatus or terminationSignal, cancelled and
+      outputTruncated. This is a captured command result, never a test verdict.
+      stderr reports a Parley Run ID; `parley wait <id>` recovers it only from
+      the same live requesting generation. A rejected, interrupted or uncertain
+      run must not be silently resubmitted. The person can Cancel in Requested
+      command runs or Status Center; Stop Everything and quit also end tracked runs
+      and revoke grants. The completed pane remains an ordinary human Shell.
+      This reviewed path grants no general agent-to-shell input route.
+
     - To request changes on a returned Delegate you initiated or received, run
       `parley delegate <target> --parent <handoff-id> "<task>"`. Parley records
       exactly one linked Delegate child with relationship `requestChanges` on
@@ -185,6 +210,12 @@ public enum AgentProtocol {
       parley status                     list work this pane initiated as JSON
       parley wait <id|current>           wait for an Ask or delegated result
       parley cancel <id|current>         cancel owned tracking, not the target CLI
+
+    Reviewed test runs (native approval; outside the agent boundary):
+      parley request-run --cwd <absolute-folder> -- <absolute-executable> [args...]
+                                        request a new Shell and wait for captured output/exit
+      parley wait <run-id>              recover a run from the same source generation
+                                        Cancel and session trust are native-only
 
     Reserved entry points:
       parley signal <event>             reserved for generated vendor hook adapters

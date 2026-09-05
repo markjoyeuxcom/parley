@@ -10,6 +10,7 @@ struct StatusCenterView: View {
     @State private var selectedBusyDraftID: String?
     @State private var showDismissed = false
     @State private var historyQuery = ""
+    @State private var historyManagementNotice: String?
     @State private var historyKind = CollaborationHistoryKindFilter.all
     @State private var historyOutcome = CollaborationHistoryOutcomeFilter.all
     @State private var historyExportSelection: Set<String> = []
@@ -101,6 +102,13 @@ struct StatusCenterView: View {
             RuntimeBanner(runtime: model.runtime)
             if model.runtime.visibleMarker != nil { Divider() }
             header
+            if let notice = historyManagementNotice {
+                Text(notice)
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.bottom, 8)
+            }
+            CommandRunNotice(model: model, alwaysShow: true)
             if let error = model.historyPersistenceError {
                 Text("History could not be saved. \(error) Delivered messages may already have reached their target; do not resend them to repair history.")
                     .font(.system(size: 12))
@@ -160,6 +168,7 @@ struct StatusCenterView: View {
             selectedHandoffID = nil
             selectedBusyDraftID = nil
             historyExportSelection.removeAll()
+            historyManagementNotice = nil
             ensureSelection()
         }
         .onChange(of: showDismissed) { _, _ in
@@ -240,6 +249,8 @@ struct StatusCenterView: View {
             )
             .accessibilityHint("Opens the Notifications tab in Settings, where workspace notifications are enabled")
             Menu {
+                Button("Manage history…") { segment = .history }
+                Divider()
                 Toggle("Show Dismissed", isOn: $showDismissed)
                 Button("Restore All Dismissed") {
                     model.restoreAllStatusCenterDismissals()
@@ -262,32 +273,28 @@ struct StatusCenterView: View {
                         }
                     }
                 }
-                if let workspace = model.workspaces.first(where: { $0.id == workspaceID }) {
-                    Divider()
-                    Button("Export History for \(workspace.name)…") {
-                        model.exportWorkspaceHistory(for: workspace)
-                    }
-                    Button("Delete History for \(workspace.name)…", role: .destructive) {
-                        if model.deleteStatusHistory(for: workspace) {
-                            selectedHandoffID = nil
-                            ensureSelection()
-                        }
-                    }
-                }
+                Divider()
+                Button("Export history for \(historyScopeLabel)…", action: exportHistoryScope)
+                    .disabled(scopedHistoryRecords.isEmpty)
             } label: {
-                Image(systemName: model.dismissedHandoffIDs.isEmpty ? "archivebox" : "archivebox.fill")
+                Label("History", systemImage: model.dismissedHandoffIDs.isEmpty ? "archivebox" : "archivebox.fill")
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .accessibilityLabel("Dismissed records, retention, export, and deletion")
+            .accessibilityLabel("History management")
             .accessibilityValue(
                 model.dismissedHandoffIDs.isEmpty
                     ? "No dismissed records"
                     : "\(model.dismissedHandoffIDs.count) dismissed record\(model.dismissedHandoffIDs.count == 1 ? "" : "s")"
             )
-            .help("Dismissed records, local retention, and workspace history controls")
-            .accessibilityHint("Show or restore dismissed records, change bounded local retention, or export and delete history for the selected workspace")
+            .help("Manage dismissed records, retention and export for the selected scope, including All Workspaces")
+            .accessibilityHint("Open history management, show or restore dismissed records, change local retention, or export the selected scope")
+            Button("Clear history…", role: .destructive, action: clearHistoryScope)
+                .controlSize(.small)
+                .disabled(!model.coreAvailable)
+                .help("Clear finished history for \(historyScopeLabel), including hidden records. Active work is preserved.")
+                .accessibilityLabel("Clear history for \(historyScopeLabel)")
             Picker("Scope", selection: $workspaceID) {
                 Text("All Workspaces").tag("")
                 ForEach(model.workspaces) { workspace in
@@ -523,7 +530,7 @@ struct StatusCenterView: View {
                         ChromeChip(verdict.label, color: verdictColor(verdict))
                     }
                     HStack(spacing: 5) {
-                        Text(handoff.kind.rawValue.capitalized)
+                        Text(handoff.kind.label)
                             .font(ChromeFont.secondary)
                             .foregroundStyle(.secondary)
                         ChromeChip(handoff.state.rawValue.capitalized, color: stateColor(handoff))
@@ -592,6 +599,26 @@ struct StatusCenterView: View {
     private var collaborationHistory: some View {
         statusGroup("COLLABORATION HISTORY") {
             VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 8) {
+                    Text("Retain up to").font(.system(size: 11))
+                    Picker("History retention", selection: Binding(
+                        get: { model.historyRetentionPolicy.maximumRecords },
+                        set: { model.setHistoryRetention(maximumRecords: $0) }
+                    )) {
+                        ForEach(CollaborationHistoryRetentionPolicy.allowedMaximumRecords, id: \.self) { limit in
+                            Text("\(limit) records").tag(limit)
+                        }
+                    }
+                    .labelsHidden().frame(width: 125)
+                    .disabled(!model.coreAvailable)
+                    Spacer()
+                    Button("Export scope…", action: exportHistoryScope)
+                        .disabled(scopedHistoryRecords.isEmpty)
+                        .help("Export loaded history for \(historyScopeLabel), including dismissed records and results hidden by filters.")
+                }.controlSize(.small)
+                Text("Retention applies to collaboration and activity separately across all workspaces. Active work is preserved.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                Divider()
                 HStack(spacing: 8) {
                     TextField("Search questions, results, people, workspaces…", text: $historyQuery)
                         .textFieldStyle(.roundedBorder)
@@ -697,7 +724,7 @@ struct StatusCenterView: View {
                     if let verdict = handoff.humanVerdict {
                         ChromeChip(verdict.label, color: verdictColor(verdict))
                     }
-                    Text(handoff.kind.rawValue.capitalized)
+                    Text(handoff.kind.label)
                         .font(ChromeFont.secondary)
                         .foregroundStyle(.secondary)
                     ChromeChip(handoff.state.rawValue.capitalized, color: stateColor(handoff))
@@ -720,9 +747,34 @@ struct StatusCenterView: View {
         )
     }
 
+    private var historyScopeLabel: String { selectedHistoryScopeName ?? "All Workspaces" }
+
+    private var scopedHistoryRecords: [RelayHandoff] {
+        model.statusSnapshot(workspaceID: workspaceID.isEmpty ? nil : workspaceID,
+                             includeDismissed: true).handoffs
+    }
+
+    private func exportHistoryScope() {
+        let records = scopedHistoryRecords
+        model.exportCollaborationHistory(records, scopeName: historyScopeLabel,
+            selectionDescription: "All \(records.count) loaded handoff records in this scope, including dismissed records")
+    }
+
+    private func clearHistoryScope() {
+        guard let message = model.clearStatusHistory(
+            workspaceID: workspaceID.isEmpty ? nil : workspaceID,
+            workspaceName: selectedHistoryScopeName
+        ) else { return }
+        historyManagementNotice = message
+        selectedHandoffID = nil
+        selectedBusyDraftID = nil
+        historyExportSelection.removeAll()
+        ensureSelection()
+    }
+
     private var selectedHistoryScopeName: String? {
         guard !workspaceID.isEmpty else { return nil }
-        return model.workspaces.first(where: { $0.id == workspaceID })?.name ?? workspaceID
+        return model.workspaces.first(where: { $0.workspaceID == workspaceID })?.name ?? workspaceID
     }
 
 
@@ -1098,7 +1150,7 @@ struct StatusCenterView: View {
                         Text("\(handoff.sourceName) → \(handoff.targetName)")
                             .font(.system(size: 16, weight: .semibold))
                         HStack(spacing: 7) {
-                            statusChip(handoff.kind.rawValue.uppercased(), color: .secondary)
+                            statusChip(handoff.kind.label.uppercased(), color: .secondary)
                             statusChip(handoff.state.rawValue.uppercased(), color: stateColor(handoff))
                             if let relationship = handoff.relationship {
                                 statusChip(relationship.rawValue.uppercased(), color: .accentColor)
@@ -1131,7 +1183,7 @@ struct StatusCenterView: View {
                     if threadMembers(handoff).count > 1 {
                         threadSection(handoff)
                     }
-                    inspectorSection(handoff.kind == .delegate ? "INSTRUCTION" : "QUESTION OR MESSAGE", handoff.text)
+                    inspectorSection(handoff.kind == .commandRun ? "COMMAND REQUEST" : (handoff.kind == .delegate ? "INSTRUCTION" : "QUESTION OR MESSAGE"), handoff.text)
                     if handoff.kind == .delegate {
                         TimelineView(.periodic(from: .now, by: 1)) { context in
                             if let facts = model.delegationVisibility(for: handoff, at: context.date) {
@@ -1146,7 +1198,7 @@ struct StatusCenterView: View {
                         delegationProgressSection(handoff, progress: progress)
                     }
                     if let result = handoff.resultText, !result.isEmpty {
-                        inspectorSection("RETURNED RESULT", result)
+                        inspectorSection(handoff.kind == .commandRun ? "CAPTURED COMMAND RESULT" : "RETURNED RESULT", result)
                     }
                     if let review = model.returnedFileReview(for: handoff) {
                         if let evidence = CompletionEvidenceProjection.evidence(for: handoff, review: review) {
@@ -1154,7 +1206,7 @@ struct StatusCenterView: View {
                         }
                         returnedFileReviewSection(review)
                     }
-                    if handoff.hasReturnedResult {
+                    if (handoff.kind == .ask || handoff.kind == .delegate) && handoff.hasReturnedResult {
                         HandoffHumanReviewEditor(model: model, handoff: handoff)
                             .id("\(handoff.id)-review-\(handoff.reviewRevision ?? 0)")
                     }
@@ -1306,7 +1358,7 @@ struct StatusCenterView: View {
                 Button("Focus Target") { model.focus(handoff, target: true) }
                     .disabled(!model.canFocus(handoff.targetPaneID))
             }
-            if handoff.hasReturnedResult {
+            if (handoff.kind == .ask || handoff.kind == .delegate) && handoff.hasReturnedResult {
                 HStack {
                     handoffReviewMenu(.challenge, handoff: handoff)
                     handoffReviewMenu(.verify, handoff: handoff)

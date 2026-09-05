@@ -54,7 +54,7 @@ public enum WorkspaceAutomationPolicy: String, CaseIterable, Codable, Equatable,
         switch kind {
         case .paste:
             true
-        case .relay, .ask:
+        case .relay, .ask, .commandRun:
             self != .off
         case .delegate:
             self == .askAndDelegate
