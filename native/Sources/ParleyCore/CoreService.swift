@@ -545,6 +545,14 @@ public struct RelayCoreClient: Sendable {
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
 
+    public func deleteAllHistory() throws -> RelayTextResponse {
+        let response = try request(
+            method: "POST", path: "/ui/history/delete-all",
+            headers: ["X-Parley-Control": controlToken], body: Data()
+        )
+        return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
     public func deleteWorkspaceHistory(
         workspaceID: String,
         workspaceName: String?

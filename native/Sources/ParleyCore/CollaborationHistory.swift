@@ -6,6 +6,7 @@ public enum CollaborationHistoryKindFilter: String, CaseIterable, Identifiable, 
     case delegate
     case relay
     case paste
+    case commandRun
 
     public var id: String { rawValue }
 
@@ -16,6 +17,7 @@ public enum CollaborationHistoryKindFilter: String, CaseIterable, Identifiable, 
         case .delegate: "Delegate"
         case .relay: "Relay"
         case .paste: "Paste"
+        case .commandRun: "Command runs"
         }
     }
 }
@@ -115,6 +117,7 @@ public enum CollaborationHistoryProjection {
         case .delegate: handoff.kind == .delegate
         case .relay: handoff.kind == .relay
         case .paste: handoff.kind == .paste
+        case .commandRun: handoff.kind == .commandRun
         }
     }
 
@@ -263,7 +266,7 @@ public enum CollaborationHistoryMarkdown {
             }
             lines.append(contentsOf: [
                 "",
-                handoff.kind == .delegate ? "### Instruction" : "### Question or message",
+                handoff.kind == .commandRun ? "### Command request" : (handoff.kind == .delegate ? "### Instruction" : "### Question or message"),
                 "",
                 fencedBlock(handoff.text),
             ])

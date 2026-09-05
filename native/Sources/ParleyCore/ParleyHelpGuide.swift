@@ -703,6 +703,20 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "cli-permissions-test-runs",
+                    title: "Requested command runs",
+                    paragraphs: [
+                        "An agent can request a noninteractive command with exact argv and a canonical folder inside its working folder. Review runs and trust opens an editable native preview. Run once in new Shell opens a new visible Shell in the requesting workspace; existing Shell panes never receive agent input.",
+                        ReviewedCommandRunCoordinator.trustDisclosure,
+                        "Per-run approval is the default. Optional exact-command session trust applies to argv, canonical folder and requesting pane generation, including code edited between runs. Active grants stay visible and can be revoked. Restart, move, folder or policy changes, Stop Everything and quit invalidate them.",
+                        "The command has closed stdin and separate piped stdout/stderr, bounded to 30 KB each with explicit truncation. Parley returns captured output and exit status or signal; it assigns no test verdict. Afterward the same pane becomes an ordinary interactive human Shell.",
+                        "One run may be active per requester. Cancel in Review runs and trust stops the owned process group. The same live requesting generation can recover the result using its run ID with parley wait. Do not resend an uncertain run to repair history.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand("parley request-run --cwd /absolute/project -- /absolute/executable arg", "Request an editable human approval and a new visible Shell run."),
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "cli-permissions-swiftpm",
                     title: "Swift package builds in agent panes",
                     paragraphs: [
@@ -853,8 +867,8 @@ public enum ParleyHelpGuide {
                         "The inspector renders the thread Delegation → Result → Request changes → Revised result from the existing handoffs' receipts, and the Markdown export preserves the same thread and linked children.",
                         "The Human Review editor stores an optional person-owned verdict and note on the same handoff. Agent panes have no command or capability route that can set this state.",
                         "Relationship, verdict, note and review time are searchable and remain visible in selected-result Context Packs and Markdown exports.",
-                        "With one workspace selected in Status Center, the archive menu can export every retained handoff involving that workspace, including dismissed records. The export contains handoff bodies and receipts, not lifecycle activity. The neighbouring Delete History action removes eligible handoffs and lifecycle activity only after a workspace-specific destructive confirmation; active work remains.",
-                        "Local retention is core-owned and separate for Production and Development. Choose a bound of 100, 250 or 500 for both handoffs and lifecycle events. Lowering it immediately and irreversibly removes the oldest eligible records; active handoffs are preserved, and increasing it later cannot restore deleted history.",
+                        "Status Center has a visible Clear history button that follows the selected workspace scope, including All Workspaces. Its confirmation names the scope and explains that clearing includes finished handoffs, their returned or captured results, and lifecycle activity hidden by filters or dismissal. Active work and running panes remain. All Workspaces also clears finished history for removed workspaces. This irreversible action affects only the current local runtime.",
+                        "History → Manage history opens search, filters, retention and export together. Command runs has its own kind filter. Export scope writes the loaded handoffs in the selected workspace scope, including dismissed records even in All Workspaces, regardless of search filters; it includes bodies and receipts, not lifecycle activity. Local retention is separate for Production and Development: choose 100, 250 or 500 records, with the same limit applied separately to handoffs and lifecycle events across all workspaces. Lowering the limit irreversibly prunes the oldest eligible records after confirmation; active handoffs remain, and increasing it later cannot restore deleted history.",
                         "The Markdown export deliberately contains complete question, instruction and returned-result bodies plus identities and delivery receipts. Review it before sharing; it is different from Parley's privacy-bounded diagnostics export.",
                         "Ask This Again is available only after an Ask has ended and its original cross-vendor source and target panes are still running, relay-ready and on the current protocol.",
                         "Repeating always opens the recorded question in an editable preview. Ask Again creates a fresh tracked handoff identity and leaves the historical record unchanged; Parley never silently replays it.",

@@ -183,6 +183,9 @@ public final class RelayFileTransport: @unchecked Sendable {
 
     private func route(_ request: FileRequest, onAskAccepted: @escaping (String) -> Void) -> FileResponse {
         switch request.command {
+        case "request-run":
+            return encode(broker.handleCommandRun(token: request.token, folder: request.target, body: request.body,
+                idempotencyKey: request.idempotencyKey, onAccepted: onAskAccepted))
         case "whoami":
             return encode(broker.agentIdentity(token: request.token))
         case "panes":
@@ -318,7 +321,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         try validateDirectory(directory)
         let command = try readField("command", from: directory, maximumBytes: 32)
         let allowed = [
-            "whoami", "panes", "events", "signal", "relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "progress", "done", "done-file", "fail", "cancel",
+            "request-run", "whoami", "panes", "events", "signal", "relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "progress", "done", "done-file", "fail", "cancel",
             "context-draft", "context-add", "context-list", "context-show", "context-discard", "context-ask",
         ]
         guard allowed.contains(command) else { throw RelayFileTransportError.runtime("unknown command") }
@@ -328,7 +331,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         }
         let request = FileRequest(
             command: command,
-            target: try readField("target", from: directory, maximumBytes: 1_024),
+            target: try readField("target", from: directory, maximumBytes: command == "request-run" ? 4_096 : 1_024),
             item: try readField("item", from: directory, maximumBytes: 128),
             idempotencyKey: try readField("idempotency-key", from: directory, maximumBytes: 128),
             token: token,

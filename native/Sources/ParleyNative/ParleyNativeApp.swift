@@ -1,5 +1,6 @@
 import AppKit
 import ParleyCore
+import ParleyUI
 import SwiftUI
 
 fileprivate enum ExternalApplicationRequest: Equatable {
@@ -12,7 +13,7 @@ fileprivate enum ExternalApplicationRequest: Equatable {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var externalRequestHandler: ((ExternalApplicationRequest) -> Void)?
     private var pendingExternalRequests: [ExternalApplicationRequest] = []
-    private var titlebarZoomRecognizer: NSClickGestureRecognizer?
+    private var titlebarDoubleClickMonitor: Any?
     private var keyDownMonitor: Any?
     var terminationHandler: (() -> Bool)?
     var terminalFocusRepairHandler: ((NSEvent) -> Void)?
@@ -73,6 +74,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let titlebarDoubleClickMonitor {
+            NSEvent.removeMonitor(titlebarDoubleClickMonitor)
+            self.titlebarDoubleClickMonitor = nil
+        }
         if let keyDownMonitor {
             NSEvent.removeMonitor(keyDownMonitor)
             self.keyDownMonitor = nil
@@ -202,7 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         frameView.layer?.cornerRadius = 16
         frameView.layer?.cornerCurve = .continuous
         frameView.layer?.masksToBounds = true
-        installTitlebarZoomRecognizer(on: window)
+        installTitlebarDoubleClickMonitor(on: window)
         window.invalidateShadow()
     }
 
@@ -237,41 +242,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
     }
 
-    private func installTitlebarZoomRecognizer(on window: NSWindow) {
-        if let titlebarZoomRecognizer {
-            titlebarZoomRecognizer.view?.removeGestureRecognizer(titlebarZoomRecognizer)
+    // Keep the custom workbench toolbar inside the content safe area below
+    // contentLayoutRect.maxY. SwiftUI buttons are not reliably NSControls, so
+    // they must never overlap the native title-bar band handled here.
+    private func installTitlebarDoubleClickMonitor(on window: NSWindow) {
+        if let titlebarDoubleClickMonitor { NSEvent.removeMonitor(titlebarDoubleClickMonitor) }
+        titlebarDoubleClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) {
+            [weak window] event in
+            guard let window else { return event }
+            return WindowTitlebarDoubleClick.handle(event, in: window) ? nil : event
         }
-        guard let titlebar = titlebarInteractionView(for: window) else { return }
-        let recognizer = NSClickGestureRecognizer(target: self, action: #selector(zoomFromTitlebar(_:)))
-        recognizer.numberOfClicksRequired = 2
-        recognizer.buttonMask = 0x1
-        recognizer.delaysPrimaryMouseButtonEvents = false
-        titlebar.addGestureRecognizer(recognizer)
-        titlebarZoomRecognizer = recognizer
-    }
-
-    private func titlebarInteractionView(for window: NSWindow) -> NSView? {
-        guard let closeButton = window.standardWindowButton(.closeButton) else { return nil }
-        var candidate = closeButton.superview
-        while let view = candidate {
-            if view.bounds.width >= window.frame.width * 0.7,
-               view.bounds.height >= 24,
-               view.bounds.height <= 120 {
-                return view
-            }
-            candidate = view.superview
-        }
-        return nil
-    }
-
-    @objc
-    private func zoomFromTitlebar(_ recognizer: NSClickGestureRecognizer) {
-        guard recognizer.state == .ended else { return }
-        recognizer.view?.window?.performZoom(recognizer)
     }
 }
 
 @main
+enum ParleyNativeEntry {
+    @MainActor static func main() {
+        let arguments = CommandLine.arguments
+        if arguments.count > 1 && arguments[1] == ApprovedCommandWorker.argument {
+            guard arguments.count == 3 else { Foundation.exit(2) }
+            ApprovedCommandWorker.execute(ticketPath: arguments[2])
+        }
+        ParleyNativeApp.main()
+    }
+}
+
 struct ParleyNativeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()

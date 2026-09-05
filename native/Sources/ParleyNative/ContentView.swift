@@ -27,6 +27,7 @@ struct ContentView: View {
                     Divider()
                 }
                 toolbar
+                CommandRunNotice(model: model)
                 Divider()
                 if let top = noticeLane.first {
                     noticeLaneView(top: top, lane: noticeLane)
@@ -67,6 +68,10 @@ struct ContentView: View {
             }
         }
         .parleyFlatWindowToolbar()
+        .sheet(isPresented: Binding(
+            get: { model.commandRunsPresented },
+            set: { if !$0 { model.dismissCommandRunReview() } }
+        )) { CommandRunsView(model: model) }
         .sheet(isPresented: $model.commandPalettePresented) {
             CommandPaletteView(model: model)
         }
@@ -944,7 +949,9 @@ struct ContentView: View {
                 waitingMenu
             }
 
-            Spacer()
+            WindowDragArea()
+                .frame(minWidth: 6, maxWidth: .infinity)
+                .frame(height: 42)
             Button(action: { model.toggleFocusCanvas() }) {
                 Label(
                     model.focusCanvasPaneID == nil ? "Focus" : "Grid",
@@ -981,7 +988,9 @@ struct ContentView: View {
             newPaneMenu
             askMenu
             compactActionsMenu
-            Spacer(minLength: 6)
+            WindowDragArea()
+                .frame(minWidth: 6, maxWidth: .infinity)
+                .frame(height: 42)
             Button(action: { model.toggleFocusCanvas() }) {
                 Image(systemName: model.focusCanvasPaneID == nil ? "rectangle.inset.filled" : "rectangle.grid.2x2")
             }
@@ -1818,7 +1827,8 @@ struct ContentView: View {
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
         .contentShape(Rectangle())
-        .background(pane.isActive ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+        .background(pane.isActive ? Color.accentColor.opacity(0.12) : Color.clear)
+        .background(Color(nsColor: .controlBackgroundColor))
         .onTapGesture(count: 2) {
             model.toggleFocusCanvas(paneID: pane.id)
         }

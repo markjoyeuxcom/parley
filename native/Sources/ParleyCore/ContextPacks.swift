@@ -537,7 +537,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
         """
         return try part(
             source: ContextPackSource(
-                kind: .handoffResult,
+                kind: handoff.kind == .commandRun ? .commandResult : .handoffResult,
                 label: "\(handoff.sourceName) → \(handoff.targetName)",
                 detail: "\(route) · handoff \(handoff.id)",
                 referenceID: handoff.id

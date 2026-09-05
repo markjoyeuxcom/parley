@@ -68,6 +68,7 @@ private enum ParleyGhosttySoak {
 
     @MainActor
     private static func run() throws -> GhosttySoakReport {
+        try GhosttyLaunchPreflight.check()
         let startedAt = Date()
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory

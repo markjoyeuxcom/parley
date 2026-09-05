@@ -4072,7 +4072,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "18", "the shared protocol version drifted from cross-project agent awareness")
+    try expect(AgentProtocol.version == "19", "the shared protocol version drifted from cross-project agent awareness")
     try expect(
         AgentProtocol.text.contains("parley delegate <target> --parent <handoff-id>")
             && AgentProtocol.text.contains("requestChanges")
@@ -7048,6 +7048,80 @@ private func checkDurableHandoffJournal() throws {
     let replayedBounded = try RelayHandoffJournal(file: boundedFile, maximumHandoffs: 2).handoffs()
     try expect(replayedBounded.count == 2, "replayed journal exceeded its handoff bound")
     try expect(!replayedBounded.contains(where: { $0.idempotencyKey == "bounded-durable-0" }), "bounded journal retained its oldest terminal handoff")
+}
+
+
+private func checkAllWorkspaceHistoryClearing() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("tokens.json"))
+    let token = try credentials.token(for: "%source")
+    let panes = [
+        WorkbenchPane(id: "%source", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "live"),
+        WorkbenchPane(id: "%target", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "live"),
+    ]
+    let historyFile = directory.appendingPathComponent("handoffs.jsonl")
+    let activityFile = directory.appendingPathComponent("activity.jsonl")
+    let journal = try RelayHandoffJournal(file: historyFile)
+    for (index, state) in [RelayHandoffState.completed, .cancelled, .failed, .interrupted].enumerated() {
+        try journal.recordDurably(statusHandoff(id: "finished-\(index)", kind: index == 0 ? .commandRun : .ask,
+            state: state, sourceWorkspaceID: "removed-workspace", targetWorkspaceID: "another-old-workspace",
+            occurredAt: Double(index), resultText: "Captured or returned result"))
+    }
+    let activityJournal = try RelayActivityJournal(file: activityFile)
+    let broker = RelayBroker(credentials: credentials, panes: { panes }, paste: { _, _ in },
+        submit: { _, _ in }, handoffJournal: journal, activityJournal: activityJournal)
+    _ = try broker.recordActivity(RelayActivityEventRequest(kind: .workspaceCreated,
+        workspaceID: "removed-workspace", workspaceName: "Removed workspace"))
+    let pending = broker.handleDelegate(token: token, target: "Reviewer", text: "Keep this active delegation")
+    try expect(pending.status == 200, "all-history fixture could not create active work")
+    let activeID = try require(pending.body.handoffID, "active delegation has no id")
+    let infoFile = directory.appendingPathComponent("core")
+    let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: "history-control")
+    try server.start()
+    defer { server.stop() }
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: "history-control")
+    let agent = RelayCoreClient(infoFile: infoFile, controlToken: token)
+    let denied = try agent.deleteAllHistory()
+    try expect(denied.status == 401, "a pane credential could clear all history")
+    try expect(broker.handoffs().count == 5, "rejected clearing changed the records")
+    let emptyScope = try client.deleteWorkspaceHistory(workspaceID: "", workspaceName: nil)
+    try expect(emptyScope.status == 400, "empty workspace scope silently cleared all history")
+
+    let response = try client.deleteAllHistory()
+    try expect(response.status == 200, "all-workspace history could not be cleared: \(response.text)")
+    try expect(broker.handoffs().map(\.id) == [activeID], "clearing removed active work or kept finished/orphaned records")
+    try expect(broker.activityEvents().isEmpty, "clearing left workspace activity behind")
+    let savedHandoffs = try RelayHandoffJournal(file: historyFile).handoffs()
+    let savedActivity = try RelayActivityJournal(file: activityFile).events()
+    try expect(savedHandoffs.map(\.id) == [activeID],
+               "all-history clearing was not durable or erased the active delegation")
+    try expect(savedActivity.isEmpty, "activity clearing was not durable")
+    let cancelled = try client.cancelHandoff(activeID)
+    try expect(cancelled.status == 200, "clearing broke control of the preserved active handoff")
+
+    // Each journal is atomic independently. A later activity-file failure must
+    // not leave already-deleted collaboration records visible in memory.
+    _ = try broker.recordActivity(RelayActivityEventRequest(kind: .workspaceCreated,
+        workspaceID: "live", workspaceName: "Live workspace"))
+    try FileManager.default.moveItem(at: activityFile, to: directory.appendingPathComponent("activity-backup.jsonl"))
+    try FileManager.default.createDirectory(at: activityFile, withIntermediateDirectories: false)
+    let partial = try client.deleteAllHistory()
+    try expect(partial.status == 500, "partial history clearing claimed complete success")
+    try expect(broker.handoffs().isEmpty, "durably cleared handoffs remained visible after an activity-file failure")
+    try expect(!broker.activityEvents().isEmpty, "failed activity clearing erased its in-memory records")
+    let handoffsAfterFailure = try RelayHandoffJournal(file: historyFile).handoffs()
+    try expect(handoffsAfterFailure.isEmpty, "partial failure resurrected cleared handoffs on disk")
+}
+
+private func checkHistoryCommandRunFilter() throws {
+    let command = try statusHandoff(id: "command", kind: .commandRun, state: .completed,
+        sourceWorkspaceID: "scope", targetWorkspaceID: "scope", occurredAt: 1, resultText: "captured output")
+    let ask = try statusHandoff(id: "ask", kind: .ask, state: .completed,
+        sourceWorkspaceID: "scope", targetWorkspaceID: "scope", occurredAt: 2, resultText: "answer")
+    let filtered = CollaborationHistoryProjection.filter([command, ask],
+        using: CollaborationHistoryFilter(query: "", kind: .commandRun, outcome: .all))
+    try expect(filtered.map(\.id) == ["command"], "command-run history cannot be filtered independently")
 }
 
 private func checkWorkspaceHandoffHistoryDeletion() throws {
@@ -10219,7 +10293,9 @@ private func checkAppResidentWorkbenchRelayAndShutdown() throws {
     )
 }
 
+
 private func checkRealGhosttyAppResidentPaneLifecycle() throws {
+    try GhosttyLaunchPreflight.check()
     try MainActor.assumeIsolated {
         _ = NSApplication.shared
         let directory = try temporaryDirectory()
@@ -10310,6 +10386,7 @@ private func checkRealGhosttyAppResidentPaneLifecycle() throws {
 }
 
 private func checkRealGhosttySixPaneInputIsolation() throws {
+    try GhosttyLaunchPreflight.check()
     try MainActor.assumeIsolated {
         _ = NSApplication.shared
         let directory = try temporaryDirectory()
@@ -10465,6 +10542,9 @@ let checks: [(String, () throws -> Void)] = [
     ("review and correct guidance is documented as practice", checkReviewAndCorrectGuidanceIsDocumentedAsPractice),
     ("review and correct requires two targets from different vendors", checkReviewAndCorrectRequiresTwoTargetsFromDifferentVendors),
     ("adjacent navigation order", checkAdjacentNavigationOrder),
+    ("window chrome toolbar drag and double-click", checkWindowToolbarDragArea),
+    ("window chrome full title-bar double-click", checkWindowTitlebarDoubleClick),
+    ("window chrome respects title-bar double-click preferences", checkWindowTitlebarPreferences),
     ("menu-safe periodic refresh", checkMenuTrackingRefreshPolicy),
     ("Pane menu remains stable during live updates", checkPaneMenuSurvivesUpdatesWhileTracking),
     ("Ask toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Ask") }),
@@ -10537,6 +10617,8 @@ let checks: [(String, () throws -> Void)] = [
     ("stable handoff identity and idempotent relay", checkStableHandoffIdentityAndIdempotentRelay),
     ("completed handoff retention bound", checkCompletedHandoffRetentionIsBounded),
     ("durable handoff journal", checkDurableHandoffJournal),
+    ("history management clears all workspaces through native control only", checkAllWorkspaceHistoryClearing),
+    ("history management filters captured command runs", checkHistoryCommandRunFilter),
     ("workspace handoff history deletion", checkWorkspaceHandoffHistoryDeletion),
     ("cross-workspace relay addressing", checkCrossWorkspaceRelayAddressing),
     ("persistent relay identity", checkRelayCredentialPersistsAndIdentifiesSender),
@@ -10637,9 +10719,13 @@ if let resultPath = ProcessInfo.processInfo.environment["PARLEY_COMMAND_CAPTURE_
     exit(FileManager.default.fileExists(atPath: resultPath) ? 0 : 1)
 }
 
+if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == ApprovedCommandWorker.argument {
+    ApprovedCommandWorker.execute(ticketPath: CommandLine.arguments[2])
+}
+
 // `--only <substring>` runs the matching checks alone during local iteration.
 let onlyFilter = argument(named: "--only")?.lowercased()
-let selectedChecks = (checks + reviewRegressionChecks).filter { name, _ in
+let selectedChecks = (checks + reviewRegressionChecks + reviewedCommandRunChecks).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var failureCount = 0

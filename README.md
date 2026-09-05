@@ -203,6 +203,15 @@ current prompt from terminal text. Command-Shift-J cycles the newest attention
 items, focusing a live permission pane or opening the exact durable handoff in
 Status Center.
 
+Status Center’s **Clear history…** follows the selected workspace scope,
+including **All Workspaces**, and names that scope before confirmation. It
+clears finished handoffs, their results and recorded activity, including
+records hidden by search or dismissal; active work and running panes remain.
+**History → Manage history…** brings together search, a **Command runs** filter,
+retention (100, 250 or 500 records of each kind across all workspaces), and
+export of selected records or the loaded scope. Clearing and retention affect
+only the current local Production or Development runtime.
+
 Agent-initiated Ask is for a focused consultation likely to finish within one
 minute. Once terminal submission succeeds, the managed command prints
 `Parley Ask ID: <id>` on stderr and reserves stdout for the exact answer. If
@@ -374,6 +383,47 @@ only for the installed app's signed update path. `Package.swift` and
   trusted side of this boundary.
 - Agent-authored content is never interpolated into a shell command.
 - Parley has no hosted service, sync, telemetry or remote-control backend.
+
+### Requested command runs
+
+When a test needs human Shell permissions, an agent can submit:
+
+```sh
+parley request-run --cwd "$PWD" -- "$(command -v npm)" test
+```
+
+Parley automatically opens the editable approval preview when its main window
+is active and no other dialog is open. Background requests ask for Dock attention;
+requests deferred by a dialog appear when the main window is available again.
+Approving or rejecting a request lets the next unreviewed request open.
+**Done** or Escape leaves a prominent **Approval required** banner and defers all
+currently pending requests without reopening them automatically. The preview shows the requesting pane,
+exact argument array and canonical folder. **Run once in new Shell** opens a new visible
+Shell pane in that workspace. A fixed native worker spawns argv directly;
+no agent text is interpolated into a shell command and no input is sent to
+an existing Shell.
+
+The command runs **as you, outside the agent boundary and vendor tool
+enforcement**. It uses the project's current code, which an agent can edit.
+Its stdin is closed; stdout/stderr use pipes, with a 30 KB capture limit per
+stream and explicit truncation. The agent receives captured output and the
+actual exit status or termination signal, not a Parley test verdict. The pane
+becomes an ordinary interactive human Shell when the command ends.
+
+Per-run approval is the default. **Auto-approve this command for this session**
+is an explicit, optional grant for exact argv + canonical folder + requesting
+pane generation. This is trust in mutable code, not a code boundary: the run
+can access your files and other panes' credentials, so cross-vendor attribution
+cannot be guaranteed while it is granted. A persistent notice exposes active
+trust; **Review runs and trust** or Status Center lets you revoke it. Restart,
+move, source-folder or workspace-policy changes, Stop Everything and quit
+invalidate grants. Nothing restores grants or execution authority from history.
+
+One run may be active per requesting pane. Cancel stops its owned process
+group. The run ID printed to stderr can be recovered with `parley wait <id>`
+only from the same live requesting generation. Rejection or an uncertain
+failure is not permission to resend automatically. Existing Relay/Paste routes
+still refuse Shell targets.
 
 ### Swift package builds in agent panes
 

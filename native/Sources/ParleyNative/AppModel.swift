@@ -205,6 +205,15 @@ struct PaletteCommand: Identifiable, Sendable {
 final class AppModel: ObservableObject {
     @Published private(set) var panes: [WorkbenchPane] = []
     @Published private(set) var workspaces: [WorkbenchWorkspace] = []
+    @Published private(set) var commandRuns: [ReviewedCommandRun] = []
+    @Published private(set) var commandRunGrants: [ReviewedCommandGrant] = []
+    @Published private(set) var commandRunError: String?
+    @Published private(set) var commandRunsPresented = false
+    @Published private(set) var selectedCommandRunID: String?
+    private var commandRunAttention = ReviewedCommandRunAttention()
+    private var pendingCommandRunIDs: [String] {
+        commandRuns.filter { $0.state == .pending }.map(\.id)
+    }
     @Published private(set) var consultations: [RelayConsultation] = []
     @Published private(set) var handoffs: [RelayHandoff] = []
     @Published private(set) var unreadHandoffs: [RelayHandoff] = []
@@ -2214,7 +2223,118 @@ final class AppModel: ObservableObject {
         }
     }
 
+
+    private func refreshCommandRuns() {
+        guard let core = residentCore, let controller else { return }
+        let coordinator = core.commandRuns
+        coordinator.reconcile()
+        coordinator.serviceWorkers(directory: core.commandRunDirectory)
+        // Keep approved work queued while a preview covers the terminal.
+        if !commandRunsPresented,
+           let mainWindow = NSApp.windows.first(where: { $0.identifier?.rawValue == "main" || $0.title == "Parley" }),
+           mainWindow.attachedSheet == nil {
+            coordinator.launchApproved { run in
+                if mainWindow.isMiniaturized { mainWindow.deminiaturize(nil) }
+                mainWindow.makeKeyAndOrderFront(nil)
+                NSApp.activate()
+                guard mainWindow.isVisible else { throw ReviewedCommandRunError.invalid("A visible Parley window is required before starting this command.") }
+                guard let executable = Bundle.main.executableURL else { throw ReviewedCommandRunError.invalid("The Parley worker executable is unavailable.") }
+                let created = try controller.createApprovedCommandPane(run: run, workerExecutable: executable)
+                focusCanvasPaneID = nil
+                recordNativeSplit(created: created, target: run.source, direction: .vertical)
+                // Select and visibly mount the new retained surface before starting
+                // the fixed worker. No input is sent to an existing Shell.
+                panes = try controller.listPanes()
+                workspaces = try controller.listWorkspaces()
+                _ = try ghosttyRegistry.view(for: created.id)
+                ghosttyRegistry.select(paneID: created.id)
+            }
+        }
+        let runs = coordinator.runs()
+        let grants = coordinator.grants()
+        if runs != commandRuns { commandRuns = runs }
+        if grants != commandRunGrants { commandRunGrants = grants }
+        commandRunError = coordinator.lastError ?? (core.commandRunCleanupWarnings.isEmpty ? nil : core.commandRunCleanupWarnings.joined(separator: "\n"))
+        refreshCommandRunAttention()
+    }
+
+    private func refreshCommandRunAttention() {
+        let mainWindow = NSApp.windows.first { $0.identifier?.rawValue == "main" || $0.title == "Parley" }
+        // Include requested sheets that SwiftUI has not mounted yet. Keep
+        // menus, native alerts, settings and other windows' edits undisturbed.
+        let anotherPresentation = commandPalettePresented || setupPresented
+            || panePermissionRequest != nil || paneChoiceRequest != nil
+            || askManyComparisonPresented || contextPackPresented
+            || workspaceBriefPresented || pinnedContextSnippetsPresented
+            || supervisedWorkflowPresented || worktreeBrowserPresented
+            || releaseLifecyclePresented || betaFeedbackPresented
+            || handoffComposerDraft != nil || startupError != nil
+        let canPresent = mainWindow?.isKeyWindow == true
+            && mainWindow?.isVisible == true && mainWindow?.isMiniaturized == false
+            && NSApp.modalWindow == nil && !anotherPresentation
+            && !NSApp.windows.contains(where: { $0.attachedSheet != nil })
+            && RunLoop.main.currentMode != .eventTracking
+        let decision = commandRunAttention.update(
+            pendingIDs: pendingCommandRunIDs, reviewPresented: commandRunsPresented,
+            canPresent: canPresent, applicationActive: NSApp.isActive
+        )
+        if decision.requestDockAttention {
+            _ = NSApp.requestUserAttention(.informationalRequest)
+        }
+        if let id = decision.presentRunID {
+            selectedCommandRunID = id
+            commandRunsPresented = true
+        }
+    }
+
+    func reviewCommandRuns() {
+        if let run = commandRuns.first(where: { $0.state == .pending }) ?? commandRuns.first {
+            selectCommandRun(run)
+        }
+        commandRunsPresented = true
+    }
+
+    func selectCommandRun(_ run: ReviewedCommandRun) {
+        selectedCommandRunID = run.id
+        if run.state == .pending { commandRunAttention.didPresent(runID: run.id) }
+    }
+
+    func dismissCommandRunReview() {
+        // SwiftUI can report a dismissal after approve/reject already closed
+        // the sheet. That acknowledgement must not suppress the next request.
+        guard commandRunsPresented else { return }
+        commandRunAttention.didDismiss(pendingIDs: pendingCommandRunIDs)
+        commandRunsPresented = false
+    }
+
+    func approveCommandRun(_ run: ReviewedCommandRun, argv: [String], folder: String, autoApprove: Bool) throws {
+        guard let core = residentCore else { throw ReviewedCommandRunError.invalid("The native command-run service is unavailable.") }
+        try core.commandRuns.approve(id: run.id, revision: run.revision, argv: argv, folder: folder, autoApprove: autoApprove)
+        commandRuns = core.commandRuns.runs()
+        commandRunGrants = core.commandRuns.grants()
+        commandRunsPresented = false
+        // Dismiss the editable preview before the normal refresh starts work.
+    }
+    func rejectCommandRun(_ run: ReviewedCommandRun) {
+        perform {
+            guard let core = residentCore else { throw ReviewedCommandRunError.invalid("The native command-run service is unavailable.") }
+            try core.commandRuns.reject(id: run.id, revision: run.revision)
+            commandRuns = core.commandRuns.runs()
+            commandRunsPresented = false
+            try refresh()
+        }
+    }
+    func cancelCommandRun(_ run: ReviewedCommandRun) {
+        perform { try residentCore?.commandRuns.cancel(id: run.id); try refresh() }
+    }
+    func revokeCommandRunGrant(_ grant: ReviewedCommandGrant) {
+        residentCore?.commandRuns.revoke(grantID: grant.id)
+        try? refresh()
+    }
+
+
     func refresh() throws {
+        refreshCommandRuns()
         var firstError: Error?
         if let controller {
             do {
@@ -2726,29 +2846,43 @@ final class AppModel: ObservableObject {
         saveDismissedHandoffs()
     }
 
-    func deleteStatusHistory(for workspace: WorkbenchWorkspace) -> Bool {
+    func clearStatusHistory(workspaceID: String?, workspaceName: String?) -> String? {
+        // Only an explicit nil scope means All Workspaces; never widen an
+        // empty or stale workspace argument into a global deletion.
+        if let workspaceID, workspaceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            NSAlert(error: RelayUIError.message("Choose a workspace or All Workspaces before clearing history.")).runModal()
+            return nil
+        }
+        let scopeName = workspaceID == nil ? "All Workspaces" : (workspaceName ?? workspaceID ?? "")
         let alert = NSAlert()
-        alert.messageText = "Delete collaboration history for \(workspace.name)?"
-        alert.informativeText = "This permanently deletes completed, cancelled, failed, and interrupted Ask, Delegate, Relay, and Paste records involving this workspace, plus its recorded pane and workspace lifecycle events. Active work is preserved. Returned answers are included, and this cannot be undone."
+        alert.messageText = "Clear history for \(scopeName)?"
+        alert.informativeText = "This permanently clears finished collaboration records and their returned or captured results, plus recorded pane and workspace activity in this scope. It includes records hidden by search filters or dismissal. Active work and running panes are preserved. This affects only this local \(runtime.mode.label) app and cannot be undone."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete History")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        let clear = alert.addButton(withTitle: "Clear History")
+        let cancel = alert.addButton(withTitle: "Cancel")
+        clear.keyEquivalent = ""
+        cancel.keyEquivalent = "\r"
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
 
         do {
             guard let relayClient else {
                 throw RelayUIError.message("The Parley coordination core is unavailable.")
             }
-            let response = try relayClient.deleteWorkspaceHistory(
-                workspaceID: workspace.workspaceID,
-                workspaceName: workspace.name
-            )
+            let response: RelayTextResponse
+            if let workspaceID {
+                response = try relayClient.deleteWorkspaceHistory(workspaceID: workspaceID, workspaceName: workspaceName)
+            } else {
+                response = try relayClient.deleteAllHistory()
+            }
             guard response.status == 200 else { throw RelayUIError.message(response.text) }
             refreshStatusCenterQuietly()
-            return true
+            return response.text
         } catch {
+            // One journal may have cleared before another failed. Refresh the
+            // actual retained records before showing the bounded error.
+            refreshStatusCenterQuietly()
             NSAlert(error: error).runModal()
-            return false
+            return nil
         }
     }
 
@@ -3351,7 +3485,7 @@ final class AppModel: ObservableObject {
     }
 
     func handoffReviewSource(for handoff: RelayHandoff) -> WorkbenchPane? {
-        guard handoff.hasReturnedResult else { return nil }
+        guard (handoff.kind == .ask || handoff.kind == .delegate), handoff.hasReturnedResult else { return nil }
         if let original = panes.first(where: {
             $0.id == handoff.sourcePaneID && isReviewReadyAgent($0)
         }) {
@@ -3648,7 +3782,7 @@ final class AppModel: ObservableObject {
         case .requestChanges:
             request = "Revise this returned result. Address the requested changes below, keep what is already correct, and return the revised result with `parley done current` or `parley done current --file <path>`.\n\nRequested changes:\n(describe the changes required before this result can be accepted)"
         }
-        let originalLabel = handoff.kind == .delegate ? "Original instruction" : "Original question or message"
+        let originalLabel = handoff.kind == .commandRun ? "Original command request" : (handoff.kind == .delegate ? "Original instruction" : "Original question or message")
         return """
         \(request)
 
@@ -5408,7 +5542,7 @@ final class AppModel: ObservableObject {
     func cancel(_ handoff: RelayHandoff) {
         cancelTracked(
             id: handoff.id,
-            kind: handoff.kind == .delegate ? "delegation" : "Ask",
+            kind: handoff.kind == .commandRun ? "command run" : (handoff.kind == .delegate ? "delegation" : "Ask"),
             sourceName: handoff.sourceName,
             targetPaneID: handoff.targetPaneID,
             targetName: handoff.targetName

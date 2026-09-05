@@ -14,6 +14,9 @@ private enum AppResidentCoordinationCoreError: LocalizedError {
 /// they stop with the application process, matching pane lifetime exactly.
 final class AppResidentCoordinationCore {
     let client: RelayCoreClient
+    let commandRuns: ReviewedCommandRunCoordinator
+    let commandRunDirectory: URL
+    let commandRunCleanupWarnings: [String]
 
     private let handoffJournal: RelayHandoffJournal
     var historyPersistenceError: String? { handoffJournal.lastError }
@@ -94,6 +97,14 @@ final class AppResidentCoordinationCore {
             contextReviewStore: contextReviewStore,
             busyDraftStore: busyDraftStore
         )
+        broker.enableReviewedCommandRuns()
+        commandRuns = broker.commandRuns!
+        commandRunDirectory = applicationDirectory.resolvingSymlinksInPath().appendingPathComponent("approved-command-runs")
+        let runDirectory = commandRunDirectory
+        commandRunCleanupWarnings = ApprovedCommandWorker.removeAbandoned(in: runDirectory)
+        commandRuns.cancellationHandler = { run in
+            try ApprovedCommandWorker.cancel(runID: run.id, directory: runDirectory)
+        }
         server = RelayHTTPServer(
             broker: broker,
             infoFile: infoFile,
@@ -129,6 +140,7 @@ final class AppResidentCoordinationCore {
     deinit { stop() }
 
     func stop() {
+        commandRuns.stop(reason: "Parley stopped; session trust was revoked and active command runs were interrupted.")
         server.stop()
         agentTransport.stop()
         try? FileManager.default.removeItem(at: pidFile)

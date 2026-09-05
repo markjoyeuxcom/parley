@@ -60,6 +60,7 @@ public final class WorkbenchController: @unchecked Sendable {
         var ownerPID: Int32
         var ownerSessionID: String?
     }
+    private var approvedShellLaunches: [String: (generation: Int, argv: [String])] = [:]
     private static let processSessionID = UUID().uuidString
 
     private struct AgentLaunchRequest {
@@ -408,6 +409,46 @@ public final class WorkbenchController: @unchecked Sendable {
             document.panes.append(pane)
             document.activity[pane.id] = Date()
             try persistLocked()
+            return pane
+        }
+    }
+
+
+    /// Native-only creation path. No agent transport can supply launch overrides.
+    public func createApprovedCommandPane(run: ReviewedCommandRun, workerExecutable: URL) throws -> WorkbenchPane {
+        try lock.withLock {
+            guard run.state == .running,
+                  let source = document.panes.first(where: { $0.id == run.source.id }),
+                  source.kind.isAgent, source.isStarted, !source.isDead,
+                  source.launchGeneration == run.source.launchGeneration,
+                  source.workspaceID == run.source.workspaceID,
+                  WorkspaceFolderIdentity.matchingKey(source.cwd) == run.sourceFolder,
+                  let workspace = document.workspaces.first(where: { $0.workspaceID == source.workspaceID }),
+                  !document.panes.contains(where: { $0.id == run.shellPaneID }),
+                  workerExecutable.path.hasPrefix("/"),
+                  fileManager.isExecutableFile(atPath: workerExecutable.path) else {
+                throw ReviewedCommandRunError.invalid("The approved request or its source pane changed before Shell creation.")
+            }
+            let checked = try ReviewedCommand(argv: run.command.argv, folder: run.command.folder, sourceFolder: run.sourceFolder)
+            guard checked == run.command else { throw ReviewedCommandRunError.invalid("The approved folder changed.") }
+            let directory = applicationDirectory.resolvingSymlinksInPath().appendingPathComponent("approved-command-runs")
+            let ticket = try ApprovedCommandWorker.stage(run: run, directory: directory,
+                shellExecutable: loginShellExecutable().path, ownerPID: ProcessInfo.processInfo.processIdentifier)
+            let previous = document
+            var pane = makePane(kind: .shell, cwd: run.command.folder, workspace: workspace, started: true, permissionProfile: nil)
+            pane.id = run.shellPaneID
+            pane.customName = "Command run"
+            for index in document.workspaces.indices { document.workspaces[index].isActive = document.workspaces[index].workspaceID == workspace.workspaceID }
+            for index in document.panes.indices { document.panes[index].isActive = false }
+            document.panes.append(pane)
+            document.activity[pane.id] = Date()
+            do { try persistLocked() }
+            catch {
+                document = previous
+                try? fileManager.removeItem(at: ticket.deletingLastPathComponent())
+                throw error
+            }
+            approvedShellLaunches[pane.id] = (pane.launchGeneration, [workerExecutable.path, ApprovedCommandWorker.argument, ticket.path])
             return pane
         }
     }
@@ -797,7 +838,11 @@ public final class WorkbenchController: @unchecked Sendable {
                 argv = ["/usr/bin/env"] + inheritedKeys.sorted().flatMap { ["-u", $0] }
                 if let marker = relayRuntime?.runtimeMarker { argv += ["PARLEY_RUNTIME=\(marker)"] }
                 launchEnvironment["PATH"] = environment["PATH"] ?? "/usr/bin:/bin"
-                argv += [loginShellExecutable().path, "-l"]
+                if let approved = approvedShellLaunches.removeValue(forKey: pane.id), approved.generation == pane.launchGeneration {
+                    argv += approved.argv
+                } else {
+                    argv += [loginShellExecutable().path, "-l"]
+                }
             } else {
                 guard let relayRuntime else {
                     throw ParleyWorkbenchError.commandFailed(
