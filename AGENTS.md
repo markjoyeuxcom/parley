@@ -296,6 +296,36 @@ Strip parent multiplexer marker variables from vendor environments so a
 development launch cannot accidentally bind an agent to a parent terminal
 session.
 
+## SwiftPM inside agent panes
+
+SwiftPM compatibility is available in **Settings → General → Swift package
+builds** and is off by default. After explicit human opt-in, newly launched
+agent panes receive a runtime-local `swift` wrapper for SwiftPM `build`,
+`test`, `run` and `package`. It adds SwiftPM's `--disable-sandbox`
+option to avoid unsupported nested macOS sandboxes. Project and dependency manifests and plugins run
+with the agent's existing permissions, including any permitted network access.
+Parley's outer boundary and vendor approvals remain active. The setting only
+automates a SwiftPM flag; it does not expand the agent's existing permissions.
+The no-approval-bypass invariant still applies to all vendor launch permissions
+and Parley's mandatory boundary; this opt-in affects only SwiftPM's additional
+subprocess sandbox.
+
+The wrapper resolves the current PATH toolchain, including mise, on each
+invocation. It does not install a language toolchain or change global shell
+configuration. Human Shell panes retain ordinary SwiftPM behaviour. A changed
+setting applies on the next explicit pane start/restart, never on a remount.
+If a vendor rebuilds PATH, `"$PARLEY_SWIFT_COMMAND" build ...` reaches the
+same helper. Absolute compiler paths and `xcrun swift` do not use a PATH
+wrapper. `PARLEY_SWIFTPM_COMPATIBILITY=0` opts an invocation out.
+
+The repository's native runner honours the same explicit opt-in before
+stripping pane capabilities from build children. For an existing agent pane,
+a person-authorized `PARLEY_SWIFTPM_COMPATIBILITY=1 npm test` or
+`PARLEY_SWIFTPM_COMPATIBILITY=1 npm run build` enables it for that command only. Never infer opt-in
+merely from being inside Parley. Tests that themselves create another
+Seatbelt sandbox or need an unrestricted UI process may still require a
+human Shell pane; report those limits rather than silently skipping checks.
+
 ## Reviewed context boundary
 
 An agent-staged context part is a claim. Its path and bytes stay labelled
@@ -374,14 +404,25 @@ alter an existing model context.
   generated lifecycle hooks through an additional `--settings` file.
 - Codex receives the protocol through `developer_instructions` and generated
   lifecycle hooks through fixed inline `-c` values.
-- Agy receives generated `agent-protocol/AGENTS.md` through `--add-dir`; no
+- Agy is passed generated `agent-protocol/AGENTS.md` through `--add-dir`.
+  Automatic rule loading from that added directory remains unverified; do not
+  claim uptake without the fresh/resumed-session check in RELEASING.md. No
   lifecycle adapter is installed because Agy has no verified per-launch path.
-- Copilot receives the same instructions through
-  `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, permits only `shell(parley)` without an
+- Copilot receives the canonical text as additional instructions through
+  `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Applicable instructions are combined
+  without a general precedence order. It permits only `shell(parley)` without an
   extra tool confirmation and loads generated lifecycle hooks through
   `--plugin-dir`.
 
 Do not maintain separate handwritten protocol wording per vendor.
+
+`parley help` (also `--help` and `-h`) and `parley protocol` are local,
+read-only references generated from AgentProtocol. They work without a broker
+or pane credential. All agent launches receive `PARLEY_COMMAND` for an absolute
+shim fallback if PATH changes; vendor tool approval still applies. The launch
+stamp is configuration evidence, not proof of model uptake. Never overwrite
+another project's instruction files to add Parley awareness. This repository's
+`CLAUDE.md` is a relative symlink to its existing `AGENTS.md`.
 
 ## Production and Development isolation
 

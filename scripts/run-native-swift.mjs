@@ -3,9 +3,20 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { tmpdir, homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+
+// This is an explicit opt-in, captured before build-child capability cleanup.
+const swiftPMCompatibility = process.platform === 'darwin'
+  && process.env.PARLEY_PANE === '1'
+  && ['claude', 'codex', 'agy', 'copilot'].includes(process.env.PARLEY_PANE_KIND)
+  && process.env.PARLEY_SWIFTPM_COMPATIBILITY === '1'
+function swiftArguments(args) {
+  return swiftPMCompatibility && ['build', 'run', 'test', 'package'].includes(args[0])
+    ? [args[0], '--disable-sandbox', ...args.slice(1)]
+    : args
+}
 
 const cacheRoot = join(tmpdir(), 'parley-native-swift-cache')
 mkdirSync(cacheRoot, { recursive: true })
@@ -21,7 +32,11 @@ for (const key of Object.keys(environment)) {
   if (key.startsWith('PARLEY_') || key === 'TMUX' || key === 'TMUX_PANE') delete environment[key]
 }
 const managedBins = new Set(['Parley Native', 'Parley Native Development']
-  .map(name => join(homedir(), 'Library/Application Support', name, 'bin')))
+  .flatMap(name => ['bin', 'agent-protocol/swiftpm-bin'].map(directory =>
+    join(homedir(), 'Library/Application Support', name, directory))))
+if (process.env.PARLEY_SWIFT_COMMAND?.endsWith('/agent-protocol/swiftpm-bin/swift')) {
+  managedBins.add(dirname(process.env.PARLEY_SWIFT_COMMAND))
+}
 environment.PATH = (environment.PATH || '/usr/bin:/bin').split(':')
   .filter(entry => !managedBins.has(entry)).join(':')
 
@@ -149,7 +164,7 @@ if (requested[0] === 'dev') {
     }
   }
 
-  const build = spawnSync('swift', ['build', '--package-path', packagePath], {
+  const build = spawnSync('swift', swiftArguments(['build', '--package-path', packagePath]), {
     stdio: 'inherit',
     env: environment,
   })
@@ -159,7 +174,7 @@ if (requested[0] === 'dev') {
   }
   if (build.status !== 0) process.exit(build.status ?? 1)
 
-  const binPath = output('swift', ['build', '--show-bin-path', '--package-path', packagePath])
+  const binPath = output('swift', swiftArguments(['build', '--show-bin-path', '--package-path', packagePath]))
   if (!binPath) {
     process.stderr.write('Swift did not report the native build directory.\n')
     process.exit(1)
@@ -168,7 +183,7 @@ if (requested[0] === 'dev') {
   applyDevelopmentBuildMetadata()
   result = spawnSync(executable, appArguments, { stdio: 'inherit', env: environment })
 } else {
-  result = spawnSync('swift', requested, { stdio: 'inherit', env: environment })
+  result = spawnSync('swift', swiftArguments(requested), { stdio: 'inherit', env: environment })
 }
 if (result.error) {
   process.stderr.write(`Could not start Swift: ${result.error.message}\n`)

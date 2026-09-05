@@ -123,6 +123,42 @@ native lifecycle records per page; continue with its `nextCursor`. These JSON
 responses never contain credentials, folders, terminal text, questions,
 results or activity-detail content.
 
+
+### Agent awareness in any project
+
+Parley supplies its shared protocol at agent launch; using another project does
+not require copying Parley's instructions into that repository. Agents can
+rediscover the complete command index and canonical reference locally:
+
+```text
+parley help
+parley protocol
+```
+
+Both commands work without a running broker and print no pane credential or
+project data. Every agent launch also supplies `PARLEY_COMMAND`, the absolute
+runtime-local shim path. If a vendor rebuilds PATH, use
+`"$PARLEY_COMMAND" protocol`. Vendor tool approvals still apply.
+
+Claude receives the canonical text through its appended system prompt; Codex
+through developer instructions. Copilot receives an additional instructions
+directory; it combines applicable instruction files without a general
+precedence order. Agy is passed the generated protocol directory with
+`--add-dir`, but automatic rule loading from that added directory remains
+unverified. Its documented rule discovery starts with workspace files.
+See the [Copilot instruction rules](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions)
+and [Agy workspace-rule guidance](https://www.antigravity.google/docs/cli/best-practices/).
+
+A protocol stamp records the instructions configured for launch, not proof that
+a model loaded or retained them. Use the fresh/resumed-session smoke check in
+[RELEASING.md](RELEASING.md) before claiming vendor uptake. When a vendor needs a
+manual reminder, ask it to run `parley protocol` and then `parley whoami`.
+After a protocol upgrade, explicitly restart panes marked **RESTART FOR
+PROTOCOL**; Parley does not silently restart existing sessions.
+
+This repository's `CLAUDE.md` links to `AGENTS.md` so Claude receives the
+engineering guide as well. Parley does not create that alias in other projects.
+
 High-frequency turn and notification signals update live pane state and a
 separate bounded in-memory event ring. They never consume durable human-history
 retention or appear in the Status Center timeline. Session start/end and
@@ -338,6 +374,33 @@ only for the installed app's signed update path. `Package.swift` and
   trusted side of this boundary.
 - Agent-authored content is never interpolated into a shell command.
 - Parley has no hosted service, sync, telemetry or remote-control backend.
+
+### Swift package builds in agent panes
+
+SwiftPM compatibility is available in **Settings → General → Swift package
+builds** and is off by default. After explicit human opt-in, newly launched
+agent panes receive a runtime-local `swift` wrapper for SwiftPM `build`,
+`test`, `run` and `package`. It adds SwiftPM's `--disable-sandbox`
+option to avoid unsupported nested macOS sandboxes. Project and dependency manifests and plugins run
+with the agent's existing permissions, including any permitted network access.
+Parley's outer boundary and vendor approvals remain active. The setting only
+automates a SwiftPM flag; it does not expand the agent's existing permissions.
+
+The wrapper resolves the current PATH toolchain, including mise, on each
+invocation. It does not install a language toolchain or change global shell
+configuration. Human Shell panes retain ordinary SwiftPM behaviour. A changed
+setting applies on the next explicit pane start/restart, never on a remount.
+If a vendor rebuilds PATH, `"$PARLEY_SWIFT_COMMAND" build ...` reaches the
+same helper. Absolute compiler paths and `xcrun swift` do not use a PATH
+wrapper. `PARLEY_SWIFTPM_COMPATIBILITY=0` opts an invocation out.
+
+The repository's native runner honours the same explicit opt-in before
+stripping pane capabilities from build children. For an existing agent pane,
+a person-authorized `PARLEY_SWIFTPM_COMPATIBILITY=1 npm test` or
+`PARLEY_SWIFTPM_COMPATIBILITY=1 npm run build` enables it for that command only. Never infer opt-in
+merely from being inside Parley. Tests that themselves create another
+Seatbelt sandbox or need an unrestricted UI process may still require a
+human Shell pane; report those limits rather than silently skipping checks.
 
 The stable `~/.local/bin/parley` command is a runtime-neutral router for vendor
 CLIs that rebuild `PATH`. Production is the default route; exact

@@ -248,6 +248,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var releaseChecking = false
     @Published private(set) var releaseDownloading = false
     @Published private(set) var releaseLifecycleMessage: String?
+    @Published private(set) var swiftPMCompatibilityEnabled = false
     @Published private(set) var automaticUpdatesAvailable = false
     @Published private(set) var automaticUpdateChecksEnabled = false
     @Published private(set) var automaticUpdateCanCheck = false
@@ -351,6 +352,7 @@ final class AppModel: ObservableObject {
     private static let releaseChannelKey = "parley.releaseChannel"
     private static let permissionProfileKeyPrefix = "parley.permissionProfile"
     private static let collaborationDockVisibleKey = "parley.collaborationDockVisible"
+    private static let swiftPMCompatibilityKey = "parley.swiftPMCompatibilityEnabled"
     private static let terminalFontPreferenceKey = "parley.terminalFontPreference"
     private static let terminalAppearanceImportKey = "parley.terminalAppearanceImport"
     private static let projectContextRefreshInterval: TimeInterval = 5
@@ -401,6 +403,7 @@ final class AppModel: ObservableObject {
             collaborationDockVisible = preferences.bool(forKey: Self.collaborationDockVisibleKey)
         }
         idleAgentReaperEnabled = preferences.bool(forKey: Self.idleAgentReaperKey)
+        swiftPMCompatibilityEnabled = preferences.bool(forKey: Self.swiftPMCompatibilityKey)
         layoutStore = SavedWorkspaceLayoutStore(
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
         )
@@ -524,7 +527,10 @@ final class AppModel: ObservableObject {
         }
 
         do {
-            let controller = try WorkbenchController(applicationDirectory: runtime.applicationDirectory)
+            let controller = try WorkbenchController(
+                applicationDirectory: runtime.applicationDirectory,
+                swiftPMCompatibilityEnabled: swiftPMCompatibilityEnabled
+            )
             try controller.bootstrap(
                 cwd: defaultFolder,
                 createIfMissing: true
@@ -1239,6 +1245,12 @@ final class AppModel: ObservableObject {
     func checkForStableAutomaticUpdate() {
         automaticUpdater?.checkForUpdates()
         refreshAutomaticUpdateState()
+    }
+
+    func setSwiftPMCompatibilityEnabled(_ enabled: Bool) {
+        preferences.set(enabled, forKey: Self.swiftPMCompatibilityKey)
+        swiftPMCompatibilityEnabled = enabled
+        controller?.setSwiftPMCompatibilityEnabled(enabled)
     }
 
     func setAutomaticUpdateChecksEnabled(_ enabled: Bool) {

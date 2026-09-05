@@ -100,6 +100,32 @@ runs `codesign`, `stapler` and `spctl`. Sparkle's official `generate_appcast`
 tool must produce both an Ed25519 enclosure signature and a signed-feed footer.
 The cask SHA-256 is calculated only after the final DMG has been stapled.
 
+## Verify agent awareness in another project
+
+After changing the shared protocol or a launch adapter, use a person-supervised
+check in the newly built app. This is a manual vendor-session check, separate
+from deterministic tests; it can consume subscription quota.
+
+1. Create an unrelated temporary folder with no Parley repository instructions.
+   Open it in Parley, then explicitly start one pane for each installed vendor.
+   Resolve that vendor's normal permission and folder-trust prompts.
+2. Ask each agent which Parley protocol version it received at launch, before
+   asking it to read a reference. Then ask it to run `parley whoami`,
+   `parley help` and `parley protocol`. Record the vendor's declared version,
+   the app-owned launch stamp and the command outcomes separately. A printed
+   reference or a launch stamp alone is not evidence of initial uptake.
+3. Confirm the response distinguishes Relay from Paste, Ask from Delegate,
+   reviewed context from agent claims, and native-only verdicts from agent work.
+   For Copilot, inspect `/instructions` to confirm the generated directory is
+   discovered and enabled. Test Agy first: its added-directory uptake remains
+   unverified until this check demonstrates it.
+4. Explicitly restart each pane through its vendor-owned Resume path and repeat.
+   Also try the absolute `"$PARLEY_COMMAND" protocol` fallback with a PATH
+   that omits Parley's bin directory, retaining normal vendor tool approvals.
+5. Record app build, installed vendor CLI versions, fresh/resumed outcomes and
+   any manual reminder required. Restore the person's normal workspace after
+   the check. Do not infer knowledge from terminal activity or lifecycle hooks.
+
 ## Review and publish
 
 Before publishing the draft:

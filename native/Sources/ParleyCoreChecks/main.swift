@@ -1327,7 +1327,8 @@ private func checkInAppHelpGuideCoverage() throws {
         ParleyHelpGuide.matching("ask many independent").map(\.id) == ["coordination"],
         "help search did not narrow multiple literal terms to the relevant topic"
     )
-    try expect(ParleyHelpGuide.matching("no-such-help-term").isEmpty, "help search returned an unrelated topic")
+    // Hyphenated queries split into ordinary words that valid help may contain.
+    try expect(ParleyHelpGuide.matching("zzzxqvnomatch98417").isEmpty, "help search returned an unrelated topic")
     let permissions = try require(
         topics.first(where: { $0.id == "cli-permissions" }),
         "the in-app guide omitted CLI permission best practices"
@@ -4071,7 +4072,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "16", "the shared protocol version drifted from linked Request Changes delegation")
+    try expect(AgentProtocol.version == "18", "the shared protocol version drifted from cross-project agent awareness")
     try expect(
         AgentProtocol.text.contains("parley delegate <target> --parent <handoff-id>")
             && AgentProtocol.text.contains("requestChanges")
@@ -4502,6 +4503,9 @@ private func checkTrackedDelegationCompletesAndWaits() throws {
     try expect(submitted.value?.text.contains("parley done current --file <path>") == true, "delegate omitted its reviewed file-result command")
     try expect(submitted.value?.text.contains("parley fail current") == true, "delegate omitted its failure command")
     try expect(submitted.value?.text.contains("parley progress current") == true, "delegate omitted its optional progress command")
+    try expect(submitted.value?.text.contains("\(DelegationProgressText.maximumBytes) UTF-8 bytes") == true, "delegate omitted the actual progress bound")
+    try expect(submitted.value?.text.contains("\(ContextPackBuilder.defaultMaximumPartBytes) UTF-8 bytes") == true, "delegate omitted the result-file bound")
+    try expect(submitted.value?.text.contains("parley protocol") == true, "delegate omitted protocol recovery")
 
     let statusesResponse = broker.delegationStatus(token: sourceToken)
     try expect(statusesResponse.status == 200, "the initiating pane could not inspect its delegations")
@@ -10463,6 +10467,13 @@ let checks: [(String, () throws -> Void)] = [
     ("adjacent navigation order", checkAdjacentNavigationOrder),
     ("menu-safe periodic refresh", checkMenuTrackingRefreshPolicy),
     ("Pane menu remains stable during live updates", checkPaneMenuSurvivesUpdatesWhileTracking),
+    ("Ask toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Ask") }),
+    ("Review toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Review") }),
+    ("Context toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Context") }),
+    ("Recipes toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Recipes") }),
+    ("Return toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Return") }),
+    ("Actions toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Actions") }),
+    ("Waiting toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Waiting") }),
     ("detailed in-app help coverage", checkInAppHelpGuideCoverage),
     ("workbench state projection", checkWorkbenchStateProjection),
     ("Precision Grid chrome uses owned state", checkPrecisionGridChromeUsesOwnedState),
@@ -10481,6 +10492,12 @@ let checks: [(String, () throws -> Void)] = [
     ("idle agent reaper gates", checkIdleAgentReaperGates),
     ("vendor-owned resume plans are explicit and safe", checkVendorOwnedResumePlansAreExplicitAndSafe),
     ("shared protocol launch adapters", checkSharedProtocolLaunchAdapters),
+    ("agent awareness local reference across projects", checkAgentAwarenessReferenceAcrossProjects),
+    ("agent awareness boundaries and command recovery", checkAgentAwarenessBoundariesAndRecovery),
+    ("SwiftPM compatibility is installed only for agent launches", checkSwiftPMCompatibilityLaunchScope),
+    ("SwiftPM compatibility preserves argv and selected toolchain", checkSwiftPMCompatibilityArgumentsAndToolchain),
+    ("SwiftPM compatibility requires opt-in and snapshots each launch", checkSwiftPMCompatibilityOptInAndRestart),
+    ("SwiftPM compatibility loads an unrelated real package manifest", checkSwiftPMCompatibilityWithRealManifest),
     ("authenticated agent discovery and resumable events", checkAuthenticatedAgentDiscoveryAndResumableEvents),
     ("official vendor hook adapters and authenticated signals", checkOfficialVendorHookAdaptersAndSignals),
     ("linked handoff review primitives", checkLinkedHandoffReviewPrimitives),

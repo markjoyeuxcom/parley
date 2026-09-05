@@ -73,6 +73,23 @@ private struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Swift package builds") {
+                Toggle(
+                    "Enable SwiftPM compatibility for new agent panes",
+                    isOn: Binding(
+                        get: { model.swiftPMCompatibilityEnabled },
+                        set: { model.setSwiftPMCompatibilityEnabled($0) }
+                    )
+                )
+                .accessibilityHint("Off by default. Applies when an agent pane is next started or restarted.")
+                Text(SwiftPMCompatibility.explanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Off by default. Vendor prompts may show the original command without the added flag. Restart an existing agent pane to apply a setting change; Parley does not restart it automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Software updates") {
                 if model.automaticUpdatesAvailable {
                     Toggle(
