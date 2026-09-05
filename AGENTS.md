@@ -319,6 +319,49 @@ per requester; native cancellation stops its owned process group. Result recover
 requires the same live source generation. Reuse the existing journal and 90 KB
 rendered/200 KB transport bounds; agent commands never create their own approval.
 
+## Team sessions
+
+`parley team request --folder <absolute-folder> [--template <name>] [--panes <n>]
+[--hours <n>] "<objective>"` lets one lead pane propose a bounded team for one
+objective. It requires a live agent pane in a workspace whose policy allows
+delegation and a folder inside the lead's working folder. Nothing is authorized
+until the person approves a native editable preview of objective, folder,
+allowed vendors, permission profile, pane limit (at most 8) and deadline (at
+most 128 hours). A named template only prefills vendors and count; folders
+bind in the approval, never in the portable template.
+
+Approval creates one memory-only `TeamSessionGrant` keyed to the lead pane id,
+generation, workspace, automation policy and canonical folder, binding the
+complete approved permission definition and roots, not merely a profile id.
+While it is live only the lead may run `parley team add --vendor <vendor>
+[--name] [--role]`, one creation at a time, with an idempotent request identity
+and a Parley Pane Request ID announced on stderr for `parley wait` recovery.
+The native app re-verifies the grant and the unchanged stored profile, then
+creates a NEW started agent pane in that workspace bound to the approved folder
+and exact profile. Creation is transactional: the controller rolls back a pane
+it cannot persist, and the coordinator records ownership (pane id, created
+generation, workspace, requesting pane, grant, time) the moment the controller
+returns, before any Ghostty mounting step that may fail; a mounting failure is
+reported on the owned member, never dropped from the count or from Stop. The
+limit counts every creation for the session's lifetime. Members cannot add
+panes or nest sessions. Every created pane keeps its vendor's own permission
+prompts; Parley never answers them, never restarts a pane on an agent's behalf
+and never restores team authority from any journal. Sessions appear as native
+activity records for visibility only. The Team Sessions sheet is the
+monitoring surface and never blocks provisioning; any other sheet or modal
+does, and creation never steals focus from a visible window.
+
+Ownership is pane id plus created generation. Stop revokes the grant and stops
+only still-owned processes, leaving them as stopped placeholders; a pane the
+person restarted since creation is skipped and reported, a moved pane stays
+owned, and the lead, unrelated panes and in-flight Ask/Delegate work are
+untouched. Actual stop failures are shown with a retry. The deadline bounds
+provisioning only: expiry or interruption revokes the grant and stops nothing,
+while "Stop team panes" stays available for still-owned running panes. Lead
+restart, move, folder or policy change, an edited or removed approved profile,
+Stop Everything and quit interrupt the session. Requests, decisions and pane
+results are recoverable only by the same live lead generation.
+
 ## SwiftPM inside agent panes
 
 SwiftPM compatibility is available in **Settings → General → Swift package

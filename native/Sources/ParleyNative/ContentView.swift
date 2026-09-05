@@ -28,6 +28,7 @@ struct ContentView: View {
                 }
                 toolbar
                 CommandRunNotice(model: model)
+                TeamSessionNotice(model: model)
                 Divider()
                 if let top = noticeLane.first {
                     noticeLaneView(top: top, lane: noticeLane)
@@ -72,6 +73,10 @@ struct ContentView: View {
             get: { model.commandRunsPresented },
             set: { if !$0 { model.dismissCommandRunReview() } }
         )) { CommandRunsView(model: model) }
+        .sheet(isPresented: Binding(
+            get: { model.teamSessionsPresented },
+            set: { if !$0 { model.dismissTeamSessionReview() } }
+        )) { TeamSessionsView(model: model) }
         .sheet(isPresented: $model.commandPalettePresented) {
             CommandPaletteView(model: model)
         }

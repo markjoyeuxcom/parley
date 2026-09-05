@@ -410,6 +410,7 @@ struct ParleyNativeApp: App {
             CommandMenu("Tools") {
                 Button("Task Manager…") { openWindow(id: "task-manager") }
                     .keyboardShortcut("t", modifiers: [.command, .shift])
+                Button("Team Sessions…") { openWindow(id: "main"); model.reviewTeamSessions() }
                 Divider()
                 Button("Environment Check…") { model.showEnvironmentCheck() }
                 Button("Compatibility & Releases…") { model.showReleaseLifecycle() }

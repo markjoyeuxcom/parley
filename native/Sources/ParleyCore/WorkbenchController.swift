@@ -413,6 +413,66 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
 
+    /// Native-only creation path for an approved team session. The agent
+    /// transport can only ask; the workspace, folder, vendor list, permission
+    /// profile and limit come from the person's approval, re-checked here.
+    public func createTeamPane(
+        session: TeamSession,
+        grant: TeamSessionGrant,
+        provision: TeamPaneProvision,
+        permissionProfile: EffectivePermissionProfile
+    ) throws -> WorkbenchPane {
+        try requireDirectory(grant.folder)
+        return try lock.withLock {
+            guard session.state == .active, session.grantID == grant.id, provision.sessionID == session.id,
+                  provision.paneID == nil, provision.failure == nil,
+                  provision.kind.isAgent, grant.allowedVendors.contains(provision.kind),
+                  session.members.count < grant.paneLimit, Date() < grant.provisioningDeadline,
+                  let lead = document.panes.first(where: { $0.id == grant.leadPaneID }),
+                  lead.kind.isAgent, lead.isStarted, !lead.isDead,
+                  lead.launchGeneration == grant.leadGeneration, lead.workspaceID == grant.workspaceID,
+                  WorkspaceFolderIdentity.matchingKey(lead.cwd) == session.sourceFolder,
+                  let workspace = document.workspaces.first(where: { $0.workspaceID == grant.workspaceID }),
+                  workspace.automationPolicy == grant.automationPolicy else {
+                throw TeamSessionError.invalid("The approved team session or its lead pane changed before pane creation.")
+            }
+            let canonical = WorkspaceFolderIdentity.matchingKey(grant.folder)
+            guard canonical == session.sourceFolder || canonical.hasPrefix(session.sourceFolder + "/") else {
+                throw TeamSessionError.invalid("The approved folder is outside the lead pane's working folder.")
+            }
+            if let role = provision.role {
+                if let error = PaneRoleRules.validationError(role) { throw TeamSessionError.invalid(error) }
+                guard !document.panes.contains(where: { $0.workspaceID == workspace.workspaceID && $0.role == role }) else {
+                    throw TeamSessionError.invalid("The role \(role) is already assigned in this workspace.")
+                }
+            }
+            // The supplied profile must be the approved definition and roots.
+            // There is no fallback to a stored default under another identity.
+            guard grant.matches(effective: permissionProfile) else {
+                throw TeamSessionError.invalid("The permission profile does not match the approved grant.")
+            }
+            let current = try permissionProfileStore.profiles().first { $0.id == grant.permissionProfileID }
+            guard current == grant.approvedProfile else {
+                throw TeamSessionError.invalid("The approved permission profile was edited or removed; the pane was not created.")
+            }
+            var pane = makePane(kind: provision.kind, cwd: grant.folder, workspace: workspace, started: true, permissionProfile: permissionProfile)
+            pane.customName = provision.name
+            pane.role = provision.role
+            let previous = document
+            for index in document.workspaces.indices {
+                document.workspaces[index].isActive = document.workspaces[index].workspaceID == workspace.workspaceID
+            }
+            for index in document.panes.indices { document.panes[index].isActive = false }
+            document.panes.append(pane)
+            document.activity[pane.id] = Date()
+            do { try persistLocked() } catch {
+                // Creation is atomic: a pane that could not be recorded does not exist.
+                document = previous
+                throw TeamSessionError.invalid("The pane could not be recorded, so it was not created: \(error.localizedDescription)")
+            }
+            return pane
+        }
+    }
 
     /// Native-only creation path. No agent transport can supply launch overrides.
     public func createApprovedCommandPane(run: ReviewedCommandRun, workerExecutable: URL) throws -> WorkbenchPane {
