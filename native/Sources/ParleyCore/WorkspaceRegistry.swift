@@ -129,6 +129,19 @@ public final class WorkspaceRegistry {
     public let file: URL
     private let fileManager: FileManager
     private let lock = NSLock()
+    /// Times the registry file was actually read and decoded. Diagnostics only.
+    public private(set) var fileReads = 0
+    /// The last decoded document with the file identity it came from. The
+    /// refresh tick reads the registry every second; an unchanged file is
+    /// answered from memory after one `lstat`, and any replacement (new inode,
+    /// size or modification time) is decoded again.
+    private struct FileStamp: Equatable {
+        let inode: UInt64
+        let size: Int64
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+    }
+    private var cache: (stamp: FileStamp, document: Document)?
 
     public init(file: URL, fileManager: FileManager = .default) {
         self.file = file
@@ -288,15 +301,19 @@ public final class WorkspaceRegistry {
 
     private func readDocument() throws -> Document {
         guard fileManager.fileExists(atPath: file.path) else {
+            cache = nil
             return Document(version: Self.schemaVersion, records: [])
         }
-        try validateExistingFile()
+        let stamp = try validateExistingFile()
+        if let cache, cache.stamp == stamp { return cache.document }
         do {
+            fileReads += 1
             let data = try Data(contentsOf: file)
             let document = try JSONDecoder().decode(Document.self, from: data)
             guard document.version == Self.schemaVersion else {
                 throw WorkspaceRegistryError.unreadable("unsupported schema version \(document.version)")
             }
+            cache = (stamp, document)
             return document
         } catch let error as WorkspaceRegistryError {
             throw error
@@ -319,9 +336,11 @@ public final class WorkspaceRegistry {
         let data = try encoder.encode(document)
         try data.write(to: file, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        cache = (try? validateExistingFile()).map { ($0, document) }
     }
 
-    private func validateExistingFile() throws {
+    @discardableResult
+    private func validateExistingFile() throws -> FileStamp {
         var metadata = stat()
         guard lstat(file.path, &metadata) == 0,
               metadata.st_mode & S_IFMT == S_IFREG,
@@ -329,5 +348,7 @@ public final class WorkspaceRegistry {
               metadata.st_mode & 0o077 == 0 else {
             throw WorkspaceRegistryError.unreadable("the registry file is not an owner-only regular file")
         }
+        return FileStamp(inode: UInt64(metadata.st_ino), size: Int64(metadata.st_size),
+            modifiedSeconds: metadata.st_mtimespec.tv_sec, modifiedNanoseconds: metadata.st_mtimespec.tv_nsec)
     }
 }

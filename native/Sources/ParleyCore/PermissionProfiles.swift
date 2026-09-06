@@ -483,6 +483,17 @@ public final class PermissionProfileStore: @unchecked Sendable {
     private let file: URL
     private let fileManager: FileManager
     private let lock = NSLock()
+    /// Times the profile file was actually read and decoded. Diagnostics only.
+    public private(set) var fileReads = 0
+    /// Last decoded custom profiles with the file identity they came from; an
+    /// unchanged file is answered from memory after one `lstat`.
+    private struct FileStamp: Equatable {
+        let inode: UInt64
+        let size: Int64
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+    }
+    private var cache: (stamp: FileStamp, profiles: [PermissionProfileDefinition])?
 
     public init(file: URL, fileManager: FileManager = .default) {
         self.file = file
@@ -527,9 +538,14 @@ public final class PermissionProfileStore: @unchecked Sendable {
     }
 
     private func loadCustomLocked() throws -> [PermissionProfileDefinition] {
-        guard fileManager.fileExists(atPath: file.path) else { return [] }
+        guard fileManager.fileExists(atPath: file.path) else {
+            cache = nil
+            return []
+        }
+        let stamp = try validateExistingFile()
+        if let cache, cache.stamp == stamp { return cache.profiles }
         do {
-            try validateExistingFile()
+            fileReads += 1
             let document = try JSONDecoder().decode(Document.self, from: Data(contentsOf: file))
             guard document.version == 1 else {
                 throw PermissionProfileError.unreadable(
@@ -544,6 +560,7 @@ public final class PermissionProfileStore: @unchecked Sendable {
                 }
                 try PermissionProfileValidator.validate(profile)
             }
+            cache = (stamp, document.customProfiles)
             return document.customProfiles
         } catch let error as PermissionProfileError {
             throw error
@@ -563,17 +580,19 @@ public final class PermissionProfileStore: @unchecked Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(Document(version: 1, customProfiles: profiles)).write(to: file, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        cache = (try? validateExistingFile()).map { ($0, profiles) }
     }
 
-    private func validateExistingFile() throws {
+    @discardableResult
+    private func validateExistingFile() throws -> FileStamp {
         var metadata = stat()
         guard lstat(file.path, &metadata) == 0,
               metadata.st_mode & S_IFMT == S_IFREG,
               metadata.st_uid == getuid(),
               metadata.st_mode & 0o077 == 0 else {
-            throw PermissionProfileError.unreadable(
-                "The permission profile file is not an owner-only regular file."
-            )
+            throw PermissionProfileError.unreadable("The permission profile file is not an owner-only regular file.")
         }
+        return FileStamp(inode: UInt64(metadata.st_ino), size: Int64(metadata.st_size),
+            modifiedSeconds: metadata.st_mtimespec.tv_sec, modifiedNanoseconds: metadata.st_mtimespec.tv_nsec)
     }
 }

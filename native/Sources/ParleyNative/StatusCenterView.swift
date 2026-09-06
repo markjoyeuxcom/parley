@@ -157,7 +157,7 @@ struct StatusCenterView: View {
             ensureSelection()
         }
         .onReceive(refresh) { _ in
-            model.refreshStatusCenterQuietly()
+            model.refreshStatusCenterPeriodically()
             applyExternalSelection()
             ensureSelection()
         }
