@@ -115,15 +115,34 @@ public final class WorkbenchController: @unchecked Sendable {
     private var copilotTrustConfirmations: [String: Int] = [:]
     private var agentLaunchRequests: [String: AgentLaunchRequest] = [:]
 
+    /// Terminal titles change many times a second while a vendor CLI works.
+    /// They are applied in memory at once and written to the state file at
+    /// most once per interval; every other persist, stop, close and shutdown
+    /// carries a pending title with it immediately.
+    private let titlePersistenceInterval: TimeInterval
+    private let deferredPersistenceQueue = DispatchQueue(label: "parley.workbench.deferred-persistence", qos: .utility)
+    private var titlePersistencePending = false
+    private var titlePersistenceScheduled = false
+    private var isShutDown = false
+    private var persistWriteCountStorage = 0
+    private var lastDeferredPersistenceErrorStorage: String?
+    /// Diagnostics for checks and measurements: state-file writes so far.
+    /// Read under the same lock the deferred queue writes them under.
+    public var persistWriteCount: Int { lock.withLock { persistWriteCountStorage } }
+    /// The last deferred write failure; cleared by the next successful write.
+    public var lastDeferredPersistenceError: String? { lock.withLock { lastDeferredPersistenceErrorStorage } }
+
     public init(
         applicationDirectory: URL? = nil,
         environment: [String: String]? = nil,
         swiftPMCompatibilityEnabled: Bool = false,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        titlePersistenceInterval: TimeInterval = 1
     ) throws {
         let directory = applicationDirectory ?? fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Parley Native", isDirectory: true)
         self.applicationDirectory = directory
+        self.titlePersistenceInterval = max(0.05, titlePersistenceInterval)
         self.environment = Self.scrubInheritedCapabilities(environment ?? EnvironmentResolver.resolved())
         self.fileManager = fileManager
         self.swiftPMCompatibilityEnabled = swiftPMCompatibilityEnabled
@@ -734,6 +753,7 @@ public final class WorkbenchController: @unchecked Sendable {
 
     public func shutdown() throws {
         try lock.withLock {
+            isShutDown = true
             for pane in document.panes { try relayRuntime?.credentials.forget(pane.id) }
             terminateAllSurfaces()
             agentLaunchRequests.removeAll()
@@ -1026,8 +1046,47 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
 
-    public func terminalDidChangeTitle(paneID: String, title: String) throws {
-        try updatePaneRuntime(paneID: paneID) { $0.terminalTitle = title }
+    /// Applies a title in memory and schedules one coalesced write. Returns
+    /// false, changing nothing durable, when the title is unchanged; a
+    /// repeated title still counts as pane activity in memory because the
+    /// vendor process is evidently alive.
+    @discardableResult
+    public func terminalDidChangeTitle(paneID: String, title: String) throws -> Bool {
+        lock.withLock {
+            guard !isShutDown, let index = document.panes.firstIndex(where: { $0.id == paneID }) else { return false }
+            document.activity[paneID] = Date()
+            guard document.panes[index].terminalTitle != title else { return false }
+            document.panes[index].terminalTitle = title
+            scheduleTitlePersistenceLocked()
+            return true
+        }
+    }
+
+    public var hasPendingPersistence: Bool {
+        lock.withLock { titlePersistencePending }
+    }
+
+    /// Writes a pending title-only change now. Safe to call at any time; a
+    /// failure keeps the change pending and records the error.
+    public func flushPendingPersistence() {
+        lock.withLock {
+            titlePersistenceScheduled = false
+            guard titlePersistencePending, !isShutDown else { return }
+            do {
+                try persistLocked()
+            } catch {
+                lastDeferredPersistenceErrorStorage = error.localizedDescription
+            }
+        }
+    }
+
+    private func scheduleTitlePersistenceLocked() {
+        titlePersistencePending = true
+        guard !titlePersistenceScheduled else { return }
+        titlePersistenceScheduled = true
+        deferredPersistenceQueue.asyncAfter(deadline: .now() + titlePersistenceInterval) { [weak self] in
+            self?.flushPendingPersistence()
+        }
     }
 
     public func terminalDidChangeWorkingDirectory(paneID: String, path: String) throws {
@@ -1315,6 +1374,10 @@ public final class WorkbenchController: @unchecked Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(document).write(to: stateFile, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
+        // The whole document was just written, so any deferred title is durable too.
+        titlePersistencePending = false
+        lastDeferredPersistenceErrorStorage = nil
+        persistWriteCountStorage += 1
     }
 
     /// Every creation, start and restart passes through here, so a folder

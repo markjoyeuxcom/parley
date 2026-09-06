@@ -666,17 +666,19 @@ struct StatusCenterView: View {
                     .accessibilityLabel("Collaboration outcome filter")
                 }
 
+                // One filter pass per render: every use below reads `rows`.
+                let rows = filteredHistory
                 HStack(spacing: 8) {
-                    Text("\(filteredHistory.count) matching · \(selectedHistoryForExport.count) selected")
+                    Text("\(rows.count) matching · \(selectedHistoryForExport.count) selected")
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Select Results") {
                         historyExportSelection.formUnion(
-                            filteredHistory.filter(\.hasReturnedResult).map(\.id)
+                            rows.filter(\.hasReturnedResult).map(\.id)
                         )
                     }
-                    .disabled(!filteredHistory.contains(where: \.hasReturnedResult))
+                    .disabled(!rows.contains(where: \.hasReturnedResult))
                     Button("Clear Selection") {
                         historyExportSelection.removeAll()
                     }
@@ -697,13 +699,14 @@ struct StatusCenterView: View {
                 }
                 .controlSize(.small)
 
-                if filteredHistory.isEmpty {
+                if rows.isEmpty {
                     emptyRow("No collaboration records match these filters")
                 } else {
+                    let lastID = rows.last?.id
                     LazyVStack(spacing: 0) {
-                        ForEach(filteredHistory) { handoff in
+                        ForEach(rows) { handoff in
                             historyRow(handoff)
-                            if handoff.id != filteredHistory.last?.id { Divider() }
+                            if handoff.id != lastID { Divider() }
                         }
                     }
                 }

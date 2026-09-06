@@ -119,7 +119,14 @@ Production and a separate Development directory.
   shell or vendor CLI process.
 - `WorkbenchController` persists workspace/pane metadata in
   `workbench-state.json`; terminal bytes and vendor conversations are never
-  serialized there.
+  serialized there. Terminal titles are the one hot input: a title is applied
+  in memory at once (a repeated title changes nothing durable but still
+  stamps pane activity), written at most once per second by a coalesced
+  deferred write, and carried immediately by any other persist, stop, close
+  or shutdown. Working-directory, attach, detach and close callbacks persist
+  synchronously and run the full model refresh as before; a title change only
+  publishes the pane list once per run-loop turn with no relay fetch or
+  layout work, because no view renders titles today.
 - `GhosttyPaneRegistry` retains views by pane id across SwiftUI remounts and
   main-window hiding.
 - Closing/hiding the main window keeps panes and coordination alive while the
@@ -147,6 +154,23 @@ Production and a separate Development directory.
   process and the coordination core.
 - On a later app launch, workspace definitions remain, shells can restart and
   agent panes are stopped placeholders. Never claim a vendor session survived.
+
+Durable records are JSON lines. The handoff journal and the native activity
+journal both append one synced line per record and compact the bounded file
+atomically only past eight times their bound, on removal, on any retention
+change that leaves pruned lines on disk (so a larger bound never reads pruned
+history back) or when a truncated tail is repaired at load; a record is
+durable before it is acknowledged, a failed append changes nothing in memory
+and truncates the file back to the committed boundary, an append whose
+partial bytes cannot be cut away marks the tail uncertain so every later
+append first rewrites the acknowledged projection or refuses, and a
+compaction failure after a durable append is retained as `lastError` and
+surfaced through the Status Center core-health route until the next
+successful compaction, never reported as a lost record. Pane attention is projected once per input generation
+(panes plus every handoff collection) through `PaneAttentionCache`; Task
+Manager sampling runs on one serial owner off the main actor and publishes a
+result only when it is the newest request and the sampled pane set (id plus
+launch generation) is unchanged.
 
 The relay broker lives in `AppResidentCoordinationCore` inside the application
 process. It owns the authenticated UI control socket, capability filesystem
