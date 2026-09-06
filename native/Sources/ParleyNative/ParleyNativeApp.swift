@@ -456,7 +456,7 @@ struct ParleyNativeApp: App {
         }
 
         Settings {
-            ParleySettingsView(model: model)
+            AuxiliaryWindowRoot(minimumSize: CGSize(width: 680, height: 590)) { ParleySettingsView(model: model) }
         }
 
         MenuBarExtra {
@@ -467,26 +467,26 @@ struct ParleyNativeApp: App {
         .menuBarExtraStyle(.menu)
 
         Window("Status Center", id: "status-center") {
-            StatusCenterView(model: model)
+            AuxiliaryWindowRoot(minimumSize: CGSize(width: 980, height: 640)) { StatusCenterView(model: model) }
         }
         .defaultSize(width: 1_120, height: 780)
         .windowResizability(.contentMinSize)
 
         Window("Task Manager", id: "task-manager") {
-            TaskManagerView(model: model)
+            AuxiliaryWindowRoot(minimumSize: CGSize(width: 860, height: 590)) { TaskManagerView(model: model) }
         }
         .defaultSize(width: 1_020, height: 720)
         .windowResizability(.contentMinSize)
 
 
         Window("Parley Help", id: "help") {
-            HelpView(model: model)
+            AuxiliaryWindowRoot(minimumSize: CGSize(width: 820, height: 590)) { HelpView(model: model) }
         }
         .defaultSize(width: 980, height: 720)
         .windowResizability(.contentMinSize)
 
         Window("About Parley", id: "about") {
-            AboutView(runtime: model.runtime, updateChannel: model.releaseChannel)
+            AuxiliaryWindowRoot(minimumSize: CGSize(width: 650, height: 1)) { AboutView(runtime: model.runtime, updateChannel: model.releaseChannel) }
         }
         .windowResizability(.contentSize)
     }
