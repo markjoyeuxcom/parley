@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import ParleyCore
+import ParleyUI
 import SwiftUI
 
 struct TaskManagerView: View {
@@ -8,7 +9,9 @@ struct TaskManagerView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var showProcesses = true
     @State private var autoRefresh = true
-    private let refresh = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+    // Owned by this mounted content; invalidated when the window closes.
+    @StateObject private var refreshClock = AuxiliaryWindowClock(interval: 2)
+    @Environment(\.auxiliaryWindowActive) private var windowActive
 
     private var snapshot: TaskManagerSnapshot? { model.taskManagerSnapshot }
 
@@ -28,10 +31,14 @@ struct TaskManagerView: View {
         }
         .frame(minWidth: 860, minHeight: 590)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { model.refreshTaskManager() }
-        .onReceive(refresh) { _ in
-            if autoRefresh { model.refreshTaskManager() }
+        .onAppear {
+            model.refreshTaskManager()
+            if windowActive { refreshClock.start { if autoRefresh { model.refreshTaskManager() } } }
         }
+        .onChange(of: windowActive) { _, active in
+            if active { refreshClock.start { if autoRefresh { model.refreshTaskManager() } } } else { refreshClock.stop() }
+        }
+        .onDisappear { refreshClock.stop() }
     }
 
     private var header: some View {
