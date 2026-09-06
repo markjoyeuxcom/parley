@@ -90,6 +90,32 @@ public struct ReviewedCommandGrant: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// The person's optional Settings choice to end a run's pane once the run
+/// has nothing left to show. `isClean` is the result rule the worker applies
+/// before deciding whether to hand the pane to an interactive shell at all:
+/// a clean run's worker exits instead. `shouldClose` is the app-side view of
+/// the same run once its clean result is saved and the worker's lease is
+/// released; the pane itself is removed only after its process has ended.
+/// Every other outcome keeps its pane, with an ordinary shell, for inspection.
+public enum ReviewedCommandRunPaneClosePolicy {
+    public static let disclosure = "While this is on, a run that starts afterwards and finishes cleanly (exit status 0, no signal, not cancelled, output within the capture limit) ends its pane's process instead of handing the pane to an interactive shell; once its result is saved and the process has ended, Parley removes that pane and returns focus to the pane you were using. The choice is fixed for each run when it starts, so a run already given a shell is never affected. Parley never closes a pane that is running an interactive shell, and a pane you restarted is yours. A failed, cancelled or truncated run keeps its pane, with an ordinary shell, so you can inspect it. The captured result stays available under Review runs and trust and in Status Center. Like automatic approval, this choice stays on across Parley relaunches until you turn it off here, and it is stored in Parley's own private directory, which agent processes cannot read or write."
+
+    /// The result-only part of the rule, applied by the worker before it
+    /// decides whether to hand the pane to an interactive shell.
+    public static func isClean(_ result: ReviewedCommandRunResult) -> Bool {
+        result.exitStatus == 0 && result.terminationSignal == nil && !result.cancelled && !result.outputTruncated
+    }
+
+    public static func shouldClose(state: ReviewedCommandRunState, result: ReviewedCommandRunResult?, resultSaved: Bool, workerStillRunning: Bool) -> Bool {
+        guard state == .completed, let result, resultSaved, !workerStillRunning else { return false }
+        return isClean(result)
+    }
+
+    public static func shouldClose(_ run: ReviewedCommandRun) -> Bool {
+        shouldClose(state: run.state, result: run.result, resultSaved: run.resultSaved, workerStillRunning: run.workerStillRunning)
+    }
+}
+
 public enum ReviewedCommandRunState: String, Codable, Sendable {
     case pending, approved, running, completed, rejected, cancelled, interrupted, failed
     public var isTerminal: Bool { ![Self.pending, .approved, .running].contains(self) }

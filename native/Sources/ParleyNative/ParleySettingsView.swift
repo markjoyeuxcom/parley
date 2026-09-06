@@ -73,6 +73,39 @@ private struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Agent command runs") {
+                Toggle(
+                    "Approve agent command runs automatically",
+                    isOn: Binding(
+                        get: { model.automaticCommandRunApprovalEnabled },
+                        set: { model.setAutomaticCommandRunApprovalEnabled($0) }
+                    )
+                )
+                .help("Start every parley request-run command as requested, in a new Shell pane, without the editable preview")
+                .accessibilityHint("Off by default. While on, requested commands run as you outside the agent boundary without a preview.")
+                Text(ReviewedCommandRunCoordinator.automaticApprovalDisclosure)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Off by default. Requested runs stay visible under Review runs and trust and in Status Center, and Cancel still stops a running command.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle(
+                    "Close the Shell pane when a run finishes cleanly",
+                    isOn: Binding(
+                        get: { model.automaticCommandRunPaneCloseEnabled },
+                        set: { model.setAutomaticCommandRunPaneCloseEnabled($0) }
+                    )
+                )
+                .help("Close a run's new Shell pane once a clean result is recorded; failed, cancelled or truncated runs keep their pane")
+                .accessibilityHint("Off by default. Applies to runs that finish after it is turned on.")
+                Text(ReviewedCommandRunPaneClosePolicy.disclosure)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let problem = model.commandRunAuthorizationError {
+                    Text(problem).font(.caption).foregroundStyle(.red)
+                }
+            }
+
             Section("Swift package builds") {
                 Toggle(
                     "Enable SwiftPM compatibility for new agent panes",

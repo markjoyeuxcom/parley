@@ -314,7 +314,32 @@ off by default, memory-only, revocable and visibly disclosed. It keys exact argv
 canonical folder and source generation and includes mutable code with human file
 and credential access. Cross-vendor attribution cannot be guaranteed while it is
 granted. Restart/move/folder/policy changes, Stop Everything and quit invalidate
-it. Do not restore execution authority from the handoff journal. One active run
+it. Do not restore execution authority from the handoff journal. Separately,
+**Settings > General > Agent command runs** holds the person's durable choice
+to approve requested runs automatically. Both switches in that section are
+execution authority and live in `CommandRunAuthorizationStore`
+(`command-run-authorization.json`, owner-only, inside the agent-denied
+application directory, narrowly validated on every read, anything odd reads
+as off), never in a preference domain an agent process could write; nothing
+reads them from an agent request or the journal. `AppModel` pushes the
+approval choice into `ReviewedCommandRunCoordinator.setAutomaticApproval`.
+While on, an eligible request is approved exactly as requested with no
+session grant and `approvedAutomatically` recorded on the run (decoded as
+false for older journal records), requests already waiting are approved if
+their pane is still current, the runs notice discloses it, and turning it
+off restores per-run approval immediately and returns not-yet-launched
+automatic approvals to pending. A permanent stop still refuses every
+request. The second switch, "Close the Shell pane when a run finishes
+cleanly", is decided before any shell exists: the worker ticket carries
+`exitInsteadOfShellWhenClean`, so after a clean result
+(`ReviewedCommandRunPaneClosePolicy.isClean`) the worker exits instead of
+exec'ing a login shell. `CommandRunPaneCleanup` then decides from fresh
+controller facts, bound to the pane's created generation, and `AppModel`
+removes only a pane whose process has already ended, restoring the pane that
+was active at launch if the person is still on the run's pane. A pane handed
+to an interactive shell, a restarted pane, a failed, cancelled, truncated or
+unsaved run all keep their pane; close failures are retried up to three
+times and reported separately. One active run
 per requester; native cancellation stops its owned process group. Result recovery
 requires the same live source generation. Reuse the existing journal and 90 KB
 rendered/200 KB transport bounds; agent commands never create their own approval.

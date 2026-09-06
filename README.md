@@ -435,6 +435,30 @@ trust; **Review runs and trust** or Status Center lets you revoke it. Restart,
 move, source-folder or workspace-policy changes, Stop Everything and quit
 invalidate grants. Nothing restores grants or execution authority from history.
 
+If you would rather not review each run, **Settings > General > Agent command
+runs > Approve agent command runs automatically** (off by default) approves
+every eligible request exactly as requested and starts it in a new Shell pane
+without a preview. The same disclosure applies: the command runs as you,
+outside the agent boundary. The runs notice shows that the switch is on, runs
+stay listed under **Review runs and trust** and in Status Center, Cancel still
+works, and turning the switch off restores per-run approval at once and
+returns any request it approved that has not started yet to waiting. Both
+choices in this section are stored in Parley's private application directory,
+which agent processes cannot read or write; if that file cannot be trusted,
+both read as off and Settings says why. Only you can change them; an agent
+cannot.
+
+A second switch in the same section, **Close the Shell pane when a run
+finishes cleanly** (also off by default), applies to runs that start after it
+is on. After a clean result (exit status 0, no signal, not cancelled, output
+within the capture limit) the run's worker ends the pane's process instead of
+opening an interactive shell; once the result is saved and the process has
+ended, Parley removes the pane and returns focus to the pane you were using.
+Parley never closes a pane that is running an interactive shell, and a pane
+you restarted is yours. A failed, cancelled or truncated run keeps its pane,
+with an ordinary shell, so you can look at it, and the captured result always
+stays under **Review runs and trust** and in Status Center.
+
 One run may be active per requesting pane. Cancel stops its owned process
 group. The run ID printed to stderr can be recovered with `parley wait <id>`
 only from the same live requesting generation. Rejection or an uncertain

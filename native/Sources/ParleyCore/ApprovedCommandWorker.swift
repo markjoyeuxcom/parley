@@ -10,6 +10,41 @@ public struct ApprovedCommandTicket: Codable, Sendable {
     public let shellExecutable: String
     public let ownerPID: Int32
     public let expiresAt: Date
+    /// The person's Settings choice at staging time: after a clean result the
+    /// worker exits so the pane's process ends and Parley can remove the
+    /// pane, instead of exec'ing an interactive shell that would then be
+    /// the person's. Decided before any shell exists, never afterwards.
+    public let exitInsteadOfShellWhenClean: Bool
+
+    public init(resultKey: Data, runID: String, command: ReviewedCommand, sourceFolder: String, shellExecutable: String,
+                ownerPID: Int32, expiresAt: Date, exitInsteadOfShellWhenClean: Bool) {
+        self.resultKey = resultKey
+        self.runID = runID
+        self.command = command
+        self.sourceFolder = sourceFolder
+        self.shellExecutable = shellExecutable
+        self.ownerPID = ownerPID
+        self.expiresAt = expiresAt
+        self.exitInsteadOfShellWhenClean = exitInsteadOfShellWhenClean
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case resultKey, runID, command, sourceFolder, shellExecutable, ownerPID, expiresAt, exitInsteadOfShellWhenClean
+    }
+
+    /// A ticket staged by an earlier build has no flag and keeps the old
+    /// behaviour: hand the pane to an interactive shell.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        resultKey = try container.decode(Data.self, forKey: .resultKey)
+        runID = try container.decode(String.self, forKey: .runID)
+        command = try container.decode(ReviewedCommand.self, forKey: .command)
+        sourceFolder = try container.decode(String.self, forKey: .sourceFolder)
+        shellExecutable = try container.decode(String.self, forKey: .shellExecutable)
+        ownerPID = try container.decode(Int32.self, forKey: .ownerPID)
+        expiresAt = try container.decode(Date.self, forKey: .expiresAt)
+        exitInsteadOfShellWhenClean = try container.decodeIfPresent(Bool.self, forKey: .exitInsteadOfShellWhenClean) ?? false
+    }
 }
 
 
@@ -39,7 +74,7 @@ private func interruptCommandWorker(_ signal: Int32) { commandWorkerInterrupted 
 public enum ApprovedCommandWorker {
     private static let resultKeys = CommandResultKeys()
     public static let argument = "--parley-approved-command-worker"
-    public static func stage(run: ReviewedCommandRun, directory: URL, shellExecutable: String, ownerPID: Int32) throws -> URL {
+    public static func stage(run: ReviewedCommandRun, directory: URL, shellExecutable: String, ownerPID: Int32, exitWhenClean: Bool = false) throws -> URL {
         guard run.state == .running, UUID(uuidString: run.id) != nil,
               shellExecutable.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: shellExecutable) else {
             throw ReviewedCommandRunError.invalid("Only a natively approved running request can create a worker ticket.")
@@ -51,7 +86,8 @@ public enum ApprovedCommandWorker {
         let key = SymmetricKey(size: .bits256)
         let keyData = key.withUnsafeBytes { Data($0) }
         let ticket = ApprovedCommandTicket(resultKey: keyData, runID: run.id, command: run.command, sourceFolder: run.sourceFolder,
-            shellExecutable: shellExecutable, ownerPID: ownerPID, expiresAt: Date().addingTimeInterval(120))
+            shellExecutable: shellExecutable, ownerPID: ownerPID, expiresAt: Date().addingTimeInterval(120),
+            exitInsteadOfShellWhenClean: exitWhenClean)
         let path = job.appendingPathComponent("ticket.json")
         try writeNew(JSONEncoder().encode(ticket), to: path)
         resultKeys.lock.withLock { resultKeys.values[job.path] = key }
@@ -224,6 +260,7 @@ public enum ApprovedCommandWorker {
         let job = path.deletingLastPathComponent()
         var shell: String?
         var lease: Int32 = -1
+        var endsPaneAfterResult = false
         do {
             lease = try acquireLease(job)
             let ticket = try claim(path)
@@ -256,7 +293,8 @@ public enum ApprovedCommandWorker {
             let envelope = AuthenticatedCommandResult(payload: payload, authentication: Data(authentication))
             try writeNew(JSONEncoder().encode(envelope), to: temporary)
             guard renamex_np(temporary.path, job.appendingPathComponent("result.json").path, UInt32(RENAME_EXCL)) == 0 else { throw posixError() }
-            mirror(Data("\r\n[Parley captured command result: exit \(result.exitStatus.map(String.init) ?? "unavailable"), signal \(result.terminationSignal.map(String.init) ?? "none"). Returning to Shell.]\r\n".utf8), to: STDOUT_FILENO)
+            endsPaneAfterResult = ticket.exitInsteadOfShellWhenClean && ReviewedCommandRunPaneClosePolicy.isClean(result)
+            mirror(Data("\r\n[Parley captured command result: exit \(result.exitStatus.map(String.init) ?? "unavailable"), signal \(result.terminationSignal.map(String.init) ?? "none"). \(endsPaneAfterResult ? "Clean result; this pane closes." : "Returning to Shell.")]\r\n".utf8), to: STDOUT_FILENO)
             if commandWorkerInterrupted != 0 || kill(ticket.ownerPID, 0) != 0 { exit(0) }
             _ = chdir(ticket.command.folder)
         } catch {
@@ -266,6 +304,10 @@ public enum ApprovedCommandWorker {
             }
             mirror(Data("Parley approved command could not start: \(error.localizedDescription)\r\n".utf8), to: STDERR_FILENO)
         }
+        // Decided from the ticket the person's settings staged: a clean run
+        // ends here, so no interactive shell is ever created for it and the
+        // app removes a pane whose process has already ended.
+        if endsPaneAfterResult { exit(0) }
         guard let shell else { exit(1) }
         // The one-use command is over. The same retained Ghostty pane now owns
         // an ordinary human login shell, with no reusable execution ticket.

@@ -475,7 +475,7 @@ public final class WorkbenchController: @unchecked Sendable {
     }
 
     /// Native-only creation path. No agent transport can supply launch overrides.
-    public func createApprovedCommandPane(run: ReviewedCommandRun, workerExecutable: URL) throws -> WorkbenchPane {
+    public func createApprovedCommandPane(run: ReviewedCommandRun, workerExecutable: URL, exitWhenClean: Bool = false) throws -> WorkbenchPane {
         try lock.withLock {
             guard run.state == .running,
                   let source = document.panes.first(where: { $0.id == run.source.id }),
@@ -495,7 +495,8 @@ public final class WorkbenchController: @unchecked Sendable {
             try requireNotReservedForRemoval(run.command.folder)
             let directory = applicationDirectory.resolvingSymlinksInPath().appendingPathComponent("approved-command-runs")
             let ticket = try ApprovedCommandWorker.stage(run: run, directory: directory,
-                shellExecutable: loginShellExecutable().path, ownerPID: ProcessInfo.processInfo.processIdentifier)
+                shellExecutable: loginShellExecutable().path, ownerPID: ProcessInfo.processInfo.processIdentifier,
+                exitWhenClean: exitWhenClean)
             let previous = document
             var pane = try makePane(kind: .shell, cwd: run.command.folder, workspace: workspace, started: true, permissionProfile: nil)
             pane.id = run.shellPaneID

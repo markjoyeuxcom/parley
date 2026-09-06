@@ -9,16 +9,19 @@ struct CommandRunNotice: View {
     private var active: [ReviewedCommandRun] { model.commandRuns.filter { !$0.state.isTerminal || $0.workerStillRunning } }
     private var pendingCount: Int { active.filter { $0.state == .pending }.count }
     var body: some View {
-        if alwaysShow || !active.isEmpty || !model.commandRunGrants.isEmpty || model.commandRunError != nil {
+        if alwaysShow || !active.isEmpty || !model.commandRunGrants.isEmpty || model.automaticCommandRunApprovalEnabled || model.commandRunError != nil {
             HStack(spacing: 10) {
-                Image(systemName: pendingCount > 0 ? "hand.raised.fill" : model.commandRunGrants.isEmpty ? "terminal" : "lock.open")
+                Image(systemName: pendingCount > 0 ? "hand.raised.fill" : model.commandRunGrants.isEmpty && !model.automaticCommandRunApprovalEnabled ? "terminal" : "lock.open")
                     .foregroundStyle(pendingCount > 0 ? Color.accentColor : Color.primary)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(pendingCount > 0 ? "Approval required" : "Requested command runs")
                         .font(.system(size: 12, weight: pendingCount > 0 ? .semibold : .medium))
                     Text(model.commandRunError ?? "\(pendingCount) awaiting approval · \(active.filter { $0.state == .running || $0.workerStillRunning }.count) running · \(model.commandRunGrants.count) session grants")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
-                    if !model.commandRunGrants.isEmpty {
+                    if model.automaticCommandRunApprovalEnabled {
+                        Text("Automatic approval on (Settings > General) · requested commands run as you outside the agent boundary without a preview")
+                            .font(.system(size: 11, weight: .medium))
+                    } else if !model.commandRunGrants.isEmpty {
                         Text("Session trust active · runs as you outside the agent boundary")
                             .font(.system(size: 11, weight: .medium))
                     }
@@ -52,7 +55,9 @@ struct CommandRunsView: View {
                 Spacer()
                 Button("Done") { model.dismissCommandRunReview() }.keyboardShortcut(.cancelAction)
             }
-            Text("Each approved run opens a new visible Shell pane in the requesting workspace. The pane stays open as an ordinary Shell afterwards.")
+            Text(model.automaticCommandRunPaneCloseEnabled
+                ? "Each approved run opens a new visible Shell pane in the requesting workspace. A cleanly finished run's pane closes automatically (Settings > General); any other pane stays open as an ordinary Shell."
+                : "Each approved run opens a new visible Shell pane in the requesting workspace. The pane stays open as an ordinary Shell afterwards.")
                 .foregroundStyle(.secondary)
             if let error = model.commandRunError { Text(error).foregroundStyle(.red) }
             HSplitView {
@@ -63,7 +68,7 @@ struct CommandRunsView: View {
                                 model.selectCommandRun(run)
                             } label: {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text("\(run.source.displayName) · \(run.state.rawValue)")
+                                    Text("\(run.source.displayName) · \(run.state.rawValue)\(run.approvedAutomatically ? " · automatic" : "")")
                                         .font(.system(size: 12, weight: .medium))
                                     Text(run.command.display).lineLimit(2).font(.system(size: 11, design: .monospaced))
                                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
@@ -84,8 +89,12 @@ struct CommandRunsView: View {
             }
             Divider()
             Text("Session trust").font(.headline)
+            if model.automaticCommandRunApprovalEnabled {
+                Text("Automatic approval is on in Settings > General: requested commands start without a preview. " + ReviewedCommandRunCoordinator.trustDisclosure)
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
             if model.commandRunGrants.isEmpty {
-                Text("No auto-approval grants. Per-run approval is the default.").foregroundStyle(.secondary)
+                Text(model.automaticCommandRunApprovalEnabled ? "No exact-command grants; the automatic switch covers every request while it is on." : "No auto-approval grants. Per-run approval is the default.").foregroundStyle(.secondary)
             } else {
                 Text(ReviewedCommandRunCoordinator.trustDisclosure).font(.system(size: 11)).foregroundStyle(.secondary)
                 ScrollView {
@@ -135,7 +144,7 @@ private struct CommandRunPreview: View {
                 .accessibilityLabel("Approved executable and literal argument array")
             TextField("Working folder", text: $folder).textFieldStyle(.roundedBorder)
                 .disabled(run.state != .pending)
-            Text("Noninteractive run: stdin is closed and stdout/stderr are captured through pipes. Each captured stream is limited to 30 KB; truncation is reported. The Shell becomes interactive after the command exits. Cancel stops the owned command process group; detached children may continue.")
+            Text("Noninteractive run: stdin is closed and stdout/stderr are captured through pipes. Each captured stream is limited to 30 KB; truncation is reported. \(run.state == .pending ? (model.automaticCommandRunPaneCloseEnabled ? "If the run finishes cleanly its process ends and Parley removes the pane (Settings > General); otherwise the Shell becomes interactive after the command exits." : "The Shell becomes interactive after the command exits.") : "Whether a clean result ends the pane was fixed when the run started (Settings > General at that moment); otherwise the Shell becomes interactive after the command exits.") Cancel stops the owned command process group; detached children may continue.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
             if run.state == .pending {
                 Toggle("Auto-approve this command for this session", isOn: $autoApprove)
@@ -158,6 +167,10 @@ private struct CommandRunPreview: View {
                     }.buttonStyle(.borderedProminent)
                 }
             } else {
+                if run.approvedAutomatically {
+                    Text("Approved automatically by your Settings choice (Approve agent command runs automatically); no preview was shown.")
+                        .font(.system(size: 11, weight: .medium))
+                }
                 Text(run.detail ?? run.state.rawValue).foregroundStyle(.secondary)
                 if !run.state.isTerminal {
                     Button(run.cancellationRequested ? "Cancellation requested" : "Cancel run") { model.cancelCommandRun(run) }
