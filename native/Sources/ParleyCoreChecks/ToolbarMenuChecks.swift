@@ -64,7 +64,13 @@ private struct ToolbarMenuFixture: View {
     }
 }
 
-func checkToolbarMenuSurvivesUpdatesWhileTracking(_ name: String) throws {
+/// Menu tracking is global: a click anywhere on the machine, or the app
+/// losing activation, ends it. That is not what this check measures (it
+/// measures whether live updates rebuild an open menu), so an attempt whose
+/// tracking ends early without any chrome or item change is retried a few
+/// times. `interruptFirstAttemptAfter` lets a check prove that recovery
+/// deterministically by ending the first attempt itself.
+func checkToolbarMenuSurvivesUpdatesWhileTracking(_ name: String, interruptFirstAttemptAfter: Int? = nil) throws {
     try MainActor.assumeIsolated {
         _ = NSApplication.shared
         let probe = ToolbarMenuProbe(name)
@@ -92,35 +98,67 @@ func checkToolbarMenuSurvivesUpdatesWhileTracking(_ name: String) throws {
         guard let button = control(in: host), button.bounds.width > 40 else {
             throw ToolbarMenuFailure("No usable \(name) control")
         }
-        let timer = Timer(timeInterval: 0.05, repeats: true) { _ in
-            MainActor.assumeIsolated {
-                guard probe.tracking != nil else { return }
-                if let popup = button as? NSPopUpButton, !popup.isEnabled || popup.title != name {
-                    probe.chromeChanges += 1
+        let maximumAttempts = 3
+        var attempt = 0
+        var interruptedAttempts = 0
+        var menu: NSMenu?
+        while menu == nil {
+            attempt += 1
+            probe.tracking = nil
+            probe.opened = nil
+            probe.refreshes = 0
+            probe.tick = 0
+            probe.chromeChanges = 0
+            probe.mutations = 0
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            let interruptAfter = attempt == 1 ? interruptFirstAttemptAfter : nil
+            let timer = Timer(timeInterval: 0.05, repeats: true) { _ in
+                MainActor.assumeIsolated {
+                    guard probe.tracking != nil else { return }
+                    if let popup = button as? NSPopUpButton, !popup.isEnabled || popup.title != name {
+                        probe.chromeChanges += 1
+                    }
+                    probe.refreshes += 1
+                    probe.tick = probe.refreshes
+                    if let interruptAfter, probe.refreshes == interruptAfter {
+                        // Stand-in for a click elsewhere ending the tracking.
+                        probe.tracking?.cancelTracking()
+                        return
+                    }
+                    if probe.refreshes >= 12 { probe.tracking?.cancelTracking() }
                 }
-                probe.refreshes += 1
-                probe.tick = probe.refreshes
-                if probe.refreshes >= 12 { probe.tracking?.cancelTracking() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            // Bound even a failure to recognize the menu; never synthesize global input.
+            let timeout = Timer(timeInterval: 3, repeats: false) { _ in
+                MainActor.assumeIsolated { (button as? NSPopUpButton)?.menu?.cancelTracking() }
+            }
+            RunLoop.main.add(timeout, forMode: .common)
+            let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+            let event = NSEvent.mouseEvent(
+                with: .leftMouseDown, location: point, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+            )!
+            button.mouseDown(with: event)
+            timer.invalidate()
+            timeout.invalidate()
+            if let opened = probe.opened, probe.refreshes >= 12 {
+                menu = opened
+            } else if probe.chromeChanges == 0, probe.mutations == 0, attempt < maximumAttempts {
+                // Tracking ended before the live updates finished and nothing
+                // about the menu changed: something outside ended it. Retry.
+                interruptedAttempts += 1
+                print("  note: \(name) tracking ended externally after \(probe.refreshes) live refreshes; retrying (attempt \(attempt + 1) of \(maximumAttempts))")
+            } else {
+                throw ToolbarMenuFailure("\(name) lost tracking after \(probe.refreshes) live refreshes (attempt \(attempt) of \(maximumAttempts))")
             }
         }
-        RunLoop.main.add(timer, forMode: .common)
-        // Bound even a failure to recognize the menu; never synthesize global input.
-        let timeout = Timer(timeInterval: 3, repeats: false) { _ in
-            MainActor.assumeIsolated { (button as? NSPopUpButton)?.menu?.cancelTracking() }
-        }
-        RunLoop.main.add(timeout, forMode: .common)
-        defer { timer.invalidate(); timeout.invalidate() }
-        let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
-        let event = NSEvent.mouseEvent(
-            with: .leftMouseDown, location: point, modifierFlags: [],
-            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-            context: nil, eventNumber: 0, clickCount: 1, pressure: 1
-        )!
-        button.mouseDown(with: event)
-        timer.invalidate()
-        timeout.invalidate()
-        guard let menu = probe.opened, probe.refreshes >= 12 else {
-            throw ToolbarMenuFailure("\(name) lost tracking after \(probe.refreshes) live refreshes")
+        guard let menu else { throw ToolbarMenuFailure("\(name) never opened") }
+        if let interruptFirstAttemptAfter {
+            guard interruptedAttempts == 1, attempt == 2 else {
+                throw ToolbarMenuFailure("\(name) did not recover from an interrupted first attempt (interrupted \(interruptedAttempts), attempts \(attempt), first attempt cut at \(interruptFirstAttemptAfter))")
+            }
         }
         guard probe.chromeChanges == 0 else {
             throw ToolbarMenuFailure("\(name) changed its button title or availability while open")
