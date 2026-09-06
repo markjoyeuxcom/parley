@@ -61,16 +61,30 @@ public final class WindowRefreshClock {
     public var isRunning: Bool { timer != nil }
 
     /// Schedules on the calling thread's run loop; content calls this from the
-    /// main actor, so the timer joins the main loop in the policy mode.
+    /// main actor, so the timer joins the main loop in the policy mode. The
+    /// timer fires through a selector on a small target that holds this clock
+    /// weakly: no block captures the clock (a block-based timer would need a
+    /// Sendable capture), and the run loop's strong reference to the timer
+    /// never keeps the clock alive, so `deinit` still invalidates it.
     public func start() {
         guard timer == nil else { return }
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.handler() }
+        let target = WindowRefreshClockTarget(clock: self)
+        let timer = Timer(timeInterval: interval, target: target, selector: #selector(WindowRefreshClockTarget.fire(_:)), userInfo: nil, repeats: true)
         RunLoop.current.add(timer, forMode: mode)
         self.timer = timer
     }
+
+    fileprivate func fire() { handler() }
 
     public func stop() {
         timer?.invalidate()
         timer = nil
     }
+}
+
+/// The timer target for `WindowRefreshClock`; see `start()`.
+private final class WindowRefreshClockTarget: NSObject {
+    private weak var clock: WindowRefreshClock?
+    init(clock: WindowRefreshClock) { self.clock = clock }
+    @objc func fire(_ timer: Timer) { clock?.fire() }
 }

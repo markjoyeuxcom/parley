@@ -148,7 +148,9 @@ private func reviewController(_ root: URL) throws -> WorkbenchController {
     }),
     ("review regression selected Git filenames are literal", {
         let root = try reviewRoot(); defer { try? FileManager.default.removeItem(at: root) }
-        let runner = ProcessCommandRunner(timeout: 3)
+        // Fixture setup only: a cold `git init`/`git add` on a loaded CI runner
+        // has exceeded 3 s, which is not what this check measures.
+        let runner = ProcessCommandRunner(timeout: 15)
         func git(_ args: [String]) throws {
             let result = try runner.run(executable: URL(fileURLWithPath: "/usr/bin/git"), arguments: ["-C", root.path] + args, environment: ["PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1"], input: nil)
             try reviewExpect(result.status == 0, result.stderrText)

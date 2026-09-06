@@ -10554,6 +10554,7 @@ let checks: [(String, () throws -> Void)] = [
     ("Return toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Return") }),
     ("Actions toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Actions") }),
     ("Waiting toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Waiting") }),
+    ("toolbar menu check recovers when something outside ends its tracking early", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Ask", interruptFirstAttemptAfter: 5) }),
     ("detailed in-app help coverage", checkInAppHelpGuideCoverage),
     ("workbench state projection", checkWorkbenchStateProjection),
     ("Precision Grid chrome uses owned state", checkPrecisionGridChromeUsesOwnedState),
