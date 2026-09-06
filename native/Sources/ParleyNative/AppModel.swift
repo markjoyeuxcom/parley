@@ -266,6 +266,26 @@ final class AppModel: ObservableObject {
     @Published private(set) var releaseDownloading = false
     @Published private(set) var releaseLifecycleMessage: String?
     @Published private(set) var swiftPMCompatibilityEnabled = false
+    /// The person's choice to approve agent command runs without a preview.
+    /// Read from and written to the owner-only authorization file inside the
+    /// application directory, never a preference domain.
+    @Published private(set) var automaticCommandRunApprovalEnabled = false
+    /// The person's choice to end a clean run's pane instead of handing it to a shell.
+    @Published private(set) var automaticCommandRunPaneCloseEnabled = false
+    /// Why the authorization file was ignored or could not be written, if so.
+    @Published private(set) var commandRunAuthorizationError: String?
+    /// Automatic pane closes that failed or closed without restoring focus,
+    /// per run, so one run's success never erases another run's explanation.
+    @Published private(set) var commandRunPaneCloseErrors: [String: String] = [:]
+    var commandRunPaneCloseError: String? {
+        commandRunPaneCloseErrors.isEmpty ? nil : commandRunPaneCloseErrors.keys.sorted().compactMap { commandRunPaneCloseErrors[$0] }.joined(separator: "\n")
+    }
+    private let commandRunAuthorization: CommandRunAuthorizationStore
+    private var commandRunPaneCleanup = CommandRunPaneCleanup()
+    /// Closing a pane makes Ghostty report the close synchronously, which
+    /// refreshes the model from inside the close; the cleanup pass must not
+    /// run again inside itself.
+    private var closingCommandRunPanes = false
     @Published private(set) var automaticUpdatesAvailable = false
     @Published private(set) var automaticUpdateChecksEnabled = false
     @Published private(set) var automaticUpdateCanCheck = false
@@ -451,6 +471,13 @@ final class AppModel: ObservableObject {
         }
         idleAgentReaperEnabled = preferences.bool(forKey: Self.idleAgentReaperKey)
         swiftPMCompatibilityEnabled = preferences.bool(forKey: Self.swiftPMCompatibilityKey)
+        commandRunAuthorization = CommandRunAuthorizationStore(
+            file: applicationDirectory.appendingPathComponent(CommandRunAuthorizationStore.fileName)
+        )
+        let authorization = commandRunAuthorization.load()
+        automaticCommandRunApprovalEnabled = authorization.automaticApproval
+        automaticCommandRunPaneCloseEnabled = authorization.closeCleanPanes
+        commandRunAuthorizationError = authorization.error
         layoutStore = SavedWorkspaceLayoutStore(
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
         )
@@ -1303,6 +1330,39 @@ final class AppModel: ObservableObject {
         preferences.set(enabled, forKey: Self.swiftPMCompatibilityKey)
         swiftPMCompatibilityEnabled = enabled
         controller?.setSwiftPMCompatibilityEnabled(enabled)
+    }
+
+    /// Settings > General. The choice is the person's; it is written to the
+    /// owner-only authorization file and pushed into the coordinator from
+    /// here (and from every refresh, so a core started later sees it), never
+    /// taken from an agent request, a preference domain or the journal.
+    /// Turning on fails closed: if the file cannot be written, nothing changes.
+    func setAutomaticCommandRunApprovalEnabled(_ enabled: Bool) {
+        let outcome = persistCommandRunAuthorization(automaticApproval: enabled, closeCleanPanes: automaticCommandRunPaneCloseEnabled,
+            turningOn: enabled, setting: "Automatic approval of agent command runs")
+        guard outcome.applied else { return }
+        automaticCommandRunApprovalEnabled = enabled
+        residentCore?.commandRuns.setAutomaticApproval(enabled)
+        try? refresh()
+    }
+
+    /// Settings > General. Applies to runs staged after it is turned on: the
+    /// worker ticket carries the choice, so a pane already handed to an
+    /// interactive shell is never affected.
+    func setAutomaticCommandRunPaneCloseEnabled(_ enabled: Bool) {
+        let outcome = persistCommandRunAuthorization(automaticApproval: automaticCommandRunApprovalEnabled, closeCleanPanes: enabled,
+            turningOn: enabled, setting: "Closing a clean run's pane")
+        guard outcome.applied else { return }
+        automaticCommandRunPaneCloseEnabled = enabled
+    }
+
+    private func persistCommandRunAuthorization(automaticApproval: Bool, closeCleanPanes: Bool, turningOn: Bool, setting: String) -> CommandRunAuthorizationChange.Outcome {
+        var saveError: String?
+        do { try commandRunAuthorization.save(automaticApproval: automaticApproval, closeCleanPanes: closeCleanPanes) }
+        catch { saveError = error.localizedDescription }
+        let outcome = CommandRunAuthorizationChange.outcome(turningOn: turningOn, saveError: saveError, setting: setting)
+        commandRunAuthorizationError = outcome.message
+        return outcome
     }
 
     func setAutomaticUpdateChecksEnabled(_ enabled: Bool) {
@@ -2617,6 +2677,9 @@ final class AppModel: ObservableObject {
     private func refreshCommandRuns() {
         guard let core = residentCore, let controller else { return }
         let coordinator = core.commandRuns
+        if coordinator.automaticApprovalEnabled != automaticCommandRunApprovalEnabled {
+            coordinator.setAutomaticApproval(automaticCommandRunApprovalEnabled)
+        }
         coordinator.reconcile()
         coordinator.serviceWorkers(directory: core.commandRunDirectory)
         // Keep approved work queued while a preview covers the terminal.
@@ -2629,7 +2692,11 @@ final class AppModel: ObservableObject {
                 NSApp.activate()
                 guard mainWindow.isVisible else { throw ReviewedCommandRunError.invalid("A visible Parley window is required before starting this command.") }
                 guard let executable = Bundle.main.executableURL else { throw ReviewedCommandRunError.invalid("The Parley worker executable is unavailable.") }
-                let created = try controller.createApprovedCommandPane(run: run, workerExecutable: executable)
+                let previouslyActive = (try? controller.listPanes())?.first(where: \.isActive)?.id
+                let exitWhenClean = automaticCommandRunPaneCloseEnabled
+                let created = try controller.createApprovedCommandPane(run: run, workerExecutable: executable, exitWhenClean: exitWhenClean)
+                commandRunPaneCleanup.recordLaunch(runID: run.id, paneID: created.id, paneGeneration: created.launchGeneration,
+                    exitsWhenClean: exitWhenClean, previousActivePaneID: previouslyActive)
                 focusCanvasPaneID = nil
                 recordNativeSplit(created: created, target: run.source, direction: .vertical)
                 // Select and visibly mount the new retained surface before starting
@@ -2642,11 +2709,77 @@ final class AppModel: ObservableObject {
         }
         let runs = coordinator.runs()
         let grants = coordinator.grants()
+        closeFinishedCommandRunPanes(runs, coordinator: coordinator, directory: core.commandRunDirectory)
         if runs != commandRuns { commandRuns = runs }
         if grants != commandRunGrants { commandRunGrants = grants }
         let commandRunMessage = coordinator.lastError ?? (core.commandRunCleanupWarnings.isEmpty ? nil : core.commandRunCleanupWarnings.joined(separator: "\n"))
+            ?? commandRunPaneCloseError ?? commandRunAuthorizationError
         if commandRunError != commandRunMessage { commandRunError = commandRunMessage }
         refreshCommandRunAttention()
+    }
+
+    /// Runs inside the ordinary refresh, before panes are re-listed, so a
+    /// removed pane disappears in the same pass. Every fact comes from a fresh
+    /// controller read and the decision from `CommandRunPaneCleanup`: only a
+    /// pane whose worker exited without handing over a shell is ever closed,
+    /// even though Ghostty keeps showing the surface until a key is pressed.
+    /// Never calls refresh() itself.
+    private func closeFinishedCommandRunPanes(_ runs: [ReviewedCommandRun], coordinator: ReviewedCommandRunCoordinator, directory: URL) {
+        // A refresh raised by a synchronous close report arrives while the
+        // controller is still inside a lifecycle mutation; leave it for the
+        // next tick rather than counting it as a failed close.
+        guard !closingCommandRunPanes, let controller, !controller.isTerminatingSurface,
+              let current = try? controller.listPanes() else { return }
+        closingCommandRunPanes = true
+        defer { closingCommandRunPanes = false }
+        let facts = current.map { CommandRunPaneCleanup.PaneFacts(id: $0.id, launchGeneration: $0.launchGeneration, isStarted: $0.isStarted, isDead: $0.isDead) }
+        // Newest first from the tracker, so a chain of run panes unwinds back
+        // to the pane the person started from.
+        for decision in commandRunPaneCleanup.decisions(runs: runs, panes: facts) {
+            guard case let .close(runID, paneID, recordedRestore) = decision else { continue }
+            do {
+                // Re-read right before acting: the person may have moved, and an
+                // earlier close in this pass may have removed the recorded target.
+                let fresh = try controller.listPanes()
+                guard let pane = fresh.first(where: { $0.id == paneID && $0.kind == .shell }) else {
+                    commandRunPaneCleanup.didFailToClose(runID: runID)
+                    continue
+                }
+                // The decision used the cached lease flag; take the kernel fact
+                // now. A worker still in its exit delay keeps the pane one more
+                // tick (not counted as a failed attempt).
+                guard coordinator.workerLeaseReleased(id: runID, directory: directory) else { continue }
+                let wasActive = pane.isActive
+                try controller.closePane(paneID)
+                commandRunPaneCleanup.didClose(runID: runID)
+                // Only this run's own explanation is repaired by its success.
+                commandRunPaneCloseErrors.removeValue(forKey: runID)
+                if focusCanvasPaneID == paneID { focusCanvasPaneID = nil }
+                if handoffComposerDraft?.sourcePaneID == paneID || handoffComposerDraft?.targetPaneID == paneID {
+                    handoffComposerDraft = nil
+                }
+                // Give focus back only if the person was still on the run's
+                // pane; a focus choice they made in the meantime is theirs.
+                guard wasActive else { continue }
+                let remaining = try controller.listPanes()
+                let remainingFacts = remaining.map { CommandRunPaneCleanup.PaneFacts(id: $0.id, launchGeneration: $0.launchGeneration, isStarted: $0.isStarted, isDead: $0.isDead) }
+                guard let restoreTo = commandRunPaneCleanup.restoreTarget(from: recordedRestore, panes: remainingFacts),
+                      let target = remaining.first(where: { $0.id == restoreTo }) else { continue }
+                do {
+                    try controller.selectPane(target.id)
+                    _ = try? workspaceRegistry.updateSelectedPane(workspaceID: target.workspaceID, paneID: target.id)
+                } catch {
+                    commandRunPaneCloseErrors[runID] = "The finished run's pane was closed, but focus could not return to \(target.displayName): \(error.localizedDescription)"
+                }
+            } catch {
+                let gaveUp = commandRunPaneCleanup.didFailToClose(runID: runID)
+                commandRunPaneCloseErrors[runID] = "The finished run's pane could not be closed automatically\(gaveUp ? " and stays open" : "; Parley will retry"): \(error.localizedDescription)"
+            }
+        }
+        // Explanations for runs no longer listed at all can go.
+        let listed = Set(runs.map(\.id))
+        let pruned = commandRunPaneCloseErrors.filter { listed.contains($0.key) }
+        if pruned != commandRunPaneCloseErrors { commandRunPaneCloseErrors = pruned }
     }
 
     private func refreshCommandRunAttention() {

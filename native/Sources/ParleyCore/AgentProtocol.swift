@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "22"
+    public static let version = "23"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -82,10 +82,17 @@ public enum AgentProtocol {
       outside vendor tool enforcement; stdin is closed, output uses pipes.
       Requesting a run does not itself approve execution. Per-run approval is
       the default. Only the person may grant or revoke exact-command session
-      trust in the native UI. That trust includes mutable project code and access
-      to the person's files and other pane credentials; cross-vendor attribution
-      cannot be guaranteed while it is granted. Never grant it yourself or
-      describe exact argv as a code boundary.
+      trust in the native UI, or turn on automatic approval of requested runs
+      in Settings > General; while that switch is on, an eligible request is
+      approved as requested and starts without a preview, and turning it off
+      returns any such approval that has not started to waiting. Both are the
+      person's choice alone, stored where agents cannot reach, visibly
+      disclosed and revocable. That trust
+      includes mutable project code and access to the person's files and
+      other pane credentials; cross-vendor attribution cannot be guaranteed
+      while it is granted. Never grant it yourself, never ask for the switch
+      to be turned on to get past a refusal, and never describe exact argv as
+      a code boundary.
       One active request is allowed per source pane. The command returns JSON
       with approvedCommand (argv/folder after human edits), bounded stdout/stderr,
       exitStatus or terminationSignal, cancelled and
@@ -94,7 +101,11 @@ public enum AgentProtocol {
       the same live requesting generation. A rejected, interrupted or uncertain
       run must not be silently resubmitted. The person can Cancel in Requested
       command runs or Status Center; Stop Everything and quit also end tracked runs
-      and revoke grants. The completed pane remains an ordinary human Shell.
+      and revoke grants. The completed pane remains an ordinary human Shell
+      unless the person chose in Settings > General to end a cleanly finished
+      run's pane instead: then the worker exits after a clean result, no
+      shell is opened, and Parley removes the pane once its process has
+      ended; the captured result is unaffected.
       This reviewed path grants no general agent-to-shell input route.
     - To assemble a bounded team for one objective, run
       `parley team request --folder <absolute-folder> [--template <name>] [--panes <n>] [--hours <n>] [--worktree <branch> [--base <ref>]] "<objective>"`

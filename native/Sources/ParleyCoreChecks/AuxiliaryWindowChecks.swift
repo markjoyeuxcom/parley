@@ -80,6 +80,10 @@ private final class WindowProbeLedger {
     var destroyed = 0
     var appeared = 0
     var ticks = 0
+    /// Times the content saw `auxiliaryWindowActive` turn false. The state
+    /// lands on a later run-loop turn than the AppKit action that causes it,
+    /// so a step must wait for this before asserting the clock is quiet.
+    var suspended = 0
 }
 
 @MainActor
@@ -116,7 +120,7 @@ private struct WindowProbeContent: View {
                 if active { clock.start { ledger.ticks += 1 } }
             }
             .onChange(of: active) { _, isActive in
-                if isActive { clock.start { ledger.ticks += 1 } } else { clock.stop() }
+                if isActive { clock.start { ledger.ticks += 1 } } else { clock.stop(); ledger.suspended += 1 }
             }
             .onDisappear { clock.stop() }
     }
@@ -147,6 +151,7 @@ private final class WindowProbeScenario {
     var notes: [String] = []
     var recordedTicks = 0
     var recordedAppearances = 0
+    var recordedSuspensions = 0
     var minimiseSupported = true
     var hideSupported = true
     var settleRetries = 0
@@ -203,8 +208,8 @@ func auxiliaryWindowLifetimeChecks() throws {
             }),
             ("minimise", {
                 guard live() == 1, ledger.ticks > 0 else { return "showing the window did not mount content and start its clock (created \(ledger.created), destroyed \(ledger.destroyed), ticks \(ledger.ticks))" }
-                scenario.recordedTicks = ledger.ticks
                 createdBefore = ledger.created
+                scenario.recordedSuspensions = ledger.suspended
                 window.miniaturize(nil)
                 scenario.minimiseSupported = window.isMiniaturized
                 if !scenario.minimiseSupported {
@@ -213,9 +218,23 @@ func auxiliaryWindowLifetimeChecks() throws {
                 }
                 return nil
             }),
+            // The suspended state lands on a later run-loop turn than the
+            // action; wait for the content to report it before asserting
+            // that the clock is quiet, so a tick in between is not a failure.
+            ("settle after minimise", {
+                if scenario.minimiseSupported, ledger.suspended == scenario.recordedSuspensions, scenario.settleRetries < 10 {
+                    scenario.settleRetries += 1
+                    scenario.index -= 1
+                    return nil
+                }
+                scenario.settleRetries = 0
+                scenario.recordedTicks = ledger.ticks
+                return nil
+            }),
             ("deminiaturise", {
                 if scenario.minimiseSupported {
                     guard ledger.destroyed == 0 else { return "minimising destroyed the content and its drafts" }
+                    guard ledger.suspended > scenario.recordedSuspensions else { return "minimising did not suspend the content" }
                     guard ledger.ticks == scenario.recordedTicks else { return "the clock kept ticking while minimised (\(ledger.ticks) vs \(scenario.recordedTicks))" }
                     window.deminiaturize(nil)
                 }
@@ -228,8 +247,8 @@ func auxiliaryWindowLifetimeChecks() throws {
                 } else {
                     guard live() == 1 else { return "restoring the window after the skipped minimise left no live content (created \(ledger.created), destroyed \(ledger.destroyed))" }
                 }
-                scenario.recordedTicks = ledger.ticks
                 createdBefore = ledger.created
+                scenario.recordedSuspensions = ledger.suspended
                 app.hide(nil)
                 scenario.hideSupported = app.isHidden
                 if !scenario.hideSupported {
@@ -237,8 +256,19 @@ func auxiliaryWindowLifetimeChecks() throws {
                 }
                 return nil
             }),
+            ("settle after hide", {
+                if scenario.hideSupported, ledger.suspended == scenario.recordedSuspensions, scenario.settleRetries < 10 {
+                    scenario.settleRetries += 1
+                    scenario.index -= 1
+                    return nil
+                }
+                scenario.settleRetries = 0
+                scenario.recordedTicks = ledger.ticks
+                return nil
+            }),
             ("unhide", {
                 if scenario.hideSupported {
+                    guard ledger.suspended > scenario.recordedSuspensions else { return "hiding the application did not suspend the content" }
                     guard live() == 1, ledger.created == createdBefore else { return "hiding the application destroyed the content and its drafts (created \(ledger.created), destroyed \(ledger.destroyed))" }
                     guard ledger.ticks == scenario.recordedTicks else { return "the clock kept ticking while the application was hidden" }
                     app.unhide(nil)
