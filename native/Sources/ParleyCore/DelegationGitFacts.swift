@@ -5,6 +5,32 @@ import Foundation
 /// paths. Paths only; never file contents, patches, diffs, command output,
 /// authorship or blame. Other panes and the person edit the same tree, so
 /// nothing here says who changed anything.
+/// The managed worktree containing the folder at capture time, copied from
+/// Parley's own record then: path, branch, the base commit the tree was
+/// created from and whether Parley created it. It is evidence recorded with
+/// the handoff, never a later lookup, and never a claim about who changed a file.
+public struct ManagedWorktreeEvidence: Codable, Equatable, Sendable {
+    public let path: String
+    public let branch: String
+    public let baseCommit: String?
+    public let parleyCreated: Bool
+
+    public init(path: String, branch: String, baseCommit: String?, parleyCreated: Bool) {
+        self.path = path
+        self.branch = branch
+        self.baseCommit = baseCommit
+        self.parleyCreated = parleyCreated
+    }
+
+    public init(record: ManagedWorktreeRecord) {
+        self.init(path: record.path, branch: record.branch, baseCommit: record.baseCommit, parleyCreated: record.parleyCreated)
+    }
+
+    public var summary: String {
+        "worktree \(branch) · recorded base \(baseCommit.map { String($0.prefix(12)) } ?? "not recorded") · \(parleyCreated ? "created by Parley" : "person-owned")"
+    }
+}
+
 public struct DelegationGitSnapshot: Codable, Equatable, Sendable {
     public static let maximumPaths = 200
     public static let label = "Shared worktree: not attribution"
@@ -23,6 +49,9 @@ public struct DelegationGitSnapshot: Codable, Equatable, Sendable {
     /// Set when the folder exists but Git could not report; the other fields
     /// are then empty. A non-Git folder produces no snapshot at all.
     public let unavailableReason: String?
+    /// Present when the folder was inside a Parley-managed worktree at
+    /// capture time. Older records decode without it.
+    public var managedWorktree: ManagedWorktreeEvidence? = nil
 
     public init(
         capturedAt: Date,
@@ -32,7 +61,8 @@ public struct DelegationGitSnapshot: Codable, Equatable, Sendable {
         isDetached: Bool,
         dirtyPaths: [String],
         dirtyPathCount: Int,
-        unavailableReason: String? = nil
+        unavailableReason: String? = nil,
+        managedWorktree: ManagedWorktreeEvidence? = nil
     ) {
         self.capturedAt = capturedAt
         self.folder = folder
@@ -42,6 +72,7 @@ public struct DelegationGitSnapshot: Codable, Equatable, Sendable {
         self.dirtyPaths = dirtyPaths
         self.dirtyPathCount = dirtyPathCount
         self.unavailableReason = unavailableReason
+        self.managedWorktree = managedWorktree
     }
 
     public var isAvailable: Bool { unavailableReason == nil }
@@ -49,6 +80,11 @@ public struct DelegationGitSnapshot: Codable, Equatable, Sendable {
     public var shortRevision: String? { headRevision.map { String($0.prefix(7)) } }
 
     public var summary: String {
+        let base = baseSummary
+        return managedWorktree.map { base + " · " + $0.summary } ?? base
+    }
+
+    private var baseSummary: String {
         if let unavailableReason { return "Git facts unavailable: \(unavailableReason)" }
         let head = shortRevision.map { "HEAD \($0)" } ?? "no commits yet"
         let reference = isDetached ? "detached" : (branch ?? "no branch")
@@ -240,15 +276,22 @@ public final class DelegationGitSnapshotCapture: @unchecked Sendable {
     private let environment: [String: String]
     private let fileManager: FileManager
     private let clock: () -> Date
+    /// Answers "which managed record is exactly this Git worktree root" from
+    /// Parley's own records at capture time; nil when none or not configured.
+    /// The root comes from Git (`--show-toplevel`), so a nested worktree or an
+    /// unmanaged nested repository is never attributed to a managed parent.
+    private let managedWorktreeLookup: (@Sendable (String) -> ManagedWorktreeEvidence?)?
 
     public init(
         runner: CommandRunning = ProcessCommandRunner(timeout: 2),
         gitExecutable: URL = URL(fileURLWithPath: "/usr/bin/git"),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default,
-        clock: @escaping () -> Date = Date.init
+        clock: @escaping () -> Date = Date.init,
+        managedWorktreeLookup: (@Sendable (String) -> ManagedWorktreeEvidence?)? = nil
     ) {
         self.runner = runner
+        self.managedWorktreeLookup = managedWorktreeLookup
         self.gitExecutable = gitExecutable
         var gitEnvironment = environment
         gitEnvironment["GIT_OPTIONAL_LOCKS"] = "0"
@@ -294,6 +337,29 @@ public final class DelegationGitSnapshotCapture: @unchecked Sendable {
             if output.stderrText.lowercased().contains("not a git repository") { return nil }
             return unavailable("git status exited \(output.status)")
         }
-        return DelegationGitFacts.parseStatus(output.stdout, folder: folder, capturedAt: capturedAt)
+        var snapshot = DelegationGitFacts.parseStatus(output.stdout, folder: folder, capturedAt: capturedAt)
+        if let managedWorktreeLookup, let root = worktreeRoot(of: folder) {
+            snapshot.managedWorktree = managedWorktreeLookup(root)
+        }
+        return snapshot
+    }
+
+    private func worktreeRoot(of folder: String) -> String? {
+        guard let output = try? runner.run(executable: gitExecutable,
+            arguments: ["-C", folder, "-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel"], environment: environment, input: nil),
+              output.status == 0 else { return nil }
+        let root = output.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return root.hasPrefix("/") ? GitWorktreeResolver.canonicalPath(root) : nil
+    }
+}
+
+extension ManagedWorktreeStore {
+    /// Lookup for delegation Git facts: the record whose path is exactly this
+    /// Git worktree root, read from the store file at that moment. A read
+    /// failure yields nil, which the snapshot shows as no evidence.
+    public func evidence(forWorktreeRoot root: String) -> ManagedWorktreeEvidence? {
+        guard let records = try? records() else { return nil }
+        let canonical = GitWorktreeResolver.canonicalPath(root)
+        return records.first { $0.path == canonical }.map(ManagedWorktreeEvidence.init(record:))
     }
 }

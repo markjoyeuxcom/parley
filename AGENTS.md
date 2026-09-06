@@ -322,9 +322,10 @@ rendered/200 KB transport bounds; agent commands never create their own approval
 ## Team sessions
 
 `parley team request --folder <absolute-folder> [--template <name>] [--panes <n>]
-[--hours <n>] "<objective>"` lets one lead pane propose a bounded team for one
-objective. It requires a live agent pane in a workspace whose policy allows
-delegation and a folder inside the lead's working folder. Nothing is authorized
+[--hours <n>] [--worktree <branch> [--base <ref>]] "<objective>"` lets one lead
+pane propose a bounded team for one objective. It requires a live agent pane
+in a workspace whose policy allows delegation and a folder inside the lead's
+working folder. Nothing is authorized
 until the person approves a native editable preview of objective, folder,
 allowed vendors, permission profile, pane limit (at most 8) and deadline (at
 most 128 hours). A named template only prefills vendors and count; folders
@@ -378,6 +379,123 @@ UTF-8-bounded, control-cleaned and flagged when truncated; retained attempts
 are capped so status stays under the 200 KB cap. Historical membership is kept
 separately from current ownership, and machine timestamps are ISO 8601 while
 `detail` stays display-only.
+
+## Managed Git worktrees
+
+Parley manages one Git worktree per feature or team, never one per pane, and
+only as lifecycle, evidence and safety around Git. `ManagedWorktrees.swift`
+owns it: `ManagedWorktreeService` runs a fixed `/usr/bin/git` with argv only,
+an environment scrubbed of every inherited `GIT_*` variable (locks, prompts
+and pagers disabled), `--end-of-options` before any person-supplied value,
+bounded timeouts and no `--force` anywhere. Branch names and refs are
+validated before a process runs (no option shapes, traversal, control
+characters, `..`, `refs/`, trailing `/`, `.lock`), and Git's own
+`check-ref-format --branch` is consulted too. Repository identity is the
+canonical `--git-common-dir`; worktree listings are parsed on NUL boundaries
+so a newline-bearing path survives.
+
+Creation happens only after a native preview, and the mutation is bound to
+that preview. `createPreview` resolves the base ref to one commit and the
+exact planned path `<toplevel>/.worktrees/<slug>`; native flows build the
+`CreateRequest` from the preview alone, and `create` re-resolves the folder
+and refuses before any directory, exclude line or Git command if the common
+directory, the planned path or the base commit differ from the preview (a
+re-pointed alias to a clone with the same commits is refused with nothing
+written there). It also refuses an existing branch, a symlinked `.worktrees`
+or one resolving outside the repository, and an existing path. It appends one
+`.worktrees/` line to `<common>/info/exclude` (idempotent, other lines
+untouched, tracked ignore rules never edited), runs `git worktree add -b
+<branch> --end-of-options <path> <commit>` once, observing a timeout as
+status 124 rather than skipping reconciliation, then asks Git's registry what
+happened. Only a successful add from this process is a creation receipt:
+a nonzero or timed-out add that nonetheless registered a tree (for example
+after a failing post-checkout hook) is `unmanaged`, described as possibly
+usable, never adopted, and never retried; stderr wording or a matching
+branch and HEAD is not proof of the creator. After a successful add, a tree
+whose admin directory already carries a creation marker is `ambiguous` (no
+marker written, the other creator's marker preserved, no record); a tree Git
+does not list is `incomplete` and nothing on disk is deleted; an unreadable
+registry is `uncertain`; a registered tree whose record cannot be saved is
+`createdButUnrecorded` and must not be created again. The preview states the real execution boundary: checkout runs
+configured post-checkout hooks and clean/smudge or process filters with the
+application's permissions, and Parley does not disable them. The marker is
+`<common>/worktrees/<name>/parley-worktree-owner`, written without
+overwriting; a tree removed and recreated at the same path never inherits
+it, and `attach` (selecting an existing tree) records `parleyCreated: false`
+with no base unless a ref was given. Records live in
+`managed-worktrees.json` (mode 0600) as ownership and base metadata only,
+never execution authority.
+
+Team Sessions integrate at approval. `--worktree` on the request is a
+proposal only; the approval form offers ordinary folder, existing linked
+worktree or new worktree, previews the base commit and path, and the native
+app calls `preflightApproval` (same checks as `approve`, no mutation,
+planned-path containment through the nearest existing ancestor) before any
+Git runs, then creates or attaches, then approves with the folder equal to
+exactly that tree and `TeamWorktreeBinding` on the session. In every mode the
+grant is one folder inside the requester's working folder; only a created
+tree is placed under `.worktrees/`. A grant is never widened to the
+repository or to the shared `.git` directory: whether a vendor may commit
+from a linked worktree is that vendor's own permission decision, and the
+approval, help and protocol say so. A created tree whose approval then fails
+is reported as created-but-unapproved and stays selectable or removable.
+`parley team status` exposes the binding as `worktree`; panes, the Team
+Sessions detail and the Status Center delegation inspector show path, branch
+and recorded base. The inspector renders `ManagedWorktreeEvidence` captured
+inside the delegation Git snapshot at delegation and return time, matched by
+the exact `--show-toplevel` root (a nested worktree or an unmanaged nested
+repository is never attributed to a managed parent), never a later lookup.
+Generic `whoami`, `panes` and events stay path-free. Pane rows look the pane
+up through the background scan's exact worktree root and cached records; no
+filesystem work happens at render time.
+
+Cleanup is person-triggered from the worktree browser, for Parley-created
+trees only. `cleanupPreview` and `remove` each read every fact fresh:
+registered and token-verified identity, lock and prunable state, other
+registered worktrees or Parley-known trees nested inside the tree, this
+runtime's pane folders (started or stopped, re-read again right before the
+mutation) and the other Production/Development runtime's `workbench-state.json`
+(an unreadable file refuses), `git status --porcelain=v1 -z --untracked-files=all
+--ignored=matching`, the configured upstream from `branch.<name>.merge` with
+`rev-list --count @{upstream}..HEAD`, and `merge-base --is-ancestor` against
+the primary worktree. `WorktreeCleanupPolicy.decision` is the pure table:
+a nested registered or known worktree, any live or placeholder pane inside
+the tree, modified or untracked files, commits ahead of the upstream's local
+remote-tracking state (a pushed but unmerged branch is allowed; the remote
+is never contacted), no upstream and not contained in the primary's HEAD,
+locked, prunable, unregistered, unverified identity, a non-directory item
+at the recorded path, a path that cannot be inspected (only a confirmed
+"no such file" is an absence), an unreadable state file, an unreadable worktree
+registry, an unreadable record store, a target record missing from or
+changed in the freshly read store, or an unanswerable Git question refuses;
+a path with no filesystem item at all that a successfully read registry no
+longer lists as present, with its record present and unchanged in a
+successfully read store, becomes record-only cleanup that runs no Git
+command. Every ignored entry Git would delete is shown in full in a
+scrollable native list with control characters escaped (`displayPath`), a
+directory entry meaning its whole contents; more than 200 refuses; the
+person acknowledges exactly that list and the preview words the preservation
+evidence from the facts (local remote-tracking state, not current remote
+knowledge). While a removal runs, `WorkbenchController` holds a folder
+reservation that `requireDirectory` enforces on every creation, start and
+restart route, so no process can appear inside the tree. Removal runs
+`git worktree remove --end-of-options <path>` from the primary worktree
+without `--force`, observes a timeout as status 124, and reports only what
+Git's registry and the filesystem show afterwards: `removed` (folder gone
+and no longer present, record cleared, record failure reported separately),
+`retained` (still listed and the folder remains; after a Git error a
+partial removal is possible and the text says so) or `uncertain` (registry
+unreadable or registration and folder disagree; nothing recorded, no
+retry). Native titles follow that state. Folder reservations are checked
+under the controller's mutation lock before any workspace or pane changes,
+so a refusal leaves no half-applied metadata. Background facts (branch, HEAD,
+changed count, upstream) refresh with the worktree scan for trees a pane sits
+in or an active session is bound to, and for every record when the browser
+opens, under a generation guard that applies only over unchanged records;
+`registered` is a tri-state and a read failure stays unknown, never
+"absent". Deferred: merge-tree previews, disk usage, merges, rebases, pushes,
+stashes, automatic cleanup, automatic branch deletion, per-pane worktrees and
+multi-folder grants.
 
 ## SwiftPM inside agent panes
 

@@ -343,6 +343,22 @@ paths from another machine, credentials or terminal content. A team can be
 applied folderless; its agents remain stopped and unbound until their working
 folders and permissions are reviewed explicitly.
 
+Git worktrees stay one per feature, not one per pane. The worktree browser
+opens any existing worktree as a workspace and can create a new one on a new
+branch from a previewed base commit under `<repository>/.worktrees/`; a Team
+Session approval offers the same choice, and every pane the session creates
+then shares that tree. Parley records the base commit the tree was created
+from and shows it on panes, in Team Sessions and beside a delegation's Git
+facts. Removing a Parley-created worktree is an explicit action. It refuses
+nested worktrees, live panes, modified or untracked files and locks; it also
+refuses a branch with commits ahead of its upstream according to local
+remote-tracking state (Parley never contacts the remote), or, when there is
+no upstream, a branch whose HEAD is not already contained in the primary
+worktree's HEAD. A pushed branch that is not yet merged is allowed. It lists
+every ignored entry for acknowledgement, reports what Git and the filesystem
+show afterwards, and never uses `--force` or deletes the branch. Parley never commits, merges, rebases, pushes or stashes, and grants
+no extra permission for the worktree's shared `.git` directory.
+
 ## Local architecture
 
 ```text

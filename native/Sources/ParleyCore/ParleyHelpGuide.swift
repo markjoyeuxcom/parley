@@ -145,12 +145,17 @@ public enum ParleyHelpGuide {
                     title: "Existing Git worktrees",
                     paragraphs: [
                         "Git worktrees are parallel filesystem locations, not Parley workspaces or agents. From the workspace plus menu, Open Existing Worktree as Workspace reads git worktree list --porcelain without a shell and lets you open one of that repository's existing directories as an ordinary workspace.",
+                        "Parley can also create one worktree per feature for a team. Team Session approval offers a new worktree (new branch from a base ref you preview) or an existing one; the worktree browser has the same New Worktree action. Creation is one fixed git worktree add under <repository>/.worktrees/, run natively after your approval and never by an agent. The base is recorded as the exact commit the tree was created from and shown on panes, in Team Sessions and beside a delegation's Git facts. A tree you selected rather than created stays person-owned: Parley records no base and never removes it.",
+                        ManagedWorktreeService.CreatePreview.executionNotice,
+                        "Removing a Parley-created worktree is a person action in the browser. Parley reads Git again and refuses when the tree contains another registered worktree, when any pane's folder (this runtime's or the other Production/Development runtime's) is inside it, when Git status shows modified or untracked files, when commits are ahead of the upstream's local remote-tracking state or, without an upstream, not contained in the primary worktree's HEAD, when the tree is locked or prunable, or when any of these could not be read. Every ignored entry Git would delete with the folder is listed in full for you to acknowledge (a directory entry means its whole contents); more than 200 refuses. While the removal runs, no pane can start or be created inside the tree. The removal is a single git worktree remove without --force, and the result reports what Git's registry and the filesystem show afterwards: removed, not removed, or uncertain. A tree that already vanished only clears Parley's record. The branch, objects, refs and stashes remain.",
+                        "A worktree's shared .git directory lies outside the pane folder. Parley grants no extra permission root for it; whether a vendor CLI may commit, switch or push from the worktree is that vendor's own permission decision and may need its approval or fail. Parley makes no claim that commits need no vendor approval.",
                         "Parley warns when two running agent panes point at the same exact canonical worktree and both have visible permission profiles that explicitly allow project writes. The warning is permission evidence only: Parley does not claim either process changed a file, and a quiet terminal never proves concurrent work is safe.",
                     ],
                     items: [
                         "The list shows the repository, branch or detached commit identity, primary or linked worktree status, exact path, and Git's locked or prunable state.",
-                        "Ordinary folders remain supported. Parley never requires one worktree per agent or silently creates one.",
-                        "Discovery and opening do not create, move, prune, delete, merge, rebase or switch a worktree.",
+                        "Linked worktrees share objects, refs, the stash stack, hooks and configuration with the repository; only HEAD, the index and the working files are separate. Parley never claims isolation beyond that.",
+                        "Ordinary folders remain supported. Parley never requires one worktree per agent or silently creates one, and a worktree created for a team must lie inside the requesting pane's working folder.",
+                        "Parley never commits, merges, rebases, pushes, stashes, forces or deletes a branch. Everything beyond one approved add or remove stays in your terminal.",
                         "A shared worktree can be intentional—for example, one vendor implements while another reviews the same uncommitted files. Decide whether simultaneous write permission is appropriate for that workflow.",
                     ]
                 ),
@@ -724,10 +729,12 @@ public enum ParleyHelpGuide {
                         TeamSessionDisclosure.approval,
                         TeamSessionDisclosure.deadline,
                         "After approval the sheet stays open as the session's monitoring surface and never blocks pane creation. It shows every participant with its provenance and created generation, handoffs between participants, decisions that need you and the remaining provisioning time. Each created pane is an ordinary vendor session with that vendor's own permission prompts.",
+                        TeamSessionDisclosure.worktree,
                         TeamSessionDisclosure.stop + " " + TeamSessionDisclosure.expiry,
                     ],
                     commands: [
                         ParleyHelpCommand("parley team request --folder /absolute/project --panes 2 --hours 8 \"objective\"", "The requesting pane proposes a team and waits for your editable approval."),
+                        ParleyHelpCommand("parley team request --folder /absolute/repo --worktree feat/parser --base main \"objective\"", "Proposes a new worktree on a new branch; you preview the base commit and decide in the approval."),
                         ParleyHelpCommand("parley team add --vendor codex --name Reviewer --role reviewer", "The requesting pane creates one approved pane and receives its id."),
                         ParleyHelpCommand("parley team status", "The requester or a member reads its session as JSON, including structured stop outcomes."),
                     ]

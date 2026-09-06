@@ -172,6 +172,7 @@ struct ContentView: View {
                                     PaneRow(
                                         pane: pane,
                                         facts: model.sidebarFacts(for: pane),
+                                        managedWorktreeBranch: model.managedWorktree(forPane: pane.id)?.branch,
                                         awaitingAnswerCount: model.awaitingAnswerCount(for: pane.id),
                                         unreadResultCount: model.unreadResultCount(forPane: pane.id),
                                         latestFailure: model.latestFailure(for: pane.id),
@@ -2046,6 +2047,8 @@ private struct NativeLayoutSplitView<Leaf: View>: View {
 private struct PaneRow: View {
     let pane: WorkbenchPane
     let facts: PaneSidebarFacts
+    /// Branch of the Parley-managed worktree containing this pane, if any.
+    var managedWorktreeBranch: String? = nil
     let awaitingAnswerCount: Int
     let unreadResultCount: Int
     let latestFailure: RelayHandoff?
@@ -2097,6 +2100,13 @@ private struct PaneRow: View {
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.primary)
                         }
+                    }
+                    if let managedWorktreeBranch {
+                        Text("·")
+                        Text("worktree \(managedWorktreeBranch)")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help("This pane works in a Git worktree Parley created or bound to a team. The Team Sessions sheet and the worktree browser show its recorded base.")
                     }
                     if pane.kind.isAgent, let rootCount = pane.permissionSelection?.approvedRoots.count,
                        rootCount > 1 {

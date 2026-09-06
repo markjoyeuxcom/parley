@@ -116,17 +116,59 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
 
     // MARK: Native decisions
 
+    /// Every check `approve` makes, with no mutation: live pending session at
+    /// this revision, present requester, vendors, profile validity and the
+    /// requester-containment of `folder`. Native code calls it before running
+    /// Git for a worktree so a tree is never created for an approval that
+    /// would be refused. `folderExists: false` allows the planned path of a
+    /// worktree that does not exist yet; its nearest existing ancestor is
+    /// canonicalised and must sit inside the requester's working folder.
+    public func preflightApproval(id: String, revision: String, objective: String, folder: String, allowedVendors: [PaneKind],
+                                  permissionProfileID: String, paneLimit: Int, hours: Int, folderExists: Bool = true) throws {
+        try lock.withLock {
+            guard !stopped, let session = records[id], session.state == .pending, session.revision == revision,
+                  let source = currentRequester(session) else {
+                throw TeamSessionError.invalid("This preview is stale or its requesting pane changed. Refresh before approving.")
+            }
+            let cleanObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
+            let edited = TeamSessionProposal(objective: cleanObjective, folder: folder, templateName: session.proposal.templateName, paneLimit: paneLimit, hours: hours,
+                worktreeBranch: session.proposal.worktreeBranch, worktreeBase: session.proposal.worktreeBase)
+            try edited.validate()
+            let canonical = folderExists ? try Self.canonicalFolder(folder, within: source.cwd) : try Self.canonicalPlannedFolder(folder, within: source.cwd)
+            let vendors = allowedVendors.reduce(into: [PaneKind]()) { if !$0.contains($1) { $0.append($1) } }
+            guard !vendors.isEmpty, vendors.allSatisfy(\.isAgent) else {
+                throw TeamSessionError.invalid("Choose at least one agent vendor; Shell panes are never team members.")
+            }
+            guard let definition = try profiles().first(where: { $0.id == permissionProfileID }) else {
+                throw TeamSessionError.invalid("That permission profile is no longer available.")
+            }
+            if folderExists {
+                _ = try PermissionProfileResolver.resolve(definition: definition, paneFolder: canonical,
+                    approvedRoots: definition.rootMode == .exactApprovedRoots ? [canonical] : [])
+            }
+        }
+    }
+
+    /// `worktree`, when present, must be exactly the approved folder: the
+    /// grant binds that one path and nothing wider, and the same
+    /// requester-containment rule applies to it.
     public func approve(id: String, revision: String, objective: String, folder: String, allowedVendors: [PaneKind],
-                        permissionProfileID: String, paneLimit: Int, hours: Int) throws {
+                        permissionProfileID: String, paneLimit: Int, hours: Int, worktree: TeamWorktreeBinding? = nil) throws {
         try lock.withLock {
             guard !stopped, var session = records[id], session.state == .pending, session.revision == revision,
                   let source = currentRequester(session) else {
                 throw TeamSessionError.invalid("This preview is stale or its requesting pane changed. Refresh before approving.")
             }
             let cleanObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
-            let edited = TeamSessionProposal(objective: cleanObjective, folder: folder, templateName: session.proposal.templateName, paneLimit: paneLimit, hours: hours)
+            let edited = TeamSessionProposal(objective: cleanObjective, folder: folder, templateName: session.proposal.templateName, paneLimit: paneLimit, hours: hours,
+                worktreeBranch: session.proposal.worktreeBranch, worktreeBase: session.proposal.worktreeBase)
             try edited.validate()
             let canonical = try Self.canonicalFolder(folder, within: source.cwd)
+            if let worktree {
+                guard WorkspaceFolderIdentity.matchingKey(worktree.path) == canonical else {
+                    throw TeamSessionError.invalid("The approved folder must be exactly the bound worktree; Parley never widens a team grant beyond one folder.")
+                }
+            }
             let vendors = allowedVendors.reduce(into: [PaneKind]()) { if !$0.contains($1) { $0.append($1) } }
             guard !vendors.isEmpty, vendors.allSatisfy(\.isAgent) else {
                 throw TeamSessionError.invalid("Choose at least one agent vendor; Shell panes are never team members.")
@@ -152,7 +194,9 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             session.state = .active
             session.approvedAt = now
             session.grantID = grant.id
+            session.worktree = worktree
             session.detail = "Human approved up to \(paneLimit) pane\(paneLimit == 1 ? "" : "s") with the \(definition.name) profile; provisioning until \(Self.timestamp(grant.provisioningDeadline))"
+                + (worktree.map { " · worktree \($0.branch)\($0.parleyCreated ? " created by Parley" : " selected by the person")" } ?? "")
             // Durable record first; a failed record cannot leave authority live.
             try save(session, transition: .approved)
             grants[id] = grant
@@ -400,6 +444,34 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         let panesCreated: Int
         let paneLimit: Int
         let warning: String?
+    }
+
+    /// Containment for a folder that may not exist yet: the nearest existing
+    /// ancestor is canonicalised (symlinks resolved) and the remaining
+    /// components must be plain names, so nothing can escape by traversal or
+    /// by a link created later at the missing part.
+    static func canonicalPlannedFolder(_ folder: String, within sourceFolder: String) throws -> String {
+        guard folder.hasPrefix("/") else { throw TeamSessionError.invalid("The team folder must be absolute.") }
+        var existing = URL(fileURLWithPath: folder).standardizedFileURL
+        var remainder: [String] = []
+        while !FileManager.default.fileExists(atPath: existing.path) {
+            guard existing.pathComponents.count > 1 else { throw TeamSessionError.invalid("The team folder has no existing ancestor.") }
+            remainder.insert(existing.lastPathComponent, at: 0)
+            existing = existing.deletingLastPathComponent()
+        }
+        guard remainder.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+            throw TeamSessionError.invalid("The planned folder path contains traversal components.")
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: existing.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw TeamSessionError.invalid("The planned folder's parent must be an existing directory.")
+        }
+        let canonical = ([WorkspaceFolderIdentity.matchingKey(existing.path)] + remainder).joined(separator: "/")
+        let root = WorkspaceFolderIdentity.matchingKey(sourceFolder)
+        guard canonical == root || canonical.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
+            throw TeamSessionError.invalid("The team folder must be inside the lead pane's working folder.")
+        }
+        return canonical
     }
 
     static func canonicalFolder(_ folder: String, within sourceFolder: String) throws -> String {

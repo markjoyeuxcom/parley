@@ -81,13 +81,21 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
     public let templateName: String?
     public let paneLimit: Int
     public let hours: Int
+    /// Optional proposal to work in a new Git worktree of the repository at
+    /// `folder`. It is a suggestion the person sees in the approval; Parley
+    /// creates nothing until they approve, and never from this value alone.
+    public let worktreeBranch: String?
+    public let worktreeBase: String?
 
-    public init(objective: String, folder: String, templateName: String?, paneLimit: Int, hours: Int) {
+    public init(objective: String, folder: String, templateName: String?, paneLimit: Int, hours: Int,
+                worktreeBranch: String? = nil, worktreeBase: String? = nil) {
         self.objective = objective
         self.folder = folder
         self.templateName = templateName
         self.paneLimit = paneLimit
         self.hours = hours
+        self.worktreeBranch = worktreeBranch
+        self.worktreeBase = worktreeBase
     }
 
     /// Decodes the shim's NUL-separated literal argument list. Arguments are
@@ -108,6 +116,8 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
         var template: String?
         var paneLimit = defaultPaneLimit
         var hours = defaultHours
+        var worktreeBranch: String?
+        var worktreeBase: String?
         var words: [String] = []
         var index = 0
         func value(_ option: String) throws -> String {
@@ -120,6 +130,8 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
             switch argument {
             case "--folder": folder = try value(argument)
             case "--template": template = try value(argument)
+            case "--worktree": worktreeBranch = try value(argument)
+            case "--base": worktreeBase = try value(argument)
             case "--panes":
                 guard let parsed = Int(try value(argument)) else { throw TeamSessionError.invalid("--panes needs a number") }
                 paneLimit = parsed
@@ -134,7 +146,8 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
         guard let folder else { throw TeamSessionError.invalid("team request needs --folder <absolute-folder>") }
         let objective = words.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !objective.isEmpty else { throw TeamSessionError.invalid("team request needs an objective") }
-        let proposal = TeamSessionProposal(objective: objective, folder: folder, templateName: template, paneLimit: paneLimit, hours: hours)
+        let proposal = TeamSessionProposal(objective: objective, folder: folder, templateName: template, paneLimit: paneLimit, hours: hours,
+            worktreeBranch: worktreeBranch, worktreeBase: worktreeBase)
         try proposal.validate()
         return proposal
     }
@@ -156,6 +169,47 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
                 throw TeamSessionError.invalid("The template name is invalid.")
             }
         }
+        if let worktreeBranch {
+            do { try WorktreeNaming.validateBranch(worktreeBranch) } catch { throw TeamSessionError.invalid("--worktree: \(error.localizedDescription)") }
+            if let worktreeBase {
+                do { try WorktreeNaming.validateRef(worktreeBase) } catch { throw TeamSessionError.invalid("--base: \(error.localizedDescription)") }
+            }
+        } else if worktreeBase != nil {
+            throw TeamSessionError.invalid("--base needs --worktree <branch>.")
+        }
+    }
+}
+
+/// The worktree a team session is bound to, recorded at approval from what
+/// Parley created or the person selected. Display and evidence only: the
+/// grant's folder is the authority, and the base is the commit recorded
+/// when the tree was created or attached, never a live reading.
+public struct TeamWorktreeBinding: Codable, Equatable, Sendable {
+    public let path: String
+    public let branch: String
+    public let baseRef: String?
+    public let baseCommit: String?
+    /// True when Parley ran `git worktree add` for this session; a selected
+    /// existing tree stays person-owned and is never a cleanup candidate.
+    public let parleyCreated: Bool
+    public let managedRecordID: String
+
+    public init(path: String, branch: String, baseRef: String?, baseCommit: String?, parleyCreated: Bool, managedRecordID: String) {
+        self.path = path
+        self.branch = branch
+        self.baseRef = baseRef
+        self.baseCommit = baseCommit
+        self.parleyCreated = parleyCreated
+        self.managedRecordID = managedRecordID
+    }
+
+    public init(record: ManagedWorktreeRecord) {
+        self.init(path: record.path, branch: record.branch, baseRef: record.baseRef, baseCommit: record.baseCommit,
+            parleyCreated: record.parleyCreated, managedRecordID: record.id)
+    }
+
+    public var summary: String {
+        "\(branch) at \(path) · base \(baseCommit.map { String($0.prefix(12)) } ?? "not recorded")\(baseRef.map { " (\($0))" } ?? "") · \(parleyCreated ? "created by Parley" : "existing tree, person-owned")"
     }
 }
 
@@ -605,6 +659,8 @@ public struct TeamSession: Identifiable, Codable, Equatable, Sendable {
     /// Historical membership: every pane this session created, never removed.
     public var members: [TeamSessionMember] = []
     public var grantID: String?
+    /// The worktree the approved folder is, when the person bound one.
+    public var worktree: TeamWorktreeBinding? = nil
     /// Native stop attempts in order, as recorded by the app. Bounded so
     /// repeated retries never grow past the transport cap.
     public var stopAttempts: [TeamStopAttempt] = []
@@ -672,6 +728,10 @@ public struct TeamSession: Identifiable, Codable, Equatable, Sendable {
         /// Owned generations that are still running now.
         public let ownedRunningPaneIDs: [String]
         public let stopAttempts: [TeamStopAttempt]
+        /// The approved folder's worktree binding: path, branch, recorded base
+        /// commit and whether Parley created it. Absent when the team works
+        /// in an ordinary folder.
+        public let worktree: TeamWorktreeBinding?
         /// Display-only; never parse. Times inside are local and labelled.
         public let detail: String?
     }
@@ -684,7 +744,7 @@ public struct TeamSession: Identifiable, Codable, Equatable, Sendable {
             createdAt: createdAt, approvedAt: approvedAt, endedAt: endedAt, requesterPaneID: source.id,
             members: members.map { .init(paneID: $0.paneID, vendor: $0.kind.rawValue, name: $0.name, role: $0.role, createdGeneration: $0.launchGeneration, createdAt: $0.createdAt) },
             currentPanes: current, ownedRunningPaneIDs: current.filter { $0.ownedRunning }.map(\.paneID),
-            stopAttempts: stopAttempts, detail: detail)
+            stopAttempts: stopAttempts, worktree: worktree, detail: detail)
     }
 }
 
@@ -693,4 +753,5 @@ public enum TeamSessionDisclosure {
     public static let deadline = "The deadline bounds provisioning only: after it no new panes can be created. It does not stop or pause work already running in created panes; stopping them is always your explicit action."
     public static let stop = "Stop revokes the grant, refuses further provisioning and stops the processes of panes this session created, identified by pane id and the exact generation Parley started; they remain as stopped placeholders you can close. A pane you restarted since creation is no longer team-owned and is skipped; a pane you moved to another workspace stays owned. The requesting pane and unrelated panes are not touched. Tracked Ask or Delegate work already in flight is not cancelled; cancel it in Status Center. The recorded outcome lists exactly what was stopped, skipped or could not be stopped, with a retry."
     public static let expiry = "When provisioning authority expires or is interrupted, new panes are refused. Running panes are not stopped automatically; Stop team panes remains available for still-owned panes until you use it."
+    public static let worktree = "A team worktree is one Git worktree per feature: every pane the session creates shares that folder, its branch, index and uncommitted files, while objects, refs, stashes, hooks and configuration stay shared with the whole repository through a .git directory outside the pane folder. Parley grants no extra permission root for that shared .git directory: whether a vendor CLI may commit, switch or push from the worktree is that vendor's own permission decision and may need its approval or fail. Creating a tree runs a single fixed git worktree add under <repository>/.worktrees/ from the base commit shown here; selecting an existing tree records no ownership. Parley never commits, merges, rebases, pushes, forces or deletes a branch, and removing a worktree is a separate explicit action."
 }
