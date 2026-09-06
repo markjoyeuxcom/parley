@@ -720,16 +720,16 @@ public enum ParleyHelpGuide {
                     id: "cli-permissions-team-sessions",
                     title: "Team sessions",
                     paragraphs: [
-                        "A lead agent pane can propose a bounded team for one objective. Team Sessions (Tools menu, or the notice above the terminal) opens an editable preview of the objective, working folder, allowed vendors, permission profile, pane limit and provisioning deadline. Nothing is authorized until you approve.",
+                        "A requesting agent pane can propose a bounded team for one objective. Team Sessions (Tools menu, or the notice above the terminal) opens an editable preview of the objective, working folder, allowed vendors, permission profile, pane limit and provisioning deadline. Nothing is authorized until you approve.",
                         TeamSessionDisclosure.approval,
                         TeamSessionDisclosure.deadline,
                         "After approval the sheet stays open as the session's monitoring surface and never blocks pane creation. It shows every participant with its provenance and created generation, handoffs between participants, decisions that need you and the remaining provisioning time. Each created pane is an ordinary vendor session with that vendor's own permission prompts.",
                         TeamSessionDisclosure.stop + " " + TeamSessionDisclosure.expiry,
                     ],
                     commands: [
-                        ParleyHelpCommand("parley team request --folder /absolute/project --panes 2 --hours 8 \"objective\"", "Lead proposes a team and waits for your editable approval."),
-                        ParleyHelpCommand("parley team add --vendor codex --name Reviewer --role reviewer", "Lead creates one approved pane and receives its id."),
-                        ParleyHelpCommand("parley team status", "A lead or member reads its session as JSON."),
+                        ParleyHelpCommand("parley team request --folder /absolute/project --panes 2 --hours 8 \"objective\"", "The requesting pane proposes a team and waits for your editable approval."),
+                        ParleyHelpCommand("parley team add --vendor codex --name Reviewer --role reviewer", "The requesting pane creates one approved pane and receives its id."),
+                        ParleyHelpCommand("parley team status", "The requester or a member reads its session as JSON, including structured stop outcomes."),
                     ]
                 ),
                 ParleyHelpSection(

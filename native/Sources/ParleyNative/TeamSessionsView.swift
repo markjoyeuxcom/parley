@@ -48,7 +48,7 @@ struct TeamSessionsView: View {
                 Spacer()
                 Button("Done") { model.dismissTeamSessionReview() }.keyboardShortcut(.cancelAction)
             }
-            Text("A lead pane proposes one objective, folder and team size. Approval lets that pane create up to the pane limit of new agent panes in its workspace without another click per pane. Every new pane is an ordinary vendor session with its own permission prompts.")
+            Text("A requesting agent pane proposes one objective, folder and team size. Approval lets that pane create up to the pane limit of new agent panes in its workspace without another click per pane. Every new pane is an ordinary vendor session with its own permission prompts.")
                 .foregroundStyle(.secondary)
             if let error = model.teamSessionError { Text(error).foregroundStyle(.red) }
             HSplitView {
@@ -59,7 +59,7 @@ struct TeamSessionsView: View {
                                 model.selectTeamSession(session)
                             } label: {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text("\(session.leadName) · \(session.state.label)")
+                                    Text("\(session.requesterName) · \(session.state.label)")
                                         .font(.system(size: 12, weight: .medium))
                                     Text(session.objective).lineLimit(2).font(.system(size: 11))
                                         .foregroundStyle(.secondary)
@@ -119,7 +119,7 @@ private struct TeamSessionApproval: View {
                 }
                 note = "Prefilled from the portable template “\(template.name)”: \(leaves.map(\.kind.label).joined(separator: ", ")). Templates never carry folders; the folder below comes from this approval."
             } else {
-                note = "The lead named a template “\(name)” that does not exist here. Nothing was prefilled from it."
+                note = "The requesting pane named a template “\(name)” that does not exist here. Nothing was prefilled from it."
             }
         }
         _vendors = State(initialValue: initialVendors)
@@ -136,19 +136,19 @@ private struct TeamSessionApproval: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("\(session.leadName) · \(session.source.kind.label)").font(.headline)
+            Text("\(session.requesterName) · \(session.source.kind.label)").font(.headline)
             Text("Workspace: \(session.source.workspaceName ?? session.source.workspaceID)\nRequest: \(session.id)\nRequested: \(session.proposal.paneLimit) pane\(session.proposal.paneLimit == 1 ? "" : "s") for \(session.proposal.hours) hour\(session.proposal.hours == 1 ? "" : "s")")
                 .font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
             Text(TeamSessionDisclosure.approval).font(.system(size: 12))
             if let templateNote {
                 Text(templateNote).font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            Text("Objective (edit freely; the lead receives the approved text)")
+            Text("Objective (edit freely; the requesting pane receives the approved text)")
                 .font(.system(size: 11, weight: .medium))
             TextEditor(text: $objective).font(.system(size: 12))
                 .frame(height: 90).border(Color.secondary.opacity(0.3))
                 .accessibilityLabel("Approved objective")
-            TextField("Working folder (inside the lead's working folder)", text: $folder).textFieldStyle(.roundedBorder)
+            TextField("Working folder (inside the requesting pane's working folder)", text: $folder).textFieldStyle(.roundedBorder)
             Text("Allowed vendors").font(.system(size: 11, weight: .medium))
             HStack(spacing: 14) {
                 ForEach(PaneKind.allCases.filter(\.isAgent), id: \.self) { kind in
@@ -217,11 +217,17 @@ private struct TeamSessionDetail: View {
     }
 
     private func liveState(for member: TeamSessionMember) -> String {
-        guard let pane = model.panes.first(where: { $0.id == member.paneID }) else { return "closed" }
-        guard member.owns(pane) else { return "restarted by you; no longer team-owned" }
-        if pane.isDead { return "exited" }
-        let moved = pane.workspaceID != member.workspaceID ? ", moved to another workspace" : ""
-        return (pane.isStarted ? "running" : "stopped") + moved
+        let pane = model.panes.first { $0.id == member.paneID }
+        switch member.ownership(of: pane) {
+        case .closed: return "closed"
+        case .restartedByPerson: return "restarted by you; no longer team-owned"
+        case .stopped: return "stopped" + (pane.map { $0.workspaceID != member.workspaceID } == true ? ", moved to another workspace" : "")
+        case .owned:
+            guard let pane else { return "closed" }
+            if pane.isDead { return "exited" }
+            let moved = pane.workspaceID != member.workspaceID ? ", moved to another workspace" : ""
+            return (pane.isStarted ? "running" : "stopped") + moved
+        }
     }
 
     private var ownedRunning: [TeamSessionMember] { session.ownedRunningMembers(in: model.panes) }
@@ -246,16 +252,16 @@ private struct TeamSessionDetail: View {
             Text("Participants").font(.system(size: 12, weight: .semibold))
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .top) {
-                    Text("\(session.leadName) · \(session.source.kind.label) · lead")
+                    Text("\(session.requesterName) · \(session.source.kind.label) · requester")
                     Spacer()
-                    Text("Person-created pane; requested this session").foregroundStyle(.secondary)
+                    Text("Person-created pane; requested this session. Members address it by its exact pane id; “lead” still means the workspace lead.").foregroundStyle(.secondary)
                 }.font(.system(size: 11))
                 ForEach(session.members) { member in
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(alignment: .top) {
                             Text("\(member.name) · \(member.kind.label)\(member.role.map { " · @\($0)" } ?? "") · \(liveState(for: member))")
                             Spacer()
-                            Text("Created by \(session.leadName) under this session's grant at \(member.createdAt.formatted(date: .omitted, time: .shortened)) · generation \(member.launchGeneration)")
+                            Text("Created by \(session.requesterName) under this session's grant at \(member.createdAt.formatted(date: .omitted, time: .shortened)) · generation \(member.launchGeneration)")
                                 .foregroundStyle(.secondary).multilineTextAlignment(.trailing)
                         }
                         if let warning = member.warning {
@@ -282,7 +288,7 @@ private struct TeamSessionDetail: View {
             }
 
             if let outcome = session.stopOutcome {
-                Text("Last stop attempt: \(outcome)").font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+                Text("Last stop attempt (\(session.stopAttempts.last.map { $0.attemptedAt.formatted(date: .abbreviated, time: .shortened) + " " + (TimeZone.current.abbreviation() ?? "local") } ?? "")): \(outcome)").font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
             }
             if session.state == .active || !ownedRunning.isEmpty {
                 Divider()

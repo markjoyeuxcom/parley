@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "20"
+    public static let version = "21"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -115,7 +115,13 @@ public enum AgentProtocol {
       same live pane generation. The limit counts every pane the session
       created, including closed ones. Team members cannot add panes or
       request nested sessions. `parley team status` returns this pane's
-      session as JSON. Each new pane keeps its vendor's own permission
+      session as JSON: `requesterPaneID` names the pane that requested the
+      session (members may target it by that exact pane id; `lead` still
+      means the marked workspace lead), `members` is historical membership,
+      `currentPanes` and `ownedRunningPaneIDs` are app-owned lifecycle facts,
+      `stopAttempts` lists native stop attempts with per-pane outcomes, every
+      time is ISO 8601, and `detail` is display-only text that must never be
+      parsed. Each new pane keeps its vendor's own permission
       prompts; Parley never answers or skips them and never restarts a pane
       for you. The grant is memory-only and ends at the provisioning
       deadline, on the person's Stop, on Stop Everything or quit, when this
@@ -254,7 +260,9 @@ public enum AgentProtocol {
       parley wait <session-or-pane-request-id>
                                         recover a decision from the same source generation
                                         Stop and grant revocation are native-only;
-                                        the deadline bounds provisioning, not work
+                                        the deadline bounds provisioning, not work;
+                                        requesterPaneID is the requester, lead is
+                                        still the workspace lead; detail is display-only
 
     Reserved entry points:
       parley signal <event>             reserved for generated vendor hook adapters

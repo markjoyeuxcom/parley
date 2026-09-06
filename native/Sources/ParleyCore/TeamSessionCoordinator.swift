@@ -13,7 +13,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
     private let authenticate: (String) -> String?
     private let panes: () throws -> [WorkbenchPane]
     private let profiles: () throws -> [PermissionProfileDefinition]
-    private let record: (TeamSession, String) throws -> Void
+    private let record: (TeamSession, TeamSessionTransition, [String]) throws -> Void
     private var records: [String: TeamSession] = [:]
     private var grants: [String: TeamSessionGrant] = [:]
     private var provisions: [String: TeamPaneProvision] = [:]
@@ -23,7 +23,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
 
     public init(authenticate: @escaping (String) -> String?, panes: @escaping () throws -> [WorkbenchPane],
                 profiles: @escaping () throws -> [PermissionProfileDefinition],
-                record: @escaping (TeamSession, String) throws -> Void) {
+                record: @escaping (TeamSession, TeamSessionTransition, [String]) throws -> Void) {
         self.authenticate = authenticate
         self.panes = panes
         self.profiles = profiles
@@ -40,7 +40,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                 throw TeamSessionError.invalid("A live authenticated agent pane in a workspace with Ask + Delegation automation is required.")
             }
             guard !isMember(id) else {
-                throw TeamSessionError.invalid("Team members cannot request a nested team session; ask the session lead.")
+                throw TeamSessionError.invalid("Team members cannot request a nested team session; ask the requesting pane.")
             }
             try proposal.validate()
             let folder = try Self.canonicalFolder(proposal.folder, within: source.cwd)
@@ -60,7 +60,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                 objective: proposal.objective, folder: folder, allowedVendors: PaneKind.allCases.filter(\.isAgent),
                 permissionProfileID: nil, paneLimit: proposal.paneLimit, deadline: nil, state: .pending,
                 createdAt: now, updatedAt: now, detail: "Waiting for human approval")
-            let stored = try save(session, event: "Team session requested")
+            let stored = try save(session, transition: .requested)
             prune()
             return stored
         }
@@ -79,11 +79,11 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                 throw TeamSessionError.invalid("A live authenticated agent pane is required.")
             }
             guard !isMember(id) else {
-                throw TeamSessionError.invalid("Team members cannot provision panes; only the session lead may, within its approved limit.")
+                throw TeamSessionError.invalid("Team members cannot provision panes; only the requesting pane may, within its approved limit.")
             }
             guard !idempotencyKey.isEmpty, idempotencyKey.utf8.count <= 128 else { throw TeamSessionError.invalid("Invalid request identity.") }
             guard let session = records.values.first(where: { $0.state == .active && $0.source.id == id }),
-                  let grant = grants[session.id], grant.matches(lead: source), currentLead(session) != nil else {
+                  let grant = grants[session.id], grant.matches(requester: source), currentRequester(session) != nil else {
                 throw TeamSessionError.invalid("This pane has no active approved team session.")
             }
             if let previous = provisions.values.first(where: { $0.sessionID == session.id && $0.idempotencyKey == idempotencyKey }) {
@@ -120,7 +120,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                         permissionProfileID: String, paneLimit: Int, hours: Int) throws {
         try lock.withLock {
             guard !stopped, var session = records[id], session.state == .pending, session.revision == revision,
-                  let source = currentLead(session) else {
+                  let source = currentRequester(session) else {
                 throw TeamSessionError.invalid("This preview is stale or its requesting pane changed. Refresh before approving.")
             }
             let cleanObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -139,7 +139,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             _ = try PermissionProfileResolver.resolve(definition: definition, paneFolder: canonical,
                 approvedRoots: definition.rootMode == .exactApprovedRoots ? [canonical] : [])
             let now = Date()
-            let grant = TeamSessionGrant(id: UUID().uuidString.lowercased(), leadPaneID: source.id, leadGeneration: source.launchGeneration,
+            let grant = TeamSessionGrant(id: UUID().uuidString.lowercased(), requesterPaneID: source.id, requesterGeneration: source.launchGeneration,
                 workspaceID: source.workspaceID, automationPolicy: source.automationPolicy, folder: canonical, allowedVendors: vendors,
                 approvedProfile: definition, approvedRoots: definition.rootMode == .exactApprovedRoots ? [canonical] : [],
                 paneLimit: paneLimit, provisioningDeadline: now.addingTimeInterval(TimeInterval(hours) * 3_600), approvedAt: now)
@@ -154,7 +154,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             session.grantID = grant.id
             session.detail = "Human approved up to \(paneLimit) pane\(paneLimit == 1 ? "" : "s") with the \(definition.name) profile; provisioning until \(Self.timestamp(grant.provisioningDeadline))"
             // Durable record first; a failed record cannot leave authority live.
-            try save(session, event: "Team session approved")
+            try save(session, transition: .approved)
             grants[id] = grant
         }
     }
@@ -167,7 +167,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             session.state = .rejected
             session.endedAt = Date()
             session.detail = "The person refused this team session."
-            try save(session, event: "Team session refused")
+            try save(session, transition: .refused)
         }
     }
 
@@ -182,8 +182,8 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             failProvisions(sessionID: id, reason: "The session was stopped before the pane was created.")
             session.state = .stopped
             session.endedAt = Date()
-            session.detail = reason + ". " + TeamSessionDisclosure.stop
-            store(session, event: "Team session stopped")
+            session.detail = TeamBoundedText.clean(reason) + ". " + TeamSessionDisclosure.stop
+            store(session, transition: .stopped, affected: session.members.map(\.paneID))
             return session.members
         }
     }
@@ -199,12 +199,16 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         }
     }
 
-    /// Records the native outcome of a stop attempt for the person to see.
-    public func recordStopOutcome(id: String, outcome: String) {
+    /// Records one native stop attempt exactly as the app observed it. The
+    /// attempt is a human action; its affected pane ids travel with the event.
+    public func recordStopAttempt(id: String, attempt: TeamStopAttempt) {
         lock.withLock {
             guard var session = records[id] else { return }
-            session.stopOutcome = outcome
-            store(session, event: "Team panes stop attempted")
+            session.stopAttempts.append(attempt)
+            if session.stopAttempts.count > TeamSession.maximumRetainedStopAttempts {
+                session.stopAttempts.removeFirst(session.stopAttempts.count - TeamSession.maximumRetainedStopAttempts)
+            }
+            store(session, transition: .stopAttempted, affected: attempt.affectedPaneIDs)
         }
     }
 
@@ -219,7 +223,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             let pending = provisions.values.filter { !$0.isSettled }.sorted { $0.createdAt < $1.createdAt }
             for var provision in pending {
                 guard !stopped, var session = records[provision.sessionID], session.state == .active,
-                      let grant = grants[session.id], let lead = currentLead(session), grant.matches(lead: lead),
+                      let grant = grants[session.id], let lead = currentRequester(session), grant.matches(requester: lead),
                       Date() < grant.provisioningDeadline, session.members.count < grant.paneLimit,
                       (try? verifiedProfile(for: grant)) != nil else {
                     provision.failure = "The session is no longer authorized to create panes."
@@ -253,7 +257,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                     session.detail = (session.detail ?? "") + ". " + member.warning!
                 }
                 // Keep provenance in memory even if the record fails.
-                store(session, event: "Team pane created: \(provision.name) (\(pane.kind.label))")
+                store(session, transition: .paneCreated, affected: [pane.id])
             }
         }
     }
@@ -268,13 +272,13 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                     interrupt(id, reason: "The unapproved request expired.", at: now)
                     continue
                 }
-                guard let lead = currentLead(session, in: live) else {
-                    interrupt(id, reason: "The lead pane stopped, moved, changed folder or restarted, or its workspace policy changed. Provisioning authority was revoked; created panes were not stopped.", at: now)
+                guard let lead = currentRequester(session, in: live) else {
+                    interrupt(id, reason: "The requesting pane stopped, moved, changed folder or restarted, or its workspace policy changed. Provisioning authority was revoked; created panes were not stopped.", at: now)
                     continue
                 }
                 guard session.state == .active, let grant = grants[id] else { continue }
-                if !grant.matches(lead: lead) {
-                    interrupt(id, reason: "The lead pane no longer matches the approved grant. Provisioning authority was revoked; created panes were not stopped.", at: now)
+                if !grant.matches(requester: lead) {
+                    interrupt(id, reason: "The requesting pane no longer matches the approved grant. Provisioning authority was revoked; created panes were not stopped.", at: now)
                 } else if now >= grant.provisioningDeadline {
                     expire(id, at: now)
                 } else if let available, available.first(where: { $0.id == grant.permissionProfileID }) != grant.approvedProfile {
@@ -310,12 +314,12 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         while true {
             let response: RelayTextResponse? = lock.withLock {
                 reconcile()
-                guard let session = records[id], isOriginalLead(token: token, session: session) else {
+                guard let session = records[id], isOriginalRequester(token: token, session: session) else {
                     return RelayTextResponse(status: 403, text: "Only the same live requesting pane generation can recover this team session.")
                 }
                 switch session.state {
                 case .pending: return nil
-                case .active: return Self.json(session.agentView)
+                case .active: return Self.liveView(of: session, panes: panes)
                 default: return RelayTextResponse(status: 409, text: session.detail ?? session.state.label)
                 }
             }
@@ -329,7 +333,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             let response: RelayTextResponse? = lock.withLock {
                 reconcile()
                 guard let provision = provisions[id], let session = records[provision.sessionID],
-                      isOriginalLead(token: token, session: session) else {
+                      isOriginalRequester(token: token, session: session) else {
                     return RelayTextResponse(status: 403, text: "Only the same live requesting pane generation can recover this pane request.")
                 }
                 if let failure = provision.failure { return RelayTextResponse(status: 409, text: failure) }
@@ -356,7 +360,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             guard let session = session(forToken: token) else {
                 return RelayTextResponse(status: 404, text: "This pane has no team session.")
             }
-            return Self.json(session.agentView)
+            return Self.liveView(of: session, panes: panes)
         }
     }
 
@@ -412,6 +416,16 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         return canonical
     }
 
+    /// Pane facts come from the live workbench or not at all: a listing
+    /// failure is reported explicitly, never as "every pane is closed".
+    private static func liveView(of session: TeamSession, panes: () throws -> [WorkbenchPane]) -> RelayTextResponse {
+        do {
+            return json(session.agentView(live: try panes()))
+        } catch {
+            return RelayTextResponse(status: 503, text: "Pane state is temporarily unavailable, so the session view was withheld: \(error.localizedDescription). Retry.")
+        }
+    }
+
     private static func json<Value: Encodable>(_ value: Value) -> RelayTextResponse {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -422,11 +436,13 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         return RelayTextResponse(status: 200, text: String(decoding: data, as: UTF8.self))
     }
 
+    /// Display-only local time, labelled with its zone. Machine readers use
+    /// the ISO 8601 fields instead.
     private static func timestamp(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
-        return formatter.string(from: date)
+        return formatter.string(from: date) + " (" + (TimeZone.current.abbreviation(for: date) ?? "local") + ")"
     }
 
     /// The current store must still hold the exact approved definition.
@@ -446,7 +462,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         pane.kind.isAgent && pane.isStarted && !pane.isDead && pane.relayEnabled && pane.automationPolicy == .askAndDelegate
     }
 
-    private func currentLead(_ session: TeamSession, in live: [WorkbenchPane]? = nil) -> WorkbenchPane? {
+    private func currentRequester(_ session: TeamSession, in live: [WorkbenchPane]? = nil) -> WorkbenchPane? {
         guard let live = live ?? (try? panes()) else { return nil }
         return live.first {
             eligible($0) && $0.id == session.source.id && $0.launchGeneration == session.source.launchGeneration
@@ -457,7 +473,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
 
     /// Recovery needs the same pane id and the exact generation that made the
     /// request; a restarted lead is a new generation and gets nothing back.
-    private func isOriginalLead(token: String, session: TeamSession) -> Bool {
+    private func isOriginalRequester(token: String, session: TeamSession) -> Bool {
         guard authenticate(token) == session.source.id, let live = try? panes() else { return false }
         return live.contains { $0.id == session.source.id && $0.launchGeneration == session.source.launchGeneration }
     }
@@ -469,7 +485,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         session.state = .interrupted
         session.endedAt = now
         session.detail = reason
-        store(session, event: "Team session interrupted")
+        store(session, transition: .interrupted)
     }
 
     private func expire(_ id: String, at now: Date = Date()) {
@@ -479,7 +495,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         session.state = .expired
         session.endedAt = now
         session.detail = TeamSessionDisclosure.expiry
-        store(session, event: "Team session provisioning expired")
+        store(session, transition: .expired)
     }
 
     private func failProvisions(sessionID: String, reason: String) {
@@ -499,20 +515,20 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
     /// Records durably before authority changes; throws so callers fail closed.
     /// Returns the stored value, whose revision callers must use afterwards.
     @discardableResult
-    private func save(_ session: TeamSession, event: String) throws -> TeamSession {
+    private func save(_ session: TeamSession, transition: TeamSessionTransition, affected: [String] = []) throws -> TeamSession {
         let next = changed(session)
-        try record(next, event)
+        try record(next, transition, affected)
         records[next.id] = next
         storedError = nil
         return next
     }
 
     /// Keeps a revocation or provenance change in memory even when the record fails.
-    private func store(_ session: TeamSession, event: String) {
+    private func store(_ session: TeamSession, transition: TeamSessionTransition, affected: [String] = []) {
         let next = changed(session)
         records[next.id] = next
         do {
-            try record(next, event)
+            try record(next, transition, affected)
             storedError = nil
         } catch {
             storedError = error.localizedDescription

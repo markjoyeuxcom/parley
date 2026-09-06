@@ -428,17 +428,17 @@ public final class WorkbenchController: @unchecked Sendable {
                   provision.paneID == nil, provision.failure == nil,
                   provision.kind.isAgent, grant.allowedVendors.contains(provision.kind),
                   session.members.count < grant.paneLimit, Date() < grant.provisioningDeadline,
-                  let lead = document.panes.first(where: { $0.id == grant.leadPaneID }),
+                  let lead = document.panes.first(where: { $0.id == grant.requesterPaneID }),
                   lead.kind.isAgent, lead.isStarted, !lead.isDead,
-                  lead.launchGeneration == grant.leadGeneration, lead.workspaceID == grant.workspaceID,
+                  lead.launchGeneration == grant.requesterGeneration, lead.workspaceID == grant.workspaceID,
                   WorkspaceFolderIdentity.matchingKey(lead.cwd) == session.sourceFolder,
                   let workspace = document.workspaces.first(where: { $0.workspaceID == grant.workspaceID }),
                   workspace.automationPolicy == grant.automationPolicy else {
-                throw TeamSessionError.invalid("The approved team session or its lead pane changed before pane creation.")
+                throw TeamSessionError.invalid("The approved team session or its requesting pane changed before pane creation.")
             }
             let canonical = WorkspaceFolderIdentity.matchingKey(grant.folder)
             guard canonical == session.sourceFolder || canonical.hasPrefix(session.sourceFolder + "/") else {
-                throw TeamSessionError.invalid("The approved folder is outside the lead pane's working folder.")
+                throw TeamSessionError.invalid("The approved folder is outside the requesting pane's working folder.")
             }
             if let role = provision.role {
                 if let error = PaneRoleRules.validationError(role) { throw TeamSessionError.invalid(error) }

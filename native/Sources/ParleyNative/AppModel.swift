@@ -2483,50 +2483,30 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Executes the pure stop plan against the workbench and records exactly
+    /// what happened per owned generation. Process state and recording
+    /// failure are kept distinct: a pane that stopped but could not be
+    /// recorded is reported as stopped-but-unrecorded, never as still running.
     private func finishStoppingTeamPanes(sessionID: String, members: [TeamSessionMember]) throws {
         guard let core = residentCore, let controller else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
-        var stopped: [String] = []
-        var skipped: [String] = []
-        var failed: [String] = []
-        for member in members {
-            guard let pane = panes.first(where: { $0.id == member.paneID }) else {
-                skipped.append("\(member.name): already closed")
-                continue
-            }
-            guard member.owns(pane) else {
-                skipped.append("\(member.name): restarted by you since creation, no longer team-owned")
-                continue
-            }
-            guard pane.kind.isAgent, pane.isStarted else {
-                skipped.append("\(member.name): already stopped")
-                continue
-            }
-            do {
-                try controller.stopPaneProcess(pane.id)
-                stopped.append(member.name)
-                try? recordSuccessfulActivity(RelayActivityEventRequest(
-                    kind: .teamSessionEnded,
-                    workspaceID: pane.workspaceID,
-                    workspaceName: pane.workspaceName ?? pane.workspaceID,
-                    paneID: pane.id,
-                    paneName: pane.displayName,
-                    paneKind: pane.kind,
-                    detail: "Stopped by the person through the team session; the pane remains as a stopped placeholder."
-                ))
-            } catch {
-                failed.append("\(member.name): \(error.localizedDescription)")
-            }
+        // Planning needs fresh workbench state; a cached list could stop the wrong generation.
+        let live: [WorkbenchPane]
+        do { live = try controller.listPanes() } catch {
+            throw RelayUIError.message("The workbench state could not be read, so no team pane was stopped: \(error.localizedDescription)")
         }
-        var parts: [String] = []
-        if !stopped.isEmpty { parts.append("Stopped: " + stopped.joined(separator: ", ")) }
-        if !skipped.isEmpty { parts.append("Skipped: " + skipped.joined(separator: "; ")) }
-        if !failed.isEmpty { parts.append("Could not stop: " + failed.joined(separator: "; ") + ". Use Stop team panes to retry.") }
-        if parts.isEmpty { parts.append("No team panes needed stopping.") }
-        core.teamSessions.recordStopOutcome(id: sessionID, outcome: parts.joined(separator: ". "))
+        let outcomes = TeamStopExecution.execute(
+            plan: TeamStopPlanner.plan(members: members, live: live),
+            stop: { try controller.stopPaneProcess($0) },
+            currentPane: { id in (try? controller.listPanes())?.first { $0.id == id } }
+        )
+        let attempt = TeamStopAttempt(reason: "Stopped by the person", outcomes: outcomes)
+        core.teamSessions.recordStopAttempt(id: sessionID, attempt: attempt)
         teamSessions = core.teamSessions.sessions()
         try refresh()
+        let failed = outcomes.filter { [.failed, .stoppedUnrecorded, .unknown].contains($0.result) }
         if !failed.isEmpty {
-            throw RelayUIError.message("Some team panes could not be stopped:\n" + failed.joined(separator: "\n") + "\n\nThe session shows the outcome and offers Stop team panes to retry.")
+            throw RelayUIError.message("Some team panes did not stop cleanly:\n" + failed.map { "\($0.name): \($0.result.label). \($0.message ?? "")" }.joined(separator: "\n")
+                + "\n\nThe session shows the recorded outcome; Stop team panes retries any owned generation still running.")
         }
     }
 

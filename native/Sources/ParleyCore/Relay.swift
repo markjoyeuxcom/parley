@@ -385,6 +385,7 @@ public enum RelayActivityEventKind: String, Codable, Equatable, Sendable {
     case teamSessionApproved
     case teamPaneCreated
     case teamSessionEnded
+    case teamPaneStopAttempted
 }
 
 /// A successful operation initiated from Parley's native controls. These are
@@ -401,6 +402,11 @@ public struct RelayActivityEvent: Identifiable, Codable, Equatable, Sendable {
     public let paneKind: PaneKind?
     public let detail: String?
     public let origin: RelayTransitionOrigin
+    /// Bounded team-session correlation: identifiers only, never objectives,
+    /// folders or commands. Absent on records written before protocol 21.
+    public let teamSessionID: String?
+    public let requesterPaneID: String?
+    public let affectedPaneIDs: [String]?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -412,7 +418,10 @@ public struct RelayActivityEvent: Identifiable, Codable, Equatable, Sendable {
         paneName: String? = nil,
         paneKind: PaneKind? = nil,
         detail: String? = nil,
-        origin: RelayTransitionOrigin = .human
+        origin: RelayTransitionOrigin = .human,
+        teamSessionID: String? = nil,
+        requesterPaneID: String? = nil,
+        affectedPaneIDs: [String]? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -424,6 +433,9 @@ public struct RelayActivityEvent: Identifiable, Codable, Equatable, Sendable {
         self.paneKind = paneKind
         self.detail = detail
         self.origin = origin
+        self.teamSessionID = teamSessionID
+        self.requesterPaneID = requesterPaneID
+        self.affectedPaneIDs = affectedPaneIDs
     }
 }
 
@@ -2305,16 +2317,25 @@ public final class RelayBroker: @unchecked Sendable {
             authenticate: { [credentials] in credentials.paneID(for: $0) },
             panes: panes,
             profiles: profiles,
-            record: { [weak self] session, event in try self?.recordTeamSessionEvent(session, event: event) })
+            record: { [weak self] session, transition, affected in try self?.recordTeamSessionEvent(session, transition: transition, affected: affected) })
     }
 
-    private func recordTeamSessionEvent(_ session: TeamSession, event: String) throws {
-        let kind: RelayActivityEventKind = switch session.state {
-        case .pending: .teamSessionRequested
-        case .active: event.hasPrefix("Team pane created") ? .teamPaneCreated : .teamSessionApproved
-        case .stopped, .expired, .rejected, .interrupted: .teamSessionEnded
+    /// Typed, app-owned transitions. The origin comes from the transition in
+    /// trusted code; no transport payload can choose it. The durable detail
+    /// deliberately carries labels and counts only: stop diagnostics can hold
+    /// localized paths, so they stay in the session record and never enter
+    /// activity records or the agent events feed (which omits detail anyway).
+    private func recordTeamSessionEvent(_ session: TeamSession, transition: TeamSessionTransition, affected: [String]) throws {
+        let kind: RelayActivityEventKind = switch transition {
+        case .requested: .teamSessionRequested
+        case .approved: .teamSessionApproved
+        case .paneCreated: .teamPaneCreated
+        case .stopAttempted: .teamPaneStopAttempted
+        case .refused, .stopped, .expired, .interrupted: .teamSessionEnded
         }
         let created = session.members.count
+        var detail = "\(transition.label). \(session.state.label); \(created) of \(session.paneLimit) pane\(session.paneLimit == 1 ? "" : "s") created."
+        if transition == .stopAttempted, let attempt = session.stopAttempts.last { detail += " Outcomes: " + attempt.countsSummary + "." }
         _ = try recordActivity(RelayActivityEventRequest(
             kind: kind,
             workspaceID: session.source.workspaceID,
@@ -2322,8 +2343,8 @@ public final class RelayBroker: @unchecked Sendable {
             paneID: session.source.id,
             paneName: session.source.displayName,
             paneKind: session.source.kind,
-            detail: "\(event). \(session.state.label); \(created) of \(session.paneLimit) pane\(session.paneLimit == 1 ? "" : "s") created. \(session.detail ?? "")"
-        ))
+            detail: detail
+        ), origin: transition.origin, teamSessionID: session.id, requesterPaneID: session.source.id, affectedPaneIDs: Array(affected.prefix(8)))
     }
 
     public func handleTeamRequest(token: String, body: String, idempotencyKey: String,
@@ -3248,7 +3269,14 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     @discardableResult
+    /// The native control route: every event it records is a human action.
     public func recordActivity(_ request: RelayActivityEventRequest) throws -> RelayActivityEvent {
+        try recordActivity(request, origin: .human, teamSessionID: nil, requesterPaneID: nil, affectedPaneIDs: nil)
+    }
+
+    /// Trusted in-process callers only; the origin is never a request field.
+    private func recordActivity(_ request: RelayActivityEventRequest, origin: RelayTransitionOrigin, teamSessionID: String?,
+                                requesterPaneID: String?, affectedPaneIDs: [String]?) throws -> RelayActivityEvent {
         let workspaceID = request.workspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
         let workspaceName = request.workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !workspaceID.isEmpty, !workspaceName.isEmpty else { throw RelayActivityError.invalidEvent }
@@ -3260,7 +3288,11 @@ public final class RelayBroker: @unchecked Sendable {
             paneID: request.paneID,
             paneName: request.paneName,
             paneKind: request.paneKind,
-            detail: request.detail
+            detail: request.detail,
+            origin: origin,
+            teamSessionID: teamSessionID,
+            requesterPaneID: requesterPaneID,
+            affectedPaneIDs: affectedPaneIDs
         )
         try activityJournal?.record(event)
         consultationCondition.lock()

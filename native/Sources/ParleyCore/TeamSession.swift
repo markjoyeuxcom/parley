@@ -6,16 +6,16 @@ public enum TeamSessionError: LocalizedError, Equatable {
 }
 
 public enum TeamSessionState: String, Codable, Equatable, Sendable {
-    /// Requested by an authenticated lead pane; nothing is authorized yet.
+    /// Requested by an authenticated requesting pane; nothing is authorized yet.
     case pending
     /// Human approved; a memory-only grant permits bounded provisioning.
     case active
     /// The person pressed Stop: grant revoked, team-owned processes stopped.
     case stopped
-    /// The deadline passed: grant revoked, running panes untouched.
+    /// The provisioning deadline passed: grant revoked, running panes untouched.
     case expired
     case rejected
-    /// The lead pane or its workspace changed, or Parley stopped.
+    /// The requesting pane or its workspace changed, or Parley stopped.
     case interrupted
 
     public var isTerminal: Bool { self != .pending && self != .active }
@@ -32,8 +32,43 @@ public enum TeamSessionState: String, Codable, Equatable, Sendable {
     }
 }
 
-/// What the lead asked for. Kept separately from the approved values so the
-/// person's edits stay visible beside the original proposal.
+/// Every session lifecycle change, typed so trusted code decides who caused
+/// it. An agent payload never chooses an origin: requests, provisioning,
+/// expiry and interruption are automation; approval, refusal, Stop and stop
+/// attempts are native human decisions.
+public enum TeamSessionTransition: String, Codable, Equatable, Sendable {
+    case requested
+    case approved
+    case refused
+    case paneCreated
+    case stopped
+    case stopAttempted
+    case expired
+    case interrupted
+
+    public var origin: RelayTransitionOrigin {
+        switch self {
+        case .approved, .refused, .stopped, .stopAttempted: .human
+        case .requested, .paneCreated, .expired, .interrupted: .automation
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .requested: "Team session requested"
+        case .approved: "Team session approved"
+        case .refused: "Team session refused"
+        case .paneCreated: "Team pane created"
+        case .stopped: "Team session stopped"
+        case .stopAttempted: "Team panes stop attempted"
+        case .expired: "Team session provisioning expired"
+        case .interrupted: "Team session interrupted"
+        }
+    }
+}
+
+/// What the requesting pane asked for. Kept separately from the approved
+/// values so the person's edits stay visible beside the original proposal.
 public struct TeamSessionProposal: Codable, Equatable, Sendable {
     public static let maximumObjectiveBytes = 4_000
     public static let maximumPaneLimit = 8
@@ -114,7 +149,7 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
             throw TeamSessionError.invalid("The pane limit must be between 1 and \(Self.maximumPaneLimit).")
         }
         guard (1...Self.maximumHours).contains(hours) else {
-            throw TeamSessionError.invalid("The deadline must be between 1 and \(Self.maximumHours) hours.")
+            throw TeamSessionError.invalid("The provisioning deadline must be between 1 and \(Self.maximumHours) hours.")
         }
         if let templateName {
             guard !templateName.isEmpty, templateName.utf8.count <= 64 else {
@@ -125,8 +160,8 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
 }
 
 /// One pane the session created. Provenance is app-owned: the requesting
-/// lead, the grant and the time are recorded here, never in the pane's
-/// vendor session.
+/// pane, the grant and the time are recorded here, never in the pane's
+/// vendor session. Membership is historical and never removed.
 public struct TeamSessionMember: Identifiable, Codable, Equatable, Sendable {
     public let paneID: String
     /// Ownership is the pane id plus the generation Parley assigned at
@@ -164,10 +199,21 @@ public struct TeamSessionMember: Identifiable, Codable, Equatable, Sendable {
     public func owns(_ pane: WorkbenchPane) -> Bool {
         pane.id == paneID && pane.launchGeneration == launchGeneration
     }
+
+    /// The workbench increments a pane's generation when it stops the
+    /// process, so a stopped placeholder of the created generation is
+    /// `launchGeneration + 1` and not started. Anything else is a person's
+    /// restart. This mirrors `WorkbenchController.stopPaneProcess` exactly.
+    public func ownership(of pane: WorkbenchPane?) -> TeamPaneOwnership {
+        guard let pane, pane.id == paneID else { return .closed }
+        if pane.launchGeneration == launchGeneration { return .owned }
+        if !pane.isStarted, pane.launchGeneration == launchGeneration &+ 1 { return .stopped }
+        return .restartedByPerson
+    }
 }
 
-/// A pending request from the lead to add one pane. It is fulfilled only by
-/// the native app after re-validating the grant.
+/// A pending request from the requesting pane to add one pane. It is
+/// fulfilled only by the native app after re-validating the grant.
 public struct TeamPaneProvision: Identifiable, Codable, Equatable, Sendable {
     public static let maximumNameLength = 48
 
@@ -232,13 +278,15 @@ public struct TeamPaneProvision: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// The exact authority the person approved. It lives only in memory, is
-/// keyed to one lead pane generation and one workspace policy, binds the
-/// complete approved permission definition and roots, and is re-checked
+/// keyed to one requesting pane generation and one workspace policy, binds
+/// the complete approved permission definition and roots, and is re-checked
 /// before every provisioning mutation.
 public struct TeamSessionGrant: Identifiable, Codable, Equatable, Sendable {
     public let id: String
-    public let leadPaneID: String
-    public let leadGeneration: Int
+    /// The pane that requested the session. It need not be the workspace
+    /// lead; the `lead` routing alias keeps meaning the marked workspace lead.
+    public let requesterPaneID: String
+    public let requesterGeneration: Int
     public let workspaceID: String
     public let automationPolicy: WorkspaceAutomationPolicy
     public let folder: String
@@ -256,12 +304,12 @@ public struct TeamSessionGrant: Identifiable, Codable, Equatable, Sendable {
 
     public var permissionProfileID: String { approvedProfile.id }
 
-    public init(id: String, leadPaneID: String, leadGeneration: Int, workspaceID: String, automationPolicy: WorkspaceAutomationPolicy,
+    public init(id: String, requesterPaneID: String, requesterGeneration: Int, workspaceID: String, automationPolicy: WorkspaceAutomationPolicy,
                 folder: String, allowedVendors: [PaneKind], approvedProfile: PermissionProfileDefinition, approvedRoots: [String],
                 paneLimit: Int, provisioningDeadline: Date, approvedAt: Date) {
         self.id = id
-        self.leadPaneID = leadPaneID
-        self.leadGeneration = leadGeneration
+        self.requesterPaneID = requesterPaneID
+        self.requesterGeneration = requesterGeneration
         self.workspaceID = workspaceID
         self.automationPolicy = automationPolicy
         self.folder = folder
@@ -273,9 +321,9 @@ public struct TeamSessionGrant: Identifiable, Codable, Equatable, Sendable {
         self.approvedAt = approvedAt
     }
 
-    public func matches(lead: WorkbenchPane) -> Bool {
-        lead.id == leadPaneID && lead.launchGeneration == leadGeneration
-            && lead.workspaceID == workspaceID && lead.automationPolicy == automationPolicy
+    public func matches(requester: WorkbenchPane) -> Bool {
+        requester.id == requesterPaneID && requester.launchGeneration == requesterGeneration
+            && requester.workspaceID == workspaceID && requester.automationPolicy == automationPolicy
     }
 
     /// The effective profile a created pane must carry: the approved
@@ -299,6 +347,241 @@ public enum TeamProvisioningPresentation {
     }
 }
 
+// MARK: - Stop results
+
+public enum TeamMemberStopResult: String, Codable, Equatable, Sendable, CaseIterable {
+    /// The owned process generation was asked to stop and the workbench accepted.
+    case stopped
+    /// The workbench refused or failed and the pane still reports a started
+    /// owned generation; it may still be running.
+    case failed
+    /// The process was terminated and the pane shows stopped, but the
+    /// workbench could not record it (credential or persistence failure).
+    case stoppedUnrecorded
+    /// The stop reported an error and the pane's state could not be read
+    /// afterwards; nothing about the process is claimed.
+    case unknown
+    /// The person restarted this pane since creation; it is no longer team-owned.
+    case skippedRestarted
+    /// The pane was closed before the attempt.
+    case skippedClosed
+    /// The owned generation was already stopped.
+    case alreadyStopped
+
+    public var label: String {
+        switch self {
+        case .stopped: "stopped"
+        case .stoppedUnrecorded: "stopped, but the workbench could not record it"
+        case .unknown: "stop reported an error and the pane state could not be read; it may still be running"
+        case .failed: "could not stop"
+        case .skippedRestarted: "skipped: restarted by you, no longer team-owned"
+        case .skippedClosed: "skipped: already closed"
+        case .alreadyStopped: "already stopped"
+        }
+    }
+}
+
+/// Bounded, control-clean diagnostic text. Every stored reason or message
+/// passes through here so repeated retries with long path-bearing errors can
+/// never grow a session record past the transport cap.
+public enum TeamBoundedText {
+    public static let maximumMessageBytes = 240
+    public static let truncationMarker = " [truncated]"
+
+    public struct Bounded: Equatable, Sendable {
+        public let text: String
+        public let truncated: Bool
+    }
+
+    public static func bounded(_ text: String, maximumBytes: Int = maximumMessageBytes) -> Bounded {
+        let scalars = text.unicodeScalars.filter { scalar in
+            !(scalar.value < 0x20 || (0x7f...0x9f).contains(scalar.value)) || scalar == " "
+        }
+        var cleaned = String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.utf8.count > maximumBytes else { return Bounded(text: cleaned, truncated: false) }
+        let budget = max(0, maximumBytes - truncationMarker.utf8.count)
+        while cleaned.utf8.count > budget, !cleaned.isEmpty { cleaned.removeLast() }
+        return Bounded(text: cleaned + truncationMarker, truncated: true)
+    }
+
+    public static func clean(_ text: String, maximumBytes: Int = maximumMessageBytes) -> String {
+        bounded(text, maximumBytes: maximumBytes).text
+    }
+}
+
+public struct TeamMemberStopOutcome: Codable, Equatable, Sendable {
+    public let paneID: String
+    public let launchGeneration: Int
+    public let name: String
+    public let result: TeamMemberStopResult
+    /// Bounded and control-clean; truncation is disclosed in the text and in
+    /// `messageTruncated`.
+    public let message: String?
+    public let messageTruncated: Bool
+
+    public init(paneID: String, launchGeneration: Int, name: String, result: TeamMemberStopResult, message: String?) {
+        self.paneID = paneID
+        self.launchGeneration = launchGeneration
+        self.name = TeamBoundedText.clean(name, maximumBytes: TeamPaneProvision.maximumNameLength * 4)
+        self.result = result
+        let bounded = message.map { TeamBoundedText.bounded($0) }
+        self.message = bounded?.text
+        self.messageTruncated = bounded?.truncated ?? false
+    }
+}
+
+/// Executes a stop plan against the workbench and classifies each outcome
+/// from what the workbench reports afterwards. `stopPaneProcess` terminates
+/// and mutates pane state before it records credentials and persistence, so
+/// a thrown error is re-read: a pane that now shows stopped is
+/// stopped-but-unrecorded, a pane still started is failed.
+public enum TeamStopExecution {
+    public static func execute(plan: [TeamStopPlanner.Entry], stop: (String) throws -> Void,
+                               currentPane: (String) -> WorkbenchPane?) -> [TeamMemberStopOutcome] {
+        plan.map { entry in
+            let member = entry.member
+            switch entry.action {
+            case let .skip(result):
+                return TeamMemberStopOutcome(paneID: member.paneID, launchGeneration: member.launchGeneration, name: member.name, result: result, message: nil)
+            case .stop:
+                do {
+                    try stop(member.paneID)
+                    return TeamMemberStopOutcome(paneID: member.paneID, launchGeneration: member.launchGeneration, name: member.name, result: .stopped, message: nil)
+                } catch {
+                    // Only a fresh, successful state read may classify the process.
+                    let result: TeamMemberStopResult
+                    if let after = currentPane(member.paneID) {
+                        result = after.isStarted ? .failed : .stoppedUnrecorded
+                    } else {
+                        result = .unknown
+                    }
+                    return TeamMemberStopOutcome(paneID: member.paneID, launchGeneration: member.launchGeneration, name: member.name,
+                        result: result, message: error.localizedDescription)
+                }
+            }
+        }
+    }
+}
+
+/// One native stop attempt as it actually happened. Recorded by the app
+/// after asking the workbench, never inferred from terminal text.
+public struct TeamStopAttempt: Identifiable, Codable, Equatable, Sendable {
+    public let id: String
+    public let attemptedAt: Date
+    /// Stop attempts are always native human actions.
+    public let origin: RelayTransitionOrigin
+    public let reason: String
+    public let reasonTruncated: Bool
+    public let outcomes: [TeamMemberStopOutcome]
+    /// True when more outcomes were supplied than the pane limit allows.
+    public let outcomesTruncated: Bool
+
+    public init(id: String = UUID().uuidString.lowercased(), attemptedAt: Date = Date(), reason: String, outcomes: [TeamMemberStopOutcome]) {
+        self.id = id
+        self.attemptedAt = attemptedAt
+        self.origin = .human
+        let bounded = TeamBoundedText.bounded(reason)
+        self.reason = bounded.text
+        self.reasonTruncated = bounded.truncated
+        self.outcomes = Array(outcomes.prefix(TeamSessionProposal.maximumPaneLimit))
+        self.outcomesTruncated = outcomes.count > TeamSessionProposal.maximumPaneLimit
+    }
+
+    public var affectedPaneIDs: [String] { outcomes.map(\.paneID) }
+    public var failedPaneIDs: [String] { outcomes.filter { $0.result == .failed || $0.result == .unknown }.map(\.paneID) }
+
+    /// Content-minimal counts for durable activity records: no messages,
+    /// because diagnostics may carry localized paths.
+    public var countsSummary: String {
+        let counts = Dictionary(grouping: outcomes, by: \.result).mapValues(\.count)
+        return TeamMemberStopResult.allCases.compactMap { result in
+            counts[result].map { "\($0) \(result.rawValue)" }
+        }.joined(separator: ", ")
+    }
+
+    /// Display-only summary for the native UI; never parsed.
+    public var summary: String {
+        var parts: [String] = []
+        let stopped = outcomes.filter { $0.result == .stopped }.map(\.name)
+        if !stopped.isEmpty { parts.append("Stopped: " + stopped.joined(separator: ", ")) }
+        let unrecorded = outcomes.filter { $0.result == .stoppedUnrecorded }
+        if !unrecorded.isEmpty {
+            parts.append("Stopped but not recorded: " + unrecorded.map { "\($0.name): \($0.message ?? "unknown error")" }.joined(separator: "; "))
+        }
+        let skipped = outcomes.filter { [.skippedRestarted, .skippedClosed, .alreadyStopped].contains($0.result) }
+        if !skipped.isEmpty { parts.append("Skipped: " + skipped.map { "\($0.name) (\($0.result.label))" }.joined(separator: "; ")) }
+        let failed = outcomes.filter { $0.result == .failed || $0.result == .unknown }
+        if !failed.isEmpty {
+            parts.append("Could not confirm a stop: " + failed.map { "\($0.name): \($0.result.label). \($0.message ?? "")" }.joined(separator: "; ") + " Use Stop team panes to retry.")
+        }
+        if parts.isEmpty { parts.append("No team panes needed stopping.") }
+        return parts.joined(separator: ". ")
+    }
+}
+
+/// Pure planning from current pane facts: which owned generations to stop
+/// and why the others are skipped. The native app executes only `.stop`.
+/// Eligibility is the baseline rule: an owned, started agent pane is stopped
+/// even when its process has already exited, because `stopPaneProcess` is
+/// also the cleanup that turns an exited pane into a stopped placeholder.
+public enum TeamStopPlanner {
+    public enum Action: Equatable, Sendable {
+        case stop
+        case skip(TeamMemberStopResult)
+    }
+
+    public struct Entry: Equatable, Sendable {
+        public let member: TeamSessionMember
+        public let action: Action
+    }
+
+    public static func plan(members: [TeamSessionMember], live: [WorkbenchPane]) -> [Entry] {
+        members.map { member in
+            let pane = live.first { $0.id == member.paneID }
+            switch member.ownership(of: pane) {
+            case .closed: return Entry(member: member, action: .skip(.skippedClosed))
+            case .restartedByPerson: return Entry(member: member, action: .skip(.skippedRestarted))
+            case .stopped: return Entry(member: member, action: .skip(.alreadyStopped))
+            case .owned:
+                guard let pane, pane.kind.isAgent, pane.isStarted else { return Entry(member: member, action: .skip(.alreadyStopped)) }
+                return Entry(member: member, action: .stop)
+            }
+        }
+    }
+}
+
+public enum TeamPaneOwnership: String, Codable, Equatable, Sendable {
+    /// The exact created generation still exists.
+    case owned
+    /// The created generation was stopped (by Stop or by the person) and the
+    /// pane remains as a stopped placeholder.
+    case stopped
+    /// The person restarted the pane; a newer generation runs there.
+    case restartedByPerson
+    /// The pane no longer exists in the workbench.
+    case closed
+}
+
+/// Current lifecycle facts for one historical member, derived from live
+/// pane state at the moment of the query.
+public struct TeamPaneState: Codable, Equatable, Sendable {
+    public let paneID: String
+    public let name: String
+    public let vendor: String
+    public let role: String?
+    public let createdGeneration: Int
+    public let currentGeneration: Int?
+    public let ownership: TeamPaneOwnership
+    /// Whether any process is started in that pane now, whatever generation
+    /// owns it; nil when the pane is closed.
+    public let processRunning: Bool?
+    /// Whether the exact created generation is the one running now. False
+    /// for a person-restarted pane even though `processRunning` is true.
+    public let ownedRunning: Bool
+    public let moved: Bool
+    public let currentWorkspaceID: String?
+}
+
 public struct TeamSession: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let idempotencyKey: String
@@ -317,33 +600,54 @@ public struct TeamSession: Identifiable, Codable, Equatable, Sendable {
     public var updatedAt: Date
     public var approvedAt: Date?
     public var endedAt: Date?
+    /// Display-only text; machine readers must use the structured fields.
     public var detail: String?
+    /// Historical membership: every pane this session created, never removed.
     public var members: [TeamSessionMember] = []
     public var grantID: String?
-    /// The most recent native stop outcome: which owned panes stopped, which
-    /// could not, and which were skipped because the person restarted them.
-    public var stopOutcome: String?
+    /// Native stop attempts in order, as recorded by the app. Bounded so
+    /// repeated retries never grow past the transport cap.
+    public var stopAttempts: [TeamStopAttempt] = []
+    public static let maximumRetainedStopAttempts = 16
+
+    public var stopOutcome: String? { stopAttempts.last?.summary }
 
     public var remainingTime: TimeInterval? {
         guard state == .active, let deadline else { return nil }
         return max(0, deadline.timeIntervalSinceNow)
     }
 
+    public var requesterName: String { source.displayName }
+
     /// Owned members whose exact created generation is still running.
     public func ownedRunningMembers(in live: [WorkbenchPane]) -> [TeamSessionMember] {
         members.filter { member in live.contains { member.owns($0) && $0.isStarted && !$0.isDead } }
     }
 
-    public var leadName: String { source.displayName }
+    public func currentPaneStates(in live: [WorkbenchPane]) -> [TeamPaneState] {
+        members.map { member in
+            let pane = live.first { $0.id == member.paneID }
+            let ownership = member.ownership(of: pane)
+            return TeamPaneState(paneID: member.paneID, name: member.name, vendor: member.kind.rawValue, role: member.role,
+                createdGeneration: member.launchGeneration, currentGeneration: pane?.launchGeneration, ownership: ownership,
+                processRunning: pane.map { $0.isStarted && !$0.isDead },
+                ownedRunning: pane.map { ownership == .owned && $0.isStarted && !$0.isDead } ?? false,
+                moved: pane.map { $0.workspaceID != member.workspaceID } ?? false, currentWorkspaceID: pane?.workspaceID)
+        }
+    }
 
-    /// The bounded JSON returned to the lead. It contains identities and
-    /// limits, never credentials or terminal text.
+    /// The bounded JSON returned to the requesting pane and members. It
+    /// contains identities, limits and app-owned lifecycle facts, never
+    /// credentials or terminal text. Every time is ISO 8601; `detail` is
+    /// display-only.
     public struct AgentView: Codable, Equatable, Sendable {
         public struct Member: Codable, Equatable, Sendable {
             public let paneID: String
             public let vendor: String
             public let name: String
             public let role: String?
+            public let createdGeneration: Int
+            public let createdAt: Date
         }
         public let sessionID: String
         public let state: String
@@ -355,23 +659,38 @@ public struct TeamSession: Identifiable, Codable, Equatable, Sendable {
         /// Provisioning authority ends here; it is not a work deadline.
         public let provisioningDeadline: Date?
         public let remainingProvisioningSeconds: Int?
-        public let leadPaneID: String
+        public let createdAt: Date
+        public let approvedAt: Date?
+        public let endedAt: Date?
+        /// The pane that requested this session. Members may target it by this
+        /// exact id; `lead` still means the marked workspace lead.
+        public let requesterPaneID: String
+        /// Historical membership in creation order.
         public let members: [Member]
+        /// Current lifecycle and ownership per historical member.
+        public let currentPanes: [TeamPaneState]
+        /// Owned generations that are still running now.
+        public let ownedRunningPaneIDs: [String]
+        public let stopAttempts: [TeamStopAttempt]
+        /// Display-only; never parse. Times inside are local and labelled.
         public let detail: String?
     }
 
-    public var agentView: AgentView {
-        AgentView(sessionID: id, state: state.rawValue, objective: objective, folder: folder,
+    public func agentView(live: [WorkbenchPane]) -> AgentView {
+        let current = currentPaneStates(in: live)
+        return AgentView(sessionID: id, state: state.rawValue, objective: objective, folder: folder,
             allowedVendors: allowedVendors.map(\.rawValue), paneLimit: paneLimit, panesCreated: members.count,
-            provisioningDeadline: deadline, remainingProvisioningSeconds: remainingTime.map { Int($0) }, leadPaneID: source.id,
-            members: members.map { .init(paneID: $0.paneID, vendor: $0.kind.rawValue, name: $0.name, role: $0.role) },
-            detail: detail)
+            provisioningDeadline: deadline, remainingProvisioningSeconds: remainingTime.map { Int($0) },
+            createdAt: createdAt, approvedAt: approvedAt, endedAt: endedAt, requesterPaneID: source.id,
+            members: members.map { .init(paneID: $0.paneID, vendor: $0.kind.rawValue, name: $0.name, role: $0.role, createdGeneration: $0.launchGeneration, createdAt: $0.createdAt) },
+            currentPanes: current, ownedRunningPaneIDs: current.filter { $0.ownedRunning }.map(\.paneID),
+            stopAttempts: stopAttempts, detail: detail)
     }
 }
 
 public enum TeamSessionDisclosure {
-    public static let approval = "Approval lets the requesting lead pane create up to the pane limit of new agent panes in this workspace, bound to the approved folder and the exact permission profile shown here, without another approval per pane. Each new pane is an ordinary vendor session with that vendor's own permission prompts; Parley never answers or skips them. The grant lives only in memory and ends at the provisioning deadline, on Stop, on Stop Everything or quit, when the lead pane restarts, moves, changes folder or its workspace policy changes, and when the approved permission profile is edited or removed."
+    public static let approval = "Approval lets the requesting pane create up to the pane limit of new agent panes in this workspace, bound to the approved folder and the exact permission profile shown here, without another approval per pane. Each new pane is an ordinary vendor session with that vendor's own permission prompts; Parley never answers or skips them. The grant lives only in memory and ends at the provisioning deadline, on Stop, on Stop Everything or quit, when the requesting pane restarts, moves, changes folder or its workspace policy changes, and when the approved permission profile is edited or removed."
     public static let deadline = "The deadline bounds provisioning only: after it no new panes can be created. It does not stop or pause work already running in created panes; stopping them is always your explicit action."
-    public static let stop = "Stop revokes the grant, refuses further provisioning and stops the processes of panes this session created, identified by pane id and the exact generation Parley started; they remain as stopped placeholders you can close. A pane you restarted since creation is no longer team-owned and is skipped; a pane you moved to another workspace stays owned. The lead pane and unrelated panes are not touched. Tracked Ask or Delegate work already in flight is not cancelled; cancel it in Status Center. Any pane that could not be stopped is reported here with a retry."
+    public static let stop = "Stop revokes the grant, refuses further provisioning and stops the processes of panes this session created, identified by pane id and the exact generation Parley started; they remain as stopped placeholders you can close. A pane you restarted since creation is no longer team-owned and is skipped; a pane you moved to another workspace stays owned. The requesting pane and unrelated panes are not touched. Tracked Ask or Delegate work already in flight is not cancelled; cancel it in Status Center. The recorded outcome lists exactly what was stopped, skipped or could not be stopped, with a retry."
     public static let expiry = "When provisioning authority expires or is interrupted, new panes are refused. Running panes are not stopped automatically; Stop team panes remains available for still-owned panes until you use it."
 }

@@ -42,10 +42,14 @@ private struct TeamFixture {
             authenticate: { tokens[$0] },
             panes: { panes() },
             profiles: { [profiles] in profiles },
-            record: { _, detail in recorded.lock.withLock { recorded.details.append(detail) } })
+            record: { _, transition, _ in recorded.lock.withLock { recorded.details.append(transition.rawValue) } })
     }
 
     func cleanup() { try? FileManager.default.removeItem(at: root) }
+}
+
+private final class FlakyBox: @unchecked Sendable {
+    var failing = false
 }
 
 private final class PaneBox: @unchecked Sendable {
@@ -136,10 +140,10 @@ func teamSessionRequestAndApprovalChecks() throws {
     try teamExpect(active.state == .active && active.objective == "Implement the parser carefully" && active.folder == fixture.project
         && active.allowedVendors == [.codex, .agy] && active.permissionProfileID == "review-only" && active.paneLimit == 2
         && active.proposal == proposal, "human edits were not applied or the original proposal was lost")
-    try teamExpect(grant.leadPaneID == "lead" && grant.leadGeneration == 3 && grant.workspaceID == "workspace" && grant.folder == fixture.project
+    try teamExpect(grant.requesterPaneID == "lead" && grant.requesterGeneration == 3 && grant.workspaceID == "workspace" && grant.folder == fixture.project
         && grant.paneLimit == 2 && grant.provisioningDeadline.timeIntervalSinceNow <= 3_600 && grant.provisioningDeadline.timeIntervalSinceNow > 3_500,
         "the grant did not key the lead generation, workspace, folder, limit and deadline")
-    try teamExpect(fixture.recorded.lock.withLock { fixture.recorded.details.contains { $0.contains("approved") } }, "approval was not recorded")
+    try teamExpect(fixture.recorded.lock.withLock { fixture.recorded.details.contains("approved") }, "approval was not recorded")
     try teamRejects("a decided session could be approved again") {
         try coordinator.approve(id: session.id, revision: active.revision, objective: "x", folder: fixture.project, allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 2, hours: 4)
     }
@@ -275,7 +279,7 @@ func teamSessionInvalidationChecks() throws {
     // Removing the approved permission profile invalidates.
     let profileBox = PaneBox([fixture.lead])
     let profileless = TeamSessionCoordinator(authenticate: { $0 == "lead-token" ? "lead" : nil }, panes: { profileBox.current() },
-        profiles: { [] }, record: { _, _ in })
+        profiles: { [] }, record: { _, _, _ in })
     let profileSession = try profileless.request(token: "lead-token", proposal: proposal)
     try teamRejects("approval succeeded without any permission profile") {
         try profileless.approve(id: profileSession.id, revision: profileSession.revision, objective: "x", folder: fixture.project, allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1)
@@ -388,14 +392,14 @@ func teamSessionNativePaneChecks() throws {
     eligible.relayEnabled = true
     let box = PaneBox([eligible])
     let coordinator = TeamSessionCoordinator(authenticate: { _ in lead.id }, panes: { box.current() },
-        profiles: { PermissionProfileDefinition.builtIns }, record: { _, _ in })
+        profiles: { PermissionProfileDefinition.builtIns }, record: { _, _, _ in })
     let proposal = TeamSessionProposal(objective: "Build it", folder: root.appendingPathComponent("project").path, templateName: nil, paneLimit: 2, hours: 1)
     let session = try coordinator.request(token: "t", proposal: proposal)
     let provisionBeforeApproval = TeamPaneProvision(id: "p", sessionID: session.id, kind: .codex, name: "Reviewer", role: "reviewer", createdAt: Date(), paneID: nil, failure: nil)
     let defaultDefinition = PermissionProfileDefinition.builtIns.first { $0.id == "default" }!
     let defaultProfile = try PermissionProfileResolver.resolve(definition: defaultDefinition, paneFolder: proposal.folder)
     try teamRejects("the controller created a team pane without an active grant") {
-        _ = try controller.createTeamPane(session: session, grant: TeamSessionGrant(id: "g", leadPaneID: lead.id, leadGeneration: lead.launchGeneration,
+        _ = try controller.createTeamPane(session: session, grant: TeamSessionGrant(id: "g", requesterPaneID: lead.id, requesterGeneration: lead.launchGeneration,
             workspaceID: workspace.workspaceID, automationPolicy: eligible.automationPolicy, folder: proposal.folder, allowedVendors: [.codex],
             approvedProfile: defaultDefinition, approvedRoots: [], paneLimit: 2, provisioningDeadline: Date().addingTimeInterval(60), approvedAt: Date()),
             provision: provisionBeforeApproval, permissionProfile: defaultProfile)
@@ -460,12 +464,25 @@ func teamSessionNativePaneChecks() throws {
     }
     try teamExpect(retried != nil && (try controller.listPanes()).count == paneCountBefore + 1, "creation did not recover after the persistence failure")
 
+    // The real controller Stop path increments the generation; a stopped owned
+    // generation must read as stopped, never as restarted by the person.
+    guard let owning = coordinator.sessions().first(where: { $0.id == session.id }),
+          let firstMember = owning.members.first(where: { $0.paneID == created.id }) else { throw TeamSessionError.invalid("member missing") }
+    try teamExpect(TeamStopPlanner.plan(members: [firstMember], live: try controller.listPanes()).first?.action == .stop, "a running owned pane was not planned for stopping")
+    try controller.stopPaneProcess(created.id)
+    let afterStop = try controller.listPanes()
+    try teamExpect(firstMember.ownership(of: afterStop.first { $0.id == created.id }) == .stopped, "a pane stopped through the controller was not recognised as the stopped owned generation")
+    try teamExpect(TeamStopPlanner.plan(members: [firstMember], live: afterStop).first?.action == .skip(.alreadyStopped), "a stopped owned generation was planned again")
+    try teamExpect(owning.currentPaneStates(in: afterStop).first { $0.paneID == created.id }?.ownedRunning == false, "a stopped pane was reported running")
+    try controller.startPane(created.id)
+    try teamExpect(firstMember.ownership(of: try controller.listPanes().first { $0.id == created.id }) == .restartedByPerson, "a person restart after Stop still counted as owned")
+
     // Editing the stored custom profile after approval revokes the grant and blocks native creation.
     let store = PermissionProfileStore(file: runtime.appendingPathComponent("permission-profiles.json"))
     let custom = PermissionProfileDefinition.builtIns.first { $0.id == "review-only" }!.clone(id: "custom-team", name: "Team review")
     try store.saveCustom(custom)
     let storeBacked = TeamSessionCoordinator(authenticate: { _ in lead.id }, panes: { box.current() },
-        profiles: { try store.profiles() }, record: { _, _ in })
+        profiles: { try store.profiles() }, record: { _, _, _ in })
     let customSession = try storeBacked.request(token: "t", proposal: proposal)
     try storeBacked.approve(id: customSession.id, revision: customSession.revision, objective: "x", folder: proposal.folder,
         allowedVendors: [.codex], permissionProfileID: custom.id, paneLimit: 1, hours: 1)
@@ -544,7 +561,7 @@ func teamSessionShimChecks() throws {
     decoder.dateDecodingStrategy = .iso8601
     let view = try decoder.decode(TeamSession.AgentView.self, from: approved.stdout)
     try teamExpect(view.provisioningDeadline != nil && view.remainingProvisioningSeconds.map { $0 > 3_500 && $0 <= 3_600 } == true, "the deadline was not returned to the lead")
-    try teamExpect(view.state == "active" && view.objective == "Build it carefully" && view.paneLimit == 2 && view.allowedVendors == ["codex"] && view.leadPaneID == "lead",
+    try teamExpect(view.state == "active" && view.objective == "Build it carefully" && view.paneLimit == 2 && view.allowedVendors == ["codex"] && view.requesterPaneID == "lead",
         "the lead did not receive the approved values")
     try teamExpect(String(decoding: approved.stderr, as: UTF8.self).contains("Parley Team Session ID: \(pending.id)"), "the session id was not reported on stderr")
     try teamExpect(broker.waitForTrackedWork(token: token, handoffID: pending.id).status == 200, "parley wait could not recover the decision")
@@ -616,7 +633,7 @@ func teamSessionShimChecks() throws {
     try teamExpect(overLimit.status != 0 && String(decoding: overLimit.stdout + overLimit.stderr, as: UTF8.self).contains("limit"), "the pane limit was not enforced over the shim")
     let nested = try ProcessCommandRunner(timeout: 10).run(executable: executable, arguments: ["team", "add", "--vendor", "codex"],
         environment: ["PATH": "/usr/bin:/bin", "PARLEY_RELAY_TOKEN": memberToken])
-    try teamExpect(nested.status != 0 && String(decoding: nested.stdout + nested.stderr, as: UTF8.self).contains("lead"), "a member provisioned over the shim")
+    try teamExpect(nested.status != 0 && String(decoding: nested.stdout + nested.stderr, as: UTF8.self).contains("requesting pane"), "a member provisioned over the shim")
 }
 
 @MainActor
@@ -624,6 +641,12 @@ let teamSessionChecks: [(String, () throws -> Void)] = [
     ("team session review regression changed profile revokes approval", teamSessionReviewProfileMutationCheck),
     ("team session review regression partial creation remains owned", teamSessionReviewPartialCreationCheck),
     ("team session review regression recovery requires original generation", teamSessionReviewRecoveryGenerationCheck),
+    ("team session transitions carry trusted origin and correlation", teamSessionTransitionOriginChecks),
+    ("team session requester is distinct from the workspace lead alias", teamSessionRequesterChecks),
+    ("team session Stop results are structured and derived from pane state", teamSessionStopResultChecks),
+    ("team session machine timestamps are ISO 8601 and detail is display-only", teamSessionTimestampChecks),
+    ("team session stop recording failures are classified from real workbench state", teamSessionStopRecordingFailureChecks),
+    ("team session diagnostics are byte-bounded and control-clean under the transport cap", teamSessionBoundedDiagnosticsChecks),
     ("team session native presentation never blocks on the session sheet", teamSessionPresentationChecks),
     ("team session ownership is pane id plus created generation and survives expiry", teamSessionOwnershipChecks),
     ("team session shim round trip, recovery and activity attribution", teamSessionShimChecks),
@@ -644,7 +667,7 @@ func teamSessionReviewProfileMutationCheck() throws {
     let original = PermissionProfileDefinition.builtIns.first { $0.id == "review-only" }!.clone(id: "custom-review", name: "Custom review")
     var available = [original]
     let coordinator = TeamSessionCoordinator(authenticate: { $0 == "lead-token" ? "lead" : nil }, panes: { box.current() },
-        profiles: { available }, record: { _, _ in })
+        profiles: { available }, record: { _, _, _ in })
     let proposal = TeamSessionProposal(objective: "Review", folder: fixture.project, templateName: nil, paneLimit: 1, hours: 1)
     let session = try coordinator.request(token: "lead-token", proposal: proposal)
     try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
@@ -740,8 +763,12 @@ func teamSessionOwnershipChecks() throws {
     try teamRejects("provisioning resumed after expiry through the stop path") {
         _ = try coordinator.requestPane(token: "lead-token", kind: .codex, name: "Late", role: nil)
     }
-    coordinator.recordStopOutcome(id: session.id, outcome: "Stopped: Reviewer. Skipped: Worker: restarted by you")
-    try teamExpect(coordinator.sessions().first(where: { $0.id == session.id })?.stopOutcome?.contains("Skipped: Worker") == true, "the stop outcome was not recorded")
+    coordinator.recordStopAttempt(id: session.id, attempt: TeamStopAttempt(reason: "Stopped by the person", outcomes: [
+        TeamMemberStopOutcome(paneID: "member-Reviewer", launchGeneration: 4, name: "Reviewer", result: .stopped, message: nil),
+        TeamMemberStopOutcome(paneID: "member-Worker", launchGeneration: 4, name: "Worker", result: .skippedRestarted, message: nil),
+    ]))
+    try teamExpect(coordinator.sessions().first(where: { $0.id == session.id })?.stopAttempts.last?.outcomes.map(\.result) == [.stopped, .skippedRestarted],
+        "the structured stop attempt was not recorded")
     try teamRejects("a pending session exposed owned members") {
         let fresh = fixture.coordinator { box.current() }
         box.update { $0[0].launchGeneration = 3 }
@@ -767,4 +794,353 @@ func teamSessionReviewRecoveryGenerationCheck() throws {
     box.update { $0[0].launchGeneration += 1 }
     let recovered = coordinator.waitForProvision(token: "lead-token", id: provision.id)
     try teamExpect(recovered.status != 200, "a restarted lead recovered a previous generation's provisioning result")
+}
+
+// MARK: - PR #46 pre-merge corrections
+
+private func teamBroker(root: URL, panes: @escaping () -> [WorkbenchPane]) throws -> (RelayBroker, RelayCredentials, RelayActivityJournal) {
+    let credentials = try RelayCredentials(file: root.appendingPathComponent("tokens.json"))
+    let activity = try RelayActivityJournal(file: root.appendingPathComponent("activity-events.jsonl"))
+    let journal = try RelayHandoffJournal(file: root.appendingPathComponent("handoffs.jsonl"))
+    let broker = RelayBroker(credentials: credentials, panes: { panes() }, paste: { _, _ in }, submit: { _, _ in },
+        handoffJournal: journal, activityJournal: activity)
+    broker.enableTeamSessions(profiles: { PermissionProfileDefinition.builtIns })
+    return (broker, credentials, activity)
+}
+
+func teamSessionTransitionOriginChecks() throws {
+    let fixture = try TeamFixture()
+    defer { fixture.cleanup() }
+    let box = PaneBox(fixture.live)
+    let (broker, credentials, activity) = try teamBroker(root: fixture.root) { box.current() }
+    let token = try credentials.token(for: "lead")
+    let coordinator = broker.teamSessions!
+    let proposal = TeamSessionProposal(objective: "PRIVATE_OBJECTIVE build", folder: fixture.project, templateName: nil, paneLimit: 2, hours: 1)
+    let session = try coordinator.request(token: token, proposal: proposal)
+    func events(_ kind: RelayActivityEventKind) -> [RelayActivityEvent] {
+        broker.activityEvents().filter { $0.kind == kind && $0.teamSessionID == session.id }.sorted { $0.occurredAt < $1.occurredAt }
+    }
+    guard let requested = events(.teamSessionRequested).last else { throw TeamSessionError.invalid("no request event") }
+    try teamExpect(requested.origin == .automation && requested.requesterPaneID == "lead" && requested.paneID == "lead",
+        "an agent-initiated request was attributed to the person or lost its requester")
+    try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
+        allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 2, hours: 1)
+    try teamExpect(events(.teamSessionApproved).last?.origin == .human, "a native approval was not attributed to the person")
+    _ = try coordinator.requestPane(token: token, kind: .codex, name: "Worker", role: nil)
+    coordinator.fulfilProvisions(create: { _, grant, provision in
+        let pane = WorkbenchPane(id: "member-1", kind: provision.kind, customName: provision.name, terminalTitle: "", cwd: grant.folder,
+            currentCommand: "codex", isActive: false, workspaceID: "workspace", relayEnabled: true, automationPolicy: .askAndDelegate, launchGeneration: 2)
+        box.update { $0.append(pane) }
+        return pane
+    })
+    guard let created = events(.teamPaneCreated).last else { throw TeamSessionError.invalid("no pane-created event") }
+    try teamExpect(created.origin == .automation && created.affectedPaneIDs == ["member-1"] && created.requesterPaneID == "lead",
+        "an agent-requested creation was attributed to the person or lost the created pane id")
+    let endedBefore = events(.teamSessionEnded).count
+    let members = try coordinator.stop(id: session.id, reason: "Stopped by the person")
+    try teamExpect(events(.teamSessionEnded).count == endedBefore + 1 && events(.teamSessionEnded).last?.origin == .human,
+        "one Stop did not produce exactly one human session-ended event")
+    coordinator.recordStopAttempt(id: session.id, attempt: TeamStopAttempt(reason: "Stopped by the person", outcomes: members.map {
+        TeamMemberStopOutcome(paneID: $0.paneID, launchGeneration: $0.launchGeneration, name: $0.name, result: .stopped, message: nil)
+    }))
+    guard let attempt = events(.teamPaneStopAttempted).last else { throw TeamSessionError.invalid("no stop-attempt event") }
+    try teamExpect(attempt.origin == .human && attempt.affectedPaneIDs == ["member-1"] && events(.teamSessionEnded).count == endedBefore + 1,
+        "a pane stop attempt masqueraded as a session-ended event or lost the affected pane")
+    coordinator.recordStopAttempt(id: session.id, attempt: TeamStopAttempt(reason: "retry", outcomes: [
+        TeamMemberStopOutcome(paneID: "member-1", launchGeneration: 2, name: "Worker", result: .failed, message: "EACCES \(fixture.project)/PRIVATE_DIAGNOSTIC"),
+    ]))
+    for event in broker.activityEvents() where event.teamSessionID == session.id {
+        let text = String(decoding: try JSONEncoder().encode(event), as: UTF8.self)
+        try teamExpect(!text.contains("PRIVATE_OBJECTIVE") && !text.contains(fixture.project) && !text.contains("PRIVATE_DIAGNOSTIC"),
+            "an activity record carried the objective, folder or a stop diagnostic")
+    }
+    try teamExpect(events(.teamPaneStopAttempted).last?.detail?.contains("1 failed") == true, "the stop-attempt activity lost its counts")
+    // Content-minimal agent projection carries identifiers only.
+    let page = try JSONDecoder().decode(RelayAgentEventPage.self, from: Data(broker.agentEvents(token: token, since: "beginning").text.utf8))
+    let projected = page.events.filter { $0.teamSessionID == session.id }
+    try teamExpect(projected.contains { $0.activityKind == .teamPaneCreated && $0.affectedPaneIDs == ["member-1"] && $0.requesterPaneID == "lead" && $0.origin == .automation },
+        "the agent event projection lost team correlation or origin")
+    let raw = broker.agentEvents(token: token, since: "beginning").text
+    try teamExpect(!raw.contains("PRIVATE_OBJECTIVE") && !raw.contains(fixture.project) && !raw.contains(token), "the events feed exposed content or credentials")
+    // Older journal lines without the correlation fields still decode.
+    let legacy = """
+    {"id":"legacy","kind":"paneRestarted","occurredAt":0,"workspaceID":"workspace","workspaceName":"Team","origin":"human"}
+    """
+    let decoded = try JSONDecoder().decode(RelayActivityEvent.self, from: Data(legacy.utf8))
+    try teamExpect(decoded.teamSessionID == nil && decoded.affectedPaneIDs == nil, "legacy activity decoding changed")
+    // The durable journal round-trips the new fields through the file, not memory.
+    _ = activity
+    let reopened = try RelayActivityJournal(file: fixture.root.appendingPathComponent("activity-events.jsonl"))
+    let persisted = reopened.events().first { $0.id == created.id }
+    try teamExpect(persisted?.affectedPaneIDs == ["member-1"] && persisted?.origin == .automation && persisted?.teamSessionID == session.id
+        && persisted?.requesterPaneID == "lead", "the activity journal dropped correlation or origin after reopening from disk")
+    // Expiry and interruption are automation, never the person.
+    let again = try coordinator.request(token: token, proposal: proposal)
+    try coordinator.approve(id: again.id, revision: again.revision, objective: "x", folder: proposal.folder, allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1)
+    coordinator.reconcile(at: Date().addingTimeInterval(3_601))
+    try teamExpect(broker.activityEvents().last { $0.teamSessionID == again.id }?.origin == .automation, "expiry was attributed to the person")
+}
+
+func teamSessionRequesterChecks() throws {
+    let fixture = try TeamFixture()
+    defer { fixture.cleanup() }
+    let chief = WorkbenchPane(id: "chief", kind: .codex, customName: "Chief", terminalTitle: "", cwd: fixture.project, currentCommand: "codex",
+        isActive: false, workspaceID: "workspace", relayEnabled: true, workspaceName: "Team", inputAvailable: true, isWorkspaceLead: true, automationPolicy: .askAndDelegate)
+    let requester = WorkbenchPane(id: "pane-requester", kind: .claude, customName: "Requester", terminalTitle: "", cwd: fixture.project,
+        currentCommand: "claude", isActive: true, workspaceID: "workspace", relayEnabled: true, workspaceName: "Team", inputAvailable: true,
+        isWorkspaceLead: false, automationPolicy: .askAndDelegate, launchGeneration: 3)
+    let box = PaneBox([requester, chief])
+    let (broker, credentials, _) = try teamBroker(root: fixture.root) { box.current() }
+    let token = try credentials.token(for: "pane-requester")
+    let coordinator = broker.teamSessions!
+    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, templateName: nil, paneLimit: 1, hours: 1)
+    let session = try coordinator.request(token: token, proposal: proposal)
+    try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
+        allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1)
+    _ = try coordinator.requestPane(token: token, kind: .codex, name: "Worker", role: nil)
+    coordinator.fulfilProvisions(create: { _, grant, provision in
+        let pane = WorkbenchPane(id: "member-1", kind: provision.kind, customName: provision.name, terminalTitle: "", cwd: grant.folder, currentCommand: "codex",
+            isActive: false, workspaceID: "workspace", relayEnabled: true, workspaceName: "Team", inputAvailable: true, automationPolicy: .askAndDelegate)
+        box.update { $0.append(pane) }
+        return pane
+    })
+    let status = coordinator.status(token: token)
+    try teamExpect(status.text.contains("\"requesterPaneID\":\"pane-requester\"") && !status.text.contains("leadPaneID"), "team status did not name the requester: \(status.text)")
+    let memberToken = try credentials.token(for: "member-1")
+    let toLead = broker.handle(token: memberToken, target: "lead", text: "to the workspace lead", idempotencyKey: UUID().uuidString)
+    try teamExpect(toLead.status == 200, "a member could not address the workspace lead: \(toLead)")
+    let handoffs = broker.handoffs(limit: 10)
+    try teamExpect(handoffs.contains { $0.sourcePaneID == "member-1" && $0.targetPaneID == "chief" } && !handoffs.contains { $0.targetPaneID == "pane-requester" },
+        "the lead alias stopped meaning the marked workspace lead")
+    let exact = broker.handle(token: memberToken, target: requester.id, text: "to the requester by exact id", idempotencyKey: UUID().uuidString)
+    try teamExpect(exact.status == 200 && broker.handoffs(limit: 10).contains { $0.sourcePaneID == "member-1" && $0.targetPaneID == requester.id },
+        "a member could not reach the requester by its exact pane id: \(exact)")
+}
+
+func teamSessionStopResultChecks() throws {
+    let fixture = try TeamFixture()
+    defer { fixture.cleanup() }
+    let box = PaneBox(fixture.live)
+    let coordinator = fixture.coordinator { box.current() }
+    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, templateName: nil, paneLimit: 6, hours: 1)
+    let session = try coordinator.request(token: "lead-token", proposal: proposal)
+    try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
+        allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 6, hours: 1)
+    for name in ["Running", "Restarted", "Closed", "Stopped", "Moved", "Exited"] {
+        _ = try coordinator.requestPane(token: "lead-token", kind: .codex, name: name, role: nil)
+        coordinator.fulfilProvisions(create: { _, grant, provision in
+            let pane = WorkbenchPane(id: "pane-\(provision.name)", kind: provision.kind, customName: provision.name, terminalTitle: "", cwd: grant.folder,
+                currentCommand: "codex", isActive: false, workspaceID: "workspace", relayEnabled: true, automationPolicy: .askAndDelegate, launchGeneration: 7)
+            box.update { $0.append(pane) }
+            return pane
+        })
+    }
+    box.update { panes in
+        panes[2].launchGeneration = 8                       // Restarted by the person
+        panes.removeAll { $0.id == "pane-Closed" }          // Closed by the person
+        panes[3].isStarted = false                          // Already stopped (index shifted after removal)
+        panes[3].launchGeneration = 8                       // stopPaneProcess increments the generation
+        panes[4].workspaceID = "elsewhere"                  // Moved, still owned
+        panes[5].isDead = true                              // Exited but still started: baseline cleanup still stops it
+        panes[5].exitStatus = 1
+    }
+    guard let active = coordinator.sessions().first(where: { $0.id == session.id }) else { throw TeamSessionError.invalid("session vanished") }
+    let plan = TeamStopPlanner.plan(members: active.members, live: box.current())
+    let byName = Dictionary(uniqueKeysWithValues: plan.map { ($0.member.name, $0.action) })
+    try teamExpect(byName["Running"] == .stop && byName["Moved"] == .stop && byName["Exited"] == .stop,
+        "owned running, moved or exited-but-started panes were not planned for stopping (baseline eligibility)")
+    try teamExpect(byName["Restarted"] == .skip(.skippedRestarted) && byName["Closed"] == .skip(.skippedClosed) && byName["Stopped"] == .skip(.alreadyStopped),
+        "the stop plan misjudged a restarted, closed or stopped pane: \(byName)")
+    // The native app records what actually happened, including a failure that keeps the retry path open.
+    let members = try coordinator.stop(id: session.id, reason: "Stopped by the person")
+    try teamExpect(members.count == 6, "historical membership was lost at Stop")
+    let attempt = TeamStopAttempt(reason: "Stopped by the person", outcomes: plan.map { entry in
+        switch entry.action {
+        case .stop where entry.member.name == "Moved":
+            TeamMemberStopOutcome(paneID: entry.member.paneID, launchGeneration: entry.member.launchGeneration, name: entry.member.name, result: .failed, message: "injected terminate failure")
+        case .stop:
+            TeamMemberStopOutcome(paneID: entry.member.paneID, launchGeneration: entry.member.launchGeneration, name: entry.member.name, result: .stopped, message: nil)
+        case let .skip(result):
+            TeamMemberStopOutcome(paneID: entry.member.paneID, launchGeneration: entry.member.launchGeneration, name: entry.member.name, result: result, message: nil)
+        }
+    })
+    coordinator.recordStopAttempt(id: session.id, attempt: attempt)
+    box.update { panes in panes[1].isStarted = false; panes[1].launchGeneration = 8 }   // Running actually stopped (generation incremented); Moved did not.
+    let state = coordinator.status(token: "lead-token")
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let view = try decoder.decode(TeamSession.AgentView.self, from: Data(state.text.utf8))
+    try teamExpect(view.state == "stopped" && view.members.count == 6, "status lost historical membership")
+    try teamExpect(view.stopAttempts.count == 1 && view.stopAttempts[0].origin == .human && view.stopAttempts[0].outcomes.count == 6
+        && view.stopAttempts[0].outcomes.contains { $0.name == "Moved" && $0.result == .failed && $0.message == "injected terminate failure" },
+        "status did not carry the structured stop attempt")
+    let current = Dictionary(uniqueKeysWithValues: view.currentPanes.map { ($0.name, $0) })
+    try teamExpect(current["Running"]?.ownership == .stopped && current["Running"]?.ownedRunning == false && current["Running"]?.processRunning == false, "a stopped owned pane was misreported")
+    try teamExpect(current["Moved"]?.ownership == .owned && current["Moved"]?.ownedRunning == true && current["Moved"]?.processRunning == true && current["Moved"]?.moved == true, "a moved, still-running owned pane was misreported")
+    try teamExpect(current["Exited"]?.ownership == .owned && current["Exited"]?.processRunning == false && current["Exited"]?.ownedRunning == false,
+        "an exited-but-started owned pane misreported its process lifecycle")
+    try teamExpect(current["Restarted"]?.ownership == .restartedByPerson && current["Restarted"]?.processRunning == true && current["Restarted"]?.ownedRunning == false
+        && current["Closed"]?.ownership == .closed && current["Closed"]?.processRunning == nil && current["Stopped"]?.ownership == .stopped,
+        "restarted, closed or stopped panes conflated process lifecycle with ownership")
+    try teamExpect(view.ownedRunningPaneIDs == ["pane-Moved"], "still-running owned generations were not listed for retry: \(view.ownedRunningPaneIDs)")
+    // A pane listing failure is reported, never presented as every pane closed.
+    let failing = TeamSessionCoordinator(authenticate: { $0 == "lead-token" ? "lead" : nil },
+        panes: { throw TeamSessionError.invalid("listing unavailable") }, profiles: { PermissionProfileDefinition.builtIns }, record: { _, _, _ in })
+    _ = failing
+    let flaky = PaneBox(box.current())
+    let flakyFail = FlakyBox()
+    let flakyCoordinator = TeamSessionCoordinator(authenticate: { $0 == "lead-token" ? "lead" : nil },
+        panes: { if flakyFail.failing { throw TeamSessionError.invalid("listing unavailable") } else { return flaky.current() } },
+        profiles: { PermissionProfileDefinition.builtIns }, record: { _, _, _ in })
+    let flakySession = try flakyCoordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "x", folder: fixture.project, templateName: nil, paneLimit: 1, hours: 1))
+    try flakyCoordinator.approve(id: flakySession.id, revision: flakySession.revision, objective: "x", folder: fixture.project, allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1)
+    flakyFail.failing = true
+    let withheld = flakyCoordinator.status(token: "lead-token")
+    try teamExpect(withheld.status == 503 && withheld.text.contains("unavailable") && !withheld.text.contains("closed"), "a pane listing failure was reported as pane state: \(withheld.text)")
+    flakyFail.failing = false
+    // Repeated retries stay bounded.
+    for _ in 0..<(TeamSession.maximumRetainedStopAttempts + 5) {
+        coordinator.recordStopAttempt(id: session.id, attempt: TeamStopAttempt(reason: "retry", outcomes: attempt.outcomes))
+    }
+    let bounded = coordinator.sessions().first { $0.id == session.id }
+    try teamExpect(bounded?.stopAttempts.count == TeamSession.maximumRetainedStopAttempts && bounded?.stopAttempts.last?.reason == "retry",
+        "stop attempt history was not bounded or dropped the newest attempt")
+    try teamExpect(coordinator.status(token: "lead-token").text.utf8.count < 200_000, "status grew past the transport cap")
+    // Retry after the failure still names only the surviving owned generation, even after expiry-like termination.
+    let survivors = try coordinator.ownedMembers(id: session.id)
+    try teamExpect(TeamStopPlanner.plan(members: survivors, live: box.current()).filter { $0.action == .stop }.map(\.member.paneID) == ["pane-Moved", "pane-Exited"],
+        "the retry plan did not target the surviving owned generations (running moved pane and exited-but-started pane)")
+}
+
+func teamSessionTimestampChecks() throws {
+    let fixture = try TeamFixture()
+    defer { fixture.cleanup() }
+    let box = PaneBox(fixture.live)
+    let coordinator = fixture.coordinator { box.current() }
+    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, templateName: nil, paneLimit: 1, hours: 2)
+    let session = try coordinator.request(token: "lead-token", proposal: proposal)
+    try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
+        allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 2)
+    let text = coordinator.status(token: "lead-token").text
+    let iso = try NSRegularExpression(pattern: "\"provisioningDeadline\":\"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\"")
+    try teamExpect(iso.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil, "the provisioning deadline is not ISO 8601 UTC: \(text)")
+    try teamExpect(text.contains("\"approvedAt\":\"") && text.contains("\"createdAt\":\""), "structured times are missing from status")
+    let detail = coordinator.sessions().first { $0.id == session.id }?.detail ?? ""
+    try teamExpect(detail.contains(TimeZone.current.abbreviation() ?? "local") || detail.contains("GMT"), "the display-only detail time is not labelled with its zone: \(detail)")
+}
+
+
+func teamSessionStopRecordingFailureChecks() throws {
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("parley-team-stopfail-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.appendingPathComponent("runtime").path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    try FileManager.default.createDirectory(at: root.appendingPathComponent("project"), withIntermediateDirectories: true)
+    let runtime = root.appendingPathComponent("runtime")
+    let controller = try WorkbenchController(applicationDirectory: runtime, environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"])
+    let shimDirectory = runtime.appendingPathComponent("bin", isDirectory: true)
+    let transportDirectory = runtime.appendingPathComponent("relay", isDirectory: true)
+    try FileManager.default.createDirectory(at: shimDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: transportDirectory, withIntermediateDirectories: true)
+    controller.configureRelay(RelayRuntime(infoFile: runtime.appendingPathComponent("relay-url"), shimDirectory: shimDirectory,
+        transportDirectory: transportDirectory, credentials: try RelayCredentials(file: runtime.appendingPathComponent("relay-tokens.json")), runtimeMarker: "DEV"))
+    _ = try controller.createWorkspace(folder: root.appendingPathComponent("project").path)
+    let requester = try controller.createPane(kind: .claude, cwd: root.appendingPathComponent("project").path)
+    var eligible = requester
+    eligible.relayEnabled = true
+    let box = PaneBox([eligible])
+    let coordinator = TeamSessionCoordinator(authenticate: { _ in requester.id }, panes: { box.current() },
+        profiles: { PermissionProfileDefinition.builtIns }, record: { _, _, _ in })
+    let proposal = TeamSessionProposal(objective: "Build", folder: root.appendingPathComponent("project").path, templateName: nil, paneLimit: 2, hours: 1)
+    let session = try coordinator.request(token: "t", proposal: proposal)
+    try coordinator.approve(id: session.id, revision: session.revision, objective: "x", folder: proposal.folder, allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 2, hours: 1)
+    var created: [WorkbenchPane] = []
+    for name in ["Unrecorded", "Refused"] {
+        _ = try coordinator.requestPane(token: "t", kind: .codex, name: name, role: nil)
+        coordinator.fulfilProvisions(create: { session, grant, provision in
+            let profile = try PermissionProfileResolver.resolve(definition: grant.approvedProfile, paneFolder: grant.folder, approvedRoots: grant.approvedRoots)
+            let pane = try controller.createTeamPane(session: session, grant: grant, provision: provision, permissionProfile: profile)
+            created.append(pane)
+            box.update { $0.append(pane) }
+            return pane
+        })
+    }
+    guard created.count == 2, let active = coordinator.sessions().first(where: { $0.id == session.id }) else { throw TeamSessionError.invalid("panes were not created") }
+    let members = active.members
+
+    // Real path: stopPaneProcess terminates and mutates the pane, then credential
+    // forgetting / persistence throws under a read-only runtime directory.
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: runtime.path)
+    let unrecorded = TeamStopExecution.execute(
+        plan: TeamStopPlanner.plan(members: [members[0]], live: try controller.listPanes()),
+        stop: { try controller.stopPaneProcess($0) },
+        currentPane: { id in (try? controller.listPanes())?.first { $0.id == id } })
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: runtime.path)
+    try teamExpect(unrecorded.count == 1 && unrecorded[0].result == .stoppedUnrecorded && unrecorded[0].message?.isEmpty == false,
+        "a stop whose recording failed was not classified as stopped-but-unrecorded: \(unrecorded)")
+    let afterUnrecorded = try controller.listPanes().first { $0.id == members[0].paneID }
+    try teamExpect(afterUnrecorded?.isStarted == false && members[0].ownership(of: afterUnrecorded) == .stopped,
+        "the pane whose stop went unrecorded was not reported as the stopped owned generation")
+    try teamExpect(TeamStopPlanner.plan(members: [members[0]], live: try controller.listPanes()).first?.action == .skip(.alreadyStopped),
+        "a retry would re-stop a pane the workbench already shows stopped")
+
+    // A stop the workbench refuses before mutating anything is a plain failure and stays retryable.
+    let refused = TeamStopExecution.execute(
+        plan: TeamStopPlanner.plan(members: [members[1]], live: try controller.listPanes()),
+        stop: { _ in throw TeamSessionError.invalid("injected refusal before termination") },
+        currentPane: { id in (try? controller.listPanes())?.first { $0.id == id } })
+    try teamExpect(refused[0].result == .failed && refused[0].message == "injected refusal before termination", "a refused stop was misclassified: \(refused)")
+    let blind = TeamStopExecution.execute(
+        plan: TeamStopPlanner.plan(members: [members[1]], live: try controller.listPanes()),
+        stop: { _ in throw TeamSessionError.invalid("injected error") },
+        currentPane: { _ in nil })
+    try teamExpect(blind[0].result == .unknown && !blind[0].result.label.contains("stopped,"), "a failed state lookup claimed a termination or a running process: \(blind)")
+    try teamExpect(TeamStopPlanner.plan(members: [members[1]], live: try controller.listPanes()).first?.action == .stop, "a failed stop lost its retry")
+    try teamExpect(TeamStopAttempt(reason: "Stopped by the person", outcomes: unrecorded + refused).summary.contains("Stopped but not recorded: Unrecorded"),
+        "the summary hid the unrecorded stop")
+}
+
+func teamSessionBoundedDiagnosticsChecks() throws {
+    let fixture = try TeamFixture()
+    defer { fixture.cleanup() }
+    let box = PaneBox(fixture.live)
+    let coordinator = fixture.coordinator { box.current() }
+    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, templateName: nil, paneLimit: 8, hours: 1)
+    let session = try coordinator.request(token: "lead-token", proposal: proposal)
+    try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
+        allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 8, hours: 1)
+    for index in 0..<8 {
+        _ = try coordinator.requestPane(token: "lead-token", kind: .codex, name: "Worker \(index)", role: nil)
+        coordinator.fulfilProvisions(create: { _, grant, provision in
+            let pane = WorkbenchPane(id: "pane-\(index)", kind: provision.kind, customName: provision.name, terminalTitle: "", cwd: grant.folder,
+                currentCommand: "codex", isActive: false, workspaceID: "workspace", relayEnabled: true, automationPolicy: .askAndDelegate)
+            box.update { $0.append(pane) }
+            return pane
+        })
+    }
+    let members = try coordinator.stop(id: session.id, reason: String(repeating: "很长的原因", count: 2_000))
+    let longMessage = "\u{1b}[31m/Users/private/very/long/path/" + String(repeating: "é", count: 5_000) + "\u{7}"
+    let cleaned = TeamBoundedText.clean(longMessage)
+    try teamExpect(cleaned.utf8.count <= TeamBoundedText.maximumMessageBytes && cleaned.hasSuffix(TeamBoundedText.truncationMarker)
+        && !cleaned.contains("\u{1b}") && !cleaned.contains("\u{7}") && cleaned.hasPrefix("[31m/Users"), "diagnostic text was not bounded or control-cleaned: \(cleaned.utf8.count)")
+    try teamExpect(TeamBoundedText.clean("short ok") == "short ok", "a short message was altered")
+    for _ in 0..<(TeamSession.maximumRetainedStopAttempts + 5) {
+        coordinator.recordStopAttempt(id: session.id, attempt: TeamStopAttempt(reason: longMessage, outcomes: members.map {
+            TeamMemberStopOutcome(paneID: $0.paneID, launchGeneration: $0.launchGeneration, name: $0.name, result: .failed, message: longMessage)
+        } + members.map {
+            TeamMemberStopOutcome(paneID: $0.paneID, launchGeneration: $0.launchGeneration, name: $0.name, result: .failed, message: longMessage)
+        }))
+    }
+    let status = coordinator.status(token: "lead-token")
+    try teamExpect(status.status == 200 && status.text.utf8.count < 200_000, "status with retried long diagnostics exceeded the transport cap: \(status.text.utf8.count) bytes")
+    let stored = coordinator.sessions().first { $0.id == session.id }!
+    try teamExpect(stored.stopAttempts.count == TeamSession.maximumRetainedStopAttempts
+        && stored.stopAttempts.allSatisfy { $0.outcomes.count == 8 && $0.reason.utf8.count <= TeamBoundedText.maximumMessageBytes
+            && $0.reasonTruncated && $0.outcomesTruncated
+            && $0.outcomes.allSatisfy { ($0.message?.utf8.count ?? 0) <= TeamBoundedText.maximumMessageBytes && $0.message?.hasSuffix(TeamBoundedText.truncationMarker) == true && $0.messageTruncated } },
+        "stored attempts were not bounded per outcome and per reason with disclosed truncation")
+    try teamExpect(status.text.contains("\"messageTruncated\":true") && status.text.contains("\"reasonTruncated\":true"), "truncation metadata is missing from status")
+    try teamExpect(!TeamMemberStopOutcome(paneID: "p", launchGeneration: 1, name: "n", result: .stopped, message: "fine").messageTruncated, "a short message was flagged truncated")
+    try teamExpect(!status.text.contains("\u{1b}") && stored.detail?.utf8.count ?? 0 < 4_000, "control characters or an unbounded detail reached the status record")
 }

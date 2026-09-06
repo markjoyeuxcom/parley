@@ -360,7 +360,24 @@ provisioning only: expiry or interruption revokes the grant and stops nothing,
 while "Stop team panes" stays available for still-owned running panes. Lead
 restart, move, folder or policy change, an edited or removed approved profile,
 Stop Everything and quit interrupt the session. Requests, decisions and pane
-results are recoverable only by the same live lead generation.
+results are recoverable only by the same live requesting-pane generation.
+Agent-facing status names the requester as `requesterPaneID`; the `lead`
+routing alias keeps meaning the marked workspace lead, and members address
+the requester by its exact pane id. Every session transition is typed
+(`TeamSessionTransition`) and its origin is derived in trusted code: requests,
+provisioning, expiry and interruption are automation; approval, refusal, Stop
+and stop attempts are human. Activity records and the agent events feed carry
+bounded correlation only (session id, requester pane id, affected pane ids)
+plus label-and-count detail, never objectives, folders, diagnostics or
+terminal text; the agent events feed omits detail entirely, and older records
+without the new fields still decode. Stop attempts are recorded as structured
+per-member outcomes derived from a fresh workbench read (stopped,
+stopped-but-unrecorded, failed, unknown when the state could not be read,
+skipped restarted/closed, already stopped) with every message and reason
+UTF-8-bounded, control-cleaned and flagged when truncated; retained attempts
+are capped so status stays under the 200 KB cap. Historical membership is kept
+separately from current ownership, and machine timestamps are ISO 8601 while
+`detail` stays display-only.
 
 ## SwiftPM inside agent panes
 

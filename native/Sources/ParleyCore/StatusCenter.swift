@@ -284,6 +284,7 @@ public enum StatusCenterProjection {
                     || event.kind == .teamSessionApproved
                     || event.kind == .teamPaneCreated
                     || event.kind == .teamSessionEnded
+                    || event.kind == .teamPaneStopAttempted
                     || VendorHookSignal(activityKind: event.kind) != nil
                 let action: String
                 switch event.kind {
@@ -291,6 +292,7 @@ public enum StatusCenterProjection {
                 case .teamSessionApproved: action = "TEAM SESSION APPROVED"
                 case .teamPaneCreated: action = "TEAM PANE CREATED"
                 case .teamSessionEnded: action = "TEAM SESSION ENDED"
+                case .teamPaneStopAttempted: action = "TEAM PANES STOP ATTEMPTED"
                 case .paneRestarted: action = "RESTARTED"
                 case .paneResumeRequested: action = "RESUME REQUESTED"
                 case .paneReaped: action = "REAPED IDLE"
