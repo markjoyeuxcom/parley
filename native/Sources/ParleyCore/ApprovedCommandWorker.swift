@@ -181,7 +181,7 @@ public enum ApprovedCommandWorker {
     public static func observation(runID: String, directory: URL) throws -> ApprovedCommandWorkerObservation {
         guard UUID(uuidString: runID) != nil else { throw ReviewedCommandRunError.invalid("Invalid run identity.") }
         let job = directory.appendingPathComponent(runID)
-        guard FileManager.default.fileExists(atPath: job.path) else {
+        guard try !confirmedAbsent(job) else {
             return ApprovedCommandWorkerObservation(running: false, ticketPending: false, consumed: false, failure: nil)
         }
         try privateDirectory(job)
@@ -201,11 +201,11 @@ public enum ApprovedCommandWorker {
     public static func workerIsRunning(runID: String, directory: URL) throws -> Bool {
         guard UUID(uuidString: runID) != nil else { throw ReviewedCommandRunError.invalid("Invalid run identity.") }
         let job = directory.appendingPathComponent(runID)
-        guard FileManager.default.fileExists(atPath: job.path) else { return false }
+        guard try !confirmedAbsent(job) else { return false }
         try privateDirectory(job)
         let lockPath = job.appendingPathComponent("worker.lock")
         var running = false
-        if FileManager.default.fileExists(atPath: lockPath.path) {
+        if try !confirmedAbsent(lockPath) {
             let descriptor = open(lockPath.path, O_RDONLY | O_EXLOCK | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
             if descriptor >= 0 { close(descriptor) }
             else if errno == EWOULDBLOCK || errno == EAGAIN { running = true }
@@ -363,6 +363,17 @@ public enum ApprovedCommandWorker {
             }
         }
     }
+    /// True only when the kernel confirms there is no such item. An
+    /// inspection that fails for any other reason (denied traversal, I/O
+    /// error) is not absence and is reported, so a caller deciding whether a
+    /// worker still holds its lease treats it as held.
+    private static func confirmedAbsent(_ path: URL) throws -> Bool {
+        var info = stat()
+        if lstat(path.path, &info) == 0 { return false }
+        guard errno == ENOENT else { throw posixError() }
+        return true
+    }
+
     private static func privateDirectory(_ path: URL) throws {
         var info = stat()
         guard lstat(path.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,

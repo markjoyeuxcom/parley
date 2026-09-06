@@ -4,10 +4,15 @@ import Foundation
 /// a finished command run. A pane is removed only when its worker was staged
 /// to end the pane's process after a clean result (so no interactive shell
 /// was ever handed to the person), the run's clean result is saved, the
-/// worker's lease is released, and the pane Parley created, in that exact
-/// generation, has no live process. Every other outcome keeps the pane, and
-/// a pane the person restarted is theirs. The decision is remembered so a run
-/// is closed at most once and a close that keeps failing is given up.
+/// worker's lease is released, and the pane Parley created still has that
+/// exact generation. Ghostty forces wait-after-command on every surface
+/// created with a command, so the surface itself keeps showing "Process
+/// exited" and never reports its process as ended; in exit-when-clean mode
+/// the released lease is the fact that the worker exited without exec'ing a
+/// shell, and nothing runs behind the surface. Every other outcome keeps the
+/// pane, and a pane the person restarted is theirs. The decision is
+/// remembered so a run is closed at most once and a close that keeps
+/// failing is given up.
 public struct CommandRunPaneCleanup: Sendable {
     public struct PaneFacts: Equatable, Sendable {
         public let id: String
@@ -41,7 +46,7 @@ public struct CommandRunPaneCleanup: Sendable {
         case close(runID: String, paneID: String, restoreTo: String?)
         /// Final: the pane stays, for this reason.
         case keep(runID: String, reason: String)
-        /// Not yet decidable: the lease or the process has not ended.
+        /// Not yet decidable: the worker still holds its lease.
         case wait(runID: String)
     }
 
@@ -114,7 +119,7 @@ public struct CommandRunPaneCleanup: Sendable {
             guard pane.launchGeneration == launch.paneGeneration else {
                 result.append(settle(run.id, "the pane was restarted by the person")); continue
             }
-            guard pane.processEnded else { result.append(.wait(runID: run.id)); continue }
+            // No process remains: the worker exited instead of exec'ing a shell.
             result.append(.close(runID: run.id, paneID: pane.id, restoreTo: restoreTarget(from: launch.previousActivePaneID, panes: panes)))
         }
         return result

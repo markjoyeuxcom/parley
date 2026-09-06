@@ -35,7 +35,7 @@ let reviewedCommandRunChecks: [(String, () throws -> Void)] = [
     ("reviewed command run pane cleanup closes only an ended pane of the created generation, across refreshes", reviewedRunPaneCleanupChecks),
     ("reviewed command run worker ends a clean run's pane only when its ticket says so", reviewedRunWorkerExitWhenCleanChecks),
     ("reviewed command run pane close survives a terminal transport that re-enters the workbench", reviewedRunReentrantCloseChecks),
-    ("reviewed command run pane launch waits after the command unless staged to end when clean", reviewedRunLaunchWaitChecks),
+    ("reviewed command run cleanup re-checks the kernel lease after a result arrives", reviewedRunLeaseOrderChecks),
     ("reviewed command run records from earlier releases still decode and load from the journal", reviewedRunLegacyDecodeChecks),
     ("reviewed command run approval fails closed on persistence failure", reviewedRunDurabilityChecks),
     ("reviewed command run preserves literal argv and validates contained folders", {
@@ -367,9 +367,13 @@ func reviewedRunPaneCleanupChecks() throws {
     var finished = current(clean.id)
     finished.workerStillRunning = true // observed before the lease released
     try runExpect(cleanup.decisions(runs: [finished], panes: [pane(finished)]) == [.wait(runID: clean.id)], "a held lease did not wait")
-    try runExpect(cleanup.decisions(runs: [current(clean.id)], panes: [pane(finished)]) == [.wait(runID: clean.id)], "a live process did not wait")
     try runExpect(!cleanup.isSettled(clean.id), "waiting settled the run")
+    // Ghostty forces wait-after-command on every surface created with a
+    // command, so the pane never reports its process as ended by itself: once
+    // the worker's lease is released in exit-when-clean mode there is no
+    // process behind the surface, and the pane is closed as it stands.
     let sourcePane = Cleanup.PaneFacts(id: "source", launchGeneration: 1, isStarted: true, isDead: false)
+    try runExpect(cleanup.decisions(runs: [current(clean.id)], panes: [pane(finished), sourcePane]) == [.close(runID: clean.id, paneID: clean.shellPaneID, restoreTo: "source")], "a pane whose worker exited was not closed while Ghostty still showed it")
     try runExpect(cleanup.decisions(runs: [current(clean.id)], panes: [pane(finished, dead: true), sourcePane]) == [.close(runID: clean.id, paneID: clean.shellPaneID, restoreTo: "source")], "an ended pane was not closed with focus restore")
     // A predecessor that no longer exists and was never a run pane yields no target.
     try runExpect(cleanup.decisions(runs: [current(clean.id)], panes: [pane(finished, dead: true)]) == [.close(runID: clean.id, paneID: clean.shellPaneID, restoreTo: nil)], "a vanished non-run predecessor produced a restore target")
@@ -612,36 +616,76 @@ func reviewedRunReentrantCloseChecks() throws {
     try runExpect(finalPanes.map(\.id) == [survivor.id] && (try two.listWorkspaces()).count == 1, "nested close emptied the workspace: \(finalPanes.map(\.id))")
 }
 
-/// A run pane staged to end when clean must not wait for a keypress after
-/// the worker exits, or the pane could never be removed; every other pane
-/// keeps Ghostty's wait-after-command behaviour.
-func reviewedRunLaunchWaitChecks() throws {
-    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("parley-run-wait-\(UUID().uuidString)")
-    defer { try? FileManager.default.removeItem(at: root) }
+/// serviceWorkers observes the lease before it reads a newly published
+/// result, so a result that lands in between is recorded while the cached
+/// "worker still running" flag is stale. Cleanup must therefore ask for a
+/// fresh lease fact before closing, and the coordinator must re-observe after
+/// recording a result; an unknown observation counts as held.
+func reviewedRunLeaseOrderChecks() throws {
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("parley-run-lease-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let controller = try WorkbenchController(applicationDirectory: root.appendingPathComponent("runtime"), environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"])
-    _ = try controller.createWorkspace(folder: root.path)
-    let plain = try controller.createPane(kind: .shell, cwd: root.path)
-    try runExpect(try controller.launchConfiguration(for: plain.id).waitAfterCommand, "an ordinary Shell lost wait-after-command")
-    let source = try controller.createPane(kind: .codex, cwd: root.path)
-    var eligible = source
-    eligible.relayEnabled = true
-    let coordinator = ReviewedCommandRunCoordinator(authenticate: { _ in source.id }, panes: { [eligible] }, record: { _ in })
-    func launch(_ argv: [String], exitWhenClean: Bool) throws -> GhosttyPaneLaunch {
-        let request = try coordinator.request(token: "capability", argv: argv, folder: root.path)
-        try coordinator.approve(id: request.id, revision: request.revision, argv: argv, folder: root.path, autoApprove: false)
-        var created: WorkbenchPane?
-        coordinator.launchApproved { run in
-            created = try controller.createApprovedCommandPane(run: run, workerExecutable: URL(fileURLWithPath: "/usr/bin/true"), exitWhenClean: exitWhenClean)
-        }
-        guard let created else { throw ReviewedCommandRunError.invalid("no pane") }
-        let launch = try controller.launchConfiguration(for: created.id)
-        coordinator.complete(id: request.id, result: ReviewedCommandRunResult(exitStatus: 0, stdout: Data(), stderr: Data()))
-        try controller.closePane(created.id)
-        return launch
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = WorkbenchPane(id: "source", kind: .codex, customName: nil, terminalTitle: "", cwd: root.path,
+        currentCommand: "codex", isActive: true, workspaceID: "workspace", relayEnabled: true)
+    // The run's Shell pane must be listed, or the pending ticket is cancelled
+    // as "Shell closed before the worker claimed its ticket" and discarded.
+    var panes = [source]
+    let coordinator = ReviewedCommandRunCoordinator(authenticate: { _ in "source" }, panes: { panes }, record: { _ in })
+    let directory = root.appendingPathComponent("approved-command-runs")
+    let request = try coordinator.request(token: "capability", argv: ["/usr/bin/true"], folder: root.path)
+    panes.append(WorkbenchPane(id: request.shellPaneID, kind: .shell, customName: "Command run", terminalTitle: "", cwd: root.path,
+        currentCommand: "sh", isActive: false, workspaceID: "workspace", relayEnabled: false))
+    try coordinator.approve(id: request.id, revision: request.revision, argv: request.command.argv, folder: root.path, autoApprove: false)
+    var ticket: URL?
+    coordinator.launchApproved { run in
+        ticket = try ApprovedCommandWorker.stage(run: run, directory: directory, shellExecutable: "/usr/bin/true",
+            ownerPID: ProcessInfo.processInfo.processIdentifier, exitWhenClean: true)
     }
-    try runExpect(try launch(["/usr/bin/true"], exitWhenClean: true).waitAfterCommand == false, "a pane staged to end when clean still waits for a keypress")
-    try runExpect(try launch(["/usr/bin/true", "shell"], exitWhenClean: false).waitAfterCommand, "a pane handed to a shell lost wait-after-command")
+    guard let ticket else { throw ReviewedCommandRunError.invalid("No worker ticket") }
+    let job = ticket.deletingLastPathComponent()
+    // First observation: the ticket is pending and no worker holds the lease.
+    coordinator.serviceWorkers(directory: directory)
+    try runExpect(coordinator.runs().first?.workerStillRunning == false, "the pending ticket was observed as a running worker")
+    // The worker acquires its lease and publishes a clean result before the
+    // next observation; model the arrival with complete(), as the reader does.
+    let lease = open(job.appendingPathComponent("worker.lock").path, O_RDWR | O_CREAT | O_EXLOCK | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC, 0o600)
+    try runExpect(lease >= 0, "could not acquire a test lease")
+    defer { if lease >= 0 { close(lease) } }
+    coordinator.complete(id: request.id, result: ReviewedCommandRunResult(exitStatus: 0, stdout: Data(), stderr: Data()))
+    let stale = coordinator.runs().first { $0.id == request.id }
+    try runExpect(stale?.state == .completed && stale?.resultSaved == true, "the modelled result was not recorded")
+    // Cleanup asks for the fresh fact: held means not released, and the
+    // record is corrected at the same time.
+    try runExpect(!coordinator.workerLeaseReleased(id: request.id, directory: directory), "a held lease was reported as released")
+    try runExpect(coordinator.runs().first(where: { $0.id == request.id })?.workerStillRunning == true, "the fresh lease fact did not correct the record")
+    var cleanup = CommandRunPaneCleanup()
+    cleanup.recordLaunch(runID: request.id, paneID: request.shellPaneID, paneGeneration: 1, exitsWhenClean: true, previousActivePaneID: "source")
+    let facts = [CommandRunPaneCleanup.PaneFacts(id: request.shellPaneID, launchGeneration: 1, isStarted: true, isDead: false)]
+    try runExpect(cleanup.decisions(runs: coordinator.runs(), panes: facts) == [.wait(runID: request.id)], "cleanup did not wait for the held lease")
+    // The next ordinary observation agrees while the lease is held.
+    coordinator.serviceWorkers(directory: directory)
+    try runExpect(coordinator.runs().first(where: { $0.id == request.id })?.workerStillRunning == true, "a later observation lost the held lease")
+    // An inspection that fails (job directory not traversable, then an
+    // inaccessible ancestor) is not absence: the lease counts as held.
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: job.path)
+    try runExpect(!coordinator.workerLeaseReleased(id: request.id, directory: directory), "an untraversable job directory was reported as a released lease")
+    try runExpect(coordinator.runs().first(where: { $0.id == request.id })?.workerStillRunning == true, "an inspection failure cleared the running flag")
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: job.path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: directory.path)
+    try runExpect(!coordinator.workerLeaseReleased(id: request.id, directory: directory), "an inaccessible ancestor was reported as a released lease")
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    try runExpect(!coordinator.workerLeaseReleased(id: request.id, directory: directory), "the held lease was lost after restoring access")
+    // Release: the worker exited without a shell; now the pane may go.
+    close(lease)
+    try runExpect(coordinator.workerLeaseReleased(id: request.id, directory: directory), "a released lease was reported as held")
+    try runExpect(cleanup.decisions(runs: coordinator.runs(), panes: facts).first.map { if case .close = $0 { true } else { false } } == true, "cleanup did not close after the lease was released")
+    // A job directory that is already gone cannot hold a lease.
+    coordinator.serviceWorkers(directory: directory)
+    try runExpect(coordinator.workerLeaseReleased(id: request.id, directory: directory), "a discarded job was reported as a held lease")
+    // An unreadable job directory is an unknown fact, which counts as held.
+    let unknownRoot = root.appendingPathComponent("unknown")
+    try FileManager.default.createDirectory(at: unknownRoot.appendingPathComponent(request.id), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o777])
+    try runExpect(!coordinator.workerLeaseReleased(id: request.id, directory: unknownRoot), "an uninspectable job was reported as released")
 }
 
 func reviewedRunDurabilityChecks() throws {

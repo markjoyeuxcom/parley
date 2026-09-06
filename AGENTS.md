@@ -335,18 +335,21 @@ cleanly", is decided before any shell exists: the worker ticket carries
 (`ReviewedCommandRunPaneClosePolicy.isClean`) the worker exits instead of
 exec'ing a login shell. `CommandRunPaneCleanup` then decides from fresh
 controller facts, bound to the pane's created generation, and `AppModel`
-removes only a pane whose process has already ended, restoring the pane that
-was active at launch if the person is still on the run's pane. Such a pane is
-launched without Ghostty's wait-after-command (`GhosttyPaneLaunch.
-waitAfterCommand`), so the worker's exit is reported at once, and the worker
-outlives Ghostty's abnormal-runtime threshold before exiting (monotonic
-clock). Ghostty reports a close synchronously from inside `terminate`, and
-that report refreshes the app: every termination in `WorkbenchController`
-goes through `terminateSurface`, and close, restart, stop, start and
-workspace close refuse to begin while one is in progress
-(`isTerminatingSurface`); the cleanup pass skips such ticks, `closePane`
-removes by identity and restart/stop re-resolve their target after the
-transport ran. A pane handed
+removes the pane once the worker's lease is released, restoring the pane that
+was active at launch if the person is still on the run's pane. Ghostty forces
+wait-after-command on every surface created with a command (the per-surface
+flag can only turn it on), so the surface keeps showing "Process exited" and
+never reports its process as ended by itself; in exit-when-clean mode the
+released lease is the proof that the worker exited without exec'ing a shell
+and nothing runs behind the surface. The worker outlives Ghostty's
+abnormal-runtime threshold before exiting (monotonic clock) so no
+failed-launch screen flashes. Ghostty reports a close synchronously from
+inside `terminate`, and that report refreshes the app: every termination in
+`WorkbenchController` goes through `terminateSurface`, and close, restart,
+stop, start, workspace close and layout restore refuse to begin while one is
+in progress (`isTerminatingSurface`); the cleanup pass skips such ticks,
+`closePane` removes by identity and restart/stop re-resolve their target
+after the transport ran. A pane handed
 to an interactive shell, a restarted pane, a failed, cancelled, truncated or
 unsaved run all keep their pane; close failures are retried up to three
 times and reported separately. One active run

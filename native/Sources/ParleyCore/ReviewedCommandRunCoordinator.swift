@@ -313,6 +313,10 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
                 }
                 if snapshot.result == nil, let result = try ApprovedCommandWorker.result(runID: snapshot.id, directory: directory) {
                     complete(id: snapshot.id, result: result)
+                    // The lease was observed before this result existed; a
+                    // worker that acquired it in between (and now sits in its
+                    // clean-exit delay) must not read as gone. Unknown is held.
+                    _ = workerLeaseReleased(id: snapshot.id, directory: directory)
                 }
                 guard var run = lock.withLock({ records[snapshot.id] }) else { continue }
                 if !run.state.isTerminal {
@@ -362,6 +366,23 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
         }
     }
 
+
+    /// A fresh kernel-lease fact for native cleanup, taken right before a
+    /// pane is removed: true only when the worker's lock is observed free (or
+    /// its job directory is already gone). An observation that cannot be made
+    /// counts as held. The record's cached flag is corrected at the same time.
+    public func workerLeaseReleased(id: String, directory: URL) -> Bool {
+        let held: Bool
+        do { held = try ApprovedCommandWorker.workerIsRunning(runID: id, directory: directory) }
+        catch { held = true }
+        lock.withLock {
+            if var current = records[id], current.workerStillRunning != held {
+                current.workerStillRunning = held
+                records[id] = current
+            }
+        }
+        return !held
+    }
 
     public func runs() -> [ReviewedCommandRun] {
         lock.withLock { records.values.sorted { $0.createdAt > $1.createdAt } }

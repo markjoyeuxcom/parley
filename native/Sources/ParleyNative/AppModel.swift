@@ -2709,7 +2709,7 @@ final class AppModel: ObservableObject {
         }
         let runs = coordinator.runs()
         let grants = coordinator.grants()
-        closeFinishedCommandRunPanes(runs)
+        closeFinishedCommandRunPanes(runs, coordinator: coordinator, directory: core.commandRunDirectory)
         if runs != commandRuns { commandRuns = runs }
         if grants != commandRunGrants { commandRunGrants = grants }
         let commandRunMessage = coordinator.lastError ?? (core.commandRunCleanupWarnings.isEmpty ? nil : core.commandRunCleanupWarnings.joined(separator: "\n"))
@@ -2720,10 +2720,11 @@ final class AppModel: ObservableObject {
 
     /// Runs inside the ordinary refresh, before panes are re-listed, so a
     /// removed pane disappears in the same pass. Every fact comes from a fresh
-    /// controller read, the decision from `CommandRunPaneCleanup`, and only a
-    /// pane whose process has already ended is ever closed. Never calls
-    /// refresh() itself.
-    private func closeFinishedCommandRunPanes(_ runs: [ReviewedCommandRun]) {
+    /// controller read and the decision from `CommandRunPaneCleanup`: only a
+    /// pane whose worker exited without handing over a shell is ever closed,
+    /// even though Ghostty keeps showing the surface until a key is pressed.
+    /// Never calls refresh() itself.
+    private func closeFinishedCommandRunPanes(_ runs: [ReviewedCommandRun], coordinator: ReviewedCommandRunCoordinator, directory: URL) {
         // A refresh raised by a synchronous close report arrives while the
         // controller is still inside a lifecycle mutation; leave it for the
         // next tick rather than counting it as a failed close.
@@ -2740,10 +2741,14 @@ final class AppModel: ObservableObject {
                 // Re-read right before acting: the person may have moved, and an
                 // earlier close in this pass may have removed the recorded target.
                 let fresh = try controller.listPanes()
-                guard let pane = fresh.first(where: { $0.id == paneID }), pane.isDead || !pane.isStarted else {
+                guard let pane = fresh.first(where: { $0.id == paneID && $0.kind == .shell }) else {
                     commandRunPaneCleanup.didFailToClose(runID: runID)
                     continue
                 }
+                // The decision used the cached lease flag; take the kernel fact
+                // now. A worker still in its exit delay keeps the pane one more
+                // tick (not counted as a failed attempt).
+                guard coordinator.workerLeaseReleased(id: runID, directory: directory) else { continue }
                 let wasActive = pane.isActive
                 try controller.closePane(paneID)
                 commandRunPaneCleanup.didClose(runID: runID)

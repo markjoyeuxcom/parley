@@ -6,25 +6,19 @@ public struct GhosttyPaneLaunch: Equatable, Sendable {
     public let workingDirectory: String
     public let environment: [String: String]
     public let command: String
-    /// Ghostty keeps the surface open for a keypress after the command
-    /// exits. False only for a run pane staged to end when its result is
-    /// clean, so the exited worker's pane can be removed without a key.
-    public let waitAfterCommand: Bool
 
     public init(
         paneID: String,
         generation: Int,
         workingDirectory: String,
         environment: [String: String],
-        command: String,
-        waitAfterCommand: Bool = true
+        command: String
     ) {
         self.paneID = paneID
         self.generation = generation
         self.workingDirectory = workingDirectory
         self.environment = environment
         self.command = command
-        self.waitAfterCommand = waitAfterCommand
     }
 }
 
@@ -66,7 +60,7 @@ public final class WorkbenchController: @unchecked Sendable {
         var ownerPID: Int32
         var ownerSessionID: String?
     }
-    private var approvedShellLaunches: [String: (generation: Int, argv: [String], waitAfterCommand: Bool)] = [:]
+    private var approvedShellLaunches: [String: (generation: Int, argv: [String])] = [:]
     /// Greater than zero while a surface is being terminated. Ghostty reports
     /// the close synchronously from inside that call, and the report refreshes
     /// the app; no lifecycle mutation may start from inside it.
@@ -546,9 +540,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 try? fileManager.removeItem(at: ticket.deletingLastPathComponent())
                 throw error
             }
-            // A pane staged to end when clean must not wait for a keypress after
-            // the worker exits, or its process could never be seen as ended.
-            approvedShellLaunches[pane.id] = (pane.launchGeneration, [workerExecutable.path, ApprovedCommandWorker.argument, ticket.path], !exitWhenClean)
+            approvedShellLaunches[pane.id] = (pane.launchGeneration, [workerExecutable.path, ApprovedCommandWorker.argument, ticket.path])
             return pane
         }
     }
@@ -952,7 +944,6 @@ public final class WorkbenchController: @unchecked Sendable {
                 "PARLEY_APP_PID": String(ProcessInfo.processInfo.processIdentifier),
             ]
             var argv: [String]
-            var waitAfterCommand = true
             if pane.kind == .shell {
                 // Ghostty overlays envVars on its process environment. Remove
                 // inherited authority before the login shell starts.
@@ -965,7 +956,6 @@ public final class WorkbenchController: @unchecked Sendable {
                 launchEnvironment["PATH"] = environment["PATH"] ?? "/usr/bin:/bin"
                 if let approved = approvedShellLaunches.removeValue(forKey: pane.id), approved.generation == pane.launchGeneration {
                     argv += approved.argv
-                    waitAfterCommand = approved.waitAfterCommand
                 } else {
                     argv += [loginShellExecutable().path, "-l"]
                 }
@@ -1031,8 +1021,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 generation: pane.launchGeneration,
                 workingDirectory: pane.cwd,
                 environment: launchEnvironment,
-                command: GhosttyLaunchCommand.render(argv),
-                waitAfterCommand: waitAfterCommand
+                command: GhosttyLaunchCommand.render(argv)
             )
         }
     }
