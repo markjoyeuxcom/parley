@@ -342,7 +342,19 @@ final class AppModel: ObservableObject {
     private var worktreeDiscoveryTask: Task<Void, Never>?
     private var worktreeDiscoveryID: UUID?
     private var automaticOrchestrationTasks: [String: Task<Void, Never>] = [:]
-    private var relayClient: RelayCoreClient?
+    /// Replacing or dropping the control client invalidates every in-flight
+    /// background result that was fetched through the old one.
+    private var relayClient: RelayCoreClient? { didSet { refreshGate.invalidate() } }
+    /// The periodic tick and the Status Center timer fetch off the main actor.
+    /// One gate orders both channels against explicit refreshes and direct
+    /// mutations, so a slower fetch that started earlier never overwrites
+    /// state a human action just produced.
+    private var refreshGate = RefreshSequenceGate()
+    private var relayRefreshInFlight = false
+    private var statusHistoryRefreshInFlight = false
+    /// Bumped only when fetched history actually changed the model, so views
+    /// can reconcile selection against the fetched state without idle publishes.
+    @Published private(set) var statusHistoryRevision = 0
     private var residentCore: AppResidentCoordinationCore?
     private var reviewDraftBuilder: ReviewDraftBuilder?
     private var contextPackBuilder: ContextPackBuilder?
@@ -2263,7 +2275,8 @@ final class AppModel: ObservableObject {
         let grants = coordinator.grants()
         if runs != commandRuns { commandRuns = runs }
         if grants != commandRunGrants { commandRunGrants = grants }
-        commandRunError = coordinator.lastError ?? (core.commandRunCleanupWarnings.isEmpty ? nil : core.commandRunCleanupWarnings.joined(separator: "\n"))
+        let commandRunMessage = coordinator.lastError ?? (core.commandRunCleanupWarnings.isEmpty ? nil : core.commandRunCleanupWarnings.joined(separator: "\n"))
+        if commandRunError != commandRunMessage { commandRunError = commandRunMessage }
         refreshCommandRunAttention()
     }
 
@@ -2379,7 +2392,7 @@ final class AppModel: ObservableObject {
         }
         let sessions = coordinator.sessions()
         if sessions != teamSessions { teamSessions = sessions }
-        teamSessionError = coordinator.lastError
+        if teamSessionError != coordinator.lastError { teamSessionError = coordinator.lastError }
         refreshTeamSessionAttention()
     }
 
@@ -2510,7 +2523,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func refresh() throws {
+    func refresh(includingRelay: Bool = true) throws {
+        if includingRelay { refreshGate.invalidate() }
         refreshCommandRuns()
         refreshTeamSessions()
         var firstError: Error?
@@ -2543,54 +2557,25 @@ final class AppModel: ObservableObject {
                 )
                 reconcileNativeLayouts(workspaces: refreshedWorkspaces, panes: refreshedPanes)
                 reapIdleAgentsIfEnabled(controller: controller, panes: refreshedPanes)
-                terminalAvailable = true
-                terminalError = nil
+                if !terminalAvailable { terminalAvailable = true }
+                if terminalError != nil { terminalError = nil }
             } catch {
-                terminalAvailable = false
-                terminalError = error.localizedDescription
+                if terminalAvailable { terminalAvailable = false }
+                let message = error.localizedDescription
+                if terminalError != message { terminalError = message }
                 firstError = error
             }
-        } else {
+        } else if terminalAvailable {
             terminalAvailable = false
         }
-        if let relayClient {
-            do {
-                let refreshedConsultations = try relayClient.consultations()
-                if refreshedConsultations != consultations { consultations = refreshedConsultations }
-                let refreshedHandoffs = try relayClient.handoffs(limit: 24)
-                if refreshedHandoffs != handoffs { handoffs = refreshedHandoffs }
-                let refreshedUnread = try relayClient.unreadHandoffs()
-                if refreshedUnread != unreadHandoffs { unreadHandoffs = refreshedUnread }
-                let refreshedContextReviews = try relayClient.contextReviews()
-                if refreshedContextReviews != contextReviews {
-                    contextReviews = refreshedContextReviews
-                    if var draft = contextPackDraft,
-                       let reviewID = draft.reviewID,
-                       let review = refreshedContextReviews.first(where: { $0.id == reviewID }) {
-                        draft.reviewState = review.state
-                        draft.requestedTargetPaneID = review.requestedTargetPaneID
-                        if draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                           !review.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            draft.pack.note = review.pack.note
-                        }
-                        updateContextPackMeasurement(&draft)
-                        contextPackDraft = draft
-                    }
-                }
-                let refreshedBusyDrafts = try relayClient.reviewedBusyDrafts()
-                if refreshedBusyDrafts != reviewedBusyDrafts {
-                    reviewedBusyDrafts = refreshedBusyDrafts
-                }
-                processNotifications(from: refreshedHandoffs + refreshedUnread)
-                coreAvailable = true
-                coreError = nil
-            } catch {
+        if includingRelay {
+            if let relayClient {
+                let result = Result { try Self.fetchRelaySnapshot(relayClient) }
+                applyRelaySnapshot(result)
+                if case let .failure(error) = result, firstError == nil { firstError = error }
+            } else if coreAvailable {
                 coreAvailable = false
-                coreError = error.localizedDescription
-                if firstError == nil { firstError = error }
             }
-        } else {
-            coreAvailable = false
         }
         if terminalAvailable {
             scheduleProjectContextRefresh()
@@ -2644,7 +2629,133 @@ final class AppModel: ObservableObject {
     }
 
     func refreshQuietly() {
-        do { try refresh() } catch { /* a retained surface or broker may be between lifecycle events */ }
+        do { try refresh(includingRelay: false) } catch { /* a retained surface or broker may be between lifecycle events */ }
+        refreshRelayStateInBackground()
+    }
+
+    /// What one relay refresh reads. Fetched and decoded off the main actor
+    /// for the periodic tick; applied on it with the usual equality guards.
+    private struct RelayRefreshSnapshot: Sendable {
+        let consultations: [RelayConsultation]
+        let handoffs: [RelayHandoff]
+        let unread: [RelayHandoff]
+        let contextReviews: [AgentContextReview]
+        let busyDrafts: [ReviewedBusyDraft]
+    }
+
+    private nonisolated static func fetchRelaySnapshot(_ client: RelayCoreClient) throws -> RelayRefreshSnapshot {
+        RelayRefreshSnapshot(
+            consultations: try client.consultations(),
+            handoffs: try client.handoffs(limit: 24),
+            unread: try client.unreadHandoffs(),
+            contextReviews: try client.contextReviews(),
+            busyDrafts: try client.reviewedBusyDrafts()
+        )
+    }
+
+    private func refreshRelayStateInBackground() {
+        guard let relayClient else {
+            if coreAvailable { coreAvailable = false }
+            return
+        }
+        guard !relayRefreshInFlight else { return }
+        relayRefreshInFlight = true
+        let token = refreshGate.token()
+        let client = relayClient
+        Task.detached(priority: .utility) { [weak self] in
+            let result = Result { try Self.fetchRelaySnapshot(client) }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.relayRefreshInFlight = false
+                // A synchronous refresh or direct mutation ran meanwhile and holds newer state.
+                guard self.refreshGate.accepts(token) else { return }
+                self.applyRelaySnapshot(result)
+                // Companion attention follows the accepted application, not the next tick.
+                if case .success = result { self.publishExternalAttentionSnapshot() }
+            }
+        }
+    }
+
+    /// Applies fetched relay state with equality guards so an unchanged tick
+    /// publishes nothing. Used by both the synchronous and background paths.
+    private func applyRelaySnapshot(_ result: Result<RelayRefreshSnapshot, Error>) {
+        switch result {
+        case let .success(snapshot):
+            if snapshot.consultations != consultations { consultations = snapshot.consultations }
+            if snapshot.handoffs != handoffs { handoffs = snapshot.handoffs }
+            if snapshot.unread != unreadHandoffs { unreadHandoffs = snapshot.unread }
+            if snapshot.contextReviews != contextReviews {
+                contextReviews = snapshot.contextReviews
+                if var draft = contextPackDraft,
+                   let reviewID = draft.reviewID,
+                   let review = snapshot.contextReviews.first(where: { $0.id == reviewID }) {
+                    draft.reviewState = review.state
+                    draft.requestedTargetPaneID = review.requestedTargetPaneID
+                    if draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       !review.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        draft.pack.note = review.pack.note
+                    }
+                    updateContextPackMeasurement(&draft)
+                    contextPackDraft = draft
+                }
+            }
+            if snapshot.busyDrafts != reviewedBusyDrafts { reviewedBusyDrafts = snapshot.busyDrafts }
+            processNotifications(from: snapshot.handoffs + snapshot.unread)
+            if !coreAvailable { coreAvailable = true }
+            if coreError != nil { coreError = nil }
+        case let .failure(error):
+            if coreAvailable { coreAvailable = false }
+            let message = error.localizedDescription
+            if coreError != message { coreError = message }
+        }
+    }
+
+    /// The Status Center timer's refresh: history and activity are fetched
+    /// and decoded off the main actor, and no second full tick runs. Explicit
+    /// actions keep using the synchronous `refreshStatusCenterQuietly()`.
+    func refreshStatusCenterPeriodically() {
+        let persistence = residentCore?.historyPersistenceError
+        if historyPersistenceError != persistence { historyPersistenceError = persistence }
+        guard let relayClient, !statusHistoryRefreshInFlight else { return }
+        statusHistoryRefreshInFlight = true
+        let token = refreshGate.token()
+        let client = relayClient
+        // Busy drafts have one asynchronous owner, the relay tick; this channel
+        // never writes them, so the two channels cannot race on that list.
+        Task.detached(priority: .utility) { [weak self] in
+            let result = Result {
+                StatusHistoryRefresh.Fetched(handoffs: try client.handoffs(limit: 500), activity: try client.activityEvents(limit: 500),
+                    retention: try client.historyRetentionPolicy())
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.statusHistoryRefreshInFlight = false
+                guard case let .success(fetched) = result else { return }
+                _ = self.applyFetchedStatusHistory(fetched, token: token)
+            }
+        }
+    }
+
+    private var statusHistoryState: StatusHistoryRefresh.State {
+        StatusHistoryRefresh.State(handoffs: statusHandoffs, activity: statusActivityEvents, retention: historyRetentionPolicy,
+            dismissedHandoffIDs: dismissedHandoffIDs)
+    }
+
+    /// Applies fetched history through the gated pure step. A stale token
+    /// changes nothing, prunes nothing and raises no notification.
+    @discardableResult
+    private func applyFetchedStatusHistory(_ fetched: StatusHistoryRefresh.Fetched, token: Int) -> Bool {
+        guard let outcome = StatusHistoryRefresh.apply(fetched, token: token, gate: refreshGate, to: statusHistoryState) else { return false }
+        if outcome.state.handoffs != statusHandoffs { statusHandoffs = outcome.state.handoffs }
+        if outcome.state.activity != statusActivityEvents { statusActivityEvents = outcome.state.activity }
+        if outcome.state.retention != historyRetentionPolicy { historyRetentionPolicy = outcome.state.retention }
+        if outcome.dismissalsChanged {
+            dismissedHandoffIDs = outcome.state.dismissedHandoffIDs
+            saveDismissedHandoffs()
+        }
+        if outcome.changed || outcome.dismissalsChanged { statusHistoryRevision &+= 1 }
+        processNotifications(from: outcome.notificationInput)
+        return true
     }
 
     private func startPeriodicRefresh() {
@@ -2722,27 +2833,16 @@ final class AppModel: ObservableObject {
     }
 
     func refreshStatusCenterQuietly() {
-        historyPersistenceError = residentCore?.historyPersistenceError
+        let persistence = residentCore?.historyPersistenceError
+        if historyPersistenceError != persistence { historyPersistenceError = persistence }
         do {
-            try refresh()
+            try refresh() // invalidates the gate: older background results are discarded
             guard let relayClient else { return }
-            let history = try relayClient.handoffs(limit: 500)
-            if history != statusHandoffs { statusHandoffs = history }
-            let activity = try relayClient.activityEvents(limit: 500)
-            if activity != statusActivityEvents { statusActivityEvents = activity }
-            let retention = try relayClient.historyRetentionPolicy()
-            if retention != historyRetentionPolicy { historyRetentionPolicy = retention }
+            let fetched = StatusHistoryRefresh.Fetched(handoffs: try relayClient.handoffs(limit: 500),
+                activity: try relayClient.activityEvents(limit: 500), retention: try relayClient.historyRetentionPolicy())
             let busyDrafts = try relayClient.reviewedBusyDrafts()
             if busyDrafts != reviewedBusyDrafts { reviewedBusyDrafts = busyDrafts }
-            let retainedDismissals = StatusCenterVisibility.retainedDismissalIDs(
-                dismissedHandoffIDs,
-                handoffs: history
-            )
-            if retainedDismissals != dismissedHandoffIDs {
-                dismissedHandoffIDs = retainedDismissals
-                saveDismissedHandoffs()
-            }
-            processNotifications(from: history)
+            applyFetchedStatusHistory(fetched, token: refreshGate.token())
         } catch {
             // Availability flags are updated by refresh; the last authoritative
             // snapshot stays visible instead of being replaced with guessed state.
@@ -3011,16 +3111,19 @@ final class AppModel: ObservableObject {
 
     func dismissFromStatusCenter(_ handoff: RelayHandoff) {
         guard StatusCenterVisibility.isDismissible(handoff) else { return }
+        refreshGate.invalidate() // an older fetch must not prune this dismissal
         dismissedHandoffIDs.insert(handoff.id)
         saveDismissedHandoffs()
     }
 
     func restoreToStatusCenter(_ handoff: RelayHandoff) {
+        refreshGate.invalidate()
         dismissedHandoffIDs.remove(handoff.id)
         saveDismissedHandoffs()
     }
 
     func restoreAllStatusCenterDismissals() {
+        refreshGate.invalidate()
         dismissedHandoffIDs.removeAll()
         saveDismissedHandoffs()
     }

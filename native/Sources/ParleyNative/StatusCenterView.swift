@@ -122,6 +122,8 @@ struct StatusCenterView: View {
             Divider()
             segmentBar
             Divider()
+            // Split columns must accept the available height; the AppKit
+            // bridge otherwise keeps its short intrinsic height and leaves gaps.
             HSplitView {
                 ScrollViewReader { reader in
                     ScrollView {
@@ -144,12 +146,15 @@ struct StatusCenterView: View {
                     }
                 }
                 .frame(minWidth: 520, idealWidth: 650)
+                .frame(minHeight: 0, maxHeight: .infinity)
 
                 inspector
                     .frame(minWidth: 330, idealWidth: 430)
+                    .frame(minHeight: 0, maxHeight: .infinity)
             }
         }
-        .frame(minWidth: 980, minHeight: 640)
+        .frame(minWidth: 980, maxWidth: .infinity,
+               minHeight: 640, maxHeight: .infinity, alignment: .top)
         .onAppear {
             model.refreshStatusCenterQuietly()
             model.refreshRuntimeReadiness()
@@ -157,7 +162,10 @@ struct StatusCenterView: View {
             ensureSelection()
         }
         .onReceive(refresh) { _ in
-            model.refreshStatusCenterQuietly()
+            model.refreshStatusCenterPeriodically()
+        }
+        .onChange(of: model.statusHistoryRevision) { _, _ in
+            // Fetched history was applied; reconcile selection against it now.
             applyExternalSelection()
             ensureSelection()
         }

@@ -10725,7 +10725,7 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == ApprovedComma
 
 // `--only <substring>` runs the matching checks alone during local iteration.
 let onlyFilter = argument(named: "--only")?.lowercased()
-let selectedChecks = (checks + reviewRegressionChecks + reviewedCommandRunChecks + teamSessionChecks).filter { name, _ in
+let selectedChecks = (checks + reviewRegressionChecks + reviewedCommandRunChecks + teamSessionChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var failureCount = 0
