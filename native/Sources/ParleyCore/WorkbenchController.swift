@@ -6,19 +6,25 @@ public struct GhosttyPaneLaunch: Equatable, Sendable {
     public let workingDirectory: String
     public let environment: [String: String]
     public let command: String
+    /// Ghostty keeps the surface open for a keypress after the command
+    /// exits. False only for a run pane staged to end when its result is
+    /// clean, so the exited worker's pane can be removed without a key.
+    public let waitAfterCommand: Bool
 
     public init(
         paneID: String,
         generation: Int,
         workingDirectory: String,
         environment: [String: String],
-        command: String
+        command: String,
+        waitAfterCommand: Bool = true
     ) {
         self.paneID = paneID
         self.generation = generation
         self.workingDirectory = workingDirectory
         self.environment = environment
         self.command = command
+        self.waitAfterCommand = waitAfterCommand
     }
 }
 
@@ -60,7 +66,36 @@ public final class WorkbenchController: @unchecked Sendable {
         var ownerPID: Int32
         var ownerSessionID: String?
     }
-    private var approvedShellLaunches: [String: (generation: Int, argv: [String])] = [:]
+    private var approvedShellLaunches: [String: (generation: Int, argv: [String], waitAfterCommand: Bool)] = [:]
+    /// Greater than zero while a surface is being terminated. Ghostty reports
+    /// the close synchronously from inside that call, and the report refreshes
+    /// the app; no lifecycle mutation may start from inside it.
+    private var terminatingDepth = 0
+    public var isTerminatingSurface: Bool { lock.withLock { terminatingDepth > 0 } }
+
+    /// Every surface termination goes through here so the re-entrancy guard
+    /// covers each lifecycle path alike.
+    private func terminateSurface(_ paneID: String) {
+        terminatingDepth += 1
+        defer { terminatingDepth -= 1 }
+        terminalTransport?.terminate(paneID)
+    }
+
+    private func terminateAllSurfaces() {
+        terminatingDepth += 1
+        defer { terminatingDepth -= 1 }
+        terminalTransport?.terminateAll()
+    }
+
+    /// Lifecycle mutations (close, restart, stop, start, workspace close,
+    /// layout replacement) refuse to begin from inside a termination. A
+    /// refresh triggered by a synchronous close report retries later instead
+    /// of mutating a document another operation is still changing.
+    private func requireNoTerminationInProgress() throws {
+        guard terminatingDepth == 0 else {
+            throw ParleyWorkbenchError.commandFailed("A pane is being terminated; this change can be retried once it has finished.")
+        }
+    }
     private static let processSessionID = UUID().uuidString
 
     private struct AgentLaunchRequest {
@@ -511,7 +546,9 @@ public final class WorkbenchController: @unchecked Sendable {
                 try? fileManager.removeItem(at: ticket.deletingLastPathComponent())
                 throw error
             }
-            approvedShellLaunches[pane.id] = (pane.launchGeneration, [workerExecutable.path, ApprovedCommandWorker.argument, ticket.path])
+            // A pane staged to end when clean must not wait for a keypress after
+            // the worker exits, or its process could never be seen as ended.
+            approvedShellLaunches[pane.id] = (pane.launchGeneration, [workerExecutable.path, ApprovedCommandWorker.argument, ticket.path], !exitWhenClean)
             return pane
         }
     }
@@ -548,6 +585,7 @@ public final class WorkbenchController: @unchecked Sendable {
         launchMode: AgentLaunchMode = .fresh
     ) throws {
         try lock.withLock {
+            try requireNoTerminationInProgress()
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
@@ -561,7 +599,11 @@ public final class WorkbenchController: @unchecked Sendable {
                 supplied: permissionProfile,
                 selection: document.panes[index].permissionSelection
             )
-            terminalTransport?.terminate(paneID)
+            terminateSurface(paneID)
+            // Re-resolve after the transport ran: act on this pane or not at all.
+            guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
+                throw ParleyWorkbenchError.paneNotFound(paneID)
+            }
             copilotTrustConfirmations[paneID] = nil
             markStartedLocked(index: index, profile: profile)
             if document.panes[index].kind.isAgent {
@@ -582,6 +624,7 @@ public final class WorkbenchController: @unchecked Sendable {
         launchMode: AgentLaunchMode = .fresh
     ) throws {
         try lock.withLock {
+            try requireNoTerminationInProgress()
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
@@ -624,11 +667,16 @@ public final class WorkbenchController: @unchecked Sendable {
 
     public func stopPaneProcess(_ paneID: String) throws {
         try lock.withLock {
+            try requireNoTerminationInProgress()
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
             guard document.panes[index].kind.isAgent, document.panes[index].isStarted else { return }
-            terminalTransport?.terminate(paneID)
+            terminateSurface(paneID)
+            // Re-resolve after the transport ran: act on this pane or not at all.
+            guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
+                throw ParleyWorkbenchError.paneNotFound(paneID)
+            }
             copilotTrustConfirmations[paneID] = nil
             agentLaunchRequests[paneID] = nil
             document.panes[index].launchGeneration &+= 1
@@ -648,15 +696,20 @@ public final class WorkbenchController: @unchecked Sendable {
 
     public func closePane(_ paneID: String) throws {
         try lock.withLock {
+            try requireNoTerminationInProgress()
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
             guard document.panes.count > 1 else { throw ParleyWorkbenchError.cannotCloseLastPane }
             let workspaceID = document.panes[index].workspaceID
-            terminalTransport?.terminate(paneID)
+            // Terminating the surface reports its close synchronously, and that
+            // report refreshes the app inside this call (the lock is recursive).
+            // Nested lifecycle mutations are refused above; still remove by
+            // identity, never by an index computed before the transport ran.
+            terminateSurface(paneID)
             copilotTrustConfirmations[paneID] = nil
             agentLaunchRequests[paneID] = nil
-            document.panes.remove(at: index)
+            document.panes.removeAll { $0.id == paneID }
             document.activity[paneID] = nil
             try relayRuntime?.credentials.forget(paneID)
             if !document.panes.contains(where: { $0.workspaceID == workspaceID }) {
@@ -669,11 +722,12 @@ public final class WorkbenchController: @unchecked Sendable {
 
     public func closeWorkspace(_ workspaceID: String) throws {
         try lock.withLock {
+            try requireNoTerminationInProgress()
             guard document.workspaces.count > 1 else { throw ParleyWorkbenchError.cannotCloseLastWorkspace }
             let workspace = document.workspaces[try workspaceIndexLocked(workspaceID)]
             let paneIDs = document.panes.filter { $0.workspaceID == workspace.workspaceID }.map(\.id)
             for paneID in paneIDs {
-                terminalTransport?.terminate(paneID)
+                terminateSurface(paneID)
                 copilotTrustConfirmations[paneID] = nil
                 agentLaunchRequests[paneID] = nil
                 try relayRuntime?.credentials.forget(paneID)
@@ -689,7 +743,7 @@ public final class WorkbenchController: @unchecked Sendable {
     public func shutdown() throws {
         try lock.withLock {
             for pane in document.panes { try relayRuntime?.credentials.forget(pane.id) }
-            terminalTransport?.terminateAll()
+            terminateAllSurfaces()
             agentLaunchRequests.removeAll()
             copilotTrustConfirmations.removeAll()
             for index in document.panes.indices {
@@ -868,7 +922,7 @@ public final class WorkbenchController: @unchecked Sendable {
             if let replacement {
                 let oldIDs = document.panes.filter { $0.workspaceID == replacement.workspaceID }.map(\.id)
                 for id in oldIDs {
-                    terminalTransport?.terminate(id)
+                    terminateSurface(id)
                     copilotTrustConfirmations[id] = nil
                     agentLaunchRequests[id] = nil
                     try relayRuntime?.credentials.forget(id)
@@ -884,6 +938,7 @@ public final class WorkbenchController: @unchecked Sendable {
 
     public func launchConfiguration(for paneID: String) throws -> GhosttyPaneLaunch {
         try lock.withLock {
+            try requireNoTerminationInProgress()
             guard let pane = document.panes.first(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
@@ -897,6 +952,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 "PARLEY_APP_PID": String(ProcessInfo.processInfo.processIdentifier),
             ]
             var argv: [String]
+            var waitAfterCommand = true
             if pane.kind == .shell {
                 // Ghostty overlays envVars on its process environment. Remove
                 // inherited authority before the login shell starts.
@@ -909,6 +965,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 launchEnvironment["PATH"] = environment["PATH"] ?? "/usr/bin:/bin"
                 if let approved = approvedShellLaunches.removeValue(forKey: pane.id), approved.generation == pane.launchGeneration {
                     argv += approved.argv
+                    waitAfterCommand = approved.waitAfterCommand
                 } else {
                     argv += [loginShellExecutable().path, "-l"]
                 }
@@ -974,7 +1031,8 @@ public final class WorkbenchController: @unchecked Sendable {
                 generation: pane.launchGeneration,
                 workingDirectory: pane.cwd,
                 environment: launchEnvironment,
-                command: GhosttyLaunchCommand.render(argv)
+                command: GhosttyLaunchCommand.render(argv),
+                waitAfterCommand: waitAfterCommand
             )
         }
     }

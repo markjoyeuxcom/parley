@@ -336,7 +336,17 @@ cleanly", is decided before any shell exists: the worker ticket carries
 exec'ing a login shell. `CommandRunPaneCleanup` then decides from fresh
 controller facts, bound to the pane's created generation, and `AppModel`
 removes only a pane whose process has already ended, restoring the pane that
-was active at launch if the person is still on the run's pane. A pane handed
+was active at launch if the person is still on the run's pane. Such a pane is
+launched without Ghostty's wait-after-command (`GhosttyPaneLaunch.
+waitAfterCommand`), so the worker's exit is reported at once, and the worker
+outlives Ghostty's abnormal-runtime threshold before exiting (monotonic
+clock). Ghostty reports a close synchronously from inside `terminate`, and
+that report refreshes the app: every termination in `WorkbenchController`
+goes through `terminateSurface`, and close, restart, stop, start and
+workspace close refuse to begin while one is in progress
+(`isTerminatingSurface`); the cleanup pass skips such ticks, `closePane`
+removes by identity and restart/stop re-resolve their target after the
+transport ran. A pane handed
 to an interactive shell, a restarted pane, a failed, cancelled, truncated or
 unsaved run all keep their pane; close failures are retried up to three
 times and reported separately. One active run

@@ -282,6 +282,10 @@ final class AppModel: ObservableObject {
     }
     private let commandRunAuthorization: CommandRunAuthorizationStore
     private var commandRunPaneCleanup = CommandRunPaneCleanup()
+    /// Closing a pane makes Ghostty report the close synchronously, which
+    /// refreshes the model from inside the close; the cleanup pass must not
+    /// run again inside itself.
+    private var closingCommandRunPanes = false
     @Published private(set) var automaticUpdatesAvailable = false
     @Published private(set) var automaticUpdateChecksEnabled = false
     @Published private(set) var automaticUpdateCanCheck = false
@@ -2720,7 +2724,13 @@ final class AppModel: ObservableObject {
     /// pane whose process has already ended is ever closed. Never calls
     /// refresh() itself.
     private func closeFinishedCommandRunPanes(_ runs: [ReviewedCommandRun]) {
-        guard let controller, let current = try? controller.listPanes() else { return }
+        // A refresh raised by a synchronous close report arrives while the
+        // controller is still inside a lifecycle mutation; leave it for the
+        // next tick rather than counting it as a failed close.
+        guard !closingCommandRunPanes, let controller, !controller.isTerminatingSurface,
+              let current = try? controller.listPanes() else { return }
+        closingCommandRunPanes = true
+        defer { closingCommandRunPanes = false }
         let facts = current.map { CommandRunPaneCleanup.PaneFacts(id: $0.id, launchGeneration: $0.launchGeneration, isStarted: $0.isStarted, isDead: $0.isDead) }
         // Newest first from the tracker, so a chain of run panes unwinds back
         // to the pane the person started from.

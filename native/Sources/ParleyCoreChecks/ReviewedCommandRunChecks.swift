@@ -34,6 +34,8 @@ let reviewedCommandRunChecks: [(String, () throws -> Void)] = [
     ("reviewed command run authorization file is owner-only, validated and reads as off when untrusted", reviewedRunAuthorizationStoreChecks),
     ("reviewed command run pane cleanup closes only an ended pane of the created generation, across refreshes", reviewedRunPaneCleanupChecks),
     ("reviewed command run worker ends a clean run's pane only when its ticket says so", reviewedRunWorkerExitWhenCleanChecks),
+    ("reviewed command run pane close survives a terminal transport that re-enters the workbench", reviewedRunReentrantCloseChecks),
+    ("reviewed command run pane launch waits after the command unless staged to end when clean", reviewedRunLaunchWaitChecks),
     ("reviewed command run records from earlier releases still decode and load from the journal", reviewedRunLegacyDecodeChecks),
     ("reviewed command run approval fails closed on persistence failure", reviewedRunDurabilityChecks),
     ("reviewed command run preserves literal argv and validates contained folders", {
@@ -470,6 +472,7 @@ func reviewedRunWorkerExitWhenCleanChecks() throws {
         currentCommand: "codex", isActive: true, workspaceID: "workspace", relayEnabled: true)
     let coordinator = ReviewedCommandRunCoordinator(authenticate: { _ in "source" }, panes: { [source] }, record: { _ in })
     let directory = root.appendingPathComponent("approved-command-runs")
+    var lastWorkerLifetime: TimeInterval = 0
     func run(_ argv: [String], exitWhenClean: Bool) throws -> (stdout: String, status: Int32, result: ReviewedCommandRunResult?) {
         let request = try coordinator.request(token: "capability", argv: argv, folder: root.path)
         try coordinator.approve(id: request.id, revision: request.revision, argv: argv, folder: root.path, autoApprove: false)
@@ -479,14 +482,19 @@ func reviewedRunWorkerExitWhenCleanChecks() throws {
                 ownerPID: ProcessInfo.processInfo.processIdentifier, exitWhenClean: exitWhenClean)
         }
         guard let ticket else { throw ReviewedCommandRunError.invalid("No worker ticket") }
+        let launchedAt = ProcessInfo.processInfo.systemUptime
         let output = try ProcessCommandRunner(timeout: 5).run(executable: URL(fileURLWithPath: CommandLine.arguments[0]),
             arguments: [ApprovedCommandWorker.argument, ticket.path], environment: ["PATH": "/usr/bin:/bin"])
+        lastWorkerLifetime = ProcessInfo.processInfo.systemUptime - launchedAt
         let result = try ApprovedCommandWorker.result(runID: request.id, directory: directory)
         coordinator.complete(id: request.id, result: result ?? ReviewedCommandRunResult(exitStatus: nil, stdout: Data(), stderr: Data()))
         coordinator.serviceWorkers(directory: directory)
         return (output.stdoutText, output.status, result)
     }
     let cleanExit = try run(["/bin/sh", "-c", "printf clean-out"], exitWhenClean: true)
+    // Ghostty treats an exit inside its abnormal-runtime threshold (250 ms by
+    // default) as a failed launch and waits for a key; the worker must outlive it.
+    try runExpect(lastWorkerLifetime >= ApprovedCommandWorker.minimumCleanExitRuntime, "a clean exit returned inside Ghostty's abnormal-runtime threshold (\(lastWorkerLifetime) s)")
     try runExpect(cleanExit.result?.exitStatus == 0 && cleanExit.result?.stdout == "clean-out", "the clean run did not publish its result")
     try runExpect(!cleanExit.stdout.contains("SHELL-STARTED") && cleanExit.stdout.contains("this pane closes") && cleanExit.status == 0,
         "a clean run staged to exit still handed the pane to a shell: \(cleanExit.stdout)")
@@ -500,6 +508,140 @@ func reviewedRunWorkerExitWhenCleanChecks() throws {
     let legacy = "{\"resultKey\":\"\(Data(repeating: 1, count: 32).base64EncodedString())\",\"runID\":\"\(UUID().uuidString.lowercased())\",\"command\":{\"argv\":[\"/usr/bin/true\"],\"folder\":\"\(root.path)\"},\"sourceFolder\":\"\(root.path)\",\"shellExecutable\":\"/bin/sh\",\"ownerPID\":1,\"expiresAt\":0}"
     let decoded = try JSONDecoder().decode(ApprovedCommandTicket.self, from: Data(legacy.utf8))
     try runExpect(!decoded.exitInsteadOfShellWhenClean, "a legacy ticket did not default to handing over a shell")
+}
+
+/// Ghostty reports a surface close synchronously from inside the transport's
+/// terminate call; that report marks the pane dead and triggers a refresh,
+/// which may close other panes before the outer close finishes. The
+/// workbench must remove the right pane even when the array changed under it.
+func reviewedRunReentrantCloseChecks() throws {
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("parley-run-reenter-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let controller = try WorkbenchController(applicationDirectory: root.appendingPathComponent("runtime"), environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"])
+    _ = try controller.createWorkspace(folder: root.path)
+    let keeper = try controller.createPane(kind: .shell, cwd: root.path)
+    let first = try controller.createPane(kind: .shell, cwd: root.path)
+    let second = try controller.createPane(kind: .shell, cwd: root.path)
+    let expected = try controller.listPanes().map(\.id).filter { $0 != first.id && $0 != second.id }
+    var terminated: [String] = []
+    controller.configureTerminalTransport(PaneTerminalTransport(paste: { _, _, _ in }, interrupt: { _ in }, captureSelectedText: { _ in "" },
+        terminate: { paneID in
+            terminated.append(paneID)
+            // The surface close report and a refresh that closes an earlier pane.
+            try? controller.terminalDidClose(paneID: paneID, processAlive: false)
+            if paneID == second.id { try? controller.closePane(first.id) }
+        }, terminateAll: {}))
+    try controller.closePane(second.id)
+    let remaining = try controller.listPanes().map(\.id)
+    // A lifecycle mutation must not be entered from inside a termination:
+    // the nested close is refused, the outer close removes exactly its pane,
+    // and the earlier pane is still there for a later, non-nested pass.
+    try runExpect(remaining == expected + [first.id] || remaining == expected.filter { $0 != first.id } + [first.id] || Set(remaining) == Set(expected + [first.id]), "re-entrant close mutated other panes: \(remaining) vs \(expected + [first.id])")
+    try runExpect(remaining.contains(keeper.id) && remaining.contains(first.id) && !remaining.contains(second.id), "the wrong pane was removed: \(remaining)")
+    try runExpect(terminated == [second.id], "a nested close reached the transport: \(terminated)")
+    try runExpect(!controller.isTerminatingSurface, "termination state leaked after the close")
+    try controller.closePane(first.id)
+    try runExpect(try controller.listPanes().map(\.id) == expected, "the deferred close did not remove the earlier pane")
+    try runRejects { try controller.closePane(second.id) }
+
+    // Restart and stop compute their target before terminating it; a nested
+    // cleanup during termination must neither remove the target nor shift a
+    // following pane into its place. Sentinel after the target, then target last.
+    for targetLast in [false, true] {
+        let sandbox = root.appendingPathComponent(targetLast ? "last" : "middle")
+        try FileManager.default.createDirectory(at: sandbox, withIntermediateDirectories: true)
+        let lifecycle = try WorkbenchController(applicationDirectory: sandbox.appendingPathComponent("runtime"), environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"])
+        _ = try lifecycle.createWorkspace(folder: sandbox.path)
+        let earlier = try lifecycle.createPane(kind: .shell, cwd: sandbox.path)
+        // Middle case: the target is followed by a sentinel pane that a stale
+        // index would hit; last case: nothing follows the target.
+        let target = try lifecycle.createPane(kind: .codex, cwd: sandbox.path)
+        let sentinel: WorkbenchPane? = targetLast ? nil : try lifecycle.createPane(kind: .shell, cwd: sandbox.path)
+        try runExpect((try lifecycle.listPanes().last?.id == target.id) == targetLast, "fixture ordering drifted (targetLast \(targetLast))")
+        var nestedRefusals = 0
+        lifecycle.configureTerminalTransport(PaneTerminalTransport(paste: { _, _, _ in }, interrupt: { _ in }, captureSelectedText: { _ in "" },
+            terminate: { paneID in
+                try? lifecycle.terminalDidClose(paneID: paneID, processAlive: false)
+                // A refresh inside the termination tries to clean up an earlier pane.
+                do { try lifecycle.closePane(earlier.id) } catch { nestedRefusals += 1 }
+            }, terminateAll: {}))
+        let sentinelBefore = sentinel.map { s in try? lifecycle.listPanes().first { $0.id == s.id } } ?? nil
+        let before = try lifecycle.listPanes().first { $0.id == target.id }!
+        try lifecycle.restartPane(target.id)
+        let afterRestart = try lifecycle.listPanes()
+        let restarted = afterRestart.first { $0.id == target.id }
+        try runExpect(restarted?.launchGeneration == before.launchGeneration + 1 && restarted?.isStarted == true && restarted?.isDead == false, "restart did not act on its own pane (targetLast \(targetLast)): \(String(describing: restarted))")
+        if let sentinelBefore, let sentinelAfter = afterRestart.first(where: { $0.id == sentinelBefore.id }) {
+            try runExpect(sentinelAfter.launchGeneration == sentinelBefore.launchGeneration && sentinelAfter.isStarted == sentinelBefore.isStarted, "restart mutated the following pane (targetLast \(targetLast))")
+        }
+        try runExpect(afterRestart.contains { $0.id == earlier.id }, "nested cleanup removed a pane during restart (targetLast \(targetLast))")
+        try lifecycle.stopPaneProcess(target.id)
+        let afterStop = try lifecycle.listPanes()
+        let stopped = afterStop.first { $0.id == target.id }
+        try runExpect(stopped?.isStarted == false && stopped?.currentCommand == "stopped" && stopped?.launchGeneration == before.launchGeneration + 2, "stop did not act on its own pane (targetLast \(targetLast)): \(String(describing: stopped))")
+        if let sentinelBefore, let sentinelAfter = afterStop.first(where: { $0.id == sentinelBefore.id }) {
+            try runExpect(sentinelAfter.launchGeneration == sentinelBefore.launchGeneration && sentinelAfter.isStarted == sentinelBefore.isStarted && sentinelAfter.currentCommand != "stopped", "stop mutated the following pane (targetLast \(targetLast))")
+        }
+        try runExpect(afterStop.contains { $0.id == earlier.id }, "nested cleanup removed a pane during stop (targetLast \(targetLast))")
+        try runExpect(nestedRefusals == 2, "nested closes were not refused during restart and stop (targetLast \(targetLast)): \(nestedRefusals)")
+    }
+
+    // Two panes: the outer close passed the last-pane check; a nested close of
+    // the other pane must be refused so a workspace never ends with no pane.
+    let twoPaneRoot = root.appendingPathComponent("two")
+    try FileManager.default.createDirectory(at: twoPaneRoot, withIntermediateDirectories: true)
+    let two = try WorkbenchController(applicationDirectory: twoPaneRoot.appendingPathComponent("runtime"), environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"])
+    _ = try two.createWorkspace(folder: twoPaneRoot.path)
+    let seeded = try two.listPanes()
+    let extra = try two.createPane(kind: .shell, cwd: twoPaneRoot.path)
+    let others = try two.listPanes().filter { $0.id != extra.id }
+    // Close every seeded pane but one so exactly two remain.
+    for pane in others.dropFirst() { try two.closePane(pane.id) }
+    let survivor = others.first!
+    try runExpect(try two.listPanes().count == 2, "two-pane fixture did not settle at two panes (seeded \(seeded.count))")
+    var nestedError: Error?
+    two.configureTerminalTransport(PaneTerminalTransport(paste: { _, _, _ in }, interrupt: { _ in }, captureSelectedText: { _ in "" },
+        terminate: { paneID in
+            try? two.terminalDidClose(paneID: paneID, processAlive: false)
+            if paneID == extra.id { do { try two.closePane(survivor.id) } catch { nestedError = error } }
+        }, terminateAll: {}))
+    try two.closePane(extra.id)
+    try runExpect(nestedError != nil, "a nested close of the last other pane was not refused")
+    let finalPanes = try two.listPanes()
+    try runExpect(finalPanes.map(\.id) == [survivor.id] && (try two.listWorkspaces()).count == 1, "nested close emptied the workspace: \(finalPanes.map(\.id))")
+}
+
+/// A run pane staged to end when clean must not wait for a keypress after
+/// the worker exits, or the pane could never be removed; every other pane
+/// keeps Ghostty's wait-after-command behaviour.
+func reviewedRunLaunchWaitChecks() throws {
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("parley-run-wait-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let controller = try WorkbenchController(applicationDirectory: root.appendingPathComponent("runtime"), environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"])
+    _ = try controller.createWorkspace(folder: root.path)
+    let plain = try controller.createPane(kind: .shell, cwd: root.path)
+    try runExpect(try controller.launchConfiguration(for: plain.id).waitAfterCommand, "an ordinary Shell lost wait-after-command")
+    let source = try controller.createPane(kind: .codex, cwd: root.path)
+    var eligible = source
+    eligible.relayEnabled = true
+    let coordinator = ReviewedCommandRunCoordinator(authenticate: { _ in source.id }, panes: { [eligible] }, record: { _ in })
+    func launch(_ argv: [String], exitWhenClean: Bool) throws -> GhosttyPaneLaunch {
+        let request = try coordinator.request(token: "capability", argv: argv, folder: root.path)
+        try coordinator.approve(id: request.id, revision: request.revision, argv: argv, folder: root.path, autoApprove: false)
+        var created: WorkbenchPane?
+        coordinator.launchApproved { run in
+            created = try controller.createApprovedCommandPane(run: run, workerExecutable: URL(fileURLWithPath: "/usr/bin/true"), exitWhenClean: exitWhenClean)
+        }
+        guard let created else { throw ReviewedCommandRunError.invalid("no pane") }
+        let launch = try controller.launchConfiguration(for: created.id)
+        coordinator.complete(id: request.id, result: ReviewedCommandRunResult(exitStatus: 0, stdout: Data(), stderr: Data()))
+        try controller.closePane(created.id)
+        return launch
+    }
+    try runExpect(try launch(["/usr/bin/true"], exitWhenClean: true).waitAfterCommand == false, "a pane staged to end when clean still waits for a keypress")
+    try runExpect(try launch(["/usr/bin/true", "shell"], exitWhenClean: false).waitAfterCommand, "a pane handed to a shell lost wait-after-command")
 }
 
 func reviewedRunDurabilityChecks() throws {

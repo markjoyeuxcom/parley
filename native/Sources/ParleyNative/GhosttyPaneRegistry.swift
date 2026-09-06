@@ -180,7 +180,7 @@ final class GhosttyPaneRegistry {
             workingDirectory: launch.workingDirectory,
             envVars: launch.environment,
             command: launch.command,
-            waitAfterCommand: true,
+            waitAfterCommand: launch.waitAfterCommand,
             context: .window,
             resizeThrottleMilliseconds: 64
         )

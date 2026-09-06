@@ -255,7 +255,13 @@ public enum ApprovedCommandWorker {
         return descriptor
     }
 
+    /// Ghostty treats a command that exits inside its abnormal-runtime
+    /// threshold (250 ms by default) as a failed launch and holds the surface
+    /// for a keypress. A clean run that ends its pane must outlive that.
+    public static let minimumCleanExitRuntime: TimeInterval = 0.5
+
     public static func execute(ticketPath: String) -> Never {
+        let started = ProcessInfo.processInfo.systemUptime // monotonic: a clock change cannot shorten the floor
         let path = URL(fileURLWithPath: ticketPath)
         let job = path.deletingLastPathComponent()
         var shell: String?
@@ -307,7 +313,11 @@ public enum ApprovedCommandWorker {
         // Decided from the ticket the person's settings staged: a clean run
         // ends here, so no interactive shell is ever created for it and the
         // app removes a pane whose process has already ended.
-        if endsPaneAfterResult { exit(0) }
+        if endsPaneAfterResult {
+            let remaining = minimumCleanExitRuntime - (ProcessInfo.processInfo.systemUptime - started)
+            if remaining > 0 { Thread.sleep(forTimeInterval: remaining) }
+            exit(0)
+        }
         guard let shell else { exit(1) }
         // The one-use command is over. The same retained Ghostty pane now owns
         // an ordinary human login shell, with no reusable execution ticket.
