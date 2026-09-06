@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "21"
+    public static let version = "22"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -97,12 +97,27 @@ public enum AgentProtocol {
       and revoke grants. The completed pane remains an ordinary human Shell.
       This reviewed path grants no general agent-to-shell input route.
     - To assemble a bounded team for one objective, run
-      `parley team request --folder <absolute-folder> [--template <name>] [--panes <n>] [--hours <n>] "<objective>"`
+      `parley team request --folder <absolute-folder> [--template <name>] [--panes <n>] [--hours <n>] [--worktree <branch> [--base <ref>]] "<objective>"`
       and wait. The folder must be inside this pane's working folder and the
       workspace policy must allow delegation. Parley shows the person an
       editable preview of the objective, folder, allowed vendors, permission
       profile, pane limit (at most 8) and provisioning deadline (at most 128
-      hours); nothing is authorized until they approve. stderr reports a
+      hours); nothing is authorized until they approve. `--worktree` only
+      proposes one new Git worktree of that repository on a new branch from
+      `--base` (default HEAD); the person may create it, select an existing
+      worktree or keep the ordinary folder. In every mode the approved folder
+      is exactly one folder inside this pane's working folder; a worktree
+      Parley creates is placed under `<repository>/.worktrees/`. Parley runs
+      one fixed `git worktree add` natively; agents never run Git through
+      Parley. A linked worktree shares objects, refs, stashes, hooks and
+      configuration with the repository through a `.git` directory outside
+      the pane folder: Parley grants no extra root for it, and whether a
+      vendor CLI may commit or change branches from there is that vendor's
+      own permission decision. `parley team status` reports the binding as
+      `worktree` (path, branch, recorded base commit, parleyCreated); the
+      recorded base is the commit the tree was created from, never its
+      current HEAD or a claim about who changed a file. Removing a worktree
+      is a separate native action the person takes. stderr reports a
       Parley Team Session ID; stdout returns the approved session as JSON or
       an explicit refusal. While the session is active, only this lead pane
       may run
@@ -252,8 +267,8 @@ public enum AgentProtocol {
                                         Cancel and session trust are native-only
 
     Team sessions (native approval; bounded provisioning for one objective):
-      parley team request --folder <absolute-folder> [--template <name>] [--panes <n>] [--hours <n>] [objective...]
-                                        wait for the person's editable approval
+      parley team request --folder <absolute-folder> [--template <name>] [--panes <n>] [--hours <n>] [--worktree <branch> [--base <ref>]] [objective...]
+                                        wait for the person's editable approval; --worktree only proposes a new tree
       parley team add --vendor <claude|codex|agy|copilot> [--name <name>] [--role <role>]
                                         lead only: create one approved pane; request id on stderr
       parley team status                this pane's session as JSON

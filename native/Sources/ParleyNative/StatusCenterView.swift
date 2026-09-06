@@ -1660,9 +1660,15 @@ struct StatusCenterView: View {
             }
             if let facts = handoff.gitFactsAtDelegation {
                 delegationFact("arrow.triangle.branch", "At delegation · \(facts.summary)", at: facts.capturedAt)
+                if let evidence = facts.managedWorktree {
+                    delegationFact("point.3.connected.trianglepath.dotted", "Worktree at delegation · \(evidence.path) · \(evidence.summary)", at: facts.capturedAt, chip: "RECORDED THEN")
+                }
             }
             if let facts = handoff.gitFactsAtReturn {
                 delegationFact("arrow.triangle.branch", "At return · \(facts.summary)", at: facts.capturedAt)
+                if let evidence = facts.managedWorktree, evidence != handoff.gitFactsAtDelegation?.managedWorktree {
+                    delegationFact("point.3.connected.trianglepath.dotted", "Worktree at return · \(evidence.path) · \(evidence.summary)", at: facts.capturedAt, chip: "RECORDED THEN")
+                }
             }
             if let comparison {
                 Text(comparison.title)

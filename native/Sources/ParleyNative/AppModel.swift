@@ -339,6 +339,24 @@ final class AppModel: ObservableObject {
     private var worktreeRefreshTask: Task<Void, Never>?
     private var worktreePaneFolders: [String: String] = [:]
     private var lastWorktreeRefresh = Date.distantPast
+    /// Worktrees Parley created or bound to a team: ownership and base
+    /// metadata only, never execution authority. Facts come from bounded
+    /// background Git reads and are applied only when nothing moved meanwhile.
+    @Published private(set) var managedWorktrees: [ManagedWorktreeRecord] = [] {
+        didSet { managedWorktreesByPath = Dictionary(managedWorktrees.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first }) }
+    }
+    /// Exact canonical worktree root → record, for render-time lookups that
+    /// must not touch the filesystem.
+    private(set) var managedWorktreesByPath: [String: ManagedWorktreeRecord] = [:]
+    @Published private(set) var managedWorktreeFacts: [String: ManagedWorktreeFacts] = [:]
+    private var managedWorktreeStore: ManagedWorktreeStore?
+    private var managedWorktreeService: ManagedWorktreeService?
+    private var managedWorktreeFactsTask: Task<Void, Never>?
+    private var managedWorktreeFactsGeneration = 0
+    /// One native worktree mutation at a time. While a removal is in flight
+    /// its path is published so pane starts and team provisioning inside that
+    /// tree are refused instead of racing the delete.
+    @Published private(set) var managedWorktreeMutation: ManagedWorktreeMutation?
     private var worktreeDiscoveryTask: Task<Void, Never>?
     private var worktreeDiscoveryID: UUID?
     private var automaticOrchestrationTasks: [String: Task<Void, Never>] = [:]
@@ -643,6 +661,10 @@ final class AppModel: ObservableObject {
             self.relayClient = relayClient
             terminalAvailable = true
             terminalError = nil
+            let worktreeStore = ManagedWorktreeStore(file: controller.applicationDirectory.appendingPathComponent("managed-worktrees.json"))
+            managedWorktreeStore = worktreeStore
+            managedWorktreeService = ManagedWorktreeService(store: worktreeStore, environment: controller.environment)
+            reloadManagedWorktrees()
             reviewDraftBuilder = ReviewDraftBuilder(environment: controller.environment)
             contextPackBuilder = ContextPackBuilder(environment: controller.environment)
             workspaces = liveWorkspaces
@@ -1647,6 +1669,353 @@ final class AppModel: ObservableObject {
             && isDirectory.boolValue
     }
 
+    // MARK: Managed worktrees
+
+    struct ManagedWorktreeMutation: Equatable {
+        enum Kind: String { case create, attach, remove }
+        let kind: Kind
+        /// The tree being removed; nil while creating, whose path is not yet a tree.
+        let path: String?
+    }
+
+    private func beginManagedWorktreeMutation(_ kind: ManagedWorktreeMutation.Kind, path: String?) throws {
+        if let current = managedWorktreeMutation {
+            throw RelayUIError.message("Another worktree operation (\(current.kind.rawValue)\(current.path.map { " of \($0)" } ?? "")) is still in progress. Wait for it to finish; Parley runs one worktree mutation at a time.")
+        }
+        managedWorktreeMutation = ManagedWorktreeMutation(kind: kind, path: path)
+    }
+
+    private func endManagedWorktreeMutation() {
+        managedWorktreeMutation = nil
+    }
+
+    /// How a team session approval binds its folder to a Git worktree.
+    enum TeamWorktreeChoice: Equatable {
+        /// Named to avoid `.none` reading as `Optional.none` at call sites.
+        case ordinaryFolder
+        case existing(path: String)
+        /// The exact create preview the person approved.
+        case create(preview: ManagedWorktreeService.CreatePreview)
+    }
+
+    func openManagedWorktree(_ record: ManagedWorktreeRecord) {
+        perform {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: record.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw RelayUIError.message("That worktree folder no longer exists. Parley did not change Git state.")
+            }
+            _ = try openWorkspace(folder: record.path)
+            worktreeBrowserPresented = false
+        }
+    }
+
+    func reloadManagedWorktrees() {
+        guard let store = managedWorktreeStore else { return }
+        let records = ((try? store.records()) ?? []).sorted { $0.createdAt > $1.createdAt }
+        if records != managedWorktrees { managedWorktrees = records }
+    }
+
+    /// The managed record for the exact Git worktree root the background scan
+    /// mapped this pane to. No filesystem work: SwiftUI bodies call this per
+    /// row, and a pane the scan has not mapped yet simply shows nothing.
+    func managedWorktree(forPane paneID: String) -> ManagedWorktreeRecord? {
+        guard let root = worktreeScan.paneWorktreePaths[paneID] else { return nil }
+        return managedWorktreesByPath[root]
+    }
+
+    func managedWorktree(atPath path: String) -> ManagedWorktreeRecord? {
+        let canonical = GitWorktreeResolver.canonicalPath(path)
+        return managedWorktrees.first { $0.path == canonical }
+    }
+
+    /// Display line for one managed worktree: recorded base from the record,
+    /// live branch, HEAD, dirty count and upstream from the last background
+    /// read. Anything Git did not answer is shown as unknown.
+    func managedWorktreeSummary(_ record: ManagedWorktreeRecord) -> String {
+        var parts = ["\(record.branch)", "recorded base \(record.baseCommit.map { String($0.prefix(12)) } ?? "not recorded")\(record.baseRef.map { " (\($0))" } ?? "")"]
+        if let facts = managedWorktreeFacts[record.id] {
+            switch facts.registered {
+            case false?: parts.append("folder gone or no longer listed by Git"); return parts.joined(separator: " · ")
+            case nil: parts.append("Git could not be read; registration unknown"); return parts.joined(separator: " · ")
+            case true?: break
+            }
+            if let branch = facts.currentBranch, branch != record.branch { parts.append("now on \(branch)") }
+            if let head = facts.head {
+                parts.append("HEAD \(head.prefix(12))" + (record.baseCommit == head ? " (at base)" : ""))
+            } else { parts.append("HEAD unknown") }
+            switch facts.changedPathCount {
+            case let count?: parts.append(count == 0 ? "clean" : "\(count) changed path\(count == 1 ? "" : "s")")
+            case nil: parts.append("status unknown")
+            }
+            switch (facts.hasUpstream, facts.upstreamAheadCount) {
+            case (true?, let ahead?): parts.append("\(ahead) ahead of upstream (local tracking state)")
+            case (true?, nil): parts.append("ahead-of-upstream count unknown")
+            case (false?, _): parts.append("no upstream")
+            case (nil, _): parts.append("upstream unknown")
+            }
+        } else {
+            parts.append("live state not read yet")
+        }
+        parts.append(record.parleyCreated ? "created by Parley" : "existing tree, person-owned")
+        return parts.joined(separator: " · ")
+    }
+
+    /// Bounded background Git reads for every managed record. Results apply
+    /// only when the record set is unchanged, so a create or remove that
+    /// happened meanwhile is never overwritten by stale facts.
+    enum ManagedWorktreeFactsScope { case live, all }
+
+    /// Records worth reading periodically: trees a pane sits in and trees
+    /// bound to a session that is not over. Everything else is read on
+    /// demand (browser open), so an archive of old records costs nothing.
+    private func liveManagedWorktrees() -> [ManagedWorktreeRecord] {
+        let paneRoots = Set(worktreeScan.paneWorktreePaths.values)
+        let sessionRoots = Set(teamSessions.filter { !$0.state.isTerminal }.compactMap { $0.worktree?.path })
+        return managedWorktrees.filter { paneRoots.contains($0.path) || sessionRoots.contains($0.path) }
+    }
+
+    func scheduleManagedWorktreeFactsRefresh(force: Bool = false, scope: ManagedWorktreeFactsScope = .live) {
+        guard let service = managedWorktreeService, managedWorktreeFactsTask == nil || force else { return }
+        managedWorktreeFactsTask?.cancel()
+        managedWorktreeFactsGeneration += 1
+        let generation = managedWorktreeFactsGeneration
+        let records = scope == .all ? managedWorktrees : liveManagedWorktrees()
+        guard !records.isEmpty else {
+            managedWorktreeFactsTask = nil
+            return
+        }
+        managedWorktreeFactsTask = Task.detached(priority: .utility) { [records, service] in
+            var facts: [String: ManagedWorktreeFacts] = [:]
+            for record in records {
+                guard !Task.isCancelled else { return }
+                facts[record.id] = service.facts(for: record)
+            }
+            let result = facts
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                // Only the newest scheduled read may publish, and only over the
+                // exact record set it read; a superseded task neither applies nor
+                // clears anything.
+                guard self.managedWorktreeFactsGeneration == generation else { return }
+                self.managedWorktreeFactsTask = nil
+                // Apply only over records that still exist unchanged; facts for
+                // records not in this scope are left as they were.
+                let current = Dictionary(self.managedWorktrees.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                var merged = self.managedWorktreeFacts
+                for record in records {
+                    guard current[record.id] == record, let facts = result[record.id] else { continue }
+                    merged[record.id] = facts
+                }
+                merged = merged.filter { current[$0.key] != nil }
+                if merged != self.managedWorktreeFacts { self.managedWorktreeFacts = merged }
+            }
+        }
+    }
+
+    /// Reads what a creation would do, off the main thread. The returned
+    /// base commit is what the person approves; creation refuses a ref that
+    /// moved afterwards.
+    func previewManagedWorktree(repositoryFolder: String, branch: String, baseRef: String) async -> Result<ManagedWorktreeService.CreatePreview, Error> {
+        guard let service = managedWorktreeService else { return .failure(RelayUIError.message("The workbench is not available.")) }
+        return await Task.detached(priority: .userInitiated) { [service] in
+            Result { try service.createPreview(repositoryFolder: repositoryFolder, branch: branch, baseRef: baseRef) }
+        }.value
+    }
+
+    /// One fixed-argv `git worktree add` bound to the exact preview the person
+    /// approved: repository, path and base commit are re-resolved and compared
+    /// before anything is written.
+    func createManagedWorktree(preview: ManagedWorktreeService.CreatePreview, repositoryFolder: String,
+                               teamSessionID: String? = nil, requestedByPaneID: String? = nil) async throws -> ManagedWorktreeRecord {
+        guard let service = managedWorktreeService else { throw RelayUIError.message("The workbench is not available.") }
+        let request = ManagedWorktreeService.CreateRequest(preview: preview, repositoryFolder: repositoryFolder,
+            teamSessionID: teamSessionID, requestedByPaneID: requestedByPaneID)
+        try beginManagedWorktreeMutation(.create, path: nil)
+        defer {
+            endManagedWorktreeMutation()
+            reloadManagedWorktrees()
+            scheduleManagedWorktreeFactsRefresh(force: true)
+            scheduleWorktreeRefresh(force: true)
+        }
+        return try await Task.detached(priority: .userInitiated) { [service, request] in try service.create(request) }.value
+    }
+
+    /// Records an existing registered worktree for a team without taking ownership.
+    func attachManagedWorktree(existingPath: String, repositoryFolder: String, teamSessionID: String?, requestedByPaneID: String?) async throws -> ManagedWorktreeRecord {
+        guard let service = managedWorktreeService else { throw RelayUIError.message("The workbench is not available.") }
+        try beginManagedWorktreeMutation(.attach, path: existingPath)
+        defer {
+            endManagedWorktreeMutation()
+            reloadManagedWorktrees()
+            scheduleManagedWorktreeFactsRefresh(force: true)
+        }
+        return try await Task.detached(priority: .userInitiated) { [service] in
+            try service.attach(existingPath: existingPath, in: repositoryFolder, baseRef: nil, teamSessionID: teamSessionID, requestedByPaneID: requestedByPaneID)
+        }.value
+    }
+
+    private var otherRuntimeStateFiles: [URL] {
+        ParleyRuntimeMode.allCases.filter { $0 != runtime.mode }.map {
+            ParleyRuntime.make(mode: $0, homeDirectory: FileManager.default.homeDirectoryForCurrentUser).applicationDirectory
+                .appendingPathComponent("workbench-state.json")
+        }
+    }
+
+    /// Every pane folder this runtime knows, read fresh: started or stopped,
+    /// any workspace. A stopped placeholder inside the tree would restart into
+    /// a deleted folder, so it blocks removal too.
+    private func livePaneFoldersForCleanup() throws -> [String] {
+        guard let controller else { throw RelayUIError.message("The workbench is not available.") }
+        return try controller.listPanes().map(\.cwd)
+    }
+
+    /// Person-triggered cleanup of one Parley-created worktree: a fresh
+    /// preview, one concrete confirmation naming what will be deleted, a
+    /// second full revalidation inside the removal, and an honest outcome.
+    func removeManagedWorktree(_ record: ManagedWorktreeRecord) {
+        guard let service = managedWorktreeService, let controller else { return }
+        let stateFiles = otherRuntimeStateFiles
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try self.beginManagedWorktreeMutation(.remove, path: record.path)
+            } catch {
+                NSAlert(error: error).runModal()
+                return
+            }
+            // The controller's launch gate refuses every creation, start and
+            // restart inside the tree from here until the defer below runs.
+            do { try controller.reserveFolderForRemoval(record.path) } catch {
+                self.endManagedWorktreeMutation()
+                NSAlert(error: error).runModal()
+                return
+            }
+            defer {
+                controller.releaseFolderReservation(record.path)
+                self.endManagedWorktreeMutation()
+                self.reloadManagedWorktrees()
+                self.scheduleManagedWorktreeFactsRefresh(force: true, scope: .all)
+                self.scheduleWorktreeRefresh(force: true)
+                if self.worktreeBrowserPresented, let folder = self.activePane?.cwd { self.showWorktreeBrowser(sourceFolder: folder) }
+            }
+            let folders: [String]
+            do { folders = try self.livePaneFoldersForCleanup() } catch {
+                NSAlert(error: error).runModal()
+                return
+            }
+            let previewResult = await Task.detached(priority: .userInitiated) { [service, record, folders, stateFiles] in
+                Result { try service.cleanupPreview(record, livePaneFolders: folders, otherRuntimeStateFiles: stateFiles) }
+            }.value
+            let preview: WorktreeCleanupPreview
+            switch previewResult {
+            case let .failure(error):
+                NSAlert(error: error).runModal()
+                return
+            case let .success(value):
+                preview = value
+            }
+            let alert = NSAlert()
+            switch preview.decision {
+            case let .refuse(reasons):
+                alert.messageText = "This worktree cannot be removed"
+                alert.informativeText = "\(DelegationGitFacts.displayPath(record.path))\n\nParley refused because:\n• " + reasons.map(DelegationGitFacts.displayPath).joined(separator: "\n• ")
+                    + "\n\nNothing was changed. Resolve these in a terminal or close the panes, then try again."
+                alert.alertStyle = .informational
+                alert.runModal()
+                return
+            case .clearRecordOnly:
+                alert.messageText = "Clear Parley's record of \(record.branch)?"
+                alert.informativeText = "The folder \(DelegationGitFacts.displayPath(record.path)) no longer exists"
+                    + (preview.facts.registered ? " and Git lists it as prunable." : " and Git no longer lists it.")
+                    + " Parley will clear only its own record; no Git command runs, and the branch \(record.branch) is not touched."
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "Clear Record")
+                alert.addButton(withTitle: "Cancel")
+            case .removeTree:
+                let ignored = preview.ignoredPaths
+                alert.messageText = "Remove worktree \(record.branch)?"
+                var lines = [
+                    "Folder to delete: \(DelegationGitFacts.displayPath(record.path))",
+                    "Branch \(record.branch) is kept; only the checkout is removed. Recorded base \(record.baseCommit.map { String($0.prefix(12)) } ?? "not recorded").",
+                    "Checked just now: " + preview.preservationSummary + ".",
+                ]
+                if ignored.isEmpty {
+                    lines.append("No ignored files were found; Git removes only tracked content.")
+                } else {
+                    lines.append("\(ignored.count) ignored entr\(ignored.count == 1 ? "y is" : "ies are") not in Git and will be deleted with the folder. The complete list is below; an entry ending in / is a directory and means everything inside it.")
+                }
+                lines.append("Parley runs one git worktree remove without --force, re-checking everything first. Objects, refs, stashes and the branch stay in the repository.")
+                alert.informativeText = lines.joined(separator: "\n\n")
+                alert.alertStyle = .warning
+                if !ignored.isEmpty {
+                    alert.accessoryView = Self.reviewedPathList(ignored)
+                }
+                alert.addButton(withTitle: ignored.isEmpty ? "Remove Worktree" : "Remove Worktree and \(ignored.count) Ignored Entr\(ignored.count == 1 ? "y" : "ies")")
+                alert.addButton(withTitle: "Cancel")
+            }
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            // The person may have opened or started a pane while the sheet was
+            // up: the pane list is read again now, and the service re-reads
+            // every Git fact inside remove before touching anything.
+            let currentFolders: [String]
+            do { currentFolders = try self.livePaneFoldersForCleanup() } catch {
+                NSAlert(error: error).runModal()
+                return
+            }
+            let acknowledged = preview.ignoredPaths
+            let outcome = await Task.detached(priority: .userInitiated) { [service, record, acknowledged, currentFolders, stateFiles] in
+                Result { try service.remove(record, acknowledgedIgnoredPaths: acknowledged, livePaneFolders: currentFolders, otherRuntimeStateFiles: stateFiles) }
+            }.value
+            let result = NSAlert()
+            switch outcome {
+            case let .success(removal):
+                switch removal.state {
+                case .removed:
+                    result.messageText = removal.recordRemoved ? "Worktree removed" : "Worktree removed; record not cleared"
+                    result.alertStyle = removal.recordRemoved ? .informational : .warning
+                    result.informativeText = removal.detail + (removal.recordRemoved ? "" : " Choose Remove… again to clear the record; Git will not run for an absent tree.")
+                case .retained:
+                    result.messageText = "Worktree not removed"
+                    result.alertStyle = .warning
+                    result.informativeText = removal.detail
+                case .uncertain:
+                    result.messageText = "Worktree state uncertain"
+                    result.alertStyle = .critical
+                    result.informativeText = removal.detail + " Parley kept its record and will not retry on its own."
+                }
+            case let .failure(error):
+                result.messageText = "Worktree not removed"
+                result.informativeText = error.localizedDescription + "\n\nNothing is deleted without Git's consent and Parley never adds --force."
+                result.alertStyle = .warning
+            }
+            result.runModal()
+        }
+    }
+
+    /// The complete reviewed list of paths in a scrollable, read-only view.
+    /// Paths are escaped so control or invisible characters cannot hide or
+    /// spoof an entry.
+    private static func reviewedPathList(_ paths: [String]) -> NSView {
+        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 520, height: 180))
+        text.isEditable = false
+        text.isSelectable = true
+        text.isRichText = false
+        text.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        text.string = paths.map(DelegationGitFacts.displayPath).joined(separator: "\n")
+        text.textContainerInset = NSSize(width: 6, height: 6)
+        text.isVerticallyResizable = true
+        text.isHorizontallyResizable = true
+        text.textContainer?.widthTracksTextView = false
+        text.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 520, height: min(180, CGFloat(paths.count) * 16 + 14)))
+        scroll.documentView = text
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
+        scroll.borderType = .bezelBorder
+        return scroll
+    }
+
     var paletteCommands: [PaletteCommand] {
         var commands = [
             PaletteCommand(
@@ -2451,6 +2820,44 @@ final class AppModel: ObservableObject {
         selectedTeamSessionID = session.id
     }
 
+    /// Approval bound to a worktree. Git work runs off the main thread first;
+    /// the grant is then bound to exactly the resulting folder. A tree that
+    /// was created but whose approval then failed is reported as such and
+    /// stays as a Parley-created worktree the person can select or remove.
+    func approveTeamSession(_ session: TeamSession, objective: String, folder: String, allowedVendors: [PaneKind],
+                            permissionProfileID: String, paneLimit: Int, hours: Int, worktree: TeamWorktreeChoice) async throws {
+        guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
+        let record: ManagedWorktreeRecord
+        switch worktree {
+        case .ordinaryFolder:
+            try approveTeamSession(session, objective: objective, folder: folder, allowedVendors: allowedVendors,
+                permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours)
+            return
+        case let .existing(path):
+            // Authority and containment first; Git only after the approval would pass.
+            try core.teamSessions.preflightApproval(id: session.id, revision: session.revision, objective: objective, folder: path,
+                allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours, folderExists: true)
+            record = try await attachManagedWorktree(existingPath: path, repositoryFolder: folder, teamSessionID: session.id, requestedByPaneID: session.source.id)
+        case let .create(preview):
+            try core.teamSessions.preflightApproval(id: session.id, revision: session.revision, objective: objective, folder: preview.path,
+                allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours, folderExists: false)
+            record = try await createManagedWorktree(preview: preview, repositoryFolder: folder, teamSessionID: session.id, requestedByPaneID: session.source.id)
+        }
+        do {
+            try core.teamSessions.approve(id: session.id, revision: session.revision, objective: objective, folder: record.path,
+                allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours,
+                worktree: TeamWorktreeBinding(record: record))
+        } catch {
+            teamSessions = core.teamSessions.sessions()
+            if case .create = worktree {
+                throw RelayUIError.message("The worktree \(record.branch) was created at \(record.path), but the team session was not approved: \(error.localizedDescription) The tree stays as a Parley-created worktree; approve again by selecting it as an existing worktree, or remove it from the worktree browser. Do not create it a second time.")
+            }
+            throw error
+        }
+        teamSessions = core.teamSessions.sessions()
+        selectedTeamSessionID = session.id
+    }
+
     func rejectTeamSession(_ session: TeamSession) {
         perform {
             guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
@@ -2972,6 +3379,7 @@ final class AppModel: ObservableObject {
             return
         }
 
+        scheduleManagedWorktreeFactsRefresh()
         let resolver = worktreeResolver
         worktreeRefreshTask = Task.detached(priority: .utility) { [paneFolders, resolver] in
             let scan = resolver.scan(paneFolders: paneFolders)

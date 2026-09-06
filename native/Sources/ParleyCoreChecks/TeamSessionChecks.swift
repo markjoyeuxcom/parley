@@ -71,6 +71,13 @@ func teamSessionProposalParsingChecks() throws {
     try teamRejects("a deadline above 128 hours was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "--hours", "129", "x"]) }
     try teamRejects("a zero pane limit was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "--panes", "0", "x"]) }
     try teamRejects("control characters entered the objective") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "bad\u{1b}[31mtext"]) }
+    let withWorktree = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "--worktree", "feat/parser", "--base", "main", "Parse"])
+    try teamExpect(withWorktree.worktreeBranch == "feat/parser" && withWorktree.worktreeBase == "main", "worktree options were not parsed literally")
+    try teamExpect(try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "x"]).worktreeBranch == nil, "a proposal without --worktree carried one")
+    try teamRejects("--base without --worktree was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "--base", "main", "x"]) }
+    try teamRejects("an option-shaped worktree branch was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "--worktree", "--force", "x"]) }
+    try teamRejects("a traversal worktree branch was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "--worktree", "../x", "x"]) }
+    try teamRejects("an option-shaped base ref was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "--worktree", "ok", "--base", "-x", "x"]) }
 
     let add = try TeamPaneProvision.parse(arguments: ["--vendor", "Codex", "--name", "Reviewer", "--role", "reviewer"])
     try teamExpect(add.kind == .codex && add.name == "Reviewer" && add.role == "reviewer", "team add arguments were not parsed")
@@ -636,8 +643,87 @@ func teamSessionShimChecks() throws {
     try teamExpect(nested.status != 0 && String(decoding: nested.stdout + nested.stderr, as: UTF8.self).contains("requesting pane"), "a member provisioned over the shim")
 }
 
+func teamSessionWorktreeBindingChecks() throws {
+    let fixture = try TeamFixture()
+    defer { fixture.cleanup() }
+    let box = PaneBox(fixture.live)
+    let coordinator = fixture.coordinator { box.current() }
+    let tree = fixture.root.appendingPathComponent("project/.worktrees/feat-parser")
+    try FileManager.default.createDirectory(at: tree, withIntermediateDirectories: true)
+    let proposal = TeamSessionProposal(objective: "Parse", folder: fixture.project, templateName: nil, paneLimit: 2, hours: 2, worktreeBranch: "feat/parser", worktreeBase: "main")
+    let session = try coordinator.request(token: "lead-token", proposal: proposal, idempotencyKey: "wt-1")
+    try teamExpect(session.proposal.worktreeBranch == "feat/parser" && session.worktree == nil, "a request bound a worktree before approval")
+    let binding = TeamWorktreeBinding(path: tree.path, branch: "feat/parser", baseRef: "main", baseCommit: String(repeating: "a", count: 40), parleyCreated: true, managedRecordID: "rec")
+    // The approved folder must be exactly the bound worktree, and containment still applies.
+    try teamRejects("a binding whose path differs from the approved folder was accepted") {
+        try coordinator.approve(id: session.id, revision: session.revision, objective: "Parse", folder: fixture.project, allowedVendors: [.codex],
+            permissionProfileID: "default", paneLimit: 2, hours: 2, worktree: binding)
+    }
+    let outside = fixture.root.appendingPathComponent("outside")
+    try teamRejects("a worktree outside the requester's folder was accepted") {
+        try coordinator.approve(id: session.id, revision: session.revision, objective: "Parse", folder: outside.path, allowedVendors: [.codex],
+            permissionProfileID: "default", paneLimit: 2, hours: 2,
+            worktree: TeamWorktreeBinding(path: outside.path, branch: "x", baseRef: nil, baseCommit: nil, parleyCreated: false, managedRecordID: "r"))
+    }
+    try coordinator.approve(id: session.id, revision: session.revision, objective: "Parse", folder: tree.path, allowedVendors: [.codex],
+        permissionProfileID: "default", paneLimit: 2, hours: 2, worktree: binding)
+    guard let active = coordinator.sessions().first(where: { $0.id == session.id }), let grant = coordinator.grant(for: session.id) else {
+        throw TeamSessionError.invalid("approval with a worktree did not activate the session")
+    }
+    try teamExpect(active.worktree == binding && grant.folder == WorkspaceFolderIdentity.matchingKey(tree.path) && grant.approvedRoots.allSatisfy { $0 == grant.folder },
+        "the grant was not bound to exactly the worktree folder: \(grant.folder) roots \(grant.approvedRoots)")
+    let view = active.agentView(live: box.current())
+    try teamExpect(view.worktree?.branch == "feat/parser" && view.worktree?.baseCommit == binding.baseCommit && view.folder == grant.folder,
+        "team status did not expose the worktree binding")
+    try teamExpect(active.detail?.contains("worktree feat/parser created by Parley") == true, "the session detail did not name the worktree")
+    // Preflight mirrors approval without mutating: a planned path that does not
+    // exist yet is contained by its nearest existing ancestor; traversal,
+    // escapes, stale revisions and unknown profiles are refused before any Git runs.
+    let second = try TeamFixture()
+    defer { second.cleanup() }
+    let secondBox = PaneBox(second.live)
+    let secondCoordinator = second.coordinator { secondBox.current() }
+    let pending = try secondCoordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "Plan", folder: second.project, templateName: nil, paneLimit: 1, hours: 1), idempotencyKey: "pre-1")
+    let planned = second.root.appendingPathComponent("project/.worktrees/feat-x").path
+    try secondCoordinator.preflightApproval(id: pending.id, revision: pending.revision, objective: "Plan", folder: planned, allowedVendors: [.codex],
+        permissionProfileID: "default", paneLimit: 1, hours: 1, folderExists: false)
+    try teamExpect(secondCoordinator.sessions().first { $0.id == pending.id }?.state == .pending && secondCoordinator.grant(for: pending.id) == nil, "preflight mutated the session")
+    try teamRejects("preflight accepted a planned path escaping by traversal") {
+        try secondCoordinator.preflightApproval(id: pending.id, revision: pending.revision, objective: "Plan", folder: second.project + "/.worktrees/../../outside/x",
+            allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1, folderExists: false)
+    }
+    try teamRejects("preflight accepted a planned path outside the requester's folder") {
+        try secondCoordinator.preflightApproval(id: pending.id, revision: pending.revision, objective: "Plan", folder: second.root.appendingPathComponent("outside/wt").path,
+            allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1, folderExists: false)
+    }
+    let escapeLink = second.root.appendingPathComponent("project/.worktrees")
+    try FileManager.default.createSymbolicLink(at: escapeLink, withDestinationURL: second.root.appendingPathComponent("outside"))
+    try teamRejects("preflight accepted a planned path under a symlinked parent that escapes") {
+        try secondCoordinator.preflightApproval(id: pending.id, revision: pending.revision, objective: "Plan", folder: planned,
+            allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1, folderExists: false)
+    }
+    try FileManager.default.removeItem(at: escapeLink)
+    try teamRejects("preflight accepted a stale revision") {
+        try secondCoordinator.preflightApproval(id: pending.id, revision: "stale", objective: "Plan", folder: planned,
+            allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1, folderExists: false)
+    }
+    try teamRejects("preflight accepted an unknown profile") {
+        try secondCoordinator.preflightApproval(id: pending.id, revision: pending.revision, objective: "Plan", folder: planned,
+            allowedVendors: [.codex], permissionProfileID: "missing", paneLimit: 1, hours: 1, folderExists: false)
+    }
+    // Older records without the field still decode, and the binding round-trips.
+    let encoded = try JSONEncoder().encode(active)
+    let decoded = try JSONDecoder().decode(TeamSession.self, from: encoded)
+    try teamExpect(decoded.worktree == binding, "the worktree binding did not round-trip")
+    var legacy = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+    legacy.removeValue(forKey: "worktree")
+    let legacySession = try JSONDecoder().decode(TeamSession.self, from: JSONSerialization.data(withJSONObject: legacy))
+    try teamExpect(legacySession.worktree == nil && legacySession.id == active.id, "a record without a worktree field failed to decode")
+}
+
 @MainActor
 let teamSessionChecks: [(String, () throws -> Void)] = [
+    ("team session worktree binding is exact, contained and visible in status", teamSessionWorktreeBindingChecks),
     ("team session review regression changed profile revokes approval", teamSessionReviewProfileMutationCheck),
     ("team session review regression partial creation remains owned", teamSessionReviewPartialCreationCheck),
     ("team session review regression recovery requires original generation", teamSessionReviewRecoveryGenerationCheck),

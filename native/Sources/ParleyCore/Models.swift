@@ -392,9 +392,14 @@ public enum ParleyWorkbenchError: LocalizedError, Equatable {
     case cannotCloseLastWorkspace
     case copilotTrustRequired
     case unsafeRelayTarget(String)
+    /// A native worktree removal is in flight for this folder; no process may
+    /// start or be created inside it until that finishes.
+    case folderReservedForRemoval(String)
 
     public var errorDescription: String? {
         switch self {
+        case let .folderReservedForRemoval(path):
+            "\(path) is being removed as a Git worktree right now. Wait for that removal to finish or fail, then try again."
         case let .invalidDirectory(path):
             "The folder does not exist: \(path)"
         case let .commandFailed(detail):

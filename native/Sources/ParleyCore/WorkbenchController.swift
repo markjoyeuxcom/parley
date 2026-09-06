@@ -398,7 +398,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 supplied: permissionProfile,
                 selection: nil
             )
-            let pane = makePane(
+            let pane = try makePane(
                 kind: kind,
                 cwd: cwd,
                 workspace: activeWorkspace,
@@ -455,7 +455,7 @@ public final class WorkbenchController: @unchecked Sendable {
             guard current == grant.approvedProfile else {
                 throw TeamSessionError.invalid("The approved permission profile was edited or removed; the pane was not created.")
             }
-            var pane = makePane(kind: provision.kind, cwd: grant.folder, workspace: workspace, started: true, permissionProfile: permissionProfile)
+            var pane = try makePane(kind: provision.kind, cwd: grant.folder, workspace: workspace, started: true, permissionProfile: permissionProfile)
             pane.customName = provision.name
             pane.role = provision.role
             let previous = document
@@ -491,11 +491,13 @@ public final class WorkbenchController: @unchecked Sendable {
             }
             let checked = try ReviewedCommand(argv: run.command.argv, folder: run.command.folder, sourceFolder: run.sourceFolder)
             guard checked == run.command else { throw ReviewedCommandRunError.invalid("The approved folder changed.") }
+            // Refused before the worker ticket is staged, not only at pane construction.
+            try requireNotReservedForRemoval(run.command.folder)
             let directory = applicationDirectory.resolvingSymlinksInPath().appendingPathComponent("approved-command-runs")
             let ticket = try ApprovedCommandWorker.stage(run: run, directory: directory,
                 shellExecutable: loginShellExecutable().path, ownerPID: ProcessInfo.processInfo.processIdentifier)
             let previous = document
-            var pane = makePane(kind: .shell, cwd: run.command.folder, workspace: workspace, started: true, permissionProfile: nil)
+            var pane = try makePane(kind: .shell, cwd: run.command.folder, workspace: workspace, started: true, permissionProfile: nil)
             pane.id = run.shellPaneID
             pane.customName = "Command run"
             for index in document.workspaces.indices { document.workspaces[index].isActive = document.workspaces[index].workspaceID == workspace.workspaceID }
@@ -548,6 +550,7 @@ public final class WorkbenchController: @unchecked Sendable {
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
+            try requireDirectory(document.panes[index].cwd)
             if document.panes[index].kind.isAgent, let relayRuntime {
                 _ = try relayRuntime.credentials.rotate(paneID)
             }
@@ -582,6 +585,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
             guard document.panes[index].kind.isAgent, !document.panes[index].isStarted else { return }
+            try requireDirectory(document.panes[index].cwd)
             let profile = try effectivePermissionProfile(
                 for: document.panes[index].kind,
                 cwd: document.panes[index].cwd,
@@ -822,6 +826,10 @@ public final class WorkbenchController: @unchecked Sendable {
         try requireDirectory(layout.defaultFolder)
         for leaf in layout.root.leaves { try requireDirectory(leaf.folder) }
         return try lock.withLock {
+            // Every leaf folder is checked under the lock before the workspace
+            // is created, so a refusal changes nothing.
+            try requireNotReservedForRemoval(layout.defaultFolder)
+            for leaf in layout.root.leaves { try requireNotReservedForRemoval(leaf.folder) }
             let replacement = try replacedWorkspaceID.map { document.workspaces[try workspaceIndexLocked($0)] }
             let workspace = try createWorkspaceLocked(
                 launchFolder: layout.defaultFolder,
@@ -843,7 +851,7 @@ public final class WorkbenchController: @unchecked Sendable {
                         selection: leaf.permissionSelection
                     )
                 }
-                var pane = makePane(
+                var pane = try makePane(
                     kind: leaf.kind,
                     cwd: leaf.folder,
                     workspace: workspace,
@@ -1103,6 +1111,9 @@ public final class WorkbenchController: @unchecked Sendable {
         attachedFolders: [String],
         newPaneFolder: String?
     ) throws -> WorkbenchWorkspace {
+        // Checked under the lock before any workspace or pane is touched, so a
+        // reservation never leaves half-applied metadata behind.
+        try requireNotReservedForRemoval(launchFolder)
         let baseName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachedName = attachedFolders.first.map {
             URL(fileURLWithPath: $0).lastPathComponent
@@ -1122,7 +1133,7 @@ public final class WorkbenchController: @unchecked Sendable {
             workspaceID: id
         )
         document.workspaces.append(workspace)
-        let pane = makePane(
+        let pane = try makePane(
             kind: .shell,
             cwd: launchFolder,
             workspace: workspace,
@@ -1140,7 +1151,9 @@ public final class WorkbenchController: @unchecked Sendable {
         workspace: WorkbenchWorkspace,
         started: Bool,
         permissionProfile: EffectivePermissionProfile?
-    ) -> WorkbenchPane {
+    ) throws -> WorkbenchPane {
+        // Every pane is constructed here, under the mutation lock.
+        try requireNotReservedForRemoval(cwd)
         let plan = permissionProfile.map { PermissionProfileAdapter.launchPlan(for: kind, profile: $0) }
         let paneID = Self.paneID()
         return WorkbenchPane(
@@ -1256,11 +1269,49 @@ public final class WorkbenchController: @unchecked Sendable {
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
     }
 
+    /// Every creation, start and restart passes through here, so a folder
+    /// reserved by a native removal in flight refuses new processes on every
+    /// route, not only the toolbar actions that happen to check.
     private func requireDirectory(_ path: String) throws {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw ParleyWorkbenchError.invalidDirectory(path)
         }
+        try requireNotReservedForRemoval(path)
+    }
+
+    /// Called again inside the mutation lock by `makePane`, so a reservation
+    /// inserted between an early check and the mutation still refuses.
+    private func requireNotReservedForRemoval(_ path: String) throws {
+        let reserved = lock.withLock { removalReservations }
+        if let blocking = reserved.first(where: { WorktreeCleanupPolicy.isNested(path, in: $0) }) {
+            throw ParleyWorkbenchError.folderReservedForRemoval(blocking)
+        }
+    }
+
+    // MARK: Folder reservations
+
+    /// Canonical folders a native worktree removal is working on. Memory-only;
+    /// the removal releases them when it finishes, whatever its outcome.
+    private var removalReservations: Set<String> = []
+
+    public func reserveFolderForRemoval(_ path: String) throws {
+        let canonical = GitWorktreeResolver.canonicalPath(path)
+        try lock.withLock {
+            guard !removalReservations.contains(canonical) else {
+                throw ParleyWorkbenchError.folderReservedForRemoval(canonical)
+            }
+            removalReservations.insert(canonical)
+        }
+    }
+
+    public func releaseFolderReservation(_ path: String) {
+        let canonical = GitWorktreeResolver.canonicalPath(path)
+        lock.withLock { _ = removalReservations.remove(canonical) }
+    }
+
+    public func reservedFolders() -> [String] {
+        lock.withLock { removalReservations.sorted() }
     }
 
     private func loginShellExecutable() -> URL {

@@ -100,13 +100,39 @@ private struct TeamSessionApproval: View {
     @State private var paneLimit: Int
     @State private var hours: Int
     @State private var error: String?
+    @State private var worktreeMode: WorktreeMode
+    @State private var existingWorktreePath: String = ""
+    @State private var worktreeBranch: String
+    @State private var worktreeBase: String
+    @State private var worktreePreview: ManagedWorktreeService.CreatePreview?
+    @State private var worktreePreviewError: String?
+    @State private var busy = false
     private let templateNote: String?
+    private let worktreeNote: String?
+
+    enum WorktreeMode: String, CaseIterable, Identifiable {
+        case none, existing, create
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .none: "Ordinary folder"
+            case .existing: "Existing worktree"
+            case .create: "New worktree"
+            }
+        }
+    }
 
     init(model: AppModel, session: TeamSession) {
         self.model = model
         self.session = session
         _objective = State(initialValue: session.objective)
         _folder = State(initialValue: session.folder)
+        _worktreeMode = State(initialValue: session.proposal.worktreeBranch == nil ? .none : .create)
+        _worktreeBranch = State(initialValue: session.proposal.worktreeBranch ?? "")
+        _worktreeBase = State(initialValue: session.proposal.worktreeBase ?? "HEAD")
+        worktreeNote = session.proposal.worktreeBranch.map {
+            "The requesting pane proposed a new worktree on branch “\($0)” from \(session.proposal.worktreeBase ?? "HEAD"). Nothing is created until you preview and approve it here."
+        }
         var initialVendors = Set(session.allowedVendors)
         var initialLimit = session.paneLimit
         var note: String?
@@ -134,6 +160,95 @@ private struct TeamSessionApproval: View {
         Binding(get: { vendors.contains(kind) }, set: { on in if on { vendors.insert(kind) } else { vendors.remove(kind) } })
     }
 
+    /// Linked worktrees of the repository containing the working folder, from
+    /// the read-only discovery scan. The primary checkout is the folder itself.
+    private var selectableWorktrees: [GitWorktreeRecord] {
+        let canonical = GitWorktreeResolver.canonicalPath(folder)
+        guard let repository = model.worktreeScan.repositories.first(where: { repository in
+            repository.worktrees.contains { WorktreeCleanupPolicy.isNested(canonical, in: $0.path) }
+        }) else { return [] }
+        return repository.worktrees.filter { !$0.isPrimary && $0.pruneReason == nil }
+    }
+
+    private var worktreeChoice: AppModel.TeamWorktreeChoice? {
+        switch worktreeMode {
+        case .none: return .ordinaryFolder
+        case .existing: return existingWorktreePath.isEmpty ? nil : .existing(path: existingWorktreePath)
+        case .create:
+            guard let preview = worktreePreview, preview.branch == worktreeBranch.trimmingCharacters(in: .whitespaces),
+                  preview.baseRef == worktreeBase.trimmingCharacters(in: .whitespaces) else { return nil }
+            return .create(preview: preview)
+        }
+    }
+
+    private func previewWorktree() {
+        let branch = worktreeBranch.trimmingCharacters(in: .whitespaces)
+        let base = worktreeBase.trimmingCharacters(in: .whitespaces)
+        let repository = folder
+        worktreePreview = nil
+        worktreePreviewError = nil
+        busy = true
+        Task { @MainActor in
+            defer { busy = false }
+            let result = await model.previewManagedWorktree(repositoryFolder: repository, branch: branch, baseRef: base)
+            // A preview answers exactly the inputs it was asked about; edits made
+            // while Git was reading discard the answer instead of approving it.
+            guard repository == folder, branch == worktreeBranch.trimmingCharacters(in: .whitespaces),
+                  base == worktreeBase.trimmingCharacters(in: .whitespaces) else { return }
+            switch result {
+            case let .success(preview): worktreePreview = preview
+            case let .failure(error): worktreePreviewError = error.localizedDescription
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var worktreeSection: some View {
+        Text("Git worktree for this team").font(.system(size: 11, weight: .medium))
+        if let worktreeNote { Text(worktreeNote).font(.system(size: 11)).foregroundStyle(.secondary) }
+        Picker("Worktree", selection: $worktreeMode) {
+            ForEach(WorktreeMode.allCases) { mode in Text(mode.label).tag(mode) }
+        }.pickerStyle(.segmented).labelsHidden()
+        switch worktreeMode {
+        case .none:
+            Text("Panes are created in the working folder above.").font(.system(size: 11)).foregroundStyle(.secondary)
+        case .existing:
+            let candidates = selectableWorktrees
+            if candidates.isEmpty {
+                Text("Git discovery lists no linked worktree for this repository. Ordinary folders remain supported.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            } else {
+                Picker("Existing worktree", selection: $existingWorktreePath) {
+                    Text("Choose…").tag("")
+                    ForEach(candidates) { tree in
+                        Text("\(tree.shortIdentity) · \(tree.path)").tag(tree.path)
+                    }
+                }
+                Text("Selecting an existing tree binds the team to exactly that folder. Parley records no ownership and no base for it, and never removes it.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+        case .create:
+            HStack {
+                TextField("Branch (new, e.g. feat/parser)", text: $worktreeBranch).textFieldStyle(.roundedBorder)
+                    .onChange(of: worktreeBranch) { _, _ in worktreePreview = nil; worktreePreviewError = nil }
+                TextField("Base ref (branch, tag or commit)", text: $worktreeBase).textFieldStyle(.roundedBorder)
+                    .onChange(of: worktreeBase) { _, _ in worktreePreview = nil; worktreePreviewError = nil }
+                Button("Preview") { previewWorktree() }.disabled(busy || worktreeBranch.trimmingCharacters(in: .whitespaces).isEmpty || worktreeBase.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if let preview = worktreePreview {
+                Text("Will run: git worktree add -b \(preview.branch) \(preview.path) \(preview.baseCommit.prefix(12))\nRepository: \(preview.repositoryToplevel)\nBase \(preview.baseRef) resolves now to \(preview.baseCommit); creation is refused if it moves before you approve.\n\(preview.excludeEntryPresent ? ".worktrees/ is already in the repository's local exclude file." : "Parley appends one .worktrees/ line to .git/info/exclude (local, untracked).")")
+                    .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                Text(ManagedWorktreeService.CreatePreview.executionNotice).font(.system(size: 11)).foregroundStyle(.secondary)
+            } else if let worktreePreviewError {
+                Text(worktreePreviewError).font(.system(size: 11)).foregroundStyle(.red)
+            } else {
+                Text("Preview resolves the base commit and the exact folder before anything runs. The working folder above must be the repository whose .worktrees/ directory the requesting pane can see.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+        }
+        Text(TeamSessionDisclosure.worktree).font(.system(size: 11)).foregroundStyle(.secondary)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("\(session.requesterName) · \(session.source.kind.label)").font(.headline)
@@ -149,6 +264,8 @@ private struct TeamSessionApproval: View {
                 .frame(height: 90).border(Color.secondary.opacity(0.3))
                 .accessibilityLabel("Approved objective")
             TextField("Working folder (inside the requesting pane's working folder)", text: $folder).textFieldStyle(.roundedBorder)
+                .onChange(of: folder) { _, _ in worktreePreview = nil; worktreePreviewError = nil; existingWorktreePath = "" }
+            worktreeSection
             Text("Allowed vendors").font(.system(size: 11, weight: .medium))
             HStack(spacing: 14) {
                 ForEach(PaneKind.allCases.filter(\.isAgent), id: \.self) { kind in
@@ -170,17 +287,24 @@ private struct TeamSessionApproval: View {
                 .font(.system(size: 11)).foregroundStyle(.secondary)
             Text("After approval this sheet stays open as the session's monitoring surface; panes are created while it is open.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
-            if let error { Text(error).foregroundStyle(.red) }
+            if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
-                Button("Reject") { model.rejectTeamSession(session) }
+                Button("Reject") { model.rejectTeamSession(session) }.disabled(busy)
                 Spacer()
-                Button("Approve team session") {
-                    do {
-                        try model.approveTeamSession(session, objective: objective, folder: folder,
-                            allowedVendors: PaneKind.allCases.filter { vendors.contains($0) }, permissionProfileID: profileID,
-                            paneLimit: paneLimit, hours: hours)
-                    } catch { self.error = error.localizedDescription }
-                }.buttonStyle(.borderedProminent)
+                if busy { ProgressView().controlSize(.small) }
+                Button(worktreeMode == .create ? "Create worktree and approve" : "Approve team session") {
+                    guard let choice = worktreeChoice else { return }
+                    busy = true
+                    error = nil
+                    Task { @MainActor in
+                        defer { busy = false }
+                        do {
+                            try await model.approveTeamSession(session, objective: objective, folder: folder,
+                                allowedVendors: PaneKind.allCases.filter { vendors.contains($0) }, permissionProfileID: profileID,
+                                paneLimit: paneLimit, hours: hours, worktree: choice)
+                        } catch { self.error = error.localizedDescription }
+                    }
+                }.buttonStyle(.borderedProminent).disabled(busy || worktreeChoice == nil)
             }
         }.padding(12)
     }
@@ -247,6 +371,18 @@ private struct TeamSessionDetail: View {
             Text(TeamSessionDisclosure.deadline).font(.system(size: 11)).foregroundStyle(.secondary)
             Text("Folder: \(session.folder)\nVendors: \(session.allowedVendors.map(\.label).joined(separator: ", "))\nPermission profile: \(session.permissionProfileID.flatMap { id in model.permissionProfiles.first { $0.id == id }?.name } ?? session.permissionProfileID ?? "—")\nSession: \(session.id)")
                 .font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+            if let binding = session.worktree {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Worktree: \(binding.summary)").font(.system(size: 11, weight: .medium))
+                    if let record = model.managedWorktree(atPath: binding.path) {
+                        Text("Now: \(model.managedWorktreeSummary(record))").font(.system(size: 11)).foregroundStyle(.secondary)
+                    } else {
+                        Text("Parley no longer has a record of this worktree; it may have been removed.").font(.system(size: 11)).foregroundStyle(.orange)
+                    }
+                    Text("The recorded base is the commit the tree was created from. It is not the tree's current HEAD, and nothing here says who changed a file.")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }.textSelection(.enabled)
+            }
             if let detail = session.detail { Text(detail).font(.system(size: 11)).foregroundStyle(.secondary) }
 
             Text("Participants").font(.system(size: 12, weight: .semibold))

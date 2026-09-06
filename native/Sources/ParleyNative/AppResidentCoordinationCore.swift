@@ -75,7 +75,8 @@ final class AppResidentCoordinationCore {
         let busyDraftStore = try ReviewedBusyDraftStore(
             file: applicationDirectory.appendingPathComponent("reviewed-busy-drafts.json")
         )
-        let gitFactsCapture = DelegationGitSnapshotCapture()
+        let managedWorktreeStore = ManagedWorktreeStore(file: applicationDirectory.appendingPathComponent("managed-worktrees.json"))
+        let gitFactsCapture = DelegationGitSnapshotCapture(managedWorktreeLookup: { root in managedWorktreeStore.evidence(forWorktreeRoot: root) })
         let broker = RelayBroker(
             credentials: credentials,
             panes: { try controller.listPanes() },
