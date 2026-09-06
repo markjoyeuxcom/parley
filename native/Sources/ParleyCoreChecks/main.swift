@@ -4072,7 +4072,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "22", "the shared protocol version drifted from cross-project agent awareness")
+    try expect(AgentProtocol.version == "23", "the shared protocol version drifted from cross-project agent awareness")
     try expect(
         AgentProtocol.text.contains("parley delegate <target> --parent <handoff-id>")
             && AgentProtocol.text.contains("requestChanges")
@@ -10554,6 +10554,7 @@ let checks: [(String, () throws -> Void)] = [
     ("Return toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Return") }),
     ("Actions toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Actions") }),
     ("Waiting toolbar menu remains stable during live updates", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Waiting") }),
+    ("toolbar menu check recovers when something outside ends its tracking early", { try checkToolbarMenuSurvivesUpdatesWhileTracking("Ask", interruptFirstAttemptAfter: 5) }),
     ("detailed in-app help coverage", checkInAppHelpGuideCoverage),
     ("workbench state projection", checkWorkbenchStateProjection),
     ("Precision Grid chrome uses owned state", checkPrecisionGridChromeUsesOwnedState),
@@ -10725,7 +10726,7 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == ApprovedComma
 
 // `--only <substring>` runs the matching checks alone during local iteration.
 let onlyFilter = argument(named: "--only")?.lowercased()
-let selectedChecks = (checks + reviewRegressionChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + hotPathCostChecks + callbackHotPathChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
+let selectedChecks = (checks + reviewRegressionChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + auxiliaryWindowChecks + helpAuditChecks + hotPathCostChecks + callbackHotPathChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var failureCount = 0

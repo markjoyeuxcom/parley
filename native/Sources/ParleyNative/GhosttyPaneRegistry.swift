@@ -183,6 +183,8 @@ final class GhosttyPaneRegistry {
             workingDirectory: launch.workingDirectory,
             envVars: launch.environment,
             command: launch.command,
+            // Ghostty forces this on for any surface created with a command;
+            // stated here so the behaviour is explicit, not chosen per pane.
             waitAfterCommand: true,
             context: .window,
             resizeThrottleMilliseconds: 64

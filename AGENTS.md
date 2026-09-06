@@ -131,6 +131,24 @@ Production and a separate Development directory.
   main-window hiding.
 - Closing/hiding the main window keeps panes and coordination alive while the
   application remains running.
+- Auxiliary windows (Status Center, Task Manager, Help, About, Settings) are
+  `Window`/`Settings` scenes, which SwiftUI hides on close and keeps alive.
+  Each scene's root is `AuxiliaryWindowRoot` (ParleyUI): it observes no
+  model state and follows `AuxiliaryWindowPresence.next`, a per-window
+  transition driven by AppKit window notifications because `onDisappear`
+  never fires for a hidden scene window. Closed or ordered out is
+  `released`: the view is destroyed, so no observer, timer, `TimelineView`
+  or layout work remains, and reopening builds it fresh (filters and toggles
+  reset; selection lives in the model). Minimising or hiding the application
+  suspends only a window that was on screen; a released window stays
+  released through a global hide/unhide because that notification reaches
+  closed windows too. `suspended` keeps the view and its
+  unapplied drafts (for example Settings font choices), while the
+  `auxiliaryWindowActive` environment turns false so the content's
+  `WindowRefreshClock` stops and its once-a-second labels become static.
+  Those clocks run in `MenuTrackingRefreshPolicy.runLoopMode`, owned by the
+  mounted content and invalidated with it. The placeholder shown while
+  released carries the same minimum frame as the content.
 - Closing a pane or workspace explicitly ends its processes.
 - Stop Everything, Prepare to Uninstall and confirmed full quit end every pane
   process and the coordination core.
@@ -338,7 +356,45 @@ off by default, memory-only, revocable and visibly disclosed. It keys exact argv
 canonical folder and source generation and includes mutable code with human file
 and credential access. Cross-vendor attribution cannot be guaranteed while it is
 granted. Restart/move/folder/policy changes, Stop Everything and quit invalidate
-it. Do not restore execution authority from the handoff journal. One active run
+it. Do not restore execution authority from the handoff journal. Separately,
+**Settings > General > Agent command runs** holds the person's durable choice
+to approve requested runs automatically. Both switches in that section are
+execution authority and live in `CommandRunAuthorizationStore`
+(`command-run-authorization.json`, owner-only, inside the agent-denied
+application directory, narrowly validated on every read, anything odd reads
+as off), never in a preference domain an agent process could write; nothing
+reads them from an agent request or the journal. `AppModel` pushes the
+approval choice into `ReviewedCommandRunCoordinator.setAutomaticApproval`.
+While on, an eligible request is approved exactly as requested with no
+session grant and `approvedAutomatically` recorded on the run (decoded as
+false for older journal records), requests already waiting are approved if
+their pane is still current, the runs notice discloses it, and turning it
+off restores per-run approval immediately and returns not-yet-launched
+automatic approvals to pending. A permanent stop still refuses every
+request. The second switch, "Close the Shell pane when a run finishes
+cleanly", is decided before any shell exists: the worker ticket carries
+`exitInsteadOfShellWhenClean`, so after a clean result
+(`ReviewedCommandRunPaneClosePolicy.isClean`) the worker exits instead of
+exec'ing a login shell. `CommandRunPaneCleanup` then decides from fresh
+controller facts, bound to the pane's created generation, and `AppModel`
+removes the pane once the worker's lease is released, restoring the pane that
+was active at launch if the person is still on the run's pane. Ghostty forces
+wait-after-command on every surface created with a command (the per-surface
+flag can only turn it on), so the surface keeps showing "Process exited" and
+never reports its process as ended by itself; in exit-when-clean mode the
+released lease is the proof that the worker exited without exec'ing a shell
+and nothing runs behind the surface. The worker outlives Ghostty's
+abnormal-runtime threshold before exiting (monotonic clock) so no
+failed-launch screen flashes. Ghostty reports a close synchronously from
+inside `terminate`, and that report refreshes the app: every termination in
+`WorkbenchController` goes through `terminateSurface`, and close, restart,
+stop, start, workspace close and layout restore refuse to begin while one is
+in progress (`isTerminatingSurface`); the cleanup pass skips such ticks,
+`closePane` removes by identity and restart/stop re-resolve their target
+after the transport ran. A pane handed
+to an interactive shell, a restarted pane, a failed, cancelled, truncated or
+unsaved run all keep their pane; close failures are retried up to three
+times and reported separately. One active run
 per requester; native cancellation stops its owned process group. Result recovery
 requires the same live source generation. Reuse the existing journal and 90 KB
 rendered/200 KB transport bounds; agent commands never create their own approval.
