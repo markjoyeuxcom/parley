@@ -1,4 +1,5 @@
 import ParleyCore
+import ParleyUI
 import SwiftUI
 
 struct StatusCenterView: View {
@@ -14,12 +15,25 @@ struct StatusCenterView: View {
     @State private var historyKind = CollaborationHistoryKindFilter.all
     @State private var historyOutcome = CollaborationHistoryOutcomeFilter.all
     @State private var historyExportSelection: Set<String> = []
-    // Do not rebuild an open AppKit menu while it is tracking the pointer.
-    private let refresh = Timer.publish(
-        every: 2,
-        on: .main,
-        in: MenuTrackingRefreshPolicy.runLoopMode
-    ).autoconnect()
+    // Owned by this mounted content: it runs in the menu-tracking policy mode
+    // (an open AppKit menu is never rebuilt while tracking the pointer) and is
+    // invalidated when the window closes and this view is destroyed.
+    @StateObject private var refreshClock = AuxiliaryWindowClock(interval: 2)
+    /// False while the window is minimised or the app is hidden: drafts stay,
+    /// the clock and the once-a-second labels stop.
+    @Environment(\.auxiliaryWindowActive) private var windowActive
+
+    /// A once-a-second timeline while the window is on screen; a single
+    /// static evaluation while it is minimised or the app is hidden, so a
+    /// suspended window schedules no updates.
+    @ViewBuilder
+    private func liveClock<Body: View>(@ViewBuilder _ body: @escaping (Date) -> Body) -> some View {
+        if windowActive {
+            TimelineView(.periodic(from: .now, by: 1)) { context in body(context.date) }
+        } else {
+            body(Date())
+        }
+    }
 
     private var snapshot: StatusCenterSnapshot {
         model.statusSnapshot(
@@ -160,10 +174,12 @@ struct StatusCenterView: View {
             model.refreshRuntimeReadiness()
             applyExternalSelection()
             ensureSelection()
+            if windowActive { refreshClock.start { model.refreshStatusCenterPeriodically() } }
         }
-        .onReceive(refresh) { _ in
-            model.refreshStatusCenterPeriodically()
+        .onChange(of: windowActive) { _, active in
+            if active { refreshClock.start { model.refreshStatusCenterPeriodically() } } else { refreshClock.stop() }
         }
+        .onDisappear { refreshClock.stop() }
         .onChange(of: model.statusHistoryRevision) { _, _ in
             // Fetched history was applied; reconcile selection against it now.
             applyExternalSelection()
@@ -522,8 +538,8 @@ struct StatusCenterView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     if handoff.kind == .delegate {
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            if let facts = model.delegationVisibility(for: handoff, at: context.date) {
+                        liveClock { date in
+                            if let facts = model.delegationVisibility(for: handoff, at: date) {
                                 delegationFactsLine(facts)
                             }
                         }
@@ -543,8 +559,8 @@ struct StatusCenterView: View {
                             .foregroundStyle(.secondary)
                         ChromeChip(handoff.state.rawValue.capitalized, color: stateColor(handoff))
                     }
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(activityTiming(handoff, at: context.date))
+                    liveClock { date in
+                        Text(activityTiming(handoff, at: date))
                             .font(ChromeFont.meta)
                             .foregroundStyle(.secondary)
                     }
@@ -1193,8 +1209,8 @@ struct StatusCenterView: View {
                     }
                     inspectorSection(handoff.kind == .commandRun ? "COMMAND REQUEST" : (handoff.kind == .delegate ? "INSTRUCTION" : "QUESTION OR MESSAGE"), handoff.text)
                     if handoff.kind == .delegate {
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            if let facts = model.delegationVisibility(for: handoff, at: context.date) {
+                        liveClock { date in
+                            if let facts = model.delegationVisibility(for: handoff, at: date) {
                                 delegationFactsSection(facts)
                             }
                         }

@@ -124,6 +124,24 @@ Production and a separate Development directory.
   main-window hiding.
 - Closing/hiding the main window keeps panes and coordination alive while the
   application remains running.
+- Auxiliary windows (Status Center, Task Manager, Help, About, Settings) are
+  `Window`/`Settings` scenes, which SwiftUI hides on close and keeps alive.
+  Each scene's root is `AuxiliaryWindowRoot` (ParleyUI): it observes no
+  model state and follows `AuxiliaryWindowPresence.next`, a per-window
+  transition driven by AppKit window notifications because `onDisappear`
+  never fires for a hidden scene window. Closed or ordered out is
+  `released`: the view is destroyed, so no observer, timer, `TimelineView`
+  or layout work remains, and reopening builds it fresh (filters and toggles
+  reset; selection lives in the model). Minimising or hiding the application
+  suspends only a window that was on screen; a released window stays
+  released through a global hide/unhide because that notification reaches
+  closed windows too. `suspended` keeps the view and its
+  unapplied drafts (for example Settings font choices), while the
+  `auxiliaryWindowActive` environment turns false so the content's
+  `WindowRefreshClock` stops and its once-a-second labels become static.
+  Those clocks run in `MenuTrackingRefreshPolicy.runLoopMode`, owned by the
+  mounted content and invalidated with it. The placeholder shown while
+  released carries the same minimum frame as the content.
 - Closing a pane or workspace explicitly ends its processes.
 - Stop Everything, Prepare to Uninstall and confirmed full quit end every pane
   process and the coordination core.
