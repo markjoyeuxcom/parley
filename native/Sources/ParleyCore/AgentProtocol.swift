@@ -271,11 +271,13 @@ public enum AgentProtocol {
       parley wait <id|current>           wait for an Ask or delegated result
       parley cancel <id|current>         cancel owned tracking, not the target CLI
 
-    Reviewed test runs (native approval; outside the agent boundary):
+    Requested command runs (outside the agent boundary; per-run approval by default):
       parley request-run --cwd <absolute-folder> -- <absolute-executable> [args...]
                                         request a new Shell and wait for captured output/exit
       parley wait <run-id>              recover a run from the same source generation
-                                        Cancel and session trust are native-only
+                                        human session trust or automatic approval may omit the preview
+                                        Cancel, session trust and persistent Settings switches are native-only
+                                        clean-close is fixed at launch; captured results remain available
 
     Team sessions (native approval; bounded provisioning for one objective):
       parley team request --folder <absolute-folder> [--template <name>] [--panes <n>] [--hours <n>] [--worktree <branch> [--base <ref>]] [objective...]

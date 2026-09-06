@@ -141,6 +141,15 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "workspaces-canvas-dock",
+                    title: "Focus Canvas and the Collaboration Dock",
+                    paragraphs: [
+                        "Use Focus in the workbench toolbar, Navigate > Enter Focus Canvas, or Command-Shift-F to enlarge the selected pane while keeping peers visible. Grid or Return to Pane Grid restores the persisted split proportions. These actions keep the same terminal processes and sessions.",
+                        "Navigate > Show Collaboration Dock (Command-Shift-D) opens the side panel for the current workspace’s waiting work, active handoffs, recipes and recent results. It offers a route to Status Center for the full record. Hide Collaboration Dock with the same shortcut to recover the space.",
+                        "Command-1…9 focuses an existing pane by its position in the current workspace. Command-Option-T returns keyboard focus to the active terminal. Command-Shift-T opens Task Manager; it does not create a terminal.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "workspaces-worktrees",
                     title: "Existing Git worktrees",
                     paragraphs: [
@@ -499,6 +508,17 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "context-packs-inspect",
+                    title: "Inspect your agent-staged drafts",
+                    paragraphs: [
+                        "An agent can list and inspect its own staged drafts before asking with them or discarding them. Inspection does not approve a draft, change its agent-provided provenance or send it to another pane.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand("parley context list", "List drafts owned by this agent pane."),
+                        ParleyHelpCommand("parley context show <draft-id>", "Inspect one of this pane’s drafts by its exact id."),
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "context-packs-send",
                     title: "Preview and send",
                     paragraphs: [
@@ -671,6 +691,131 @@ public enum ParleyHelpGuide {
             ]
         ),
         ParleyHelpTopic(
+            id: "settings",
+            title: "Settings and appearance",
+            summary: "Adjust terminal appearance and agent lifecycle, and understand which window choices are kept.",
+            symbol: "gearshape",
+            sections: [
+                ParleyHelpSection(
+                    id: "settings-appearance",
+                    title: "Terminal fonts and Ghostty appearance",
+                    paragraphs: [
+                        "Open Settings > Appearance. Choose an explicit font family or leave the family at Parley Default (or Imported when an import supplies it). Enable the font size Override to choose a size; turn Override off to inherit it. Your explicit font choices take precedence over imported values.",
+                        "Import… reads the supported Ghostty configuration and theme locations into an appearance preview. Refresh… rereads those locations when an import already exists. Remove clears the staged import. Only appearance values are imported: font family, font size, theme, palette and colours. Commands, keybindings, shell integration, config-file includes and other behavioural settings are not imported.",
+                        "Apply saves your staged font and import choices and updates existing terminal surfaces without restarting running sessions; new panes use the same appearance. Import, Refresh and Remove need Apply before they take effect. Restore Parley Defaults applies immediately: it clears both explicit font overrides and imported appearance.",
+                        "Closing Settings discards unapplied appearance edits. Saved settings are retained. General switches take effect when changed; they do not wait for the Appearance Apply button.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "settings-idle-agents",
+                    title: "Idle agent reaping",
+                    paragraphs: [
+                        "Settings > General > Agent lifecycle offers Reap idle agents after 30 minutes, off by default. The same switch appears in Tools. When enabled, it can stop a background agent after at least 30 minutes without recorded pane activity. It never reaps the selected pane, a workspace lead, Shell panes or a pane in a live Ask or Delegate.",
+                        "Reaping leaves a visible stopped slot; it does not close the pane and does not automatically resume a vendor session. You choose when to start it again. Recorded silence is not proof that a vendor finished: quiet, untracked vendor work may be interrupted, so keep this off when that work needs to continue unattended.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "settings-other",
+                    title: "Other Settings sections",
+                    items: [
+                        "General > Agent command runs controls automatic approval and clean Shell pane removal. See Requested command runs for the exact lifetimes and exceptions.",
+                        "General > Swift package builds enables the optional compatibility wrapper for newly started agent panes. See CLI permissions and Troubleshooting before retrying a nested-sandbox error.",
+                        "General > Software updates controls the opt-in Production stable update checks and the separate manual Stable/Beta release channel. See Compatibility, updates and feedback.",
+                        "Notifications controls local attention notifications. They use content-free collaboration facts rather than terminal text; workspace notifications are opt-in.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "settings-window-lifetime",
+                    title: "Close, minimise and hide",
+                    paragraphs: [
+                        "When you close Status Center, Task Manager, Settings, Help or About, that window’s content is released. On reopening, window-local filters, search, selections and toggles return to their defaults; unapplied edits are discarded. This does not erase saved settings, workspaces or collaboration history.",
+                        "If you minimise one of those windows or hide Parley, its drafts and local controls stay in memory while live refresh pauses. Restore the window or unhide the app to continue. Closing the window is different from minimising it or hiding the app.",
+                        "Closing the main window keeps app-resident panes running and coordination alive. Quit and Stop Everything end those processes; auxiliary window closure does not.",
+                    ]
+                ),
+            ]
+        ),
+        ParleyHelpTopic(
+            id: "command-runs",
+            title: "Requested command runs",
+            summary: "Run an agent-proposed command in a new human Shell, review its authority and recover the captured result.",
+            symbol: "terminal",
+            sections: [
+                ParleyHelpSection(
+                    id: "cli-permissions-test-runs",
+                    title: "Request, review and run",
+                    paragraphs: [
+                        "An agent can request a noninteractive command with exact argv and a canonical folder inside its working folder. Each approved run opens a new visible Shell in the requesting workspace; existing Shell panes never receive agent input.",
+                        "Per-run approval is the default. The notice above the terminals and Review runs and trust open an editable native preview of the command, folder and requester. Choose Run once in new Shell to submit the edited command, or reject it. A matching session grant or the automatic approval switch can instead authorize a request without a preview.",
+                        ReviewedCommandRunCoordinator.trustDisclosure,
+                        "This executes outside the agent boundary and outside vendor tool enforcement. It does not answer a vendor permission prompt or make captured output a test verdict.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand("parley request-run --cwd /absolute/project -- /absolute/executable arg", "Propose literal argv and a contained folder. Native per-run approval is the default; existing human authorization may allow the run without another preview."),
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "command-runs-session-trust",
+                    title: "Exact-command session trust",
+                    paragraphs: [
+                        "Optional exact-command session trust is off by default, memory-only and granted or revoked by you in Review runs and trust. It matches exact argv, canonical folder and requesting pane generation, including mutable project code edited between runs. Exact argv is not a boundary around the code it executes.",
+                        "Active session grants stay visible. Restart, move, folder or policy changes, Stop Everything and quit invalidate them; they do not survive relaunch. Revoke a grant when you want future matching requests to need review again.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "command-runs-settings",
+                    title: "Persistent Settings switches",
+                    paragraphs: [
+                        "Settings > General > Agent command runs has two separate switches, both off by default. Unlike exact-command session trust, these choices survive relaunch until you change them. They are stored in Parley’s private application directory, which ordinary agent panes cannot read or write; an untrusted settings file is treated as both off and Settings explains why.",
+                        "Approve agent command runs automatically authorizes every eligible request exactly as requested, without a preview or an exact-command session grant. Turning it on also approves eligible waiting requests. The requester must still be a current agent pane, workspace policy must allow runs, and the canonical folder must be inside that pane’s folder. The runs notice, review sheet and run records disclose automatic approval.",
+                        "Turning automatic approval off returns queued automatic approvals that have not launched to waiting. It does not revoke manual approvals or exact-command session grants, and does not stop a command already running. Revoke those grants or use Cancel separately when needed.",
+                        "Close the Shell pane when a run finishes cleanly is independent of automatic approval. Its choice is fixed when the run starts: switching it later does not change that run. A clean run has exit 0, no signal, was not cancelled and has no truncated output. With clean-close enabled at launch, its worker exits instead of handing over an interactive shell; after the captured result is saved and the worker has exited, Parley removes the run pane automatically.",
+                        "Focus returns to the previous surviving pane only if you are still on the run’s pane. An interactive shell is never closed by this option, and a pane you restarted is yours. Failed, cancelled or truncated runs keep their panes for inspection and ordinary shell use. A result that could not be saved does not qualify for automatic pane removal. The captured result remains in Review runs and trust and Status Center.",
+                        "If a switch cannot be saved, Settings shows the error. Enabling fails and stays off. Disabling still takes effect for this session, but the previously saved choice may return after relaunch; turn it off again once storage is writable.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "command-runs-results",
+                    title: "Results, cancellation and recovery",
+                    paragraphs: [
+                        "The command has closed stdin and separate piped stdout/stderr, bounded to 30 KB each with explicit truncation. Parley returns a captured result with the approved argv/folder, output, exit status or signal and cancellation/truncation flags. Unless clean-close was selected at launch and the run qualifies, the pane becomes an ordinary interactive human Shell afterward.",
+                        "One run may be active per requester. Cancel in Review runs and trust stops the owned process group. Stop Everything and quit end tracked runs and revoke session grants; they do not turn off the persistent Settings switches.",
+                        "The request prints a Parley Run ID on stderr. If its calling shell disconnects, the same live requesting pane generation can use parley wait with that exact ID to recover the captured result. Do not silently resend a rejected, interrupted or uncertain run. Troubleshooting has the SwiftPM-to-human-Shell test path.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand("parley wait <run-id>", "Recover one captured command result from the same live requesting generation."),
+                    ]
+                ),
+            ]
+        ),
+        ParleyHelpTopic(
+            id: "team-sessions",
+            title: "Team sessions",
+            summary: "Approve a bounded team for one objective, monitor members and stop only the panes it created.",
+            symbol: "person.3",
+            sections: [
+                ParleyHelpSection(
+                    id: "cli-permissions-team-sessions",
+                    title: "Team sessions",
+                    paragraphs: [
+                        "A requesting agent pane can propose a bounded team for one objective. Team Sessions (Tools menu, or the notice above the terminal) opens an editable preview of the objective, working folder, allowed vendors, permission profile, pane limit and provisioning deadline. Nothing is authorized until you approve.",
+                        "A portable team template is a blueprint, not permission to provision agents. A named template can prefill a request, but you still approve its bound folder, vendors, profile, count and deadline here. See Workspaces for applying templates directly from the native UI.",
+                        TeamSessionDisclosure.approval,
+                        TeamSessionDisclosure.deadline,
+                        "After approval the sheet stays open as the session's monitoring surface and never blocks pane creation. It shows every participant with its provenance and created generation, handoffs between participants, decisions that need you and the remaining provisioning time. Each created pane is an ordinary vendor session with that vendor's own permission prompts.",
+                        TeamSessionDisclosure.worktree,
+                        TeamSessionDisclosure.stop + " " + TeamSessionDisclosure.expiry,
+                    ],
+                    commands: [
+                        ParleyHelpCommand("parley team request --folder /absolute/project --panes 2 --hours 8 \"objective\"", "The requesting pane proposes a team and waits for your editable approval."),
+                        ParleyHelpCommand("parley team request --folder /absolute/repo --worktree feat/parser --base main \"objective\"", "Proposes a new worktree on a new branch; you preview the base commit and decide in the approval."),
+                        ParleyHelpCommand("parley team add --vendor codex --name Reviewer --role reviewer", "The requesting pane creates one approved pane and receives its id."),
+                        ParleyHelpCommand("parley team status", "The requester or a member reads its session as JSON, including structured stop outcomes."),
+                    ]
+                ),
+            ]
+        ),
+        ParleyHelpTopic(
             id: "cli-permissions",
             title: "CLI permission decisions",
             summary: "Grant the narrowest access needed by the current task without turning routine source reads into repeated friction.",
@@ -708,37 +853,10 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
-                    id: "cli-permissions-test-runs",
-                    title: "Requested command runs",
+                    id: "cli-permissions-run-and-team-help",
+                    title: "Command runs and team approvals",
                     paragraphs: [
-                        "An agent can request a noninteractive command with exact argv and a canonical folder inside its working folder. Review runs and trust opens an editable native preview. Run once in new Shell opens a new visible Shell in the requesting workspace; existing Shell panes never receive agent input.",
-                        ReviewedCommandRunCoordinator.trustDisclosure,
-                        "Per-run approval is the default. Optional exact-command session trust applies to argv, canonical folder and requesting pane generation, including code edited between runs. Active grants stay visible and can be revoked. Restart, move, folder or policy changes, Stop Everything and quit invalidate them.",
-                        "Settings > General > Agent command runs offers Approve agent command runs automatically, off by default. While it is on, every eligible request starts as requested in a new Shell pane without a preview, the runs notice says so, and turning it off restores per-run approval at once. Turning it off also returns any request it approved that has not started yet to waiting. Both choices in this section are stored in Parley's private application directory, which agent processes cannot read or write, so an agent cannot turn them on; if that file cannot be trusted, both are treated as off and Settings says why.",
-                        "Close the Shell pane when a run finishes cleanly, in the same section and also off by default, applies to runs that start after it is on: after a clean result (exit 0, no signal, not cancelled, output within the capture limit) the run's worker ends the pane's process instead of opening an interactive shell, and once the result is saved and the process has ended Parley removes the pane and returns focus to the pane you were using. Parley never closes a pane running an interactive shell, and a pane you restarted is yours. A failed, cancelled or truncated run keeps its pane with an ordinary shell. The captured result stays in Review runs and trust and Status Center.",
-                        "The command has closed stdin and separate piped stdout/stderr, bounded to 30 KB each with explicit truncation. Parley returns captured output and exit status or signal; it assigns no test verdict. Afterward the same pane becomes an ordinary interactive human Shell, unless the run started while Close the Shell pane when a run finishes cleanly was on and finished cleanly, in which case its process ends and Parley removes the pane.",
-                        "One run may be active per requester. Cancel in Review runs and trust stops the owned process group. The same live requesting generation can recover the result using its run ID with parley wait. Do not resend an uncertain run to repair history.",
-                    ],
-                    commands: [
-                        ParleyHelpCommand("parley request-run --cwd /absolute/project -- /absolute/executable arg", "Request an editable human approval and a new visible Shell run."),
-                    ]
-                ),
-                ParleyHelpSection(
-                    id: "cli-permissions-team-sessions",
-                    title: "Team sessions",
-                    paragraphs: [
-                        "A requesting agent pane can propose a bounded team for one objective. Team Sessions (Tools menu, or the notice above the terminal) opens an editable preview of the objective, working folder, allowed vendors, permission profile, pane limit and provisioning deadline. Nothing is authorized until you approve.",
-                        TeamSessionDisclosure.approval,
-                        TeamSessionDisclosure.deadline,
-                        "After approval the sheet stays open as the session's monitoring surface and never blocks pane creation. It shows every participant with its provenance and created generation, handoffs between participants, decisions that need you and the remaining provisioning time. Each created pane is an ordinary vendor session with that vendor's own permission prompts.",
-                        TeamSessionDisclosure.worktree,
-                        TeamSessionDisclosure.stop + " " + TeamSessionDisclosure.expiry,
-                    ],
-                    commands: [
-                        ParleyHelpCommand("parley team request --folder /absolute/project --panes 2 --hours 8 \"objective\"", "The requesting pane proposes a team and waits for your editable approval."),
-                        ParleyHelpCommand("parley team request --folder /absolute/repo --worktree feat/parser --base main \"objective\"", "Proposes a new worktree on a new branch; you preview the base commit and decide in the approval."),
-                        ParleyHelpCommand("parley team add --vendor codex --name Reviewer --role reviewer", "The requesting pane creates one approved pane and receives its id."),
-                        ParleyHelpCommand("parley team status", "The requester or a member reads its session as JSON, including structured stop outcomes."),
+                        "For a command that needs human Shell permissions, see the Requested command runs topic, including per-run approval, exact-command session trust and both Settings switches. For bounded creation of agent panes, see Team sessions. These approvals are separate from each vendor CLI’s own permission prompts.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -953,12 +1071,21 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
-                    id: "release-updates",
-                    title: "Stable and Beta GitHub Releases",
+                    id: "release-automatic-updates",
+                    title: "Automatic stable updates in Production",
                     paragraphs: [
-                        "Stable selects published non-prereleases. Beta selects the newest published release including prereleases. Parley contacts its public GitHub Releases API only after you press Check GitHub; there is no background update check.",
+                        "Settings > General > Software updates offers Check for stable updates automatically in configured Production builds. It is off by default. Turning it on allows periodic checks of the signed stable update channel; Check Now… checks that channel immediately without enabling periodic checks.",
+                        "The updater requires your consent to install. There is no background installation. An update that needs to quit Parley follows the ordinary pane-aware quit confirmation, because full quit ends app-resident panes and coordination. Finish tracked work before agreeing to quit and install.",
+                        "Development does not start the updater or use the Production feed. If the installed build has no configured automatic update channel, Settings shows it as unavailable. Manual GitHub downloads below remain a separate path.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "release-updates",
+                    title: "Manual Stable and Beta GitHub downloads",
+                    paragraphs: [
+                        "The Manual release channel in Settings chooses the GitHub downloads shown in Compatibility & Releases. Stable selects published non-prereleases. Beta selects the newest published release including prereleases. This manual path contacts the public GitHub Releases API when you press Check GitHub; choosing Beta does not change the automatic stable update channel.",
                         "Before offering a DMG, Parley requires the GitHub asset list, release manifest and SHA256SUMS to agree on version, repository, architecture, filename, byte count and SHA-256. Download and Verify hashes the complete downloaded DMG before saving it locally. It does not install, relaunch or stop app-resident panes.",
-                        "The automatic check is deliberately credential-free. A private releases repository returns HTTP 404 and cannot be checked from the app; Open Releases uses your signed-in browser, while automatic checks require releases to be published from a public repository.",
+                        "The manual GitHub check is credential-free. A private releases repository returns HTTP 404 and cannot be checked from the app; Open Releases uses your signed-in browser. In-app GitHub checks require a public releases repository.",
                     ],
                     items: [
                         "Release notes are shown before any download.",
@@ -994,6 +1121,11 @@ public enum ParleyHelpGuide {
                         "Control-Tab / Control-Shift-Tab — next / previous workspace.",
                         "Control-Option-Right / Control-Option-Left — next / previous pane.",
                         "Command-Shift-J — cycle authoritative permission, result and interruption attention.",
+                        "Command-1…9 — focus pane 1 through 9 in the current workspace, when that pane exists.",
+                        "Command-Shift-F — enter Focus Canvas or return to Pane Grid.",
+                        "Command-Shift-D — show or hide the Collaboration Dock.",
+                        "Command-Option-T — focus the active terminal.",
+                        "Command-Shift-T — open Task Manager.",
                         "Command-? — open this detailed help window.",
                     ]
                 ),
@@ -1001,7 +1133,7 @@ public enum ParleyHelpGuide {
                     id: "shortcuts-actions",
                     title: "Creation and handoff",
                     items: [
-                        "Command-Shift-N — open a workspace.",
+                        "Command-Shift-N — New Workspace; creates a folderless workspace. Use Workspace > Open Folder… to open an existing folder.",
                         "Command-Shift-1 — new Claude pane.",
                         "Command-Shift-2 — new Codex pane.",
                         "Command-Shift-3 — new Agy pane.",
@@ -1041,10 +1173,35 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "troubleshooting-test-runs",
+                    title: "A test needs a human Shell",
+                    items: [
+                        "1. If SwiftPM reports sandbox_apply: Operation not permitted in an agent pane, open Settings > General > Swift package builds. Compatibility is off by default; opt in deliberately, then explicitly restart that agent pane or start a new one. This changes SwiftPM’s nested sandbox only; Parley’s outer boundary and vendor approvals remain.",
+                        "2. Retry the build or test with the compatibility wrapper. If the vendor rebuilt PATH, the PARLEY_SWIFT_COMMAND helper below reaches the same wrapper. Do not enable compatibility or restart a pane silently on someone else’s behalf.",
+                        "3. A remaining GUI test failure such as EPERM spawning /usr/bin/login under AgentProcessBoundary needs a human Shell’s permissions. From the project folder, ask for one reviewed run with request-run. The npm example below resolves the installed npm executable and runs that project’s test script; it requires npm on PATH and a package.json test script.",
+                        "4. Review runs and trust shows the exact command and folder for native approval. Run once in new Shell creates a new visible pane. An existing matching session grant or the automatic approval switch can authorize it without another preview; the run record says how it was approved.",
+                        "5. Read the returned captured result and exit status. If the request’s shell disconnected, use the Parley Run ID printed on stderr with parley wait from the same live requesting pane generation. Inspect cancellation and truncation flags, and do not resubmit an uncertain command.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand("\"$PARLEY_SWIFT_COMMAND\" build", "Retry a Swift package build after your compatibility opt-in and explicit pane start/restart."),
+                        ParleyHelpCommand("parley request-run --cwd \"$PWD\" -- \"$(command -v npm)\" test", "From a project using npm test, resolve the installed executable and request a new human Shell run."),
+                        ParleyHelpCommand("parley wait <run-id>", "Replace <run-id> with the exact Parley Run ID to recover the captured result."),
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "troubleshooting-uninstall",
+                    title: "Prepare to Uninstall",
+                    paragraphs: [
+                        "In Production, choose Parley > Prepare to Uninstall… while coordination is available, then review Prepare and Quit. Parley refuses while an Ask or tracked delegation is active: finish or cancel that work first.",
+                        "Preparation ends every app-resident pane process, stops coordination and quits. If shutdown cannot be confirmed, Parley reports the error and keeps the app open. This action does not delete the app, workspace layouts or local collaboration history.",
+                        "After Parley quits, move the application to Trash to uninstall it. Saved local data remains on disk for a later reinstall; Prepare to Uninstall is not a history-erasure action.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "troubleshooting-shutdown",
                     title: "Quit, detach, or reset the runtime",
                     items: [
-                        "Press Command-Q to quit the app. Closing the last window with its red button leaves Parley running.",
+                        "Press Command-Q to quit the app. Closing the main window with its red button leaves Parley running; closing auxiliary windows releases their local content as described in Settings and appearance.",
                         "An owned Production or Development runtime always offers Keep Running, Stop Everything, or Cancel, even when every agent is stopped or dead.",
                         "Closing the main window keeps panes running while Parley remains open. Quit or Stop Everything ends every pane process and the app-resident coordination core.",
                         "If Parley cannot verify that every pane stopped, it reports the failure and keeps the app open instead of claiming shutdown succeeded.",
