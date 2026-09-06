@@ -72,6 +72,9 @@ final class GhosttyPaneRegistry {
     private var selectedPaneID: String?
     var onPaneFocused: ((String) -> Void)?
     var onPaneStateChanged: (() -> Void)?
+    /// A title actually changed. Titles are display metadata only, so the
+    /// model publishes pane state without relay fetching or layout work.
+    var onPaneTitleChanged: (() -> Void)?
 
     func bind(_ workbench: WorkbenchController) {
         self.workbench = workbench
@@ -187,8 +190,10 @@ final class GhosttyPaneRegistry {
         let delegate = Delegate(
             paneID: paneID,
             onTitle: { [weak self] paneID, title in
-                try? self?.workbench?.terminalDidChangeTitle(paneID: paneID, title: title)
-                self?.onPaneStateChanged?()
+                guard let self, let workbench = self.workbench else { return }
+                if (try? workbench.terminalDidChangeTitle(paneID: paneID, title: title)) == true {
+                    self.onPaneTitleChanged?()
+                }
             },
             onFocus: { [weak self] paneID in
                 guard let self else { return }

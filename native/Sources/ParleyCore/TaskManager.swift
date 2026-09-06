@@ -399,12 +399,19 @@ public enum TaskManagerTTY {
 }
 
 public final class TaskManagerSampler {
+    public typealias ProcessReader = @Sendable () -> [TaskManagerRawProcess]
+    /// The real system reader; checks inject a recording or sleeping one.
+    public static let systemProcessReader: ProcessReader = { TaskManagerProcessReader.readAll() }
+
     private var previousCPUTimeByProcess: [TaskManagerProcessIdentity: UInt64] = [:]
     private var previousSampledAt: Date?
     private let anchorResolver: PaneProcessAnchorResolver
+    private let readProcesses: ProcessReader
 
-    public init(anchorResolver: PaneProcessAnchorResolver = PaneProcessAnchorResolver()) {
+    public init(anchorResolver: PaneProcessAnchorResolver = PaneProcessAnchorResolver(),
+                readProcesses: @escaping ProcessReader = TaskManagerSampler.systemProcessReader) {
         self.anchorResolver = anchorResolver
+        self.readProcesses = readProcesses
     }
 
     public func sample(
@@ -412,7 +419,7 @@ public final class TaskManagerSampler {
         paneDescriptors: [TaskManagerPaneDescriptor],
         sampledAt: Date = Date()
     ) -> TaskManagerSnapshot {
-        let rawProcesses = TaskManagerProcessReader.readAll()
+        let rawProcesses = readProcesses()
         let elapsed = previousSampledAt.map { sampledAt.timeIntervalSince($0) }
         let anchoredDescriptors = anchorResolver.anchored(
             paneDescriptors,
@@ -482,5 +489,87 @@ enum TaskManagerProcessReader {
         guard length > 0 else { return "Process \(pid)" }
         let bytes = buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }
         return String(decoding: bytes, as: UTF8.self)
+    }
+}
+
+
+/// Pure decisions for asynchronous sampling: a result is published only if
+/// no newer request was made while it ran and the pane set it sampled
+/// (pane id plus launch generation) is still the current one; a request made
+/// during sampling runs once more afterwards instead of being dropped.
+public enum TaskManagerSamplingPolicy {
+    public struct PaneIdentity: Equatable, Sendable {
+        public let paneID: String
+        public let launchGeneration: Int
+        public init(paneID: String, launchGeneration: Int) {
+            self.paneID = paneID
+            self.launchGeneration = launchGeneration
+        }
+    }
+
+    public static func identity(of panes: [WorkbenchPane]) -> [PaneIdentity] {
+        panes.map { PaneIdentity(paneID: $0.id, launchGeneration: $0.launchGeneration) }
+    }
+
+    public static func shouldPublish(resultGeneration: Int, latestRequest: Int, sampledIdentity: [PaneIdentity], currentIdentity: [PaneIdentity]) -> Bool {
+        resultGeneration == latestRequest && sampledIdentity == currentIdentity
+    }
+
+    public static func shouldResample(afterCompleting generation: Int, latestRequest: Int) -> Bool {
+        latestRequest > generation
+    }
+}
+
+/// The single owner of the stateful sampler. Samples run off the main actor
+/// and never overlap, so CPU baselines between consecutive samples stay
+/// consistent; PID and start-time identity are the sampler's own.
+public actor TaskManagerSamplingOwner {
+    private let sampler: TaskManagerSampler
+
+    public init(anchorResolver: PaneProcessAnchorResolver = PaneProcessAnchorResolver(),
+                readProcesses: @escaping TaskManagerSampler.ProcessReader = TaskManagerSampler.systemProcessReader) {
+        sampler = TaskManagerSampler(anchorResolver: anchorResolver, readProcesses: readProcesses)
+    }
+
+    public func sample(applicationPID: Int32, paneDescriptors: [TaskManagerPaneDescriptor], sampledAt: Date = Date()) -> TaskManagerSnapshot {
+        sampler.sample(applicationPID: applicationPID, paneDescriptors: paneDescriptors, sampledAt: sampledAt)
+    }
+}
+
+
+/// The request/complete state machine the model drives. `request` returns
+/// the generation to start, or nil while a sample is in flight (the request
+/// is remembered, never dropped). `complete` says whether the finished
+/// sample may be published and which generation, if any, to start next.
+public struct TaskManagerSamplingCoordinator: Equatable, Sendable {
+    public struct Outcome: Equatable, Sendable {
+        public let publish: Bool
+        public let restart: Int?
+    }
+
+    public private(set) var latestRequest = 0
+    public private(set) var inFlight: Int?
+
+    public init() {}
+
+    public mutating func request() -> Int? {
+        latestRequest &+= 1
+        guard inFlight == nil else { return nil }
+        inFlight = latestRequest
+        return latestRequest
+    }
+
+    public mutating func complete(generation: Int, sampledIdentity: [TaskManagerSamplingPolicy.PaneIdentity],
+                                  currentIdentity: [TaskManagerSamplingPolicy.PaneIdentity]) -> Outcome {
+        inFlight = nil
+        let publish = TaskManagerSamplingPolicy.shouldPublish(resultGeneration: generation, latestRequest: latestRequest,
+            sampledIdentity: sampledIdentity, currentIdentity: currentIdentity)
+        let stale = sampledIdentity != currentIdentity
+        guard TaskManagerSamplingPolicy.shouldResample(afterCompleting: generation, latestRequest: latestRequest) || stale else {
+            return Outcome(publish: publish, restart: nil)
+        }
+        if stale, latestRequest == generation { latestRequest &+= 1 }
+        inFlight = latestRequest
+        return Outcome(publish: publish, restart: latestRequest)
     }
 }

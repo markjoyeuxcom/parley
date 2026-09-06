@@ -140,3 +140,39 @@ public enum PaneAttentionProjection {
         items.first { $0.paneID == paneID }
     }
 }
+
+
+/// Memoises `PaneAttentionProjection.items` for one input generation. The
+/// owner bumps the generation whenever panes or any handoff collection
+/// change, so every sidebar row, header and focus-strip lookup in one pass
+/// shares a single projection. Future-dated items keep today's clamp-at-now
+/// ordering by never being served from the cache.
+public struct PaneAttentionCache: Sendable {
+    private var cachedGeneration: Int?
+    private var cachedItems: [PaneAttentionItem] = []
+    public private(set) var computeCount = 0
+
+    public init() {}
+
+    public mutating func items(generation: Int, panes: [WorkbenchPane], handoffs: [RelayHandoff], now: Date = Date()) -> [PaneAttentionItem] {
+        if cachedGeneration == generation { return cachedItems }
+        let items = PaneAttentionProjection.items(panes: panes, handoffs: handoffs, now: now)
+        computeCount += 1
+        if items.contains(where: { $0.occurredAt > now }) {
+            cachedGeneration = nil
+        } else {
+            cachedGeneration = generation
+            cachedItems = items
+        }
+        return items
+    }
+
+    public func hasItems(for generation: Int) -> Bool {
+        cachedGeneration == generation
+    }
+
+    public mutating func invalidate() {
+        cachedGeneration = nil
+        cachedItems = []
+    }
+}

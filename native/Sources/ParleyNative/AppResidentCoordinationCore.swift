@@ -20,7 +20,14 @@ final class AppResidentCoordinationCore {
     let teamSessions: TeamSessionCoordinator
 
     private let handoffJournal: RelayHandoffJournal
-    var historyPersistenceError: String? { handoffJournal.lastError }
+    private let activityJournal: RelayActivityJournal
+    /// Handoff persistence failures and activity-journal maintenance failures
+    /// share the Status Center health route; an activity compaction failure
+    /// follows an already durable append and clears on the next success.
+    var historyPersistenceError: String? {
+        let errors = [handoffJournal.lastError, activityJournal.lastError.map { "Activity journal maintenance: \($0)" }].compactMap { $0 }
+        return errors.isEmpty ? nil : errors.joined(separator: " ")
+    }
 
     private let server: RelayHTTPServer
     private let agentTransport: RelayFileTransport
@@ -69,6 +76,7 @@ final class AppResidentCoordinationCore {
             file: applicationDirectory.appendingPathComponent("activity-events.jsonl"),
             maximumEvents: historyRetentionPolicy.maximumRecords
         )
+        self.activityJournal = activityJournal
         let contextReviewStore = try AgentContextReviewStore(
             file: applicationDirectory.appendingPathComponent("context-reviews.json")
         )

@@ -203,7 +203,9 @@ struct PaletteCommand: Identifiable, Sendable {
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published private(set) var panes: [WorkbenchPane] = []
+    @Published private(set) var panes: [WorkbenchPane] = [] {
+        didSet { attentionInputGeneration &+= 1 }
+    }
     @Published private(set) var workspaces: [WorkbenchWorkspace] = []
     @Published private(set) var commandRuns: [ReviewedCommandRun] = []
     @Published private(set) var commandRunGrants: [ReviewedCommandGrant] = []
@@ -223,9 +225,15 @@ final class AppModel: ObservableObject {
         teamSessions.filter { $0.state == .pending }.map(\.id)
     }
     @Published private(set) var consultations: [RelayConsultation] = []
-    @Published private(set) var handoffs: [RelayHandoff] = []
-    @Published private(set) var unreadHandoffs: [RelayHandoff] = []
-    @Published private(set) var statusHandoffs: [RelayHandoff] = []
+    @Published private(set) var handoffs: [RelayHandoff] = [] {
+        didSet { attentionInputGeneration &+= 1 }
+    }
+    @Published private(set) var unreadHandoffs: [RelayHandoff] = [] {
+        didSet { attentionInputGeneration &+= 1 }
+    }
+    @Published private(set) var statusHandoffs: [RelayHandoff] = [] {
+        didSet { attentionInputGeneration &+= 1 }
+    }
     @Published private(set) var statusActivityEvents: [RelayActivityEvent] = []
     @Published private(set) var reviewedBusyDrafts: [ReviewedBusyDraft] = []
     @Published private(set) var controller: WorkbenchController?
@@ -386,7 +394,16 @@ final class AppModel: ObservableObject {
     private var lastExternalAttentionPublishedAt = Date.distantPast
     private var lastExternalEditorCapabilitiesPublishedAt = Date.distantPast
     private var periodicRefreshTimer: Timer?
-    private let taskManagerSampler = TaskManagerSampler()
+    /// One serial owner samples processes off the main actor; requests are
+    /// numbered so a result is published only when it is the newest and the
+    /// pane set it sampled is unchanged.
+    private let taskManagerOwner = TaskManagerSamplingOwner()
+    private var taskManagerSampling = TaskManagerSamplingCoordinator()
+    /// Bumped whenever panes or any handoff collection change; the attention
+    /// cache below is keyed on it so one sidebar pass shares one projection.
+    private var attentionInputGeneration = 0
+    private var attentionCache = PaneAttentionCache()
+    private var paneStatePublishScheduled = false
     private var quickRelayTargetHistory = QuickRelayTargetHistory()
     private var attentionCycleCursorID: String?
     private static let recentFoldersKey = "parley.recentWorkspaceFolders"
@@ -678,6 +695,9 @@ final class AppModel: ObservableObject {
             }
             ghosttyRegistry.onPaneStateChanged = { [weak self] in
                 try? self?.refresh()
+            }
+            ghosttyRegistry.onPaneTitleChanged = { [weak self] in
+                self?.schedulePaneStatePublish()
             }
             controller.configureTerminalTransport(makeGhosttyTerminalTransport())
             reconcileNativeLayouts(workspaces: liveWorkspaces, panes: livePanes)
@@ -1055,11 +1075,25 @@ final class AppModel: ObservableObject {
     }
 
     func refreshTaskManager() {
+        guard let generation = taskManagerSampling.request() else { return }
+        startTaskManagerSample(generation: generation)
+    }
+
+    private func startTaskManagerSample(generation: Int) {
         let descriptors = taskManagerPaneDescriptors()
-        taskManagerSnapshot = taskManagerSampler.sample(
-            applicationPID: ProcessInfo.processInfo.processIdentifier,
-            paneDescriptors: descriptors
-        )
+        let identity = TaskManagerSamplingPolicy.identity(of: panes)
+        let applicationPID = ProcessInfo.processInfo.processIdentifier
+        let owner = taskManagerOwner
+        Task { @MainActor [weak self] in
+            let snapshot = await owner.sample(applicationPID: applicationPID, paneDescriptors: descriptors)
+            guard let self else { return }
+            let outcome = self.taskManagerSampling.complete(generation: generation, sampledIdentity: identity,
+                currentIdentity: TaskManagerSamplingPolicy.identity(of: self.panes))
+            if outcome.publish, snapshot != self.taskManagerSnapshot { self.taskManagerSnapshot = snapshot }
+            // A refresh requested while sampling ran, or a pane change that made
+            // this result stale, gets one fresh sample instead of a dropped request.
+            if let next = outcome.restart { self.startTaskManagerSample(generation: next) }
+        }
     }
 
     /// The Task Manager's Refresh button: resample processes now and force one
@@ -2493,14 +2527,16 @@ final class AppModel: ObservableObject {
     }
 
     var paneAttentionItems: [PaneAttentionItem] {
+        let generation = attentionInputGeneration
         var byID: [String: RelayHandoff] = [:]
+        // Inputs are only merged when the cache misses; a hit returns at once.
+        if attentionCache.hasItems(for: generation) {
+            return attentionCache.items(generation: generation, panes: panes, handoffs: [])
+        }
         for handoff in unreadHandoffs + statusHandoffs + handoffs {
             byID[handoff.id] = handoff
         }
-        return PaneAttentionProjection.items(
-            panes: panes,
-            handoffs: Array(byID.values)
-        )
+        return attentionCache.items(generation: generation, panes: panes, handoffs: Array(byID.values))
     }
 
     func paneAttention(for paneID: String) -> PaneAttentionItem? {
@@ -3033,6 +3069,21 @@ final class AppModel: ObservableObject {
         }
         try refresh()
         startupError = nil
+    }
+
+    /// Title-only changes: publish the controller's pane list once per
+    /// run-loop turn, equality-guarded, with no relay sockets, layout
+    /// reconciliation or background scheduling. Titles are not rendered by
+    /// any view today, so this only keeps `panes` consistent.
+    private func schedulePaneStatePublish() {
+        guard !paneStatePublishScheduled else { return }
+        paneStatePublishScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.paneStatePublishScheduled = false
+            guard let controller = self.controller, let refreshed = try? controller.listPanes(), refreshed != self.panes else { return }
+            self.panes = refreshed
+        }
     }
 
     func refreshQuietly() {
