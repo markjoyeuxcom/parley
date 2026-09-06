@@ -580,7 +580,7 @@ public final class PermissionProfileStore: @unchecked Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(Document(version: 1, customProfiles: profiles)).write(to: file, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        cache = (try? validateExistingFile()).map { ($0, profiles) }
+        cache = nil // see WorkspaceRegistry.write: never pair our bytes with a post-write pathname stamp
     }
 
     @discardableResult

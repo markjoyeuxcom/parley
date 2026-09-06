@@ -158,6 +158,9 @@ struct StatusCenterView: View {
         }
         .onReceive(refresh) { _ in
             model.refreshStatusCenterPeriodically()
+        }
+        .onChange(of: model.statusHistoryRevision) { _, _ in
+            // Fetched history was applied; reconcile selection against it now.
             applyExternalSelection()
             ensureSelection()
         }

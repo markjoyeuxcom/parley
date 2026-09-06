@@ -336,7 +336,10 @@ public final class WorkspaceRegistry {
         let data = try encoder.encode(document)
         try data.write(to: file, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        cache = (try? validateExistingFile()).map { ($0, document) }
+        // A stamp taken from the pathname after writing could describe another
+        // writer's replacement; the next read decodes once and pairs bytes with
+        // the identity it actually read.
+        cache = nil
     }
 
     @discardableResult
