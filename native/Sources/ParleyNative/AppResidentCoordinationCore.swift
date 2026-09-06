@@ -17,6 +17,7 @@ final class AppResidentCoordinationCore {
     let commandRuns: ReviewedCommandRunCoordinator
     let commandRunDirectory: URL
     let commandRunCleanupWarnings: [String]
+    let teamSessions: TeamSessionCoordinator
 
     private let handoffJournal: RelayHandoffJournal
     var historyPersistenceError: String? { handoffJournal.lastError }
@@ -29,7 +30,8 @@ final class AppResidentCoordinationCore {
         controller: WorkbenchController,
         credentials: RelayCredentials,
         applicationDirectory: URL,
-        transportDirectory: URL
+        transportDirectory: URL,
+        permissionProfiles: @escaping () throws -> [PermissionProfileDefinition]
     ) throws {
         let controlToken = try RelayCoreControlToken.loadOrCreate(
             at: applicationDirectory.appendingPathComponent("core-control-token")
@@ -99,6 +101,8 @@ final class AppResidentCoordinationCore {
         )
         broker.enableReviewedCommandRuns()
         commandRuns = broker.commandRuns!
+        broker.enableTeamSessions(profiles: permissionProfiles)
+        teamSessions = broker.teamSessions!
         commandRunDirectory = applicationDirectory.resolvingSymlinksInPath().appendingPathComponent("approved-command-runs")
         let runDirectory = commandRunDirectory
         commandRunCleanupWarnings = ApprovedCommandWorker.removeAbandoned(in: runDirectory)
@@ -141,6 +145,7 @@ final class AppResidentCoordinationCore {
 
     func stop() {
         commandRuns.stop(reason: "Parley stopped; session trust was revoked and active command runs were interrupted.")
+        teamSessions.stopAll(reason: "Parley stopped; team session grants were revoked. Created panes were not stopped separately.")
         server.stop()
         agentTransport.stop()
         try? FileManager.default.removeItem(at: pidFile)

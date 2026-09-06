@@ -186,6 +186,14 @@ public final class RelayFileTransport: @unchecked Sendable {
         case "request-run":
             return encode(broker.handleCommandRun(token: request.token, folder: request.target, body: request.body,
                 idempotencyKey: request.idempotencyKey, onAccepted: onAskAccepted))
+        case "team-request":
+            return encode(broker.handleTeamRequest(token: request.token, body: request.body,
+                idempotencyKey: request.idempotencyKey, onAccepted: onAskAccepted))
+        case "team-add":
+            return encode(broker.handleTeamAdd(token: request.token, body: request.body,
+                idempotencyKey: request.idempotencyKey, onAccepted: onAskAccepted))
+        case "team-status":
+            return encode(broker.handleTeamStatus(token: request.token))
         case "whoami":
             return encode(broker.agentIdentity(token: request.token))
         case "panes":
@@ -321,7 +329,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         try validateDirectory(directory)
         let command = try readField("command", from: directory, maximumBytes: 32)
         let allowed = [
-            "request-run", "whoami", "panes", "events", "signal", "relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "progress", "done", "done-file", "fail", "cancel",
+            "request-run", "team-request", "team-add", "team-status", "whoami", "panes", "events", "signal", "relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "progress", "done", "done-file", "fail", "cancel",
             "context-draft", "context-add", "context-list", "context-show", "context-discard", "context-ask",
         ]
         guard allowed.contains(command) else { throw RelayFileTransportError.runtime("unknown command") }

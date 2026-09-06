@@ -135,6 +135,10 @@ public struct RelayAgentEvent: Codable, Equatable, Sendable {
     public let paneID: String?
     public let paneVendor: PaneKind?
     public let vendorSignal: VendorHookSignal?
+    /// Team-session correlation, identifiers only.
+    public let teamSessionID: String?
+    public let requesterPaneID: String?
+    public let affectedPaneIDs: [String]?
 
     static func handoff(
         _ handoff: RelayHandoff,
@@ -163,7 +167,10 @@ public struct RelayAgentEvent: Codable, Equatable, Sendable {
             workspaceID: nil,
             paneID: nil,
             paneVendor: nil,
-            vendorSignal: nil
+            vendorSignal: nil,
+            teamSessionID: nil,
+            requesterPaneID: nil,
+            affectedPaneIDs: nil
         )
     }
 
@@ -190,7 +197,10 @@ public struct RelayAgentEvent: Codable, Equatable, Sendable {
             workspaceID: activity.workspaceID,
             paneID: activity.paneID,
             paneVendor: activity.paneKind,
-            vendorSignal: VendorHookSignal(activityKind: activity.kind)
+            vendorSignal: VendorHookSignal(activityKind: activity.kind),
+            teamSessionID: activity.teamSessionID,
+            requesterPaneID: activity.requesterPaneID,
+            affectedPaneIDs: activity.affectedPaneIDs
         )
     }
 

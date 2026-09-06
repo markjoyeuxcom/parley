@@ -381,6 +381,11 @@ public enum RelayActivityEventKind: String, Codable, Equatable, Sendable {
     case vendorAwaitingPermission
     case vendorNotification
     case vendorSessionEnded
+    case teamSessionRequested
+    case teamSessionApproved
+    case teamPaneCreated
+    case teamSessionEnded
+    case teamPaneStopAttempted
 }
 
 /// A successful operation initiated from Parley's native controls. These are
@@ -397,6 +402,11 @@ public struct RelayActivityEvent: Identifiable, Codable, Equatable, Sendable {
     public let paneKind: PaneKind?
     public let detail: String?
     public let origin: RelayTransitionOrigin
+    /// Bounded team-session correlation: identifiers only, never objectives,
+    /// folders or commands. Absent on records written before protocol 21.
+    public let teamSessionID: String?
+    public let requesterPaneID: String?
+    public let affectedPaneIDs: [String]?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -408,7 +418,10 @@ public struct RelayActivityEvent: Identifiable, Codable, Equatable, Sendable {
         paneName: String? = nil,
         paneKind: PaneKind? = nil,
         detail: String? = nil,
-        origin: RelayTransitionOrigin = .human
+        origin: RelayTransitionOrigin = .human,
+        teamSessionID: String? = nil,
+        requesterPaneID: String? = nil,
+        affectedPaneIDs: [String]? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -420,6 +433,9 @@ public struct RelayActivityEvent: Identifiable, Codable, Equatable, Sendable {
         self.paneKind = paneKind
         self.detail = detail
         self.origin = origin
+        self.teamSessionID = teamSessionID
+        self.requesterPaneID = requesterPaneID
+        self.affectedPaneIDs = affectedPaneIDs
     }
 }
 
@@ -2292,6 +2308,79 @@ public final class RelayBroker: @unchecked Sendable {
             record: { [weak self] run in try self?.recordReviewedCommandRun(run) })
     }
 
+    public private(set) var teamSessions: TeamSessionCoordinator?
+    /// Installed once by the native core. Team authority never comes from the
+    /// journal; sessions are recorded as native activity for visibility only.
+    public func enableTeamSessions(profiles: @escaping () throws -> [PermissionProfileDefinition]) {
+        guard teamSessions == nil else { return }
+        teamSessions = TeamSessionCoordinator(
+            authenticate: { [credentials] in credentials.paneID(for: $0) },
+            panes: panes,
+            profiles: profiles,
+            record: { [weak self] session, transition, affected in try self?.recordTeamSessionEvent(session, transition: transition, affected: affected) })
+    }
+
+    /// Typed, app-owned transitions. The origin comes from the transition in
+    /// trusted code; no transport payload can choose it. The durable detail
+    /// deliberately carries labels and counts only: stop diagnostics can hold
+    /// localized paths, so they stay in the session record and never enter
+    /// activity records or the agent events feed (which omits detail anyway).
+    private func recordTeamSessionEvent(_ session: TeamSession, transition: TeamSessionTransition, affected: [String]) throws {
+        let kind: RelayActivityEventKind = switch transition {
+        case .requested: .teamSessionRequested
+        case .approved: .teamSessionApproved
+        case .paneCreated: .teamPaneCreated
+        case .stopAttempted: .teamPaneStopAttempted
+        case .refused, .stopped, .expired, .interrupted: .teamSessionEnded
+        }
+        let created = session.members.count
+        var detail = "\(transition.label). \(session.state.label); \(created) of \(session.paneLimit) pane\(session.paneLimit == 1 ? "" : "s") created."
+        if transition == .stopAttempted, let attempt = session.stopAttempts.last { detail += " Outcomes: " + attempt.countsSummary + "." }
+        _ = try recordActivity(RelayActivityEventRequest(
+            kind: kind,
+            workspaceID: session.source.workspaceID,
+            workspaceName: session.source.workspaceName ?? session.source.workspaceID,
+            paneID: session.source.id,
+            paneName: session.source.displayName,
+            paneKind: session.source.kind,
+            detail: detail
+        ), origin: transition.origin, teamSessionID: session.id, requesterPaneID: session.source.id, affectedPaneIDs: Array(affected.prefix(8)))
+    }
+
+    public func handleTeamRequest(token: String, body: String, idempotencyKey: String,
+                                  onAccepted: (String) -> Void) -> RelayTextResponse {
+        do {
+            guard let teamSessions else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
+            let proposal = try TeamSessionProposal.parse(arguments: try TeamSessionProposal.decodeArguments(body))
+            let session = try teamSessions.request(token: token, proposal: proposal, idempotencyKey: idempotencyKey)
+            onAccepted(session.id)
+            return teamSessions.waitForDecision(token: token, id: session.id)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func handleTeamAdd(token: String, body: String, idempotencyKey: String,
+                              onAccepted: (String) -> Void) -> RelayTextResponse {
+        do {
+            guard let teamSessions else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
+            let parsed = try TeamPaneProvision.parse(arguments: try TeamSessionProposal.decodeArguments(body))
+            let provision = try teamSessions.requestPane(token: token, kind: parsed.kind, name: parsed.name, role: parsed.role,
+                idempotencyKey: idempotencyKey)
+            onAccepted(provision.id)
+            return teamSessions.waitForProvision(token: token, id: provision.id)
+        } catch {
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+    }
+
+    public func handleTeamStatus(token: String) -> RelayTextResponse {
+        guard let teamSessions else {
+            return RelayTextResponse(status: 409, text: "The native team session service is unavailable.")
+        }
+        return teamSessions.status(token: token)
+    }
+
     private func recordReviewedCommandRun(_ run: ReviewedCommandRun) throws {
         consultationCondition.lock()
         defer { consultationCondition.unlock() }
@@ -2355,6 +2444,7 @@ public final class RelayBroker: @unchecked Sendable {
 
     public func waitForTrackedWork(token: String, handoffID requestedHandoffID: String) -> RelayTextResponse {
         if let commandRuns, commandRuns.owns(id: requestedHandoffID) { return commandRuns.wait(token: token, id: requestedHandoffID) }
+        if let teamSessions, teamSessions.owns(id: requestedHandoffID) { return teamSessions.wait(token: token, id: requestedHandoffID) }
         let source: WorkbenchPane
         do { source = try authenticatedSender(token: token) }
         catch { return RelayTextResponse(status: 403, text: error.localizedDescription) }
@@ -3179,7 +3269,14 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     @discardableResult
+    /// The native control route: every event it records is a human action.
     public func recordActivity(_ request: RelayActivityEventRequest) throws -> RelayActivityEvent {
+        try recordActivity(request, origin: .human, teamSessionID: nil, requesterPaneID: nil, affectedPaneIDs: nil)
+    }
+
+    /// Trusted in-process callers only; the origin is never a request field.
+    private func recordActivity(_ request: RelayActivityEventRequest, origin: RelayTransitionOrigin, teamSessionID: String?,
+                                requesterPaneID: String?, affectedPaneIDs: [String]?) throws -> RelayActivityEvent {
         let workspaceID = request.workspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
         let workspaceName = request.workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !workspaceID.isEmpty, !workspaceName.isEmpty else { throw RelayActivityError.invalidEvent }
@@ -3191,7 +3288,11 @@ public final class RelayBroker: @unchecked Sendable {
             paneID: request.paneID,
             paneName: request.paneName,
             paneKind: request.paneKind,
-            detail: request.detail
+            detail: request.detail,
+            origin: origin,
+            teamSessionID: teamSessionID,
+            requesterPaneID: requesterPaneID,
+            affectedPaneIDs: affectedPaneIDs
         )
         try activityJournal?.record(event)
         consultationCondition.lock()
@@ -4513,6 +4614,42 @@ public enum RelayShim {
         case "$target" in /*) ;; *) echo "--cwd must be absolute" >&2; exit 2 ;; esac
         case "$1" in /*) ;; *) echo "the executable must be absolute" >&2; exit 2 ;; esac
         ;;
+      team)
+        subcommand="${2:-}"
+        case "$subcommand" in
+          request)
+            shift 2
+            if [ "$#" -lt 3 ]; then
+              echo "usage: parley team request --folder <absolute-folder> [--template <name>] [--panes <n>] [--hours <n>] \\"<objective>\\"" >&2
+              exit 2
+            fi
+            command="team-request"
+            ;;
+          add)
+            shift 2
+            if [ "$#" -lt 2 ]; then
+              echo "usage: parley team add --vendor <claude|codex|agy|copilot> [--name <name>] [--role <role>]" >&2
+              exit 2
+            fi
+            command="team-add"
+            ;;
+          status)
+            if [ "$#" -ne 2 ]; then
+              echo "usage: parley team status" >&2
+              exit 2
+            fi
+            shift 2
+            command="team-status"
+            ;;
+          *)
+            echo "usage:" >&2
+            echo "  parley team request --folder <absolute-folder> [--template <name>] [--panes <n>] [--hours <n>] \\"<objective>\\"" >&2
+            echo "  parley team add --vendor <claude|codex|agy|copilot> [--name <name>] [--role <role>]" >&2
+            echo "  parley team status" >&2
+            exit 2
+            ;;
+        esac
+        ;;
       context)
         subcommand="${2:-}"
         case "$subcommand" in
@@ -4795,7 +4932,7 @@ public enum RelayShim {
       checks=0
       while :; do
         if [ "$ask_id_reported" -eq 0 ] \
-          && { [ "$command" = "ask" ] || [ "$command" = "context-ask" ] || [ "$command" = "request-run" ]; } \
+          && { [ "$command" = "ask" ] || [ "$command" = "context-ask" ] || [ "$command" = "request-run" ] || [ "$command" = "team-request" ] || [ "$command" = "team-add" ]; } \
           && protected_directory "$response_dir" \
           && [ -f "$response_dir/accepted" ] && [ ! -L "$response_dir/accepted" ] \
           && [ -f "$response_dir/handoff-id" ] && [ ! -L "$response_dir/handoff-id" ]; then
@@ -4806,6 +4943,10 @@ public enum RelayShim {
               if [ "${#handoff_id}" -eq 36 ]; then
                 if [ "$command" = "request-run" ]; then
                   echo "Parley Run ID: $handoff_id" >&2
+                elif [ "$command" = "team-request" ]; then
+                  echo "Parley Team Session ID: $handoff_id" >&2
+                elif [ "$command" = "team-add" ]; then
+                  echo "Parley Pane Request ID: $handoff_id" >&2
                 else
                   echo "Parley Ask ID: $handoff_id" >&2
                 fi
@@ -4836,8 +4977,11 @@ public enum RelayShim {
     }
 
     case "$command" in
-      request-run)
+      request-run|team-request|team-add)
         printf '%s\\0' "$@" | post
+        ;;
+      team-status)
+        printf '' | post
         ;;
       relay|paste|ask|ask-many|delegate|context-ask)
         if [ "$#" -gt 0 ]; then
