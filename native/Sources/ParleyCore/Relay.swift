@@ -1163,6 +1163,7 @@ public final class RelayBroker: @unchecked Sendable {
                         expired.detail = "Context review timed out before approval."
                         contextReviewRecords[draftID] = expired
                         try? contextReviewStore?.record(expired)
+                        noteChangeLocked()
                     }
                     consultationCondition.unlock()
                     return RelayTextResponse(status: 408, text: "context review timed out before approval")
@@ -3119,6 +3120,7 @@ public final class RelayBroker: @unchecked Sendable {
                 preserveFormatting: request.preserveFormatting
             )
             busyDraftDispatches.insert(dispatching.id)
+            noteChangeLocked() // the draft is now dispatching
             consultationCondition.unlock()
         } catch let error as ReviewedBusyDraftStoreError {
             consultationCondition.unlock()
@@ -3152,6 +3154,9 @@ public final class RelayBroker: @unchecked Sendable {
                 detail: "The explicit send did not reach terminal submission: \(response.text)"
             )
         }
+        // Either the draft was removed on submission or restored to queued;
+        // both are visible to the relay tick. The lock is not held here.
+        noteChange()
         return response
     }
 

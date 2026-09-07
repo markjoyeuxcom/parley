@@ -35,6 +35,17 @@ public final class RelayFileTransport: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private var lastHeartbeat = Date.distantPast
     private var schedule = TransportPollSchedule()
+    /// Request directories seen without their `ready` marker, by first
+    /// sighting. A shim finishes writing within milliseconds; the fast
+    /// follow-up lasts `pendingFollowUpWindow`, after which the directory
+    /// is polled at the normal cadence, and past `abandonedRequestAge` it is
+    /// discarded as a writer that crashed mid-request.
+    private var pendingSince: [String: Date] = [:]
+    public static let pendingFollowUpWindow: TimeInterval = 0.25
+    public let abandonedRequestAge: TimeInterval
+    /// Ticks serviced so far (diagnostics and checks).
+    public var tickCount: Int { lock.withLock { ticks } }
+    private var ticks = 0
     /// One directory watcher per endpoint inbox (keyed by pane capability):
     /// a write there wakes the transport at once, so the timer can back off.
     private var inboxWatchers: [String: DispatchSourceFileSystemObject] = [:]
@@ -49,12 +60,14 @@ public final class RelayFileTransport: @unchecked Sendable {
         broker: RelayBroker,
         credentials: RelayCredentials,
         runtimeDirectory: URL,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        abandonedRequestAge: TimeInterval = 30
     ) {
         self.broker = broker
         self.credentials = credentials
         self.runtimeDirectory = runtimeDirectory
         self.fileManager = fileManager
+        self.abandonedRequestAge = max(0.1, abandonedRequestAge)
     }
 
     public static func runtimeDirectory(
@@ -134,14 +147,19 @@ public final class RelayFileTransport: @unchecked Sendable {
     }
 
     private func serviceTick() {
-        if Date().timeIntervalSince(lastHeartbeat) >= 1 {
+        lock.withLock { ticks += 1 }
+        let now = Date()
+        if now.timeIntervalSince(lastHeartbeat) >= 1 {
             try? writeHeartbeats()
         }
         var activity = false
         // A request directory that exists but has no `ready` marker yet: the
         // shim is still writing it. The watcher fired on the directory's
-        // creation, so follow up quickly rather than waiting a full cadence.
+        // creation, so follow up quickly rather than waiting a full cadence,
+        // but only for a bounded window; an abandoned directory must not keep
+        // the transport spinning.
         var pending = false
+        var seenWithoutReady: Set<String> = []
         let endpoints = endpointDirectories()
         syncInboxWatchers(endpoints)
         for endpoint in endpoints {
@@ -157,7 +175,20 @@ public final class RelayFileTransport: @unchecked Sendable {
                 let requestID = candidate.lastPathComponent
                 guard Self.isRequestID(requestID) else { continue }
                 guard fileManager.fileExists(atPath: candidate.appendingPathComponent("ready").path) else {
-                    pending = true
+                    seenWithoutReady.insert(requestID)
+                    let firstSeen = lock.withLock { () -> Date in
+                        if let existing = pendingSince[requestID] { return existing }
+                        pendingSince[requestID] = now
+                        return now
+                    }
+                    let age = now.timeIntervalSince(firstSeen)
+                    if age > abandonedRequestAge {
+                        // The writer never finished; nothing was claimed or answered.
+                        try? fileManager.removeItem(at: candidate)
+                        _ = lock.withLock { pendingSince.removeValue(forKey: requestID) }
+                    } else if age <= Self.pendingFollowUpWindow {
+                        pending = true
+                    }
                     continue
                 }
                 let claimed = processing.appendingPathComponent(requestID, isDirectory: true)
@@ -176,6 +207,7 @@ public final class RelayFileTransport: @unchecked Sendable {
             }
         }
         lock.withLock {
+            pendingSince = pendingSince.filter { seenWithoutReady.contains($0.key) }
             let before = schedule.interval
             schedule.observe(activity: activity || pending)
             if pending {
