@@ -83,6 +83,11 @@ test('the GitLab release job is manual, tag-only, and creates an unpublished Git
   assert.match(job, /gh release create[\s\S]*--draft[\s\S]*--prerelease/, 'the GitHub release must be an unpublished prerelease draft')
   assert.match(job, /--verify-tag/, 'the GitHub release must verify its tag')
   assert.doesNotMatch(job, /--dangerously|danger-full-access/, 'no approval bypass')
+  // The release CLI reads PARLEY_RELEASE_TAG from the environment and the
+  // deterministic checks assert it is not preset, so it must not be a job
+  // variable; only the release step may set it.
+  assert.doesNotMatch(job, /^\s+PARLEY_RELEASE_TAG:/m, 'PARLEY_RELEASE_TAG must not be a job-level variable')
+  assert.match(job, /PARLEY_RELEASE_TAG="\$CI_COMMIT_TAG" npm run release:mac:beta/, 'the release step must receive the tag explicitly')
 })
 
 test('public repository policy files describe the Apache-2.0 open-source boundary', () => {
