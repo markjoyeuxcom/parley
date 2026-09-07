@@ -7,11 +7,11 @@ and Sparkle feed signing all succeed.
 
 ## Locked release dependencies
 
-The repository currently pins Sparkle 2.9.6 and `libghostty-spm` 1.5.2 in both
+The repository currently pins Sparkle 2.9.6 and `libghostty-spm` 1.5.20260906 in both
 `native/Package.swift` and `native/Package.resolved`. These values were checked
-against their official GitHub release APIs on 2 September 2026. The wrapper
-release embeds Ghostty v1.3.1 at commit
-`332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28`.
+against their official GitHub release APIs on 7 September 2026. The wrapper
+release embeds Ghostty 1.3.2-dev at commit
+`c4e16970a803b170e352432424f44192cb59f3ac`.
 
 Do not copy these version numbers into a future update without querying the
 official release API again and reviewing the intervening release and security
