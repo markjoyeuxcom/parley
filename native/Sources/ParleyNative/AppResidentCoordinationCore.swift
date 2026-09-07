@@ -14,6 +14,11 @@ private enum AppResidentCoordinationCoreError: LocalizedError {
 /// they stop with the application process, matching pane lifetime exactly.
 final class AppResidentCoordinationCore {
     let client: RelayCoreClient
+    /// The in-process broker. The UI still reads relay state through the
+    /// authenticated control socket; this reference exists so the periodic
+    /// tick can ask `stateRevision()` and skip the round trips when nothing
+    /// changed, and so native-only coordinators are reachable.
+    let broker: RelayBroker
     let commandRuns: ReviewedCommandRunCoordinator
     let commandRunDirectory: URL
     let commandRunCleanupWarnings: [String]
@@ -108,6 +113,7 @@ final class AppResidentCoordinationCore {
             contextReviewStore: contextReviewStore,
             busyDraftStore: busyDraftStore
         )
+        self.broker = broker
         broker.enableReviewedCommandRuns()
         commandRuns = broker.commandRuns!
         broker.enableTeamSessions(profiles: permissionProfiles)

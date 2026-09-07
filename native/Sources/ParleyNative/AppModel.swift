@@ -396,6 +396,10 @@ final class AppModel: ObservableObject {
     /// mutations, so a slower fetch that started earlier never overwrites
     /// state a human action just produced.
     private var refreshGate = RefreshSequenceGate()
+    /// The broker revision the last applied relay snapshot was fetched at,
+    /// and how many ticks skipped fetching since; see `RelayPollPolicy`.
+    private var lastAppliedRelayRevision: UInt64?
+    private var relayTicksSinceFetch = 0
     private var relayRefreshInFlight = false
     private var statusHistoryRefreshInFlight = false
     /// Bumped only when fetched history actually changed the model, so views
@@ -3100,7 +3104,11 @@ final class AppModel: ObservableObject {
     }
 
     func refresh(includingRelay: Bool = true) throws {
-        if includingRelay { refreshGate.invalidate() }
+        if includingRelay {
+            refreshGate.invalidate()
+            // A direct mutation or explicit refresh: the next tick must fetch.
+            lastAppliedRelayRevision = nil
+        }
         refreshCommandRuns()
         refreshTeamSessions()
         var firstError: Error?
@@ -3250,6 +3258,13 @@ final class AppModel: ObservableObject {
             return
         }
         guard !relayRefreshInFlight else { return }
+        // The broker is in this process: if nothing it holds changed since the
+        // snapshot we applied, the five round trips would return the same data.
+        let revision = residentCore?.broker.stateRevision()
+        if let revision, !RelayPollPolicy.shouldFetch(revision: revision, lastApplied: lastAppliedRelayRevision, ticksSinceFetch: relayTicksSinceFetch) {
+            relayTicksSinceFetch += 1
+            return
+        }
         relayRefreshInFlight = true
         let token = refreshGate.token()
         let client = relayClient
@@ -3261,8 +3276,14 @@ final class AppModel: ObservableObject {
                 // A synchronous refresh or direct mutation ran meanwhile and holds newer state.
                 guard self.refreshGate.accepts(token) else { return }
                 self.applyRelaySnapshot(result)
-                // Companion attention follows the accepted application, not the next tick.
-                if case .success = result { self.publishExternalAttentionSnapshot() }
+                if case .success = result {
+                    // The revision read before the fetch: a change during the
+                    // fetch advances it and the next tick fetches again.
+                    self.lastAppliedRelayRevision = revision
+                    self.relayTicksSinceFetch = 0
+                    // Companion attention follows the accepted application, not the next tick.
+                    self.publishExternalAttentionSnapshot()
+                }
             }
         }
     }

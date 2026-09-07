@@ -34,17 +34,40 @@ public final class RelayFileTransport: @unchecked Sendable {
     private let lock = NSLock()
     private var timer: DispatchSourceTimer?
     private var lastHeartbeat = Date.distantPast
+    private var schedule = TransportPollSchedule()
+    /// Request directories seen without their `ready` marker, by first
+    /// sighting. A shim finishes writing within milliseconds; the fast
+    /// follow-up lasts `pendingFollowUpWindow`, after which the directory
+    /// is polled at the normal cadence, and past `abandonedRequestAge` it is
+    /// discarded as a writer that crashed mid-request.
+    private var pendingSince: [String: Date] = [:]
+    public static let pendingFollowUpWindow: TimeInterval = 0.25
+    public let abandonedRequestAge: TimeInterval
+    /// Ticks serviced so far (diagnostics and checks).
+    public var tickCount: Int { lock.withLock { ticks } }
+    private var ticks = 0
+    /// One directory watcher per endpoint inbox (keyed by pane capability):
+    /// a write there wakes the transport at once, so the timer can back off.
+    private var inboxWatchers: [String: DispatchSourceFileSystemObject] = [:]
+
+    /// The fallback timer's current cadence (diagnostics and checks).
+    public var currentPollInterval: DispatchTimeInterval { lock.withLock { schedule.interval } }
+    /// How many times an inbox watcher woke the transport (diagnostics and checks).
+    public var watcherWakeCount: Int { lock.withLock { wakes } }
+    private var wakes = 0
 
     public init(
         broker: RelayBroker,
         credentials: RelayCredentials,
         runtimeDirectory: URL,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        abandonedRequestAge: TimeInterval = 30
     ) {
         self.broker = broker
         self.credentials = credentials
         self.runtimeDirectory = runtimeDirectory
         self.fileManager = fileManager
+        self.abandonedRequestAge = max(0.1, abandonedRequestAge)
     }
 
     public static func runtimeDirectory(
@@ -103,7 +126,7 @@ public final class RelayFileTransport: @unchecked Sendable {
             try writeHeartbeats()
 
             let source = DispatchSource.makeTimerSource(queue: queue)
-            source.schedule(deadline: .now(), repeating: .milliseconds(50), leeway: .milliseconds(10))
+            source.schedule(deadline: .now(), repeating: schedule.interval, leeway: .milliseconds(10))
             source.setEventHandler { [weak self] in self?.serviceTick() }
             timer = source
             source.resume()
@@ -114,6 +137,8 @@ public final class RelayFileTransport: @unchecked Sendable {
         lock.withLock {
             timer?.cancel()
             timer = nil
+            for watcher in inboxWatchers.values { watcher.cancel() }
+            inboxWatchers.removeAll()
         }
         for endpoint in endpointDirectories() {
             try? fileManager.removeItem(at: heartbeat(in: endpoint))
@@ -122,10 +147,22 @@ public final class RelayFileTransport: @unchecked Sendable {
     }
 
     private func serviceTick() {
-        if Date().timeIntervalSince(lastHeartbeat) >= 1 {
+        lock.withLock { ticks += 1 }
+        let now = Date()
+        if now.timeIntervalSince(lastHeartbeat) >= 1 {
             try? writeHeartbeats()
         }
-        for endpoint in endpointDirectories() {
+        var activity = false
+        // A request directory that exists but has no `ready` marker yet: the
+        // shim is still writing it. The watcher fired on the directory's
+        // creation, so follow up quickly rather than waiting a full cadence,
+        // but only for a bounded window; an abandoned directory must not keep
+        // the transport spinning.
+        var pending = false
+        var seenWithoutReady: Set<String> = []
+        let endpoints = endpointDirectories()
+        syncInboxWatchers(endpoints)
+        for endpoint in endpoints {
             let inbox = endpoint.appendingPathComponent("inbox", isDirectory: true)
             let processing = endpoint.appendingPathComponent("processing", isDirectory: true)
             guard let candidates = try? fileManager.contentsOfDirectory(
@@ -136,20 +173,83 @@ public final class RelayFileTransport: @unchecked Sendable {
 
             for candidate in candidates.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
                 let requestID = candidate.lastPathComponent
-                guard Self.isRequestID(requestID),
-                      fileManager.fileExists(atPath: candidate.appendingPathComponent("ready").path) else { continue }
+                guard Self.isRequestID(requestID) else { continue }
+                guard fileManager.fileExists(atPath: candidate.appendingPathComponent("ready").path) else {
+                    seenWithoutReady.insert(requestID)
+                    let firstSeen = lock.withLock { () -> Date in
+                        if let existing = pendingSince[requestID] { return existing }
+                        pendingSince[requestID] = now
+                        return now
+                    }
+                    let age = now.timeIntervalSince(firstSeen)
+                    if age > abandonedRequestAge {
+                        // The writer never finished; nothing was claimed or answered.
+                        try? fileManager.removeItem(at: candidate)
+                        _ = lock.withLock { pendingSince.removeValue(forKey: requestID) }
+                    } else if age <= Self.pendingFollowUpWindow {
+                        pending = true
+                    }
+                    continue
+                }
                 let claimed = processing.appendingPathComponent(requestID, isDirectory: true)
                 do {
                     try fileManager.moveItem(at: candidate, to: claimed)
                 } catch {
                     continue
                 }
+                activity = true
                 workers.enter()
                 let workers = workers
                 DispatchQueue.global(qos: .utility).async { [weak self] in
                     defer { workers.leave() }
                     self?.process(requestID: requestID, directory: claimed, endpoint: endpoint)
                 }
+            }
+        }
+        lock.withLock {
+            pendingSince = pendingSince.filter { seenWithoutReady.contains($0.key) }
+            let before = schedule.interval
+            schedule.observe(activity: activity || pending)
+            if pending {
+                timer?.schedule(deadline: .now() + .milliseconds(5), repeating: schedule.interval, leeway: .milliseconds(2))
+            } else if schedule.interval != before {
+                rescheduleLocked()
+            }
+        }
+    }
+
+    /// Runs on the transport queue with `lock` held.
+    private func rescheduleLocked() {
+        timer?.schedule(deadline: .now() + schedule.interval, repeating: schedule.interval, leeway: .milliseconds(10))
+    }
+
+    /// Keeps one vnode watcher per live endpoint inbox. A watcher fires on the
+    /// transport queue, restores the active cadence and services the tick
+    /// immediately, so a backed-off timer never delays an agent's request.
+    private func syncInboxWatchers(_ endpoints: [URL]) {
+        let live = Dictionary(uniqueKeysWithValues: endpoints.map { ($0.lastPathComponent, $0) })
+        lock.withLock {
+            for (token, watcher) in inboxWatchers where live[token] == nil {
+                watcher.cancel()
+                inboxWatchers.removeValue(forKey: token)
+            }
+            for (token, endpoint) in live where inboxWatchers[token] == nil {
+                let inbox = endpoint.appendingPathComponent("inbox", isDirectory: true)
+                let descriptor = open(inbox.path, O_EVTONLY | O_DIRECTORY | O_NOFOLLOW)
+                guard descriptor >= 0 else { continue }
+                let watcher = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: [.write, .extend, .link, .rename, .delete], queue: queue)
+                watcher.setEventHandler { [weak self] in
+                    guard let self else { return }
+                    self.lock.withLock {
+                        self.wakes += 1
+                        self.schedule.wake()
+                        self.rescheduleLocked()
+                    }
+                    self.serviceTick()
+                }
+                watcher.setCancelHandler { close(descriptor) }
+                watcher.resume()
+                inboxWatchers[token] = watcher
             }
         }
     }

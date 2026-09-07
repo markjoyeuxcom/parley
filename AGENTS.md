@@ -176,7 +176,17 @@ The relay broker lives in `AppResidentCoordinationCore` inside the application
 process. It owns the authenticated UI control socket, capability filesystem
 transport, consultations and durable records. There is no separate core
 executable, login item or background process. `core.pid` contains the app PID
-while coordination is live.
+while coordination is live. The UI still reads relay state through the
+control socket, but its one-second tick first asks the in-process broker for
+`stateRevision()`, which every mutation of what the tick reads advances
+(`noteChangeLocked` at each broadcast site plus read marks, busy drafts and
+activity); an unchanged revision skips the five round trips, and
+`RelayPollPolicy` forces a fetch every fifteen ticks as a safety net. The
+agent file transport polls each endpoint inbox every 50 ms while requests
+are flowing and backs off to 250 ms after ten quiet ticks
+(`TransportPollSchedule`), with a vnode watcher per inbox that wakes it at
+once on a write, so an idle app neither scans inboxes twenty times a second
+nor makes an agent wait on the backed-off timer.
 
 Sparkle.framework is the sole application-update mechanism. Its bundled helper
 processes may run transiently only during an explicit update check or

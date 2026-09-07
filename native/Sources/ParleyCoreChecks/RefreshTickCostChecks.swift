@@ -72,11 +72,17 @@ func refreshTickCostChecks() throws {
         _ = try client.historyRetentionPolicy()
         _ = try client.reviewedBusyDrafts()
     }
+    // What an unchanged tick costs once the app asks the in-process broker first.
+    let revisionBefore = broker.stateRevision()
+    let revisionRead = try milliseconds(1000) { _ = broker.stateRevision() }
+    _ = broker.handle(token: sourceToken, target: target.id, text: "one more", idempotencyKey: "perf-relay-final")
+    try tickExpect(broker.stateRevision() > revisionBefore, "a relay did not advance the broker revision")
     let recentBytes = try JSONEncoder().encode(recent).count
     let historyBytes = try JSONEncoder().encode(try client.handoffs(limit: 500)).count
 
     print(String(format: "  refresh tick relay work: %.2f ms per tick (5 requests; recent 24 handoffs = %d KB)", tick, recentBytes / 1_024))
     print(String(format: "  handoffs(limit: 24) alone: %.2f ms; equality compare of the decoded array: %.3f ms", recentDecodeOnly, compare))
+    print(String(format: "  unchanged tick after revision gating: %.4f ms (one in-process revision read; the 5 requests are skipped)", revisionRead))
     print(String(format: "  Status Center history read: %.2f ms per 2 s tick (500 handoffs = %d KB + 500 activity records)", statusCenter, historyBytes / 1_024))
     try tickExpect(recent.count == 24 && tick > 0 && statusCenter > 0, "the refresh paths did not return data")
 }

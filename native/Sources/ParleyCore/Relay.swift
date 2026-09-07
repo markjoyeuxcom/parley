@@ -667,6 +667,11 @@ public final class RelayBroker: @unchecked Sendable {
     private let busyDraftStore: ReviewedBusyDraftStore?
     private let contextPackBuilder = ContextPackBuilder()
     private let consultationCondition = NSCondition()
+    /// Advances on every mutation of the state the native relay tick reads
+    /// (consultations, handoffs and their read marks, context reviews, busy
+    /// drafts, activity, command runs, team sessions). The UI compares it in
+    /// process before spending five control-socket round trips.
+    private var changeRevision: UInt64 = 0
     private var consultationRecords: [String: ConsultationRecord] = [:]
     /// In-memory only: a persisted `.dispatching` draft after restart is an
     /// uncertain record that the person may dismiss, while an entry here is
@@ -835,7 +840,7 @@ public final class RelayBroker: @unchecked Sendable {
                 review.updatedAt = Date()
                 try contextReviewStore?.record(review)
                 contextReviewRecords[review.id] = review
-                consultationCondition.broadcast()
+                noteChangeLocked()
                 consultationCondition.unlock()
             } catch {
                 consultationCondition.unlock()
@@ -914,7 +919,7 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 throw error
             }
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
             return RelayTextResponse(status: 200, text: review.detail ?? "Context draft discarded.")
         } catch let error as BrokerFailure {
@@ -1066,7 +1071,7 @@ public final class RelayBroker: @unchecked Sendable {
                 review.detail = "A person added \(captured.count) source\(captured.count == 1 ? "" : "s") through Parley's authenticated review control; each part states what Parley independently established."
                 try contextReviewStore?.record(review)
                 contextReviewRecords[review.id] = review
-                consultationCondition.broadcast()
+                noteChangeLocked()
                 consultationCondition.unlock()
             } catch {
                 consultationCondition.unlock()
@@ -1146,7 +1151,7 @@ public final class RelayBroker: @unchecked Sendable {
                     consultationCondition.unlock()
                     throw error
                 }
-                consultationCondition.broadcast()
+                noteChangeLocked()
             }
 
             let deadline = Date().addingTimeInterval(consultationTimeout)
@@ -1158,6 +1163,7 @@ public final class RelayBroker: @unchecked Sendable {
                         expired.detail = "Context review timed out before approval."
                         contextReviewRecords[draftID] = expired
                         try? contextReviewStore?.record(expired)
+                        noteChangeLocked()
                     }
                     consultationCondition.unlock()
                     return RelayTextResponse(status: 408, text: "context review timed out before approval")
@@ -1269,7 +1275,7 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 throw error
             }
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
             return RelayTextResponse(status: 200, text: "Context Ask approved; the waiting pane will submit it now.")
         } catch let error as BrokerFailure {
@@ -1317,7 +1323,7 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 throw error
             }
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
 
             do {
@@ -1332,7 +1338,7 @@ public final class RelayBroker: @unchecked Sendable {
                     contextReviewRecords[failed.id] = failed
                     try? contextReviewStore?.record(failed)
                 }
-                consultationCondition.broadcast()
+                noteChangeLocked()
                 consultationCondition.unlock()
                 return RelayTextResponse(status: 409, text: detail)
             }
@@ -1351,14 +1357,14 @@ public final class RelayBroker: @unchecked Sendable {
             contextReviewRecords[completed.id] = completed
             do {
                 try contextReviewStore?.record(completed)
-                consultationCondition.broadcast()
+                noteChangeLocked()
                 consultationCondition.unlock()
                 return RelayTextResponse(status: 200, text: completed.detail ?? "Context draft sent.")
             } catch {
                 let detail = "Context was delivered to \(prepared.target.displayName), but Parley could not persist its completion: \(error.localizedDescription). Do not resend it."
                 completed.detail = detail
                 contextReviewRecords[completed.id] = completed
-                consultationCondition.broadcast()
+                noteChangeLocked()
                 consultationCondition.unlock()
                 return RelayTextResponse(status: 202, text: detail)
             }
@@ -1388,7 +1394,7 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.unlock()
             return RelayTextResponse(status: 409, text: error.localizedDescription)
         }
-        consultationCondition.broadcast()
+        noteChangeLocked()
         consultationCondition.unlock()
         return RelayTextResponse(status: 200, text: review.detail ?? "Context draft declined.")
     }
@@ -1404,7 +1410,7 @@ public final class RelayBroker: @unchecked Sendable {
         review.detail = response.text
         contextReviewRecords[review.id] = review
         try? contextReviewStore?.record(review)
-        consultationCondition.broadcast()
+        noteChangeLocked()
         consultationCondition.unlock()
     }
 
@@ -1444,7 +1450,7 @@ public final class RelayBroker: @unchecked Sendable {
         try contextReviewStore?.record(review)
         consultationCondition.lock()
         contextReviewRecords[review.id] = review
-        consultationCondition.broadcast()
+        noteChangeLocked()
         consultationCondition.unlock()
     }
 
@@ -1605,7 +1611,7 @@ public final class RelayBroker: @unchecked Sendable {
                 handoffID: handoff.id,
                 response: nil
             )
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
 
             do {
@@ -1629,7 +1635,7 @@ public final class RelayBroker: @unchecked Sendable {
                 )
                 idempotencyRecords[scope]?.response = .delivery(response)
                 pruneHandoffsLocked()
-                consultationCondition.broadcast()
+                noteChangeLocked()
                 consultationCondition.unlock()
                 return response
             } catch {
@@ -1649,7 +1655,7 @@ public final class RelayBroker: @unchecked Sendable {
                 )
                 idempotencyRecords[scope]?.response = .delivery(response)
                 pruneHandoffsLocked()
-                consultationCondition.broadcast()
+                noteChangeLocked()
                 consultationCondition.unlock()
                 return response
             }
@@ -1765,7 +1771,7 @@ public final class RelayBroker: @unchecked Sendable {
             sourceCredential: token,
             targetCredential: targetCredential
         )
-        consultationCondition.broadcast()
+        noteChangeLocked()
         consultationCondition.unlock()
 
         // Informational Git facts are read outside the coordination lock. They
@@ -1791,7 +1797,7 @@ public final class RelayBroker: @unchecked Sendable {
                 state: terminal?.state
             )
             idempotencyRecords[scope]?.response = .delivery(response)
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
             return response
         }
@@ -1828,7 +1834,7 @@ public final class RelayBroker: @unchecked Sendable {
                 )
             )
             idempotencyRecords[scope]?.response = .delivery(response)
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
             return response
         } catch {
@@ -1848,7 +1854,7 @@ public final class RelayBroker: @unchecked Sendable {
             delegationRecords.removeValue(forKey: handoff.id)
             idempotencyRecords[scope]?.response = .delivery(response)
             pruneHandoffsLocked()
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
             return response
         }
@@ -1925,7 +1931,7 @@ public final class RelayBroker: @unchecked Sendable {
         }
         delegationRecords.removeValue(forKey: handoffID)
         pruneHandoffsLocked()
-        consultationCondition.broadcast()
+        noteChangeLocked()
         consultationCondition.unlock()
         return RelayTextResponse(
             status: 200,
@@ -2033,7 +2039,7 @@ public final class RelayBroker: @unchecked Sendable {
             delegationResponses[handoffID] = RelayTextResponse(status: 200, text: receipt)
             delegationRecords.removeValue(forKey: handoffID)
             pruneHandoffsLocked()
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
             return RelayTextResponse(
                 status: 200,
@@ -2102,7 +2108,7 @@ public final class RelayBroker: @unchecked Sendable {
         handoff.progressUpdatedAt = clock()
         handoffRecords[handoffID] = handoff
         handoffJournal?.record(handoff)
-        consultationCondition.broadcast()
+        noteChangeLocked()
         consultationCondition.unlock()
         return RelayTextResponse(status: 200, text: "Progress recorded for \(handoff.sourceName).")
     }
@@ -2154,7 +2160,7 @@ public final class RelayBroker: @unchecked Sendable {
                 transientVendorEventRecords[event.id] = event
                 pruneTransientVendorEventsLocked()
             }
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
             return RelayTextResponse(status: 200, text: "")
         } catch let error as BrokerFailure {
@@ -2414,7 +2420,7 @@ public final class RelayBroker: @unchecked Sendable {
         try handoffJournal?.recordDurably(handoff)
         handoffRecords[run.id] = handoff
         pruneHandoffsLocked()
-        consultationCondition.broadcast()
+        noteChangeLocked()
 
     }
 
@@ -2654,7 +2660,7 @@ public final class RelayBroker: @unchecked Sendable {
             sourceCredential: token,
             targetCredential: targetCredential
         )
-        consultationCondition.broadcast()
+        noteChangeLocked()
         consultationCondition.unlock()
 
         do {
@@ -2666,7 +2672,7 @@ public final class RelayBroker: @unchecked Sendable {
                 transitionHandoffLocked(handoff.id, to: .waiting, origin: recordedOrigin)
             }
             onSubmitted?()
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
             onAccepted?(handoff.id)
         } catch {
@@ -2689,7 +2695,7 @@ public final class RelayBroker: @unchecked Sendable {
             idempotencyRecords[scope]?.response = .ask(response)
             consultationRecords.removeValue(forKey: consultation.id)
             pruneHandoffsLocked()
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
             return response
         }
@@ -3053,6 +3059,7 @@ public final class RelayBroker: @unchecked Sendable {
         )
         do {
             try busyDraftStore.record(draft)
+            noteChange()
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
             return RelayTextResponse(
@@ -3113,6 +3120,7 @@ public final class RelayBroker: @unchecked Sendable {
                 preserveFormatting: request.preserveFormatting
             )
             busyDraftDispatches.insert(dispatching.id)
+            noteChangeLocked() // the draft is now dispatching
             consultationCondition.unlock()
         } catch let error as ReviewedBusyDraftStoreError {
             consultationCondition.unlock()
@@ -3146,6 +3154,9 @@ public final class RelayBroker: @unchecked Sendable {
                 detail: "The explicit send did not reach terminal submission: \(response.text)"
             )
         }
+        // Either the draft was removed on submission or restored to queued;
+        // both are visible to the relay tick. The lock is not held here.
+        noteChange()
         return response
     }
 
@@ -3167,6 +3178,7 @@ public final class RelayBroker: @unchecked Sendable {
         }
         do {
             try busyDraftStore.remove(id: draftID)
+            noteChangeLocked()
             consultationCondition.unlock()
             return RelayTextResponse(
                 status: 200,
@@ -3226,6 +3238,26 @@ public final class RelayBroker: @unchecked Sendable {
             text: text,
             origin: .human
         )
+    }
+
+    public func stateRevision() -> UInt64 {
+        consultationCondition.lock()
+        defer { consultationCondition.unlock() }
+        return changeRevision
+    }
+
+    /// Call with `consultationCondition` held: records a state change and
+    /// wakes waiters, which is what every broadcast site already meant.
+    private func noteChangeLocked() {
+        changeRevision &+= 1
+        consultationCondition.broadcast()
+    }
+
+    /// For the few mutations that happen outside the condition lock.
+    private func noteChange() {
+        consultationCondition.lock()
+        noteChangeLocked()
+        consultationCondition.unlock()
     }
 
     public func consultations() -> [RelayConsultation] {
@@ -3302,6 +3334,7 @@ public final class RelayBroker: @unchecked Sendable {
         } else {
             pruneActivityRecordsLocked()
         }
+        noteChangeLocked()
         consultationCondition.unlock()
         return event
     }
@@ -3345,7 +3378,7 @@ public final class RelayBroker: @unchecked Sendable {
         delegationResponses = delegationResponses.filter { handoffRecords[$0.key] != nil }
         let inMemoryHandoffRemoval = handoffCountBefore - handoffRecords.count
         let inMemoryActivityRemoval = activityCountBefore - activityRecords.count
-        consultationCondition.broadcast()
+        noteChangeLocked()
         consultationCondition.unlock()
 
         return CollaborationHistoryRetentionChange(
@@ -3395,7 +3428,7 @@ public final class RelayBroker: @unchecked Sendable {
             return RelayTextResponse(status: 500, text: "Human review could not be saved: \(error.localizedDescription)")
         }
         handoffRecords[handoff.id] = handoff
-        consultationCondition.broadcast()
+        noteChangeLocked()
         consultationCondition.unlock()
         return RelayTextResponse(status: 200, text: hasReview ? "Human review saved." : "Human review cleared.")
     }
@@ -3418,6 +3451,7 @@ public final class RelayBroker: @unchecked Sendable {
             handoff.readAt = Date()
             handoffRecords[handoffID] = handoff
             handoffJournal?.record(handoff)
+            noteChangeLocked()
         }
         consultationCondition.unlock()
         return RelayTextResponse(status: 200, text: "Result marked read.")
@@ -3583,7 +3617,7 @@ public final class RelayBroker: @unchecked Sendable {
             delegationRecords.removeValue(forKey: handoffID)
             delegationResponses[handoffID] = RelayTextResponse(status: 409, text: message)
             pruneHandoffsLocked()
-            consultationCondition.broadcast()
+            noteChangeLocked()
         case .relay, .paste:
             consultationCondition.unlock()
             return RelayTextResponse(status: 409, text: "completed message delivery cannot be cancelled")
@@ -3658,7 +3692,7 @@ public final class RelayBroker: @unchecked Sendable {
             origin: .human,
             allowsSafeRetry: true
         )
-        consultationCondition.broadcast()
+        noteChangeLocked()
         consultationCondition.unlock()
 
         let writer = handoff.submitted ? submit : paste
@@ -3687,7 +3721,7 @@ public final class RelayBroker: @unchecked Sendable {
                 )
             )
             idempotencyRecords[scope]?.response = .delivery(response)
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
             return RelayTextResponse(
                 status: 200,
@@ -3710,7 +3744,7 @@ public final class RelayBroker: @unchecked Sendable {
                 state: .failed
             )
             idempotencyRecords[scope]?.response = .delivery(response)
-            consultationCondition.broadcast()
+            noteChangeLocked()
             consultationCondition.unlock()
             return RelayTextResponse(status: 409, text: "Retry failed: \(error.localizedDescription)")
         }
@@ -3852,7 +3886,7 @@ public final class RelayBroker: @unchecked Sendable {
         transitionHandoffLocked(consultationID, to: .completed, origin: origin)
         consultationRecords.removeValue(forKey: consultationID)
         pruneHandoffsLocked()
-        consultationCondition.broadcast()
+        noteChangeLocked()
         consultationCondition.unlock()
         return RelayTextResponse(status: 200, text: "Answer returned to \(record.consultation.sourceName).")
     }
@@ -3969,7 +4003,7 @@ public final class RelayBroker: @unchecked Sendable {
         idempotencyRecords[record.idempotencyScope]?.response = .ask(response)
         consultationRecords.removeValue(forKey: handoffID)
         pruneHandoffsLocked()
-        consultationCondition.broadcast()
+        noteChangeLocked()
     }
 
     private func askResponseLocked(for scope: IdempotencyScope) -> RelayTextResponse? {
@@ -4122,7 +4156,7 @@ public final class RelayBroker: @unchecked Sendable {
         delegationResponses[handoffID] = RelayTextResponse(status: status, text: detail)
         delegationRecords.removeValue(forKey: handoffID)
         pruneHandoffsLocked()
-        consultationCondition.broadcast()
+        noteChangeLocked()
     }
 
     private func trackedWaitResponse(for handoff: RelayHandoff) -> RelayTextResponse? {
