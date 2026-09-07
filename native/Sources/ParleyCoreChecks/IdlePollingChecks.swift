@@ -5,6 +5,17 @@ private func pollExpect(_ condition: @autoclosure () throws -> Bool, _ message: 
     if try !condition() { throw NSError(domain: "IdlePolling", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
 }
 
+/// Waits for the transport's quiet streak to back the timer off. The streak
+/// is counted in ticks, and a loaded CI runner delivers utility-priority
+/// timer ticks late, so a check waits for the state rather than a fixed time.
+private func waitUntilIdle(_ transport: RelayFileTransport, timeout: TimeInterval = 8) throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while transport.currentPollInterval != TransportPollSchedule.idleInterval {
+        try pollExpect(Date() < deadline, "the transport did not back off within \(timeout) s (interval \(transport.currentPollInterval), ticks \(transport.tickCount))")
+        Thread.sleep(forTimeInterval: 0.05)
+    }
+}
+
 private func pollPane(_ id: String, _ kind: PaneKind, _ name: String) -> WorkbenchPane {
     WorkbenchPane(id: id, kind: kind, customName: name, terminalTitle: "", cwd: "/tmp", currentCommand: kind.rawValue,
         isActive: false, workspaceID: "workspace", relayEnabled: true, workspaceName: "Idle", inputAvailable: true,
@@ -82,8 +93,7 @@ let idlePollingChecks: [(String, () throws -> Void)] = [
         let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory, abandonedRequestAge: 2.0)
         try transport.start()
         defer { transport.stop() }
-        Thread.sleep(forTimeInterval: 0.8)
-        try pollExpect(transport.currentPollInterval == TransportPollSchedule.idleInterval, "the transport did not back off before the abandoned request")
+        try waitUntilIdle(transport)
         // A writer that created its request directory and then died.
         let abandoned = endpoint.appendingPathComponent("inbox", isDirectory: true).appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
         try FileManager.default.createDirectory(at: abandoned, withIntermediateDirectories: false)
@@ -99,7 +109,7 @@ let idlePollingChecks: [(String, () throws -> Void)] = [
         print("  ticks in the second after an abandoned request: \(ticksInQuietSecond)")
         try pollExpect(ticksInQuietSecond <= 25, "the transport kept spinning on an abandoned request (\(ticksInQuietSecond) ticks in one second)")
         try pollExpect(FileManager.default.fileExists(atPath: abandoned.path), "the request directory was discarded before its age limit")
-        try pollExpect(transport.currentPollInterval == TransportPollSchedule.idleInterval, "the transport did not return to idle cadence with an abandoned request present")
+        try waitUntilIdle(transport, timeout: 3)
         // Past the age limit the directory is discarded (the removal itself wakes the watcher once).
         Thread.sleep(forTimeInterval: 1.0)
         try pollExpect(!FileManager.default.fileExists(atPath: abandoned.path), "the abandoned request directory was not discarded after its age limit")
@@ -143,13 +153,11 @@ let idlePollingChecks: [(String, () throws -> Void)] = [
             try? FileManager.default.removeItem(at: replied.deletingLastPathComponent())
             return elapsed
         }
-        Thread.sleep(forTimeInterval: 1.0)
-        try pollExpect(transport.currentPollInterval == TransportPollSchedule.idleInterval, "the transport did not back off while idle (\(transport.currentPollInterval))")
+        try waitUntilIdle(transport)
         let wakesBefore = transport.watcherWakeCount
         var idle: [Double] = []
         for _ in 0..<5 {
-            Thread.sleep(forTimeInterval: 0.7) // back to idle between requests
-            try pollExpect(transport.currentPollInterval == TransportPollSchedule.idleInterval, "the transport did not return to idle between requests")
+            try waitUntilIdle(transport) // back to idle between requests
             idle.append(try directRequest())
         }
         try pollExpect(transport.watcherWakeCount >= wakesBefore + 5, "the inbox watcher did not wake the transport for each idle request (\(transport.watcherWakeCount - wakesBefore) wakes)")
