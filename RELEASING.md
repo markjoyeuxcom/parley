@@ -56,6 +56,32 @@ directory, imports the certificate into an ephemeral keychain and removes both
 after the job. The release script passes private material to fixed-argument
 Apple and Sparkle tools; no key is written into an artifact.
 
+## Where releases run since 7 September 2026
+
+The source of truth is `gitlab.com/markjoyeuxcom/apps/parley`; GitHub Actions
+minutes are exhausted and its CI workflow is disabled, while GitHub remains the
+public copy and the release host (the shipped builds' update feed and manual
+release checks point at it). The test-beta release therefore runs as the
+manual `release-beta` job of the GitLab pipeline on the macOS runner and
+creates the unpublished GitHub draft from there. To cut one:
+
+1. Bump `version` in `package.json` and add `.github/release-notes/vX.Y.Z.md`
+   in a merge request; merge it once its pipeline is green.
+2. Tag the merge commit `vX.Y.Z` and push the tag to GitLab (`origin`) and
+   GitHub (`github`); the job also pushes the tag to GitHub before creating
+   the draft, because the draft verifies it.
+3. In GitLab, open the tag's pipeline and start `release-beta`. It runs the
+   deterministic checks, the 25-round Ghostty soak, packaging, launch
+   verification and checksum assembly exactly as the retired workflow did,
+   then creates the draft with the runner user's signed-in `gh`.
+4. Review the draft's checksums, soak report and install guide on GitHub and
+   publish it there. Keep GitHub's `main` in step with GitLab's by pushing
+   it to the `github` remote.
+
+The notarized release path can move the same way once the signing and
+notarization material below is stored as masked GitLab CI variables instead
+of GitHub Actions secrets.
+
 ## Unnotarized test betas
 
 When current features need installation testing before Developer ID credentials

@@ -15,6 +15,7 @@
 
 stages:
   - verify
+  - release
 
 workflow:
   rules:
@@ -42,3 +43,68 @@ test-and-build:
   script:
     - npm test
     - npm run build
+
+# Cuts an unnotarized test beta from an existing version tag and creates an
+# unpublished GitHub draft release, exactly as the retired GitHub Actions
+# workflow did, but on the macOS runner. Publishing the draft stays a person's
+# action on GitHub. The runner's shell user must have `gh` signed in to the
+# GitHub account that owns markjoyeuxcom/parley and SSH access to push tags.
+release-beta:
+  stage: release
+  tags:
+    - macos
+  when: manual
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/
+  variables:
+    PARLEY_RELEASE_TAG: $CI_COMMIT_TAG
+    GITHUB_REPOSITORY: markjoyeuxcom/parley
+  before_script:
+    - export PATH="$HOME/.local/bin:$PATH"
+    - if command -v mise >/dev/null 2>&1; then eval "$(mise activate bash --shims)"; fi
+    - node --version
+    - gh auth status
+  script:
+    - npm ci --prefix vscode-extension
+    - npm test
+    - mkdir -p dist
+    - npm run test:soak -- --rounds 25 --output dist/Parley-Ghostty-soak.json
+    - npm run package:vscode
+    - npm run release:mac:beta
+    - npm run verify:launch:mac
+    - |
+      version="$(node -p "require('./package.json').version")"
+      companion="$(node -p "require('./vscode-extension/package.json').version")"
+      checksums="dist/Parley-${version}-mac-arm64.SHA256SUMS"
+      (cd dist && shasum -a 256 "Parley-Companion-${companion}.vsix" >> "$(basename "$checksums")")
+      (cd dist && shasum -a 256 "Parley-Ghostty-soak.json" >> "$(basename "$checksums")")
+      LC_ALL=C sort -o "$checksums" "$checksums"
+      (cd dist && shasum -a 256 -c "$(basename "$checksums")")
+    - |
+      # The GitHub draft verifies its tag, so the tag must exist there first.
+      git push "git@github.com:${GITHUB_REPOSITORY}.git" "refs/tags/${PARLEY_RELEASE_TAG}:refs/tags/${PARLEY_RELEASE_TAG}"
+    - |
+      version="$(node -p "require('./package.json').version")"
+      companion="$(node -p "require('./vscode-extension/package.json').version")"
+      base="dist/Parley-${version}-mac-arm64"
+      notes=".github/release-notes/${PARLEY_RELEASE_TAG}.md"
+      test -f "$notes"
+      gh release create "$PARLEY_RELEASE_TAG" \
+        "$base.dmg" \
+        "$base.zip" \
+        "$base.release.json" \
+        "$base.SHA256SUMS" \
+        "${base}-INSTALL.txt" \
+        "dist/Parley-Companion-${companion}.vsix" \
+        "dist/Parley-Ghostty-soak.json" \
+        --repo "$GITHUB_REPOSITORY" \
+        --verify-tag \
+        --draft \
+        --prerelease \
+        --title "Parley v${version} — unnotarized test beta" \
+        --notes-file "$notes"
+  artifacts:
+    expire_in: 2 weeks
+    paths:
+      - dist/Parley-*-mac-arm64.*
+      - dist/Parley-Ghostty-soak.json

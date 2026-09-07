@@ -68,6 +68,23 @@ test('GitLab CI is the deterministic macOS gate for merge requests and main', ()
   assert.match(source, /CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH/, 'pushes to main must be verified')
 })
 
+test('the GitLab release job is manual, tag-only, and creates an unpublished GitHub draft', () => {
+  // GitHub Actions minutes are exhausted, so the test-beta release runs on the
+  // macOS runner and publishes to GitHub Releases, where releases stay.
+  const source = readFileSync(join(repositoryRoot, '.gitlab-ci.yml'), 'utf8')
+  const job = source.slice(source.indexOf('release-beta:'))
+  assert.ok(job.length > 0, 'the release-beta job is missing')
+  assert.match(job, /when:\s*manual/, 'a release must be started by a person')
+  assert.match(job, /CI_COMMIT_TAG =~/, 'a release must come from a version tag')
+  assert.match(job, /npm test/, 'a release must pass the deterministic checks')
+  assert.match(job, /test:soak -- --rounds 25/, 'a release must pass the 25-round Ghostty soak')
+  assert.match(job, /release:mac:beta/, 'a test beta must use the unnotarized release path')
+  assert.match(job, /verify:launch:mac/, 'a release must prove the packaged app reaches its event loop')
+  assert.match(job, /gh release create[\s\S]*--draft[\s\S]*--prerelease/, 'the GitHub release must be an unpublished prerelease draft')
+  assert.match(job, /--verify-tag/, 'the GitHub release must verify its tag')
+  assert.doesNotMatch(job, /--dangerously|danger-full-access/, 'no approval bypass')
+})
+
 test('public repository policy files describe the Apache-2.0 open-source boundary', () => {
   const license = readFileSync(join(repositoryRoot, 'LICENSE'), 'utf8')
   const security = readFileSync(join(repositoryRoot, 'SECURITY.md'), 'utf8')
