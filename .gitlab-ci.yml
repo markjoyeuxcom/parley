@@ -57,7 +57,9 @@ release-beta:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/
   variables:
-    PARLEY_RELEASE_TAG: $CI_COMMIT_TAG
+    # PARLEY_RELEASE_TAG is deliberately not a job variable: the release CLI
+    # reads it from the environment, and `npm test` asserts the CLI has no
+    # preset tag. It is passed to the release steps only.
     GITHUB_REPOSITORY: markjoyeuxcom/parley
   before_script:
     - export PATH="$HOME/.local/bin:$PATH"
@@ -70,7 +72,7 @@ release-beta:
     - mkdir -p dist
     - npm run test:soak -- --rounds 25 --output dist/Parley-Ghostty-soak.json
     - npm run package:vscode
-    - npm run release:mac:beta
+    - PARLEY_RELEASE_TAG="$CI_COMMIT_TAG" npm run release:mac:beta
     - npm run verify:launch:mac
     - |
       version="$(node -p "require('./package.json').version")"
@@ -82,14 +84,14 @@ release-beta:
       (cd dist && shasum -a 256 -c "$(basename "$checksums")")
     - |
       # The GitHub draft verifies its tag, so the tag must exist there first.
-      git push "git@github.com:${GITHUB_REPOSITORY}.git" "refs/tags/${PARLEY_RELEASE_TAG}:refs/tags/${PARLEY_RELEASE_TAG}"
+      git push "git@github.com:${GITHUB_REPOSITORY}.git" "refs/tags/${CI_COMMIT_TAG}:refs/tags/${CI_COMMIT_TAG}"
     - |
       version="$(node -p "require('./package.json').version")"
       companion="$(node -p "require('./vscode-extension/package.json').version")"
       base="dist/Parley-${version}-mac-arm64"
-      notes=".github/release-notes/${PARLEY_RELEASE_TAG}.md"
+      notes=".github/release-notes/${CI_COMMIT_TAG}.md"
       test -f "$notes"
-      gh release create "$PARLEY_RELEASE_TAG" \
+      gh release create "$CI_COMMIT_TAG" \
         "$base.dmg" \
         "$base.zip" \
         "$base.release.json" \
