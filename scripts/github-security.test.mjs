@@ -53,8 +53,19 @@ test('macOS release packaging creates the shared artifact directory on a clean c
   assert.ok(createDirectory < packageCompanion, 'dist must exist before VS Code packaging writes its VSIX')
 })
 
-test('retired GitLab automation cannot become an apparent security gate', () => {
-  assert.equal(existsSync(join(repositoryRoot, '.gitlab-ci.yml')), false)
+test('GitLab CI is the deterministic macOS gate for merge requests and main', () => {
+  // The repository moved to gitlab.com/markjoyeuxcom/apps/parley on
+  // 2026-09-07. GitLab.com's hosted macOS runners are a paid-tier feature,
+  // so the pipeline targets a runner tagged `macos` registered on a Mac.
+  const pipeline = join(repositoryRoot, '.gitlab-ci.yml')
+  assert.equal(existsSync(pipeline), true, '.gitlab-ci.yml is missing')
+  const source = readFileSync(pipeline, 'utf8')
+  assert.match(source, /tags:\s*\n\s*-\s*macos/, 'the job must target a macOS runner')
+  assert.match(source, /-\s*npm test/, 'the job must run the deterministic checks')
+  assert.match(source, /-\s*npm run build/, 'the job must build the native application')
+  assert.match(source, /GIT_DEPTH:\s*0/, 'the public scan needs the complete reachable history')
+  assert.match(source, /merge_request_event/, 'merge requests must be verified')
+  assert.match(source, /CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH/, 'pushes to main must be verified')
 })
 
 test('public repository policy files describe the Apache-2.0 open-source boundary', () => {

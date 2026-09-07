@@ -42,8 +42,3 @@ test-and-build:
   script:
     - npm test
     - npm run build
-  artifacts:
-    when: on_failure
-    expire_in: 1 week
-    paths:
-      - native/.build/*.log
