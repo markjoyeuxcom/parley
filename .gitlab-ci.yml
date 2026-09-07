@@ -1,0 +1,49 @@
+# Parley continuous integration on GitLab.
+#
+# Every check needs macOS: the native app is Swift with an embedded Ghostty,
+# and the deterministic suite runs the AppKit/SwiftUI checks in process.
+# GitLab.com's shared macOS runners are available only on paid tiers, so this
+# job targets a runner tagged `macos`. Register one on a Mac with the tools
+# the repository expects (Xcode command line tools, mise with Node) using the
+# shell executor, for example:
+#
+#   gitlab-runner register --url https://gitlab.com --executor shell --tag-list macos
+#
+# To use GitLab's own macOS runners on a paid group instead, replace the tag
+# with the SaaS runner tag (for example `saas-macos-medium-m1`) and add an
+# `image:` line with the macOS image GitLab lists for it.
+
+stages:
+  - verify
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+variables:
+  # The public repository scan walks the complete reachable history.
+  GIT_DEPTH: 0
+  GIT_STRATEGY: fetch
+
+test-and-build:
+  stage: verify
+  tags:
+    - macos
+  interruptible: true
+  before_script:
+    # A shell-executor runner inherits the login user's mise setup; make sure
+    # the pinned Node is on PATH without depending on the runner's shell rc.
+    - export PATH="$HOME/.local/bin:$PATH"
+    - if command -v mise >/dev/null 2>&1; then eval "$(mise activate bash --shims)"; fi
+    - node --version
+    - swift --version | head -1
+  script:
+    - npm test
+    - npm run build
+  artifacts:
+    when: on_failure
+    expire_in: 1 week
+    paths:
+      - native/.build/*.log
