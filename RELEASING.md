@@ -9,7 +9,7 @@ and Sparkle feed signing all succeed.
 
 The repository currently pins Sparkle 2.9.6 and `libghostty-spm` 1.5.20260906 in both
 `native/Package.swift` and `native/Package.resolved`. These values were checked
-against their official GitHub release APIs on 2 September 2026. The wrapper
+against their official GitHub release APIs on 7 September 2026. The wrapper
 release embeds Ghostty 1.3.2-dev at commit
 `c4e16970a803b170e352432424f44192cb59f3ac`.
 
