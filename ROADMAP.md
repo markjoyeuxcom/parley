@@ -32,9 +32,8 @@ Copilot.
 The durable product primitive is the **handoff**. A handoff has an authenticated
 source, one explicit target, correlation, lifecycle, result and optional human
 review. Cross-vendor verification is another handoff linked to the item it
-challenges; it is not a second evidence database. Workspace-level decisions
-belong in the Workspace Brief, and multi-handoff review belongs in Status
-Center.
+challenges; it is not a second evidence database. Multi-handoff review belongs
+in Status Center.
 
 Parley owns:
 
@@ -68,7 +67,7 @@ in the same request, protocol version bumped where its wording changes.
   `parley://` focus and status URLs. Native file and diff capture, Context
   Packs and `parley open` remain.
 - [x] Automatic idle-agent reaping and its switch. Explicit Stop remains.
-- [ ] Workspace briefs and pinned snippets as separate stores and editors,
+- [x] Workspace briefs and pinned snippets as separate stores and editors,
   after exporting existing person-authored text.
 - [ ] Team templates and Clone Configuration. Roles, Move and team sessions
   remain.
@@ -700,8 +699,8 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 - Every cross-vendor message is attributable to an authenticated source and an
   explicit target.
 - Every reviewed claim remains an attributable handoff with optional human
-  verdict, note and reply lineage; workspace decisions have one durable home in
-  the Workspace Brief.
+  verdict, note and reply lineage; workspace decisions live in the
+  repository's own documents.
 - An authenticated pane can discover its own identity, valid targets and new
   authoritative events without gaining control of another pane.
 - Unsupported vendor lifecycle state is visibly **Unknown**, never guessed from

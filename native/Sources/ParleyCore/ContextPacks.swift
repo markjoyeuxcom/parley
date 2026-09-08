@@ -308,8 +308,8 @@ private final class BoundedContextData: @unchecked Sendable {
 /// Captures explicit local sources and renders the exact attributed payload a
 /// person can inspect before sending. Person-created drafts remain ephemeral;
 /// an agent-proposed pack may be serialized only as part of its durable,
-/// human-reviewed checkpoint. Durable workspace briefs and reusable pinned
-/// snippets enter only through explicit snapshots.
+/// human-reviewed checkpoint. Every source enters only as an explicit
+/// snapshot.
 public final class ContextPackBuilder: @unchecked Sendable {
     public static let defaultMaximumPartBytes = 60_000
     public static let defaultMaximumRenderedBytes = 90_000
@@ -652,30 +652,6 @@ public final class ContextPackBuilder: @unchecked Sendable {
                 vendorEvidence: provenance
             ),
             text: "Local file selected by the person: \(selected.path)\nThe file bytes are not embedded in this text context pack. The receiving vendor must say if its own tools or granted filesystem scope cannot read that path."
-        )
-    }
-
-    public func workspaceBrief(_ brief: WorkspaceBrief) throws -> ContextPackPart {
-        try part(
-            source: ContextPackSource(
-                kind: .workspaceBrief,
-                label: brief.workspaceName,
-                detail: "Workspace brief for \(brief.workspaceName) (\(brief.workspaceID)), saved \(brief.updatedAt.formatted(.iso8601))",
-                referenceID: brief.id
-            ),
-            text: brief.renderedText
-        )
-    }
-
-    public func pinnedSnippet(_ snippet: PinnedContextSnippet) throws -> ContextPackPart {
-        try part(
-            source: ContextPackSource(
-                kind: .pinnedSnippet,
-                label: snippet.title,
-                detail: "Pinned snippet \(snippet.title) (\(snippet.id)), saved \(snippet.updatedAt.formatted(.iso8601))",
-                referenceID: snippet.id
-            ),
-            text: snippet.text
         )
     }
 
