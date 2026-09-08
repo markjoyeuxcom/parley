@@ -131,7 +131,7 @@ Production and a separate Development directory.
   main-window hiding.
 - Closing/hiding the main window keeps panes and coordination alive while the
   application remains running.
-- Auxiliary windows (Status Center, Task Manager, Help, About, Settings) are
+- Auxiliary windows (Status Center, Help, About, Settings) are
   `Window`/`Settings` scenes, which SwiftUI hides on close and keeps alive.
   Each scene's root is `AuxiliaryWindowRoot` (ParleyUI): it observes no
   model state and follows `AuxiliaryWindowPresence.next`, a per-window
@@ -167,10 +167,11 @@ append first rewrites the acknowledged projection or refuses, and a
 compaction failure after a durable append is retained as `lastError` and
 surfaced through the Status Center core-health route until the next
 successful compaction, never reported as a lost record. Pane attention is projected once per input generation
-(panes plus every handoff collection) through `PaneAttentionCache`; Task
-Manager sampling runs on one serial owner off the main actor and publishes a
-result only when it is the newest request and the sampled pane set (id plus
-launch generation) is unchanged.
+(panes plus every handoff collection) through `PaneAttentionCache`; process
+sampling for Status Center's Health section runs on one serial owner off the
+main actor, only while that section is mounted in an active window, and
+publishes a result only when it is the newest request and the sampled pane
+set (id plus launch generation) is unchanged.
 
 The relay broker lives in `AppResidentCoordinationCore` inside the application
 process. It owns the authenticated UI control socket, capability filesystem

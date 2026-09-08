@@ -62,7 +62,7 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         try helpAuditContains(topic.searchableText, [
             "Command-1…9 — focus pane", "Command-Shift-F — enter Focus Canvas or return to Pane Grid",
             "Command-Shift-D — show or hide the Collaboration Dock", "Command-Option-T — focus the active terminal",
-            "Command-Shift-T — open Task Manager", "Command-Shift-N — New Workspace",
+            "Command-Shift-N — New Workspace",
         ])
         try helpAuditRequire(!topic.searchableText.contains("Command-Shift-N — open a workspace"), "New Workspace is not Open Folder")
         let workspaces = try helpAuditTopic("workspaces").searchableText
@@ -71,7 +71,7 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
     ("Help audit distinguishes auxiliary close from minimise or app hide", {
         let text = try helpAuditTopic("settings").searchableText
         try helpAuditContains(text, [
-            "Status Center", "Task Manager", "Settings", "Help", "About", "close",
+            "Status Center", "Settings", "Help", "About", "close",
             "released", "filters", "toggles", "unapplied", "minimise", "hide Parley",
             "drafts", "refresh pauses", "saved settings", "history", "main window", "panes running",
         ])

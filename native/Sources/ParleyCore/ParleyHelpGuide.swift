@@ -146,7 +146,7 @@ public enum ParleyHelpGuide {
                     paragraphs: [
                         "Use Focus in the workbench toolbar, Navigate > Enter Focus Canvas, or Command-Shift-F to enlarge the selected pane while keeping peers visible. Grid or Return to Pane Grid restores the persisted split proportions. These actions keep the same terminal processes and sessions.",
                         "Navigate > Show Collaboration Dock (Command-Shift-D) opens the side panel for the current workspace’s waiting work, active handoffs, recipes and recent results. It offers a route to Status Center for the full record. Hide Collaboration Dock with the same shortcut to recover the space.",
-                        "Command-1…9 focuses an existing pane by its position in the current workspace. Command-Option-T returns keyboard focus to the active terminal. Command-Shift-T opens Task Manager; it does not create a terminal.",
+                        "Command-1…9 focuses an existing pane by its position in the current workspace. Command-Option-T returns keyboard focus to the active terminal.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -580,7 +580,7 @@ public enum ParleyHelpGuide {
                     id: "settings-window-lifetime",
                     title: "Close, minimise and hide",
                     paragraphs: [
-                        "When you close Status Center, Task Manager, Settings, Help or About, that window’s content is released. On reopening, window-local filters, search, selections and toggles return to their defaults; unapplied edits are discarded. This does not erase saved settings, workspaces or collaboration history.",
+                        "When you close Status Center, Settings, Help or About, that window’s content is released. On reopening, window-local filters, search, selections and toggles return to their defaults; unapplied edits are discarded. This does not erase saved settings, workspaces or collaboration history.",
                         "If you minimise one of those windows or hide Parley, its drafts and local controls stay in memory while live refresh pauses. Restore the window or unhide the app to continue. Closing the window is different from minimising it or hiding the app.",
                         "Closing the main window keeps app-resident panes running and coordination alive. Quit and Stop Everything end those processes; auxiliary window closure does not.",
                     ]
@@ -888,7 +888,7 @@ public enum ParleyHelpGuide {
                         "Tools → Export Diagnostics creates a privacy-bounded local archive for troubleshooting. Review it before sharing it. Environment Check verifies local executables and runtime readiness without submitting prompts or spending model quota.",
                     ],
                     items: [
-                        "Tools → Task Manager shows Parley's application process and only the processes attributed to live Ghostty panes. It groups resource use by program, workspace and pane; it is not a system-wide Activity Monitor.",
+                        "Status Center → Health → Processes shows Parley's application process and only the processes attributed to live Ghostty panes. It groups resource use by program, workspace and pane, samples only while that section is visible, and is not a system-wide Activity Monitor.",
                         "CPU is calculated from two consecutive samples, so the first sample truthfully shows an unavailable value. App RSS and Pane RSS are separate because summing resident memory can count shared pages more than once.",
                         "Process rows are read-only. Focus, diagnostic copy, Control-C, restart and close operate on the owning pane; interruption, restart and close keep their normal confirmations.",
                         "The diagnostics report contains aggregate coordination usage, typed delivery outcomes, retained event-window bounds and authoritative recovery timings. It excludes prompts, results, terminal content, names, folders and raw event bodies, and Parley never uploads it.",
@@ -974,7 +974,6 @@ public enum ParleyHelpGuide {
                         "Command-Shift-F — enter Focus Canvas or return to Pane Grid.",
                         "Command-Shift-D — show or hide the Collaboration Dock.",
                         "Command-Option-T — focus the active terminal.",
-                        "Command-Shift-T — open Task Manager.",
                         "Command-? — open this detailed help window.",
                     ]
                 ),

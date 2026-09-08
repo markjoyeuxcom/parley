@@ -392,8 +392,6 @@ struct ParleyNativeApp: App {
                     .disabled(model.activeWorkspace == nil)
             }
             CommandMenu("Tools") {
-                Button("Task Manager…") { openWindow(id: "task-manager") }
-                    .keyboardShortcut("t", modifiers: [.command, .shift])
                 Button("Team Sessions…") { openWindow(id: "main"); model.reviewTeamSessions() }
                 Divider()
                 Button("Environment Check…") { model.showEnvironmentCheck() }
@@ -447,12 +445,6 @@ struct ParleyNativeApp: App {
             AuxiliaryWindowRoot(minimumSize: CGSize(width: 980, height: 640)) { StatusCenterView(model: model) }
         }
         .defaultSize(width: 1_120, height: 780)
-        .windowResizability(.contentMinSize)
-
-        Window("Task Manager", id: "task-manager") {
-            AuxiliaryWindowRoot(minimumSize: CGSize(width: 860, height: 590)) { TaskManagerView(model: model) }
-        }
-        .defaultSize(width: 1_020, height: 720)
         .windowResizability(.contentMinSize)
 
 

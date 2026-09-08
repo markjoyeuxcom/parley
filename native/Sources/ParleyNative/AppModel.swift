@@ -999,8 +999,18 @@ final class AppModel: ObservableObject {
         refreshRuntimeReadiness()
     }
 
+    /// True only while the Processes group is mounted in an active auxiliary
+    /// window. No sample starts, restarts or stays queued while it is false.
+    private var paneProcessSamplingActive = false
+
+    func setPaneProcessSamplingActive(_ active: Bool) {
+        guard paneProcessSamplingActive != active else { return }
+        paneProcessSamplingActive = active
+        if active { refreshTaskManager() }
+    }
+
     func refreshTaskManager() {
-        guard let generation = taskManagerSampling.request() else { return }
+        guard paneProcessSamplingActive, let generation = taskManagerSampling.request() else { return }
         startTaskManagerSample(generation: generation)
     }
 
@@ -1016,14 +1026,21 @@ final class AppModel: ObservableObject {
                 currentIdentity: TaskManagerSamplingPolicy.identity(of: self.panes))
             if outcome.publish, snapshot != self.taskManagerSnapshot { self.taskManagerSnapshot = snapshot }
             // A refresh requested while sampling ran, or a pane change that made
-            // this result stale, gets one fresh sample instead of a dropped request.
-            if let next = outcome.restart { self.startTaskManagerSample(generation: next) }
+            // this result stale, gets one fresh sample instead of a dropped
+            // request, but only while the Processes group is still active.
+            if let next = outcome.restart {
+                if self.paneProcessSamplingActive {
+                    self.startTaskManagerSample(generation: next)
+                } else {
+                    self.taskManagerSampling.declineRestart()
+                }
+            }
         }
     }
 
-    /// The Task Manager's Refresh button: resample processes now and force one
-    /// listener inspection past the sidebar throttle. The automatic timer uses
-    /// `refreshTaskManager()` alone.
+    /// The Processes group's Refresh button: resample processes now and force
+    /// one listener inspection past the sidebar throttle. The automatic timer
+    /// uses `refreshTaskManager()` alone.
     func refreshTaskManagerManually() {
         refreshTaskManager()
         schedulePaneListeningPortRefresh(force: true)

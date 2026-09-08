@@ -42,7 +42,7 @@ Parley owns:
 - authenticated Relay, Ask and Delegate delivery with durable receipts;
 - handoff review, reply lineage, recovery and reviewed Context Pack promotion;
 - normalized vendor events reported through authenticated pane capabilities;
-- local attention, lifecycle, discovery and Task Manager facts.
+- local attention, lifecycle, discovery and pane process facts.
 
 Vendor CLIs own their reasoning interfaces, plans, research and browser tools,
 tasks, teams, subagents, memory, model-specific hooks and MCP/tool semantics.
@@ -74,7 +74,7 @@ in the same request, protocol version bumped where its wording changes.
   remain.
 - [x] Menu-bar attention inbox reduced to a small indicator plus Open Status
   Center, fed by the existing attention projection.
-- [ ] Task Manager folded into Status Center core health, keeping
+- [x] Task Manager folded into Status Center core health, keeping
   pane-to-process attribution and basic figures, sampled only while visible.
 - [ ] One pane grid with zoom and unzoom of a single terminal and one
   hideable collaboration dock, replacing Focus Canvas and the separate names.
@@ -249,8 +249,8 @@ without replacing vendor-owned reasoning or terminal workflows.
    snapshot, plus a second compact line for process state, up to eight
    deduplicated TCP listeners and the latest exact-pane attention reason.
    Listener discovery runs at most every ten seconds, or immediately when the
-   Task Manager's Refresh button forces it, and invokes `/usr/sbin/lsof` once
-   with a bounded newest-first PID argv after Task Manager's TTY/process-tree
+   the Processes group's Refresh button forces it, and invokes `/usr/sbin/lsof`
+   once with a bounded newest-first PID argv after the pane TTY/process-tree
    attribution. The one-second refresh signature contains only Ghostty and
    pane-lifecycle facts, so a change in the marker anchor alone waits for the
    next ten-second or manual refresh. The pane anchor comes from Ghostty when
@@ -515,8 +515,10 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 - [x] One-executable app packaging and runtime manifest.
 - [x] Window close keeps coordination available; application quit ends it.
 - [x] Status Center reports embedded terminal and app-resident core health.
-- [x] Native Task Manager attributes live process trees to exact Ghostty panes,
-  groups them by workspace and exposes only confirmed pane-level controls.
+- [x] Pane process attribution to exact Ghostty panes, grouped by workspace
+  with only confirmed pane-level controls. The separate Task Manager window
+  was folded into Status Center's Health section in the September 2026
+  reduction.
 
 ### Delivery correctness
 
