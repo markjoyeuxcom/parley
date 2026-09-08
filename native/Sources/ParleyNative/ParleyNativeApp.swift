@@ -390,7 +390,6 @@ struct ParleyNativeApp: App {
                 Divider()
                 Button("Save Current Layout…") { model.saveActiveWorkspaceLayout() }
                     .disabled(model.activeWorkspace == nil)
-                Button("Save Current as Team Template…") { model.saveActiveWorkspaceAsTeamTemplate() }
                     .disabled(model.activeWorkspace == nil)
             }
             CommandMenu("Tools") {

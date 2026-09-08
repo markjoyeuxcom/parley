@@ -97,7 +97,6 @@ public final class WorkbenchController: @unchecked Sendable {
         let mode: AgentLaunchMode
     }
 
-
     public let applicationDirectory: URL
     public let protocolDirectory: URL
     private let swiftPMDirectory: URL
@@ -836,52 +835,6 @@ public final class WorkbenchController: @unchecked Sendable {
             document.panes[index].automationPolicy = target.automationPolicy
             try persistLocked()
             return document.panes[index]
-        }
-    }
-
-    @discardableResult
-    public func clonePaneConfiguration(
-        _ paneID: String,
-        toWorkspaceID targetWorkspaceID: String,
-        activeHandoffCount: Int
-    ) throws -> WorkbenchPane {
-        try lock.withLock {
-            guard let source = document.panes.first(where: { $0.id == paneID }) else {
-                throw ParleyWorkbenchError.paneNotFound(paneID)
-            }
-            let target = document.workspaces[try workspaceIndexLocked(targetWorkspaceID)]
-            let assessment = PaneMobilityPolicy.assess(
-                action: .clone,
-                pane: source,
-                targetWorkspaceID: target.workspaceID,
-                panes: document.panes,
-                activeHandoffCount: activeHandoffCount
-            )
-            guard assessment.isAllowed else { throw ParleyWorkbenchError.commandFailed(assessment.refusalText) }
-            var clone = source
-            clone.id = Self.paneID()
-            clone.workspaceID = target.workspaceID
-            clone.workspaceName = target.name
-            clone.automationPolicy = target.automationPolicy
-            clone.inputAvailable = false
-            clone.isActive = false
-            clone.isWorkspaceLead = false
-            clone.launchGeneration = 0
-            clone.isDead = false
-            clone.exitStatus = nil
-            if clone.kind.isAgent {
-                clone.isStarted = false
-                clone.relayEnabled = false
-                clone.protocolVersion = nil
-                clone.currentCommand = "stopped"
-                clone.vendorRuntimeState = nil
-                clone.vendorRuntimeSignal = nil
-                clone.vendorRuntimeSignaledAt = nil
-            }
-            document.panes.append(clone)
-            document.activity[clone.id] = Date()
-            try persistLocked()
-            return clone
         }
     }
 

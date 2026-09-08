@@ -70,7 +70,7 @@ in the same request, protocol version bumped where its wording changes.
 - [x] Workspace briefs and pinned snippets as separate stores and editors.
   Neither store file existed on the one installed Mac at removal time; the
   app leaves any such file on disk unread.
-- [ ] Team templates and Clone Configuration. Roles, Move and team sessions
+- [x] Team templates and Clone Configuration. Roles, Move and team sessions
   remain.
 - [ ] Menu-bar attention inbox reduced to a small indicator plus Open Status
   Center, fed by the existing attention projection.

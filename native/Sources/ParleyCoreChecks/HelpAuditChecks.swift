@@ -94,10 +94,7 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         let runs = try helpAuditTopic("command-runs")
         try helpAuditRequire(ParleyHelpGuide.matching("team sessions").contains(team), "Team Sessions cannot be found")
         try helpAuditRequire(ParleyHelpGuide.matching("command runs").contains(runs), "Command runs cannot be found")
-        try helpAuditContains(team.searchableText, ["Tools", "template", "provisioning", "Stop", "parley team status"])
-        // Template controls, compared with ParleyNativeApp.swift and ContentView.swift.
-        try helpAuditContains(try helpAuditTopic("workspaces").searchableText,
-                              ["Save Current as Team Template…", "Save as Team Template…", "From Team Template"])
+        try helpAuditContains(team.searchableText, ["Tools", "provisioning", "Stop", "parley team status"])
         let context = try helpAuditTopic("context-packs")
         let commands = context.sections.flatMap(\.commands).map(\.command)
         try helpAuditRequire(commands.contains("parley context list"), "Missing context list example")

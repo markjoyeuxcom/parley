@@ -508,7 +508,7 @@ struct ContentView: View {
         .fixedSize()
         .accessibilityLabel("Create workspace")
         .help("Create workspace")
-        .accessibilityHint("Create a folderless workspace or create one from a saved layout or team template")
+        .accessibilityHint("Create a folderless workspace or create one from a saved layout")
     }
 
     @ViewBuilder
@@ -521,21 +521,12 @@ struct ContentView: View {
                 }
             }
         }
-        if !model.teamTemplates.isEmpty {
-            Menu("From Team Template") {
-                ForEach(model.teamTemplates) { template in
-                    Button(template.name) { model.apply(template) }
-                }
-            }
-        }
     }
 
     @ViewBuilder
     private func workspaceContextMenu(_ workspace: WorkbenchWorkspace) -> some View {
         Button("Rename…") { model.rename(workspace) }
         Button("Save Layout…") { model.saveLayout(of: workspace) }
-        Button("Save as Team Template…") { model.saveActiveWorkspaceAsTeamTemplate() }
-            .disabled(!workspace.isActive)
         if !model.savedLayouts.isEmpty {
             Menu("Saved Layouts") {
                 ForEach(model.savedLayouts) { layout in
@@ -546,17 +537,6 @@ struct ContentView: View {
                         }
                         Divider()
                         Button("Delete Saved Layout…", role: .destructive) { model.delete(layout) }
-                    }
-                }
-            }
-        }
-        if !model.teamTemplates.isEmpty {
-            Menu("Team Templates") {
-                ForEach(model.teamTemplates) { template in
-                    Menu(template.name) {
-                        Button("Create Workspace…") { model.apply(template) }
-                        Divider()
-                        Button("Delete Team Template…", role: .destructive) { model.delete(template) }
                     }
                 }
             }
@@ -665,13 +645,6 @@ struct ContentView: View {
             Menu("Move to Workspace") {
                 ForEach(mobilityDestinations) { workspace in
                     Button(workspace.name) { model.movePane(pane, to: workspace) }
-                }
-            }
-            Menu("Clone Configuration to Workspace") {
-                ForEach(mobilityDestinations) { workspace in
-                    Button(workspace.name) {
-                        model.clonePaneConfiguration(pane, to: workspace)
-                    }
                 }
             }
         }

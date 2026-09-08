@@ -181,20 +181,6 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
-                    id: "workspaces-teams",
-                    title: "Portable team templates",
-                    paragraphs: [
-                        "A team template is a reusable blueprint for pane vendors, names, routing roles, permission profiles, workspace lead, automation policy and split layout. Unlike a saved layout, it contains no repository paths or permission roots.",
-                        "Save the current configured grid as a team with Save Current as Team Template… in the Workspace menu or Save as Team Template… in a workspace's context menu; the workspace plus menu applies one under From Team Template. Applying a team asks for a folder and binds every pane plus its permission scope to that chosen folder.",
-                    ],
-                    items: [
-                        "Agent panes are created as stopped placeholders. Start each vendor session deliberately.",
-                        "Shell panes may start automatically because they do not spend a model subscription session.",
-                        "Live pane ids, credentials, terminal history and vendor sessions are never part of a template.",
-                        "Deleting a template never changes a workspace already created from it.",
-                    ]
-                ),
-                ParleyHelpSection(
                     id: "workspaces-roles",
                     title: "Stable routing roles",
                     paragraphs: [
@@ -209,15 +195,13 @@ public enum ParleyHelpGuide {
                 ),
                 ParleyHelpSection(
                     id: "workspaces-mobility",
-                    title: "Move or clone a pane",
+                    title: "Move a pane",
                     paragraphs: [
-                        "Right-click a pane and choose Move to Workspace to transfer the exact retained Ghostty surface, or Clone Configuration to Workspace to create a separate pane with the same visible setup. Every action names its destination and shows its process, folder and handoff consequences before it runs.",
+                        "Right-click a pane and choose Move to Workspace to transfer the exact retained Ghostty surface to another workspace. Every action is confirmed first and refused when it would break routing or lose work.",
                     ],
                     items: [
                         "Move preserves the pane id, running process and vendor session, scrollback, terminal state and pane-local folder. The destination workspace's automation policy applies after the move.",
                         "Parley refuses to move the last pane out of a workspace or a pane participating in active handoffs. It also refuses a destination with the same routing role or a second Workspace Lead.",
-                        "Clone leaves the source process and all its handoffs unchanged. It copies vendor, name, folder, permission profile, routing role and lead stamp, but never terminal history, a vendor session or a pane credential.",
-                        "An agent clone is a stopped placeholder until you press Start. A cloned shell starts normally.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -259,7 +243,7 @@ public enum ParleyHelpGuide {
                         "Rename a pane to give routing a memorable, unique name.",
                         "Make or remove a Workspace Lead.",
                         "Set or clear a stable workspace-scoped routing role.",
-                        "Move the exact pane or clone only its visible configuration into another workspace.",
+                        "Move the exact pane into another workspace.",
                         "Start Fresh Session and Restart Fresh Session never restore vendor history.",
                         "Resume asks Claude, Codex or Copilot to open its own saved-session picker. Agy instead attempts its documented most recent conversation for this pane's working directory.",
                         "Vendor-owned Resume keeps the pane folder and repeats permission review, but Parley cannot guarantee that a previous conversation resumes. Status Center records RESUME REQUESTED rather than claiming restoration.",
@@ -667,7 +651,6 @@ public enum ParleyHelpGuide {
                     title: "Team sessions",
                     paragraphs: [
                         "A requesting agent pane can propose a bounded team for one objective. Team Sessions (Tools menu, or the notice above the terminal) opens an editable preview of the objective, working folder, allowed vendors, permission profile, pane limit and provisioning deadline. Nothing is authorized until you approve.",
-                        "A portable team template is a blueprint, not permission to provision agents. A named template can prefill a request, but you still approve its bound folder, vendors, profile, count and deadline here. See Workspaces for applying templates directly from the native UI.",
                         TeamSessionDisclosure.approval,
                         TeamSessionDisclosure.deadline,
                         "After approval the sheet stays open as the session's monitoring surface and never blocks pane creation. It shows every participant with its provenance and created generation, handoffs between participants, decisions that need you and the remaining provisioning time. Each created pane is an ordinary vendor session with that vendor's own permission prompts.",

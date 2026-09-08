@@ -4654,7 +4654,7 @@ public enum RelayShim {
           request)
             shift 2
             if [ "$#" -lt 3 ]; then
-              echo "usage: parley team request --folder <absolute-folder> [--template <name>] [--panes <n>] [--hours <n>] \\"<objective>\\"" >&2
+              echo "usage: parley team request --folder <absolute-folder> [--panes <n>] [--hours <n>] \\"<objective>\\"" >&2
               exit 2
             fi
             command="team-request"
@@ -4677,7 +4677,7 @@ public enum RelayShim {
             ;;
           *)
             echo "usage:" >&2
-            echo "  parley team request --folder <absolute-folder> [--template <name>] [--panes <n>] [--hours <n>] \\"<objective>\\"" >&2
+            echo "  parley team request --folder <absolute-folder> [--panes <n>] [--hours <n>] \\"<objective>\\"" >&2
             echo "  parley team add --vendor <claude|codex|agy|copilot> [--name <name>] [--role <role>]" >&2
             echo "  parley team status" >&2
             exit 2

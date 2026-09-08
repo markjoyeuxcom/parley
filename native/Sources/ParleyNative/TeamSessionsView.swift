@@ -136,18 +136,6 @@ private struct TeamSessionApproval: View {
         var initialVendors = Set(session.allowedVendors)
         var initialLimit = session.paneLimit
         var note: String?
-        if let name = session.proposal.templateName {
-            if let template = model.teamTemplates.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
-                let leaves = template.root.leaves.filter(\.kind.isAgent)
-                if !leaves.isEmpty {
-                    initialVendors = Set(leaves.map(\.kind))
-                    initialLimit = min(max(leaves.count, 1), TeamSessionProposal.maximumPaneLimit)
-                }
-                note = "Prefilled from the portable template “\(template.name)”: \(leaves.map(\.kind.label).joined(separator: ", ")). Templates never carry folders; the folder below comes from this approval."
-            } else {
-                note = "The requesting pane named a template “\(name)” that does not exist here. Nothing was prefilled from it."
-            }
-        }
         _vendors = State(initialValue: initialVendors)
         _paneLimit = State(initialValue: initialLimit)
         _hours = State(initialValue: session.proposal.hours)

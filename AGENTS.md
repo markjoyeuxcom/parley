@@ -411,15 +411,14 @@ rendered/200 KB transport bounds; agent commands never create their own approval
 
 ## Team sessions
 
-`parley team request --folder <absolute-folder> [--template <name>] [--panes <n>]
+`parley team request --folder <absolute-folder> [--panes <n>]
 [--hours <n>] [--worktree <branch> [--base <ref>]] "<objective>"` lets one lead
 pane propose a bounded team for one objective. It requires a live agent pane
 in a workspace whose policy allows delegation and a folder inside the lead's
 working folder. Nothing is authorized
 until the person approves a native editable preview of objective, folder,
 allowed vendors, permission profile, pane limit (at most 8) and deadline (at
-most 128 hours). A named template only prefills vendors and count; folders
-bind in the approval, never in the portable template.
+most 128 hours). Folders bind in the approval.
 
 Approval creates one memory-only `TeamSessionGrant` keyed to the lead pane id,
 generation, workspace, automation policy and canonical folder, binding the
@@ -633,14 +632,7 @@ terminal input and failed delivery as terminal `.failed`. A delivery followed
 by persistence failure must state that delivery occurred and warn against
 resending. Keep rendered packs at 90 KB and control bodies at 200 KB.
 
-## Portable teams, roles and mobility
-
-A team template is a portable blueprint, not a saved live layout. It may keep
-vendor, display name, role, permission-profile identity/lifetime, lead,
-automation policy and split geometry. It must never keep repository paths,
-approved roots, live ids, credentials, terminal content or vendor sessions.
-Applying a template binds every leaf to the folder selected at that moment;
-agent leaves remain stopped.
+## Roles and mobility
 
 Roles are owner-controlled metadata independent of display name. Use
 `@reviewer` locally and `workspace/@reviewer` across workspaces. Do not fall
@@ -650,8 +642,8 @@ unique per workspace; vendor names and `lead` are reserved.
 Move preserves the exact retained Ghostty surface, pane id, process, vendor
 session, scrollback, credential and folder. Refuse moving the last source pane,
 any pane with an active handoff, or a role/lead collision; revalidate topology
-after confirmation. Clone copies visible configuration only, assigns fresh ids
-and credentials, and leaves agent clones stopped. Clean up partial clones.
+after confirmation. Team templates and configuration clone were removed in the
+September 2026 reduction; saved layouts remain.
 
 ## External integration boundaries
 

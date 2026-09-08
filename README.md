@@ -34,8 +34,8 @@ or bypass a vendor's approval flow.
   branch state, bounded TCP listeners attributed to the pane-owned process tree
   and the latest official-hook or durable-handoff attention reason. Parley
   never derives these facts from terminal text.
-- Folder-backed workspaces, favourites, saved layouts, portable team
-  templates, stable roles, workspace leads, pane move and configuration clone.
+- Folder-backed workspaces, favourites, saved layouts, stable roles,
+  workspace leads and pane move.
 - Reviewed context packs and Git diff/file capture.
 - Generated, session-scoped lifecycle hooks for Claude Code and Codex, plus a
   Copilot plugin attachment. Runtime state changes only after the pane capability
@@ -299,14 +299,10 @@ conversation resumes. Parley records **RESUME REQUESTED**, never that a prior
 session survived.
 
 Move transfers the exact retained pane, process, terminal state, credential and
-folder. Clone copies visible configuration only and never copies a process,
-vendor session, terminal history or credential. Agent clones remain stopped
-until a person starts them.
+folder.
 
-Saved layouts and team templates contain portable configuration, not live ids,
-paths from another machine, credentials or terminal content. A team can be
-applied folderless; its agents remain stopped and unbound until their working
-folders and permissions are reviewed explicitly.
+Saved layouts contain portable configuration, not live ids, paths from another
+machine, credentials or terminal content.
 
 Git worktrees stay one per feature, not one per pane. The worktree browser
 opens any existing worktree as a workspace and can create a new one on a new
