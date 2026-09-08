@@ -425,6 +425,7 @@ struct StatusCenterView: View {
         switch segment {
         case .live:
             reviewedBusyQueue
+            agentDrafts
             liveCollaboration
         case .results:
             returnedResults
@@ -437,6 +438,56 @@ struct StatusCenterView: View {
             coreHealth
             paneProcesses
             timeline
+        }
+    }
+
+    private var agentDrafts: some View {
+        let lane = AgentDraftMenuProjection.lane(reviews: model.pendingContextReviews)
+        let all = model.pendingContextReviews
+            .sorted { ($0.state == .awaitingReview ? 0 : 1, $1.updatedAt) < ($1.state == .awaitingReview ? 0 : 1, $0.updatedAt) }
+        return statusGroup("AGENT DRAFTS") {
+            if all.isEmpty {
+                emptyRow("No agent drafts are waiting for approval or saved for review")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(all) { review in
+                        let entry = AgentDraftMenuProjection.entry(review, now: Date())
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(entry.title)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(review.detail ?? "\(review.pack.parts.count) \(review.pack.parts.count == 1 ? "part" : "parts") · \(review.pack.sourceByteCount) bytes")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 8)
+                            Text(entry.isWaiting ? "AWAITING APPROVAL" : "SAVED DRAFT")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(entry.isWaiting ? Color.orange : Color.secondary)
+                            Button(entry.isWaiting ? "Review…" : "Open…") { model.presentContextReview(review) }
+                                .controlSize(.small)
+                            if !entry.isWaiting {
+                                Button("Discard…") { model.discardAgentDraft(review) }
+                                    .controlSize(.small)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .overlay(alignment: .bottom) { Divider() }
+                    }
+                    if lane.editableCount > 1 {
+                        HStack {
+                            Spacer()
+                            Button("Discard All Editable Drafts…", role: .destructive) { model.discardAllEditableDrafts() }
+                                .controlSize(.small)
+                        }
+                        .padding(8)
+                    }
+                }
+            }
         }
     }
 

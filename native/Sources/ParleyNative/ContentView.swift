@@ -1065,15 +1065,34 @@ struct ContentView: View {
 
     private var contextPackMenu: ToolbarActionMenu {
         var items: [ToolbarMenuItem] = []
-        if !model.pendingContextReviews.isEmpty {
-            items.append(.heading("Agent Drafts Awaiting Review"))
-            items += model.pendingContextReviews.map { review in
-                let target = review.requestedTargetName.map { " → \($0)" } ?? ""
-                return .action(
-                    "\(review.sourcePaneName)\(target) · \(review.state == .awaitingReview ? "awaiting review" : "draft")",
-                    systemImage: review.state == .awaitingReview ? "person.crop.circle.badge.clock" : "doc.badge.ellipsis"
-                ) { model.presentContextReview(review) }
+        // Ages are computed when the menu opens; each opening rebuilds its items.
+        let lane = AgentDraftMenuProjection.lane(reviews: model.pendingContextReviews)
+        func open(_ entry: AgentDraftMenuEntry) {
+            if let review = model.pendingContextReviews.first(where: { $0.id == entry.id }) {
+                model.presentContextReview(review)
             }
+        }
+        if !lane.waiting.isEmpty {
+            items.append(.heading("Waiting for Your Approval"))
+            items += lane.waiting.map { entry in
+                .action(entry.title, systemImage: "person.crop.circle.badge.clock") { open(entry) }
+            }
+            items.append(.separator)
+        }
+        if !lane.saved.isEmpty {
+            items.append(.heading("Saved Agent Drafts"))
+            items += lane.saved.map { entry in
+                .action(entry.title, systemImage: "doc.badge.ellipsis") { open(entry) }
+            }
+            if lane.olderCount > 0 {
+                items.append(.action("\(lane.olderCount) older \(lane.olderCount == 1 ? "draft" : "drafts") in Status Center…", systemImage: "list.bullet") {
+                    model.refreshStatusCenterQuietly()
+                    openWindow(id: "status-center")
+                })
+            }
+            items.append(.action("Discard All Editable Drafts…", systemImage: "trash", isDestructive: true) {
+                model.discardAllEditableDrafts()
+            })
             items.append(.separator)
         }
         if let draft = model.contextPackDraft {

@@ -4606,6 +4606,58 @@ final class AppModel: ObservableObject {
         contextPackPresented = true
     }
 
+    /// Discards one editable agent draft from Status Center. Drafts waiting
+    /// for approval are declined from their own review sheet, never here.
+    func discardAgentDraft(_ review: AgentContextReview) {
+        perform {
+            guard review.state == .draft, let relayClient else { return }
+            let alert = NSAlert()
+            alert.messageText = "Discard this agent draft?"
+            alert.informativeText = "Nothing will be submitted. The source pane can stage a new draft later; a file returned by a delegation stays readable on its completed handoff."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Discard Draft")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let response = try relayClient.rejectContextReview(review.id)
+            guard (200..<300).contains(response.status) else { throw RelayUIError.message(response.text) }
+            if contextPackDraft?.reviewID == review.id {
+                contextPackPresented = false
+                contextPackDraft = nil
+            }
+            try refresh()
+        }
+    }
+
+    /// Ends every editable agent draft in one confirmed action. Drafts waiting
+    /// for approval (a pane blocked in `ask --context`) are left untouched.
+    func discardAllEditableDrafts() {
+        perform {
+            guard let relayClient else { return }
+            let editable = pendingContextReviews.filter { $0.state == .draft }
+            guard !editable.isEmpty else { return }
+            let alert = NSAlert()
+            alert.messageText = "Discard \(editable.count) editable agent \(editable.count == 1 ? "draft" : "drafts")?"
+            alert.informativeText = "Nothing will be submitted. Drafts waiting for your approval are not affected. Each source pane can stage a new draft later, and a file returned by a delegation stays readable on its completed handoff in Status Center."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Discard All Editable Drafts")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            var failures: [String] = []
+            for review in editable {
+                let response = try relayClient.rejectContextReview(review.id)
+                if !(200..<300).contains(response.status) { failures.append(response.text) }
+            }
+            if let presented = contextPackDraft?.reviewID, editable.contains(where: { $0.id == presented }) {
+                contextPackPresented = false
+                contextPackDraft = nil
+            }
+            try refresh()
+            if let first = failures.first {
+                throw RelayUIError.message("\(failures.count) \(failures.count == 1 ? "draft" : "drafts") could not be discarded: \(first)")
+            }
+        }
+    }
+
     func rejectCurrentContextReview() {
         perform {
             guard let draft = contextPackDraft,

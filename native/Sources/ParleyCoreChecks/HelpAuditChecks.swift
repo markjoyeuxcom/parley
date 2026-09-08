@@ -100,6 +100,11 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         let commands = context.sections.flatMap(\.commands).map(\.command)
         try helpAuditRequire(commands.contains("parley context list"), "Missing context list example")
         try helpAuditRequire(commands.contains("parley context show <draft-id>"), "Missing context show example")
+        try helpAuditContains(context.searchableText, [
+            "Waiting for Your Approval", "Saved Agent Drafts", "newest eight", "Discard All Editable Drafts",
+            "never touches a waiting approval", "Agent-proposed context; not approved or sent", "stay unverified",
+            "reading it there is a complete interaction",
+        ])
         let sections = ParleyHelpGuide.topics.flatMap(\.sections)
         try helpAuditRequire(Set(sections.map(\.id)).count == sections.count, "Moved Help sections have duplicate identities")
     }),

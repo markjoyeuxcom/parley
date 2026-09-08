@@ -621,7 +621,14 @@ human Shell pane; report those limits rather than silently skipping checks.
 
 An agent-staged context part is a claim. Its path and bytes stay labelled
 `agentFileDraft`. Only a separate human-authorized capture may create trusted
-File, Git Diff, Selection or Command Result provenance. Approval forms return
+File, Git Diff, Selection or Command Result provenance. A pack carries its
+origin (`ContextPackOrigin`): the rendered header says "Agent-proposed
+context; not approved or sent" until the person approves, then that the
+person approved delivery while agent-provided parts stay unverified; older
+records without an origin decode as person-selected. The Context menu lists
+waiting approvals first and the newest eight saved drafts, with every pending
+draft in Status Center's Live section; a bulk discard ends only editable
+drafts, never a waiting approval. Approval forms return
 known part ids and edited text, never source metadata or captured originals.
 
 Context-review validation, durable recording, in-memory replacement and

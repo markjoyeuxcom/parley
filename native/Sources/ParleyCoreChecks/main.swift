@@ -8224,6 +8224,7 @@ private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate
     try expect(stagedReview.state == .draft, "a staged context file skipped draft review")
     try expect(stagedReview.sourcePaneID == "%1", "a context draft trusted a claimed source pane")
     try expect(stagedReview.pack.parts.first?.source.kind == .agentFileDraft, "agent-provided context was labelled as person-selected")
+    try expect(stagedReview.pack.origin == .agentProposed, "a staged context draft was not recorded as agent-proposed")
     try expect(
         stagedReview.pack.parts.first?.source.detail.contains("not independently read by Parley") == true,
         "agent-provided context omitted its trust boundary"
@@ -8269,6 +8270,11 @@ private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate
     try expect(submissions.value?.paneID == "%2", "approved context went to the wrong pane")
     try expect(submissions.value?.text.contains("Review only correctness") == true, "approval dispatched the unreviewed request")
     try expect(submissions.value?.text.contains("not independently read by Parley") == true, "approval stripped context provenance")
+    try expect(submissions.value?.text.contains("The person reviewed and approved delivery") == true, "the delivered pack did not state the person's approval")
+    try expect(submissions.value?.text.contains("not approved or sent") == false, "the delivered pack still called itself unapproved")
+    try expect(submissions.value?.text.contains("explicitly selected by the person") == false, "the delivered agent pack claimed the person selected it")
+    let approvedOrigin = try control.contextReviews().first?.pack.origin
+    try expect(approvedOrigin == .agentApproved, "the approved review did not record the approved origin")
     try expect(askResult.value == nil, "approved context Ask stopped waiting before its correlated answer")
 
     let returned = broker.handleAnswer(token: reviewerToken, consultationID: "current", text: "The fatal error is unconditional.")
@@ -9628,6 +9634,8 @@ let checks: [(String, () throws -> Void)] = [
     ("workbench notice lane is prioritised and never hides facts", checkWorkbenchNoticeLaneIsPrioritisedAndNeverHidesFacts),
     ("workbench notice lane represents every worktree collision", checkWorkbenchNoticeLaneRepresentsEveryWorktreeCollision),
     ("global unzoom clears whatever pane is zoomed", checkGlobalUnzoomClearsWhateverPaneIsZoomed),
+    ("agent draft menu separates waiting approvals from saved drafts", checkAgentDraftMenuSeparatesWaitingApprovalsFromSavedDrafts),
+    ("context pack origin is stated honestly in the header", checkContextPackOriginIsStatedHonestlyInTheHeader),
     ("status center segments map handoffs and counts", checkStatusCenterSegmentsMapHandoffsAndCounts),
     ("delegation visibility uses owned timestamps only", checkDelegationVisibilityIsComputedFromOwnedTimestampsOnly),
     ("delegation visibility requires an exact delivered transition", checkDelegationVisibilityRequiresAnExactDeliveredTransition),

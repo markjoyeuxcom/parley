@@ -63,7 +63,19 @@ struct CommandRunsView: View {
             HSplitView {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(model.commandRuns.prefix(32)) { run in
+                        let listed = Array(model.commandRuns.prefix(32))
+                        let waiting = listed.filter { !$0.state.isTerminal || $0.workerStillRunning }
+                        let recent = listed.filter { $0.state.isTerminal && !$0.workerStillRunning }
+                        if !waiting.isEmpty {
+                            Text("WAITING OR RUNNING").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                        }
+                        if !recent.isEmpty, waiting.isEmpty {
+                            Text("Nothing is waiting for approval.").foregroundStyle(.secondary).font(.system(size: 11))
+                        }
+                        ForEach(waiting + recent) { run in
+                            if run.id == recent.first?.id, !recent.isEmpty {
+                                Text("RECENT").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).padding(.top, 6)
+                            }
                             Button {
                                 model.selectCommandRun(run)
                             } label: {

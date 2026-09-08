@@ -799,7 +799,8 @@ public final class RelayBroker: @unchecked Sendable {
             let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, text: text)
             let pack = ContextPack(
                 name: name.isEmpty ? "\(sender.displayName) context" : name,
-                parts: [staged.part]
+                parts: [staged.part],
+                origin: .agentProposed
             )
             _ = try contextPackBuilder.render(pack)
             let review = AgentContextReview(
@@ -1442,7 +1443,8 @@ public final class RelayBroker: @unchecked Sendable {
             id: review.pack.id,
             name: approval.name,
             note: approval.note,
-            parts: parts
+            parts: parts,
+            origin: .agentApproved
         )
     }
 
@@ -2014,7 +2016,8 @@ public final class RelayBroker: @unchecked Sendable {
                 sourceFolder: sender.cwd,
                 pack: ContextPack(
                     name: "Delegation result from \(sender.displayName)",
-                    parts: [staged.part]
+                    parts: [staged.part],
+                    origin: .agentProposed
                 ),
                 detail: "Returned from tracked delegation \(handoffID); awaiting explicit human review."
             )
