@@ -51,8 +51,8 @@ launching a vendor CLI or spending subscription quota.
 
 ## Verification
 
-`npm test` runs deterministic native checks, packaging/security tests, the VS
-Code companion contract and the public repository scan. The public scan checks
+`npm test` runs deterministic native checks, packaging/security tests and the
+public repository scan. The public scan checks
 tracked and publishable files plus complete reachable Git patch history for
 common credential patterns and sensitive filenames. CI fetches complete history
 so the gate cannot silently shrink to the latest commit.

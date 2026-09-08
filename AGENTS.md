@@ -663,9 +663,10 @@ choose a vendor, start an agent or inject terminal input.
 Parley publishes nothing for external editors. The VS Code companion, its
 `.parleycontext` import, the capability and acknowledgement files, the
 published attention snapshot and the `parley://focus` and `parley://status`
-URLs were removed in the September 2026 reduction. The content-free attention
-projection remains in process for the menu-bar indicator only, and it still
-never receives a RelayHandoff body.
+URLs were removed in the September 2026 reduction. The attention projection
+remains in process for the menu-bar indicator: it reads handoff metadata and
+produces a content-free snapshot, and the menu-bar summary and its
+presentation receive only that snapshot, never a RelayHandoff.
 
 ## Shared protocol launch behavior
 

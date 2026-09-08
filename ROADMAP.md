@@ -587,6 +587,7 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
   acknowledgement semantics. Captured text is never persisted by the extension.
 - [x] VS Code companion Phase 5 — recovery actions, native welcome/onboarding
   surfaces, packaging assets and deterministic model/extension-host coverage.
+  All five companion phases were retired in the September 2026 reduction.
 
 ### Shipping
 

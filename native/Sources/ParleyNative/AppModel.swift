@@ -6446,8 +6446,6 @@ final class AppModel: ObservableObject {
         perform { _ = try openWorkspace(folder: request.folder) }
     }
 
-    @discardableResult
-
     func consumeRequestedStatusHandoffID() {
         requestedStatusHandoffID = nil
     }

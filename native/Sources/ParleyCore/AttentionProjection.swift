@@ -89,12 +89,6 @@ public struct ExternalAttentionSnapshot: Codable, Equatable, Sendable {
         self.items = items
     }
 
-    public func hasSameContent(as other: ExternalAttentionSnapshot) -> Bool {
-        attentionCount == other.attentionCount
-            && workspaces == other.workspaces
-            && panes == other.panes
-            && items == other.items
-    }
 }
 
 public enum ExternalAttentionProjection {
