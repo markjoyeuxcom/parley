@@ -918,7 +918,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: Idle agent reaper (opt-in)
+    // MARK: Settings and appearance
 
     func showSettings(_ section: ApplicationSettingsSection = .general) {
         selectedSettingsSection = section
