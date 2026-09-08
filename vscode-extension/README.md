@@ -117,5 +117,5 @@ npm install --prefix vscode-extension
 npm run package:vscode
 ```
 
-The package is written to `dist/Parley-Companion-0.1.0.vsix` and the manual
-draft-release workflow attaches that same audited artifact to GitHub Releases.
+The package is written to `dist/Parley-Companion-<version>.vsix` and the manual
+release job attaches that same audited artifact to the release.

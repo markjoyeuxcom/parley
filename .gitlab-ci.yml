@@ -44,31 +44,6 @@ test-and-build:
     - npm test
     - npm run build
 
-# TEMPORARY, removed before merge: proves from this runner that the job token
-# can create a release whose files go to the generic package registry, the
-# exact path release-beta takes. The throwaway tag, release and package are
-# deleted by hand afterwards.
-release-auth-smoke:
-  stage: verify
-  tags:
-    - macos
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-  script:
-    - glab --version
-    - GLAB_ENABLE_CI_AUTOLOGIN=true glab auth status
-    - printf 'job-token smoke for pipeline %s\n' "$CI_PIPELINE_ID" > smoke.txt
-    - |
-      GLAB_ENABLE_CI_AUTOLOGIN=true glab release create "ci-smoke-${CI_PIPELINE_ID}" smoke.txt \
-        --repo "$CI_PROJECT_PATH" \
-        --ref "$CI_COMMIT_SHA" \
-        --use-package-registry \
-        --package-name ci-smoke \
-        --no-update \
-        --name "CI smoke ${CI_PIPELINE_ID}" \
-        --notes "Temporary job-token smoke release. Delete."
-    - GLAB_ENABLE_CI_AUTOLOGIN=true glab release view "ci-smoke-${CI_PIPELINE_ID}" --repo "$CI_PROJECT_PATH"
-
 # Cuts an unnotarized test beta from an existing version tag and publishes it
 # as a release of this GitLab project, with every file stored in the project's
 # generic package registry as package `parley`, version `<tag>`. It does what

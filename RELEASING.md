@@ -88,9 +88,11 @@ To cut one:
    `glab release download vX.Y.Z -R markjoyeuxcom/apps/parley`.
 
 Pushing `main` and tags to the `github` remote keeps the public copy in step
-and is a person's manual choice. The notarized release path can move the
-same way once the signing and notarization material below is stored as
-masked GitLab CI variables instead of GitHub Actions secrets.
+and is a person's manual choice. The GitHub unnotarized test-beta workflow is
+removed. The GitHub **Prepare macOS draft release** workflow stays in the
+repository as the documented notarized procedure below but is disabled on
+GitHub; it can move the same way once the signing and notarization material
+is stored as masked GitLab CI variables instead of GitHub Actions secrets.
 
 ## Unnotarized test betas
 
@@ -116,6 +118,9 @@ documented
 Privacy & Security **Open Anyway** flow; never disable Gatekeeper globally.
 
 ## Prepare a draft
+
+This is the notarized GitHub workflow. It is retained as the documented
+procedure but disabled on GitHub until it moves to GitLab (see above).
 
 1. Ensure `package.json` has the intended version, the matching
    `.github/release-notes/v<version>.md` exists, the tree is clean and the tag
