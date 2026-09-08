@@ -3148,6 +3148,11 @@ final class AppModel: ObservableObject {
             if snapshot.unread != unreadHandoffs { unreadHandoffs = snapshot.unread }
             if snapshot.contextReviews != contextReviews {
                 contextReviews = snapshot.contextReviews
+                if let id = contextPackDraft?.reviewID,
+                   !snapshot.contextReviews.contains(where: { $0.id == id }) {
+                    contextPackDraft = nil
+                    contextPackPresented = false
+                }
                 if var draft = contextPackDraft,
                    let reviewID = draft.reviewID,
                    let review = snapshot.contextReviews.first(where: { $0.id == reviewID }) {
@@ -3551,7 +3556,7 @@ final class AppModel: ObservableObject {
         let scopeName = workspaceID == nil ? "All Workspaces" : (workspaceName ?? workspaceID ?? "")
         let alert = NSAlert()
         alert.messageText = "Clear history for \(scopeName)?"
-        alert.informativeText = "This permanently clears finished collaboration records and their returned or captured results, plus recorded pane and workspace activity in this scope. It includes records hidden by search filters or dismissal. Active work and running panes are preserved. This affects only this local \(runtime.mode.label) app and cannot be undone."
+        alert.informativeText = "This deletes finished collaboration records, their returned or captured results, saved context and recorded activity in this scope from Parley’s local storage. It includes records hidden by search filters or dismissal. Waiting approvals, deliveries in progress and running panes are preserved. Older context without a recorded workspace can be deleted using All Workspaces or Delete Saved Context. Project files, exports and messages already received by vendor CLIs are unchanged. This affects only this local \(runtime.mode.label) app and cannot be undone."
         alert.alertStyle = .warning
         let clear = alert.addButton(withTitle: "Clear History")
         let cancel = alert.addButton(withTitle: "Cancel")
@@ -3563,6 +3568,17 @@ final class AppModel: ObservableObject {
             guard let relayClient else {
                 throw RelayUIError.message("The Parley coordination core is unavailable.")
             }
+            let previousHandoffIDs = Set(statusHandoffs.map(\.id))
+            defer {
+                refreshStatusCenterQuietly()
+                if let core = residentCore { commandRuns = core.commandRuns.runs() }
+                let removed = previousHandoffIDs.subtracting(statusHandoffs.map(\.id))
+                if let pack = contextPackDraft?.pack,
+                   pack.parts.contains(where: { $0.source.kind == .handoffResult && removed.contains($0.source.referenceID ?? "") }) {
+                    contextPackDraft = nil
+                    contextPackPresented = false
+                }
+            }
             let response: RelayTextResponse
             if let workspaceID {
                 response = try relayClient.deleteWorkspaceHistory(workspaceID: workspaceID, workspaceName: workspaceName)
@@ -3570,7 +3586,6 @@ final class AppModel: ObservableObject {
                 response = try relayClient.deleteAllHistory()
             }
             guard response.status == 200 else { throw RelayUIError.message(response.text) }
-            refreshStatusCenterQuietly()
             return response.text
         } catch {
             // One journal may have cleared before another failed. Refresh the
@@ -4617,6 +4632,58 @@ final class AppModel: ObservableObject {
         requestedStatusCenterSegment = nil
     }
 
+    func savedContextReviews(workspaceID: String?) -> [AgentContextReview] {
+        guard let workspaceID else { return contextReviews }
+        return contextReviews.filter { $0.belongs(to: workspaceID, handoffs: statusHandoffs) }
+    }
+
+    var deletableContextReviews: [AgentContextReview] {
+        contextReviews.filter { $0.state.canDelete }
+    }
+
+    func deleteSavedContext(_ reviews: [AgentContextReview]) {
+        let selected = reviews.filter { $0.state.canDelete }
+        guard !selected.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = selected.count == 1
+            ? "Delete “\(AgentDraftMenuProjection.packLabel(for: selected[0]))”?"
+            : "Delete \(selected.count) saved context records?"
+        alert.informativeText = "This deletes the selected drafts, captured text, edits and returned-file copies from Parley's local storage. Waiting approvals and deliveries in progress are preserved. Messages already sent remain in History until you clear it. Original project files and exported copies are unchanged. This cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete Saved Context").keyEquivalent = ""
+        alert.addButton(withTitle: "Cancel").keyEquivalent = "\r"
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            guard let relayClient else { throw RelayUIError.message("The Parley coordination core is unavailable.") }
+            let response = try relayClient.deleteContextReviews(AgentContextDeletion(reviews: selected.map {
+                AgentContextDraftDiscard(reviewID: $0.id, expectedUpdatedAt: $0.updatedAt)
+            }))
+            refreshStatusCenterQuietly()
+            guard response.status == 200 else { throw RelayUIError.message(response.text) }
+        } catch {
+            refreshStatusCenterQuietly()
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    /// Closed workspaces remain addressable for history cleanup. Old records
+    /// without a stable workspace identity remain accessible in All Workspaces.
+    var closedHistoryWorkspaces: [(id: String, name: String)] {
+        var names: [String: String] = [:]
+        for handoff in statusHandoffs {
+            names[handoff.sourceWorkspaceID] = handoff.sourceWorkspaceName ?? handoff.sourceWorkspaceID
+            names[handoff.targetWorkspaceID] = handoff.targetWorkspaceName ?? handoff.targetWorkspaceID
+        }
+        for event in statusActivityEvents { names[event.workspaceID] = event.workspaceName }
+        for review in contextReviews {
+            if let id = review.sourceWorkspaceID { names[id] = review.sourceWorkspaceName ?? id }
+        }
+        let live = Set(workspaces.map(\.workspaceID))
+        return names.filter { !$0.key.isEmpty && !live.contains($0.key) }
+            .map { (id: $0.key, name: $0.value) }
+            .sorted { ($0.name, $0.id) < ($1.name, $1.id) }
+    }
+
     /// Discards one editable agent draft from Status Center. The core checks
     /// the draft state and the listed revision under its own lock, so a draft
     /// that became a waiting Ask while the confirmation was open is refused;
@@ -4643,7 +4710,7 @@ final class AppModel: ObservableObject {
 
     /// Ends every editable agent draft in one confirmed action. Drafts waiting
     /// for approval (a pane blocked in `ask --context`) are left untouched.
-    func discardAllEditableDrafts() {
+    func discardAllEditableDrafts(_ reviews: [AgentContextReview]? = nil) {
         perform {
             guard let relayClient else { return }
             let editable = pendingContextReviews.filter { $0.state == .draft }
@@ -6335,7 +6402,7 @@ final class AppModel: ObservableObject {
         let paneCount = panes.filter { $0.workspaceID == workspace.workspaceID }.count
         let alert = NSAlert()
         alert.messageText = "Close \(workspace.name)?"
-        alert.informativeText = "This removes \(paneCount) pane\(paneCount == 1 ? "" : "s") and ends every process still running in them. The workspace cannot be recovered from Parley."
+        alert.informativeText = "This removes \(paneCount) pane\(paneCount == 1 ? "" : "s") and ends every process still running in them. The workspace cannot be recovered from Parley. Its history and saved context remain in Status Center under this closed workspace until you clear them. Project files are unchanged."
         alert.alertStyle = .warning
         attachWorkspaceSafetySummaries([workspaceSafetySummary(for: workspace)], to: alert)
         alert.addButton(withTitle: "Close Workspace")

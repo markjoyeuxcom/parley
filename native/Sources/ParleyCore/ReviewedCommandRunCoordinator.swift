@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct ReviewedCommandRun: Identifiable, Codable, Equatable, Sendable {
@@ -93,6 +94,13 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
     private let panes: () throws -> [WorkbenchPane]
     private let record: (ReviewedCommandRun) throws -> Void
     private var records: [String: ReviewedCommandRun] = [:]
+    private struct RequestOwner: Hashable {
+        let paneID: String
+        let generation: Int
+    }
+    /// A deleted result must never make the same transport retry executable.
+    /// Keep only hashes of request identities, without argv, folders or output.
+    private var deletedRequests: [RequestOwner: Set<Data>] = [:]
     private var sessionGrants: [ReviewedCommandGrant] = []
     /// The person's Settings choice, pushed in by the native app and never
     /// read from disk or from any agent request.
@@ -119,6 +127,11 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
             }
             let command = try ReviewedCommand(argv: argv, folder: folder, sourceFolder: source.cwd)
             guard !idempotencyKey.isEmpty, idempotencyKey.utf8.count <= 128 else { throw ReviewedCommandRunError.invalid("Invalid request identity.") }
+            let owner = RequestOwner(paneID: source.id, generation: source.launchGeneration)
+            let fingerprint = Data(SHA256.hash(data: Data(idempotencyKey.utf8)))
+            guard deletedRequests[owner]?.contains(fingerprint) != true else {
+                throw ReviewedCommandRunError.invalid("The person deleted this command run and its result. The original request cannot be replayed.")
+            }
             if let previous = records.values.first(where: { $0.source.id == id && $0.source.launchGeneration == source.launchGeneration && $0.idempotencyKey == idempotencyKey }) {
                 guard previous.requestedCommand == command else { throw ReviewedCommandRunError.invalid("A request identity cannot name different commands.") }
                 return previous
@@ -382,6 +395,22 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
             }
         }
         return !held
+    }
+
+    /// Keep coordinator -> broker lock order throughout history deletion.
+    /// A late completion cannot re-record a result between journal removal and
+    /// forgetting its recovery copy. Only durably removed terminal IDs leave.
+    public func withHistoryDeletion(_ delete: ([ReviewedCommandRun]) -> Set<String>) {
+        lock.withLock {
+            let removed = delete(Array(records.values))
+            for run in records.values where removed.contains(run.id) && run.state.isTerminal && !run.workerStillRunning {
+                let owner = RequestOwner(paneID: run.source.id, generation: run.source.launchGeneration)
+                deletedRequests[owner, default: []].insert(Data(SHA256.hash(data: Data(run.idempotencyKey.utf8))))
+            }
+            records = records.filter { id, run in
+                !removed.contains(id) || !run.state.isTerminal || run.workerStillRunning
+            }
+        }
     }
 
     public func runs() -> [ReviewedCommandRun] {

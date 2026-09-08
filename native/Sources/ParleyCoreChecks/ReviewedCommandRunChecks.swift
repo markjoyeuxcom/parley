@@ -1054,10 +1054,12 @@ func reviewedRunLeaseRecoveryChecks() throws {
         "the finished worker could not be cleared")
     try runExpect(try RelayHandoffJournal(file: journalFile).handoffs().isEmpty,
         "finished command clearing was not durable")
-    let replay = try coordinator.request(token: token, argv: request.requestedCommand.argv,
-        folder: root.path, idempotencyKey: request.idempotencyKey)
-    try runExpect(replay.id == request.id && replay.state == .cancelled && journal.handoffs().isEmpty,
-        "clearing allowed an idempotent retry to execute again or recreate history")
+    try runRejects {
+        _ = try coordinator.request(token: token, argv: request.requestedCommand.argv,
+            folder: root.path, idempotencyKey: request.idempotencyKey)
+    }
+    try runExpect(!coordinator.owns(id: request.id) && journal.handoffs().isEmpty,
+        "clearing retained result content or allowed a retry to recreate history")
     try runExpect(!FileManager.default.fileExists(atPath: path.deletingLastPathComponent().path),
         "completed worker files were not cleaned after its lease released")
 }
@@ -1153,6 +1155,6 @@ func reviewedRunClearedLateResultChecks() throws {
         result: ReviewedCommandRunResult(exitStatus: 0, stdout: Data("late capture".utf8), stderr: Data()))
     try runExpect(journal.handoffs().isEmpty && (try RelayHandoffJournal(file: journalFile)).handoffs().isEmpty,
         "a late result resurrected a cleared command run")
-    try runExpect(coordinator.runs().first?.result?.stdout == "late capture",
-        "clearing history lost the requester's owned late result")
+    try runExpect(coordinator.runs().isEmpty,
+        "a late result restored content to the cleared recovery cache")
 }

@@ -1099,6 +1099,12 @@ struct ContentView: View {
                 })
                 items.append(.separator)
             }
+            if !model.deletableContextReviews.isEmpty {
+                items.append(.action("Delete Saved Context…", systemImage: "trash", isDestructive: true) {
+                    model.deleteSavedContext(model.deletableContextReviews)
+                })
+                items.append(.separator)
+            }
             if let draft = model.contextPackDraft {
                 items += [
                     .action("Open Context Pack “\(draft.pack.name)”") { model.presentContextPack() },
