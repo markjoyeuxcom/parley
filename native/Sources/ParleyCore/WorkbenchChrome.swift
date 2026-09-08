@@ -18,7 +18,6 @@ public enum ChromeLabel {
 
 public enum WorkbenchNoticeKind: String, CaseIterable, Codable, Equatable, Sendable {
     case permission
-    case humanCheckpoint
     case failure
     case protocolStale
     case relayUnavailable
@@ -27,7 +26,6 @@ public enum WorkbenchNoticeKind: String, CaseIterable, Codable, Equatable, Senda
     case targetAttention
     case paneStopped
     case activity
-    case workflow
     case recipe
     case focusCanvas
 }
@@ -51,7 +49,6 @@ public enum WorkbenchNoticeAction: Equatable, Sendable {
     case retryDelivery(String)
     case reconnect
     case openWorktrees(String)
-    case openWorkflow
     case stopRecipe
     case exitFocusCanvas
 }
@@ -157,30 +154,6 @@ public struct WorkbenchRecipeNotice: Equatable, Sendable {
     }
 }
 
-public struct WorkbenchWorkflowNotice: Equatable, Sendable {
-    public let name: String
-    public let phaseLabel: String
-    public let modeLabel: String
-    public let awaitsHumanDecision: Bool
-
-    public init(name: String, phaseLabel: String, modeLabel: String, awaitsHumanDecision: Bool) {
-        self.name = name
-        self.phaseLabel = phaseLabel
-        self.modeLabel = modeLabel
-        self.awaitsHumanDecision = awaitsHumanDecision
-    }
-
-    public init(run: SupervisedWorkflowRun) {
-        self.init(
-            name: run.name,
-            phaseLabel: run.phase.label,
-            modeLabel: run.mode.label,
-            awaitsHumanDecision: run.phase == .awaitingImplementationApproval
-                || run.phase == .awaitingCompletionApproval
-        )
-    }
-}
-
 public struct WorkbenchWorktreeNotice: Equatable, Sendable {
     public let path: String
     public let writerNames: [String]
@@ -199,7 +172,6 @@ public struct WorkbenchNoticeInputs: Equatable, Sendable {
     public var primaryActivity: WorkbenchNoticeActivity?
     public var attentionActivities: [WorkbenchNoticeActivity]
     public var recipe: WorkbenchRecipeNotice?
-    public var workflow: WorkbenchWorkflowNotice?
     public var focusCanvasActive: Bool
     public var dockVisible: Bool
     public var protocolVersion: String
@@ -212,7 +184,6 @@ public struct WorkbenchNoticeInputs: Equatable, Sendable {
         primaryActivity: WorkbenchNoticeActivity?,
         attentionActivities: [WorkbenchNoticeActivity],
         recipe: WorkbenchRecipeNotice?,
-        workflow: WorkbenchWorkflowNotice?,
         focusCanvasActive: Bool,
         dockVisible: Bool,
         protocolVersion: String
@@ -224,7 +195,6 @@ public struct WorkbenchNoticeInputs: Equatable, Sendable {
         self.primaryActivity = primaryActivity
         self.attentionActivities = attentionActivities
         self.recipe = recipe
-        self.workflow = workflow
         self.focusCanvasActive = focusCanvasActive
         self.dockVisible = dockVisible
         self.protocolVersion = protocolVersion
@@ -253,19 +223,6 @@ public enum WorkbenchNoticeProjection {
                 detail: "\(activity.kindLabel) from \(activity.sourceName): \(activity.subject)",
                 actionLabel: "Focus \(activity.targetName)",
                 action: .focusHandoffTarget(activity.id)
-            ))
-        }
-
-        // 2. An orchestration run is waiting on the person's decision.
-        if let workflow = inputs.workflow, workflow.awaitsHumanDecision {
-            notices.append(WorkbenchNotice(
-                id: "notice:checkpoint",
-                kind: .humanCheckpoint,
-                tone: .attention,
-                title: "Orchestration needs your decision",
-                detail: "\(workflow.name) · \(workflow.phaseLabel) · \(workflow.modeLabel)",
-                actionLabel: "Open",
-                action: .openWorkflow
             ))
         }
 
@@ -425,18 +382,7 @@ public enum WorkbenchNoticeProjection {
             ))
         }
 
-        // 10. Informational: orchestration in progress, submitted recipe, canvas.
-        if let workflow = inputs.workflow, !workflow.awaitsHumanDecision {
-            notices.append(WorkbenchNotice(
-                id: "notice:workflow",
-                kind: .workflow,
-                tone: .neutral,
-                title: "Orchestration · \(workflow.phaseLabel)",
-                detail: "\(workflow.name) · \(workflow.modeLabel)",
-                actionLabel: "Open",
-                action: .openWorkflow
-            ))
-        }
+        // 10. Informational: submitted recipe, canvas.
         if let recipe = inputs.recipe {
             notices.append(WorkbenchNotice(
                 id: "notice:recipe",

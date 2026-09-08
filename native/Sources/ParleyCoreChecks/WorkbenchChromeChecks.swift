@@ -38,7 +38,6 @@ private func inputs(
     primary: WorkbenchNoticeActivity? = nil,
     attention: [WorkbenchNoticeActivity] = [],
     recipe: WorkbenchRecipeNotice? = nil,
-    workflow: WorkbenchWorkflowNotice? = nil,
     focusCanvas: Bool = false,
     dockVisible: Bool = true
 ) -> WorkbenchNoticeInputs {
@@ -50,7 +49,6 @@ private func inputs(
         primaryActivity: primary,
         attentionActivities: attention,
         recipe: recipe,
-        workflow: workflow,
         focusCanvasActive: focusCanvas,
         dockVisible: dockVisible,
         protocolVersion: AgentProtocol.version
@@ -76,8 +74,6 @@ func checkWorkbenchNoticeLaneIsPrioritisedAndNeverHidesFacts() throws {
     let failed = activity("h-failed", state: .failed, canRetry: true)
     let waiting = activity("h-waiting", state: .waiting)
     let collision = WorkbenchWorktreeNotice(path: "/repo", writerNames: ["Claude", "Codex"])
-    let checkpoint = WorkbenchWorkflowNotice(name: "Plan", phaseLabel: "Awaiting completion approval", modeLabel: "Auto", awaitsHumanDecision: true)
-    let running = WorkbenchWorkflowNotice(name: "Plan", phaseLabel: "Implementing", modeLabel: "Auto", awaitsHumanDecision: false)
     let recipe = WorkbenchRecipeNotice(name: "Review", leadName: "Codex")
 
     let everything = WorkbenchNoticeProjection.lane(inputs(
@@ -87,16 +83,14 @@ func checkWorkbenchNoticeLaneIsPrioritisedAndNeverHidesFacts() throws {
         primary: waiting,
         attention: [permission],
         recipe: recipe,
-        workflow: checkpoint,
         focusCanvas: true,
         dockVisible: false
     ))
     try chromeExpect(
-        everything.map(\.kind) == [.permission, .humanCheckpoint, .protocolStale, .worktreeCollision, .connection, .activity, .recipe, .focusCanvas],
+        everything.map(\.kind) == [.permission, .protocolStale, .worktreeCollision, .connection, .activity, .recipe, .focusCanvas],
         "the notice lane order drifted: \(everything.map(\.kind))"
     )
     try chromeExpect(everything.first?.tone == .attention, "the top notice was not toned as attention")
-    try chromeExpect(everything.filter { $0.kind == .workflow || $0.kind == .humanCheckpoint }.count == 1, "a checkpoint workflow was listed twice")
     try chromeExpect(everything.first?.action == .focusHandoffTarget("h-permission"), "the permission notice did not offer to focus the target")
     try chromeExpect(everything.contains { $0.kind == .worktreeCollision && $0.title.contains("Shared worktree") && $0.detail.contains("/repo") }, "the worktree collision lost its path")
 
@@ -107,7 +101,6 @@ func checkWorkbenchNoticeLaneIsPrioritisedAndNeverHidesFacts() throws {
         primary: waiting,
         attention: [permission],
         recipe: recipe,
-        workflow: checkpoint,
         focusCanvas: true,
         dockVisible: false
     ))
@@ -140,8 +133,8 @@ func checkWorkbenchNoticeLaneIsPrioritisedAndNeverHidesFacts() throws {
     let quiet = WorkbenchNoticeProjection.lane(inputs())
     try chromeExpect(quiet.isEmpty, "a healthy idle workbench produced notices: \(quiet.map(\.kind))")
 
-    let runningWorkflow = WorkbenchNoticeProjection.lane(inputs(recipe: recipe, workflow: running))
-    try chromeExpect(runningWorkflow.map(\.kind) == [.workflow, .recipe] && runningWorkflow.allSatisfy { $0.tone == .neutral }, "informational workflow and recipe notices were mis-toned or mis-ordered")
+    let runningRecipe = WorkbenchNoticeProjection.lane(inputs(recipe: recipe))
+    try chromeExpect(runningRecipe.map(\.kind) == [.recipe] && runningRecipe.allSatisfy { $0.tone == .neutral }, "an informational recipe notice was not neutral")
 
     let terminalDown = WorkbenchNoticeProjection.lane(inputs(connection: .terminalDisconnected))
     try chromeExpect(terminalDown.first?.kind == .connection && terminalDown.first?.tone == .failure && terminalDown.first?.action == nil, "a missing terminal was not reported as a failure without a fake action")

@@ -52,10 +52,41 @@ but it must not reinterpret terminal text or replace the vendor workflow.
 
 ### Committed sequence
 
+#### Reduction — September 2026
+
+Agreed on 8 September 2026 after the v0.1.22 measurements and the live
+worktree walkthrough: hold feature scope and remove breadth that does not
+hand work between explicit panes or make that visibly safer. One merge
+request per row, Codex review before each merge, Help audit checks changed
+in the same request, protocol version bumped where its wording changes.
+
+- [x] Smart orchestration: the Plan → Review → Implement → Verify state
+  machine, its store, window, notice kinds and Help section. The five recipe
+  templates, the recipe runner with its notice and lead interruption, and the
+  review-and-correct practice as Help text remain.
+- [ ] VS Code companion and its context bridge, attention snapshot and
+  `parley://` focus and status URLs. Native file and diff capture, Context
+  Packs and `parley open` remain.
+- [ ] Automatic idle-agent reaping and its switch. Explicit Stop remains.
+- [ ] Workspace briefs and pinned snippets as separate stores and editors,
+  after exporting existing person-authored text.
+- [ ] Team templates and Clone Configuration. Roles, Move and team sessions
+  remain.
+- [ ] Menu-bar attention inbox reduced to a small indicator plus Open Status
+  Center, fed by the existing attention projection.
+- [ ] Task Manager folded into Status Center core health, keeping
+  pane-to-process attribution and basic figures, sampled only while visible.
+- [ ] One pane grid with zoom and unzoom of a single terminal and one
+  hideable collaboration dock, replacing Focus Canvas and the separate names.
+- Frozen, not removed: managed worktrees at their current scope; Agy as a
+  stated limitation until its instruction uptake is verified. Automatic
+  approval of requested command runs stays by the person's choice.
+
 #### Phase 1 — consolidate around handoffs
 
 - [x] Freeze new first-class workflow windows and further Smart Auto expansion
-  until the discovery and event layer is proven.
+  until the discovery and event layer is proven. Superseded by the September
+  2026 reduction, which removed smart orchestration.
 - [x] Retire the unreleased Research Board model, window, menu, help topic,
   Status Center actions, checks and `parley research` protocol namespace.
 - [x] Confirm the experiment never entered a tracked release. Its temporary
@@ -520,7 +551,8 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 - [x] Supervised lead workflows and bounded fan-out.
 - [x] Smart Plan → Review → Implement → Verify orchestration with persisted
   Supervised and Auto modes, automation-attributed transitions and a mandatory
-  final human completion decision.
+  final human completion decision. Retired in the September 2026 reduction;
+  the recipe runner and the review-and-correct practice remain.
 - [x] Research Board experiment validated exact handoff attribution,
   person-owned verdicts, reply lineage and reviewed multi-result Context Pack
   promotion. It is superseded as a standalone product surface; Phase 1 retains
