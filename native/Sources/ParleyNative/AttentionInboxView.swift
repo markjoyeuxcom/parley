@@ -79,7 +79,7 @@ struct AttentionInboxMenu: View {
 
     private func openStatusCenter(handoffID: String? = nil) {
         if let handoffID,
-           !model.openExternalNavigation(.handoff(handoffID)) {
+           !model.openAttentionNavigation(.handoff(handoffID)) {
             return
         } else if handoffID == nil {
             model.refreshStatusCenterQuietly()

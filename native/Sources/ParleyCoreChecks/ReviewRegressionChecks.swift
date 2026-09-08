@@ -78,13 +78,6 @@ private func reviewController(_ root: URL) throws -> WorkbenchController {
         let reopened = try reviewController(root)
         try reviewExpect(try reopened.listPanes().first { $0.id == pane.id }!.isStarted == false, "PID reuse auto-restored agent")
     }),
-    ("review regression native pane IDs support external navigation", {
-        let root = try reviewRoot(); defer { try? FileManager.default.removeItem(at: root) }
-        let controller = try reviewController(root)
-        let pane = try controller.createPane(kind: .claude, cwd: root.path)
-        let url = try ExternalNavigation.url(for: .pane(pane.id))
-        try reviewExpect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == pane.id, "native pane ID failed navigation")
-    }),
     ("review regression hook failures are non-blocking and silent", {
         let root = try reviewRoot(); defer { try? FileManager.default.removeItem(at: root) }
         let protocolDirectory = try AgentProtocol.install(in: root)

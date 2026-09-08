@@ -5,8 +5,6 @@ import SwiftUI
 
 fileprivate enum ExternalApplicationRequest: Equatable {
     case workspace(ExternalWorkspaceOpenRequest)
-    case contextManifest(URL)
-    case navigation(ExternalNavigationRequest)
 }
 
 @MainActor
@@ -101,12 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if url.isFileURL {
             receive(Result { try request(forFileURL: url) })
         } else {
-            receive(Result {
-                if url.host?.caseInsensitiveCompare(ExternalWorkspaceOpen.action) == .orderedSame {
-                    return .workspace(try ExternalWorkspaceOpen.request(url: url))
-                }
-                return .navigation(try ExternalNavigation.request(url: url))
-            })
+            receive(Result { .workspace(try ExternalWorkspaceOpen.request(url: url)) })
         }
     }
 
@@ -146,8 +139,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
             return .workspace(try ExternalWorkspaceOpen.request(folderPaths: [url.path]))
-        } else if url.pathExtension.caseInsensitiveCompare("parleycontext") == .orderedSame {
-            return .contextManifest(url)
         }
         throw ExternalWorkspaceOpenError.notDirectory(url.path)
     }
@@ -300,11 +291,6 @@ struct ParleyNativeApp: App {
                     appDelegate.bindExternalRequestHandler { request in
                         switch request {
                         case let .workspace(workspace): model.openExternalWorkspace(workspace)
-                        case let .contextManifest(file): model.importExternalContext(file: file)
-                        case let .navigation(navigation):
-                            if model.openExternalNavigation(navigation) {
-                                openWindow(id: "status-center")
-                            }
                         }
                     }
                     model.startAutomaticUpdater()

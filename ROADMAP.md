@@ -64,7 +64,7 @@ in the same request, protocol version bumped where its wording changes.
   machine, its store, window, notice kinds and Help section. The five recipe
   templates, the recipe runner with its notice and lead interruption, and the
   review-and-correct practice as Help text remain.
-- [ ] VS Code companion and its context bridge, attention snapshot and
+- [x] VS Code companion and its context bridge, attention snapshot and
   `parley://` focus and status URLs. Native file and diff capture, Context
   Packs and `parley open` remain.
 - [ ] Automatic idle-agent reaping and its switch. Explicit Stop remains.

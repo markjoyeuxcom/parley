@@ -38,9 +38,7 @@ or bypass a vendor's approval flow.
   templates, stable roles, workspace leads, pane move and configuration clone.
 - Reviewed context packs; workspace briefs with goals, decisions,
   person-authored investigation conclusions, rationale, confidence and open
-  questions; pinned snippets; Git diff/file capture; and a VS Code companion
-  with an explicit source composer, in-memory Context Basket, collaboration
-  sidebar and correlated preview acknowledgement.
+  questions; pinned snippets; and Git diff/file capture.
 - Generated, session-scoped lifecycle hooks for Claude Code and Codex, plus a
   Copilot plugin attachment. Runtime state changes only after the pane capability
   reports a real signal; Copilot and unsupported vendors otherwise remain visibly

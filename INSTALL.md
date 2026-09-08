@@ -41,7 +41,6 @@ Files appear only when their feature is used. The principal runtime data is:
 | `handoffs.jsonl`, `activity-events.jsonl` | Bounded local collaboration and operational history |
 | `workspace-registry.json`, `workspace-layouts.json` | Durable workspace presentation and saved portable layouts |
 | `permission-profiles.json`, `handoff-recipes.json` | Owner-defined local coordination policy |
-| `external-context-inbox/` | Owner-only one-shot manifests from the local VS Code companion |
 | `ui.lock` | Exclusive Production or Development process lease, released automatically on exit |
 
 Production may also create:
@@ -52,12 +51,11 @@ Production may also create:
 | `~/Library/Preferences/com.markjoyeux.parley.plist` | Normal macOS presentation and opt-in preferences. |
 | `/private/tmp/parley-native-<uid>-<runtime-hash>/` | Owner-only capability-separated exchange files used by agent-pane commands. |
 
-The installed bundle registers `parley://open`, a folder document role, the
-**Open in Parley** Finder Service and the private `.parleycontext` document
-type through its `Info.plist`. Those are LaunchServices registrations, not
-background processes. Folder opening accepts one existing directory and
-cannot choose a vendor or inject terminal input. Context imports stop at an
-editable preview.
+The installed bundle registers `parley://open`, a folder document role and
+the **Open in Parley** Finder Service through its `Info.plist`. Those are
+LaunchServices registrations, not background processes. Folder opening
+accepts one existing directory and cannot choose a vendor or inject terminal
+input.
 
 Parley does not modify shell startup files, vendor authentication, repository
 contents, API keys or system-wide toolchains.

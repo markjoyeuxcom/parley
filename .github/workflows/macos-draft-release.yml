@@ -22,9 +22,6 @@ jobs:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
 
-      - name: Install the locked VS Code companion toolchain
-        run: npm ci --prefix vscode-extension
-
       - name: Run deterministic checks
         run: npm test
 
@@ -32,11 +29,6 @@ jobs:
         run: |
           mkdir -p dist
           npm run test:soak -- --rounds 25 --output dist/Parley-Ghostty-soak.json
-
-      - name: Package the VS Code companion
-        run: |
-          mkdir -p dist
-          npm run package:vscode
 
       - name: Import Developer ID identity and notary credentials
         env:
@@ -77,11 +69,10 @@ jobs:
       - name: Prove the packaged application reaches its event loop
         run: npm run verify:launch:mac
 
-      - name: Add companion and soak report to the verified checksum set
+      - name: Add the soak report to the verified checksum set
         run: |
           version="$(node -p "require('./package.json').version")"
           checksums="dist/Parley-${version}-mac-arm64.SHA256SUMS"
-          (cd dist && shasum -a 256 "Parley-Companion-0.1.1.vsix" >> "$(basename "$checksums")")
           (cd dist && shasum -a 256 "Parley-Ghostty-soak.json" >> "$(basename "$checksums")")
           LC_ALL=C sort -o "$checksums" "$checksums"
           (cd dist && shasum -a 256 -c "$(basename "$checksums")")
@@ -103,7 +94,6 @@ jobs:
             "${base}-INSTALL.txt" \
             "dist/appcast.xml" \
             "dist/parley.rb" \
-            "dist/Parley-Companion-0.1.1.vsix" \
             "dist/Parley-Ghostty-soak.json" \
             --verify-tag \
             --draft \

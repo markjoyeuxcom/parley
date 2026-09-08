@@ -230,11 +230,6 @@ Compare every downloaded artifact with its matching entry in SHA256SUMS before o
 
 ${updateInstructions}
 
-Optional VS Code companion
-The release also carries a matching Parley-Companion VSIX. In VS Code,
-open Extensions, choose Install from VSIX, and select that file. It is a thin
-local remote control for the installed Production app and cannot replace it.
-
 Upgrade
 1. Finish or stop active Ask and delegated work, then quit Parley. Quitting ends the app-resident panes and coordination core.
 2. Replace Parley.app in Applications and reopen it. Workspace definitions and local handoff history remain under ~/Library/Application Support/Parley Native.

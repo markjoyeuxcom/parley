@@ -409,9 +409,6 @@ final class AppModel: ObservableObject {
     private var releaseTask: Task<Void, Never>?
     private var automaticUpdater: ParleyAutomaticUpdater?
     private var preparedForUninstall = false
-    private var lastExternalAttentionSnapshot: ExternalAttentionSnapshot?
-    private var lastExternalAttentionPublishedAt = Date.distantPast
-    private var lastExternalEditorCapabilitiesPublishedAt = Date.distantPast
     private var periodicRefreshTimer: Timer?
     /// One serial owner samples processes off the main actor; requests are
     /// numbered so a result is published only when it is the newest and the
@@ -440,7 +437,6 @@ final class AppModel: ObservableObject {
     private static let terminalAppearanceImportKey = "parley.terminalAppearanceImport"
     private static let projectContextRefreshInterval: TimeInterval = 5
     private static let worktreeRefreshInterval: TimeInterval = 15
-    private static let externalAttentionHeartbeatInterval: TimeInterval = 10
     private static let periodicRefreshInterval: TimeInterval = 1
 
     init() {
@@ -721,7 +717,6 @@ final class AppModel: ObservableObject {
             scheduleProjectContextRefresh(force: true)
             schedulePaneListeningPortRefresh(force: true)
             scheduleWorktreeRefresh(force: true)
-            publishExternalAttentionSnapshot(force: true)
         } catch {
             coreAvailable = false
             terminalAvailable = false
@@ -1041,7 +1036,6 @@ final class AppModel: ObservableObject {
         ), let controller else {
             residentCore?.stop()
             ghosttyRegistry.stopAll()
-            removeExternalEditorCapabilities()
             return true
         }
 
@@ -1063,7 +1057,6 @@ final class AppModel: ObservableObject {
             do {
                 residentCore?.stop()
                 try controller.shutdown()
-                removeExternalEditorCapabilities()
                 return true
             } catch {
                 let failure = NSAlert()
@@ -1222,7 +1215,6 @@ final class AppModel: ObservableObject {
                 self.coreAvailable = false
                 self.coreError = nil
                 self.preparedForUninstall = true
-                self.removeExternalEditorCapabilities()
 
                 let ready = NSAlert()
                 ready.messageText = "Parley Is Ready to Remove"
@@ -1618,7 +1610,7 @@ final class AppModel: ObservableObject {
 
     var menuBarAttentionSummary: MenuBarAttentionSummary {
         MenuBarAttentionProjection.summary(
-            snapshot: externalAttentionSnapshot(generatedAt: Date()),
+            snapshot: attentionSnapshot(generatedAt: Date()),
             coreAvailable: coreAvailable
         )
     }
@@ -2560,17 +2552,47 @@ final class AppModel: ObservableObject {
         attentionCycleCursorID = item.id
 
         if item.reason == .permissionRequest, canFocus(item.paneID) {
-            _ = openExternalNavigation(.pane(item.paneID))
+            _ = openAttentionNavigation(.pane(item.paneID))
             return false
         }
         if let handoffID = item.handoffID {
-            return openExternalNavigation(.handoff(handoffID))
+            return openAttentionNavigation(.handoff(handoffID))
         }
         if canFocus(item.paneID) {
-            _ = openExternalNavigation(.pane(item.paneID))
+            _ = openAttentionNavigation(.pane(item.paneID))
         }
         return false
     }
+    /// Focus one live pane or open one Status Center handoff from an attention
+    /// item. Returns true when Status Center should be presented.
+    func openAttentionNavigation(_ request: AttentionNavigationRequest) -> Bool {
+        switch request {
+        case let .pane(paneID):
+            perform {
+                guard let controller,
+                      let pane = panes.first(where: { $0.id == paneID }) else {
+                    throw RelayUIError.message("That Parley pane is no longer open.")
+                }
+                if activeWorkspace?.workspaceID != pane.workspaceID {
+                    try controller.selectWorkspace(pane.workspaceID)
+                }
+                try controller.selectPane(pane.id)
+                try refresh()
+                terminalHandle.focus()
+            }
+            return false
+        case let .handoff(handoffID):
+            refreshStatusCenterQuietly()
+            let history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+            guard history.contains(where: { $0.id == handoffID }) else {
+                NSAlert(error: RelayUIError.message("That Parley handoff is no longer in the local Status Center record.")).runModal()
+                return false
+            }
+            requestedStatusHandoffID = handoffID
+            return true
+        }
+    }
+
     func unreadResultCount(forPane paneID: String) -> Int {
         unreadHandoffs.count { $0.sourcePaneID == paneID }
     }
@@ -3088,7 +3110,6 @@ final class AppModel: ObservableObject {
             schedulePaneListeningPortRefresh()
             scheduleWorktreeRefresh()
         }
-        publishExternalAttentionSnapshot()
         if let firstError { throw firstError }
     }
 
@@ -3203,8 +3224,6 @@ final class AppModel: ObservableObject {
                     // fetch advances it and the next tick fetches again.
                     self.lastAppliedRelayRevision = revision
                     self.relayTicksSinceFetch = 0
-                    // Companion attention follows the accepted application, not the next tick.
-                    self.publishExternalAttentionSnapshot()
                 }
             }
         }
@@ -3303,7 +3322,7 @@ final class AppModel: ObservableObject {
         periodicRefreshTimer = timer
     }
 
-    private func externalAttentionSnapshot(generatedAt: Date) -> ExternalAttentionSnapshot {
+    private func attentionSnapshot(generatedAt: Date) -> ExternalAttentionSnapshot {
         var byID: [String: RelayHandoff] = [:]
         for handoff in unreadHandoffs + statusHandoffs + handoffs {
             byID[handoff.id] = handoff
@@ -3314,56 +3333,6 @@ final class AppModel: ObservableObject {
             handoffs: Array(byID.values),
             generatedAt: generatedAt
         )
-    }
-
-    private func publishExternalAttentionSnapshot(force: Bool = false) {
-        guard runtime.mode == .production else { return }
-        let now = Date()
-        publishExternalEditorCapabilities(generatedAt: now, force: force)
-        let snapshot = externalAttentionSnapshot(generatedAt: now)
-        let contentChanged = lastExternalAttentionSnapshot?.hasSameContent(as: snapshot) != true
-        let heartbeatDue = now.timeIntervalSince(lastExternalAttentionPublishedAt)
-            >= Self.externalAttentionHeartbeatInterval
-        guard force || contentChanged || heartbeatDue else { return }
-        do {
-            try ExternalAttentionSnapshotFile.write(
-                snapshot,
-                applicationDirectory: applicationDirectory
-            )
-            lastExternalAttentionSnapshot = snapshot
-            lastExternalAttentionPublishedAt = now
-        } catch {
-            // The editor companion treats a missing or stale snapshot as
-            // unavailable. UI refresh must never fail because this optional,
-            // read-only integration surface cannot be published safely.
-        }
-    }
-
-    private func publishExternalEditorCapabilities(generatedAt: Date, force: Bool) {
-        let heartbeatDue = generatedAt.timeIntervalSince(lastExternalEditorCapabilitiesPublishedAt)
-            >= Self.externalAttentionHeartbeatInterval
-        guard force || heartbeatDue else { return }
-        do {
-            try ExternalEditorBridgeCapabilitiesFile.write(
-                ExternalEditorBridgeCapabilities(generatedAt: generatedAt),
-                applicationDirectory: applicationDirectory
-            )
-            try ExternalContextAcknowledgementFile.removeExpired(
-                applicationDirectory: applicationDirectory,
-                olderThan: ExternalContextImport.requestLifetime * 2,
-                now: generatedAt
-            )
-            lastExternalEditorCapabilitiesPublishedAt = generatedAt
-        } catch {
-            // A missing or stale file makes the optional editor bridge fail
-            // closed. It must never interrupt the native workbench refresh.
-        }
-    }
-
-    private func removeExternalEditorCapabilities() {
-        guard runtime.mode == .production else { return }
-        ExternalEditorBridgeCapabilitiesFile.remove(applicationDirectory: applicationDirectory)
-        lastExternalEditorCapabilitiesPublishedAt = .distantPast
     }
 
     func refreshStatusCenterQuietly() {
@@ -6478,177 +6447,9 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func openExternalNavigation(_ request: ExternalNavigationRequest) -> Bool {
-        switch request {
-        case let .pane(paneID):
-            perform {
-                guard let controller,
-                      let pane = panes.first(where: { $0.id == paneID }) else {
-                    throw RelayUIError.message("That Parley pane is no longer open.")
-                }
-                if activeWorkspace?.workspaceID != pane.workspaceID {
-                    try controller.selectWorkspace(pane.workspaceID)
-                }
-                try controller.selectPane(pane.id)
-                try refresh()
-                terminalHandle.focus()
-            }
-            return false
-        case let .handoff(handoffID):
-            refreshStatusCenterQuietly()
-            let history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
-            guard history.contains(where: { $0.id == handoffID }) else {
-                NSAlert(error: RelayUIError.message("That Parley handoff is no longer in the local Status Center record.")).runModal()
-                return false
-            }
-            requestedStatusHandoffID = handoffID
-            return true
-        }
-    }
 
     func consumeRequestedStatusHandoffID() {
         requestedStatusHandoffID = nil
-    }
-
-    func importExternalContext(file: URL) {
-        let requestID = ExternalContextImport.requestIdentifier(
-            file: file,
-            applicationDirectory: applicationDirectory
-        )
-        do {
-            guard let contextPackBuilder else { throw ExternalContextPresentationError.contextUnavailable }
-            let imported = try ExternalContextImport.consume(
-                file: file,
-                applicationDirectory: applicationDirectory,
-                builder: contextPackBuilder
-            )
-            let workspace = try openWorkspace(folder: imported.folder)
-            let candidates = panes.filter {
-                $0.workspaceID == workspace.workspaceID
-                    && $0.kind.isAgent
-                    && $0.isStarted
-                    && !$0.isDead
-                    && $0.relayEnabled
-                    && $0.hasCurrentProtocol
-            }
-            guard let source = candidates.first(where: \.isActive) ?? candidates.first else {
-                throw ExternalContextPresentationError.noReadyAgent
-            }
-            if let existing = contextPackDraft, !existing.pack.parts.isEmpty {
-                let alert = NSAlert()
-                alert.messageText = "Replace the current context pack?"
-                alert.informativeText = "VS Code staged \(imported.parts.count) explicit source\(imported.parts.count == 1 ? "" : "s"). Replacing the current local draft cannot be undone; nothing has been sent."
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "Open VS Code Context")
-                alert.addButton(withTitle: "Keep Current Draft")
-                guard alert.runModal() == .alertFirstButtonReturn else {
-                    publishExternalContextAcknowledgement(.rejected(
-                        requestID: imported.requestID,
-                        code: .declinedReplacement,
-                        message: "Parley kept the existing context pack. Nothing was submitted."
-                    ))
-                    return
-                }
-            }
-            var draft = ActiveContextPack(
-                id: UUID().uuidString.lowercased(),
-                sourcePaneID: source.id,
-                sourcePaneKind: source.kind,
-                sourcePaneName: source.displayName,
-                sourceFolder: imported.folder,
-                pack: ContextPack(
-                    name: "\(source.displayName) · VS Code context",
-                    parts: imported.parts
-                ),
-                reviewID: nil,
-                reviewState: nil,
-                requestedTargetPaneID: nil,
-                reviewUpdatedAt: nil
-            )
-            updateContextPackMeasurement(&draft)
-            contextPackDraft = draft
-            contextPackPresented = true
-            publishExternalContextAcknowledgement(.accepted(
-                requestID: imported.requestID,
-                workspaceID: workspace.workspaceID,
-                sourceCount: imported.parts.count
-            ))
-        } catch {
-            if let requestID {
-                publishExternalContextAcknowledgement(
-                    externalContextFailureAcknowledgement(requestID: requestID, error: error)
-                )
-            }
-            NSAlert(error: error).runModal()
-        }
-    }
-
-    private func externalContextFailureAcknowledgement(
-        requestID: String,
-        error: Error
-    ) -> ExternalContextAcknowledgement {
-        if let importError = error as? ExternalContextImportError {
-            switch importError {
-            case .expiredManifest:
-                return .expired(requestID: requestID)
-            case .unsupportedVersion:
-                return .rejected(
-                    requestID: requestID,
-                    code: .unsupportedVersion,
-                    message: "Update Parley and its VS Code companion together, then build the context pack again."
-                )
-            case .invalidItem:
-                return .rejected(
-                    requestID: requestID,
-                    code: .invalidSource,
-                    message: "One selected editor source could not be recaptured safely. Nothing was submitted."
-                )
-            case .unsafeManifest, .invalidManifest:
-                return .rejected(
-                    requestID: requestID,
-                    code: .invalidRequest,
-                    message: "Parley refused that editor context request. Nothing was submitted."
-                )
-            }
-        }
-        if let presentationError = error as? ExternalContextPresentationError {
-            return .rejected(
-                requestID: requestID,
-                code: presentationError.code,
-                message: presentationError.safeMessage
-            )
-        }
-        if error is ContextPackError {
-            return .rejected(
-                requestID: requestID,
-                code: .invalidSource,
-                message: "One selected source could not be captured within Parley's context limits. Nothing was submitted."
-            )
-        }
-        return .rejected(
-            requestID: requestID,
-            code: .internalError,
-            message: "Parley could not open the editable context preview. Nothing was submitted."
-        )
-    }
-
-    private func publishExternalContextAcknowledgement(
-        _ acknowledgement: ExternalContextAcknowledgement
-    ) {
-        guard runtime.mode == .production else { return }
-        do {
-            try ExternalContextAcknowledgementFile.write(
-                acknowledgement,
-                applicationDirectory: applicationDirectory
-            )
-        } catch {
-            let alert = NSAlert()
-            alert.alertStyle = .warning
-            alert.messageText = "VS Code confirmation unavailable"
-            alert.informativeText = "Parley could not publish the local one-shot confirmation. The context preview state shown in Parley is authoritative.\n\n\(error.localizedDescription)"
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        }
     }
 
     @discardableResult
@@ -7413,36 +7214,6 @@ private enum RelayUIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .message(message): message
-        }
-    }
-}
-
-private enum ExternalContextPresentationError: LocalizedError {
-    case contextUnavailable
-    case noReadyAgent
-
-    var code: ExternalContextAcknowledgementCode {
-        switch self {
-        case .contextUnavailable: .contextUnavailable
-        case .noReadyAgent: .noReadyAgent
-        }
-    }
-
-    var safeMessage: String {
-        switch self {
-        case .contextUnavailable:
-            "Parley's context preview is unavailable while the workbench is starting. Nothing was submitted."
-        case .noReadyAgent:
-            "Start a ready agent pane in that workspace, then build the context pack again. Nothing was submitted."
-        }
-    }
-
-    var errorDescription: String? {
-        switch self {
-        case .contextUnavailable:
-            "Context capture is unavailable while Parley is starting."
-        case .noReadyAgent:
-            "Parley opened this workspace, but it has no ready agent pane. Start the pane you want to send from, then run the VS Code command again. Nothing was submitted."
         }
     }
 }
