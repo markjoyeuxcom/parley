@@ -1169,10 +1169,10 @@ struct ContentView: View {
         items += [.separator, .submenu("Edit Recipes", items: editItems)]
         return ToolbarActionMenu(
             title: "Recipes", systemImage: "list.bullet.rectangle",
-            accessibilityLabel: "Recipes and smart orchestration",
+            accessibilityLabel: "Recipes",
             accessibilityValue: model.workspaceLead.map { "Lead: \($0.displayName)" } ?? "No workspace lead",
-            help: "Run a one-shot recipe or a bounded supervised or Auto cross-vendor sequence",
-            accessibilityHint: "Choose a recipe or configure smart Plan, Review, Implement, Verify orchestration",
+            help: "Send one reviewed recipe instruction to the workspace lead, or edit the recipe templates",
+            accessibilityHint: "Choose a recipe to run with the workspace lead, or edit the recipe templates",
             items: items
         )
     }

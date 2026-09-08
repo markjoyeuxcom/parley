@@ -5499,7 +5499,7 @@ final class AppModel: ObservableObject {
                 action: "Run with Lead",
                 insertVisible: { try controller.capturePane(lead.id) }
             ) else { return }
-            try controller.paste("The person using Parley requested this supervised workflow:\n\n\(edited)", into: lead.id, submit: true)
+            try controller.paste("The person using Parley requested this recipe:\n\n\(edited)", into: lead.id, submit: true)
             let run = ActiveRecipeRun(
                 id: UUID().uuidString.lowercased(),
                 recipeName: recipe.name,

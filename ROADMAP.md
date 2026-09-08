@@ -62,7 +62,8 @@ in the same request, protocol version bumped where its wording changes.
 
 - [x] Smart orchestration: the Plan → Review → Implement → Verify state
   machine, its store, window, notice kinds and Help section. The five recipe
-  templates and the review-and-correct practice as Help text remain.
+  templates, the recipe runner with its notice and lead interruption, and the
+  review-and-correct practice as Help text remain.
 - [ ] VS Code companion and its context bridge, attention snapshot and
   `parley://` focus and status URLs. Native file and diff capture, Context
   Packs and `parley open` remain.
@@ -84,7 +85,8 @@ in the same request, protocol version bumped where its wording changes.
 #### Phase 1 — consolidate around handoffs
 
 - [x] Freeze new first-class workflow windows and further Smart Auto expansion
-  until the discovery and event layer is proven.
+  until the discovery and event layer is proven. Superseded by the September
+  2026 reduction, which removed smart orchestration.
 - [x] Retire the unreleased Research Board model, window, menu, help topic,
   Status Center actions, checks and `parley research` protocol namespace.
 - [x] Confirm the experiment never entered a tracked release. Its temporary
@@ -549,7 +551,8 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 - [x] Supervised lead workflows and bounded fan-out.
 - [x] Smart Plan → Review → Implement → Verify orchestration with persisted
   Supervised and Auto modes, automation-attributed transitions and a mandatory
-  final human completion decision.
+  final human completion decision. Retired in the September 2026 reduction;
+  the recipe runner and the review-and-correct practice remain.
 - [x] Research Board experiment validated exact handoff attribution,
   person-owned verdicts, reply lineage and reviewed multi-result Context Pack
   promotion. It is superseded as a standalone product surface; Phase 1 retains

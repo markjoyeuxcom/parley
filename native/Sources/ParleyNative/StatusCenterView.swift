@@ -2038,7 +2038,7 @@ struct StatusCenterView: View {
             "at \(transition.occurredAt.formatted(date: .omitted, time: .standard))",
         ]
         if transition.origin == .human { parts.append("human initiated") }
-        if transition.origin == .automation { parts.append("Auto orchestration") }
+        if transition.origin == .automation { parts.append("Automation") }
         if let detail = transition.detail, !detail.isEmpty { parts.append(detail) }
         return parts.joined(separator: ". ")
     }
