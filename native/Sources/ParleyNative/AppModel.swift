@@ -308,6 +308,9 @@ final class AppModel: ObservableObject {
     @Published var handoffComposerDraft: HandoffComposerDraft?
     @Published private(set) var requestedHelpTopicID: String?
     @Published private(set) var requestedStatusHandoffID: String?
+    /// A one-shot request for Status Center to show a segment when it opens or
+    /// is already open elsewhere; consumed by the view once applied.
+    @Published private(set) var requestedStatusCenterSegment: StatusCenterSegment?
     @Published var startupError: String?
     @Published private(set) var startupRequiresQuit = false
 
@@ -4606,25 +4609,35 @@ final class AppModel: ObservableObject {
         contextPackPresented = true
     }
 
-    /// Discards one editable agent draft from Status Center. Drafts waiting
-    /// for approval are declined from their own review sheet, never here.
+    func requestStatusCenterSegment(_ segment: StatusCenterSegment) {
+        requestedStatusCenterSegment = segment
+    }
+
+    func consumeRequestedStatusCenterSegment() {
+        requestedStatusCenterSegment = nil
+    }
+
+    /// Discards one editable agent draft from Status Center. The core checks
+    /// the draft state and the listed revision under its own lock, so a draft
+    /// that became a waiting Ask while the confirmation was open is refused;
+    /// waiting approvals are declined only from their own review sheet.
     func discardAgentDraft(_ review: AgentContextReview) {
         perform {
             guard review.state == .draft, let relayClient else { return }
             let alert = NSAlert()
             alert.messageText = "Discard this agent draft?"
-            alert.informativeText = "Nothing will be submitted. The source pane can stage a new draft later; a file returned by a delegation stays readable on its completed handoff."
+            alert.informativeText = "Nothing will be submitted. The source pane can stage a new draft later. A file returned by a delegation stays readable, unedited, from its completed handoff in Status Center while the core keeps the resolved review."
             alert.alertStyle = .warning
             alert.addButton(withTitle: "Discard Draft")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
-            let response = try relayClient.rejectContextReview(review.id)
-            guard (200..<300).contains(response.status) else { throw RelayUIError.message(response.text) }
-            if contextPackDraft?.reviewID == review.id {
+            let response = try relayClient.discardContextDraft(reviewID: review.id, expectedUpdatedAt: review.updatedAt)
+            if contextPackDraft?.reviewID == review.id, (200..<300).contains(response.status) {
                 contextPackPresented = false
                 contextPackDraft = nil
             }
             try refresh()
+            guard (200..<300).contains(response.status) else { throw RelayUIError.message(response.text) }
         }
     }
 
@@ -4637,23 +4650,30 @@ final class AppModel: ObservableObject {
             guard !editable.isEmpty else { return }
             let alert = NSAlert()
             alert.messageText = "Discard \(editable.count) editable agent \(editable.count == 1 ? "draft" : "drafts")?"
-            alert.informativeText = "Nothing will be submitted. Drafts waiting for your approval are not affected. Each source pane can stage a new draft later, and a file returned by a delegation stays readable on its completed handoff in Status Center."
+            alert.informativeText = "Nothing will be submitted. Drafts waiting for your approval are not affected, and a draft that becomes one before this runs is left alone. Each source pane can stage a new draft later. A file returned by a delegation stays readable, unedited, from its completed handoff in Status Center while the core keeps the resolved review."
             alert.alertStyle = .warning
             alert.addButton(withTitle: "Discard All Editable Drafts")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
+            // Each discard names the revision that was listed; the core refuses
+            // a draft that became a waiting Ask or changed meanwhile.
             var failures: [String] = []
+            var discardedIDs: Set<String> = []
             for review in editable {
-                let response = try relayClient.rejectContextReview(review.id)
-                if !(200..<300).contains(response.status) { failures.append(response.text) }
+                let response = try relayClient.discardContextDraft(reviewID: review.id, expectedUpdatedAt: review.updatedAt)
+                if (200..<300).contains(response.status) {
+                    discardedIDs.insert(review.id)
+                } else {
+                    failures.append("\(AgentDraftMenuProjection.packLabel(for: review)): \(response.text)")
+                }
             }
-            if let presented = contextPackDraft?.reviewID, editable.contains(where: { $0.id == presented }) {
+            if let presented = contextPackDraft?.reviewID, discardedIDs.contains(presented) {
                 contextPackPresented = false
                 contextPackDraft = nil
             }
             try refresh()
-            if let first = failures.first {
-                throw RelayUIError.message("\(failures.count) \(failures.count == 1 ? "draft" : "drafts") could not be discarded: \(first)")
+            if !failures.isEmpty {
+                throw RelayUIError.message("\(discardedIDs.count) discarded; \(failures.count) left as \(failures.count == 1 ? "it is" : "they are") — \(failures.joined(separator: "; "))")
             }
         }
     }

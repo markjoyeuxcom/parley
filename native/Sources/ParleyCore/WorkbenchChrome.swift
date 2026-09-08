@@ -544,3 +544,21 @@ public enum AgentDraftMenuProjection {
         return "\(Int(seconds / 86_400)) d"
     }
 }
+
+public enum CommandRunListProjection {
+    /// Every waiting or running request is listed; only finished runs are
+    /// capped, so a cap can never hide a pending approval or make the sheet
+    /// say nothing is waiting while something is.
+    public static func split<Run>(_ runs: [Run], isActive: (Run) -> Bool, maximumRecent: Int) -> (active: [Run], recent: [Run]) {
+        var active: [Run] = []
+        var recent: [Run] = []
+        for run in runs {
+            if isActive(run) {
+                active.append(run)
+            } else if recent.count < maximumRecent {
+                recent.append(run)
+            }
+        }
+        return (active, recent)
+    }
+}

@@ -188,6 +188,9 @@ struct StatusCenterView: View {
         .onChange(of: model.requestedStatusHandoffID) { _, _ in
             applyExternalSelection()
         }
+        .onChange(of: model.requestedStatusCenterSegment) { _, _ in
+            applyRequestedSegment()
+        }
         .onChange(of: workspaceID) { _, _ in
             selectedHandoffID = nil
             selectedBusyDraftID = nil
@@ -467,8 +470,11 @@ struct StatusCenterView: View {
                             Text(entry.isWaiting ? "AWAITING APPROVAL" : "SAVED DRAFT")
                                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(entry.isWaiting ? Color.orange : Color.secondary)
-                            Button(entry.isWaiting ? "Review…" : "Open…") { model.presentContextReview(review) }
-                                .controlSize(.small)
+                            Button(entry.isWaiting ? "Review…" : "Open…") {
+                                model.presentContextReview(review)
+                                openWindow(id: "main")
+                            }
+                            .controlSize(.small)
                             if !entry.isWaiting {
                                 Button("Discard…") { model.discardAgentDraft(review) }
                                     .controlSize(.small)
@@ -1853,6 +1859,32 @@ struct StatusCenterView: View {
         .accessibilityElement(children: .contain)
     }
 
+    /// The exact returned bytes stay readable from the handoff after the
+    /// draft is resolved or discarded. Nothing here edits or sends them.
+    private func returnedFileReadOnly(_ review: AgentContextReview) -> some View {
+        DisclosureGroup {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(review.pack.parts) { part in
+                        Text("\(part.source.label) · \(part.capturedByteCount.formatted()) UTF-8 bytes · agent-provided, not independently read")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Text(part.capturedText)
+                            .font(.system(size: 10, design: .monospaced))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 320)
+        } label: {
+            Text("Show returned file (read-only)")
+                .font(.system(size: 9))
+        }
+        .accessibilityLabel("Show the returned file, read-only")
+    }
+
     private func returnedFileReviewSection(_ review: AgentContextReview) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
@@ -1881,6 +1913,7 @@ struct StatusCenterView: View {
                 Text(review.detail ?? "This returned-file review has been resolved.")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
+                returnedFileReadOnly(review)
             }
         }
         .padding(9)
@@ -2139,7 +2172,16 @@ struct StatusCenterView: View {
         }
     }
 
+    /// A menu action elsewhere asked for one segment; apply it whether the
+    /// window is opening or already open on another segment.
+    private func applyRequestedSegment() {
+        guard let requested = model.requestedStatusCenterSegment else { return }
+        segment = requested
+        model.consumeRequestedStatusCenterSegment()
+    }
+
     private func applyExternalSelection() {
+        applyRequestedSegment()
         guard let requested = model.requestedStatusHandoffID else { return }
         if !showDismissed {
             showDismissed = true

@@ -1400,6 +1400,39 @@ public final class RelayBroker: @unchecked Sendable {
         return RelayTextResponse(status: 200, text: review.detail ?? "Context draft declined.")
     }
 
+    /// Discards one editable draft from the native UI. Unlike
+    /// `rejectContextReview` it refuses a draft that is now a waiting Ask or
+    /// that changed since the person read it, under the same lock as every
+    /// other review mutation, so a bulk discard can never decline an Ask.
+    public func discardContextDraft(_ discard: AgentContextDraftDiscard) -> RelayTextResponse {
+        consultationCondition.lock()
+        guard var review = contextReviewRecords[discard.reviewID], review.state.needsHumanReview else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: "that context draft is not awaiting review")
+        }
+        guard review.state == .draft else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: "that draft is now waiting for approval as a context Ask; decline it from its review instead")
+        }
+        guard review.updatedAt == discard.expectedUpdatedAt else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: "that draft changed since it was listed; read it again before discarding")
+        }
+        review.state = .discarded
+        review.updatedAt = Date()
+        review.detail = "The person discarded this context draft."
+        do {
+            try contextReviewStore?.record(review)
+            contextReviewRecords[review.id] = review
+        } catch {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+        noteChangeLocked()
+        consultationCondition.unlock()
+        return RelayTextResponse(status: 200, text: review.detail ?? "Context draft discarded.")
+    }
+
     private func finishContextReview(_ reviewID: String, response: RelayTextResponse) {
         consultationCondition.lock()
         guard var review = contextReviewRecords[reviewID] else {

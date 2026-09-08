@@ -120,4 +120,49 @@ func checkContextPackOriginIsStatedHonestlyInTheHeader() throws {
     let roundTrip = try JSONDecoder().decode(ContextPack.self, from: encoded)
     try draftExpect(roundTrip.origin == .agentApproved, "an origin did not survive a round trip")
     try draftExpect(roundTrip == ContextPack(id: "keep", name: "Kept", parts: [part], origin: .agentApproved), "a round-tripped pack lost a field")
+
+    // A review recorded before packs carried an origin is still an agent
+    // review: its state, never the person's selection, decides the origin.
+    for (state, expected) in [
+        (AgentContextReviewState.draft, ContextPackOrigin.agentProposed),
+        (.awaitingReview, .agentProposed),
+        (.rejected, .agentProposed),
+        (.discarded, .agentProposed),
+        (.interrupted, .agentProposed),
+        (.approved, .agentApproved),
+        (.completed, .agentApproved),
+        (.failed, .agentApproved),
+    ] {
+        let review = draftReview("legacy-\(state.rawValue)", state: state, name: "Legacy", ageSeconds: 10)
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(review)) as! [String: Any]
+        var packObject = object["pack"] as! [String: Any]
+        packObject.removeValue(forKey: "origin")
+        object["pack"] = packObject
+        let legacyReview = try JSONDecoder().decode(AgentContextReview.self, from: JSONSerialization.data(withJSONObject: object))
+        try draftExpect(legacyReview.pack.origin == expected, "a legacy \(state.rawValue) review decoded as \(legacyReview.pack.origin.rawValue)")
+        try draftExpect(legacyReview.pack.parts == review.pack.parts && legacyReview.state == state, "repairing a legacy origin changed the review")
+        let explicit = try JSONDecoder().decode(AgentContextReview.self, from: JSONEncoder().encode(review))
+        try draftExpect(explicit.pack.origin == .agentProposed, "an explicit origin was overridden by the state rule")
+    }
+    let legacyDraftRender = try builder.render(ContextPack(name: "Legacy", parts: [part], origin: AgentContextReview.legacyOrigin(for: .draft)))
+    try draftExpect(legacyDraftRender.contains("not approved or sent"), "a legacy draft rendered without its unapproved header")
+    try draftExpect(
+        ContextPackOrigin.agentProposed.headerStatement.contains("captured separately keeps its own provenance"),
+        "the unapproved header still calls a person-captured source an agent claim"
+    )
+}
+
+/// The runs sheet must list every waiting or running request before any cap
+/// so it never says nothing is waiting while a request is.
+func checkCommandRunListKeepsEveryActiveRequest() throws {
+    let runs = Array(0..<40)
+    let split = CommandRunListProjection.split(runs, isActive: { $0 == 39 || $0 == 3 }, maximumRecent: 32)
+    try draftExpect(split.active == [3, 39], "an active request beyond the cap was dropped: \(split.active)")
+    try draftExpect(split.recent.count == 32, "finished runs were not capped at 32: \(split.recent.count)")
+    try draftExpect(!split.recent.contains(3) && !split.recent.contains(39), "an active request was also listed as finished")
+    try draftExpect(split.recent == Array(0..<40).filter { $0 != 3 && $0 != 39 }.prefix(32).map { $0 }, "finished runs lost their order")
+    let quiet = CommandRunListProjection.split(runs, isActive: { _ in false }, maximumRecent: 32)
+    try draftExpect(quiet.active.isEmpty && quiet.recent.count == 32, "a quiet list was not capped")
+    let none = CommandRunListProjection.split([Int](), isActive: { _ in true }, maximumRecent: 32)
+    try draftExpect(none.active.isEmpty && none.recent.isEmpty, "an empty list produced rows")
 }

@@ -63,6 +63,58 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
         self.updatedAt = updatedAt
         self.detail = detail
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, sourcePaneID, sourcePaneName, sourcePaneKind, sourceFolder, pack, state
+        case requestedTargetPaneID, requestedTargetName, idempotencyKey, createdAt, updatedAt, detail
+    }
+
+    /// Every review is agent-staged. A record written before packs carried an
+    /// origin decodes with the origin its state proves: approved, completed and
+    /// failed reviews passed the person's approval; every other state is still
+    /// a proposal. None of them is ever the person's own selection.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        sourcePaneID = try container.decode(String.self, forKey: .sourcePaneID)
+        sourcePaneName = try container.decode(String.self, forKey: .sourcePaneName)
+        sourcePaneKind = try container.decode(PaneKind.self, forKey: .sourcePaneKind)
+        sourceFolder = try container.decode(String.self, forKey: .sourceFolder)
+        var decodedPack = try container.decode(ContextPack.self, forKey: .pack)
+        let decodedState = try container.decode(AgentContextReviewState.self, forKey: .state)
+        let packKeys = try container.nestedContainer(keyedBy: ContextPack.CodingKeys.self, forKey: .pack)
+        if !packKeys.contains(.origin) {
+            decodedPack.origin = Self.legacyOrigin(for: decodedState)
+        }
+        pack = decodedPack
+        state = decodedState
+        requestedTargetPaneID = try container.decodeIfPresent(String.self, forKey: .requestedTargetPaneID)
+        requestedTargetName = try container.decodeIfPresent(String.self, forKey: .requestedTargetName)
+        idempotencyKey = try container.decodeIfPresent(String.self, forKey: .idempotencyKey)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        detail = try container.decodeIfPresent(String.self, forKey: .detail)
+    }
+
+    public static func legacyOrigin(for state: AgentContextReviewState) -> ContextPackOrigin {
+        switch state {
+        case .approved, .completed, .failed: .agentApproved
+        case .draft, .awaitingReview, .rejected, .discarded, .interrupted: .agentProposed
+        }
+    }
+}
+
+/// The native discard of one editable agent draft: the exact review and the
+/// revision the person saw, so a draft that became a waiting Ask or changed in
+/// the meantime is refused rather than declined by accident.
+public struct AgentContextDraftDiscard: Codable, Equatable, Sendable {
+    public let reviewID: String
+    public let expectedUpdatedAt: Date
+
+    public init(reviewID: String, expectedUpdatedAt: Date) {
+        self.reviewID = reviewID
+        self.expectedUpdatedAt = expectedUpdatedAt
+    }
 }
 
 public struct AgentContextReviewSummary: Identifiable, Codable, Equatable, Sendable {

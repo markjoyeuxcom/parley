@@ -127,7 +127,7 @@ public enum ContextPackOrigin: String, Codable, Equatable, Sendable {
         case .personSelected:
             "This material was explicitly selected by the person using Parley. No hidden terminal history or implicit transcript was included."
         case .agentProposed:
-            "Agent-proposed context; not approved or sent. Every part is an agent-provided claim that Parley has not independently read. No hidden terminal history or implicit transcript was included."
+            "Agent-proposed context; not approved or sent. Agent-provided parts are claims Parley has not independently read; a source the person captured separately keeps its own provenance. No hidden terminal history or implicit transcript was included."
         case .agentApproved:
             "The person reviewed and approved delivery of this agent-proposed context. Agent-provided parts keep their provenance and are not independently verified. No hidden terminal history or implicit transcript was included."
         }
@@ -155,11 +155,11 @@ public struct ContextPack: Identifiable, Codable, Equatable, Sendable {
         self.origin = origin
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, note, parts, origin }
+    enum CodingKeys: String, CodingKey { case id, name, note, parts, origin }
 
-    // Packs recorded before the origin existed were person-selected or carry
-    // agent provenance on their parts; decoding them as person-selected keeps
-    // older records readable without inventing an approval.
+    // A bare pack recorded before the origin existed was assembled by the
+    // person; an agent review recorded then is repaired by AgentContextReview,
+    // which knows its state, so no agent draft decodes as person-selected.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)

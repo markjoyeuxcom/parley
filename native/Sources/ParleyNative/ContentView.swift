@@ -1064,61 +1064,69 @@ struct ContentView: View {
     }
 
     private var contextPackMenu: ToolbarActionMenu {
-        var items: [ToolbarMenuItem] = []
-        // Ages are computed when the menu opens; each opening rebuilds its items.
         let lane = AgentDraftMenuProjection.lane(reviews: model.pendingContextReviews)
-        func open(_ entry: AgentDraftMenuEntry) {
-            if let review = model.pendingContextReviews.first(where: { $0.id == entry.id }) {
-                model.presentContextReview(review)
+        // Built again each time the menu opens so draft ages are current; the
+        // static copy serves the overflow submenu.
+        func buildItems() -> [ToolbarMenuItem] {
+            var items: [ToolbarMenuItem] = []
+            let lane = AgentDraftMenuProjection.lane(reviews: model.pendingContextReviews)
+            func open(_ entry: AgentDraftMenuEntry) {
+                if let review = model.pendingContextReviews.first(where: { $0.id == entry.id }) {
+                    model.presentContextReview(review)
+                }
             }
-        }
-        if !lane.waiting.isEmpty {
-            items.append(.heading("Waiting for Your Approval"))
-            items += lane.waiting.map { entry in
-                .action(entry.title, systemImage: "person.crop.circle.badge.clock") { open(entry) }
+            if !lane.waiting.isEmpty {
+                items.append(.heading("Waiting for Your Approval"))
+                items += lane.waiting.map { entry in
+                    .action(entry.title, systemImage: "person.crop.circle.badge.clock") { open(entry) }
+                }
+                items.append(.separator)
             }
-            items.append(.separator)
-        }
-        if !lane.saved.isEmpty {
-            items.append(.heading("Saved Agent Drafts"))
-            items += lane.saved.map { entry in
-                .action(entry.title, systemImage: "doc.badge.ellipsis") { open(entry) }
-            }
-            if lane.olderCount > 0 {
-                items.append(.action("\(lane.olderCount) older \(lane.olderCount == 1 ? "draft" : "drafts") in Status Center…", systemImage: "list.bullet") {
-                    model.refreshStatusCenterQuietly()
-                    openWindow(id: "status-center")
+            if !lane.saved.isEmpty {
+                items.append(.heading("Saved Agent Drafts"))
+                items += lane.saved.map { entry in
+                    .action(entry.title, systemImage: "doc.badge.ellipsis") { open(entry) }
+                }
+                if lane.olderCount > 0 {
+                    items.append(.action("\(lane.olderCount) older \(lane.olderCount == 1 ? "draft" : "drafts") in Status Center…", systemImage: "list.bullet") {
+                        model.refreshStatusCenterQuietly()
+                        model.requestStatusCenterSegment(.live)
+                        openWindow(id: "status-center")
+                    })
+                }
+                items.append(.action("Discard All Editable Drafts…", systemImage: "trash", isDestructive: true) {
+                    model.discardAllEditableDrafts()
                 })
+                items.append(.separator)
             }
-            items.append(.action("Discard All Editable Drafts…", systemImage: "trash", isDestructive: true) {
-                model.discardAllEditableDrafts()
-            })
-            items.append(.separator)
-        }
-        if let draft = model.contextPackDraft {
+            if let draft = model.contextPackDraft {
+                items += [
+                    .action("Open Context Pack “\(draft.pack.name)”") { model.presentContextPack() },
+                    .separator
+                ]
+            }
+            items.append(.action("New Context Pack…", isEnabled: model.canCreateContextPack) { model.newContextPack() })
             items += [
-                .action("Open Context Pack “\(draft.pack.name)”") { model.presentContextPack() },
-                .separator
+                .separator,
+                .action("How Context Works", systemImage: "questionmark.circle") {
+                    model.requestHelp(topicID: "context-model")
+                    openWindow(id: "help")
+                }
             ]
+            return items
         }
-        items.append(.action("New Context Pack…", isEnabled: model.canCreateContextPack) { model.newContextPack() })
-        items += [
-            .separator,
-            .action("How Context Works", systemImage: "questionmark.circle") {
-                model.requestHelp(topicID: "context-model")
-                openWindow(id: "help")
-            }
-        ]
+        let items = buildItems()
         return ToolbarActionMenu(
             title: model.pendingContextReviews.isEmpty ? "Context" : "Context \(model.pendingContextReviews.count)",
             systemImage: model.pendingContextReviews.isEmpty ? "shippingbox" : "shippingbox.fill",
             accessibilityLabel: "Context packs and references",
             accessibilityValue: model.pendingContextReviews.isEmpty
                 ? (model.contextPackDraft.map { "\($0.pack.parts.count) sources" } ?? "No draft")
-                : "\(model.pendingContextReviews.count) agent draft\(model.pendingContextReviews.count == 1 ? "" : "s") awaiting review",
+                : "\(lane.waiting.count) waiting for your approval, \(lane.editableCount) saved agent \(lane.editableCount == 1 ? "draft" : "drafts")",
             help: "Assemble explicit attributed sources into an editable context pack before a cross-vendor handoff",
             accessibilityHint: "Open an editable attributed context pack or review an agent-staged draft",
-            items: items
+            items: items,
+            itemsOnOpen: buildItems
         )
     }
 

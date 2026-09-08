@@ -624,11 +624,19 @@ An agent-staged context part is a claim. Its path and bytes stay labelled
 File, Git Diff, Selection or Command Result provenance. A pack carries its
 origin (`ContextPackOrigin`): the rendered header says "Agent-proposed
 context; not approved or sent" until the person approves, then that the
-person approved delivery while agent-provided parts stay unverified; older
-records without an origin decode as person-selected. The Context menu lists
-waiting approvals first and the newest eight saved drafts, with every pending
-draft in Status Center's Live section; a bulk discard ends only editable
-drafts, never a waiting approval. Approval forms return
+person approved delivery while agent-provided parts stay unverified, and a
+source the person captured separately into an agent draft keeps its own
+provenance. A review recorded before the origin existed decodes with the
+origin its state proves (`AgentContextReview.legacyOrigin`: approved,
+completed and failed are approved; everything else is proposed), never as
+person-selected; only a bare pack without an origin is person-selected. The
+Context menu lists waiting approvals first and the newest eight saved drafts,
+with every pending draft in Status Center's Live section. A native discard
+(`discardContextDraft`, `/ui/context-reviews/discard`) names the draft and
+the listed revision and is refused under the broker lock for anything but an
+unchanged `.draft`, so a bulk discard can never decline a waiting Ask; the
+exact bytes of a returned file stay readable from the completed handoff while
+the resolved review is retained. Approval forms return
 known part ids and edited text, never source metadata or captured originals.
 
 Context-review validation, durable recording, in-memory replacement and

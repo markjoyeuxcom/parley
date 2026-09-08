@@ -8254,6 +8254,15 @@ private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate
     }
     try expect(eventually { (try? control.contextReviews().first?.state) == .awaitingReview }, "context Ask did not surface through native control")
     try expect(askResult.value == nil, "context Ask returned before the person reviewed it")
+    // A native discard listed while this was still a draft must not decline
+    // the Ask it became, whether it names the stale or the current revision.
+    let staleDiscard = try control.discardContextDraft(reviewID: stagedReview.id, expectedUpdatedAt: stagedReview.updatedAt)
+    try expect(staleDiscard.status == 409, "a native discard accepted a draft that had become a waiting context Ask")
+    let waitingRevision = try require(try control.contextReviews().first(where: { $0.id == stagedReview.id }), "the waiting review vanished")
+    let currentDiscard = try control.discardContextDraft(reviewID: stagedReview.id, expectedUpdatedAt: waitingRevision.updatedAt)
+    try expect(currentDiscard.status == 409 && currentDiscard.text.contains("waiting for approval"), "a native discard at the current revision declined a waiting context Ask")
+    try expect((try? control.contextReviews().first(where: { $0.id == stagedReview.id })?.state) == .awaitingReview, "a native discard changed a waiting context Ask")
+    try expect(askResult.value == nil, "a native discard released the waiting context Ask")
     try expect(submissions.value == nil, "context Ask submitted before human approval")
 
     let pending = try require(try control.contextReviews().first, "the pending context review disappeared")
@@ -8285,6 +8294,22 @@ private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate
 
     let persisted = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
     try expect(persisted.reviews().first?.state == .completed, "context review state did not survive store reattachment")
+
+    // An editable draft is discarded only at the revision that was listed.
+    let discardable = broker.handleContextDraft(token: claudeToken, name: "Discardable context", path: "Sources/Old.swift", text: "let old = true")
+    try expect(discardable.status == 201, "a second draft could not be staged")
+    let discardableID = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(discardable.text.utf8)).id
+    let discardableReview = try require(try control.contextReviews().first(where: { $0.id == discardableID }), "the second draft was not listed")
+    try expect(discardableReview.pack.origin == .agentProposed, "a second staged draft was not agent-proposed")
+    let wrongRevision = try control.discardContextDraft(reviewID: discardableID, expectedUpdatedAt: discardableReview.updatedAt.addingTimeInterval(-1))
+    try expect(wrongRevision.status == 409, "a native discard accepted a stale revision")
+    try expect(broker.contextReviews().first(where: { $0.id == discardableID })?.state == .draft, "a refused discard changed the draft")
+    let discarded = try control.discardContextDraft(reviewID: discardableID, expectedUpdatedAt: discardableReview.updatedAt)
+    try expect(discarded.status == 200, "a native discard refused an editable draft at its listed revision: \(discarded.text)")
+    try expect(broker.contextReviews().first(where: { $0.id == discardableID })?.state == .discarded, "a discarded draft did not record its state")
+    try expect(broker.contextReviews().first(where: { $0.id == discardableID })?.pack.parts.first?.capturedText == "let old = true", "a discarded draft lost its staged bytes")
+    let again = try control.discardContextDraft(reviewID: discardableID, expectedUpdatedAt: discardableReview.updatedAt)
+    try expect(again.status == 409, "a discarded draft could be discarded twice")
 }
 
 private func checkConcurrentContextAddsRetainEveryAcceptedPart() throws {
@@ -9636,6 +9661,7 @@ let checks: [(String, () throws -> Void)] = [
     ("global unzoom clears whatever pane is zoomed", checkGlobalUnzoomClearsWhateverPaneIsZoomed),
     ("agent draft menu separates waiting approvals from saved drafts", checkAgentDraftMenuSeparatesWaitingApprovalsFromSavedDrafts),
     ("context pack origin is stated honestly in the header", checkContextPackOriginIsStatedHonestlyInTheHeader),
+    ("command run list keeps every active request", checkCommandRunListKeepsEveryActiveRequest),
     ("status center segments map handoffs and counts", checkStatusCenterSegmentsMapHandoffsAndCounts),
     ("delegation visibility uses owned timestamps only", checkDelegationVisibilityIsComputedFromOwnedTimestampsOnly),
     ("delegation visibility requires an exact delivered transition", checkDelegationVisibilityRequiresAnExactDeliveredTransition),

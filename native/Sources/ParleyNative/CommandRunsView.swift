@@ -63,9 +63,15 @@ struct CommandRunsView: View {
             HSplitView {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        let listed = Array(model.commandRuns.prefix(32))
-                        let waiting = listed.filter { !$0.state.isTerminal || $0.workerStillRunning }
-                        let recent = listed.filter { $0.state.isTerminal && !$0.workerStillRunning }
+                        // Every waiting or running request is listed before any cap;
+                        // only finished runs are limited to the newest 32.
+                        let split = CommandRunListProjection.split(
+                            model.commandRuns,
+                            isActive: { !$0.state.isTerminal || $0.workerStillRunning },
+                            maximumRecent: 32
+                        )
+                        let waiting = split.active
+                        let recent = split.recent
                         if !waiting.isEmpty {
                             Text("WAITING OR RUNNING").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
                         }
