@@ -415,7 +415,7 @@ public enum ParleyHelpGuide {
                         "Adding saved context to a Context Pack creates an attributed snapshot. Edit that copy for the receiving vendor without changing its durable source, then inspect the complete pack before Ask or Compare submits it.",
                     ],
                     items: [
-                        "An agent-staged draft cannot add sources itself. During review, a person can add a file, Git diff, current terminal selection or command result through Parley's own bounded capture path.",
+                        "An agent-staged draft can only append agent-provided file claims with parley context add while it is still editable; every native trusted capture needs your review action. During review, a person can add a file, Git diff, current terminal selection or command result through Parley's own bounded capture path.",
                         "A pack includes only visible sources you deliberately add. Hidden terminal history and complete transcripts are not scraped.",
                         "Deleting or updating a saved reference never rewrites a snapshot already placed in a pack.",
                         "Context is evidence and instruction, not credential storage. Keep passwords, API keys and vendor tokens out of every pack.",
@@ -463,7 +463,7 @@ public enum ParleyHelpGuide {
                     id: "context-packs-build",
                     title: "Build an explicit pack",
                     paragraphs: [
-                        "From a ready agent pane, open Context and choose New Context Pack. Add selected UTF-8 files, the source pane's current Git diff, a chosen pane's current terminal selection, a captured command result, that workspace's saved brief, or reusable pinned context.",
+                        "From a ready agent pane, open Context and choose New Context Pack. Add selected UTF-8 files, the source pane's current Git diff, a chosen pane's current terminal selection, or a captured command result.",
                         "Every source remains a separate editable part with its exact path or pane/command provenance, captured UTF-8 bytes, current UTF-8 bytes and an EDITED marker when the preview differs from the capture.",
                     ],
                     items: [
@@ -496,7 +496,7 @@ public enum ParleyHelpGuide {
                     items: [
                         "The live rendered byte total includes provenance, your request and wrapper text—not just source bodies.",
                         "An oversized source or pack stays visibly invalid and cannot be sent; Parley never silently clips the editable preview.",
-                        "Person-created context packs remain local in-memory drafts. Agent-staged review records are owner-only and durable so closing the UI cannot silently approve or lose a waiting checkpoint. A workspace-brief attachment is a snapshot: editing it in the pack never rewrites the saved brief.",
+                        "Person-created context packs remain local in-memory drafts. Agent-staged review records are owner-only and durable so closing the UI cannot silently approve or lose a waiting checkpoint.",
                         "The Context menu lists every pending agent review separately. Discard Draft ends an unsubmitted staged draft; Decline Ask releases a pane already blocked in `ask --context`. Abandoned editable agent drafts are discarded after seven days so they cannot permanently consume the bounded review queue.",
                         "Returned delegation files retain their exact handoff lineage, canonical contained path and captured bytes. Opening one from Status Center is review, not delivery; nothing reaches another pane until the person selects a target and confirms the normal Context Pack send.",
                         "`parley ask <vendor> --context <draft> \"question\"` blocks at a visible human-review checkpoint. The Context menu shows the waiting draft; approval sends the edited pack and returns the correlated answer, while Decline submits nothing and releases the waiting pane with an explicit refusal.",

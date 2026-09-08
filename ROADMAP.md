@@ -67,8 +67,9 @@ in the same request, protocol version bumped where its wording changes.
   `parley://` focus and status URLs. Native file and diff capture, Context
   Packs and `parley open` remain.
 - [x] Automatic idle-agent reaping and its switch. Explicit Stop remains.
-- [x] Workspace briefs and pinned snippets as separate stores and editors,
-  after exporting existing person-authored text.
+- [x] Workspace briefs and pinned snippets as separate stores and editors.
+  Neither store file existed on the one installed Mac at removal time; the
+  app leaves any such file on disk unread.
 - [ ] Team templates and Clone Configuration. Roles, Move and team sessions
   remain.
 - [ ] Menu-bar attention inbox reduced to a small indicator plus Open Status
@@ -571,7 +572,8 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 - [x] Stable roles and explicit local/cross-workspace role addressing.
 - [x] Pane move preserving the exact retained surface and configuration clone
   creating fresh identity.
-- [x] Workspace briefs, pinned snippets and reviewed context packs.
+- [x] Reviewed context packs. Workspace briefs and pinned snippets were retired
+  in the September 2026 reduction.
 - [x] Git context/diff capture and optional worktree awareness.
 - [x] VS Code companion Phase 1 — fail-closed Production capability negotiation,
   correlated one-shot preview acknowledgements and privacy-safe diagnostics.

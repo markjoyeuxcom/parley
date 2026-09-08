@@ -4478,8 +4478,6 @@ final class AppModel: ObservableObject {
         """
     }
 
-    @discardableResult
-
     func newContextPack() {
         guard canCreateContextPack, let source = activePane else { return }
         if let existing = contextPackDraft, !existing.pack.parts.isEmpty {
