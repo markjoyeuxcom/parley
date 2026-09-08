@@ -50,12 +50,7 @@ test('GitHub release automation is manual and can create only a draft', () => {
   assert.match(workflow, /appcast\.xml/)
   assert.match(workflow, /parley\.rb/)
   assert.match(workflow, /PARLEY_RELEASE_TAG/)
-  assert.match(workflow, /npm ci --prefix vscode-extension/)
-  assert.match(workflow, /npm run package:vscode/)
-  const companion = JSON.parse(readFileSync(new URL('../vscode-extension/package.json', import.meta.url), 'utf8'))
-  const companionAsset = `Parley-Companion-${companion.version}.vsix`
-  assert.ok(workflow.includes(companionAsset))
-  assert.ok(companion.scripts.package.endsWith(companionAsset))
+  assert.doesNotMatch(workflow, /vscode|vsix|companion/i, 'the VS Code companion was retired in the September 2026 reduction')
   assert.match(
     workflow,
     /npm run test:soak -- --rounds 25 --output dist\/Parley-Ghostty-soak\.json/,
@@ -248,7 +243,6 @@ test('unnotarized install guide is explicit without telling users to disable Gat
   assert.match(guide, /Privacy & Security/)
   assert.match(guide, /Open Anyway/)
   assert.match(guide, /SHA256SUMS/)
-  assert.match(guide, /Install from VSIX/)
   assert.match(guide, /embedded Ghostty terminal/)
   assert.match(guide, /Closing Parley's window keeps its Ghostty panes alive/)
   assert.match(guide, /Quitting Parley ends every pane and the coordination core/)

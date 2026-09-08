@@ -72,8 +72,7 @@ test('Info.plist describes the native foreground application', () => {
   assert.match(plist, /<key>LSItemContentTypes<\/key>\s*<array>\s*<string>public\.folder<\/string>/)
   assert.match(plist, /<key>NSMessage<\/key>\s*<string>openInParley<\/string>/)
   assert.match(plist, /<key>NSSendTypes<\/key>\s*<array>\s*<string>NSFilenamesPboardType<\/string>/)
-  assert.match(plist, /<key>UTTypeIdentifier<\/key>\s*<string>com\.markjoyeux\.parley\.context-import<\/string>/)
-  assert.match(plist, /<key>public\.filename-extension<\/key>\s*<array>\s*<string>parleycontext<\/string>/)
+  assert.doesNotMatch(plist, /parleycontext|context-import/, 'the .parleycontext document type went with the VS Code companion')
 })
 
 test('production Info.plist enables only a signed opt-in Sparkle update channel', () => {
@@ -236,14 +235,12 @@ test('native package pins the registry-verified Sparkle release exactly', () => 
   assert.match(manifest, /\.product\(name: "Sparkle", package: "Sparkle"\)/)
 })
 
-test('repository and VS Code companion carry the same Apache-2.0 licence', () => {
+test('repository carries the Apache-2.0 licence', () => {
   const license = readFileSync(new URL('../LICENSE', import.meta.url), 'utf8')
-  const companionLicense = readFileSync(new URL('../vscode-extension/LICENSE', import.meta.url), 'utf8')
   const notice = readFileSync(new URL('../NOTICE', import.meta.url), 'utf8')
 
   assert.match(license, /Apache License/)
   assert.match(license, /Version 2\.0, January 2004/)
-  assert.equal(companionLicense, license)
   assert.match(notice, /Parley/)
   assert.match(notice, /Copyright 2026 Mark Joyeux/)
 })

@@ -546,34 +546,6 @@ public final class ContextPackBuilder: @unchecked Sendable {
         )
     }
 
-    public func editorSelection(
-        relativeFile: String,
-        startLine: Int,
-        endLine: Int,
-        text: String
-    ) throws -> ContextPackPart {
-        let range = startLine == endLine ? "\(startLine)" : "\(startLine)-\(endLine)"
-        return try part(
-            source: ContextPackSource(
-                kind: .editorSelection,
-                label: "VS Code selection",
-                detail: "\(relativeFile):\(range)"
-            ),
-            text: text
-        )
-    }
-
-    public func editorDiagnostics(relativeFile: String, text: String) throws -> ContextPackPart {
-        try part(
-            source: ContextPackSource(
-                kind: .editorDiagnostics,
-                label: "VS Code diagnostics",
-                detail: relativeFile
-            ),
-            text: text
-        )
-    }
-
     public func browserURLEvidence(
         from pane: WorkbenchPane,
         url: String,

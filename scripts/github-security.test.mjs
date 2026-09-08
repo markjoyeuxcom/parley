@@ -6,13 +6,12 @@ import test from 'node:test'
 const repositoryRoot = join(import.meta.dirname, '..')
 const workflowsDirectory = join(repositoryRoot, '.github', 'workflows')
 
-test('Dependabot watches Swift, VS Code npm packages and GitHub Actions weekly', () => {
+test('Dependabot watches Swift packages and GitHub Actions weekly', () => {
   const configuration = join(repositoryRoot, '.github', 'dependabot.yml')
   assert.equal(existsSync(configuration), true, '.github/dependabot.yml is missing')
 
   const source = readFileSync(configuration, 'utf8')
   assert.match(source, /package-ecosystem:\s*["']?swift["']?[\s\S]*?directory:\s*["']?\/native["']?[\s\S]*?interval:\s*["']?weekly["']?/)
-  assert.match(source, /package-ecosystem:\s*["']?npm["']?[\s\S]*?directory:\s*["']?\/vscode-extension["']?[\s\S]*?interval:\s*["']?weekly["']?/)
   assert.match(source, /package-ecosystem:\s*["']?github-actions["']?[\s\S]*?directory:\s*["']?\/["']?[\s\S]*?interval:\s*["']?weekly["']?/)
 })
 
@@ -46,11 +45,11 @@ test('macOS release packaging creates the shared artifact directory on a clean c
   const workflow = join(workflowsDirectory, 'macos-draft-release.yml')
   const source = readFileSync(workflow, 'utf8')
   const createDirectory = source.indexOf('mkdir -p dist')
-  const packageCompanion = source.indexOf('npm run package:vscode')
+  const soak = source.indexOf('npm run test:soak')
 
   assert.ok(createDirectory >= 0, 'the release workflow must create dist before packaging')
-  assert.ok(packageCompanion >= 0, 'the release workflow must package the VS Code companion')
-  assert.ok(createDirectory < packageCompanion, 'dist must exist before VS Code packaging writes its VSIX')
+  assert.ok(createDirectory < soak, 'dist must exist before the soak writes its report')
+  assert.doesNotMatch(source, /vscode|vsix|companion/i, 'the VS Code companion was retired in the September 2026 reduction')
 })
 
 test('GitLab CI is the deterministic macOS gate for merge requests and main', () => {

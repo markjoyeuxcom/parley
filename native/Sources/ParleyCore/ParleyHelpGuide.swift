@@ -253,31 +253,6 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
-                    id: "workspaces-vscode-companion",
-                    title: "VS Code Companion",
-                    paragraphs: [
-                        "The Parley Companion is a thin local VS Code desktop extension. Its one multi-select composer can combine every explicit editor selection, saved files, current-file diagnostics, selected Explorer files, whole Git scopes and selected staged or working-tree SCM resources in Parley's normal editable context preview.",
-                        "Current files and Git diffs are recaptured by Parley from the local workspace. Selections and diagnostics are editor-provided captures and stay labelled that way. The composer shows the resulting source count and known byte estimate before staging anything.",
-                        "Its native Collaboration views show content-free attention, durable Production workspaces and exact live agent panes. The in-memory Context Basket can collect several explicit sources before one preview without persisting their bodies.",
-                    ],
-                    items: [
-                        "The extension refuses VS Code for the Web and remote workspaces. Its first release uses the local macOS UI extension host and the installed Production app only.",
-                        "Each context action uses one private, owner-only, one-shot manifest. Parley consumes it from its fixed integration inbox; the file cannot carry a pane target, vendor, prompt, permission or submit action.",
-                        "A current capability heartbeat must advertise a compatible import and acknowledgement contract. LaunchServices success is never presented as preview acceptance.",
-                        "Parley returns one correlated accepted, rejected or expired acknowledgement through a fixed private outbox. Responses contain no source text, folder, prompt, result, credential or replay authority.",
-                        "A Context Basket is local to one VS Code window and canonical workspace folder. It clears automatically only after the matching preview is accepted; cancellation and rejection preserve it for correction.",
-                        "A ready agent pane in the workspace is required as the eventual source. The extension never starts one implicitly.",
-                        "Opening the preview sends nothing. Parley's existing human confirmation is still required to Ask one vendor or compare several independently.",
-                    ],
-                    commands: [
-                        ParleyHelpCommand("Parley: Open or Focus Workspace", "Bring the matching local workspace forward without starting an agent."),
-                        ParleyHelpCommand("Parley: Build Context Pack…", "Choose several explicit editor and Git sources for one editable preview; nothing is sent."),
-                        ParleyHelpCommand("Parley: Open Collaboration View", "See content-free attention, Production workspaces, live panes and the in-memory Context Basket."),
-                        ParleyHelpCommand("Parley: Review Context Basket…", "Open one bounded editable preview from the explicit sources collected in this VS Code window."),
-                        ParleyHelpCommand("Parley: Diagnose Companion", "Inspect content-free runtime, compatibility and heartbeat state."),
-                    ]
-                ),
-                ParleyHelpSection(
                     id: "workspaces-pane-menu",
                     title: "Pane context menu",
                     items: [
@@ -574,55 +549,6 @@ public enum ParleyHelpGuide {
                         "An agent-staged context draft cannot read or attach the person's pinned library.",
                         "Editing or removing a pack snapshot never changes its reusable source. Updating or deleting the saved snippet never rewrites an existing pack.",
                         "The owner-only library is not a credential vault. Do not store API keys, vendor tokens, passwords or other secrets in snippets.",
-                    ]
-                ),
-            ]
-        ),
-        ParleyHelpTopic(
-            id: "vscode-companion",
-            title: "VS Code companion",
-            summary: "Stage explicit editor evidence, see local attention and jump back to Parley's authoritative pane or record.",
-            symbol: "chevron.left.forwardslash.chevron.right",
-            sections: [
-                ParleyHelpSection(
-                    id: "vscode-companion-context",
-                    title: "Build editor context for review",
-                    paragraphs: [
-                        "The optional Parley Companion runs in VS Code's local macOS UI extension host. Parley: Build Context Pack… opens one multi-select source composer for editor selections, saved files, diagnostics, selected Explorer files and whole or path-scoped Git changes.",
-                        "Parley recaptures files and Git diffs from disk. Selection and diagnostic text remain visibly labelled as editor-provided. The composer shows source count and known bytes; a ready source pane is required, but the companion never starts an agent or sends the pack.",
-                        "For context gathered across several files or source-control actions, the per-window Context Basket groups explicit sources by canonical workspace folder. Re-adding the same source slot refreshes it; the extension does not persist basket contents.",
-                    ],
-                    items: [
-                        "Web and remote VS Code hosts are refused; a remote path is never treated as a local Mac path.",
-                        "The one-shot owner-only manifest cannot name a target pane, vendor, permission, prompt or submit action.",
-                        "The companion verifies Parley's current capability heartbeat before staging, then waits for Parley's correlated one-shot acknowledgement before reporting success.",
-                        "Selected SCM resources are recaptured by Parley with an explicit relative file after Git's option separator.",
-                        "Basket entries clear automatically only after the exact accepted acknowledgement. A rejected, cancelled or expired request remains available for correction and retry.",
-                        "Review every attributed source in Parley, edit the request, then choose the normal Ask or Compare action yourself.",
-                    ]
-                ),
-                ParleyHelpSection(
-                    id: "vscode-companion-diagnostics",
-                    title: "Diagnose the local bridge",
-                    paragraphs: [
-                        "Parley: Diagnose Companion opens a compact VS Code output report covering the local extension host, installed app, compatible contracts, limits and attention heartbeat.",
-                    ],
-                    items: [
-                        "The report omits workspace paths, selected content, prompts, results, terminal output and credentials.",
-                        "A missing or stale capability file means unavailable, not assumed compatibility.",
-                    ]
-                ),
-                ParleyHelpSection(
-                    id: "vscode-companion-attention",
-                    title: "Attention and focus",
-                    paragraphs: [
-                        "The VS Code status bar, Parley: Show Attention and Panes command and native Collaboration views show the installed Production app's current attention count, durable workspaces and exact live agent panes. Select one item to open its authoritative Status Center record or focus that pane.",
-                    ],
-                    items: [
-                        "The local snapshot contains human labels, counts and opaque pane or handoff ids only. It never contains prompts, answers, terminal output, commands, folders or pane credentials.",
-                        "A stale, malformed, symlinked or non-private snapshot is shown as unavailable rather than trusted.",
-                        "Focus links can only identify one existing pane or handoff. They cannot carry context, vendor startup, terminal input or submission.",
-                        "Development does not publish into Production's integration file or claim its machine-wide URL scheme.",
                     ]
                 ),
             ]

@@ -64,7 +64,7 @@ in the same request, protocol version bumped where its wording changes.
   machine, its store, window, notice kinds and Help section. The five recipe
   templates, the recipe runner with its notice and lead interruption, and the
   review-and-correct practice as Help text remain.
-- [ ] VS Code companion and its context bridge, attention snapshot and
+- [x] VS Code companion and its context bridge, attention snapshot and
   `parley://` focus and status URLs. Native file and diff capture, Context
   Packs and `parley open` remain.
 - [ ] Automatic idle-agent reaping and its switch. Explicit Stop remains.
@@ -587,6 +587,7 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
   acknowledgement semantics. Captured text is never persisted by the extension.
 - [x] VS Code companion Phase 5 — recovery actions, native welcome/onboarding
   surfaces, packaging assets and deterministic model/extension-host coverage.
+  All five companion phases were retired in the September 2026 reduction.
 
 ### Shipping
 

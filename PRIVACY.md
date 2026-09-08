@@ -27,7 +27,3 @@ review. They have no upload action and structurally exclude credentials,
 prompts, answers and terminal content. A collaboration-history Markdown export
 is different: it intentionally contains the selected question and result bodies
 and must be reviewed before sharing.
-
-The local VS Code companion can send only explicitly selected editor context
-into Parley's editable preview. It refuses web and remote extension hosts and
-cannot start an agent or submit a prompt.

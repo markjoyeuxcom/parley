@@ -65,11 +65,9 @@ release-beta:
     - node --version
     - glab --version
   script:
-    - npm ci --prefix vscode-extension
     - npm test
     - mkdir -p dist
     - npm run test:soak -- --rounds 25 --output dist/Parley-Ghostty-soak.json
-    - npm run package:vscode
     # PARLEY_RELEASE_TAG is deliberately not a job variable: the release CLI
     # reads it from the environment, and `npm test` asserts the CLI has no
     # preset tag. It is passed to the release step only.
@@ -77,15 +75,12 @@ release-beta:
     - npm run verify:launch:mac
     - |
       version="$(node -p "require('./package.json').version")"
-      companion="$(node -p "require('./vscode-extension/package.json').version")"
       checksums="dist/Parley-${version}-mac-arm64.SHA256SUMS"
-      (cd dist && shasum -a 256 "Parley-Companion-${companion}.vsix" >> "$(basename "$checksums")")
       (cd dist && shasum -a 256 "Parley-Ghostty-soak.json" >> "$(basename "$checksums")")
       LC_ALL=C sort -o "$checksums" "$checksums"
       (cd dist && shasum -a 256 -c "$(basename "$checksums")")
     - |
       version="$(node -p "require('./package.json').version")"
-      companion="$(node -p "require('./vscode-extension/package.json').version")"
       base="dist/Parley-${version}-mac-arm64"
       notes=".github/release-notes/${CI_COMMIT_TAG}.md"
       test -f "$notes"
@@ -95,7 +90,6 @@ release-beta:
         "$base.release.json" \
         "$base.SHA256SUMS" \
         "${base}-INSTALL.txt" \
-        "dist/Parley-Companion-${companion}.vsix" \
         "dist/Parley-Ghostty-soak.json" \
         --repo "$CI_PROJECT_PATH" \
         --use-package-registry \

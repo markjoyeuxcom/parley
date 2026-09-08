@@ -82,7 +82,7 @@ To cut one:
    deterministic checks, the 25-round Ghostty soak, packaging, launch
    verification and checksum assembly exactly as the retired workflow did,
    then creates the release with the DMG, ZIP, manifest, checksums, install
-   guide, companion VSIX and soak report. It refuses to overwrite a release
+   guide and soak report. It refuses to overwrite a release
    that already exists for the tag: delete that release and its package
    deliberately before rerunning.
 4. Review the release's checksums, soak report and install guide on GitLab.
@@ -105,7 +105,7 @@ retired with the rest of GitHub Actions. The job is an explicit exception for
 prerelease testing, not a fallback from failed notarization.
 
 The job requires an existing matching version tag, runs the deterministic
-checks and real Ghostty soak, builds the VS Code companion, invokes
+checks and real Ghostty soak, invokes
 `npm run release:mac:beta`, verifies the ZIP, DMG, upgrade and uninstall
 lifecycle, proves the final bundled executable remains alive past dynamic
 library loading, and creates the GitLab release. Its
@@ -131,8 +131,8 @@ procedure but disabled on GitHub until it moves to GitLab (see above).
    terminal or Parley shell pane that permits real child PTYs.
 3. Dispatch **Prepare macOS draft release** with the existing tag.
 4. Do not publish unless every job is green and the draft contains the DMG,
-   ZIP, release manifest, checksums, install guide, `appcast.xml`, `parley.rb`,
-   VS Code companion and Ghostty soak report.
+   ZIP, release manifest, checksums, install guide, `appcast.xml`, `parley.rb`
+   and Ghostty soak report.
 
 Both release workflows launch the final packaged executable on the clean macOS
 runner and require it to remain alive for the smoke-test window. This catches
