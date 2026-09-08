@@ -66,6 +66,9 @@ func teamSessionProposalParsingChecks() throws {
         "team request arguments were not parsed literally")
     try teamExpect(try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "x"]).paneLimit == TeamSessionProposal.defaultPaneLimit, "default pane limit drifted")
     try teamRejects("a relative folder was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "project", "objective"]) }
+    try teamRejects("the retired --template option was folded into the objective") {
+        _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/project", "--template", "Review pair", "Build feature"])
+    }
     try teamRejects("a missing objective was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p"]) }
     try teamRejects("a pane limit above the maximum was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "--panes", "9", "x"]) }
     try teamRejects("a deadline above 128 hours was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "--hours", "129", "x"]) }

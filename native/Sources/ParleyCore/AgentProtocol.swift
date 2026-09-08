@@ -206,8 +206,8 @@ public enum AgentProtocol {
       `PARLEY_SWIFTPM_COMPATIBILITY=0` restores SwiftPM's normal behaviour.
 
     Features in the native UI are person-controlled, not additional agent commands:
-    - Pane and workspace menus manage splits, folders, Focus Canvas, moving and
-      roles and the workspace lead.
+    - Pane and workspace menus manage splits, folders, Focus Canvas, moving
+      panes, roles and the workspace lead.
     - Ask, Review and Return provide editable handoff previews. Context manages
       attributed Context Packs. Human captures keep their provenance; agent
       drafts remain claims. Independent Compare keeps its targets' answers separate.

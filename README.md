@@ -301,8 +301,9 @@ session survived.
 Move transfers the exact retained pane, process, terminal state, credential and
 folder.
 
-Saved layouts contain portable configuration, not live ids, paths from another
-machine, credentials or terminal content.
+Saved layouts are local configuration for this Mac: pane vendors, names, split
+geometry, folders and permission-profile selections. They never contain live
+ids, credentials or terminal content.
 
 Git worktrees stay one per feature, not one per pane. The worktree browser
 opens any existing worktree as a workspace and can create a new one on a new

@@ -568,10 +568,11 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
   Pane Folders.
 - [x] Favourite folders and bounded external opening.
 - [x] Durable native split layouts without live ids.
-- [x] Saved layouts and portable team templates.
+- [x] Saved layouts. Portable team templates were retired in the September 2026
+  reduction.
 - [x] Stable roles and explicit local/cross-workspace role addressing.
-- [x] Pane move preserving the exact retained surface and configuration clone
-  creating fresh identity.
+- [x] Pane move preserving the exact retained surface. Configuration clone was
+  retired in the September 2026 reduction.
 - [x] Reviewed context packs. Workspace briefs and pinned snippets were retired
   in the September 2026 reduction.
 - [x] Git context/diff capture and optional worktree awareness.
@@ -625,9 +626,8 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 - [x] Migrate existing workspaces losslessly: the current home folder becomes
   an attachment and the current New Pane Folder remains the pane-launch
   default. Preserve workspace ids, panes, roles, layouts and handoff history.
-- [x] Keep portable team templates path-free. Applying a team to a folderless
-  workspace leaves agents stopped until their pane directories and permission
-  roots are explicitly bound.
+- [x] Keep portable team templates path-free. Retired with team templates in
+  the September 2026 reduction.
 - [x] Add deterministic coverage for zero-, one- and multi-folder workspaces,
   folder removal with live panes, external routing ambiguity and migration of
   existing records.
@@ -654,8 +654,7 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 
 - [ ] Improve side-by-side comparison review while retaining exact source pane
   attribution.
-- [ ] Add clearer role/lead collision previews for workspace moves and template
-  application.
+- [ ] Add clearer role/lead collision previews for workspace moves.
 - [ ] Expand context reliability checks for repository changes between preview
   and submission.
 - [ ] Continue adding vendor adapters only when their official CLIs preserve

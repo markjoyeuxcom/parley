@@ -5684,7 +5684,7 @@ final class AppModel: ObservableObject {
             history = try relayClient.handoffs(limit: 500)
         } else if required && pane.kind.isAgent {
             throw RelayUIError.message(
-                "Parley cannot verify this agent’s active handoffs while the core service is unavailable. Restore the core connection before moving or cloning it."
+                "Parley cannot verify this agent’s active handoffs while the core service is unavailable. Restore the core connection before moving it."
             )
         } else {
             history = handoffs
@@ -5708,7 +5708,7 @@ final class AppModel: ObservableObject {
         assessment: PaneMobilityAssessment
     ) {
         let alert = NSAlert()
-        alert.messageText = "\(action == .move ? "Move" : "Clone") unavailable for \(pane.displayName)"
+        alert.messageText = "Move unavailable for \(pane.displayName)"
         alert.informativeText = assessment.refusalText
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")

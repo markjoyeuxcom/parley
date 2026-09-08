@@ -390,7 +390,6 @@ struct ParleyNativeApp: App {
                 Divider()
                 Button("Save Current Layout…") { model.saveActiveWorkspaceLayout() }
                     .disabled(model.activeWorkspace == nil)
-                    .disabled(model.activeWorkspace == nil)
             }
             CommandMenu("Tools") {
                 Button("Task Manager…") { openWindow(id: "task-manager") }

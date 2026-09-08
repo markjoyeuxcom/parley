@@ -840,8 +840,7 @@ public final class WorkbenchController: @unchecked Sendable {
 
     public func restoreWorkspaceLayout(
         _ layout: SavedWorkspaceLayout,
-        replacing replacedWorkspaceID: String? = nil,
-        folderless: Bool = false
+        replacing replacedWorkspaceID: String? = nil
     ) throws -> WorkbenchWorkspace {
         try requireDirectory(layout.defaultFolder)
         for leaf in layout.root.leaves { try requireDirectory(leaf.folder) }
@@ -854,23 +853,17 @@ public final class WorkbenchController: @unchecked Sendable {
             let workspace = try createWorkspaceLocked(
                 launchFolder: layout.defaultFolder,
                 name: layout.name,
-                attachedFolders: folderless
-                    ? []
-                    : (replacement?.attachedFolders ?? [layout.defaultFolder]),
-                newPaneFolder: folderless ? nil : layout.defaultFolder
+                attachedFolders: replacement?.attachedFolders ?? [layout.defaultFolder],
+                newPaneFolder: layout.defaultFolder
             )
             document.panes.removeAll(where: { $0.workspaceID == workspace.workspaceID })
             for leaf in layout.root.leaves {
-                let profile = if folderless && leaf.kind.isAgent {
-                    Optional<EffectivePermissionProfile>.none
-                } else {
-                    try effectivePermissionProfile(
-                        for: leaf.kind,
-                        cwd: leaf.folder,
-                        supplied: nil,
-                        selection: leaf.permissionSelection
-                    )
-                }
+                let profile = try effectivePermissionProfile(
+                    for: leaf.kind,
+                    cwd: leaf.folder,
+                    supplied: nil,
+                    selection: leaf.permissionSelection
+                )
                 var pane = try makePane(
                     kind: leaf.kind,
                     cwd: leaf.folder,

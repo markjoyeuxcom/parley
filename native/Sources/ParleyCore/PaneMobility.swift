@@ -67,13 +67,11 @@ public enum PaneMobilityPolicy {
         }
 
         var blockers: [PaneMobilityBlocker] = []
-        if action == .move {
-            if panes.filter({ $0.workspaceID == pane.workspaceID }).count <= 1 {
-                blockers.append(.lastSourcePane)
-            }
-            if activeHandoffCount > 0 {
-                blockers.append(.activeHandoffs(activeHandoffCount))
-            }
+        if panes.filter({ $0.workspaceID == pane.workspaceID }).count <= 1 {
+            blockers.append(.lastSourcePane)
+        }
+        if activeHandoffCount > 0 {
+            blockers.append(.activeHandoffs(activeHandoffCount))
         }
 
         let targetPanes = panes.filter { $0.workspaceID == targetWorkspaceID }

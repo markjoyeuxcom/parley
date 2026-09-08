@@ -126,6 +126,8 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
             let argument = arguments[index]
             switch argument {
             case "--folder": folder = try value(argument)
+            case "--template":
+                throw TeamSessionError.invalid("--template was removed with team templates; vendors and pane count are chosen in the person's approval")
             case "--worktree": worktreeBranch = try value(argument)
             case "--base": worktreeBase = try value(argument)
             case "--panes":
