@@ -97,7 +97,6 @@ public final class WorkbenchController: @unchecked Sendable {
         let mode: AgentLaunchMode
     }
 
-
     public let applicationDirectory: URL
     public let protocolDirectory: URL
     private let swiftPMDirectory: URL
@@ -839,56 +838,9 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
 
-    @discardableResult
-    public func clonePaneConfiguration(
-        _ paneID: String,
-        toWorkspaceID targetWorkspaceID: String,
-        activeHandoffCount: Int
-    ) throws -> WorkbenchPane {
-        try lock.withLock {
-            guard let source = document.panes.first(where: { $0.id == paneID }) else {
-                throw ParleyWorkbenchError.paneNotFound(paneID)
-            }
-            let target = document.workspaces[try workspaceIndexLocked(targetWorkspaceID)]
-            let assessment = PaneMobilityPolicy.assess(
-                action: .clone,
-                pane: source,
-                targetWorkspaceID: target.workspaceID,
-                panes: document.panes,
-                activeHandoffCount: activeHandoffCount
-            )
-            guard assessment.isAllowed else { throw ParleyWorkbenchError.commandFailed(assessment.refusalText) }
-            var clone = source
-            clone.id = Self.paneID()
-            clone.workspaceID = target.workspaceID
-            clone.workspaceName = target.name
-            clone.automationPolicy = target.automationPolicy
-            clone.inputAvailable = false
-            clone.isActive = false
-            clone.isWorkspaceLead = false
-            clone.launchGeneration = 0
-            clone.isDead = false
-            clone.exitStatus = nil
-            if clone.kind.isAgent {
-                clone.isStarted = false
-                clone.relayEnabled = false
-                clone.protocolVersion = nil
-                clone.currentCommand = "stopped"
-                clone.vendorRuntimeState = nil
-                clone.vendorRuntimeSignal = nil
-                clone.vendorRuntimeSignaledAt = nil
-            }
-            document.panes.append(clone)
-            document.activity[clone.id] = Date()
-            try persistLocked()
-            return clone
-        }
-    }
-
     public func restoreWorkspaceLayout(
         _ layout: SavedWorkspaceLayout,
-        replacing replacedWorkspaceID: String? = nil,
-        folderless: Bool = false
+        replacing replacedWorkspaceID: String? = nil
     ) throws -> WorkbenchWorkspace {
         try requireDirectory(layout.defaultFolder)
         for leaf in layout.root.leaves { try requireDirectory(leaf.folder) }
@@ -901,23 +853,17 @@ public final class WorkbenchController: @unchecked Sendable {
             let workspace = try createWorkspaceLocked(
                 launchFolder: layout.defaultFolder,
                 name: layout.name,
-                attachedFolders: folderless
-                    ? []
-                    : (replacement?.attachedFolders ?? [layout.defaultFolder]),
-                newPaneFolder: folderless ? nil : layout.defaultFolder
+                attachedFolders: replacement?.attachedFolders ?? [layout.defaultFolder],
+                newPaneFolder: layout.defaultFolder
             )
             document.panes.removeAll(where: { $0.workspaceID == workspace.workspaceID })
             for leaf in layout.root.leaves {
-                let profile = if folderless && leaf.kind.isAgent {
-                    Optional<EffectivePermissionProfile>.none
-                } else {
-                    try effectivePermissionProfile(
-                        for: leaf.kind,
-                        cwd: leaf.folder,
-                        supplied: nil,
-                        selection: leaf.permissionSelection
-                    )
-                }
+                let profile = try effectivePermissionProfile(
+                    for: leaf.kind,
+                    cwd: leaf.folder,
+                    supplied: nil,
+                    selection: leaf.permissionSelection
+                )
                 var pane = try makePane(
                     kind: leaf.kind,
                     cwd: leaf.folder,

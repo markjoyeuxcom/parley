@@ -230,7 +230,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var worktreeDiscoveryLoading = false
     @Published private(set) var worktreeDiscoveryError: String?
     @Published private(set) var savedLayouts: [SavedWorkspaceLayout] = []
-    @Published private(set) var teamTemplates: [TeamTemplate] = []
     @Published private(set) var recipes: [HandoffRecipe] = []
     @Published private(set) var permissionProfiles: [PermissionProfileDefinition] = []
     @Published private(set) var activeRecipeRun: ActiveRecipeRun?
@@ -327,7 +326,6 @@ final class AppModel: ObservableObject {
     private let runtimeLease: RuntimeUILease?
     private let layoutStore: SavedWorkspaceLayoutStore
     private let workspaceRegistry: WorkspaceRegistry
-    private let teamTemplateStore: TeamTemplateStore
     private let recipeStore: HandoffRecipeStore
     private let permissionProfileStore: PermissionProfileStore
     private var workspaceContinuity = WorkspaceContinuityState()
@@ -478,9 +476,6 @@ final class AppModel: ObservableObject {
         nativeSplitFractions = workspaceRecords.reduce(into: [:]) {
             $0[$1.workspaceID] = $1.splitFractions
         }
-        teamTemplateStore = TeamTemplateStore(
-            file: applicationDirectory.appendingPathComponent("team-templates.json")
-        )
         recipeStore = HandoffRecipeStore(
             file: applicationDirectory.appendingPathComponent("handoff-recipes.json")
         )
@@ -501,7 +496,6 @@ final class AppModel: ObservableObject {
             startupRequiresQuit = true
         }
         recipes = (try? recipeStore.recipes()) ?? HandoffRecipe.defaults
-        teamTemplates = (try? teamTemplateStore.templates()) ?? []
         permissionProfiles = (try? permissionProfileStore.profiles())
             ?? PermissionProfileDefinition.builtIns
         do {
@@ -5684,64 +5678,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func clonePaneConfiguration(_ pane: WorkbenchPane, to targetWorkspace: WorkbenchWorkspace) {
-        perform {
-            guard let controller else { return }
-            try refresh()
-            guard let currentPane = panes.first(where: { $0.id == pane.id }) else {
-                throw ParleyWorkbenchError.paneNotFound(pane.id)
-            }
-            guard let currentTarget = workspaces.first(where: { $0.id == targetWorkspace.id }) else {
-                throw ParleyWorkbenchError.workspaceNotFound(targetWorkspace.id)
-            }
-            let activeCount = try verifiedActiveHandoffCount(for: currentPane, required: true)
-            let assessment = PaneMobilityPolicy.assess(
-                action: .clone,
-                pane: currentPane,
-                targetWorkspaceID: currentTarget.workspaceID,
-                panes: panes,
-                activeHandoffCount: activeCount
-            )
-            guard assessment.isAllowed else {
-                showPaneMobilityRefusal(
-                    pane: currentPane,
-                    action: .clone,
-                    assessment: assessment
-                )
-                return
-            }
-
-            let activeNote = activeCount > 0
-                ? " Its \(activeCount) active \(activeCount == 1 ? "handoff remains" : "handoffs remain") with the source pane."
-                : ""
-            let processNote = currentPane.kind.isAgent
-                ? "The new agent pane stays stopped with no vendor session, pane credential or protocol context until you choose Start."
-                : "The new shell starts normally."
-            let alert = NSAlert()
-            alert.messageText = "Clone \(currentPane.displayName) into \(currentTarget.name)?"
-            alert.informativeText = "The source process is unchanged. Parley copies only the visible configuration: vendor, name, folder (\(currentPane.cwd)), permission profile, routing role and Workspace Lead stamp. \(processNote)\(activeNote)"
-            alert.addButton(withTitle: "Clone Configuration")
-            alert.addButton(withTitle: "Cancel")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-            let finalActiveCount = try verifiedActiveHandoffCount(for: currentPane, required: true)
-            _ = try controller.clonePaneConfiguration(
-                currentPane.id,
-                toWorkspaceID: currentTarget.id,
-                activeHandoffCount: finalActiveCount
-            )
-            try refresh()
-            terminalHandle.focus()
-        }
-    }
-
     private func verifiedActiveHandoffCount(for pane: WorkbenchPane, required: Bool) throws -> Int {
         let history: [RelayHandoff]
         if let relayClient {
             history = try relayClient.handoffs(limit: 500)
         } else if required && pane.kind.isAgent {
             throw RelayUIError.message(
-                "Parley cannot verify this agent’s active handoffs while the core service is unavailable. Restore the core connection before moving or cloning it."
+                "Parley cannot verify this agent’s active handoffs while the core service is unavailable. Restore the core connection before moving it."
             )
         } else {
             history = handoffs
@@ -5765,7 +5708,7 @@ final class AppModel: ObservableObject {
         assessment: PaneMobilityAssessment
     ) {
         let alert = NSAlert()
-        alert.messageText = "\(action == .move ? "Move" : "Clone") unavailable for \(pane.displayName)"
+        alert.messageText = "Move unavailable for \(pane.displayName)"
         alert.informativeText = assessment.refusalText
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
@@ -6400,38 +6343,6 @@ final class AppModel: ObservableObject {
         saveLayout(of: workspace)
     }
 
-    func saveActiveWorkspaceAsTeamTemplate() {
-        guard let workspace = activeWorkspace else { return }
-        let alert = NSAlert()
-        alert.messageText = "Save team template"
-        alert.informativeText = "Saves pane vendors, names, roles, permission profiles, lead, automation policy and layout. Repository paths, permission roots, sessions and live ids are not stored."
-        let field = NSTextField(string: workspace.name)
-        field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Save Team")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-
-        if teamTemplates.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
-            let overwrite = NSAlert()
-            overwrite.messageText = "Replace team template \(name)?"
-            overwrite.informativeText = "The previous portable definition will be replaced. Running panes are unchanged."
-            overwrite.alertStyle = .warning
-            overwrite.addButton(withTitle: "Replace")
-            overwrite.addButton(withTitle: "Cancel")
-            guard overwrite.runModal() == .alertFirstButtonReturn else { return }
-        }
-
-        perform {
-            let captured = try captureWorkspaceLayout(workspace)
-            try teamTemplateStore.save(try TeamTemplate.capturing(captured, name: name))
-            teamTemplates = try teamTemplateStore.templates()
-            terminalHandle.focus()
-        }
-    }
-
     func createWorkspace(from layout: SavedWorkspaceLayout) {
         perform {
             guard let controller else { return }
@@ -6445,75 +6356,6 @@ final class AppModel: ObservableObject {
             ))
             rememberFolder(layout.defaultFolder)
             try refresh()
-            terminalHandle.focus()
-        }
-    }
-
-    func apply(_ template: TeamTemplate) {
-        let choice = NSAlert()
-        choice.messageText = "Create \(template.name) workspace"
-        choice.informativeText = "A folderless team keeps every agent stopped and unbound until you explicitly choose its working folder and permissions. Choosing a folder binds every template pane to that folder."
-        choice.addButton(withTitle: "Create Folderless")
-        choice.addButton(withTitle: "Choose Folder…")
-        choice.addButton(withTitle: "Cancel")
-        let response = choice.runModal()
-        guard response != .alertThirdButtonReturn else { return }
-
-        let folderless = response == .alertFirstButtonReturn
-        let launchFolder: String
-        let workspaceName: String
-        if folderless {
-            launchFolder = activePane?.cwd ?? fallbackFolder
-            workspaceName = availableWorkspaceName(template.name)
-        } else {
-            let panel = NSOpenPanel()
-            panel.title = "Apply \(template.name) to a folder"
-            panel.prompt = "Create Team Workspace"
-            panel.canChooseFiles = false
-            panel.canChooseDirectories = true
-            panel.allowsMultipleSelection = false
-            panel.directoryURL = URL(fileURLWithPath: defaultFolder)
-            guard panel.runModal() == .OK, let url = panel.url else { return }
-            launchFolder = url.standardizedFileURL.path
-            let baseName = url.lastPathComponent.isEmpty ? template.name : url.lastPathComponent
-            workspaceName = availableWorkspaceName(baseName)
-        }
-
-        perform {
-            guard let controller else { return }
-            let layout = try folderless
-                ? template.folderlessWorkspaceLayout(
-                    launchFolder: launchFolder,
-                    workspaceName: workspaceName
-                )
-                : template.workspaceLayout(folder: launchFolder, workspaceName: workspaceName)
-            let restored = try controller.restoreWorkspaceLayout(layout, folderless: folderless)
-            recordRestoredNativeLayout(layout.root, workspace: restored)
-            try recordSuccessfulActivity(RelayActivityEventRequest(
-                kind: .workspaceRestored,
-                workspaceID: restored.workspaceID,
-                workspaceName: restored.name,
-                detail: folderless
-                    ? "Applied team template \(template.name) without folder attachments; agent panes left stopped and unbound."
-                    : "Applied team template \(template.name); agent panes left stopped."
-            ))
-            if !folderless { rememberFolder(launchFolder) }
-            try refresh()
-            terminalHandle.focus()
-        }
-    }
-
-    func delete(_ template: TeamTemplate) {
-        let alert = NSAlert()
-        alert.messageText = "Delete team template \(template.name)?"
-        alert.informativeText = "Running workspaces and panes are unchanged."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete Team")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform {
-            try teamTemplateStore.delete(named: template.name)
-            teamTemplates = try teamTemplateStore.templates()
             terminalHandle.focus()
         }
     }

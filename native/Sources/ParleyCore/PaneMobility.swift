@@ -1,11 +1,8 @@
 import Foundation
 
-/// Moving transfers one retained Ghostty pane without restarting it. Cloning
-/// copies only visible Parley configuration and never copies an agent session
-/// or pane-scoped relay credential.
+/// Moving transfers one retained Ghostty pane without restarting it.
 public enum PaneMobilityAction: String, Equatable, Sendable {
     case move
-    case clone
 }
 
 public enum PaneMobilityBlocker: Equatable, Sendable {
@@ -70,13 +67,11 @@ public enum PaneMobilityPolicy {
         }
 
         var blockers: [PaneMobilityBlocker] = []
-        if action == .move {
-            if panes.filter({ $0.workspaceID == pane.workspaceID }).count <= 1 {
-                blockers.append(.lastSourcePane)
-            }
-            if activeHandoffCount > 0 {
-                blockers.append(.activeHandoffs(activeHandoffCount))
-            }
+        if panes.filter({ $0.workspaceID == pane.workspaceID }).count <= 1 {
+            blockers.append(.lastSourcePane)
+        }
+        if activeHandoffCount > 0 {
+            blockers.append(.activeHandoffs(activeHandoffCount))
         }
 
         let targetPanes = panes.filter { $0.workspaceID == targetWorkspaceID }

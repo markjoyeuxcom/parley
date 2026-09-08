@@ -131,7 +131,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                 throw TeamSessionError.invalid("This preview is stale or its requesting pane changed. Refresh before approving.")
             }
             let cleanObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
-            let edited = TeamSessionProposal(objective: cleanObjective, folder: folder, templateName: session.proposal.templateName, paneLimit: paneLimit, hours: hours,
+            let edited = TeamSessionProposal(objective: cleanObjective, folder: folder, paneLimit: paneLimit, hours: hours,
                 worktreeBranch: session.proposal.worktreeBranch, worktreeBase: session.proposal.worktreeBase)
             try edited.validate()
             let canonical = folderExists ? try Self.canonicalFolder(folder, within: source.cwd) : try Self.canonicalPlannedFolder(folder, within: source.cwd)
@@ -160,7 +160,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                 throw TeamSessionError.invalid("This preview is stale or its requesting pane changed. Refresh before approving.")
             }
             let cleanObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
-            let edited = TeamSessionProposal(objective: cleanObjective, folder: folder, templateName: session.proposal.templateName, paneLimit: paneLimit, hours: hours,
+            let edited = TeamSessionProposal(objective: cleanObjective, folder: folder, paneLimit: paneLimit, hours: hours,
                 worktreeBranch: session.proposal.worktreeBranch, worktreeBase: session.proposal.worktreeBase)
             try edited.validate()
             let canonical = try Self.canonicalFolder(folder, within: source.cwd)

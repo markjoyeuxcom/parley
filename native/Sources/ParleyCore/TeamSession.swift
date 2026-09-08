@@ -78,7 +78,6 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
 
     public let objective: String
     public let folder: String
-    public let templateName: String?
     public let paneLimit: Int
     public let hours: Int
     /// Optional proposal to work in a new Git worktree of the repository at
@@ -87,11 +86,10 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
     public let worktreeBranch: String?
     public let worktreeBase: String?
 
-    public init(objective: String, folder: String, templateName: String?, paneLimit: Int, hours: Int,
+    public init(objective: String, folder: String, paneLimit: Int, hours: Int,
                 worktreeBranch: String? = nil, worktreeBase: String? = nil) {
         self.objective = objective
         self.folder = folder
-        self.templateName = templateName
         self.paneLimit = paneLimit
         self.hours = hours
         self.worktreeBranch = worktreeBranch
@@ -113,7 +111,6 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
     /// in any order; the remaining words form the objective.
     public static func parse(arguments: [String]) throws -> TeamSessionProposal {
         var folder: String?
-        var template: String?
         var paneLimit = defaultPaneLimit
         var hours = defaultHours
         var worktreeBranch: String?
@@ -129,7 +126,8 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
             let argument = arguments[index]
             switch argument {
             case "--folder": folder = try value(argument)
-            case "--template": template = try value(argument)
+            case "--template":
+                throw TeamSessionError.invalid("--template was removed with team templates; vendors and pane count are chosen in the person's approval")
             case "--worktree": worktreeBranch = try value(argument)
             case "--base": worktreeBase = try value(argument)
             case "--panes":
@@ -146,7 +144,7 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
         guard let folder else { throw TeamSessionError.invalid("team request needs --folder <absolute-folder>") }
         let objective = words.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !objective.isEmpty else { throw TeamSessionError.invalid("team request needs an objective") }
-        let proposal = TeamSessionProposal(objective: objective, folder: folder, templateName: template, paneLimit: paneLimit, hours: hours,
+        let proposal = TeamSessionProposal(objective: objective, folder: folder, paneLimit: paneLimit, hours: hours,
             worktreeBranch: worktreeBranch, worktreeBase: worktreeBase)
         try proposal.validate()
         return proposal
@@ -163,11 +161,6 @@ public struct TeamSessionProposal: Codable, Equatable, Sendable {
         }
         guard (1...Self.maximumHours).contains(hours) else {
             throw TeamSessionError.invalid("The provisioning deadline must be between 1 and \(Self.maximumHours) hours.")
-        }
-        if let templateName {
-            guard !templateName.isEmpty, templateName.utf8.count <= 64 else {
-                throw TeamSessionError.invalid("The template name is invalid.")
-            }
         }
         if let worktreeBranch {
             do { try WorktreeNaming.validateBranch(worktreeBranch) } catch { throw TeamSessionError.invalid("--worktree: \(error.localizedDescription)") }

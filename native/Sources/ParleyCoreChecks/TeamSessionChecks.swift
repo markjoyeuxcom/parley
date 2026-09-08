@@ -66,6 +66,9 @@ func teamSessionProposalParsingChecks() throws {
         "team request arguments were not parsed literally")
     try teamExpect(try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "x"]).paneLimit == TeamSessionProposal.defaultPaneLimit, "default pane limit drifted")
     try teamRejects("a relative folder was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "project", "objective"]) }
+    try teamRejects("the retired --template option was folded into the objective") {
+        _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/project", "--template", "Review pair", "Build feature"])
+    }
     try teamRejects("a missing objective was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p"]) }
     try teamRejects("a pane limit above the maximum was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "--panes", "9", "x"]) }
     try teamRejects("a deadline above 128 hours was accepted") { _ = try TeamSessionProposal.parse(arguments: ["--folder", "/tmp/p", "--hours", "129", "x"]) }
@@ -94,26 +97,26 @@ func teamSessionRequestAndApprovalChecks() throws {
     let coordinator = fixture.coordinator { box.current() }
 
     try teamRejects("an unauthenticated request was accepted") {
-        _ = try coordinator.request(token: "nope", proposal: TeamSessionProposal(objective: "x", folder: fixture.project, templateName: nil, paneLimit: 2, hours: 4))
+        _ = try coordinator.request(token: "nope", proposal: TeamSessionProposal(objective: "x", folder: fixture.project, paneLimit: 2, hours: 4))
     }
     try teamRejects("a folder outside the lead's folder was accepted") {
-        _ = try coordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "x", folder: fixture.root.appendingPathComponent("outside").path, templateName: nil, paneLimit: 2, hours: 4))
+        _ = try coordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "x", folder: fixture.root.appendingPathComponent("outside").path, paneLimit: 2, hours: 4))
     }
     let link = fixture.root.appendingPathComponent("project/escape")
     try FileManager.default.createSymbolicLink(at: link, withDestinationURL: fixture.root.appendingPathComponent("outside"))
     try teamRejects("a symlink escaping the lead's folder was accepted") {
-        _ = try coordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "x", folder: link.path, templateName: nil, paneLimit: 2, hours: 4))
+        _ = try coordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "x", folder: link.path, paneLimit: 2, hours: 4))
     }
 
     var offPolicy = fixture.lead
     offPolicy.automationPolicy = .askAnswer
     box.update { $0 = [offPolicy] }
     try teamRejects("a workspace without delegation accepted a team request") {
-        _ = try coordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "x", folder: fixture.project, templateName: nil, paneLimit: 2, hours: 4))
+        _ = try coordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "x", folder: fixture.project, paneLimit: 2, hours: 4))
     }
     box.update { $0 = [fixture.lead] }
 
-    let proposal = TeamSessionProposal(objective: "Implement the parser", folder: fixture.root.appendingPathComponent("project/module").path, templateName: nil, paneLimit: 2, hours: 4)
+    let proposal = TeamSessionProposal(objective: "Implement the parser", folder: fixture.root.appendingPathComponent("project/module").path, paneLimit: 2, hours: 4)
     let session = try coordinator.request(token: "lead-token", proposal: proposal, idempotencyKey: "req-1")
     try teamExpect(session.state == .pending && session.grantID == nil && coordinator.grant(for: session.id) == nil, "a request created authority before approval")
     try teamExpect(try coordinator.request(token: "lead-token", proposal: proposal, idempotencyKey: "req-1").id == session.id, "a replayed request was not idempotent")
@@ -161,7 +164,7 @@ func teamSessionProvisioningLimitChecks() throws {
     defer { fixture.cleanup() }
     let box = PaneBox(fixture.live)
     let coordinator = fixture.coordinator(tokens: ["lead-token": "lead", "member-token": "member-1", "outsider-token": "outsider"]) { box.current() }
-    let proposal = TeamSessionProposal(objective: "Build it", folder: fixture.project, templateName: nil, paneLimit: 2, hours: 2)
+    let proposal = TeamSessionProposal(objective: "Build it", folder: fixture.project, paneLimit: 2, hours: 2)
     let session = try coordinator.request(token: "lead-token", proposal: proposal)
     try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: fixture.project,
         allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 2, hours: 2)
@@ -235,7 +238,7 @@ func teamSessionInvalidationChecks() throws {
     defer { fixture.cleanup() }
     let box = PaneBox(fixture.live)
     let coordinator = fixture.coordinator { box.current() }
-    let proposal = TeamSessionProposal(objective: "Build it", folder: fixture.project, templateName: nil, paneLimit: 3, hours: 2)
+    let proposal = TeamSessionProposal(objective: "Build it", folder: fixture.project, paneLimit: 3, hours: 2)
 
     // Lead restart invalidates the grant and refuses provisioning.
     let restarted = try coordinator.request(token: "lead-token", proposal: proposal)
@@ -312,7 +315,7 @@ func teamSessionStopChecks() throws {
         currentCommand: "codex", isActive: false, workspaceID: "workspace", relayEnabled: true, automationPolicy: .askAndDelegate)
     let box = PaneBox([fixture.lead, unrelated])
     let coordinator = fixture.coordinator { box.current() }
-    let proposal = TeamSessionProposal(objective: "Build it", folder: fixture.project, templateName: nil, paneLimit: 2, hours: 2)
+    let proposal = TeamSessionProposal(objective: "Build it", folder: fixture.project, paneLimit: 2, hours: 2)
     let session = try coordinator.request(token: "lead-token", proposal: proposal)
     try coordinator.approve(id: session.id, revision: session.revision, objective: "x", folder: fixture.project, allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 2, hours: 2)
     _ = try coordinator.requestPane(token: "lead-token", kind: .codex, name: "Reviewer", role: nil)
@@ -343,7 +346,7 @@ func teamSessionWaitChecks() throws {
     defer { fixture.cleanup() }
     let box = PaneBox(fixture.live)
     let coordinator = fixture.coordinator(tokens: ["lead-token": "lead", "other-token": "outsider"]) { box.current() }
-    let proposal = TeamSessionProposal(objective: "Build it", folder: fixture.project, templateName: nil, paneLimit: 1, hours: 1)
+    let proposal = TeamSessionProposal(objective: "Build it", folder: fixture.project, paneLimit: 1, hours: 1)
     let session = try coordinator.request(token: "lead-token", proposal: proposal)
     try teamExpect(coordinator.waitForDecision(token: "other-token", id: session.id).status == 403, "another pane recovered a session decision")
     let approver = Thread {
@@ -400,7 +403,7 @@ func teamSessionNativePaneChecks() throws {
     let box = PaneBox([eligible])
     let coordinator = TeamSessionCoordinator(authenticate: { _ in lead.id }, panes: { box.current() },
         profiles: { PermissionProfileDefinition.builtIns }, record: { _, _, _ in })
-    let proposal = TeamSessionProposal(objective: "Build it", folder: root.appendingPathComponent("project").path, templateName: nil, paneLimit: 2, hours: 1)
+    let proposal = TeamSessionProposal(objective: "Build it", folder: root.appendingPathComponent("project").path, paneLimit: 2, hours: 1)
     let session = try coordinator.request(token: "t", proposal: proposal)
     let provisionBeforeApproval = TeamPaneProvision(id: "p", sessionID: session.id, kind: .codex, name: "Reviewer", role: "reviewer", createdAt: Date(), paneID: nil, failure: nil)
     let defaultDefinition = PermissionProfileDefinition.builtIns.first { $0.id == "default" }!
@@ -650,7 +653,7 @@ func teamSessionWorktreeBindingChecks() throws {
     let coordinator = fixture.coordinator { box.current() }
     let tree = fixture.root.appendingPathComponent("project/.worktrees/feat-parser")
     try FileManager.default.createDirectory(at: tree, withIntermediateDirectories: true)
-    let proposal = TeamSessionProposal(objective: "Parse", folder: fixture.project, templateName: nil, paneLimit: 2, hours: 2, worktreeBranch: "feat/parser", worktreeBase: "main")
+    let proposal = TeamSessionProposal(objective: "Parse", folder: fixture.project, paneLimit: 2, hours: 2, worktreeBranch: "feat/parser", worktreeBase: "main")
     let session = try coordinator.request(token: "lead-token", proposal: proposal, idempotencyKey: "wt-1")
     try teamExpect(session.proposal.worktreeBranch == "feat/parser" && session.worktree == nil, "a request bound a worktree before approval")
     let binding = TeamWorktreeBinding(path: tree.path, branch: "feat/parser", baseRef: "main", baseCommit: String(repeating: "a", count: 40), parleyCreated: true, managedRecordID: "rec")
@@ -683,7 +686,7 @@ func teamSessionWorktreeBindingChecks() throws {
     defer { second.cleanup() }
     let secondBox = PaneBox(second.live)
     let secondCoordinator = second.coordinator { secondBox.current() }
-    let pending = try secondCoordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "Plan", folder: second.project, templateName: nil, paneLimit: 1, hours: 1), idempotencyKey: "pre-1")
+    let pending = try secondCoordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "Plan", folder: second.project, paneLimit: 1, hours: 1), idempotencyKey: "pre-1")
     let planned = second.root.appendingPathComponent("project/.worktrees/feat-x").path
     try secondCoordinator.preflightApproval(id: pending.id, revision: pending.revision, objective: "Plan", folder: planned, allowedVendors: [.codex],
         permissionProfileID: "default", paneLimit: 1, hours: 1, folderExists: false)
@@ -754,7 +757,7 @@ func teamSessionReviewProfileMutationCheck() throws {
     var available = [original]
     let coordinator = TeamSessionCoordinator(authenticate: { $0 == "lead-token" ? "lead" : nil }, panes: { box.current() },
         profiles: { available }, record: { _, _, _ in })
-    let proposal = TeamSessionProposal(objective: "Review", folder: fixture.project, templateName: nil, paneLimit: 1, hours: 1)
+    let proposal = TeamSessionProposal(objective: "Review", folder: fixture.project, paneLimit: 1, hours: 1)
     let session = try coordinator.request(token: "lead-token", proposal: proposal)
     try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
         allowedVendors: [.codex], permissionProfileID: original.id, paneLimit: 1, hours: 1)
@@ -770,7 +773,7 @@ func teamSessionReviewPartialCreationCheck() throws {
     defer { fixture.cleanup() }
     let box = PaneBox(fixture.live)
     let coordinator = fixture.coordinator { box.current() }
-    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, templateName: nil, paneLimit: 1, hours: 1)
+    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, paneLimit: 1, hours: 1)
     let session = try coordinator.request(token: "lead-token", proposal: proposal)
     try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
         allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1)
@@ -817,7 +820,7 @@ func teamSessionOwnershipChecks() throws {
     defer { fixture.cleanup() }
     let box = PaneBox(fixture.live)
     let coordinator = fixture.coordinator { box.current() }
-    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, templateName: nil, paneLimit: 2, hours: 1)
+    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, paneLimit: 2, hours: 1)
     let session = try coordinator.request(token: "lead-token", proposal: proposal)
     try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
         allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 2, hours: 1)
@@ -868,7 +871,7 @@ func teamSessionReviewRecoveryGenerationCheck() throws {
     defer { fixture.cleanup() }
     let box = PaneBox(fixture.live)
     let coordinator = fixture.coordinator { box.current() }
-    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, templateName: nil, paneLimit: 1, hours: 1)
+    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, paneLimit: 1, hours: 1)
     let session = try coordinator.request(token: "lead-token", proposal: proposal)
     try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
         allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1)
@@ -901,7 +904,7 @@ func teamSessionTransitionOriginChecks() throws {
     let (broker, credentials, activity) = try teamBroker(root: fixture.root) { box.current() }
     let token = try credentials.token(for: "lead")
     let coordinator = broker.teamSessions!
-    let proposal = TeamSessionProposal(objective: "PRIVATE_OBJECTIVE build", folder: fixture.project, templateName: nil, paneLimit: 2, hours: 1)
+    let proposal = TeamSessionProposal(objective: "PRIVATE_OBJECTIVE build", folder: fixture.project, paneLimit: 2, hours: 1)
     let session = try coordinator.request(token: token, proposal: proposal)
     func events(_ kind: RelayActivityEventKind) -> [RelayActivityEvent] {
         broker.activityEvents().filter { $0.kind == kind && $0.teamSessionID == session.id }.sorted { $0.occurredAt < $1.occurredAt }
@@ -979,7 +982,7 @@ func teamSessionRequesterChecks() throws {
     let (broker, credentials, _) = try teamBroker(root: fixture.root) { box.current() }
     let token = try credentials.token(for: "pane-requester")
     let coordinator = broker.teamSessions!
-    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, templateName: nil, paneLimit: 1, hours: 1)
+    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, paneLimit: 1, hours: 1)
     let session = try coordinator.request(token: token, proposal: proposal)
     try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
         allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1)
@@ -1008,7 +1011,7 @@ func teamSessionStopResultChecks() throws {
     defer { fixture.cleanup() }
     let box = PaneBox(fixture.live)
     let coordinator = fixture.coordinator { box.current() }
-    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, templateName: nil, paneLimit: 6, hours: 1)
+    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, paneLimit: 6, hours: 1)
     let session = try coordinator.request(token: "lead-token", proposal: proposal)
     try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
         allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 6, hours: 1)
@@ -1078,7 +1081,7 @@ func teamSessionStopResultChecks() throws {
     let flakyCoordinator = TeamSessionCoordinator(authenticate: { $0 == "lead-token" ? "lead" : nil },
         panes: { if flakyFail.failing { throw TeamSessionError.invalid("listing unavailable") } else { return flaky.current() } },
         profiles: { PermissionProfileDefinition.builtIns }, record: { _, _, _ in })
-    let flakySession = try flakyCoordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "x", folder: fixture.project, templateName: nil, paneLimit: 1, hours: 1))
+    let flakySession = try flakyCoordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "x", folder: fixture.project, paneLimit: 1, hours: 1))
     try flakyCoordinator.approve(id: flakySession.id, revision: flakySession.revision, objective: "x", folder: fixture.project, allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1)
     flakyFail.failing = true
     let withheld = flakyCoordinator.status(token: "lead-token")
@@ -1103,7 +1106,7 @@ func teamSessionTimestampChecks() throws {
     defer { fixture.cleanup() }
     let box = PaneBox(fixture.live)
     let coordinator = fixture.coordinator { box.current() }
-    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, templateName: nil, paneLimit: 1, hours: 2)
+    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, paneLimit: 1, hours: 2)
     let session = try coordinator.request(token: "lead-token", proposal: proposal)
     try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
         allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 2)
@@ -1138,7 +1141,7 @@ func teamSessionStopRecordingFailureChecks() throws {
     let box = PaneBox([eligible])
     let coordinator = TeamSessionCoordinator(authenticate: { _ in requester.id }, panes: { box.current() },
         profiles: { PermissionProfileDefinition.builtIns }, record: { _, _, _ in })
-    let proposal = TeamSessionProposal(objective: "Build", folder: root.appendingPathComponent("project").path, templateName: nil, paneLimit: 2, hours: 1)
+    let proposal = TeamSessionProposal(objective: "Build", folder: root.appendingPathComponent("project").path, paneLimit: 2, hours: 1)
     let session = try coordinator.request(token: "t", proposal: proposal)
     try coordinator.approve(id: session.id, revision: session.revision, objective: "x", folder: proposal.folder, allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 2, hours: 1)
     var created: [WorkbenchPane] = []
@@ -1192,7 +1195,7 @@ func teamSessionBoundedDiagnosticsChecks() throws {
     defer { fixture.cleanup() }
     let box = PaneBox(fixture.live)
     let coordinator = fixture.coordinator { box.current() }
-    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, templateName: nil, paneLimit: 8, hours: 1)
+    let proposal = TeamSessionProposal(objective: "Build", folder: fixture.project, paneLimit: 8, hours: 1)
     let session = try coordinator.request(token: "lead-token", proposal: proposal)
     try coordinator.approve(id: session.id, revision: session.revision, objective: proposal.objective, folder: proposal.folder,
         allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 8, hours: 1)

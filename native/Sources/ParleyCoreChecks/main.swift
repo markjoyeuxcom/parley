@@ -1279,9 +1279,9 @@ private func checkInAppHelpGuideCoverage() throws {
         "authenticated identity", "content-minimal coordination events",
         "cursor removed by retention",
         "context pack from selected results", "no handoff is submitted automatically",
-        "human decision", "team template",
+        "human decision",
         "routing role", "stopped placeholders", "move to workspace",
-        "clone configuration", "active handoffs", "parley open",
+        "active handoffs", "parley open",
         "parley://open", "open in parley", "person-only",
         "existing git worktrees", "exact canonical worktree", "permission evidence only",
         "safety summary", "handoff state is unavailable", "does not infer whether an agent is thinking",
@@ -2891,162 +2891,6 @@ private func checkSavedWorkspaceLayoutPersistenceAndFreshSlots() throws {
     try expect(afterDeletion.isEmpty, "case-insensitive layout deletion left the saved layout behind")
 }
 
-private func checkPortableTeamTemplatePersistenceAndApplication() throws {
-    let directory = try temporaryDirectory()
-    let file = directory.appendingPathComponent("team-templates.json")
-    let template = TeamTemplate(
-        name: "Implementation Trio",
-        root: .split(
-            direction: .horizontal,
-            ratio: 0.55,
-            first: .leaf(TeamTemplateLeaf(
-                kind: .claude,
-                name: "Planner",
-                isWorkspaceLead: true,
-                permissionProfile: TeamTemplatePermission(
-                    profileID: "review-only",
-                    lifetime: .remembered
-                )
-            )),
-            second: .split(
-                direction: .vertical,
-                ratio: 0.5,
-                first: .leaf(TeamTemplateLeaf(
-                    kind: .codex,
-                    name: "Builder",
-                    role: "implementer",
-                    permissionProfile: TeamTemplatePermission(
-                        profileID: "flexible",
-                        lifetime: .remembered
-                    )
-                )),
-                second: .leaf(TeamTemplateLeaf(
-                    kind: .agy,
-                    name: "Review",
-                    role: "reviewer"
-                ))
-            )
-        ),
-        automationPolicy: .askAndDelegate
-    )
-
-    let applied = try template.workspaceLayout(
-        folder: "/tmp/project",
-        workspaceName: "Project Team"
-    )
-    let recaptured = try TeamTemplate.capturing(applied, name: template.name)
-    try expect(recaptured == template, "capturing a live workspace did not produce the same portable team definition")
-    try expect(applied.name == "Project Team", "applying a team template lost the requested workspace name")
-    try expect(
-        applied.root.leaves.allSatisfy { $0.folder == "/tmp/project" },
-        "a portable team retained a source-machine pane folder"
-    )
-    try expect(
-        applied.root.leaves.map(\.role) == [nil, "implementer", "reviewer"],
-        "applying a team template lost its stable pane roles"
-    )
-    try expect(
-        applied.root.leaves.first?.isWorkspaceLead == true,
-        "applying a team template lost its workspace lead"
-    )
-    let builder = try require(
-        applied.root.leaves.first(where: { $0.role == "implementer" }),
-        "the applied team omitted its implementer"
-    )
-    try expect(
-        builder.permissionSelection == PermissionProfileSelection(
-            profileID: "flexible",
-            approvedRoots: ["/tmp/project"],
-            lifetime: .remembered
-        ),
-        "a portable permission profile was not rebound to the selected folder"
-    )
-    try expect(
-        applied.fromSavedLayout().slots.allSatisfy { $0.paneID == nil && !$0.isStarted },
-        "applying a team template started an agent or reused a live pane id"
-    )
-
-    let folderlessLayout = try template.folderlessWorkspaceLayout(
-        launchFolder: directory.path,
-        workspaceName: "Unbound Team"
-    )
-    try expect(
-        folderlessLayout.root.leaves.allSatisfy {
-            $0.folder == directory.path && $0.permissionSelection == nil
-        },
-        "a folderless team silently retained permission roots or lost its safe launch fallback"
-    )
-    let controllerDirectory = directory.appendingPathComponent("workbench", isDirectory: true)
-    try FileManager.default.createDirectory(at: controllerDirectory, withIntermediateDirectories: true)
-    let controller = try WorkbenchController(
-        applicationDirectory: controllerDirectory,
-        environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"]
-    )
-    try controller.bootstrap(cwd: directory.path)
-    let restoredFolderless = try controller.restoreWorkspaceLayout(folderlessLayout, folderless: true)
-    let restoredAgents = try controller.listPanes().filter {
-        $0.workspaceID == restoredFolderless.workspaceID
-    }
-    try expect(
-        restoredFolderless.isFolderless && restoredFolderless.newPaneFolder == nil,
-        "a folderless team application attached its launch fallback"
-    )
-    try expect(
-        restoredAgents.allSatisfy { !$0.isStarted && $0.permissionSelection == nil },
-        "a folderless team application started or pre-authorized an agent"
-    )
-
-    let encoded = try JSONEncoder().encode(template)
-    let json = try require(String(data: encoded, encoding: .utf8), "team template JSON was not UTF-8")
-    for forbidden in ["/tmp/project", "approvedRoots", "paneID", "windowID", "credential"] {
-        try expect(!json.contains(forbidden), "portable team template persisted forbidden state: \(forbidden)")
-    }
-    let decoded = try JSONDecoder().decode(TeamTemplate.self, from: encoded)
-    try expect(decoded == template, "team template did not round-trip")
-
-    let store = TeamTemplateStore(file: file)
-    try store.save(template)
-    let initiallyStored = try store.templates()
-    try expect(initiallyStored == [template], "team template store did not persist its first template")
-    var metadata = stat()
-    try expect(lstat(file.path, &metadata) == 0 && metadata.st_mode & 0o077 == 0, "team template file was not owner-only")
-
-    let replacement = TeamTemplate(
-        name: "implementation trio",
-        root: .leaf(TeamTemplateLeaf(kind: .copilot, name: "Builder", role: "implementer"))
-    )
-    try store.save(replacement)
-    let replaced = try store.templates()
-    try expect(replaced == [replacement], "case-insensitive team replacement created a duplicate")
-
-    let ambiguous = TeamTemplate(
-        name: "Ambiguous",
-        root: .split(
-            direction: .horizontal,
-            ratio: 0.5,
-            first: .leaf(TeamTemplateLeaf(kind: .claude, name: "One", role: "reviewer")),
-            second: .leaf(TeamTemplateLeaf(kind: .codex, name: "Two", role: "reviewer"))
-        )
-    )
-    do {
-        try store.save(ambiguous)
-        throw CheckFailure(description: "team template store accepted an ambiguous pane role")
-    } catch let error as TeamTemplateStoreError {
-        try expect(error.localizedDescription.contains("unique"), "duplicate-role refusal was unclear")
-    }
-
-    let reserved = TeamTemplate(
-        name: "Reserved",
-        root: .leaf(TeamTemplateLeaf(kind: .codex, name: "Review", role: "codex"))
-    )
-    do {
-        try store.save(reserved)
-        throw CheckFailure(description: "team template store accepted a vendor name as a role")
-    } catch let error as TeamTemplateStoreError {
-        try expect(error.localizedDescription.contains("reserved"), "reserved-role refusal was unclear")
-    }
-}
-
 private func checkExternalWorkspaceOpenContract() throws {
     let folder = try temporaryDirectory()
     let canonicalFolder = canonicalPath(folder.path)
@@ -3757,7 +3601,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "26", "the shared protocol version drifted from cross-project agent awareness")
+    try expect(AgentProtocol.version == "27", "the shared protocol version drifted from cross-project agent awareness")
     try expect(
         AgentProtocol.text.contains("parley delegate <target> --parent <handoff-id>")
             && AgentProtocol.text.contains("requestChanges")
@@ -9827,7 +9671,6 @@ let checks: [(String, () throws -> Void)] = [
     ("workbench state projection", checkWorkbenchStateProjection),
     ("Precision Grid chrome uses owned state", checkPrecisionGridChromeUsesOwnedState),
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
-    ("portable team template persistence and application", checkPortableTeamTemplatePersistenceAndApplication),
     ("external workspace open contract", checkExternalWorkspaceOpenContract),
     ("content-free attention projection contract", checkContentFreeAttentionProjectionContract),
     ("bounded menu bar attention inbox", checkMenuBarAttentionInboxProjection),

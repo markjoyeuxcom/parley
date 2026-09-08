@@ -107,7 +107,6 @@ private struct TeamSessionApproval: View {
     @State private var worktreePreview: ManagedWorktreeService.CreatePreview?
     @State private var worktreePreviewError: String?
     @State private var busy = false
-    private let templateNote: String?
     private let worktreeNote: String?
 
     enum WorktreeMode: String, CaseIterable, Identifiable {
@@ -133,27 +132,11 @@ private struct TeamSessionApproval: View {
         worktreeNote = session.proposal.worktreeBranch.map {
             "The requesting pane proposed a new worktree on branch “\($0)” from \(session.proposal.worktreeBase ?? "HEAD"). Nothing is created until you preview and approve it here."
         }
-        var initialVendors = Set(session.allowedVendors)
-        var initialLimit = session.paneLimit
-        var note: String?
-        if let name = session.proposal.templateName {
-            if let template = model.teamTemplates.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
-                let leaves = template.root.leaves.filter(\.kind.isAgent)
-                if !leaves.isEmpty {
-                    initialVendors = Set(leaves.map(\.kind))
-                    initialLimit = min(max(leaves.count, 1), TeamSessionProposal.maximumPaneLimit)
-                }
-                note = "Prefilled from the portable template “\(template.name)”: \(leaves.map(\.kind.label).joined(separator: ", ")). Templates never carry folders; the folder below comes from this approval."
-            } else {
-                note = "The requesting pane named a template “\(name)” that does not exist here. Nothing was prefilled from it."
-            }
-        }
-        _vendors = State(initialValue: initialVendors)
-        _paneLimit = State(initialValue: initialLimit)
+        _vendors = State(initialValue: Set(session.allowedVendors))
+        _paneLimit = State(initialValue: session.paneLimit)
         _hours = State(initialValue: session.proposal.hours)
         let profiles = model.permissionProfiles
         _profileID = State(initialValue: profiles.contains(where: { $0.id == "default" }) ? "default" : (profiles.first?.id ?? "default"))
-        templateNote = note
     }
 
     private func vendorBinding(_ kind: PaneKind) -> Binding<Bool> {
@@ -255,9 +238,6 @@ private struct TeamSessionApproval: View {
             Text("Workspace: \(session.source.workspaceName ?? session.source.workspaceID)\nRequest: \(session.id)\nRequested: \(session.proposal.paneLimit) pane\(session.proposal.paneLimit == 1 ? "" : "s") for \(session.proposal.hours) hour\(session.proposal.hours == 1 ? "" : "s")")
                 .font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
             Text(TeamSessionDisclosure.approval).font(.system(size: 12))
-            if let templateNote {
-                Text(templateNote).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
             Text("Objective (edit freely; the requesting pane receives the approved text)")
                 .font(.system(size: 11, weight: .medium))
             TextEditor(text: $objective).font(.system(size: 12))
