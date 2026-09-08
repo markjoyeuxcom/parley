@@ -447,8 +447,6 @@ struct ParleyNativeApp: App {
         .defaultSize(width: 1_120, height: 780)
         .windowResizability(.contentMinSize)
 
-        .windowResizability(.contentMinSize)
-
 
         Window("Parley Help", id: "help") {
             AuxiliaryWindowRoot(minimumSize: CGSize(width: 820, height: 590)) { HelpView(model: model) }

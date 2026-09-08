@@ -33,13 +33,17 @@ struct PaneProcessesView: View {
             footer
         }
         .onAppear {
-            model.refreshTaskManager()
+            model.setPaneProcessSamplingActive(windowActive)
             if windowActive { refreshClock.start { if autoRefresh { model.refreshTaskManager() } } }
         }
         .onChange(of: windowActive) { _, active in
+            model.setPaneProcessSamplingActive(active)
             if active { refreshClock.start { if autoRefresh { model.refreshTaskManager() } } } else { refreshClock.stop() }
         }
-        .onDisappear { refreshClock.stop() }
+        .onDisappear {
+            refreshClock.stop()
+            model.setPaneProcessSamplingActive(false)
+        }
     }
 
     private var header: some View {
@@ -69,14 +73,15 @@ struct PaneProcessesView: View {
     }
 
     private var summary: some View {
-        HStack(spacing: 0) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .leading), count: 3), alignment: .leading, spacing: 10) {
             metric("CPU", cpuText(snapshot?.totalCPUPercent), "Sampled total")
             metric("App RSS", bytes(snapshot?.application?.residentBytes), "Parley UI")
             metric("Pane RSS", bytes(snapshot?.childResidentBytes), "Owned processes")
             metric("Processes", snapshot.map { String($0.processCount) } ?? "—", "App + panes")
             metric("Updated", snapshot.map { timeText($0.sampledAt) } ?? "—", autoRefresh ? "Every 2 seconds" : "Manual")
         }
-        .frame(minHeight: 82)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
         .background(Color(nsColor: .underPageBackgroundColor))
     }
 
@@ -86,15 +91,15 @@ struct PaneProcessesView: View {
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.system(.title3, design: .monospaced, weight: .semibold))
+                .font(.system(.callout, design: .monospaced, weight: .semibold))
                 .monospacedDigit()
+                .lineLimit(1)
             Text(detail)
-                .font(.caption)
+                .font(.caption2)
                 .foregroundStyle(.tertiary)
+                .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 18)
-        .overlay(alignment: .trailing) { Divider() }
     }
 
     private var columnHeader: some View {
@@ -102,17 +107,17 @@ struct PaneProcessesView: View {
             Text("Name")
                 .frame(maxWidth: .infinity, alignment: .leading)
             Text("CPU")
-                .frame(width: 86, alignment: .trailing)
+                .frame(width: 60, alignment: .trailing)
             Text("Memory")
-                .frame(width: 112, alignment: .trailing)
+                .frame(width: 80, alignment: .trailing)
             Text("PID / Proc")
-                .frame(width: 90, alignment: .trailing)
+                .frame(width: 60, alignment: .trailing)
             Color.clear.frame(width: 28, height: 1)
         }
         .font(.caption.weight(.semibold))
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
     }
 
     @ViewBuilder
@@ -183,7 +188,7 @@ struct PaneProcessesView: View {
             cpu: application.cpuPercent,
             memory: application.residentBytes,
             trailing: String(application.pid),
-            leadingPadding: 18
+            leadingPadding: 12
         )
     }
 
@@ -196,7 +201,7 @@ struct PaneProcessesView: View {
             cpu: total.cpuPercent,
             memory: total.residentBytes,
             trailing: String(total.processCount),
-            leadingPadding: 18
+            leadingPadding: 12
         )
     }
 
@@ -209,7 +214,7 @@ struct PaneProcessesView: View {
             cpu: workspace.cpuPercent,
             memory: workspace.residentBytes,
             trailing: String(workspace.processCount),
-            leadingPadding: 18,
+            leadingPadding: 12,
             emphasized: true
         )
     }
@@ -225,6 +230,8 @@ struct PaneProcessesView: View {
                         Text(pane.paneName)
                             .fontWeight(.medium)
                             .lineLimit(1)
+                            .truncationMode(.middle)
+                            .layoutPriority(1)
                         if pane.isSelected {
                             Text("SELECTED")
                                 .font(.system(size: 9, weight: .bold))
@@ -245,11 +252,11 @@ struct PaneProcessesView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Text(cpuText(pane.cpuPercent))
-                .frame(width: 86, alignment: .trailing)
+                .frame(width: 60, alignment: .trailing)
             Text(bytes(pane.residentBytes))
-                .frame(width: 112, alignment: .trailing)
+                .frame(width: 80, alignment: .trailing)
             Text(String(pane.processCount))
-                .frame(width: 90, alignment: .trailing)
+                .frame(width: 60, alignment: .trailing)
             Menu {
                 Button("Focus Pane") { focus(pane) }
                 Button("Copy Diagnostics") { model.copyTaskManagerDiagnostics(pane) }
@@ -269,13 +276,13 @@ struct PaneProcessesView: View {
             .accessibilityLabel("Actions for \(pane.paneName)")
             .help("Focus, copy diagnostics, interrupt, restart or close this pane")
         }
-        .font(.system(.body, design: .default))
+        .font(.callout)
         .monospacedDigit()
-        .padding(.leading, 42)
-        .padding(.trailing, 18)
-        .padding(.vertical, 8)
+        .padding(.leading, 28)
+        .padding(.trailing, 12)
+        .padding(.vertical, 6)
         .background(pane.isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
-        .overlay(alignment: .bottom) { Divider().padding(.leading, 42) }
+        .overlay(alignment: .bottom) { Divider().padding(.leading, 28) }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { focus(pane) }
         .contextMenu {
@@ -296,7 +303,7 @@ struct PaneProcessesView: View {
             cpu: process.cpuPercent,
             memory: process.residentBytes,
             trailing: String(process.pid),
-            leadingPadding: CGFloat(72 + process.depth * 18)
+            leadingPadding: CGFloat(44 + process.depth * 12)
         )
     }
 
@@ -330,6 +337,8 @@ struct PaneProcessesView: View {
                     Text(title)
                         .fontWeight(emphasized ? .semibold : .regular)
                         .lineLimit(1)
+                        .truncationMode(.middle)
+                        .layoutPriority(1)
                     Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -338,18 +347,18 @@ struct PaneProcessesView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Text(cpuText(cpu))
-                .frame(width: 86, alignment: .trailing)
+                .frame(width: 60, alignment: .trailing)
             Text(bytes(memory))
-                .frame(width: 112, alignment: .trailing)
+                .frame(width: 80, alignment: .trailing)
             Text(trailing)
-                .frame(width: 90, alignment: .trailing)
+                .frame(width: 60, alignment: .trailing)
             Color.clear.frame(width: 28, height: 1)
         }
-        .font(.system(.body, design: .default))
+        .font(.callout)
         .monospacedDigit()
         .padding(.leading, leadingPadding)
-        .padding(.trailing, 18)
-        .padding(.vertical, 8)
+        .padding(.trailing, 12)
+        .padding(.vertical, 6)
         .overlay(alignment: .bottom) { Divider().padding(.leading, leadingPadding) }
     }
 

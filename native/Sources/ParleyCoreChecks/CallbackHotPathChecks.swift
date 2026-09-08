@@ -426,6 +426,16 @@ func taskManagerSamplingCoordinatorChecks() throws {
     let final = coordinator.complete(generation: 4, sampledIdentity: b, currentIdentity: b)
     try pathExpect(final.publish && final.restart == nil, "the resample after a pane change was not published: \(final)")
 
+    // A restart the model declines because its consumer is no longer mounted
+    // in an active window leaves nothing in flight, so the next request starts
+    // fresh instead of waiting on a sample nobody started.
+    try pathExpect(coordinator.request() == 5, "an idle coordinator did not start after the resample")
+    try pathExpect(coordinator.request() == nil, "a request during sampling started an overlapping sample")
+    let declined = coordinator.complete(generation: 5, sampledIdentity: b, currentIdentity: b)
+    try pathExpect(declined.restart == 6, "a queued request was not offered as a restart: \(declined)")
+    coordinator.declineRestart()
+    try pathExpect(coordinator.request() == 7, "declining a restart left the coordinator waiting on a sample nobody started")
+
     // The serial owner really serializes: an injected process reader records
     // its busy intervals, and concurrent samples never overlap.
     final class Intervals: @unchecked Sendable { let lock = NSLock(); var spans: [(UInt64, UInt64)] = [] }

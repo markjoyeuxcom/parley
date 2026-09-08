@@ -15,8 +15,8 @@ public extension EnvironmentValues {
     }
 }
 
-/// Root of every auxiliary window scene (Status Center, Task Manager, Help,
-/// About, Settings). It observes no model state itself. The real content,
+/// Root of every auxiliary window scene (Status Center, Help, About,
+/// Settings). It observes no model state itself. The real content,
 /// with its model observation, timers and view state, is created when the
 /// window comes on screen and destroyed when it is closed or ordered out, so
 /// a closed window leaves no work behind. Minimising or hiding the

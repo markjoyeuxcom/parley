@@ -235,7 +235,7 @@ struct StatusCenterView: View {
             .fixedSize()
             .accessibilityLabel("Show pane processes")
             .accessibilityHint("Inspect Parley-owned workspace, pane and process resource use")
-            .help("Open Task Manager")
+            .help("Show pane processes in the Health section")
             Button {
                 model.exportDiagnostics()
             } label: {

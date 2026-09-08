@@ -572,4 +572,11 @@ public struct TaskManagerSamplingCoordinator: Equatable, Sendable {
         inFlight = latestRequest
         return Outcome(publish: publish, restart: latestRequest)
     }
+
+    /// The model was handed a restart but will not start it (its consumer is
+    /// no longer mounted in an active window). Nothing is in flight afterwards,
+    /// so the next request starts a fresh sample instead of waiting forever.
+    public mutating func declineRestart() {
+        inFlight = nil
+    }
 }
