@@ -3680,41 +3680,6 @@ private func checkWorkbenchKeyboardShortcuts() throws {
     )
 }
 
-private func checkIdleAgentReaperGates() throws {
-    let now = Date()
-    let idle = now.addingTimeInterval(-IdleAgentReaper.defaultIdleInterval - 1)
-    let recent = now.addingTimeInterval(-60)
-    func pane(
-        kind: PaneKind = .claude,
-        active: Bool = false,
-        started: Bool = true,
-        dead: Bool = false,
-        lead: Bool = false
-    ) -> WorkbenchPane {
-        WorkbenchPane(
-            id: "%9", kind: kind, customName: nil, terminalTitle: "", cwd: "/tmp",
-            currentCommand: "claude", isActive: active, workspaceID: "@1",             isDead: dead, isStarted: started, isWorkspaceLead: lead
-        )
-    }
-    try expect(
-        IdleAgentReaper.shouldReap(pane: pane(), lastActivity: idle, now: now, hasLiveCollaboration: false),
-        "an idle background agent was not considered reapable"
-    )
-    let kept: [(String, Bool)] = [
-        ("shell pane", IdleAgentReaper.shouldReap(pane: pane(kind: .shell), lastActivity: idle, now: now, hasLiveCollaboration: false)),
-        ("active pane", IdleAgentReaper.shouldReap(pane: pane(active: true), lastActivity: idle, now: now, hasLiveCollaboration: false)),
-        ("stopped pane", IdleAgentReaper.shouldReap(pane: pane(started: false), lastActivity: idle, now: now, hasLiveCollaboration: false)),
-        ("dead pane", IdleAgentReaper.shouldReap(pane: pane(dead: true), lastActivity: idle, now: now, hasLiveCollaboration: false)),
-        ("workspace lead", IdleAgentReaper.shouldReap(pane: pane(lead: true), lastActivity: idle, now: now, hasLiveCollaboration: false)),
-        ("collaborating pane", IdleAgentReaper.shouldReap(pane: pane(), lastActivity: idle, now: now, hasLiveCollaboration: true)),
-        ("recently active pane", IdleAgentReaper.shouldReap(pane: pane(), lastActivity: recent, now: now, hasLiveCollaboration: false)),
-        ("unknown activity", IdleAgentReaper.shouldReap(pane: pane(), lastActivity: nil, now: now, hasLiveCollaboration: false)),
-    ]
-    for (label, reaped) in kept {
-        try expect(!reaped, "the reaper would stop a protected pane: \(label)")
-    }
-}
-
 private func checkVendorOwnedResumePlansAreExplicitAndSafe() throws {
     let directory = try temporaryDirectory()
     let protocolDirectory = try AgentProtocol.install(in: directory)
@@ -10069,7 +10034,6 @@ let checks: [(String, () throws -> Void)] = [
     ("pane attention is authoritative and aged", checkPaneAttentionProjectionIsAuthoritativeAndAged),
     ("composer signal provenance is exact, aged and advisory", checkComposerSignalProvenanceIsExactAgedAndAdvisory),
     ("workbench keyboard shortcut routing", checkWorkbenchKeyboardShortcuts),
-    ("idle agent reaper gates", checkIdleAgentReaperGates),
     ("vendor-owned resume plans are explicit and safe", checkVendorOwnedResumePlansAreExplicitAndSafe),
     ("shared protocol launch adapters", checkSharedProtocolLaunchAdapters),
     ("agent awareness local reference across projects", checkAgentAwarenessReferenceAcrossProjects),

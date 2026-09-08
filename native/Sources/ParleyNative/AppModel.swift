@@ -481,7 +481,6 @@ final class AppModel: ObservableObject {
         if preferences.object(forKey: Self.collaborationDockVisibleKey) != nil {
             collaborationDockVisible = preferences.bool(forKey: Self.collaborationDockVisibleKey)
         }
-        idleAgentReaperEnabled = preferences.bool(forKey: Self.idleAgentReaperKey)
         swiftPMCompatibilityEnabled = preferences.bool(forKey: Self.swiftPMCompatibilityKey)
         commandRunAuthorization = CommandRunAuthorizationStore(
             file: applicationDirectory.appendingPathComponent(CommandRunAuthorizationStore.fileName)
@@ -919,7 +918,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: Idle agent reaper (opt-in)
+    // MARK: Settings and appearance
 
     func showSettings(_ section: ApplicationSettingsSection = .general) {
         selectedSettingsSection = section
@@ -977,49 +976,6 @@ final class AppModel: ObservableObject {
         try updateTerminalAppearance(family: nil, size: nil, imported: nil)
     }
 
-    @Published var idleAgentReaperEnabled = false {
-        didSet {
-            guard oldValue != idleAgentReaperEnabled else { return }
-            preferences.set(idleAgentReaperEnabled, forKey: Self.idleAgentReaperKey)
-        }
-    }
-    private static let idleAgentReaperKey = "ParleyIdleAgentReaper"
-    private var lastReapSweep = Date.distantPast
-
-    private func reapIdleAgentsIfEnabled(controller: WorkbenchController, panes: [WorkbenchPane]) {
-        guard idleAgentReaperEnabled else { return }
-        let now = Date()
-        guard now.timeIntervalSince(lastReapSweep) >= 60 else { return }
-        lastReapSweep = now
-        guard let stamps = try? controller.paneActivityTimestamps() else { return }
-        for pane in panes {
-            let collaborating = consultations.contains {
-                $0.sourcePaneID == pane.id || $0.targetPaneID == pane.id
-            } || activeDelegations.contains {
-                $0.sourcePaneID == pane.id || $0.targetPaneID == pane.id
-            } || awaitingAnswerCount(for: pane.id) > 0
-            guard IdleAgentReaper.shouldReap(
-                pane: pane,
-                lastActivity: stamps[pane.id],
-                now: now,
-                hasLiveCollaboration: collaborating
-            ) else { continue }
-            do {
-                try controller.stopPaneProcess(pane.id)
-                try recordSuccessfulActivity(RelayActivityEventRequest(
-                    kind: .paneReaped,
-                    workspaceID: pane.workspaceID,
-                    workspaceName: pane.workspaceName ?? pane.workspaceID,
-                    paneID: pane.id,
-                    paneName: pane.displayName,
-                    paneKind: pane.kind,
-                    detail: "Stopped after \(Int(IdleAgentReaper.defaultIdleInterval / 60)) idle minutes. Start revives the seat."
-                ))
-            } catch {
-                // The seat is untouched on failure; the next sweep retries.
-            }
-        }
-    }
 
     // MARK: Quit-time choice
 
@@ -3084,7 +3040,6 @@ final class AppModel: ObservableObject {
                     selectedPaneIDs: selectedPaneIDs
                 )
                 reconcileNativeLayouts(workspaces: refreshedWorkspaces, panes: refreshedPanes)
-                reapIdleAgentsIfEnabled(controller: controller, panes: refreshedPanes)
                 if !terminalAvailable { terminalAvailable = true }
                 if terminalError != nil { terminalError = nil }
             } catch {

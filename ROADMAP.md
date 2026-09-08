@@ -67,7 +67,7 @@ in the same request, protocol version bumped where its wording changes.
 - [x] VS Code companion and its context bridge, attention snapshot and
   `parley://` focus and status URLs. Native file and diff capture, Context
   Packs and `parley open` remain.
-- [ ] Automatic idle-agent reaping and its switch. Explicit Stop remains.
+- [x] Automatic idle-agent reaping and its switch. Explicit Stop remains.
 - [ ] Workspace briefs and pinned snippets as separate stores and editors,
   after exporting existing person-authored text.
 - [ ] Team templates and Clone Configuration. Roles, Move and team sessions

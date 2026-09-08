@@ -617,14 +617,6 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
-                    id: "settings-idle-agents",
-                    title: "Idle agent reaping",
-                    paragraphs: [
-                        "Settings > General > Agent lifecycle offers Reap idle agents after 30 minutes, off by default. The same switch appears in Tools. When enabled, it can stop a background agent after at least 30 minutes without recorded pane activity. It never reaps the selected pane, a workspace lead, Shell panes or a pane in a live Ask or Delegate.",
-                        "Reaping leaves a visible stopped slot; it does not close the pane and does not automatically resume a vendor session. You choose when to start it again. Recorded silence is not proof that a vendor finished: quiet, untracked vendor work may be interrupted, so keep this off when that work needs to continue unattended.",
-                    ]
-                ),
-                ParleyHelpSection(
                     id: "settings-other",
                     title: "Other Settings sections",
                     items: [

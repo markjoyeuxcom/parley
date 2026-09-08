@@ -43,14 +43,6 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
             "shell integration", "explicit font", "running sessions", "unapplied",
         ])
     }),
-    ("Help audit describes opt-in idle reaping without claiming vendor inactivity", {
-        let text = try helpAuditTopic("settings").searchableText
-        try helpAuditContains(text, [
-            "Reap idle agents after 30 minutes", "off by default", "recorded pane activity",
-            "selected pane", "workspace lead", "Shell panes", "live Ask or Delegate",
-            "stopped", "untracked vendor work", "does not automatically resume",
-        ])
-    }),
     ("Help audit separates command-run approvals and launch-time clean close", {
         let text = try helpAuditTopic("command-runs").searchableText
         try helpAuditContains(text, [
