@@ -9627,6 +9627,7 @@ let checks: [(String, () throws -> Void)] = [
     ("chrome chip case is sentence case", checkChromeChipCaseIsSentenceCaseForStateLabels),
     ("workbench notice lane is prioritised and never hides facts", checkWorkbenchNoticeLaneIsPrioritisedAndNeverHidesFacts),
     ("workbench notice lane represents every worktree collision", checkWorkbenchNoticeLaneRepresentsEveryWorktreeCollision),
+    ("global unzoom clears whatever pane is zoomed", checkGlobalUnzoomClearsWhateverPaneIsZoomed),
     ("status center segments map handoffs and counts", checkStatusCenterSegmentsMapHandoffsAndCounts),
     ("delegation visibility uses owned timestamps only", checkDelegationVisibilityIsComputedFromOwnedTimestampsOnly),
     ("delegation visibility requires an exact delivered transition", checkDelegationVisibilityRequiresAnExactDeliveredTransition),

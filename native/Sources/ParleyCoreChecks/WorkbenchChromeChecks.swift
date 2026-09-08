@@ -172,3 +172,14 @@ func checkStatusCenterSegmentsMapHandoffsAndCounts() throws {
     try chromeExpect(StatusCenterSegmentProjection.segment(for: .failures) == .history, "failures count did not open History")
     try chromeExpect(StatusCenterSegment.allCases.map(\.label) == ["Live", "Results", "History", "Agents", "Health"], "segment labels drifted")
 }
+
+func checkGlobalUnzoomClearsWhateverPaneIsZoomed() throws {
+    // Zoom A, then let attention navigation select B without touching the zoom:
+    // the global action must unzoom, not zoom B.
+    try chromeExpect(WorkbenchZoomPolicy.next(current: "A", requested: nil, active: "B", visible: ["A", "B"]) == nil, "global unzoom zoomed the newly selected pane instead of clearing")
+    try chromeExpect(WorkbenchZoomPolicy.next(current: nil, requested: nil, active: "B", visible: ["A", "B"]) == "B", "the global action did not zoom the active pane")
+    try chromeExpect(WorkbenchZoomPolicy.next(current: "A", requested: "A", active: "A", visible: ["A", "B"]) == nil, "toggling the zoomed pane did not unzoom")
+    try chromeExpect(WorkbenchZoomPolicy.next(current: "A", requested: "B", active: "A", visible: ["A", "B"]) == "B", "a pane-targeted toggle did not move the zoom")
+    try chromeExpect(WorkbenchZoomPolicy.next(current: nil, requested: "C", active: "A", visible: ["A", "B"]) == nil, "a pane that is not visible was zoomed")
+    try chromeExpect(WorkbenchZoomPolicy.next(current: nil, requested: nil, active: nil, visible: ["A"]) == nil, "the global action zoomed with no active pane")
+}

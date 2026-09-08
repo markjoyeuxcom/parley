@@ -445,3 +445,20 @@ public enum StatusCenterSegmentProjection {
         }
     }
 }
+
+/// Which pane the zoom should enlarge after a toggle. A pane-targeted toggle
+/// zooms that pane or, if it is already zoomed, unzooms. The global action
+/// (toolbar, Navigate menu, Command-Shift-F) always unzooms while any pane is
+/// zoomed, whatever the selection has moved to since, and zooms the active
+/// pane otherwise. A pane that is not visible can never be zoomed.
+public enum WorkbenchZoomPolicy {
+    public static func next(current: String?, requested: String?, active: String?, visible: [String]) -> String? {
+        if let requested {
+            guard visible.contains(requested) else { return nil }
+            return current == requested ? nil : requested
+        }
+        if current != nil { return nil }
+        guard let active, visible.contains(active) else { return nil }
+        return active
+    }
+}
