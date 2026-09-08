@@ -1285,7 +1285,7 @@ private func checkInAppHelpGuideCoverage() throws {
         "parley://open", "open in parley", "person-only",
         "existing git worktrees", "exact canonical worktree", "permission evidence only",
         "safety summary", "handoff state is unavailable", "does not infer whether an agent is thinking",
-        "menu-bar attention inbox", "completed delegations", "permission requests",
+        "menu-bar attention indicator", "completed delegations", "permission requests",
         "main window is closed", "prompt and answer bodies", "coordination unavailable",
         "collaboration history", "case-insensitive and terms", "select results",
         "folderless workspaces", "attached folders", "new pane folder", "split right here", "open new workspace here",
@@ -3028,14 +3028,14 @@ private func checkMenuBarAttentionInboxProjection() throws {
     )
 
     let connected = MenuBarAttentionProjection.summary(snapshot: snapshot, coreAvailable: true)
-    try expect(connected.totalCount == 12, "menu bar inbox lost the authoritative total")
-    try expect(connected.items.count == MenuBarAttentionProjection.maximumVisibleItems, "menu bar inbox was not visibly bounded")
-    try expect(connected.hiddenItemCount == 4, "menu bar inbox did not disclose hidden attention items")
-    try expect(connected.headline == "12 items need attention", "menu bar inbox plural headline changed")
+    try expect(connected.totalCount == 12, "menu bar indicator lost the authoritative total")
+    try expect(connected.headline == "12 items need attention", "menu bar indicator plural headline changed")
+    let mirror = Mirror(reflecting: connected)
+    try expect(mirror.children.map { $0.label ?? "" } == ["coreAvailable", "totalCount", "headline"], "the menu bar summary carries more than a count and a fixed sentence")
 
     let disconnected = MenuBarAttentionProjection.summary(snapshot: snapshot, coreAvailable: false)
     try expect(disconnected.headline == "Coordination unavailable", "a disconnected core was presented as current attention state")
-    try expect(disconnected.items == connected.items, "last known content-free attention disappeared during disconnection")
+    try expect(disconnected.totalCount == connected.totalCount, "the last known count disappeared during disconnection")
 
     let empty = MenuBarAttentionProjection.summary(
         snapshot: ExternalAttentionSnapshot(
@@ -3047,7 +3047,7 @@ private func checkMenuBarAttentionInboxProjection() throws {
         ),
         coreAvailable: true
     )
-    try expect(empty.headline == "No items need attention", "empty menu bar inbox did not state the all-clear")
+    try expect(empty.headline == "No items need attention", "an empty menu bar indicator did not state the all-clear")
 }
 
 private func checkAgentProcessBoundaryIsMandatoryAndPaneScoped() throws {
@@ -9673,7 +9673,7 @@ let checks: [(String, () throws -> Void)] = [
     ("saved workspace layout persistence and fresh slots", checkSavedWorkspaceLayoutPersistenceAndFreshSlots),
     ("external workspace open contract", checkExternalWorkspaceOpenContract),
     ("content-free attention projection contract", checkContentFreeAttentionProjectionContract),
-    ("bounded menu bar attention inbox", checkMenuBarAttentionInboxProjection),
+    ("menu bar attention indicator summary", checkMenuBarAttentionInboxProjection),
     ("mandatory pane-scoped agent process boundary", checkAgentProcessBoundaryIsMandatoryAndPaneScoped),
     ("native workspace layout tree", checkNativeWorkspaceLayoutTree),
     ("window and split geometry recovery", checkWindowAndSplitGeometryRecovery),

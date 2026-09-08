@@ -72,7 +72,7 @@ in the same request, protocol version bumped where its wording changes.
   app leaves any such file on disk unread.
 - [x] Team templates and Clone Configuration. Roles, Move and team sessions
   remain.
-- [ ] Menu-bar attention inbox reduced to a small indicator plus Open Status
+- [x] Menu-bar attention inbox reduced to a small indicator plus Open Status
   Center, fed by the existing attention projection.
 - [ ] Task Manager folded into Status Center core health, keeping
   pane-to-process attribution and basic figures, sampled only while visible.

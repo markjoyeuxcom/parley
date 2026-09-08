@@ -210,23 +210,18 @@ public enum ExternalAttentionProjection {
 public struct MenuBarAttentionSummary: Equatable, Sendable {
     public let coreAvailable: Bool
     public let totalCount: Int
-    public let items: [ExternalAttentionItem]
-    public let hiddenItemCount: Int
     public let headline: String
 }
 
-/// A small, content-free slice of the attention projection for the menu bar.
-/// It never receives a RelayHandoff, so prompt and result bodies cannot
-/// accidentally enter menu-bar presentation code.
+/// The count and headline behind the menu-bar indicator. It never receives a
+/// RelayHandoff and carries no item labels, so nothing but a number and a
+/// fixed sentence can reach menu-bar presentation code.
 public enum MenuBarAttentionProjection {
-    public static let maximumVisibleItems = 8
-
     public static func summary(
         snapshot: ExternalAttentionSnapshot,
         coreAvailable: Bool
     ) -> MenuBarAttentionSummary {
         let totalCount = max(0, snapshot.attentionCount)
-        let items = Array(snapshot.items.prefix(maximumVisibleItems))
         let headline: String
         if !coreAvailable {
             headline = "Coordination unavailable"
@@ -240,8 +235,6 @@ public enum MenuBarAttentionProjection {
         return MenuBarAttentionSummary(
             coreAvailable: coreAvailable,
             totalCount: totalCount,
-            items: items,
-            hiddenItemCount: max(0, totalCount - items.count),
             headline: headline
         )
     }
