@@ -227,13 +227,13 @@ struct StatusCenterView: View {
             }
             Spacer()
             Button {
-                openWindow(id: "task-manager")
+                segment = .health
             } label: {
                 Image(systemName: "gauge.with.dots.needle.50percent")
             }
             .buttonStyle(.borderless)
             .fixedSize()
-            .accessibilityLabel("Open Task Manager")
+            .accessibilityLabel("Show pane processes")
             .accessibilityHint("Inspect Parley-owned workspace, pane and process resource use")
             .help("Open Task Manager")
             Button {
@@ -435,6 +435,7 @@ struct StatusCenterView: View {
         case .health:
             recovery
             coreHealth
+            paneProcesses
             timeline
         }
     }
@@ -1034,6 +1035,12 @@ struct StatusCenterView: View {
         switch topic {
         case .missingCLI: .secondary
         case .damagedSocket, .staleProtocol, .deadPane, .interruptedConsultation: .orange
+        }
+    }
+
+    private var paneProcesses: some View {
+        statusGroup("PROCESSES") {
+            PaneProcessesView(model: model)
         }
     }
 

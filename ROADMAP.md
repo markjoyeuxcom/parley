@@ -74,7 +74,7 @@ in the same request, protocol version bumped where its wording changes.
   remain.
 - [x] Menu-bar attention inbox reduced to a small indicator plus Open Status
   Center, fed by the existing attention projection.
-- [ ] Task Manager folded into Status Center core health, keeping
+- [x] Task Manager folded into Status Center core health, keeping
   pane-to-process attribution and basic figures, sampled only while visible.
 - [ ] One pane grid with zoom and unzoom of a single terminal and one
   hideable collaboration dock, replacing Focus Canvas and the separate names.

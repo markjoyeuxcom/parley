@@ -4,12 +4,16 @@ import ParleyCore
 import ParleyUI
 import SwiftUI
 
-struct TaskManagerView: View {
+/// Pane-to-process attribution and basic resource figures inside Status
+/// Center's Health section. Sampling runs only while this content is mounted
+/// in an active auxiliary window; switching section or closing the window
+/// stops it.
+struct PaneProcessesView: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
     @State private var showProcesses = true
     @State private var autoRefresh = true
-    // Owned by this mounted content; invalidated when the window closes.
+    // Owned by this mounted content; invalidated when the section or window closes.
     @StateObject private var refreshClock = AuxiliaryWindowClock(interval: 2)
     @Environment(\.auxiliaryWindowActive) private var windowActive
 
@@ -17,8 +21,6 @@ struct TaskManagerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            RuntimeBanner(runtime: model.runtime)
-            if model.runtime.visibleMarker != nil { Divider() }
             header
             Divider()
             summary
@@ -26,11 +28,10 @@ struct TaskManagerView: View {
             columnHeader
             Divider()
             processList
+                .frame(minHeight: 220, maxHeight: 440)
             Divider()
             footer
         }
-        .frame(minWidth: 860, minHeight: 590)
-        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             model.refreshTaskManager()
             if windowActive { refreshClock.start { if autoRefresh { model.refreshTaskManager() } } }
@@ -43,13 +44,9 @@ struct TaskManagerView: View {
 
     private var header: some View {
         HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Task Manager")
-                    .font(.system(size: 22, weight: .semibold))
-                Text("Parley-owned panes and their live process trees")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Parley-owned panes and their live process trees")
+                .font(.callout)
+                .foregroundStyle(.secondary)
             Spacer()
             Toggle("Processes", isOn: $showProcesses)
                 .toggleStyle(.checkbox)
@@ -57,7 +54,7 @@ struct TaskManagerView: View {
                 .accessibilityLabel("Show process trees")
             Toggle("Auto Refresh", isOn: $autoRefresh)
                 .toggleStyle(.checkbox)
-                .help("Resample process facts on a timer while this window is open")
+                .help("Resample process facts on a timer while this section is visible")
                 .accessibilityLabel("Refresh automatically")
             Button {
                 model.refreshTaskManagerManually()
@@ -68,7 +65,7 @@ struct TaskManagerView: View {
             .accessibilityLabel("Refresh now")
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.vertical, 10)
     }
 
     private var summary: some View {

@@ -26,7 +26,7 @@ or bypass a vendor's approval flow.
 - Durable local handoff history, Status Center recovery actions and explicit
   multi-select promotion of returned Ask or Delegate results into an editable
   Context Pack draft.
-- A native Task Manager with truthful app and pane CPU/RSS sampling, pane
+- Pane processes in Status Center with truthful app and pane CPU/RSS sampling, pane
   process attribution anchored on Ghostty's TTY when the pinned terminal
   reports it or otherwise on the `PARLEY_PANE_ID` launch marker of the pane's
   own root process, workspace hierarchy and confirmed pane-level controls.
