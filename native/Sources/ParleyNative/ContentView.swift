@@ -98,9 +98,6 @@ struct ContentView: View {
         .sheet(isPresented: $model.pinnedContextSnippetsPresented) {
             PinnedContextSnippetLibraryView(model: model)
         }
-        .sheet(isPresented: $model.supervisedWorkflowPresented) {
-            SupervisedWorkflowView(model: model)
-        }
         .sheet(isPresented: $model.worktreeBrowserPresented) {
             WorktreeBrowserView(model: model)
         }
@@ -1165,21 +1162,6 @@ struct ContentView: View {
         items += model.recipes.map { recipe in
             .action(recipe.name, isEnabled: model.canRun(recipe)) { model.run(recipe) }
         }
-        items += [.separator, .heading("Smart Orchestration")]
-        if model.activeSupervisedWorkflow != nil {
-            items.append(.action("Open Active Orchestration…") { model.presentSupervisedWorkflow() })
-        } else {
-            items.append(.action("New Plan → Review → Implement → Verify…", isEnabled: model.canStartSupervisedWorkflow) {
-                model.startSupervisedWorkflow()
-            })
-        }
-        if !model.recentSupervisedWorkflows.isEmpty {
-            items.append(.submenu("Recent Orchestration", items: model.recentSupervisedWorkflows.prefix(8).map { run in
-                .action("\(run.phase.label) · \(run.updatedAt.formatted(date: .abbreviated, time: .shortened))") {
-                    model.presentSupervisedWorkflow(run)
-                }
-            }))
-        }
         var editItems: [ToolbarMenuItem] = model.recipes.map { recipe in
             .action(recipe.name) { model.edit(recipe) }
         }
@@ -1376,7 +1358,6 @@ struct ContentView: View {
             primaryActivity: model.primaryActivity.map(WorkbenchNoticeActivity.init(handoff:)),
             attentionActivities: attention.map(WorkbenchNoticeActivity.init(handoff:)),
             recipe: model.activeRecipeRun.map { WorkbenchRecipeNotice(name: $0.recipeName, leadName: $0.leadName) },
-            workflow: model.activeSupervisedWorkflow.map(WorkbenchWorkflowNotice.init(run:)),
             focusCanvasActive: model.focusCanvasPaneID != nil,
             dockVisible: model.collaborationDockVisible,
             protocolVersion: AgentProtocol.version
@@ -1451,7 +1432,6 @@ struct ContentView: View {
     private func noticeSymbol(_ kind: WorkbenchNoticeKind) -> String {
         switch kind {
         case .permission: "hand.raised"
-        case .humanCheckpoint: "person.crop.circle.badge.questionmark"
         case .failure: "xmark.circle"
         case .protocolStale: "arrow.triangle.2.circlepath.circle"
         case .relayUnavailable: "link.badge.plus"
@@ -1460,7 +1440,6 @@ struct ContentView: View {
         case .targetAttention: "exclamationmark.bubble"
         case .paneStopped: "pause.circle"
         case .activity: "arrow.triangle.branch"
-        case .workflow: "list.bullet.rectangle"
         case .recipe: "text.badge.checkmark"
         case .focusCanvas: "rectangle.inset.filled"
         }
@@ -1476,7 +1455,6 @@ struct ContentView: View {
         case .retryDelivery: "Retry the original delivery after confirmation"
         case .reconnect: "Reconnect to the local coordination core"
         case .openWorktrees: "Open the worktree browser for this folder"
-        case .openWorkflow: "Open the supervised workflow window"
         case .stopRecipe: "Send Control-C to the lead pane after confirmation"
         case .exitFocusCanvas: "Return every visible pane to the grid"
         }
@@ -1500,8 +1478,6 @@ struct ContentView: View {
             model.retryConnections()
         case let .openWorktrees(path):
             model.showWorktreeBrowser(sourceFolder: path)
-        case .openWorkflow:
-            model.presentSupervisedWorkflow()
         case .stopRecipe:
             model.interruptActiveRecipeRun()
         case .exitFocusCanvas:

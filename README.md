@@ -23,9 +23,6 @@ or bypass a vendor's approval flow.
   Fail, Status and Wait commands.
 - Human Ask and Return previews, correlated answers, recoverable Ask ids and
   tracked delegation receipts.
-- Smart Plan → Review → Implement → Verify orchestration in Supervised and Auto
-  modes. Auto advances only from correlated answers and always stops for the
-  person's final completion decision.
 - Durable local handoff history, Status Center recovery actions and explicit
   multi-select promotion of returned Ask or Delegate results into an editable
   Context Pack draft.
@@ -272,33 +269,6 @@ protocol to integrate with.
 
 The committed phases, migration guarantees and explicit non-goals are in the
 [roadmap](ROADMAP.md#official-direction-vendor-driven-parley-coordinated).
-
-## Smart orchestration
-
-The existing bounded recipe remains available, but expansion of first-class
-workflow windows and Smart Auto is frozen until Parley's authenticated target
-discovery and authoritative vendor-event layer are proven.
-
-Mark one ready agent pane as the workspace lead, then open **Recipes → Smart
-Orchestration → New Plan → Review → Implement → Verify**. Choose explicit
-reviewer and verifier panes, select a mode and enter the exact objective.
-
-- **Supervised** pauses at every handoff. The person inspects and may edit the
-  exact plan, critique, implementation instruction and verification evidence.
-- **Auto** advances Plan, Review, Implement and Verify only when each target
-  returns one correlated Parley answer. Every automatic delivery and workflow
-  transition is labelled **AUTO** and remains visible in history.
-- Starting Auto authorizes the bounded implementation stage. It never bypasses
-  a vendor permission or folder-trust prompt, never guesses completion from
-  terminal text and stops if an exact handoff fails or the workspace automation
-  policy is switched Off.
-- Both modes stop at Completion Approval. Only the person can review the saved
-  evidence and mark the run complete.
-
-Closing the main window does not stop an active run because the application and
-its retained panes remain alive. Full application quit ends the current Ask and
-records an unfinished Auto run as interrupted; it is never silently resumed on
-the next launch.
 
 ## Workspaces and panes
 

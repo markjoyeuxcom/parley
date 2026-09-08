@@ -660,22 +660,6 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
-                    id: "lead-bounded-workflow",
-                    title: "Run smart orchestration",
-                    paragraphs: [
-                        "Open Recipes and choose New Plan → Review → Implement → Verify. Choose Supervised or Auto plus explicit reviewer and verifier panes, then enter the exact objective. The same pane may review and verify, and either role may use another pane from the lead's vendor.",
-                        "Supervised pauses at every handoff for an editable human preview. Auto advances Plan, Review, Implement and Verify only when each target returns one correlated Parley answer; it never watches terminal prose to guess that a stage finished.",
-                    ],
-                    items: [
-                        "Planning and independent review remain read-only stages.",
-                        "Starting Auto explicitly authorizes the lead's implementation stage, but it cannot bypass a vendor permission or folder-trust prompt.",
-                        "The verifier receives the attributed implementation report, independently inspects the repository and is instructed not to modify files.",
-                        "Auto preserves every answer and stops at Completion Approval. Only you can mark the run complete; verifier prose is evidence, not proof.",
-                        "Stop Auto ends further advancement without sending Control-C. Work already running in a pane remains visible and can be interrupted separately.",
-                        "The owner-only local record preserves mode, participants, exact artifacts and HUMAN or AUTO attribution for every transition.",
-                    ]
-                ),
-                ParleyHelpSection(
                     id: "lead-policy",
                     title: "Automation policy",
                     paragraphs: [

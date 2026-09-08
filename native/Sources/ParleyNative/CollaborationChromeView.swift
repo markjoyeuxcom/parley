@@ -211,11 +211,6 @@ struct CollaborationDockView: View {
                         sectionTitle("Recipe")
                         recipeSection(recipe)
                     }
-                    if let workflow = model.activeSupervisedWorkflow {
-                        Divider()
-                        sectionTitle("Workflow")
-                        workflowSection(workflow)
-                    }
                     Divider()
                     sectionTitle("Runtime")
                     fact(
@@ -294,41 +289,6 @@ struct CollaborationDockView: View {
         .padding(.horizontal, 11)
         .padding(.bottom, 12)
         .help(recipe.instructions)
-        .accessibilityElement(children: .contain)
-    }
-
-    private func workflowSection(_ run: SupervisedWorkflowRun) -> some View {
-        let checkpoint = run.phase == .awaitingImplementationApproval || run.phase == .awaitingCompletionApproval
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 7) {
-                Text(run.name)
-                    .font(ChromeFont.bodyMedium)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 4)
-                ChromeChip(run.mode.label, color: run.mode == .automatic ? .accentColor : .secondary)
-            }
-            HStack(spacing: 6) {
-                Text(run.phase.label)
-                    .font(ChromeFont.secondary)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                if checkpoint {
-                    ChromeChip("Human checkpoint", color: .orange)
-                }
-            }
-            HStack(spacing: 6) {
-                Button("Open") { model.presentSupervisedWorkflow() }
-                    .help("Open the supervised workflow window")
-                Button("End…", role: .destructive) { model.interruptSupervisedWorkflow() }
-                    .help("End this supervised workflow after explicit confirmation")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
-        .padding(.horizontal, 11)
-        .padding(.bottom, 12)
-        .help("\(run.name) · \(run.phase.label)")
         .accessibilityElement(children: .contain)
     }
 

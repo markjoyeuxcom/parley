@@ -52,6 +52,35 @@ but it must not reinterpret terminal text or replace the vendor workflow.
 
 ### Committed sequence
 
+#### Reduction — September 2026
+
+Agreed on 8 September 2026 after the v0.1.22 measurements and the live
+worktree walkthrough: hold feature scope and remove breadth that does not
+hand work between explicit panes or make that visibly safer. One merge
+request per row, Codex review before each merge, Help audit checks changed
+in the same request, protocol version bumped where its wording changes.
+
+- [x] Smart orchestration: the Plan → Review → Implement → Verify state
+  machine, its store, window, notice kinds and Help section. The five recipe
+  templates and the review-and-correct practice as Help text remain.
+- [ ] VS Code companion and its context bridge, attention snapshot and
+  `parley://` focus and status URLs. Native file and diff capture, Context
+  Packs and `parley open` remain.
+- [ ] Automatic idle-agent reaping and its switch. Explicit Stop remains.
+- [ ] Workspace briefs and pinned snippets as separate stores and editors,
+  after exporting existing person-authored text.
+- [ ] Team templates and Clone Configuration. Roles, Move and team sessions
+  remain.
+- [ ] Menu-bar attention inbox reduced to a small indicator plus Open Status
+  Center, fed by the existing attention projection.
+- [ ] Task Manager folded into Status Center core health, keeping
+  pane-to-process attribution and basic figures, sampled only while visible.
+- [ ] One pane grid with zoom and unzoom of a single terminal and one
+  hideable collaboration dock, replacing Focus Canvas and the separate names.
+- Frozen, not removed: managed worktrees at their current scope; Agy as a
+  stated limitation until its instruction uptake is verified. Automatic
+  approval of requested command runs stays by the person's choice.
+
 #### Phase 1 — consolidate around handoffs
 
 - [x] Freeze new first-class workflow windows and further Smart Auto expansion

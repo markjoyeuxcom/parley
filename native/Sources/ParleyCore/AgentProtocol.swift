@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "23"
+    public static let version = "24"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -212,8 +212,8 @@ public enum AgentProtocol {
       attributed Context Packs, workspace briefs, pinned snippets and reviewed
       editor imports. Human captures keep their provenance; agent drafts remain
       claims. Independent Compare keeps its targets' answers separate.
-    - Recipes and smart orchestration coordinate visible cross-vendor work under
-      the workspace's policy. Status Center shows handoffs, progress, results
+    - Recipes coordinate visible cross-vendor work under the workspace's
+      policy. Status Center shows handoffs, progress, results
       and attention; Challenge and Verify link reviews to a returned handoff.
       Only the person can set a verdict, change permissions or approve context.
       History search/export, the Collaboration Dock and Help make this work
