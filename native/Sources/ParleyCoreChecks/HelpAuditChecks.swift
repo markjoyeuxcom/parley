@@ -103,11 +103,53 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         try helpAuditRequire(ParleyHelpGuide.matching("team sessions").contains(team), "Team Sessions cannot be found")
         try helpAuditRequire(ParleyHelpGuide.matching("command runs").contains(runs), "Command runs cannot be found")
         try helpAuditContains(team.searchableText, ["Tools", "template", "provisioning", "Stop", "parley team status"])
+        // Template controls, compared with ParleyNativeApp.swift and ContentView.swift.
+        try helpAuditContains(try helpAuditTopic("workspaces").searchableText,
+                              ["Save Current as Team Template…", "Save as Team Template…", "From Team Template"])
         let context = try helpAuditTopic("context-packs")
         let commands = context.sections.flatMap(\.commands).map(\.command)
         try helpAuditRequire(commands.contains("parley context list"), "Missing context list example")
         try helpAuditRequire(commands.contains("parley context show <draft-id>"), "Missing context show example")
         let sections = ParleyHelpGuide.topics.flatMap(\.sections)
         try helpAuditRequire(Set(sections.map(\.id)).count == sections.count, "Moved Help sections have duplicate identities")
+    }),
+    ("Help audit states the worktree boundary and matches the cleanup policy", {
+        // Compared with ManagedWorktrees.swift (creation, cleanup policy),
+        // WorktreeBrowserView.swift, TeamSessionsView.swift and the Workspace
+        // menu in ParleyNativeApp.swift.
+        let workspaces = try helpAuditTopic("workspaces")
+        try helpAuditRequire(ParleyHelpGuide.matching("worktree").contains(workspaces), "Worktrees cannot be found")
+        let text = workspaces.searchableText
+        try helpAuditContains(text, [
+            "not Parley workspaces or agents", "Open Worktree…", "git worktree list --porcelain", "without a shell",
+            "one worktree per feature", "new branch from a base ref you preview", "existing one", "New Worktree",
+            "<repository>/\(ManagedWorktreeService.worktreesDirectoryName)/", "never by an agent",
+            "exact commit the tree was created from", "records no base and never removes it",
+            "person action in the browser", "another registered worktree", "any pane's folder",
+            "modified or untracked files", "ahead of the upstream's local remote-tracking state",
+            "not contained in the primary worktree's HEAD", "locked or prunable", "could not be read",
+            "more than \(WorktreeCleanupPolicy.maximumReviewedIgnoredPaths) refuses",
+            "no pane can start or be created inside the tree", "without --force",
+            "removed, not removed, or uncertain", "only clears Parley's record",
+            "branch, objects, refs and stashes remain",
+            "grants no extra permission root", "vendor's own permission decision",
+            "no claim that commits need no vendor approval",
+            "same exact canonical worktree", "permission evidence only", "never proves",
+            "never requires one worktree per agent", "silently creates one",
+            "inside the requesting pane's working folder",
+            "never commits, merges, rebases, pushes, stashes, forces or deletes a branch",
+        ])
+        try helpAuditRequire(text.contains(ManagedWorktreeService.CreatePreview.executionNotice),
+                             "Help must carry the exact creation execution notice")
+        try helpAuditContains(ManagedWorktreeService.CreatePreview.executionNotice, ["post-checkout hooks", "filters"])
+        try helpAuditRequire(!text.localizedCaseInsensitiveContains("automatically remov"), "Help must not promise automatic worktree removal")
+        try helpAuditRequire(!text.localizedCaseInsensitiveContains("fully isolated"), "Help must not overclaim worktree isolation")
+        let team = try helpAuditTopic("team-sessions")
+        try helpAuditRequire(team.searchableText.contains(TeamSessionDisclosure.worktree), "Team Sessions must carry the worktree disclosure")
+        let commands = team.sections.flatMap(\.commands).map(\.command)
+        try helpAuditRequire(commands.contains { $0.hasPrefix("parley team request ") && $0.contains("--worktree ") && $0.contains("--base ") },
+                             "Missing a worktree proposal example")
+        try helpAuditContains(AgentProtocol.commandHelp, ["--worktree <branch> [--base <ref>]", "only proposes"])
+        try helpAuditContains(AgentProtocol.text, ["<repository>/\(ManagedWorktreeService.worktreesDirectoryName)/", "--worktree"])
     }),
 ]
