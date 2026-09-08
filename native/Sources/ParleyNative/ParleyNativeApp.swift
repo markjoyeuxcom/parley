@@ -361,7 +361,7 @@ struct ParleyNativeApp: App {
                     .keyboardShortcut("9", modifiers: [.command])
                     .disabled(model.visiblePanes.count < 9)
                 Divider()
-                Button(model.focusCanvasPaneID == nil ? "Enter Focus Canvas" : "Return to Pane Grid") {
+                Button(model.focusCanvasPaneID == nil ? "Zoom Pane" : "Unzoom Pane") {
                     model.toggleFocusCanvas()
                 }
                 .keyboardShortcut("f", modifiers: [.command, .shift])

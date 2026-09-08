@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "27"
+    public static let version = "28"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -206,8 +206,8 @@ public enum AgentProtocol {
       `PARLEY_SWIFTPM_COMPATIBILITY=0` restores SwiftPM's normal behaviour.
 
     Features in the native UI are person-controlled, not additional agent commands:
-    - Pane and workspace menus manage splits, folders, Focus Canvas, moving
-      panes, roles and the workspace lead.
+    - Pane and workspace menus manage splits, folders, zoom, moving, roles and
+      the workspace lead.
     - Ask, Review and Return provide editable handoff previews. Context manages
       attributed Context Packs. Human captures keep their provenance; agent
       drafts remain claims. Independent Compare keeps its targets' answers separate.

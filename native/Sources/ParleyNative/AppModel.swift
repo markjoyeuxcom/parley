@@ -4075,11 +4075,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func exitFocusCanvas() {
-        focusCanvasPaneID = nil
-        terminalHandle.focus()
-    }
-
     func focusActiveTerminal() {
         terminalHandle.focus()
     }

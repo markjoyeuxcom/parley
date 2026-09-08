@@ -76,7 +76,7 @@ in the same request, protocol version bumped where its wording changes.
   Center, fed by the existing attention projection.
 - [x] Task Manager folded into Status Center core health, keeping
   pane-to-process attribution and basic figures, sampled only while visible.
-- [ ] One pane grid with zoom and unzoom of a single terminal and one
+- [x] One pane grid with zoom and unzoom of a single terminal and one
   hideable collaboration dock, replacing Focus Canvas and the separate names.
 - Frozen, not removed: managed worktrees at their current scope; Agy as a
   stated limitation until its instruction uptake is verified. Automatic

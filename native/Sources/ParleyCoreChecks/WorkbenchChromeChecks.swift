@@ -38,7 +38,6 @@ private func inputs(
     primary: WorkbenchNoticeActivity? = nil,
     attention: [WorkbenchNoticeActivity] = [],
     recipe: WorkbenchRecipeNotice? = nil,
-    focusCanvas: Bool = false,
     dockVisible: Bool = true
 ) -> WorkbenchNoticeInputs {
     WorkbenchNoticeInputs(
@@ -49,7 +48,6 @@ private func inputs(
         primaryActivity: primary,
         attentionActivities: attention,
         recipe: recipe,
-        focusCanvasActive: focusCanvas,
         dockVisible: dockVisible,
         protocolVersion: AgentProtocol.version
     )
@@ -83,11 +81,10 @@ func checkWorkbenchNoticeLaneIsPrioritisedAndNeverHidesFacts() throws {
         primary: waiting,
         attention: [permission],
         recipe: recipe,
-        focusCanvas: true,
         dockVisible: false
     ))
     try chromeExpect(
-        everything.map(\.kind) == [.permission, .protocolStale, .worktreeCollision, .connection, .activity, .recipe, .focusCanvas],
+        everything.map(\.kind) == [.permission, .protocolStale, .worktreeCollision, .connection, .activity, .recipe],
         "the notice lane order drifted: \(everything.map(\.kind))"
     )
     try chromeExpect(everything.first?.tone == .attention, "the top notice was not toned as attention")
@@ -101,7 +98,6 @@ func checkWorkbenchNoticeLaneIsPrioritisedAndNeverHidesFacts() throws {
         primary: waiting,
         attention: [permission],
         recipe: recipe,
-        focusCanvas: true,
         dockVisible: false
     ))
     try chromeExpect(again == everything, "the notice lane is not deterministic for identical inputs")
