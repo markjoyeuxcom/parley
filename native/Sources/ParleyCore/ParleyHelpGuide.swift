@@ -142,9 +142,9 @@ public enum ParleyHelpGuide {
                 ),
                 ParleyHelpSection(
                     id: "workspaces-canvas-dock",
-                    title: "Focus Canvas and the Collaboration Dock",
+                    title: "Zoom and the Collaboration Dock",
                     paragraphs: [
-                        "Use Focus in the workbench toolbar, Navigate > Enter Focus Canvas, or Command-Shift-F to enlarge the selected pane while keeping peers visible. Grid or Return to Pane Grid restores the persisted split proportions. These actions keep the same terminal processes and sessions.",
+                        "Use Zoom in the workbench toolbar, Navigate > Zoom Pane, a pane's own menu, a double-click on its header, or Command-Shift-F to enlarge the selected pane while keeping peers visible. Unzoom restores the split proportions. Both keep the same terminal processes and sessions.",
                         "Navigate > Show Collaboration Dock (Command-Shift-D) opens the side panel for the current workspace’s waiting work, active handoffs, recipes and recent results. It offers a route to Status Center for the full record. Hide Collaboration Dock with the same shortcut to recover the space.",
                         "Command-1…9 focuses an existing pane by its position in the current workspace. Command-Option-T returns keyboard focus to the active terminal.",
                     ]
@@ -971,7 +971,7 @@ public enum ParleyHelpGuide {
                         "Control-Option-Right / Control-Option-Left — next / previous pane.",
                         "Command-Shift-J — cycle authoritative permission, result and interruption attention.",
                         "Command-1…9 — focus pane 1 through 9 in the current workspace, when that pane exists.",
-                        "Command-Shift-F — enter Focus Canvas or return to Pane Grid.",
+                        "Command-Shift-F — zoom the selected pane, or unzoom.",
                         "Command-Shift-D — show or hide the Collaboration Dock.",
                         "Command-Option-T — focus the active terminal.",
                         "Command-? — open this detailed help window.",

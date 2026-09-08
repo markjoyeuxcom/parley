@@ -924,13 +924,13 @@ struct ContentView: View {
                 .frame(height: 42)
             Button(action: { model.toggleFocusCanvas() }) {
                 Label(
-                    model.focusCanvasPaneID == nil ? "Focus" : "Grid",
+                    model.focusCanvasPaneID == nil ? "Zoom" : "Unzoom",
                     systemImage: model.focusCanvasPaneID == nil ? "rectangle.inset.filled" : "rectangle.grid.2x2"
                 )
             }
             .disabled(model.activePane == nil)
-            .accessibilityLabel(model.focusCanvasPaneID == nil ? "Enter Focus Canvas" : "Return to pane grid")
-            .help(model.focusCanvasPaneID == nil ? "Enlarge the selected pane while keeping peers visible" : "Restore persisted pane proportions")
+            .accessibilityLabel(model.focusCanvasPaneID == nil ? "Zoom the selected pane" : "Unzoom")
+            .help(model.focusCanvasPaneID == nil ? "Enlarge the selected pane while keeping peers visible" : "Restore the pane proportions")
             Button(action: model.balance) { Image(systemName: "rectangle.grid.2x2") }
                 .accessibilityLabel("Balance panes")
                 .help("Balance panes")
@@ -965,7 +965,7 @@ struct ContentView: View {
                 Image(systemName: model.focusCanvasPaneID == nil ? "rectangle.inset.filled" : "rectangle.grid.2x2")
             }
             .disabled(model.activePane == nil)
-            .accessibilityLabel(model.focusCanvasPaneID == nil ? "Enter Focus Canvas" : "Return to pane grid")
+            .accessibilityLabel(model.focusCanvasPaneID == nil ? "Zoom the selected pane" : "Unzoom")
             Button {
                 openWindow(id: "status-center")
             } label: {
@@ -1308,7 +1308,6 @@ struct ContentView: View {
             primaryActivity: model.primaryActivity.map(WorkbenchNoticeActivity.init(handoff:)),
             attentionActivities: attention.map(WorkbenchNoticeActivity.init(handoff:)),
             recipe: model.activeRecipeRun.map { WorkbenchRecipeNotice(name: $0.recipeName, leadName: $0.leadName) },
-            focusCanvasActive: model.focusCanvasPaneID != nil,
             dockVisible: model.collaborationDockVisible,
             protocolVersion: AgentProtocol.version
         )
@@ -1391,7 +1390,6 @@ struct ContentView: View {
         case .paneStopped: "pause.circle"
         case .activity: "arrow.triangle.branch"
         case .recipe: "text.badge.checkmark"
-        case .focusCanvas: "rectangle.inset.filled"
         }
     }
 
@@ -1406,7 +1404,6 @@ struct ContentView: View {
         case .reconnect: "Reconnect to the local coordination core"
         case .openWorktrees: "Open the worktree browser for this folder"
         case .stopRecipe: "Send Control-C to the lead pane after confirmation"
-        case .exitFocusCanvas: "Return every visible pane to the grid"
         }
     }
 
@@ -1430,8 +1427,6 @@ struct ContentView: View {
             model.showWorktreeBrowser(sourceFolder: path)
         case .stopRecipe:
             model.interruptActiveRecipeRun()
-        case .exitFocusCanvas:
-            model.exitFocusCanvas()
         }
     }
 
@@ -1741,7 +1736,7 @@ struct ContentView: View {
                 ChromeChip(WorkbenchChromeProjection.processLabel(pane), color: ChromeColor.paneProcess(pane))
             }
             Menu {
-                Button(model.focusCanvasPaneID == pane.id ? "Return to Grid" : "Focus Canvas") {
+                Button(model.focusCanvasPaneID == pane.id ? "Unzoom" : "Zoom Pane") {
                     model.toggleFocusCanvas(paneID: pane.id)
                 }
                 Divider()
@@ -1770,7 +1765,7 @@ struct ContentView: View {
         .focusable()
         .accessibilityLabel("Focus \(pane.displayName), \(pane.kind.label) pane")
         .accessibilityValue(paneAccessibilityValue(pane))
-        .accessibilityHint("Select this terminal; double-click to toggle Focus Canvas")
+        .accessibilityHint("Select this terminal; double-click to zoom or unzoom it")
         .help(paneFocusHelp(pane))
     }
 

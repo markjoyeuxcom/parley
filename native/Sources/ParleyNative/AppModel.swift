@@ -4062,22 +4062,18 @@ final class AppModel: ObservableObject {
     }
 
     func toggleFocusCanvas(paneID: String? = nil) {
-        let target = paneID ?? activePane?.id
-        guard let target, visiblePanes.contains(where: { $0.id == target }) else {
-            focusCanvasPaneID = nil
-            return
-        }
-        focusCanvasPaneID = focusCanvasPaneID == target ? nil : target
-        if activePane?.id != target, let pane = visiblePanes.first(where: { $0.id == target }) {
+        let next = WorkbenchZoomPolicy.next(
+            current: focusCanvasPaneID,
+            requested: paneID,
+            active: activePane?.id,
+            visible: visiblePanes.map(\.id)
+        )
+        focusCanvasPaneID = next
+        if let next, activePane?.id != next, let pane = visiblePanes.first(where: { $0.id == next }) {
             select(pane)
         } else {
             terminalHandle.focus()
         }
-    }
-
-    func exitFocusCanvas() {
-        focusCanvasPaneID = nil
-        terminalHandle.focus()
     }
 
     func focusActiveTerminal() {

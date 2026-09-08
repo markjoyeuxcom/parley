@@ -27,7 +27,6 @@ public enum WorkbenchNoticeKind: String, CaseIterable, Codable, Equatable, Senda
     case paneStopped
     case activity
     case recipe
-    case focusCanvas
 }
 
 /// Which semantic colour a notice may use. The palette is fixed: attention is
@@ -50,7 +49,6 @@ public enum WorkbenchNoticeAction: Equatable, Sendable {
     case reconnect
     case openWorktrees(String)
     case stopRecipe
-    case exitFocusCanvas
 }
 
 public struct WorkbenchNotice: Identifiable, Equatable, Sendable {
@@ -172,7 +170,6 @@ public struct WorkbenchNoticeInputs: Equatable, Sendable {
     public var primaryActivity: WorkbenchNoticeActivity?
     public var attentionActivities: [WorkbenchNoticeActivity]
     public var recipe: WorkbenchRecipeNotice?
-    public var focusCanvasActive: Bool
     public var dockVisible: Bool
     public var protocolVersion: String
 
@@ -184,7 +181,6 @@ public struct WorkbenchNoticeInputs: Equatable, Sendable {
         primaryActivity: WorkbenchNoticeActivity?,
         attentionActivities: [WorkbenchNoticeActivity],
         recipe: WorkbenchRecipeNotice?,
-        focusCanvasActive: Bool,
         dockVisible: Bool,
         protocolVersion: String
     ) {
@@ -195,7 +191,6 @@ public struct WorkbenchNoticeInputs: Equatable, Sendable {
         self.primaryActivity = primaryActivity
         self.attentionActivities = attentionActivities
         self.recipe = recipe
-        self.focusCanvasActive = focusCanvasActive
         self.dockVisible = dockVisible
         self.protocolVersion = protocolVersion
     }
@@ -394,17 +389,6 @@ public enum WorkbenchNoticeProjection {
                 action: .stopRecipe
             ))
         }
-        if inputs.focusCanvasActive, let pane {
-            notices.append(WorkbenchNotice(
-                id: "notice:canvas:\(pane.id)",
-                kind: .focusCanvas,
-                tone: .neutral,
-                title: "Focus Canvas · \(pane.name)",
-                detail: "Peers remain live and selectable.",
-                actionLabel: "Return to Grid",
-                action: .exitFocusCanvas
-            ))
-        }
         return notices
     }
 }
@@ -459,5 +443,22 @@ public enum StatusCenterSegmentProjection {
         case .unreadResults: .results
         case .failures: .history
         }
+    }
+}
+
+/// Which pane the zoom should enlarge after a toggle. A pane-targeted toggle
+/// zooms that pane or, if it is already zoomed, unzooms. The global action
+/// (toolbar, Navigate menu, Command-Shift-F) always unzooms while any pane is
+/// zoomed, whatever the selection has moved to since, and zooms the active
+/// pane otherwise. A pane that is not visible can never be zoomed.
+public enum WorkbenchZoomPolicy {
+    public static func next(current: String?, requested: String?, active: String?, visible: [String]) -> String? {
+        if let requested {
+            guard visible.contains(requested) else { return nil }
+            return current == requested ? nil : requested
+        }
+        if current != nil { return nil }
+        guard let active, visible.contains(active) else { return nil }
+        return active
     }
 }

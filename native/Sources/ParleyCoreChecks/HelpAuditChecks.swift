@@ -60,13 +60,14 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
     ("Help audit matches native navigation and creation shortcuts", {
         let topic = try helpAuditTopic("shortcuts")
         try helpAuditContains(topic.searchableText, [
-            "Command-1…9 — focus pane", "Command-Shift-F — enter Focus Canvas or return to Pane Grid",
+            "Command-1…9 — focus pane", "Command-Shift-F — zoom the selected pane, or unzoom",
             "Command-Shift-D — show or hide the Collaboration Dock", "Command-Option-T — focus the active terminal",
             "Command-Shift-N — New Workspace",
         ])
         try helpAuditRequire(!topic.searchableText.contains("Command-Shift-N — open a workspace"), "New Workspace is not Open Folder")
         let workspaces = try helpAuditTopic("workspaces").searchableText
-        try helpAuditContains(workspaces, ["Focus Canvas", "Pane Grid", "Collaboration Dock"])
+        try helpAuditContains(workspaces, ["Zoom", "Unzoom", "Collaboration Dock"])
+        try helpAuditRequire(!workspaces.contains("Focus Canvas") && !workspaces.contains("Pane Grid"), "Help must not keep the retired layout names")
     }),
     ("Help audit distinguishes auxiliary close from minimise or app hide", {
         let text = try helpAuditTopic("settings").searchableText

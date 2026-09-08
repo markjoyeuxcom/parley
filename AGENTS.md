@@ -658,8 +658,9 @@ Parley publishes nothing for external editors. The VS Code companion, its
 published attention snapshot and the `parley://focus` and `parley://status`
 URLs were removed in the September 2026 reduction. The attention projection
 remains in process for the menu-bar indicator: it reads handoff metadata and
-produces a content-free snapshot, and the menu-bar summary and its
-presentation receive only that snapshot, never a RelayHandoff.
+produces a content-free snapshot; the menu-bar summary reduces that snapshot
+to coreAvailable, totalCount and headline, and the menu presentation receives
+only those three fields, never a RelayHandoff or an item label.
 
 ## Shared protocol launch behavior
 
