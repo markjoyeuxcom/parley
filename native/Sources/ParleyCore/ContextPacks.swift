@@ -110,22 +110,69 @@ public struct ContextPackPart: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// Who assembled a pack and whether a person has approved it. The rendered
+/// header states this so a receiving vendor never reads an agent's staged
+/// files as something the person chose.
+public enum ContextPackOrigin: String, Codable, Equatable, Sendable {
+    /// Assembled by the person in the native editor.
+    case personSelected
+    /// Staged by an agent (`parley context draft`, `parley done --file`) and
+    /// not yet approved or sent.
+    case agentProposed
+    /// An agent-proposed pack the person reviewed and approved for delivery.
+    case agentApproved
+    /// An agent review recorded before packs carried an origin whose final
+    /// state (failed, interrupted) is reached from either side of approval,
+    /// so whether the person approved delivery is not recorded.
+    case agentApprovalUnrecorded
+
+    public var headerStatement: String {
+        switch self {
+        case .personSelected:
+            "This material was explicitly selected by the person using Parley. No hidden terminal history or implicit transcript was included."
+        case .agentProposed:
+            "Agent-proposed context; not approved or sent. Agent-provided parts are claims Parley has not independently read; a source the person captured separately keeps its own provenance. No hidden terminal history or implicit transcript was included."
+        case .agentApproved:
+            "The person reviewed and approved delivery of this agent-proposed context. Agent-provided parts keep their provenance and are not independently verified. No hidden terminal history or implicit transcript was included."
+        case .agentApprovalUnrecorded:
+            "Agent-proposed context from a record kept before Parley stored approval status; whether the person approved delivery is not recorded. Agent-provided parts are claims Parley has not independently read; a source the person captured separately keeps its own provenance. No hidden terminal history or implicit transcript was included."
+        }
+    }
+}
+
 public struct ContextPack: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public var name: String
     public var note: String
     public var parts: [ContextPackPart]
+    public var origin: ContextPackOrigin
 
     public init(
         id: String = UUID().uuidString.lowercased(),
         name: String = "Untitled context",
         note: String = "",
-        parts: [ContextPackPart] = []
+        parts: [ContextPackPart] = [],
+        origin: ContextPackOrigin = .personSelected
     ) {
         self.id = id
         self.name = name
         self.note = note
         self.parts = parts
+        self.origin = origin
+    }
+
+    enum CodingKeys: String, CodingKey { case id, name, note, parts, origin }
+
+    // A bare pack recorded before the origin existed was assembled by the
+    // person; an agent review recorded then is repaired by AgentContextReview,
+    // which knows its state, so no agent draft decodes as person-selected.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        note = try container.decode(String.self, forKey: .note)
+        parts = try container.decode([ContextPackPart].self, forKey: .parts)
+        origin = try container.decodeIfPresent(ContextPackOrigin.self, forKey: .origin) ?? .personSelected
     }
 
     public var sourceByteCount: Int { parts.reduce(0) { $0 + $1.byteCount } }
@@ -746,7 +793,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
         let note = ContextPackText.normalize(pack.note)
         var sections = [
             "Context pack: \(name.isEmpty ? "Untitled context" : name)",
-            "This material was explicitly selected by the person using Parley. No hidden terminal history or implicit transcript was included.",
+            pack.origin.headerStatement,
         ]
         if !note.isEmpty { sections.append("Request for the receiving vendor:\n\(note)") }
         for (index, part) in pack.parts.enumerated() {

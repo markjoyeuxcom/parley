@@ -26,6 +26,10 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
     public let sourcePaneKind: PaneKind
     public let sourceFolder: String
     public var pack: ContextPack
+    /// For a `parley done --file` return, the exact part as staged. Approval
+    /// rebuilds `pack` from the reviewed part set, so this is the only copy
+    /// that survives an edit or removal before delivery.
+    public var returnedPart: ContextPackPart?
     public var state: AgentContextReviewState
     public var requestedTargetPaneID: String?
     public var requestedTargetName: String?
@@ -41,6 +45,7 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
         sourcePaneKind: PaneKind,
         sourceFolder: String,
         pack: ContextPack,
+        returnedPart: ContextPackPart? = nil,
         state: AgentContextReviewState = .draft,
         requestedTargetPaneID: String? = nil,
         requestedTargetName: String? = nil,
@@ -55,6 +60,7 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
         self.sourcePaneKind = sourcePaneKind
         self.sourceFolder = sourceFolder
         self.pack = pack
+        self.returnedPart = returnedPart
         self.state = state
         self.requestedTargetPaneID = requestedTargetPaneID
         self.requestedTargetName = requestedTargetName
@@ -62,6 +68,65 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.detail = detail
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, sourcePaneID, sourcePaneName, sourcePaneKind, sourceFolder, pack, returnedPart, state
+        case requestedTargetPaneID, requestedTargetName, idempotencyKey, createdAt, updatedAt, detail
+    }
+
+    /// Every review is agent-staged. A record written before packs carried an
+    /// origin decodes with the origin its state proves, and says so when the
+    /// state proves nothing. None of them is ever the person's own selection.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        sourcePaneID = try container.decode(String.self, forKey: .sourcePaneID)
+        sourcePaneName = try container.decode(String.self, forKey: .sourcePaneName)
+        sourcePaneKind = try container.decode(PaneKind.self, forKey: .sourcePaneKind)
+        sourceFolder = try container.decode(String.self, forKey: .sourceFolder)
+        var decodedPack = try container.decode(ContextPack.self, forKey: .pack)
+        let decodedState = try container.decode(AgentContextReviewState.self, forKey: .state)
+        let packKeys = try container.nestedContainer(keyedBy: ContextPack.CodingKeys.self, forKey: .pack)
+        if !packKeys.contains(.origin) {
+            decodedPack.origin = Self.legacyOrigin(for: decodedState)
+        }
+        pack = decodedPack
+        returnedPart = try container.decodeIfPresent(ContextPackPart.self, forKey: .returnedPart)
+        state = decodedState
+        requestedTargetPaneID = try container.decodeIfPresent(String.self, forKey: .requestedTargetPaneID)
+        requestedTargetName = try container.decodeIfPresent(String.self, forKey: .requestedTargetName)
+        idempotencyKey = try container.decodeIfPresent(String.self, forKey: .idempotencyKey)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        detail = try container.decodeIfPresent(String.self, forKey: .detail)
+    }
+
+    /// `approved` is written only by approval and `completed` only after it;
+    /// `draft`, `awaitingReview`, `rejected` and `discarded` never passed it.
+    /// `failed` is reached both by a timed-out approval wait and by a failed
+    /// delivery after approval, and a restart turns both a waiting and an
+    /// approved review into `interrupted`, so those two record no approval
+    /// status rather than guessing one.
+    public static func legacyOrigin(for state: AgentContextReviewState) -> ContextPackOrigin {
+        switch state {
+        case .approved, .completed: .agentApproved
+        case .draft, .awaitingReview, .rejected, .discarded: .agentProposed
+        case .failed, .interrupted: .agentApprovalUnrecorded
+        }
+    }
+}
+
+/// The native discard of one editable agent draft: the exact review and the
+/// revision the person saw, so a draft that became a waiting Ask or changed in
+/// the meantime is refused rather than declined by accident.
+public struct AgentContextDraftDiscard: Codable, Equatable, Sendable {
+    public let reviewID: String
+    public let expectedUpdatedAt: Date
+
+    public init(reviewID: String, expectedUpdatedAt: Date) {
+        self.reviewID = reviewID
+        self.expectedUpdatedAt = expectedUpdatedAt
     }
 }
 

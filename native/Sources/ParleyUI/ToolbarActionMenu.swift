@@ -20,12 +20,18 @@ public struct ToolbarActionMenu: NSViewRepresentable {
     public let help: String
     public let accessibilityHint: String
     public let items: [ToolbarMenuItem]
+    /// Rebuilds the items each time the menu opens, for labels such as ages
+    /// that must be current at that moment; `items` remains the static copy
+    /// for the overflow submenu. Never consulted while the menu is tracking.
+    public let itemsOnOpen: (() -> [ToolbarMenuItem])?
 
     public init(
         title: String, systemImage: String, isEnabled: Bool = true,
         accessibilityLabel: String, accessibilityValue: String = "",
-        help: String = "", accessibilityHint: String = "", items: [ToolbarMenuItem]
+        help: String = "", accessibilityHint: String = "", items: [ToolbarMenuItem],
+        itemsOnOpen: (() -> [ToolbarMenuItem])? = nil
     ) {
+        self.itemsOnOpen = itemsOnOpen
         self.title = title
         self.systemImage = systemImage
         self.isEnabled = isEnabled
@@ -97,7 +103,7 @@ public struct ToolbarActionMenu: NSViewRepresentable {
             menu.removeAllItems()
             let label = menu.addItem(withTitle: snapshot.title, action: nil, keyEquivalent: "")
             label.image = NSImage(systemSymbolName: snapshot.systemImage, accessibilityDescription: nil)
-            append(snapshot.items, to: menu)
+            append(snapshot.itemsOnOpen?() ?? snapshot.items, to: menu)
         }
 
         public func menuWillOpen(_ menu: NSMenu) { isTracking = true }

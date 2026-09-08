@@ -188,6 +188,9 @@ struct StatusCenterView: View {
         .onChange(of: model.requestedStatusHandoffID) { _, _ in
             applyExternalSelection()
         }
+        .onChange(of: model.requestedStatusCenterSegment) { _, _ in
+            applyRequestedSegment()
+        }
         .onChange(of: workspaceID) { _, _ in
             selectedHandoffID = nil
             selectedBusyDraftID = nil
@@ -425,6 +428,7 @@ struct StatusCenterView: View {
         switch segment {
         case .live:
             reviewedBusyQueue
+            agentDrafts
             liveCollaboration
         case .results:
             returnedResults
@@ -437,6 +441,59 @@ struct StatusCenterView: View {
             coreHealth
             paneProcesses
             timeline
+        }
+    }
+
+    private var agentDrafts: some View {
+        let lane = AgentDraftMenuProjection.lane(reviews: model.pendingContextReviews)
+        let all = model.pendingContextReviews
+            .sorted { ($0.state == .awaitingReview ? 0 : 1, $1.updatedAt) < ($1.state == .awaitingReview ? 0 : 1, $0.updatedAt) }
+        return statusGroup("AGENT DRAFTS") {
+            if all.isEmpty {
+                emptyRow("No agent drafts are waiting for approval or saved for review")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(all) { review in
+                        let entry = AgentDraftMenuProjection.entry(review, now: Date())
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(entry.title)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(review.detail ?? "\(review.pack.parts.count) \(review.pack.parts.count == 1 ? "part" : "parts") · \(review.pack.sourceByteCount) bytes")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 8)
+                            Text(entry.isWaiting ? "AWAITING APPROVAL" : "SAVED DRAFT")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(entry.isWaiting ? Color.orange : Color.secondary)
+                            Button(entry.isWaiting ? "Review…" : "Open…") {
+                                model.presentContextReview(review)
+                                openWindow(id: "main")
+                            }
+                            .controlSize(.small)
+                            if !entry.isWaiting {
+                                Button("Discard…") { model.discardAgentDraft(review) }
+                                    .controlSize(.small)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .overlay(alignment: .bottom) { Divider() }
+                    }
+                    if lane.editableCount > 1 {
+                        HStack {
+                            Spacer()
+                            Button("Discard All Editable Drafts…", role: .destructive) { model.discardAllEditableDrafts() }
+                                .controlSize(.small)
+                        }
+                        .padding(8)
+                    }
+                }
+            }
         }
     }
 
@@ -1802,6 +1859,60 @@ struct StatusCenterView: View {
         .accessibilityElement(children: .contain)
     }
 
+    /// The exact returned bytes stay readable from the handoff after the
+    /// draft is resolved or discarded. They come from the part kept as
+    /// staged, never from whatever remains in the reviewed delivery pack;
+    /// a record kept before that copy existed says so. Nothing here edits or
+    /// sends them.
+    private func returnedFileReadOnly(_ review: AgentContextReview) -> some View {
+        let remaining = review.returnedPart == nil ? review.pack.parts.filter { $0.source.kind == .agentFileDraft } : []
+        return DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                if let returned = review.returnedPart {
+                    returnedPartText(
+                        returned,
+                        caption: "Returned file \(returned.source.label) · \(returned.capturedByteCount.formatted()) UTF-8 bytes · agent-provided, not independently read · kept as returned, unaffected by edits made before delivery"
+                    )
+                } else if remaining.isEmpty {
+                    Text("This record was kept before Parley retained the returned file separately, and no agent-provided part remains in its reviewed draft.")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("This record was kept before Parley retained the returned file separately. Shown are the agent-provided parts still in its reviewed draft, which may have been edited before delivery.")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(remaining) { part in
+                        returnedPartText(part, caption: "\(part.source.label) · \(part.capturedByteCount.formatted()) UTF-8 bytes · agent-provided, not independently read")
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            Text("Show returned file (read-only)")
+                .font(.system(size: 9))
+        }
+        .accessibilityLabel("Show the returned file, read-only")
+    }
+
+    private func returnedPartText(_ part: ContextPackPart, caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(caption)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                Text(part.capturedText)
+                    .font(.system(size: 10, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 320)
+        }
+    }
+
     private func returnedFileReviewSection(_ review: AgentContextReview) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
@@ -1830,6 +1941,7 @@ struct StatusCenterView: View {
                 Text(review.detail ?? "This returned-file review has been resolved.")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
+                returnedFileReadOnly(review)
             }
         }
         .padding(9)
@@ -2088,7 +2200,16 @@ struct StatusCenterView: View {
         }
     }
 
+    /// A menu action elsewhere asked for one segment; apply it whether the
+    /// window is opening or already open on another segment.
+    private func applyRequestedSegment() {
+        guard let requested = model.requestedStatusCenterSegment else { return }
+        segment = requested
+        model.consumeRequestedStatusCenterSegment()
+    }
+
     private func applyExternalSelection() {
+        applyRequestedSegment()
         guard let requested = model.requestedStatusHandoffID else { return }
         if !showDismissed {
             showDismissed = true

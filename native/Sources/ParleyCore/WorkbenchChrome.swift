@@ -462,3 +462,103 @@ public enum WorkbenchZoomPolicy {
         return active
     }
 }
+
+/// One row of the Context menu or Status Center's draft list. The title names
+/// what distinguishes the draft: source pane, requested target, the pack or
+/// returned file, and its age. Bodies never enter a menu.
+public struct AgentDraftMenuEntry: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let isWaiting: Bool
+    public let updatedAt: Date
+
+    public init(id: String, title: String, isWaiting: Bool, updatedAt: Date) {
+        self.id = id
+        self.title = title
+        self.isWaiting = isWaiting
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct AgentDraftMenuLane: Equatable, Sendable {
+    /// Drafts whose source pane is blocked in `ask --context` until the person
+    /// approves or declines, newest first, never truncated.
+    public let waiting: [AgentDraftMenuEntry]
+    /// Editable drafts nobody asked to send, newest first, capped for a menu.
+    public let saved: [AgentDraftMenuEntry]
+    /// Editable drafts beyond the cap; Status Center lists every one.
+    public let olderCount: Int
+    /// Every editable draft, the set a bulk discard would end.
+    public let editableCount: Int
+}
+
+public enum AgentDraftMenuProjection {
+    public static let maximumSaved = 8
+
+    public static func lane(reviews: [AgentContextReview], now: Date = Date()) -> AgentDraftMenuLane {
+        let pending = reviews.filter(\.state.needsHumanReview).sorted { $0.updatedAt > $1.updatedAt }
+        let waiting = pending.filter { $0.state == .awaitingReview }.map { entry($0, now: now) }
+        let editable = pending.filter { $0.state == .draft }
+        let saved = editable.prefix(maximumSaved).map { entry($0, now: now) }
+        return AgentDraftMenuLane(
+            waiting: waiting,
+            saved: Array(saved),
+            olderCount: max(0, editable.count - maximumSaved),
+            editableCount: editable.count
+        )
+    }
+
+    public static func entry(_ review: AgentContextReview, now: Date) -> AgentDraftMenuEntry {
+        AgentDraftMenuEntry(
+            id: review.id,
+            title: title(for: review, now: now),
+            isWaiting: review.state == .awaitingReview,
+            updatedAt: review.updatedAt
+        )
+    }
+
+    public static func title(for review: AgentContextReview, now: Date) -> String {
+        let target = review.requestedTargetName.map { " → \($0)" } ?? ""
+        return "\(review.sourcePaneName)\(target) · \(packLabel(for: review)) · \(age(from: review.updatedAt, to: now))"
+    }
+
+    /// The pack name unless it is one the broker generated, in which case the
+    /// returned or staged file's name says more.
+    public static func packLabel(for review: AgentContextReview) -> String {
+        let name = review.pack.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let generic = name.isEmpty
+            || name == "Untitled context"
+            || name == "Delegation result from \(review.sourcePaneName)"
+            || name == "\(review.sourcePaneName) context"
+        if generic, let file = review.pack.parts.first?.source.label.trimmingCharacters(in: .whitespacesAndNewlines), !file.isEmpty {
+            return file
+        }
+        return name.isEmpty ? "Untitled context" : name
+    }
+
+    public static func age(from date: Date, to now: Date) -> String {
+        let seconds = max(0, now.timeIntervalSince(date))
+        if seconds < 60 { return "now" }
+        if seconds < 3600 { return "\(Int(seconds / 60)) min" }
+        if seconds < 86_400 { return "\(Int(seconds / 3600)) h" }
+        return "\(Int(seconds / 86_400)) d"
+    }
+}
+
+public enum CommandRunListProjection {
+    /// Every waiting or running request is listed; only finished runs are
+    /// capped, so a cap can never hide a pending approval or make the sheet
+    /// say nothing is waiting while something is.
+    public static func split<Run>(_ runs: [Run], isActive: (Run) -> Bool, maximumRecent: Int) -> (active: [Run], recent: [Run]) {
+        var active: [Run] = []
+        var recent: [Run] = []
+        for run in runs {
+            if isActive(run) {
+                active.append(run)
+            } else if recent.count < maximumRecent {
+                recent.append(run)
+            }
+        }
+        return (active, recent)
+    }
+}

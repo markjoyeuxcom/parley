@@ -573,6 +573,16 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     return
                 }
                 write(broker.captureTrustedContext(capture), to: client)
+            case "/ui/context-reviews/discard":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let discard = try? JSONDecoder().decode(AgentContextDraftDiscard.self, from: request.body) else {
+                    write(RelayTextResponse(status: 400, text: "invalid context draft discard"), to: client)
+                    return
+                }
+                write(broker.discardContextDraft(discard), to: client)
             case let path where path.hasPrefix("/ui/context-reviews/reject/"):
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)

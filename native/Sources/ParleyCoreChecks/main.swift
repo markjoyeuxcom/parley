@@ -4043,6 +4043,12 @@ private func checkDelegationFileResultsAreBoundedOwnedAndReviewed() throws {
     try expect(part.source.referenceID == handoffID, "the file review lost its delegation lineage")
     try expect(part.source.detail.contains(reportPath), "the file review omitted the contained canonical path")
     try expect(part.capturedText == report && part.text == report, "the file review damaged multiline formatting")
+    try expect(review.returnedPart == part, "the returned file was not kept on the review as staged")
+    let roundTrippedReview = try JSONDecoder().decode(AgentContextReview.self, from: JSONEncoder().encode(review))
+    try expect(roundTrippedReview.returnedPart == part, "the returned part did not survive a record round trip")
+    var editedDelivery = review
+    editedDelivery.pack.parts = []
+    try expect(editedDelivery.returnedPart == part, "removing the file from the delivery pack removed the returned copy")
 
     let status = try JSONDecoder().decode(
         [RelayDelegationStatus].self,
@@ -8224,6 +8230,7 @@ private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate
     try expect(stagedReview.state == .draft, "a staged context file skipped draft review")
     try expect(stagedReview.sourcePaneID == "%1", "a context draft trusted a claimed source pane")
     try expect(stagedReview.pack.parts.first?.source.kind == .agentFileDraft, "agent-provided context was labelled as person-selected")
+    try expect(stagedReview.pack.origin == .agentProposed, "a staged context draft was not recorded as agent-proposed")
     try expect(
         stagedReview.pack.parts.first?.source.detail.contains("not independently read by Parley") == true,
         "agent-provided context omitted its trust boundary"
@@ -8253,6 +8260,15 @@ private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate
     }
     try expect(eventually { (try? control.contextReviews().first?.state) == .awaitingReview }, "context Ask did not surface through native control")
     try expect(askResult.value == nil, "context Ask returned before the person reviewed it")
+    // A native discard listed while this was still a draft must not decline
+    // the Ask it became, whether it names the stale or the current revision.
+    let staleDiscard = try control.discardContextDraft(reviewID: stagedReview.id, expectedUpdatedAt: stagedReview.updatedAt)
+    try expect(staleDiscard.status == 409, "a native discard accepted a draft that had become a waiting context Ask")
+    let waitingRevision = try require(try control.contextReviews().first(where: { $0.id == stagedReview.id }), "the waiting review vanished")
+    let currentDiscard = try control.discardContextDraft(reviewID: stagedReview.id, expectedUpdatedAt: waitingRevision.updatedAt)
+    try expect(currentDiscard.status == 409 && currentDiscard.text.contains("waiting for approval"), "a native discard at the current revision declined a waiting context Ask")
+    try expect((try? control.contextReviews().first(where: { $0.id == stagedReview.id })?.state) == .awaitingReview, "a native discard changed a waiting context Ask")
+    try expect(askResult.value == nil, "a native discard released the waiting context Ask")
     try expect(submissions.value == nil, "context Ask submitted before human approval")
 
     let pending = try require(try control.contextReviews().first, "the pending context review disappeared")
@@ -8269,6 +8285,11 @@ private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate
     try expect(submissions.value?.paneID == "%2", "approved context went to the wrong pane")
     try expect(submissions.value?.text.contains("Review only correctness") == true, "approval dispatched the unreviewed request")
     try expect(submissions.value?.text.contains("not independently read by Parley") == true, "approval stripped context provenance")
+    try expect(submissions.value?.text.contains("The person reviewed and approved delivery") == true, "the delivered pack did not state the person's approval")
+    try expect(submissions.value?.text.contains("not approved or sent") == false, "the delivered pack still called itself unapproved")
+    try expect(submissions.value?.text.contains("explicitly selected by the person") == false, "the delivered agent pack claimed the person selected it")
+    let approvedOrigin = try control.contextReviews().first?.pack.origin
+    try expect(approvedOrigin == .agentApproved, "the approved review did not record the approved origin")
     try expect(askResult.value == nil, "approved context Ask stopped waiting before its correlated answer")
 
     let returned = broker.handleAnswer(token: reviewerToken, consultationID: "current", text: "The fatal error is unconditional.")
@@ -8279,6 +8300,64 @@ private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate
 
     let persisted = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
     try expect(persisted.reviews().first?.state == .completed, "context review state did not survive store reattachment")
+
+    // An editable draft is discarded only at the revision that was listed.
+    let discardable = broker.handleContextDraft(token: claudeToken, name: "Discardable context", path: "Sources/Old.swift", text: "let old = true")
+    try expect(discardable.status == 201, "a second draft could not be staged")
+    let discardableID = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(discardable.text.utf8)).id
+    let discardableReview = try require(try control.contextReviews().first(where: { $0.id == discardableID }), "the second draft was not listed")
+    try expect(discardableReview.pack.origin == .agentProposed, "a second staged draft was not agent-proposed")
+    let wrongRevision = try control.discardContextDraft(reviewID: discardableID, expectedUpdatedAt: discardableReview.updatedAt.addingTimeInterval(-1))
+    try expect(wrongRevision.status == 409, "a native discard accepted a stale revision")
+    try expect(broker.contextReviews().first(where: { $0.id == discardableID })?.state == .draft, "a refused discard changed the draft")
+    let discarded = try control.discardContextDraft(reviewID: discardableID, expectedUpdatedAt: discardableReview.updatedAt)
+    try expect(discarded.status == 200, "a native discard refused an editable draft at its listed revision: \(discarded.text)")
+    try expect(broker.contextReviews().first(where: { $0.id == discardableID })?.state == .discarded, "a discarded draft did not record its state")
+    try expect(broker.contextReviews().first(where: { $0.id == discardableID })?.pack.parts.first?.capturedText == "let old = true", "a discarded draft lost its staged bytes")
+    let again = try control.discardContextDraft(reviewID: discardableID, expectedUpdatedAt: discardableReview.updatedAt)
+    try expect(again.status == 409, "a discarded draft could be discarded twice")
+
+    // A record from before packs carried an origin must not gain an approval
+    // its state cannot prove. Generate the two ambiguous states the way the
+    // broker does: an approval wait that times out, and a restart over an
+    // approved review.
+    func legacyDecodedOrigin(_ reviewID: String) throws -> ContextPackOrigin {
+        let document = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("context-reviews.json"))) as! [String: Any]
+        var object = try require((document["reviews"] as! [[String: Any]]).first(where: { $0["id"] as? String == reviewID }), "review \(reviewID) was not persisted")
+        var packObject = object["pack"] as! [String: Any]
+        packObject.removeValue(forKey: "origin")
+        object["pack"] = packObject
+        return try JSONDecoder().decode(AgentContextReview.self, from: JSONSerialization.data(withJSONObject: object)).pack.origin
+    }
+    let timingOut = broker.handleContextDraft(token: claudeToken, name: "Timing out", path: "Sources/Slow.swift", text: "let slow = true")
+    try expect(timingOut.status == 201, "a third draft could not be staged")
+    let timingOutID = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(timingOut.text.utf8)).id
+    let timeoutResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        timeoutResult.set(broker.handleContextAsk(token: claudeToken, draftID: timingOutID, target: "%2", text: "Never approved.", idempotencyKey: "context-review-ask-timeout"))
+    }
+    try expect(eventually(timeout: 8) { timeoutResult.value != nil }, "the unapproved context Ask did not time out")
+    try expect(timeoutResult.value?.status == 408, "the unapproved context Ask did not report a timeout")
+    try expect(broker.contextReviews().first(where: { $0.id == timingOutID })?.state == .failed, "a timed-out approval wait did not record failed")
+    let timedOutLegacyOrigin = try legacyDecodedOrigin(timingOutID)
+    try expect(timedOutLegacyOrigin == .agentApprovalUnrecorded, "a timed-out, never-approved review decoded as \(timedOutLegacyOrigin.rawValue)")
+
+    let approvedBeforeRestart = AgentContextReview(
+        id: "approved-before-restart",
+        sourcePaneID: "%1",
+        sourcePaneName: "Claude",
+        sourcePaneKind: .claude,
+        sourceFolder: "/tmp/project",
+        pack: ContextPack(name: "Approved earlier", parts: stagedReview.pack.parts, origin: .agentApproved),
+        state: .approved,
+        requestedTargetPaneID: "%2"
+    )
+    try reviewStore.record(approvedBeforeRestart)
+    let restarted = RelayBroker(credentials: credentials, panes: { panes }, paste: { _, _ in }, submit: { _, _ in }, contextReviewStore: reviewStore)
+    try expect(restarted.contextReviews().first(where: { $0.id == approvedBeforeRestart.id })?.state == .interrupted, "a restart did not interrupt an approved review")
+    let interruptedLegacyOrigin = try legacyDecodedOrigin(approvedBeforeRestart.id)
+    try expect(interruptedLegacyOrigin == .agentApprovalUnrecorded, "an approved review interrupted by a restart decoded as \(interruptedLegacyOrigin.rawValue)")
+    try expect(restarted.contextReviews().first(where: { $0.id == approvedBeforeRestart.id })?.pack.origin == .agentApproved, "a restart overwrote an explicit origin")
 }
 
 private func checkConcurrentContextAddsRetainEveryAcceptedPart() throws {
@@ -9628,6 +9707,9 @@ let checks: [(String, () throws -> Void)] = [
     ("workbench notice lane is prioritised and never hides facts", checkWorkbenchNoticeLaneIsPrioritisedAndNeverHidesFacts),
     ("workbench notice lane represents every worktree collision", checkWorkbenchNoticeLaneRepresentsEveryWorktreeCollision),
     ("global unzoom clears whatever pane is zoomed", checkGlobalUnzoomClearsWhateverPaneIsZoomed),
+    ("agent draft menu separates waiting approvals from saved drafts", checkAgentDraftMenuSeparatesWaitingApprovalsFromSavedDrafts),
+    ("context pack origin is stated honestly in the header", checkContextPackOriginIsStatedHonestlyInTheHeader),
+    ("command run list keeps every active request", checkCommandRunListKeepsEveryActiveRequest),
     ("status center segments map handoffs and counts", checkStatusCenterSegmentsMapHandoffsAndCounts),
     ("delegation visibility uses owned timestamps only", checkDelegationVisibilityIsComputedFromOwnedTimestampsOnly),
     ("delegation visibility requires an exact delivered transition", checkDelegationVisibilityRequiresAnExactDeliveredTransition),
