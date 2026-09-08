@@ -92,21 +92,6 @@ struct ActiveContextPack: Identifiable, Equatable {
     var isValid = false
 }
 
-struct ActiveWorkspaceBriefDraft: Identifiable, Equatable {
-    let workspaceID: String
-    let workspaceName: String
-    let existingBriefID: String?
-    let goal: String
-    let constraints: String
-    let decisions: String
-    let conclusions: String
-    let rationale: String
-    let confidence: String
-    let openQuestions: String
-
-    var id: String { workspaceID }
-}
-
 enum PanePermissionAction: Equatable {
     case create(SplitDirection)
     case restart(String)
@@ -251,9 +236,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeRecipeRun: ActiveRecipeRun?
     @Published private(set) var askManyComparisonRun: AskManyComparisonRun?
     @Published private(set) var contextPackDraft: ActiveContextPack?
-    @Published private(set) var workspaceBriefs: [WorkspaceBrief] = []
-    @Published private(set) var workspaceBriefDraft: ActiveWorkspaceBriefDraft?
-    @Published private(set) var pinnedContextSnippets: [PinnedContextSnippet] = []
     @Published private(set) var contextReviews: [AgentContextReview] = []
     @Published private(set) var contextCommandCapturing = false
     @Published private(set) var coreAvailable = false
@@ -319,8 +301,6 @@ final class AppModel: ObservableObject {
     @Published var panePermissionRequest: PanePermissionRequest?
     @Published var askManyComparisonPresented = false
     @Published var contextPackPresented = false
-    @Published var workspaceBriefPresented = false
-    @Published var pinnedContextSnippetsPresented = false
     @Published var worktreeBrowserPresented = false
     @Published var releaseLifecyclePresented = false
     @Published var betaFeedbackPresented = false
@@ -349,8 +329,6 @@ final class AppModel: ObservableObject {
     private let workspaceRegistry: WorkspaceRegistry
     private let teamTemplateStore: TeamTemplateStore
     private let recipeStore: HandoffRecipeStore
-    private let workspaceBriefStore: WorkspaceBriefStore
-    private let pinnedContextSnippetStore: PinnedContextSnippetStore
     private let permissionProfileStore: PermissionProfileStore
     private var workspaceContinuity = WorkspaceContinuityState()
     private let projectContextResolver = GitProjectContextResolver()
@@ -506,12 +484,6 @@ final class AppModel: ObservableObject {
         recipeStore = HandoffRecipeStore(
             file: applicationDirectory.appendingPathComponent("handoff-recipes.json")
         )
-        workspaceBriefStore = WorkspaceBriefStore(
-            file: applicationDirectory.appendingPathComponent("workspace-briefs.json")
-        )
-        pinnedContextSnippetStore = PinnedContextSnippetStore(
-            file: applicationDirectory.appendingPathComponent("pinned-context-snippets.json")
-        )
         permissionProfileStore = PermissionProfileStore(
             file: applicationDirectory.appendingPathComponent("permission-profiles.json")
         )
@@ -530,8 +502,6 @@ final class AppModel: ObservableObject {
         }
         recipes = (try? recipeStore.recipes()) ?? HandoffRecipe.defaults
         teamTemplates = (try? teamTemplateStore.templates()) ?? []
-        workspaceBriefs = (try? workspaceBriefStore.briefs()) ?? []
-        pinnedContextSnippets = (try? pinnedContextSnippetStore.snippets()) ?? []
         permissionProfiles = (try? permissionProfileStore.profiles())
             ?? PermissionProfileDefinition.builtIns
         do {
@@ -2243,34 +2213,6 @@ final class AppModel: ObservableObject {
         contextPackDraft?.reviewID != nil
     }
 
-    var activeWorkspaceBrief: WorkspaceBrief? {
-        guard let workspaceID = activeWorkspace?.workspaceID else { return nil }
-        let aliases = workspaceAliases(for: workspaceID)
-        return workspaceBriefs.first(where: { aliases.contains($0.workspaceID) })
-    }
-
-    var contextPackWorkspaceBrief: WorkspaceBrief? {
-        guard let workspaceID = contextPackSourcePane?.workspaceID else { return nil }
-        let aliases = workspaceAliases(for: workspaceID)
-        return workspaceBriefs.first(where: { aliases.contains($0.workspaceID) })
-    }
-
-    var canAddWorkspaceBriefToContextPack: Bool {
-        guard !contextPackIsAgentProposed,
-              contextPackWorkspaceBrief != nil,
-              let parts = contextPackDraft?.pack.parts else { return false }
-        return !parts.contains(where: { $0.source.kind == .workspaceBrief })
-    }
-
-    var availablePinnedContextSnippets: [PinnedContextSnippet] {
-        guard !contextPackIsAgentProposed,
-              let parts = contextPackDraft?.pack.parts else { return [] }
-        let attached = Set(parts.compactMap { part in
-            part.source.kind == .pinnedSnippet ? part.source.referenceID : nil
-        })
-        return pinnedContextSnippets.filter { !attached.contains($0.id) }
-    }
-
     var contextPackSourcePane: WorkbenchPane? {
         guard let draft = contextPackDraft else { return nil }
         return panes.first {
@@ -2729,7 +2671,6 @@ final class AppModel: ObservableObject {
         let anotherPresentation = commandPalettePresented || setupPresented || teamSessionsPresented
             || panePermissionRequest != nil || paneChoiceRequest != nil
             || askManyComparisonPresented || contextPackPresented
-            || workspaceBriefPresented || pinnedContextSnippetsPresented
             || worktreeBrowserPresented
             || releaseLifecyclePresented || betaFeedbackPresented
             || handoffComposerDraft != nil || startupError != nil
@@ -2843,7 +2784,6 @@ final class AppModel: ObservableObject {
         let anotherPresentation = commandPalettePresented || setupPresented || commandRunsPresented
             || panePermissionRequest != nil || paneChoiceRequest != nil
             || askManyComparisonPresented || contextPackPresented
-            || workspaceBriefPresented || pinnedContextSnippetsPresented
             || worktreeBrowserPresented
             || releaseLifecyclePresented || betaFeedbackPresented
             || handoffComposerDraft != nil || startupError != nil
@@ -4538,123 +4478,6 @@ final class AppModel: ObservableObject {
         """
     }
 
-    func editWorkspaceBrief() {
-        guard let workspace = activeWorkspace else { return }
-        let aliases = workspaceAliases(for: workspace.workspaceID)
-        let existing = workspaceBriefs.first(where: { aliases.contains($0.workspaceID) })
-        workspaceBriefDraft = ActiveWorkspaceBriefDraft(
-            workspaceID: workspace.workspaceID,
-            workspaceName: workspace.name,
-            existingBriefID: existing?.id,
-            goal: existing?.goal ?? "",
-            constraints: existing?.constraints ?? "",
-            decisions: existing?.decisions ?? "",
-            conclusions: existing?.conclusions ?? "",
-            rationale: existing?.rationale ?? "",
-            confidence: existing?.confidence ?? "",
-            openQuestions: existing?.openQuestions ?? ""
-        )
-        workspaceBriefPresented = true
-    }
-
-    func presentPinnedContextSnippets() {
-        pinnedContextSnippetsPresented = true
-    }
-
-    @discardableResult
-    func savePinnedContextSnippet(id: String?, title: String, text: String) -> String? {
-        do {
-            let saved = try pinnedContextSnippetStore.save(id: id, title: title, text: text)
-            try reloadPinnedContextSnippets()
-            return saved.id
-        } catch {
-            NSAlert(error: error).runModal()
-            return nil
-        }
-    }
-
-    func deletePinnedContextSnippet(_ snippet: PinnedContextSnippet) {
-        let alert = NSAlert()
-        alert.messageText = "Delete \(snippet.title)?"
-        alert.informativeText = "This removes only the reusable local snippet. Existing context-pack snapshots and agent panes are unchanged."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete Snippet")
-        alert.addButton(withTitle: "Keep Snippet")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        do {
-            try pinnedContextSnippetStore.delete(id: snippet.id)
-            try reloadPinnedContextSnippets()
-        } catch {
-            NSAlert(error: error).runModal()
-        }
-    }
-
-    func dismissWorkspaceBrief() {
-        workspaceBriefPresented = false
-        workspaceBriefDraft = nil
-        terminalHandle.focus()
-    }
-
-    func saveWorkspaceBrief(
-        goal: String,
-        constraints: String,
-        decisions: String,
-        conclusions: String,
-        rationale: String,
-        confidence: String,
-        openQuestions: String
-    ) {
-        do {
-            guard let draft = workspaceBriefDraft else { return }
-            _ = try workspaceBriefStore.save(
-                workspaceID: draft.workspaceID,
-                workspaceName: draft.workspaceName,
-                goal: goal,
-                constraints: constraints,
-                decisions: decisions,
-                conclusions: conclusions,
-                rationale: rationale,
-                confidence: confidence,
-                openQuestions: openQuestions
-            )
-            try reloadWorkspaceBriefs()
-            workspaceBriefPresented = false
-            workspaceBriefDraft = nil
-            terminalHandle.focus()
-        } catch {
-            NSAlert(error: error).runModal()
-        }
-    }
-
-    func deleteWorkspaceBrief() {
-        guard let draft = workspaceBriefDraft, draft.existingBriefID != nil else { return }
-        let alert = NSAlert()
-        alert.messageText = "Delete the workspace brief for \(draft.workspaceName)?"
-        alert.informativeText = "This removes only the saved local brief. Existing context-pack snapshots and agent panes are unchanged."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete Brief")
-        alert.addButton(withTitle: "Keep Brief")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        do {
-            try workspaceBriefStore.delete(workspaceID: draft.workspaceID)
-            try reloadWorkspaceBriefs()
-            workspaceBriefPresented = false
-            workspaceBriefDraft = nil
-            terminalHandle.focus()
-        } catch {
-            NSAlert(error: error).runModal()
-        }
-    }
-
-    func newContextPackWithWorkspaceBrief() {
-        guard activeWorkspaceBrief != nil else { return }
-        let previousDraftID = contextPackDraft?.id
-        newContextPack()
-        guard let newDraftID = contextPackDraft?.id,
-              newDraftID != previousDraftID else { return }
-        addWorkspaceBriefContext()
-    }
-
     func newContextPack() {
         guard canCreateContextPack, let source = activePane else { return }
         if let existing = contextPackDraft, !existing.pack.parts.isEmpty {
@@ -4981,68 +4804,6 @@ final class AppModel: ObservableObject {
             )
         }
         try appendContextPackParts([part], draftID: draft.id)
-    }
-
-    func addWorkspaceBriefContext() {
-        perform {
-            guard canAddWorkspaceBriefToContextPack,
-                  let draft = contextPackDraft,
-                  let source = contextPackSourcePane,
-                  let savedBrief = contextPackWorkspaceBrief,
-                  let contextPackBuilder else {
-                throw RelayUIError.message(
-                    "Save a brief for this context pack's workspace before attaching it."
-                )
-            }
-            let currentWorkspaceName = source.workspaceName?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let workspaceName: String
-            if let currentWorkspaceName, !currentWorkspaceName.isEmpty {
-                workspaceName = currentWorkspaceName
-            } else {
-                workspaceName = savedBrief.workspaceName
-            }
-            let brief = WorkspaceBrief(
-                id: savedBrief.id,
-                workspaceID: savedBrief.workspaceID,
-                workspaceName: workspaceName,
-                goal: savedBrief.goal,
-                constraints: savedBrief.constraints,
-                decisions: savedBrief.decisions,
-                conclusions: savedBrief.conclusions,
-                rationale: savedBrief.rationale,
-                confidence: savedBrief.confidence,
-                openQuestions: savedBrief.openQuestions,
-                createdAt: savedBrief.createdAt,
-                updatedAt: savedBrief.updatedAt
-            )
-            let part = try contextPackBuilder.workspaceBrief(brief)
-            try appendContextPackParts([part], draftID: draft.id)
-        }
-    }
-
-    func addPinnedContextSnippets(ids: [String]) {
-        perform {
-            guard !contextPackIsAgentProposed,
-                  let draft = contextPackDraft,
-                  let contextPackBuilder else {
-                throw RelayUIError.message("Open a person-created context pack before adding pinned context.")
-            }
-            let uniqueIDs = ids.reduce(into: [String]()) { result, id in
-                if !result.contains(id) { result.append(id) }
-            }
-            guard !uniqueIDs.isEmpty else {
-                throw RelayUIError.message("Choose at least one pinned context snippet to add.")
-            }
-            let available = Dictionary(uniqueKeysWithValues: availablePinnedContextSnippets.map { ($0.id, $0) })
-            guard uniqueIDs.allSatisfy({ available[$0] != nil }) else {
-                throw RelayUIError.message("One of those snippets is unavailable or already attached.")
-            }
-            let parts = try uniqueIDs.compactMap { id in
-                try available[id].map(contextPackBuilder.pinnedSnippet)
-            }
-            try appendContextPackParts(parts, draftID: draft.id)
-        }
     }
 
     func captureContextCommand(executablePath: String, argumentLines: String) async throws {
@@ -5569,14 +5330,6 @@ final class AppModel: ObservableObject {
         return [candidates[max(0, picker.indexOfSelectedItem)]]
     }
 
-
-    private func reloadWorkspaceBriefs() throws {
-        workspaceBriefs = try workspaceBriefStore.briefs()
-    }
-
-    private func reloadPinnedContextSnippets() throws {
-        pinnedContextSnippets = try pinnedContextSnippetStore.snippets()
-    }
 
     private func requestPaneChoice(
         title: String,

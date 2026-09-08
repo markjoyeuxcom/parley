@@ -6,7 +6,6 @@ struct ContextPackView: View {
     @ObservedObject var model: AppModel
     @State private var selectedPartID: String?
     @State private var commandCapturePresented = false
-    @State private var pinnedSnippetPickerPresented = false
     @State private var vendorEvidencePresented = false
 
     var body: some View {
@@ -30,9 +29,6 @@ struct ContextPackView: View {
         .onChange(of: partIDs) { _, _ in selectFirstPartIfNeeded() }
         .sheet(isPresented: $commandCapturePresented) {
             ContextCommandCaptureView(model: model)
-        }
-        .sheet(isPresented: $pinnedSnippetPickerPresented) {
-            PinnedContextSnippetPickerView(model: model)
         }
         .sheet(isPresented: $vendorEvidencePresented) {
             VendorToolEvidenceCaptureView(model: model)
@@ -109,14 +105,6 @@ struct ContextPackView: View {
                     vendorEvidencePresented = true
                 }
                 .disabled(model.vendorToolEvidencePanes.isEmpty)
-                Button("Add Workspace Brief", systemImage: "doc.text") {
-                    model.addWorkspaceBriefContext()
-                }
-                .disabled(!model.canAddWorkspaceBriefToContextPack)
-                Button("Add Pinned Snippets…", systemImage: "pin") {
-                    pinnedSnippetPickerPresented = true
-                }
-                .disabled(model.contextPackIsAgentProposed)
             }
             Spacer()
             Text(model.contextPackIsAgentProposed ? "Every added source states exactly what Parley established" : "Only sources you add explicitly are included")
@@ -140,7 +128,7 @@ struct ContextPackView: View {
                         ContentUnavailableView(
                             "No Explicit Sources",
                             systemImage: "shippingbox",
-                            description: Text("Add files, a Git diff, selected terminal text, a command result, browser/tool evidence, the workspace brief or pinned context.")
+                            description: Text("Add files, a Git diff, selected terminal text, a command result or browser/tool evidence.")
                         )
                     } else {
                         List(draft.pack.parts, selection: $selectedPartID) { part in

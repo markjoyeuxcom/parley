@@ -1276,8 +1276,6 @@ private func checkInAppHelpGuideCoverage() throws {
         "workspace lead", "automation policy", "permission", "status center",
         "saved layout", "command palette", "subscription", "compare independently",
         "edited synthesis", "context pack", "utf-8 bytes", "absolute executable",
-        "workspace brief", "pinned context", "never attached automatically",
-        "investigation conclusions", "person-authored confidence",
         "authenticated identity", "content-minimal coordination events",
         "cursor removed by retention",
         "context pack from selected results", "no handoff is submitted automatically",
@@ -1342,9 +1340,8 @@ private func checkInAppHelpGuideCoverage() throws {
         "the in-app guide omitted the dedicated context model page"
     ).searchableText.lowercased()
     for guidance in [
-        "pinned snippet", "application-wide", "workspace brief", "vendor pane",
-        "attributed snapshot", "one active person-created context pack draft",
-        "never attached automatically",
+        "vendor pane", "attributed snapshot", "one active person-created context pack draft",
+        "nothing is attached automatically",
     ] {
         try expect(contextModel.contains(guidance), "the context model guide omitted \(guidance)")
     }
@@ -3760,7 +3757,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "25", "the shared protocol version drifted from cross-project agent awareness")
+    try expect(AgentProtocol.version == "26", "the shared protocol version drifted from cross-project agent awareness")
     try expect(
         AgentProtocol.text.contains("parley delegate <target> --parent <handoff-id>")
             && AgentProtocol.text.contains("requestChanges")
@@ -5027,200 +5024,6 @@ private func checkVendorToolEvidenceIsCapabilityGatedAndAttributed() throws {
         throw CheckFailure(description: "an oversized local artifact crossed the explicit evidence bound")
     } catch ContextPackError.artifactTooLarge {
         // Expected: metadata capture still has a deliberate source-byte ceiling.
-    }
-}
-
-private func checkWorkspaceBriefsAreDurableAndExplicitlyAttached() throws {
-    let directory = try temporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let file = directory.appendingPathComponent("workspace-briefs.json")
-    let store = WorkspaceBriefStore(file: file)
-    let createdAt = Date(timeIntervalSince1970: 100)
-    let brief = try store.save(
-        workspaceID: "@1",
-        workspaceName: "parley",
-        goal: "Ship reviewed cross-vendor context.",
-        constraints: "No API keys.\nNo implicit agent dispatch.",
-        decisions: "Every attachment opens as editable context.",
-        conclusions: "The authenticated handoff is the durable evidence primitive.",
-        rationale: "It preserves the real source, target and lifecycle without a parallel board.",
-        confidence: "High, based on the completed cross-vendor checks.",
-        openQuestions: "How should official vendor hooks report turn completion?",
-        now: createdAt
-    )
-    try expect(brief.createdAt == createdAt && brief.updatedAt == createdAt, "workspace brief timestamps were not stable")
-
-    let concise = WorkspaceBrief(
-        workspaceID: "@concise",
-        workspaceName: "concise",
-        goal: "Keep attached briefs focused.",
-        constraints: "",
-        decisions: ""
-    ).renderedText
-    try expect(
-        !concise.contains("Investigation conclusions:")
-            && !concise.contains("Rationale:")
-            && !concise.contains("Confidence (person-authored):")
-            && !concise.contains("Open questions:"),
-        "empty investigation fields added noise to a concise workspace brief"
-    )
-
-    let builder = ContextPackBuilder()
-    let ordinary = try builder.terminalSelection(paneID: "%1", paneName: "Claude", text: "Selected output only")
-    let withoutBrief = try builder.render(ContextPack(
-        name: "No brief",
-        note: "Review this output.",
-        parts: [ordinary]
-    ))
-    try expect(!withoutBrief.contains(brief.goal), "a workspace brief was injected without an explicit attachment")
-
-    let attached = try builder.workspaceBrief(brief)
-    try expect(attached.source.kind == .workspaceBrief, "workspace brief attachment lost its provenance kind")
-    try expect(attached.source.detail.contains("parley") && attached.source.detail.contains("@1"), "workspace brief attachment lost its workspace provenance")
-    let withBrief = try builder.render(ContextPack(
-        name: "With brief",
-        note: "Review against the workspace brief.",
-        parts: [ordinary, attached]
-    ))
-    try expect(withBrief.contains("Current goal") && withBrief.contains(brief.goal), "explicitly attached workspace brief was omitted")
-    try expect(withBrief.contains("No API keys.\nNo implicit agent dispatch."), "workspace brief formatting was flattened")
-    try expect(
-        withBrief.contains("Investigation conclusions")
-            && withBrief.contains(brief.conclusions)
-            && withBrief.contains(brief.rationale)
-            && withBrief.contains(brief.confidence)
-            && withBrief.contains(brief.openQuestions),
-        "an explicitly attached workspace brief omitted its durable investigation record"
-    )
-    let editedAttachment = attached.replacingText("Edited only for this receiving vendor.")
-    try expect(editedAttachment.isEdited, "editing an attached brief was not visible in the preview")
-    let unchangedBrief = try store.brief(workspaceID: "@1")
-    try expect(unchangedBrief?.goal == brief.goal, "editing a context snapshot rewrote the durable workspace brief")
-
-    let updated = try store.save(
-        workspaceID: "@1",
-        workspaceName: "parley-renamed",
-        goal: "Finish the workspace brief flow.",
-        constraints: brief.constraints,
-        decisions: brief.decisions,
-        conclusions: brief.conclusions,
-        rationale: brief.rationale,
-        confidence: brief.confidence,
-        openQuestions: brief.openQuestions,
-        now: Date(timeIntervalSince1970: 120)
-    )
-    try expect(updated.id == brief.id && updated.createdAt == createdAt, "updating a workspace brief created a second identity")
-    let updatedBriefs = try store.briefs()
-    try expect(updatedBriefs.count == 1, "one workspace acquired multiple briefs")
-    let legacyFile = directory.appendingPathComponent("legacy-workspace-briefs.json")
-    let legacyJSON = """
-    {"version":1,"briefs":[{"id":"legacy","workspaceID":"@legacy","workspaceName":"Legacy","goal":"Keep the old brief readable.","constraints":"","decisions":"Existing decision.","createdAt":0,"updatedAt":0}]}
-    """
-    try Data(legacyJSON.utf8).write(to: legacyFile, options: .atomic)
-    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: legacyFile.path)
-    let legacy = try require(
-        try WorkspaceBriefStore(file: legacyFile).brief(workspaceID: "@legacy"),
-        "a legacy workspace brief did not survive the investigation-field migration"
-    )
-    try expect(
-        legacy.conclusions.isEmpty
-            && legacy.rationale.isEmpty
-            && legacy.confidence.isEmpty
-            && legacy.openQuestions.isEmpty,
-        "missing investigation fields were invented while loading a legacy workspace brief"
-    )
-    let other = try store.save(
-        workspaceID: "@2",
-        workspaceName: "consumer",
-        goal: "Verify the consumer.",
-        constraints: "Read only.",
-        decisions: "Use an independent vendor."
-    )
-    try store.delete(workspaceID: "@1")
-    let remainingBriefs = try store.briefs()
-    try expect(remainingBriefs.map(\.id) == [other.id], "deleting one workspace brief removed an unrelated workspace")
-
-    let permissions = try require(
-        try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber,
-        "workspace brief permissions were unavailable"
-    )
-    try expect(permissions.intValue & 0o077 == 0, "workspace briefs are readable outside their owner")
-    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
-    do {
-        _ = try WorkspaceBriefStore(file: file).briefs()
-        throw CheckFailure(description: "an unsafe workspace brief file was accepted")
-    } catch let error as WorkspaceBriefError {
-        try expect(error.errorDescription?.contains("owner-only") == true, "unsafe workspace brief permissions failed unclearly")
-    }
-}
-
-private func checkPinnedContextSnippetsAreDurableReusableAndExplicit() throws {
-    let directory = try temporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let file = directory.appendingPathComponent("pinned-context-snippets.json")
-    let store = PinnedContextSnippetStore(file: file)
-    let createdAt = Date(timeIntervalSince1970: 200)
-    let snippet = try store.save(
-        title: "Definition of done",
-        text: "Run the deterministic suite.\nReport both stdout and stderr.",
-        now: createdAt
-    )
-    try expect(snippet.createdAt == createdAt && snippet.updatedAt == createdAt, "pinned snippet timestamps were not stable")
-    let initialSnippets = try store.snippets()
-    try expect(initialSnippets == [snippet], "a pinned snippet did not survive a store reload")
-
-    let builder = ContextPackBuilder()
-    let ordinary = try builder.terminalSelection(paneID: "%1", paneName: "Claude", text: "Implementation complete")
-    let withoutSnippet = try builder.render(ContextPack(
-        name: "No pinned context",
-        note: "Review the implementation.",
-        parts: [ordinary]
-    ))
-    try expect(!withoutSnippet.contains(snippet.text), "a pinned snippet was injected without an explicit attachment")
-
-    let attached = try builder.pinnedSnippet(snippet)
-    try expect(attached.source.kind == .pinnedSnippet, "pinned snippet attachment lost its provenance kind")
-    try expect(attached.source.referenceID == snippet.id, "pinned snippet attachment lost its durable identity")
-    let withSnippet = try builder.render(ContextPack(
-        name: "With pinned context",
-        note: "Review against the attached criteria.",
-        parts: [ordinary, attached]
-    ))
-    try expect(withSnippet.contains("Definition of done") && withSnippet.contains(snippet.text), "explicitly attached pinned snippet was omitted")
-    let editedAttachment = attached.replacingText("Use this wording for this handoff only.")
-    try expect(editedAttachment.isEdited, "editing an attached snippet was not visible in the preview")
-    let unchangedSnippet = try store.snippet(id: snippet.id)
-    try expect(unchangedSnippet?.text == snippet.text, "editing a context snapshot rewrote its pinned snippet")
-
-    let updated = try store.save(
-        id: snippet.id,
-        title: "Verification contract",
-        text: "Run tests.\nRun the production build.",
-        now: Date(timeIntervalSince1970: 220)
-    )
-    try expect(updated.id == snippet.id && updated.createdAt == createdAt, "updating a pinned snippet created a second identity")
-    do {
-        _ = try store.save(title: "verification CONTRACT", text: "Duplicate title")
-        throw CheckFailure(description: "pinned snippets accepted a case-insensitive duplicate title")
-    } catch let error as PinnedContextSnippetError {
-        try expect(error.errorDescription?.contains("already exists") == true, "duplicate snippet title failed unclearly")
-    }
-    let other = try store.save(title: "Architecture rule", text: "Keep transport shell-free.")
-    try store.delete(id: updated.id)
-    let remainingSnippetIDs = try store.snippets().map(\.id)
-    try expect(remainingSnippetIDs == [other.id], "deleting one pinned snippet removed unrelated context")
-
-    let permissions = try require(
-        try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber,
-        "pinned snippet permissions were unavailable"
-    )
-    try expect(permissions.intValue & 0o077 == 0, "pinned snippets are readable outside their owner")
-    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
-    do {
-        _ = try PinnedContextSnippetStore(file: file).snippets()
-        throw CheckFailure(description: "an unsafe pinned snippet file was accepted")
-    } catch let error as PinnedContextSnippetError {
-        try expect(error.errorDescription?.contains("owner-only") == true, "unsafe pinned snippet permissions failed unclearly")
     }
 }
 
@@ -10057,8 +9860,6 @@ let checks: [(String, () throws -> Void)] = [
     ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
     ("explicit bounded attributed context packs", checkContextPacksAreExplicitBoundedAndAttributed),
     ("vendor tool evidence is capability-gated and attributed", checkVendorToolEvidenceIsCapabilityGatedAndAttributed),
-    ("durable explicitly attached workspace briefs", checkWorkspaceBriefsAreDurableAndExplicitlyAttached),
-    ("durable reusable explicitly attached pinned context", checkPinnedContextSnippetsAreDurableReusableAndExplicit),
     ("agent context drafts require human approval", checkAgentContextDraftsRequireHumanApprovalBeforeAsk),
     ("concurrent context additions are atomic", checkConcurrentContextAddsRetainEveryAcceptedPart),
     ("context add racing Ask has one durable winner", checkContextAddRacingAskHasOneDurableWinner),

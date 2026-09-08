@@ -36,9 +36,7 @@ or bypass a vendor's approval flow.
   never derives these facts from terminal text.
 - Folder-backed workspaces, favourites, saved layouts, portable team
   templates, stable roles, workspace leads, pane move and configuration clone.
-- Reviewed context packs; workspace briefs with goals, decisions,
-  person-authored investigation conclusions, rationale, confidence and open
-  questions; pinned snippets; and Git diff/file capture.
+- Reviewed context packs and Git diff/file capture.
 - Generated, session-scoped lifecycle hooks for Claude Code and Codex, plus a
   Copilot plugin attachment. Runtime state changes only after the pane capability
   reports a real signal; Copilot and unsupported vendors otherwise remain visibly
@@ -253,8 +251,7 @@ lineage, recovery and authoritative lifecycle events.
 The unreleased Research Board experiment and the separate Handoff Chains
 surface have been retired. Their independent models and UI are removed;
 ordinary broker handoff history, receipts and recovery controls remain.
-Workspace Briefs now hold person-authored investigation conclusions,
-rationale, confidence and open questions. Status Center can inspect results
+Status Center can inspect results
 beside the multi-select history, launch Challenge or Verify as one editable
 correlated Ask to one explicit reviewer, and save a person-owned verdict and
 note. It can also promote 1 to 16 explicitly selected returned Ask or Delegate

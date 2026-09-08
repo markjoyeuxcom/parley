@@ -92,12 +92,6 @@ struct ContentView: View {
         .sheet(isPresented: $model.contextPackPresented) {
             ContextPackView(model: model)
         }
-        .sheet(isPresented: $model.workspaceBriefPresented) {
-            WorkspaceBriefView(model: model)
-        }
-        .sheet(isPresented: $model.pinnedContextSnippetsPresented) {
-            PinnedContextSnippetLibraryView(model: model)
-        }
         .sheet(isPresented: $model.worktreeBrowserPresented) {
             WorktreeBrowserView(model: model)
         }
@@ -1116,24 +1110,7 @@ struct ContentView: View {
             ]
         }
         items.append(.action("New Context Pack…", isEnabled: model.canCreateContextPack) { model.newContextPack() })
-        if model.activeWorkspace != nil {
-            items += [
-                .separator,
-                .heading("Workspace Brief"),
-                .action(model.activeWorkspaceBrief == nil ? "Create Workspace Brief…" : "Edit Workspace Brief…") {
-                    model.editWorkspaceBrief()
-                }
-            ]
-            if model.activeWorkspaceBrief != nil {
-                items.append(.action("New Context Pack with Workspace Brief…", isEnabled: model.canCreateContextPack) {
-                    model.newContextPackWithWorkspaceBrief()
-                })
-            }
-        }
         items += [
-            .separator,
-            .heading("Reusable Context"),
-            .action("Manage Pinned Snippets…") { model.presentPinnedContextSnippets() },
             .separator,
             .action("How Context Works", systemImage: "questionmark.circle") {
                 model.requestHelp(topicID: "context-model")
@@ -1147,8 +1124,8 @@ struct ContentView: View {
             accessibilityValue: model.pendingContextReviews.isEmpty
                 ? (model.contextPackDraft.map { "\($0.pack.parts.count) sources" } ?? "No draft")
                 : "\(model.pendingContextReviews.count) agent draft\(model.pendingContextReviews.count == 1 ? "" : "s") awaiting review",
-            help: "Manage reusable context, edit the workspace brief or assemble explicit attributed sources before a cross-vendor handoff",
-            accessibilityHint: "Manage pinned context and the workspace brief, or open an editable attributed context pack",
+            help: "Assemble explicit attributed sources into an editable context pack before a cross-vendor handoff",
+            accessibilityHint: "Open an editable attributed context pack or review an agent-staged draft",
             items: items
         )
     }
