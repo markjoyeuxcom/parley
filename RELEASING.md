@@ -1,9 +1,11 @@
 # Releasing Parley for macOS
 
-Parley's release job is deliberately manual and fail-closed. It produces an
-unpublished GitHub draft only after deterministic checks, the real eight-pane
-Ghostty soak, Developer ID signing, Apple notarization, Gatekeeper assessment
-and Sparkle feed signing all succeed.
+Parley's release jobs are deliberately manual and fail-closed. The
+unnotarized test beta becomes a GitLab release only after deterministic checks,
+the real eight-pane Ghostty soak, packaging and launch verification succeed.
+The notarized release additionally requires Developer ID signing, Apple
+notarization, Gatekeeper assessment and Sparkle feed signing before it
+produces an unpublished draft.
 
 ## Locked release dependencies
 
@@ -207,4 +209,5 @@ canceling it preserves the app and its panes.
 
 Do not rotate the Developer ID certificate and Sparkle key in the same release.
 If any signing or notarization stage fails, leave the prior published release
-and appcast untouched, correct the release input and rerun the draft workflow.
+and appcast untouched, correct the release input and rerun the notarized
+release workflow.
