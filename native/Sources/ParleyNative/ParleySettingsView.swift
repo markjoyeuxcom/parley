@@ -58,20 +58,6 @@ private struct GeneralSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Agent lifecycle") {
-                Toggle(
-                    "Reap idle agents after 30 minutes",
-                    isOn: Binding(
-                        get: { model.idleAgentReaperEnabled },
-                        set: { model.idleAgentReaperEnabled = $0 }
-                    )
-                )
-                .help("Close agent panes whose process has reported no activity for 30 minutes")
-                .accessibilityHint("Off by default; idleness comes from process facts, never terminal text")
-                Text("Off by default. Parley never infers that an agent is idle from terminal text.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
             Section("Agent command runs") {
                 Toggle(

@@ -402,13 +402,6 @@ struct ParleyNativeApp: App {
                 Button("Compatibility & Releases…") { model.showReleaseLifecycle() }
                 Button("Check for Stable Updates…") { model.checkForStableAutomaticUpdate() }
                     .disabled(!model.automaticUpdateCanCheck)
-                Toggle(
-                    "Reap Idle Agents After 30 Minutes",
-                    isOn: Binding(
-                        get: { model.idleAgentReaperEnabled },
-                        set: { model.idleAgentReaperEnabled = $0 }
-                    )
-                )
                 Divider()
                 Button("Export Diagnostics…") { model.exportDiagnostics() }
                     .disabled(model.diagnosticsExporting)
