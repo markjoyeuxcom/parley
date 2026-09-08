@@ -832,15 +832,13 @@ public enum ParleyHelpGuide {
                 ),
                 ParleyHelpSection(
                     id: "status-menu-bar-inbox",
-                    title: "Menu-bar attention inbox",
+                    title: "Menu-bar attention indicator",
                     paragraphs: [
-                        "Parley's bell remains in the macOS menu bar while the app is running, including after the main window is closed. It shows returned answers, completed delegations, permission requests, other known attention states and failures from the same authoritative handoff record as Status Center.",
-                        "Selecting an item opens that exact handoff in Status Center. Returned results become read when the record is selected there; the durable handoff itself is not deleted.",
+                        "Parley's bell remains in the macOS menu bar while the app is running, including after the main window is closed. Its number counts returned answers, completed delegations, permission requests, other known attention states and failures from the same authoritative handoff record as Status Center.",
+                        "The menu offers Open Parley and Open Status Center. Items are read in Status Center; the menu bar lists none of them, so prompt and answer bodies, terminal output, folders, credentials and even handoff labels never enter the menu-bar contract.",
                     ],
                     items: [
-                        "The menu shows at most eight recent items and names how many more remain in Status Center.",
-                        "Menu labels contain pane and workspace names plus an opaque handoff id behind the action. Prompt and answer bodies, terminal output, folders and credentials never enter the menu-bar contract.",
-                        "If the coordination core is disconnected, the inbox says Coordination unavailable and labels retained entries as last known instead of claiming an all-clear.",
+                        "If the coordination core is disconnected, the bell says Coordination unavailable and keeps the last known count instead of claiming an all-clear.",
                         "Development shows a DEV marker in the menu bar so an isolated test runtime is never confused with Production.",
                         "Per-workspace macOS notifications remain opt-in in Status Center. Their titles and bodies follow the same content-free boundary.",
                     ]
