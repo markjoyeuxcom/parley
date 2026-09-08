@@ -44,11 +44,14 @@ test-and-build:
     - npm test
     - npm run build
 
-# Cuts an unnotarized test beta from an existing version tag and creates an
-# unpublished GitHub draft release, exactly as the retired GitHub Actions
-# workflow did, but on the macOS runner. Publishing the draft stays a person's
-# action on GitHub. The runner's shell user must have `gh` signed in to the
-# GitHub account that owns markjoyeuxcom/parley and SSH access to push tags.
+# Cuts an unnotarized test beta from an existing version tag and publishes it
+# as a release of this GitLab project, with every file stored in the project's
+# generic package registry as package `parley`, version `<tag>`. It does what
+# the retired GitHub Actions workflow did, on the macOS runner. The job signs
+# in with its own CI job token through glab's CI auto-login, so the runner's
+# shell user needs no GitLab login and no personal token is stored anywhere;
+# `glab` must be installed on the runner. A release that already exists for
+# the tag fails the job instead of being overwritten.
 release-beta:
   stage: release
   tags:
@@ -56,22 +59,20 @@ release-beta:
   when: manual
   rules:
     - if: $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/
-  variables:
-    # PARLEY_RELEASE_TAG is deliberately not a job variable: the release CLI
-    # reads it from the environment, and `npm test` asserts the CLI has no
-    # preset tag. It is passed to the release steps only.
-    GITHUB_REPOSITORY: markjoyeuxcom/parley
   before_script:
     - export PATH="$HOME/.local/bin:$PATH"
     - if command -v mise >/dev/null 2>&1; then eval "$(mise activate bash --shims)"; fi
     - node --version
-    - gh auth status
+    - glab --version
   script:
     - npm ci --prefix vscode-extension
     - npm test
     - mkdir -p dist
     - npm run test:soak -- --rounds 25 --output dist/Parley-Ghostty-soak.json
     - npm run package:vscode
+    # PARLEY_RELEASE_TAG is deliberately not a job variable: the release CLI
+    # reads it from the environment, and `npm test` asserts the CLI has no
+    # preset tag. It is passed to the release step only.
     - PARLEY_RELEASE_TAG="$CI_COMMIT_TAG" npm run release:mac:beta
     - npm run verify:launch:mac
     - |
@@ -83,15 +84,12 @@ release-beta:
       LC_ALL=C sort -o "$checksums" "$checksums"
       (cd dist && shasum -a 256 -c "$(basename "$checksums")")
     - |
-      # The GitHub draft verifies its tag, so the tag must exist there first.
-      git push "git@github.com:${GITHUB_REPOSITORY}.git" "refs/tags/${CI_COMMIT_TAG}:refs/tags/${CI_COMMIT_TAG}"
-    - |
       version="$(node -p "require('./package.json').version")"
       companion="$(node -p "require('./vscode-extension/package.json').version")"
       base="dist/Parley-${version}-mac-arm64"
       notes=".github/release-notes/${CI_COMMIT_TAG}.md"
       test -f "$notes"
-      gh release create "$CI_COMMIT_TAG" \
+      GLAB_ENABLE_CI_AUTOLOGIN=true glab release create "$CI_COMMIT_TAG" \
         "$base.dmg" \
         "$base.zip" \
         "$base.release.json" \
@@ -99,11 +97,11 @@ release-beta:
         "${base}-INSTALL.txt" \
         "dist/Parley-Companion-${companion}.vsix" \
         "dist/Parley-Ghostty-soak.json" \
-        --repo "$GITHUB_REPOSITORY" \
-        --verify-tag \
-        --draft \
-        --prerelease \
-        --title "Parley v${version} — unnotarized test beta" \
+        --repo "$CI_PROJECT_PATH" \
+        --use-package-registry \
+        --package-name parley \
+        --no-update \
+        --name "Parley v${version} — unnotarized test beta" \
         --notes-file "$notes"
   artifacts:
     expire_in: 2 weeks

@@ -145,7 +145,7 @@ but it must not reinterpret terminal text or replace the vendor workflow.
   Schema 3 diagnostics now record content-free primitive usage, typed delivery
   outcomes, the retained event window and authoritative failure-to-session
   recovery timings. The retired Research Board and separate Handoff Chains
-  surfaces were removed before this phase. Draft releases now fail closed on a
+  surfaces were removed before this phase. Releases now fail closed on a
   25-round, eight-pane Ghostty soak and attach its checksummed JSON report.
   A passing long-running pane-stability measurement remains open: the managed
   development harness used on 2 September 2026 denied every Ghostty child shell

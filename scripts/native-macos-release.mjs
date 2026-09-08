@@ -231,7 +231,7 @@ Compare every downloaded artifact with its matching entry in SHA256SUMS before o
 ${updateInstructions}
 
 Optional VS Code companion
-The GitHub release also carries a matching Parley-Companion VSIX. In VS Code,
+The release also carries a matching Parley-Companion VSIX. In VS Code,
 open Extensions, choose Install from VSIX, and select that file. It is a thin
 local remote control for the installed Production app and cannot replace it.
 

@@ -746,12 +746,13 @@ a vendor CLI, spend subscription quota, mutate unrelated user processes or
 depend on network access. CI runs deterministic checks and the native build on
 macOS with complete Git history for the public scan.
 
-The manual draft-release workflow must pass the 25-round eight-pane soak, write
-its standalone JSON report, include it in SHA256SUMS and attach it to the draft.
-It must also Developer ID-sign nested Sparkle code inside-out, notarize and
-staple the app and DMG, pass Gatekeeper assessment, and generate a matching
-Ed25519-signed appcast and SHA-256-pinned cask. Missing credentials, signatures,
-notarization, appcast signing or soak evidence must fail the release closed.
+The manual release jobs must pass the 25-round eight-pane soak, write the
+standalone JSON report, include it in SHA256SUMS and attach it to the release.
+The notarized release must also Developer ID-sign nested Sparkle code
+inside-out, notarize and staple the app and DMG, pass Gatekeeper assessment,
+and generate a matching Ed25519-signed appcast and SHA-256-pinned cask. Missing
+credentials, signatures, notarization, appcast signing or soak evidence must
+fail the release closed.
 Publishing a release may propose the generated cask through a branch and pull
 request; release automation must never push it directly to main.
 

@@ -80,18 +80,14 @@ test('unnotarized test beta is explicit and cannot weaken the signed release pat
     /cannot be combined/,
   )
 
-  const workflow = readFileSync(join(repositoryRoot, '.github/workflows/macos-test-beta-release.yml'), 'utf8')
-  assert.match(workflow, /name: Prepare unnotarized macOS test beta/)
-  assert.match(workflow, /workflow_dispatch:/)
-  assert.doesNotMatch(workflow, /^\s+push:/m)
-  assert.match(workflow, /npm run release:mac:beta/)
-  assert.match(workflow, /npm run verify:launch:mac/)
-  assert.match(workflow, /npm run test:soak -- --rounds 25 --output dist\/Parley-Ghostty-soak\.json/)
-  assert.match(workflow, /gh release create[\s\S]*--draft[\s\S]*--prerelease/)
-  assert.doesNotMatch(workflow, /PARLEY_CODESIGN_IDENTITY/)
-  assert.doesNotMatch(workflow, /SPARKLE_PRIVATE/)
-  assert.doesNotMatch(workflow, /appcast\.xml/)
-  assert.doesNotMatch(workflow, /parley\.rb/)
+  // The GitHub Actions test-beta workflow was replaced on 2026-09-08 by the
+  // manual release-beta job in .gitlab-ci.yml (see github-security.test.mjs),
+  // so a second, dispatchable publisher of the same beta must not come back.
+  assert.equal(
+    existsSync(join(repositoryRoot, '.github/workflows/macos-test-beta-release.yml')),
+    false,
+    'the GitHub test-beta workflow was retired in favour of the GitLab release-beta job',
+  )
 })
 
 test('packaged launch check rejects an early dyld-style exit and stops a live app', async () => {
