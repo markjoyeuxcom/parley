@@ -128,10 +128,11 @@ func checkContextPackOriginIsStatedHonestlyInTheHeader() throws {
         (.awaitingReview, .agentProposed),
         (.rejected, .agentProposed),
         (.discarded, .agentProposed),
-        (.interrupted, .agentProposed),
         (.approved, .agentApproved),
         (.completed, .agentApproved),
-        (.failed, .agentApproved),
+        // Reached from either side of approval; the record must say so.
+        (.failed, .agentApprovalUnrecorded),
+        (.interrupted, .agentApprovalUnrecorded),
     ] {
         let review = draftReview("legacy-\(state.rawValue)", state: state, name: "Legacy", ageSeconds: 10)
         var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(review)) as! [String: Any]
@@ -146,6 +147,15 @@ func checkContextPackOriginIsStatedHonestlyInTheHeader() throws {
     }
     let legacyDraftRender = try builder.render(ContextPack(name: "Legacy", parts: [part], origin: AgentContextReview.legacyOrigin(for: .draft)))
     try draftExpect(legacyDraftRender.contains("not approved or sent"), "a legacy draft rendered without its unapproved header")
+    let unrecorded = ContextPackOrigin.agentApprovalUnrecorded.headerStatement
+    try draftExpect(
+        unrecorded.contains("whether the person approved delivery is not recorded")
+            && !unrecorded.contains("approved delivery of") && !unrecorded.contains("not approved or sent")
+            && !unrecorded.contains("selected by the person"),
+        "the unrecorded-approval header claims something its record cannot prove"
+    )
+    let legacyReturned = try JSONDecoder().decode(AgentContextReview.self, from: Data(#"{"id":"r","sourcePaneID":"%1","sourcePaneName":"Claude","sourcePaneKind":"claude","sourceFolder":"/p","pack":{"id":"p","name":"Old","note":"","parts":[]},"state":"completed","createdAt":0,"updatedAt":0}"#.utf8))
+    try draftExpect(legacyReturned.returnedPart == nil, "a record without a returned part invented one")
     try draftExpect(
         ContextPackOrigin.agentProposed.headerStatement.contains("captured separately keeps its own provenance"),
         "the unapproved header still calls a person-captured source an agent claim"

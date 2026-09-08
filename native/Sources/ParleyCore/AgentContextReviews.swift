@@ -26,6 +26,10 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
     public let sourcePaneKind: PaneKind
     public let sourceFolder: String
     public var pack: ContextPack
+    /// For a `parley done --file` return, the exact part as staged. Approval
+    /// rebuilds `pack` from the reviewed part set, so this is the only copy
+    /// that survives an edit or removal before delivery.
+    public var returnedPart: ContextPackPart?
     public var state: AgentContextReviewState
     public var requestedTargetPaneID: String?
     public var requestedTargetName: String?
@@ -41,6 +45,7 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
         sourcePaneKind: PaneKind,
         sourceFolder: String,
         pack: ContextPack,
+        returnedPart: ContextPackPart? = nil,
         state: AgentContextReviewState = .draft,
         requestedTargetPaneID: String? = nil,
         requestedTargetName: String? = nil,
@@ -55,6 +60,7 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
         self.sourcePaneKind = sourcePaneKind
         self.sourceFolder = sourceFolder
         self.pack = pack
+        self.returnedPart = returnedPart
         self.state = state
         self.requestedTargetPaneID = requestedTargetPaneID
         self.requestedTargetName = requestedTargetName
@@ -65,14 +71,13 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, sourcePaneID, sourcePaneName, sourcePaneKind, sourceFolder, pack, state
+        case id, sourcePaneID, sourcePaneName, sourcePaneKind, sourceFolder, pack, returnedPart, state
         case requestedTargetPaneID, requestedTargetName, idempotencyKey, createdAt, updatedAt, detail
     }
 
     /// Every review is agent-staged. A record written before packs carried an
-    /// origin decodes with the origin its state proves: approved, completed and
-    /// failed reviews passed the person's approval; every other state is still
-    /// a proposal. None of them is ever the person's own selection.
+    /// origin decodes with the origin its state proves, and says so when the
+    /// state proves nothing. None of them is ever the person's own selection.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
@@ -87,6 +92,7 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
             decodedPack.origin = Self.legacyOrigin(for: decodedState)
         }
         pack = decodedPack
+        returnedPart = try container.decodeIfPresent(ContextPackPart.self, forKey: .returnedPart)
         state = decodedState
         requestedTargetPaneID = try container.decodeIfPresent(String.self, forKey: .requestedTargetPaneID)
         requestedTargetName = try container.decodeIfPresent(String.self, forKey: .requestedTargetName)
@@ -96,10 +102,17 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
         detail = try container.decodeIfPresent(String.self, forKey: .detail)
     }
 
+    /// `approved` is written only by approval and `completed` only after it;
+    /// `draft`, `awaitingReview`, `rejected` and `discarded` never passed it.
+    /// `failed` is reached both by a timed-out approval wait and by a failed
+    /// delivery after approval, and a restart turns both a waiting and an
+    /// approved review into `interrupted`, so those two record no approval
+    /// status rather than guessing one.
     public static func legacyOrigin(for state: AgentContextReviewState) -> ContextPackOrigin {
         switch state {
-        case .approved, .completed, .failed: .agentApproved
-        case .draft, .awaitingReview, .rejected, .discarded, .interrupted: .agentProposed
+        case .approved, .completed: .agentApproved
+        case .draft, .awaitingReview, .rejected, .discarded: .agentProposed
+        case .failed, .interrupted: .agentApprovalUnrecorded
         }
     }
 }

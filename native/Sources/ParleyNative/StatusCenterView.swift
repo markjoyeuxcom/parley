@@ -1860,29 +1860,57 @@ struct StatusCenterView: View {
     }
 
     /// The exact returned bytes stay readable from the handoff after the
-    /// draft is resolved or discarded. Nothing here edits or sends them.
+    /// draft is resolved or discarded. They come from the part kept as
+    /// staged, never from whatever remains in the reviewed delivery pack;
+    /// a record kept before that copy existed says so. Nothing here edits or
+    /// sends them.
     private func returnedFileReadOnly(_ review: AgentContextReview) -> some View {
-        DisclosureGroup {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(review.pack.parts) { part in
-                        Text("\(part.source.label) · \(part.capturedByteCount.formatted()) UTF-8 bytes · agent-provided, not independently read")
-                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                        Text(part.capturedText)
-                            .font(.system(size: 10, design: .monospaced))
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
+        let remaining = review.returnedPart == nil ? review.pack.parts.filter { $0.source.kind == .agentFileDraft } : []
+        return DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                if let returned = review.returnedPart {
+                    returnedPartText(
+                        returned,
+                        caption: "Returned file \(returned.source.label) · \(returned.capturedByteCount.formatted()) UTF-8 bytes · agent-provided, not independently read · kept as returned, unaffected by edits made before delivery"
+                    )
+                } else if remaining.isEmpty {
+                    Text("This record was kept before Parley retained the returned file separately, and no agent-provided part remains in its reviewed draft.")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("This record was kept before Parley retained the returned file separately. Shown are the agent-provided parts still in its reviewed draft, which may have been edited before delivery.")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(remaining) { part in
+                        returnedPartText(part, caption: "\(part.source.label) · \(part.capturedByteCount.formatted()) UTF-8 bytes · agent-provided, not independently read")
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: 320)
+            .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
             Text("Show returned file (read-only)")
                 .font(.system(size: 9))
         }
         .accessibilityLabel("Show the returned file, read-only")
+    }
+
+    private func returnedPartText(_ part: ContextPackPart, caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(caption)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                Text(part.capturedText)
+                    .font(.system(size: 10, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 320)
+        }
     }
 
     private func returnedFileReviewSection(_ review: AgentContextReview) -> some View {

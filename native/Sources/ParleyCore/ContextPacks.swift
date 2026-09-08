@@ -121,6 +121,10 @@ public enum ContextPackOrigin: String, Codable, Equatable, Sendable {
     case agentProposed
     /// An agent-proposed pack the person reviewed and approved for delivery.
     case agentApproved
+    /// An agent review recorded before packs carried an origin whose final
+    /// state (failed, interrupted) is reached from either side of approval,
+    /// so whether the person approved delivery is not recorded.
+    case agentApprovalUnrecorded
 
     public var headerStatement: String {
         switch self {
@@ -130,6 +134,8 @@ public enum ContextPackOrigin: String, Codable, Equatable, Sendable {
             "Agent-proposed context; not approved or sent. Agent-provided parts are claims Parley has not independently read; a source the person captured separately keeps its own provenance. No hidden terminal history or implicit transcript was included."
         case .agentApproved:
             "The person reviewed and approved delivery of this agent-proposed context. Agent-provided parts keep their provenance and are not independently verified. No hidden terminal history or implicit transcript was included."
+        case .agentApprovalUnrecorded:
+            "Agent-proposed context from a record kept before Parley stored approval status; whether the person approved delivery is not recorded. Agent-provided parts are claims Parley has not independently read; a source the person captured separately keeps its own provenance. No hidden terminal history or implicit transcript was included."
         }
     }
 }

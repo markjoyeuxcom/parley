@@ -4043,6 +4043,12 @@ private func checkDelegationFileResultsAreBoundedOwnedAndReviewed() throws {
     try expect(part.source.referenceID == handoffID, "the file review lost its delegation lineage")
     try expect(part.source.detail.contains(reportPath), "the file review omitted the contained canonical path")
     try expect(part.capturedText == report && part.text == report, "the file review damaged multiline formatting")
+    try expect(review.returnedPart == part, "the returned file was not kept on the review as staged")
+    let roundTrippedReview = try JSONDecoder().decode(AgentContextReview.self, from: JSONEncoder().encode(review))
+    try expect(roundTrippedReview.returnedPart == part, "the returned part did not survive a record round trip")
+    var editedDelivery = review
+    editedDelivery.pack.parts = []
+    try expect(editedDelivery.returnedPart == part, "removing the file from the delivery pack removed the returned copy")
 
     let status = try JSONDecoder().decode(
         [RelayDelegationStatus].self,
@@ -8310,6 +8316,48 @@ private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate
     try expect(broker.contextReviews().first(where: { $0.id == discardableID })?.pack.parts.first?.capturedText == "let old = true", "a discarded draft lost its staged bytes")
     let again = try control.discardContextDraft(reviewID: discardableID, expectedUpdatedAt: discardableReview.updatedAt)
     try expect(again.status == 409, "a discarded draft could be discarded twice")
+
+    // A record from before packs carried an origin must not gain an approval
+    // its state cannot prove. Generate the two ambiguous states the way the
+    // broker does: an approval wait that times out, and a restart over an
+    // approved review.
+    func legacyDecodedOrigin(_ reviewID: String) throws -> ContextPackOrigin {
+        let document = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("context-reviews.json"))) as! [String: Any]
+        var object = try require((document["reviews"] as! [[String: Any]]).first(where: { $0["id"] as? String == reviewID }), "review \(reviewID) was not persisted")
+        var packObject = object["pack"] as! [String: Any]
+        packObject.removeValue(forKey: "origin")
+        object["pack"] = packObject
+        return try JSONDecoder().decode(AgentContextReview.self, from: JSONSerialization.data(withJSONObject: object)).pack.origin
+    }
+    let timingOut = broker.handleContextDraft(token: claudeToken, name: "Timing out", path: "Sources/Slow.swift", text: "let slow = true")
+    try expect(timingOut.status == 201, "a third draft could not be staged")
+    let timingOutID = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(timingOut.text.utf8)).id
+    let timeoutResult = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        timeoutResult.set(broker.handleContextAsk(token: claudeToken, draftID: timingOutID, target: "%2", text: "Never approved.", idempotencyKey: "context-review-ask-timeout"))
+    }
+    try expect(eventually(timeout: 8) { timeoutResult.value != nil }, "the unapproved context Ask did not time out")
+    try expect(timeoutResult.value?.status == 408, "the unapproved context Ask did not report a timeout")
+    try expect(broker.contextReviews().first(where: { $0.id == timingOutID })?.state == .failed, "a timed-out approval wait did not record failed")
+    let timedOutLegacyOrigin = try legacyDecodedOrigin(timingOutID)
+    try expect(timedOutLegacyOrigin == .agentApprovalUnrecorded, "a timed-out, never-approved review decoded as \(timedOutLegacyOrigin.rawValue)")
+
+    let approvedBeforeRestart = AgentContextReview(
+        id: "approved-before-restart",
+        sourcePaneID: "%1",
+        sourcePaneName: "Claude",
+        sourcePaneKind: .claude,
+        sourceFolder: "/tmp/project",
+        pack: ContextPack(name: "Approved earlier", parts: stagedReview.pack.parts, origin: .agentApproved),
+        state: .approved,
+        requestedTargetPaneID: "%2"
+    )
+    try reviewStore.record(approvedBeforeRestart)
+    let restarted = RelayBroker(credentials: credentials, panes: { panes }, paste: { _, _ in }, submit: { _, _ in }, contextReviewStore: reviewStore)
+    try expect(restarted.contextReviews().first(where: { $0.id == approvedBeforeRestart.id })?.state == .interrupted, "a restart did not interrupt an approved review")
+    let interruptedLegacyOrigin = try legacyDecodedOrigin(approvedBeforeRestart.id)
+    try expect(interruptedLegacyOrigin == .agentApprovalUnrecorded, "an approved review interrupted by a restart decoded as \(interruptedLegacyOrigin.rawValue)")
+    try expect(restarted.contextReviews().first(where: { $0.id == approvedBeforeRestart.id })?.pack.origin == .agentApproved, "a restart overwrote an explicit origin")
 }
 
 private func checkConcurrentContextAddsRetainEveryAcceptedPart() throws {

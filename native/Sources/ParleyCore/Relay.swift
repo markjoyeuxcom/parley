@@ -2052,6 +2052,7 @@ public final class RelayBroker: @unchecked Sendable {
                     parts: [staged.part],
                     origin: .agentProposed
                 ),
+                returnedPart: staged.part,
                 detail: "Returned from tracked delegation \(handoffID); awaiting explicit human review."
             )
             do {

@@ -627,16 +627,23 @@ context; not approved or sent" until the person approves, then that the
 person approved delivery while agent-provided parts stay unverified, and a
 source the person captured separately into an agent draft keeps its own
 provenance. A review recorded before the origin existed decodes with the
-origin its state proves (`AgentContextReview.legacyOrigin`: approved,
-completed and failed are approved; everything else is proposed), never as
-person-selected; only a bare pack without an origin is person-selected. The
+origin its state proves (`AgentContextReview.legacyOrigin`: approved and
+completed are approved; draft, awaiting review, rejected and discarded are
+proposed; failed and interrupted, which the approval timeout and the restart
+recovery reach from either side of approval, are `agentApprovalUnrecorded`
+and say so), never as person-selected; only a bare pack without an origin is
+person-selected. The
 Context menu lists waiting approvals first and the newest eight saved drafts,
 with every pending draft in Status Center's Live section. A native discard
 (`discardContextDraft`, `/ui/context-reviews/discard`) names the draft and
 the listed revision and is refused under the broker lock for anything but an
-unchanged `.draft`, so a bulk discard can never decline a waiting Ask; the
-exact bytes of a returned file stay readable from the completed handoff while
-the resolved review is retained. Approval forms return
+unchanged `.draft`, so a bulk discard can never decline a waiting Ask. A
+`done --file` review keeps the part exactly as staged in `returnedPart`;
+approval rebuilds `pack` from the reviewed part set and never touches it, and
+the completed handoff's read-only "Show returned file" reads only that copy
+(a record from before the copy existed shows the agent-provided parts still
+in its draft and says they may have been edited) while the resolved review
+is retained. Approval forms return
 known part ids and edited text, never source metadata or captured originals.
 
 Context-review validation, durable recording, in-memory replacement and
