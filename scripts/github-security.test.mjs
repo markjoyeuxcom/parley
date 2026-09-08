@@ -68,9 +68,12 @@ test('GitLab CI is the deterministic macOS gate for merge requests and main', ()
   assert.match(source, /CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH/, 'pushes to main must be verified')
 })
 
-test('the GitLab release job is manual, tag-only, and creates an unpublished GitHub draft', () => {
+test('the GitLab release job is manual, tag-only, and publishes a GitLab release with its job token', () => {
   // GitHub Actions minutes are exhausted, so the test-beta release runs on the
-  // macOS runner and publishes to GitHub Releases, where releases stay.
+  // macOS runner and publishes a release of the GitLab project itself, with
+  // the files in the project's generic package registry. The job signs in with
+  // its own CI job token; no personal GitLab or GitHub login on the runner
+  // takes part, and nothing is pushed to or published on GitHub.
   const source = readFileSync(join(repositoryRoot, '.gitlab-ci.yml'), 'utf8')
   const job = source.slice(source.indexOf('release-beta:'))
   assert.ok(job.length > 0, 'the release-beta job is missing')
@@ -80,8 +83,12 @@ test('the GitLab release job is manual, tag-only, and creates an unpublished Git
   assert.match(job, /test:soak -- --rounds 25/, 'a release must pass the 25-round Ghostty soak')
   assert.match(job, /release:mac:beta/, 'a test beta must use the unnotarized release path')
   assert.match(job, /verify:launch:mac/, 'a release must prove the packaged app reaches its event loop')
-  assert.match(job, /gh release create[\s\S]*--draft[\s\S]*--prerelease/, 'the GitHub release must be an unpublished prerelease draft')
-  assert.match(job, /--verify-tag/, 'the GitHub release must verify its tag')
+  assert.match(job, /GLAB_ENABLE_CI_AUTOLOGIN=true glab release create "\$CI_COMMIT_TAG"/, 'the release must be created for the pipeline tag with the job token')
+  assert.match(job, /--use-package-registry/, 'release files must live in the generic package registry')
+  assert.match(job, /--no-update/, 'an existing release must fail the job instead of being overwritten')
+  assert.match(job, /--notes-file/, 'the release must carry the version notes')
+  assert.doesNotMatch(job, /gh release|github\.com|GITHUB_/, 'the job must neither publish on nor push to GitHub')
+  assert.doesNotMatch(job, /GITLAB_TOKEN|PRIVATE-TOKEN|glab auth login/, 'no personal token may take part in the release')
   assert.doesNotMatch(job, /--dangerously|danger-full-access/, 'no approval bypass')
   // The release CLI reads PARLEY_RELEASE_TAG from the environment and the
   // deterministic checks assert it is not preset, so it must not be a job

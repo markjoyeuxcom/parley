@@ -58,49 +58,61 @@ Apple and Sparkle tools; no key is written into an artifact.
 
 ## Where releases run since 7 September 2026
 
-The source of truth is `gitlab.com/markjoyeuxcom/apps/parley`; GitHub Actions
-minutes are exhausted and its CI workflow is disabled, while GitHub remains the
-public copy and the release host (the shipped builds' update feed and manual
-release checks point at it). The test-beta release therefore runs as the
-manual `release-beta` job of the GitLab pipeline on the macOS runner and
-creates the unpublished GitHub draft from there. To cut one:
+The source of truth is `gitlab.com/markjoyeuxcom/apps/parley`, and since
+8 September 2026 releases are published there as well: each version is a
+GitLab release of that project whose files live in the project's generic
+package registry as package `parley`, version `vX.Y.Z`. The project is
+private, so a release is visible to its members only. GitHub Actions minutes
+are exhausted and the GitHub CI workflow is disabled; GitHub keeps the public
+copy of the code, the Homebrew tap and the update feed that shipped notarized
+builds still check, until those move as well.
+
+The test-beta release is the manual `release-beta` job of the GitLab
+pipeline on the macOS runner. It signs in with its own CI job token through
+glab's CI auto-login, so the runner's shell user needs no GitLab login and no
+personal token is stored anywhere; `glab` must be installed on the runner.
+To cut one:
 
 1. Bump `version` in `package.json` and add `.github/release-notes/vX.Y.Z.md`
    in a merge request; merge it once its pipeline is green.
-2. Tag the merge commit `vX.Y.Z` and push the tag to GitLab (`origin`) and
-   GitHub (`github`); the job also pushes the tag to GitHub before creating
-   the draft, because the draft verifies it.
+2. Tag the merge commit `vX.Y.Z` and push the tag to `origin`.
 3. In GitLab, open the tag's pipeline and start `release-beta`. It runs the
    deterministic checks, the 25-round Ghostty soak, packaging, launch
    verification and checksum assembly exactly as the retired workflow did,
-   then creates the draft with the runner user's signed-in `gh`.
-4. Review the draft's checksums, soak report and install guide on GitHub and
-   publish it there. Keep GitHub's `main` in step with GitLab's by pushing
-   it to the `github` remote.
+   then creates the release with the DMG, ZIP, manifest, checksums, install
+   guide, companion VSIX and soak report. It refuses to overwrite a release
+   that already exists for the tag: delete that release and its package
+   deliberately before rerunning.
+4. Review the release's checksums, soak report and install guide on GitLab.
+   Members download from the release page or with
+   `glab release download vX.Y.Z -R markjoyeuxcom/apps/parley`.
 
-The notarized release path can move the same way once the signing and
-notarization material below is stored as masked GitLab CI variables instead
-of GitHub Actions secrets.
+Pushing `main` and tags to the `github` remote keeps the public copy in step
+and is a person's manual choice. The notarized release path can move the
+same way once the signing and notarization material below is stored as
+masked GitLab CI variables instead of GitHub Actions secrets.
 
 ## Unnotarized test betas
 
 When current features need installation testing before Developer ID credentials
-are configured, use the separate **Prepare unnotarized macOS test beta**
-workflow. It is an explicit exception for prerelease testing, not a fallback
-from failed notarization.
+are configured, use the manual `release-beta` job described above. Its
+GitHub Actions predecessor, **Prepare unnotarized macOS test beta**, is
+retired with the rest of GitHub Actions. The job is an explicit exception for
+prerelease testing, not a fallback from failed notarization.
 
-The workflow requires an existing matching version tag, runs the deterministic
+The job requires an existing matching version tag, runs the deterministic
 checks and real Ghostty soak, builds the VS Code companion, invokes
 `npm run release:mac:beta`, verifies the ZIP, DMG, upgrade and uninstall
 lifecycle, proves the final bundled executable remains alive past dynamic
-library loading, and creates an unpublished draft marked as a prerelease. Its
+library loading, and creates the GitLab release. Its
 manifest and install guide state that the app is ad-hoc signed without the
 hardened runtime and is not notarized. Production Developer ID releases retain
-the hardened runtime. The beta workflow never emits an appcast or Homebrew cask
+the hardened runtime. The beta job never emits an appcast or Homebrew cask
 and cannot enter the stable automatic-update channel.
 
-Review the draft checksums, soak report and install guide before publishing.
-Install it only from the expected GitHub release and follow the documented
+Review the release's checksums, soak report and install guide before
+installing. Install it only from the expected GitLab release and follow the
+documented
 Privacy & Security **Open Anyway** flow; never disable Gatekeeper globally.
 
 ## Prepare a draft
