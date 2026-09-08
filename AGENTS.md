@@ -646,6 +646,24 @@ in its draft and says they may have been edited) while the resolved review
 is retained. Approval forms return
 known part ids and edited text, never source metadata or captured originals.
 
+Native **Delete Saved Context** (`/ui/context-reviews/delete`) permanently
+removes selected records, including `returnedPart`, from both the store and
+broker. Every selected revision is checked before any removal; waiting and
+approved deliveries are refused. Agent discard remains a retained state
+change. **Clear history** also removes deletable context in scope, using the
+recorded workspace identity or a durable handoff link; old unbound context is
+removed only by global clear or explicit context deletion. Closed workspaces
+with retained records remain selectable in Status Center. New context records
+capture their source workspace; legacy records decode absent identity as nil.
+Deletion never follows a source path to remove an original project file.
+Command history deletion holds coordinator then broker locks, clears finished
+worker artifacts after fresh lease checks, and forgets recovery copies only
+for durably removed handoffs. Only request-identity hashes remain in memory to
+refuse replay of a deleted command, with no command or result text. Waiting
+approvals, active work and running
+workers are preserved. Independently atomic store failures report partial
+completion and immediately publish only the successful removals.
+
 Context-review validation, durable recording, in-memory replacement and
 broadcast share one mutation lock. Approval carries the exact `updatedAt`
 revision shown in the UI and must fail stale if the draft changed.

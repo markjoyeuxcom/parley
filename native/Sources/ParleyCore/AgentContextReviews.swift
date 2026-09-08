@@ -11,6 +11,9 @@ public enum AgentContextReviewState: String, Codable, Equatable, Sendable {
     case failed
     case interrupted
 
+    /// Deletion must not interrupt approval or an approved delivery in flight.
+    public var canDelete: Bool { self != .awaitingReview && self != .approved }
+
     public var needsHumanReview: Bool {
         self == .draft || self == .awaitingReview
     }
@@ -25,6 +28,8 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
     public let sourcePaneName: String
     public let sourcePaneKind: PaneKind
     public let sourceFolder: String
+    public let sourceWorkspaceID: String?
+    public let sourceWorkspaceName: String?
     public var pack: ContextPack
     /// For a `parley done --file` return, the exact part as staged. Approval
     /// rebuilds `pack` from the reviewed part set, so this is the only copy
@@ -45,6 +50,8 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
         sourcePaneKind: PaneKind,
         sourceFolder: String,
         pack: ContextPack,
+        sourceWorkspaceID: String? = nil,
+        sourceWorkspaceName: String? = nil,
         returnedPart: ContextPackPart? = nil,
         state: AgentContextReviewState = .draft,
         requestedTargetPaneID: String? = nil,
@@ -59,6 +66,8 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
         self.sourcePaneName = sourcePaneName
         self.sourcePaneKind = sourcePaneKind
         self.sourceFolder = sourceFolder
+        self.sourceWorkspaceID = sourceWorkspaceID
+        self.sourceWorkspaceName = sourceWorkspaceName
         self.pack = pack
         self.returnedPart = returnedPart
         self.state = state
@@ -73,6 +82,7 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, sourcePaneID, sourcePaneName, sourcePaneKind, sourceFolder, pack, returnedPart, state
         case requestedTargetPaneID, requestedTargetName, idempotencyKey, createdAt, updatedAt, detail
+        case sourceWorkspaceID, sourceWorkspaceName
     }
 
     /// Every review is agent-staged. A record written before packs carried an
@@ -85,6 +95,8 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
         sourcePaneName = try container.decode(String.self, forKey: .sourcePaneName)
         sourcePaneKind = try container.decode(PaneKind.self, forKey: .sourcePaneKind)
         sourceFolder = try container.decode(String.self, forKey: .sourceFolder)
+        sourceWorkspaceID = try container.decodeIfPresent(String.self, forKey: .sourceWorkspaceID)
+        sourceWorkspaceName = try container.decodeIfPresent(String.self, forKey: .sourceWorkspaceName)
         var decodedPack = try container.decode(ContextPack.self, forKey: .pack)
         let decodedState = try container.decode(AgentContextReviewState.self, forKey: .state)
         let packKeys = try container.nestedContainer(keyedBy: ContextPack.CodingKeys.self, forKey: .pack)
@@ -102,6 +114,22 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
         detail = try container.decodeIfPresent(String.self, forKey: .detail)
     }
 
+    /// Recorded links only; a moved or closed pane does not change ownership.
+    public func isLinked(to handoff: RelayHandoff) -> Bool {
+        if handoff.resultContextReviewID == id { return true }
+        if let idempotencyKey, handoff.idempotencyKey == idempotencyKey,
+           handoff.sourcePaneID == sourcePaneID { return true }
+        return pack.parts.contains {
+            $0.source.kind == .handoffResult && $0.source.referenceID == handoff.id
+        }
+    }
+
+    public func belongs(to workspaceID: String, handoffs: [RelayHandoff]) -> Bool {
+        sourceWorkspaceID == workspaceID || handoffs.contains {
+            ($0.sourceWorkspaceID == workspaceID || $0.targetWorkspaceID == workspaceID) && isLinked(to: $0)
+        }
+    }
+
     /// `approved` is written only by approval and `completed` only after it;
     /// `draft`, `awaitingReview`, `rejected` and `discarded` never passed it.
     /// `failed` is reached both by a timed-out approval wait and by a failed
@@ -115,6 +143,14 @@ public struct AgentContextReview: Identifiable, Codable, Equatable, Sendable {
         case .failed, .interrupted: .agentApprovalUnrecorded
         }
     }
+}
+
+/// Exact native selections, checked together under the broker lock. Pane
+/// credentials cannot use the deletion route.
+public struct AgentContextDeletion: Codable, Equatable, Sendable {
+    public let reviews: [AgentContextDraftDiscard]
+
+    public init(reviews: [AgentContextDraftDiscard]) { self.reviews = reviews }
 }
 
 /// The native discard of one editable agent draft: the exact review and the
@@ -305,6 +341,17 @@ public final class AgentContextReviewStore: @unchecked Sendable {
         }
     }
 
+    /// Publish only after the rewritten document is durable. A failed purge
+    /// leaves the store's in-memory projection available for retry.
+    public func remove(ids: Set<String>) throws {
+        try lock.withLock {
+            guard !ids.isEmpty else { return }
+            let remaining = byID.filter { !ids.contains($0.key) }
+            try writeLocked(remaining)
+            byID = remaining
+        }
+    }
+
     private static func load(file: URL, fileManager: FileManager) throws -> [String: AgentContextReview] {
         guard fileManager.fileExists(atPath: file.path) else { return [:] }
         try validate(file: file)
@@ -329,12 +376,12 @@ public final class AgentContextReviewStore: @unchecked Sendable {
         }
     }
 
-    private func writeLocked() throws {
+    private func writeLocked(_ records: [String: AgentContextReview]? = nil) throws {
         let directory = file.deletingLastPathComponent()
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         if fileManager.fileExists(atPath: file.path) { try Self.validate(file: file) }
-        let ordered = byID.values.sorted {
+        let ordered = (records ?? byID).values.sorted {
             if $0.createdAt == $1.createdAt { return $0.id < $1.id }
             return $0.createdAt < $1.createdAt
         }

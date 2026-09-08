@@ -160,6 +160,13 @@ public struct RelayCoreClient: Sendable {
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
 
+    public func deleteContextReviews(_ deletion: AgentContextDeletion) throws -> RelayTextResponse {
+        let response = try request(method: "POST", path: "/ui/context-reviews/delete",
+            headers: ["X-Parley-Control": controlToken, "Content-Type": "application/json"],
+            body: JSONEncoder().encode(deletion))
+        return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
     public func approveContextReview(
         reviewID: String,
         expectedUpdatedAt: Date,

@@ -573,6 +573,16 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     return
                 }
                 write(broker.captureTrustedContext(capture), to: client)
+            case "/ui/context-reviews/delete":
+                guard controlAuthorized(request) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let deletion = try? JSONDecoder().decode(AgentContextDeletion.self, from: request.body) else {
+                    write(RelayTextResponse(status: 400, text: "invalid context deletion"), to: client)
+                    return
+                }
+                write(broker.deleteContextReviews(deletion), to: client)
             case "/ui/context-reviews/discard":
                 guard controlAuthorized(request) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)

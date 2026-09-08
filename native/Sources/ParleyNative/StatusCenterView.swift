@@ -327,6 +327,9 @@ struct StatusCenterView: View {
                 ForEach(model.workspaces) { workspace in
                     Text(workspace.name).tag(workspace.workspaceID)
                 }
+                ForEach(model.closedHistoryWorkspaces, id: \.id) { workspace in
+                    Text("\(workspace.name) · Closed").tag(workspace.id)
+                }
             }
             .labelsHidden()
             .frame(width: 210)
@@ -445,10 +448,26 @@ struct StatusCenterView: View {
     }
 
     private var agentDrafts: some View {
-        let lane = AgentDraftMenuProjection.lane(reviews: model.pendingContextReviews)
-        let all = model.pendingContextReviews
+        let scoped = model.savedContextReviews(workspaceID: workspaceID.isEmpty ? nil : workspaceID)
+        let deletable = scoped.filter { $0.state.canDelete }
+        let pending = scoped.filter { $0.state.needsHumanReview }
+        let lane = AgentDraftMenuProjection.lane(reviews: pending)
+        let all = pending
             .sorted { ($0.state == .awaitingReview ? 0 : 1, $1.updatedAt) < ($1.state == .awaitingReview ? 0 : 1, $0.updatedAt) }
         return statusGroup("AGENT DRAFTS") {
+            if !deletable.isEmpty {
+                HStack {
+                    Text("\(deletable.count) saved context records in this scope, including resolved reviews")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Delete Saved Context…", role: .destructive) {
+                        model.deleteSavedContext(deletable)
+                    }
+                    .controlSize(.small)
+                }
+                .padding(10)
+            }
             if all.isEmpty {
                 emptyRow("No agent drafts are waiting for approval or saved for review")
             } else {
@@ -478,6 +497,8 @@ struct StatusCenterView: View {
                             if !entry.isWaiting {
                                 Button("Discard…") { model.discardAgentDraft(review) }
                                     .controlSize(.small)
+                                Button("Delete…", role: .destructive) { model.deleteSavedContext([review]) }
+                                    .controlSize(.small)
                             }
                         }
                         .padding(.horizontal, 10)
@@ -487,7 +508,7 @@ struct StatusCenterView: View {
                     if lane.editableCount > 1 {
                         HStack {
                             Spacer()
-                            Button("Discard All Editable Drafts…", role: .destructive) { model.discardAllEditableDrafts() }
+                            Button("Discard All Editable Drafts…", role: .destructive) { model.discardAllEditableDrafts(pending) }
                                 .controlSize(.small)
                         }
                         .padding(8)
@@ -854,12 +875,16 @@ struct StatusCenterView: View {
         selectedHandoffID = nil
         selectedBusyDraftID = nil
         historyExportSelection.removeAll()
+        if !workspaceID.isEmpty,
+           !model.workspaces.contains(where: { $0.workspaceID == workspaceID }),
+           !model.closedHistoryWorkspaces.contains(where: { $0.id == workspaceID }) { workspaceID = "" }
         ensureSelection()
     }
 
     private var selectedHistoryScopeName: String? {
         guard !workspaceID.isEmpty else { return nil }
-        return model.workspaces.first(where: { $0.workspaceID == workspaceID })?.name ?? workspaceID
+        return model.workspaces.first(where: { $0.workspaceID == workspaceID })?.name
+            ?? model.closedHistoryWorkspaces.first(where: { $0.id == workspaceID })?.name ?? workspaceID
     }
 
 
@@ -1943,6 +1968,10 @@ struct StatusCenterView: View {
                     .foregroundStyle(.secondary)
                 returnedFileReadOnly(review)
             }
+            if review.state.canDelete {
+                Button("Delete returned file…", role: .destructive) { model.deleteSavedContext([review]) }
+                    .help("Delete Parley's stored context and returned-file copy; leave the original project file unchanged")
+            }
         }
         .padding(9)
         .background(Color.secondary.opacity(0.055))
@@ -2205,6 +2234,8 @@ struct StatusCenterView: View {
     private func applyRequestedSegment() {
         guard let requested = model.requestedStatusCenterSegment else { return }
         segment = requested
+        // The Context menu's older-drafts route spans every workspace.
+        if requested == .live { workspaceID = "" }
         model.consumeRequestedStatusCenterSegment()
     }
 

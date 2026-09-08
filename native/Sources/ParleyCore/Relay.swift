@@ -808,7 +808,9 @@ public final class RelayBroker: @unchecked Sendable {
                 sourcePaneName: sender.displayName,
                 sourcePaneKind: sender.kind,
                 sourceFolder: sender.cwd,
-                pack: pack
+                pack: pack,
+                sourceWorkspaceID: sender.workspaceID,
+                sourceWorkspaceName: sender.workspaceName
             )
             try recordContextReview(review)
             return encodeContext(review, status: 201)
@@ -1433,6 +1435,35 @@ public final class RelayBroker: @unchecked Sendable {
         return RelayTextResponse(status: 200, text: review.detail ?? "Context draft discarded.")
     }
 
+    /// Permanent removal is native-only, unlike the agent's retained discard.
+    /// Validate every selected revision before removing any of the batch.
+    public func deleteContextReviews(_ deletion: AgentContextDeletion) -> RelayTextResponse {
+        consultationCondition.lock()
+        defer { consultationCondition.unlock() }
+        let ids = Set(deletion.reviews.map(\.reviewID))
+        guard !ids.isEmpty, ids.count == deletion.reviews.count else {
+            return RelayTextResponse(status: 400, text: "select distinct saved context records to delete")
+        }
+        for selected in deletion.reviews {
+            guard let review = contextReviewRecords[selected.reviewID],
+                  review.updatedAt == selected.expectedUpdatedAt else {
+                return RelayTextResponse(status: 409, text: "a selected context record changed or was removed; refresh before deleting")
+            }
+            guard review.state.canDelete else {
+                return RelayTextResponse(status: 409, text: "a selected context record is waiting for approval or being delivered; resolve it before deleting")
+            }
+        }
+        do { try deleteContextReviewsLocked(ids: ids) }
+        catch { return RelayTextResponse(status: 500, text: "Parley could not delete saved context: \(error.localizedDescription)") }
+        return RelayTextResponse(status: 200, text: "Deleted \(ids.count) saved context record\(ids.count == 1 ? "" : "s") and their stored returned files. Project files and messages already sent are unchanged.")
+    }
+
+    private func deleteContextReviewsLocked(ids: Set<String>) throws {
+        try contextReviewStore?.remove(ids: ids)
+        contextReviewRecords = contextReviewRecords.filter { !ids.contains($0.key) }
+        if !ids.isEmpty { noteChangeLocked() }
+    }
+
     private func finishContextReview(_ reviewID: String, response: RelayTextResponse) {
         consultationCondition.lock()
         guard var review = contextReviewRecords[reviewID] else {
@@ -1482,11 +1513,11 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     private func recordContextReview(_ review: AgentContextReview) throws {
-        try contextReviewStore?.record(review)
         consultationCondition.lock()
+        defer { consultationCondition.unlock() }
+        try contextReviewStore?.record(review)
         contextReviewRecords[review.id] = review
         noteChangeLocked()
-        consultationCondition.unlock()
     }
 
     private func encodeContext(_ review: AgentContextReview, status: Int = 200) -> RelayTextResponse {
@@ -2052,6 +2083,8 @@ public final class RelayBroker: @unchecked Sendable {
                     parts: [staged.part],
                     origin: .agentProposed
                 ),
+                sourceWorkspaceID: sender.workspaceID,
+                sourceWorkspaceName: sender.workspaceName,
                 returnedPart: staged.part,
                 detail: "Returned from tracked delegation \(handoffID); awaiting explicit human review."
             )
@@ -2342,6 +2375,9 @@ public final class RelayBroker: @unchecked Sendable {
 
 
     public private(set) var commandRuns: ReviewedCommandRunCoordinator?
+    /// Native cleanup of finished worker artifacts, with a fresh lease check.
+    /// Installed before transports start; never supplied by an agent request.
+    public var deleteCommandRunArtifacts: ((Set<String>) throws -> Void)?
     /// Installed once by the native core before either transport starts.
     public func enableReviewedCommandRuns() {
         guard commandRuns == nil else { return }
@@ -2438,7 +2474,8 @@ public final class RelayBroker: @unchecked Sendable {
         let previous = handoffRecords[run.id]
         // Every launched run was recorded before execution. A missing record
         // now was cleared or pruned; a late capture must not recreate history.
-        // The coordinator retains the owned result and replay protection.
+        // Retention may keep an owned recovery copy; explicit deletion removes
+        // that copy too and retains only a hash that refuses request replay.
         guard previous != nil || run.launchedAt == nil else { return }
         var handoff = RelayHandoff(id: run.id, idempotencyKey: run.idempotencyKey,
             kind: .commandRun, sourcePaneID: run.source.id, sourceName: run.source.displayName,
@@ -3515,12 +3552,23 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     private func deleteHistory(workspaceID: String?, workspaceName: String?) -> RelayTextResponse {
-        // Read the coordinator before taking the broker lock: coordinator
-        // recording acquires these locks in that order. Cancellation can end
-        // tracking while its owned worker is still running.
-        let activeCommandRunIDs = Set((commandRuns?.runs() ?? []).filter {
-            !$0.state.isTerminal || $0.workerStillRunning
-        }.map(\.id))
+        var response = RelayTextResponse(status: 500, text: "history deletion did not complete")
+        func clear(_ runs: [ReviewedCommandRun]) -> Set<String> {
+            let active = Set(runs.filter { !$0.state.isTerminal || $0.workerStillRunning }.map(\.id))
+            var removed: Set<String> = []
+            response = deleteHistoryRecords(workspaceID: workspaceID, workspaceName: workspaceName,
+                activeCommandRunIDs: active, finishedCommandRuns: runs.filter { $0.state.isTerminal && !$0.workerStillRunning },
+                removedHandoffIDs: &removed)
+            return removed
+        }
+        if let commandRuns { commandRuns.withHistoryDeletion(clear) }
+        else { _ = clear([]) }
+        return response
+    }
+
+    private func deleteHistoryRecords(workspaceID: String?, workspaceName: String?,
+                                      activeCommandRunIDs: Set<String>, finishedCommandRuns: [ReviewedCommandRun],
+                                      removedHandoffIDs: inout Set<String>) -> RelayTextResponse {
         func matches(_ id: String, _ name: String?) -> Bool {
             guard let workspaceID else { return true }
             if !workspaceID.isEmpty { return id == workspaceID }
@@ -3529,24 +3577,51 @@ public final class RelayBroker: @unchecked Sendable {
         let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
         consultationCondition.lock()
         defer { consultationCondition.unlock() }
-        let removalIDs = Set(handoffRecords.values.lazy.filter { handoff in
+        let protectedReviews = contextReviewRecords.values.filter { !$0.state.canDelete }
+        var removalIDs = Set(handoffRecords.values.lazy.filter { handoff in
             terminalStates.contains(handoff.state)
+                && !protectedReviews.contains(where: { $0.isLinked(to: handoff) })
                 && !activeCommandRunIDs.contains(handoff.id)
                 && (matches(handoff.sourceWorkspaceID, handoff.sourceWorkspaceName)
                     || matches(handoff.targetWorkspaceID, handoff.targetWorkspaceName))
         }.map(\.id))
+        // The recovery cache can outlive journal retention. Include finished
+        // cached runs whose history is already absent, without widening scope.
+        let orphanedRunIDs = Set(finishedCommandRuns.filter {
+            handoffRecords[$0.id] == nil && matches($0.source.workspaceID, $0.source.workspaceName)
+        }.map(\.id))
+        removalIDs.formUnion(orphanedRunIDs)
         let activityRemovalIDs = Set(activityRecords.values.lazy.filter {
             matches($0.workspaceID, $0.workspaceName)
         }.map(\.id))
 
+        let removedHandoffs = handoffRecords.values.filter { removalIDs.contains($0.id) }
+        let reviewRemovalIDs = Set(contextReviewRecords.values.filter { review in
+            guard review.state.canDelete else { return false }
+            if workspaceID == nil { return true }
+            if let id = review.sourceWorkspaceID, matches(id, review.sourceWorkspaceName) { return true }
+            // Older reviews did not record a workspace. Use a durable handoff
+            // link, never today's mutable pane folder or display name.
+            return removedHandoffs.contains { review.isLinked(to: $0) }
+        }.map(\.id))
+        do {
+            let runIDs = Set(removedHandoffs.filter { $0.kind == .commandRun }.map(\.id)).union(orphanedRunIDs)
+            if !runIDs.isEmpty { try deleteCommandRunArtifacts?(runIDs) }
+        } catch {
+            return RelayTextResponse(status: 500, text: "Command worker files could not be cleared; history was kept: \(error.localizedDescription)")
+        }
+        do { try deleteContextReviewsLocked(ids: reviewRemovalIDs) }
+        catch { return RelayTextResponse(status: 500, text: "Parley could not clear stored context; history was kept: \(error.localizedDescription)") }
         do {
             try handoffJournal?.removeHandoffs(ids: removalIDs)
         } catch {
-            return RelayTextResponse(status: 500, text: "Parley could not clear collaboration history: \(error.localizedDescription)")
+            return RelayTextResponse(status: 500, text: "Deleted \(reviewRemovalIDs.count) saved context records, but collaboration history could not be cleared: \(error.localizedDescription)")
         }
         // Reflect each successful journal compaction immediately. If clearing
         // activity fails next, the already-cleared handoffs must not reappear.
         handoffRecords = handoffRecords.filter { !removalIDs.contains($0.key) }
+        removedHandoffIDs = removalIDs
+        if !removalIDs.isEmpty { noteChangeLocked() }
         idempotencyRecords = idempotencyRecords.filter { !removalIDs.contains($0.value.handoffID) }
         delegationResponses = delegationResponses.filter { !removalIDs.contains($0.key) }
         do {
@@ -3560,8 +3635,9 @@ public final class RelayBroker: @unchecked Sendable {
             !matches(event.workspaceID, event.workspaceName)
         }
         let removedCount = removalIDs.count + activityRemovalIDs.count
+        if removedCount > 0 { noteChangeLocked() }
         return RelayTextResponse(status: 200,
-            text: "Cleared \(removedCount) history record\(removedCount == 1 ? "" : "s"). Active work was preserved.")
+            text: "Cleared \(removedCount) history records and \(reviewRemovalIDs.count) saved context records. Waiting approvals and deliveries in progress were preserved. Project files were unchanged.")
     }
 
     /// Human control-token cancellation. This ends Parley's tracking only; the

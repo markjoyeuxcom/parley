@@ -121,6 +121,15 @@ final class AppResidentCoordinationCore {
         commandRunDirectory = applicationDirectory.resolvingSymlinksInPath().appendingPathComponent("approved-command-runs")
         let runDirectory = commandRunDirectory
         commandRunCleanupWarnings = ApprovedCommandWorker.removeAbandoned(in: runDirectory)
+        broker.deleteCommandRunArtifacts = { ids in
+            for id in ids {
+                let observation = try ApprovedCommandWorker.observation(runID: id, directory: runDirectory)
+                guard !observation.running, !observation.ticketPending,
+                      try ApprovedCommandWorker.discard(runID: id, directory: runDirectory) else {
+                    throw ReviewedCommandRunError.invalid("A command worker is still active or has an unclaimed ticket. Let it finish or cancel it before clearing its result.")
+                }
+            }
+        }
         commandRuns.cancellationHandler = { run in
             try ApprovedCommandWorker.cancel(runID: run.id, directory: runDirectory)
         }
