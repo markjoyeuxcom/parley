@@ -706,7 +706,9 @@ node scripts/run-native-swift.mjs run --package-path native parley-native-checks
 The transport check uses disposable fixture credentials, never a live pane's
 capability. The Ghostty check requires a human Shell. Image sign-in, fresh and
 resumed vendor instruction uptake, normal approval prompts and post-relaunch
-login persistence remain explicit human acceptance work before release.
+login persistence remain explicit human compatibility follow-ups. Ship the
+reviewed greenfield implementation with known limitations recorded; untested
+configurations do not hold the feature out of main or the next release.
 
 ## SwiftPM inside agent panes
 

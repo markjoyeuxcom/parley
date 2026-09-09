@@ -597,6 +597,9 @@ vendor-owned state. Process lists show the host Docker client, not processes
 inside the container. A reviewed command run requested from a container still
 runs on the host in a new human Shell.
 
-This feature remains experimental pending live vendor sign-in, instruction
-uptake, approval-flow and login-persistence acceptance. Container members of
-team sessions and additional Git worktree mounts are deferred.
+The tested setup is recorded in the [container spike](docs/container-pane-spike.md).
+Mark verified Codex device login, an interactive reply, bidirectional messaging
+and pane restart on OrbStack. Broader image/daemon compatibility, Claude's live
+permission flow, resumed instruction uptake and login persistence across an app
+relaunch remain follow-up checks. Container team members and additional Git
+worktree mounts are planned extensions.

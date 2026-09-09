@@ -214,11 +214,17 @@ release workflow.
 
 ## Experimental container acceptance
 
-Do not promote container panes on the strength of deterministic checks alone.
-Record the selected local daemon, exact image ID and the vendor versions from
-inside that image. Run the explicit transport and Ghostty Docker checks in
-AGENTS.md, including resize, Control-C, hidden-window input and confirmed stop.
-Then, with a person at the terminal:
+The greenfield release includes the reviewed container implementation with its
+known compatibility limits. Untested images, daemons or vendor flows are
+follow-ups, not blanket release blockers. Keep the tested configuration and
+remaining work explicit in the release notes; do not describe a test that was
+not run as passing. The normal build, regression, soak, packaging and launch
+checks still apply.
+
+When expanding compatibility, record the local daemon, exact image ID and the
+vendor versions from inside that image. Run the explicit transport and Ghostty
+Docker checks in AGENTS.md, including resize, Control-C, hidden-window input
+and confirmed stop. Continue these person-supervised checks:
 
 1. Start one Claude and one Codex container pane with the normal permission
    review; use only the compatibility setting explicitly reviewed there.

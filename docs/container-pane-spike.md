@@ -1,7 +1,8 @@
 # Container pane spike — 9 September 2026
 
-This is a local prototype result, not a release acceptance or a compatibility
-promise for other images. The native macOS core and Ghostty remain on the host.
+This records the tested local setup and the remaining compatibility work. It
+does not establish compatibility with other images. The native macOS core and
+Ghostty remain on the host.
 
 ## Environment
 
@@ -63,19 +64,22 @@ Choose **Sign in with Device Code** inside Codex and complete it in the host
 browser. No callback port is published by the current container launch.
 [Official OpenAI authentication guidance](https://learn.chatgpt.com/docs/auth#login-on-headless-devices)
 recommends device-code authentication when the localhost callback is blocked.
-The deprecated Landlock mode remains a temporary prototype compatibility
-choice; a supported vendor sandbox path is required before stable promotion.
+The deprecated Landlock mode remains an explicit compatibility choice for the
+tested image. A default sandbox path that works without this setting is a
+follow-up because the vendor plans to remove the legacy option.
 
-## Decision and remaining acceptance
+## Release decision and compatibility follow-ups
 
-| Vendor | Prototype decision | Release decision |
+| Vendor | Observed coverage | Compatibility follow-ups |
 | --- | --- | --- |
-| Codex | Device sign-in, an interactive reply, bidirectional Parley messages and pane restart reported working by Mark. Legacy Landlock is a deprecated prototype option. | Pending a supported sandbox path, ordinary approval prompts, fresh/resumed instruction uptake and login persistence. |
-| Claude Code | Continue as an experimental image launch with explicit disclosure that its sandbox may be unavailable. | Pending subscription sign-in, sandbox/ordinary permission behavior, fresh/resumed instruction uptake and login persistence. |
+| Codex | Device sign-in, an interactive reply, bidirectional Parley messages and pane restart reported working by Mark. Legacy Landlock is explicitly selected and deprecated. | Default sandbox compatibility, ordinary approval prompts, fresh/resumed instruction uptake and login persistence. |
+| Claude Code | The image binary starts; the launch disclosure says its sandbox may be unavailable. | Subscription sign-in, sandbox/ordinary permission behavior, fresh/resumed instruction uptake and login persistence. |
 
-Neither vendor is cleared for a stable release by this spike. If a vendor
-requires a permission-bypass flag, refuse that configuration. Do not mount host
-credentials or substitute API authentication. Follow the human acceptance steps
+Mark approved shipping the reviewed implementation on 9 September: this is a
+greenfield project, and the remaining compatibility work does not block the
+feature's release. If a vendor requires a permission-bypass flag, refuse that
+configuration. Do not mount host credentials or substitute API authentication.
+Continue the human compatibility checks
 in [RELEASING.md](../RELEASING.md#experimental-container-acceptance), including
 restart, workspace close, daemon outage, saved-state deletion and total host
 plus VM idle cost. Docker Desktop and Colima have not been tested.
