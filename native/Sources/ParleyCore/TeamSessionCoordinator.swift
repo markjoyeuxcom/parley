@@ -153,7 +153,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
     /// grant binds that one path and nothing wider, and the same
     /// requester-containment rule applies to it.
     public func approve(id: String, revision: String, objective: String, folder: String, allowedVendors: [PaneKind],
-                        permissionProfileID: String, paneLimit: Int, hours: Int, worktree: TeamWorktreeBinding? = nil) throws {
+                        permissionProfileID: String, paneLimit: Int, hours: Int, worktree: TeamWorktreeBinding? = nil, containerConfigurations: [String: ContainerConfiguration]? = nil) throws {
         try lock.withLock {
             guard !stopped, var session = records[id], session.state == .pending, session.revision == revision,
                   let source = currentRequester(session) else {
@@ -163,9 +163,12 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             let edited = TeamSessionProposal(objective: cleanObjective, folder: folder, paneLimit: paneLimit, hours: hours,
                 worktreeBranch: session.proposal.worktreeBranch, worktreeBase: session.proposal.worktreeBase)
             try edited.validate()
-            let canonical = try Self.canonicalFolder(folder, within: source.cwd)
+            let matchedFolder = try Self.canonicalFolder(folder, within: source.cwd)
+            // Container mounts and permission roots use realpath spelling;
+            // Foundation's matching key can shorten /private/tmp back to /tmp.
+            let canonical = containerConfigurations?.isEmpty == false ? try ContainerGitAccess.canonical(matchedFolder) : matchedFolder
             if let worktree {
-                guard WorkspaceFolderIdentity.matchingKey(worktree.path) == canonical else {
+                guard WorkspaceFolderIdentity.matches(worktree.path, canonical) else {
                     throw TeamSessionError.invalid("The approved folder must be exactly the bound worktree; Parley never widens a team grant beyond one folder.")
                 }
             }
@@ -176,6 +179,13 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             guard let definition = try profiles().first(where: { $0.id == permissionProfileID }) else {
                 throw TeamSessionError.invalid("That permission profile is no longer available.")
             }
+            for (vendor, configuration) in containerConfigurations ?? [:] {
+                guard let kind = PaneKind(rawValue: vendor), [.claude, .codex].contains(kind), vendors.contains(kind),
+                      configuration.gitAccess == nil || configuration.gitAccess?.folder == canonical else {
+                    throw TeamSessionError.invalid("Container settings must name an allowed vendor and this exact approved folder.")
+                }
+                try ContainerLaunchProjection.validate(configuration)
+            }
             // Resolving proves the definition is valid for the approved folder now;
             // the snapshot below is what every later creation must still match.
             _ = try PermissionProfileResolver.resolve(definition: definition, paneFolder: canonical,
@@ -184,7 +194,8 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             let grant = TeamSessionGrant(id: UUID().uuidString.lowercased(), requesterPaneID: source.id, requesterGeneration: source.launchGeneration,
                 workspaceID: source.workspaceID, automationPolicy: source.automationPolicy, folder: canonical, allowedVendors: vendors,
                 approvedProfile: definition, approvedRoots: definition.rootMode == .exactApprovedRoots ? [canonical] : [],
-                paneLimit: paneLimit, provisioningDeadline: now.addingTimeInterval(TimeInterval(hours) * 3_600), approvedAt: now)
+                paneLimit: paneLimit, provisioningDeadline: now.addingTimeInterval(TimeInterval(hours) * 3_600), approvedAt: now,
+                containerConfigurations: containerConfigurations)
             session.objective = cleanObjective
             session.folder = canonical
             session.allowedVendors = vendors
@@ -195,6 +206,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             session.approvedAt = now
             session.grantID = grant.id
             session.worktree = worktree
+            session.containerConfigurations = containerConfigurations
             session.detail = "Human approved up to \(paneLimit) pane\(paneLimit == 1 ? "" : "s") with the \(definition.name) profile; provisioning until \(Self.timestamp(grant.provisioningDeadline))"
                 + (worktree.map { " · worktree \($0.branch)\($0.parleyCreated ? " created by Parley" : " selected by the person")" } ?? "")
             // Durable record first; a failed record cannot leave authority live.
@@ -264,7 +276,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                                  mount: (TeamSession, WorkbenchPane) throws -> Void = { _, _ in }) {
         lock.withLock {
             reconcile()
-            let pending = provisions.values.filter { !$0.isSettled }.sorted { $0.createdAt < $1.createdAt }
+            let pending = provisions.values.filter { !$0.isSettled && $0.paneID == nil }.sorted { $0.createdAt < $1.createdAt }
             for var provision in pending {
                 guard !stopped, var session = records[provision.sessionID], session.state == .active,
                       let grant = grants[session.id], let lead = currentRequester(session), grant.matches(requester: lead),
@@ -289,11 +301,16 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                 session.members.append(member)
                 session.detail = "Created \(session.members.count) of \(grant.paneLimit) approved pane\(grant.paneLimit == 1 ? "" : "s")"
                 provision.paneID = pane.id
+                provision.containerPreparationPending = pane.containerConfiguration != nil && !pane.isStarted
                 provisions[provision.id] = provision
                 records[session.id] = session
                 do {
                     try mount(session, pane)
                 } catch {
+                    if provision.containerPreparationPending == true {
+                        provision.failure = "The team pane was created, but container preparation could not begin: \(error.localizedDescription)"
+                    }
+                    provision.containerPreparationPending = false
                     member.warning = "Created and owned, but a later native step failed: \(error.localizedDescription)"
                     provision.warning = member.warning
                     provisions[provision.id] = provision
@@ -303,6 +320,86 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                 // Keep provenance in memory even if the record fails.
                 store(session, transition: .paneCreated, affected: [pane.id])
             }
+        }
+    }
+
+    public func containerPreparation(id: String) throws -> (grant: TeamSessionGrant, pane: WorkbenchPane) {
+        try lock.withLock {
+            reconcile()
+            guard !stopped, let provision = provisions[id], provision.containerPreparationPending == true, provision.failure == nil,
+                  let session = records[provision.sessionID], session.state == .active, let grant = grants[session.id],
+                  currentRequester(session) != nil, Date() < grant.provisioningDeadline,
+                  let pane = try panes().first(where: { $0.id == provision.paneID }), !pane.isStarted,
+                  session.members.contains(where: { $0.owns(pane) }),
+                  let configuration = grant.containerConfigurations?[pane.kind.rawValue], pane.containerConfiguration == configuration else {
+                throw TeamSessionError.invalid("The container preparation no longer has an active approved grant.")
+            }
+            _ = try verifiedProfile(for: grant)
+            return (grant, pane)
+        }
+    }
+
+    /// The native app prepares Docker off the main actor, then calls this
+    /// short activation transaction. Stop/expiry/profile edits win the race.
+    public func finishContainerProvision(id: String,
+        activate: (TeamSessionGrant, WorkbenchPane) throws -> WorkbenchPane,
+        mount: (TeamSession, WorkbenchPane) throws -> Void = { _, _ in }) throws {
+        try lock.withLock {
+            reconcile()
+            guard !stopped, var provision = provisions[id], provision.containerPreparationPending == true, provision.failure == nil,
+                  var session = records[provision.sessionID], session.state == .active, let grant = grants[session.id],
+                  currentRequester(session) != nil, Date() < grant.provisioningDeadline,
+                  let memberIndex = session.members.firstIndex(where: { $0.paneID == provision.paneID }),
+                  let pane = try panes().first(where: { $0.id == provision.paneID }),
+                  session.members[memberIndex].owns(pane), !pane.isStarted,
+                  let configuration = grant.containerConfigurations?[pane.kind.rawValue], pane.containerConfiguration == configuration else {
+                throw TeamSessionError.invalid("The container provision is no longer approved; its prepared container must be removed.")
+            }
+            _ = try verifiedProfile(for: grant)
+            let old = session.members[memberIndex]
+            func ownInitialActivation(_ started: WorkbenchPane) {
+                // The controller can mutate in memory and then fail to persist.
+                // Keep ownership in that case too, before propagating the error.
+                guard started.id == old.paneID, started.launchGeneration == pane.launchGeneration + 1,
+                      started.isStarted, started.containerConfiguration == configuration else { return }
+                session.members[memberIndex] = TeamSessionMember(paneID: old.paneID, launchGeneration: started.launchGeneration,
+                    workspaceID: old.workspaceID, kind: old.kind, name: old.name, role: old.role,
+                    requestedByPaneID: old.requestedByPaneID, grantID: old.grantID, createdAt: old.createdAt)
+                records[session.id] = session
+            }
+            let started: WorkbenchPane
+            do { started = try activate(grant, pane) }
+            catch {
+                if let current = try? panes().first(where: { $0.id == pane.id }) { ownInitialActivation(current) }
+                throw error
+            }
+            ownInitialActivation(started)
+            provision.containerPreparationPending = false
+            provisions[id] = provision
+            records[session.id] = session
+            do { try mount(session, started) }
+            catch {
+                let warning = "Created and owned, but presentation failed: \(error.localizedDescription)"
+                provision.warning = warning; provisions[id] = provision
+                session.members[memberIndex].warning = warning
+            }
+            session.detail = "Container pane started within its approved team grant."
+            store(session, transition: .paneCreated, affected: [pane.id])
+        }
+    }
+
+    public func failContainerProvision(id: String, reason: String) {
+        lock.withLock {
+            guard var provision = provisions[id], provision.containerPreparationPending == true,
+                  var session = records[provision.sessionID] else { return }
+            provision.containerPreparationPending = false
+            provision.failure = TeamBoundedText.bounded(reason).text
+            provisions[id] = provision
+            if let index = session.members.firstIndex(where: { $0.paneID == provision.paneID }) {
+                session.members[index].warning = provision.failure
+            }
+            session.detail = provision.failure
+            store(session, transition: .paneCreated, affected: provision.paneID.map { [$0] } ?? [])
         }
     }
 
@@ -381,7 +478,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                     return RelayTextResponse(status: 403, text: "Only the same live requesting pane generation can recover this pane request.")
                 }
                 if let failure = provision.failure { return RelayTextResponse(status: 409, text: failure) }
-                guard let paneID = provision.paneID else { return nil }
+                guard provision.containerPreparationPending != true, let paneID = provision.paneID else { return nil }
                 let member = session.members.first { $0.paneID == paneID }
                 return Self.json(ProvisionResult(provisionID: provision.id, paneID: paneID, vendor: provision.kind.rawValue,
                     name: member?.name ?? provision.name, role: member?.role ?? provision.role, sessionID: session.id,

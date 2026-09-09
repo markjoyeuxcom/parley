@@ -539,7 +539,11 @@ public final class WorkbenchController: @unchecked Sendable {
             guard current == grant.approvedProfile else {
                 throw TeamSessionError.invalid("The approved permission profile was edited or removed; the pane was not created.")
             }
-            var pane = try makePane(kind: provision.kind, cwd: grant.folder, workspace: workspace, started: true, permissionProfile: permissionProfile)
+            let container = grant.containerConfigurations?[provision.kind.rawValue]
+            if let container { try ContainerLaunchProjection.validate(container) }
+            var pane = try makePane(kind: provision.kind, cwd: grant.folder, workspace: workspace, started: container == nil, permissionProfile: permissionProfile)
+            pane.containerConfiguration = container
+            if container != nil { confirmedContainerStops[pane.id] = pane.launchGeneration }
             pane.customName = provision.name
             pane.role = provision.role
             let previous = document
@@ -999,7 +1003,7 @@ public final class WorkbenchController: @unchecked Sendable {
         let protectedDirectories = controlDirectories
             + controlDirectories.map { RelayFileTransport.runtimeDirectory(applicationDirectory: $0) }
             + [runtime.transportDirectory]
-        try containerService.validateFolder(snapshot.cwd, protectedDirectories: protectedDirectories.map(\.path))
+        try containerService.validateFolder(snapshot.cwd, protectedDirectories: protectedDirectories.map(\.path), gitAccess: configuration.gitAccess)
         let root = applicationDirectory.appendingPathComponent("container-runtime")
         let protocolFolder = try AgentProtocol.install(in: root)
         let shim = try RelayShim.installCommand(in: root.appendingPathComponent("bin"),
@@ -1088,9 +1092,25 @@ public final class WorkbenchController: @unchecked Sendable {
 
     public func prepareAllContainerStops() throws {
         let panes = try listPanes()
-        for pane in panes where pane.containerConfiguration != nil { try prepareContainerStop(pane) }
-        // Orphans and interrupted image checks have no live pane to visit.
-        try containerService.stopAll()
+        var failures: [String] = []
+        let paneIDs = Set(panes.map(\.id))
+        var recordedPaneIDs: Set<String> = []
+        do { recordedPaneIDs = Set(try containerService.records().filter { !$0.removed }.map(\.paneID)) }
+        catch { failures.append(error.localizedDescription) }
+        let preparedPaneIDs = lock.withLock { Set(preparedContainerIDs.keys).union(containerPreparations) }
+        for pane in panes where pane.containerConfiguration != nil || recordedPaneIDs.contains(pane.id) || preparedPaneIDs.contains(pane.id) {
+            do { try prepareContainerStop(pane) }
+            catch { failures.append("\(pane.displayName): \(error.localizedDescription)") }
+        }
+        // Visit orphans independently; never retry a failed live-pane removal
+        // without its controller reservation and unchanged-generation checks.
+        do {
+            for record in try containerService.records() where !record.removed && !paneIDs.contains(record.paneID) {
+                do { try containerService.remove(record) }
+                catch { failures.append("\(record.paneID): \(error.localizedDescription)") }
+            }
+        } catch { failures.append(error.localizedDescription) }
+        if !failures.isEmpty { throw ContainerPaneError.refused(failures.joined(separator: "\n")) }
     }
 
     public func launchConfiguration(for paneID: String) throws -> GhosttyPaneLaunch {

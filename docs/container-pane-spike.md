@@ -84,5 +84,25 @@ in [RELEASING.md](../RELEASING.md#experimental-container-acceptance), including
 restart, workspace close, daemon outage, saved-state deletion and total host
 plus VM idle cost. Docker Desktop and Colima have not been tested.
 
-Worktree Git mounts and container team provisioning remain deferred. A linked
-worktree does not implicitly grant access to its parent repository.
+The subsequent follow-up adds explicit shared-Git mount review and container team
+settings. A linked worktree does not implicitly grant access to its primary
+checkout. These additions have separate checks; the earlier observations above
+remain the record of the original spike.
+
+## Default sandbox follow-up
+
+On 9 September the installed local spike image still has `/usr/bin/bwrap`, but
+`codex sandbox -- /bin/true` fails namespace creation under Parley's non-root,
+capability-dropped container settings. A separate `unshare --user /bin/true`
+probe also returns EPERM, while `user.max_user_namespaces` is nonzero. Neither
+probe receives host mounts, a vendor login or network access. This establishes
+that namespaces are unavailable under this configuration; it does not isolate
+the denial to one particular kernel security mechanism.
+
+[OpenAI's sandbox documentation](https://learn.chatgpt.com/docs/sandboxing)
+requires namespace support for the Linux sandbox.
+[Docker's seccomp documentation](https://docs.docker.com/engine/security/seccomp/)
+describes namespace restrictions in its default profile. No working default
+sandbox configuration has been established here. Parley keeps its normal
+sandbox probe, reports the failure and never silently selects legacy mode,
+adds privileged capabilities, or disables a vendor's approvals.

@@ -276,7 +276,8 @@ public struct TeamPaneProvision: Identifiable, Codable, Equatable, Sendable {
     /// The pane exists and is owned, but a later native step failed.
     public var warning: String?
 
-    public var isSettled: Bool { paneID != nil || failure != nil }
+    public var containerPreparationPending: Bool? = nil
+    public var isSettled: Bool { (paneID != nil && containerPreparationPending != true) || failure != nil }
 
     public init(id: String, sessionID: String, idempotencyKey: String = UUID().uuidString, kind: PaneKind, name: String, role: String?,
                 createdAt: Date, paneID: String? = nil, failure: String? = nil, warning: String? = nil) {
@@ -347,13 +348,14 @@ public struct TeamSessionGrant: Identifiable, Codable, Equatable, Sendable {
     public let paneLimit: Int
     /// Provisioning authority ends here. Work already running is not stopped.
     public let provisioningDeadline: Date
+    public let containerConfigurations: [String: ContainerConfiguration]?
     public let approvedAt: Date
 
     public var permissionProfileID: String { approvedProfile.id }
 
     public init(id: String, requesterPaneID: String, requesterGeneration: Int, workspaceID: String, automationPolicy: WorkspaceAutomationPolicy,
                 folder: String, allowedVendors: [PaneKind], approvedProfile: PermissionProfileDefinition, approvedRoots: [String],
-                paneLimit: Int, provisioningDeadline: Date, approvedAt: Date) {
+                paneLimit: Int, provisioningDeadline: Date, approvedAt: Date, containerConfigurations: [String: ContainerConfiguration]? = nil) {
         self.id = id
         self.requesterPaneID = requesterPaneID
         self.requesterGeneration = requesterGeneration
@@ -366,6 +368,7 @@ public struct TeamSessionGrant: Identifiable, Codable, Equatable, Sendable {
         self.paneLimit = paneLimit
         self.provisioningDeadline = provisioningDeadline
         self.approvedAt = approvedAt
+        self.containerConfigurations = containerConfigurations
     }
 
     public func matches(requester: WorkbenchPane) -> Bool {
@@ -654,6 +657,7 @@ public struct TeamSession: Identifiable, Codable, Equatable, Sendable {
     public var grantID: String?
     /// The worktree the approved folder is, when the person bound one.
     public var worktree: TeamWorktreeBinding? = nil
+    public var containerConfigurations: [String: ContainerConfiguration]? = nil
     /// Native stop attempts in order, as recorded by the app. Bounded so
     /// repeated retries never grow past the transport cap.
     public var stopAttempts: [TeamStopAttempt] = []
@@ -725,6 +729,7 @@ public struct TeamSession: Identifiable, Codable, Equatable, Sendable {
         /// commit and whether Parley created it. Absent when the team works
         /// in an ordinary folder.
         public let worktree: TeamWorktreeBinding?
+        public let containerVendors: [String]?
         /// Display-only; never parse. Times inside are local and labelled.
         public let detail: String?
     }
@@ -737,14 +742,14 @@ public struct TeamSession: Identifiable, Codable, Equatable, Sendable {
             createdAt: createdAt, approvedAt: approvedAt, endedAt: endedAt, requesterPaneID: source.id,
             members: members.map { .init(paneID: $0.paneID, vendor: $0.kind.rawValue, name: $0.name, role: $0.role, createdGeneration: $0.launchGeneration, createdAt: $0.createdAt) },
             currentPanes: current, ownedRunningPaneIDs: current.filter { $0.ownedRunning }.map(\.paneID),
-            stopAttempts: stopAttempts, worktree: worktree, detail: detail)
+            stopAttempts: stopAttempts, worktree: worktree, containerVendors: containerConfigurations.map { $0.keys.sorted() }, detail: detail)
     }
 }
 
 public enum TeamSessionDisclosure {
-    public static let approval = "Approval lets the requesting pane create up to the pane limit of new agent panes in this workspace, bound to the approved folder and the exact permission profile shown here, without another approval per pane. Each new pane is an ordinary vendor session with that vendor's own permission prompts; Parley never answers or skips them. The grant lives only in memory and ends at the provisioning deadline, on Stop, on Stop Everything or quit, when the requesting pane restarts, moves, changes folder or its workspace policy changes, and when the approved permission profile is edited or removed."
+    public static let approval = "Approval lets the requesting pane create up to the pane limit of new agent panes in this workspace, bound to the approved folder, exact permission profile and per-vendor host or container settings shown here, without another approval per pane. Each new pane is an ordinary vendor session with that vendor's own permission prompts; Parley never answers or skips them. The grant lives only in memory and ends at the provisioning deadline, on Stop, on Stop Everything or quit, when the requesting pane restarts, moves, changes folder or its workspace policy changes, and when the approved permission profile is edited or removed."
     public static let deadline = "The deadline bounds provisioning only: after it no new panes can be created. It does not stop or pause work already running in created panes; stopping them is always your explicit action."
     public static let stop = "Stop revokes the grant, refuses further provisioning and stops the processes of panes this session created, identified by pane id and the exact generation Parley started; they remain as stopped placeholders you can close. A pane you restarted since creation is no longer team-owned and is skipped; a pane you moved to another workspace stays owned. The requesting pane and unrelated panes are not touched. Tracked Ask or Delegate work already in flight is not cancelled; cancel it in Status Center. The recorded outcome lists exactly what was stopped, skipped or could not be stopped, with a retry."
     public static let expiry = "When provisioning authority expires or is interrupted, new panes are refused. Running panes are not stopped automatically; Stop team panes remains available for still-owned panes until you use it."
-    public static let worktree = "A team worktree is one Git worktree per feature: every pane the session creates shares that folder, its branch, index and uncommitted files, while objects, refs, stashes, hooks and configuration stay shared with the whole repository through a .git directory outside the pane folder. Parley grants no extra permission root for that shared .git directory: whether a vendor CLI may commit, switch or push from the worktree is that vendor's own permission decision and may need its approval or fail. Creating a tree runs a single fixed git worktree add under <repository>/.worktrees/ from the base commit shown here; selecting an existing tree records no ownership. Parley never commits, merges, rebases, pushes, forces or deletes a branch, and removing a worktree is a separate explicit action."
+    public static let worktree = "A team worktree is one Git worktree per feature: every pane the session creates shares that folder, its branch, index and uncommitted files, while objects, refs, stashes, hooks and configuration stay shared with the whole repository through a .git directory outside the pane folder. Host panes receive no extra permission root for that shared .git directory. Container members receive a shared Git mount only after you review its exact path here; the primary checkout is not mounted. Changes to shared hooks or executable Git configuration can cause commands to run on your Mac, outside the container, during later host Git operations. Parley does not review those changes again. In both cases, whether a vendor CLI may commit, switch or push from the worktree is that vendor's own permission decision and may need its approval or fail. Creating a tree runs a single fixed git worktree add under <repository>/.worktrees/ from the base commit shown here; selecting an existing tree records no ownership. Parley never commits, merges, rebases, pushes, forces or deletes a branch, and removing a worktree is a separate explicit action."
 }

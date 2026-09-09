@@ -2836,20 +2836,69 @@ final class AppModel: ObservableObject {
                 )
                 return try controller.createTeamPane(session: session, grant: grant, provision: provision, permissionProfile: profile)
             }, mount: { session, created in
-                // Ownership is already recorded; these steps only present the pane.
-                focusCanvasPaneID = nil
-                recordNativeSplit(created: created, target: panes.first { $0.id == session.source.id }, direction: .vertical)
-                panes = try controller.listPanes()
-                workspaces = try controller.listWorkspaces()
-                _ = try ghosttyRegistry.view(for: created.id)
-                ghosttyRegistry.select(paneID: created.id)
-                rememberFolder(created.cwd)
+                // Ownership precedes both asynchronous Docker preparation and mounting.
+                if created.containerConfiguration != nil {
+                    try prepareTeamContainer(session: session, pane: created)
+                } else {
+                    try presentTeamPane(session: session, pane: created)
+                }
             })
         }
         let sessions = coordinator.sessions()
         if sessions != teamSessions { teamSessions = sessions }
         if teamSessionError != coordinator.lastError { teamSessionError = coordinator.lastError }
         refreshTeamSessionAttention()
+    }
+
+    private func presentTeamPane(session: TeamSession, pane: WorkbenchPane) throws {
+        guard let controller else { throw TeamSessionError.invalid("The workbench is unavailable.") }
+        focusCanvasPaneID = nil
+        recordNativeSplit(created: pane, target: panes.first { $0.id == session.source.id }, direction: .vertical)
+        panes = try controller.listPanes()
+        workspaces = try controller.listWorkspaces()
+        _ = try ghosttyRegistry.view(for: pane.id)
+        if NSApp.isActive { ghosttyRegistry.select(paneID: pane.id) }
+        rememberFolder(pane.cwd)
+    }
+
+    private func prepareTeamContainer(session: TeamSession, pane: WorkbenchPane) throws {
+        guard let controller, let coordinator = residentCore?.teamSessions,
+              let grant = coordinator.grant(for: session.id),
+              let configuration = grant.containerConfigurations?[pane.kind.rawValue],
+              let provision = coordinator.pendingProvisions().first(where: { $0.paneID == pane.id }) else {
+            throw TeamSessionError.invalid("The container preparation no longer has its approved grant.")
+        }
+        let profile = try PermissionProfileResolver.resolve(definition: grant.approvedProfile, paneFolder: grant.folder, approvedRoots: grant.approvedRoots)
+        Task {
+            do {
+                let approved = try coordinator.containerPreparation(id: provision.id)
+                guard approved.grant == grant, approved.pane.launchGeneration == pane.launchGeneration,
+                      approved.pane.cwd == pane.cwd, approved.pane.workspaceID == pane.workspaceID,
+                      approved.pane.permissionSelection == pane.permissionSelection else {
+                    throw TeamSessionError.invalid("The team pane changed before container preparation.")
+                }
+                try await Task.detached(priority: .userInitiated) {
+                    try controller.prepareContainerStart(pane.id, configuration: configuration, permissionProfile: profile)
+                }.value
+                try coordinator.finishContainerProvision(id: provision.id, activate: { approved, current in
+                    guard approved == grant else { throw TeamSessionError.invalid("The approved container grant changed.") }
+                    try controller.startPane(current.id, permissionProfile: profile, containerConfiguration: configuration)
+                    return try controller.listPanes().first { $0.id == current.id }!
+                }, mount: { session, started in try presentTeamPane(session: session, pane: started) })
+            } catch {
+                var reason = "The team pane was created but its container did not start: \(error.localizedDescription)"
+                do {
+                    guard let current = try controller.listPanes().first(where: { $0.id == pane.id }),
+                          coordinator.sessions().first(where: { $0.id == session.id })?.members.contains(where: { $0.owns(current) }) == true else {
+                        throw TeamSessionError.invalid("The pane changed generation; its replacement was left alone.")
+                    }
+                    try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(current) }.value
+                    try controller.stopPaneProcess(current.id, expectedGeneration: current.launchGeneration)
+                } catch { reason += " Cleanup was not confirmed: \(error.localizedDescription) Use Status Center to remove its recorded container." }
+                coordinator.failContainerProvision(id: provision.id, reason: reason)
+            }
+            try? refresh()
+        }
     }
 
     private func refreshTeamSessionAttention() {
@@ -2898,10 +2947,10 @@ final class AppModel: ObservableObject {
     }
 
     func approveTeamSession(_ session: TeamSession, objective: String, folder: String, allowedVendors: [PaneKind],
-                            permissionProfileID: String, paneLimit: Int, hours: Int) throws {
+                            permissionProfileID: String, paneLimit: Int, hours: Int, containerConfigurations: [String: ContainerConfiguration]? = nil) throws {
         guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
         try core.teamSessions.approve(id: session.id, revision: session.revision, objective: objective, folder: folder,
-            allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours)
+            allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours, containerConfigurations: containerConfigurations)
         teamSessions = core.teamSessions.sessions()
         selectedTeamSessionID = session.id
     }
@@ -2911,13 +2960,13 @@ final class AppModel: ObservableObject {
     /// was created but whose approval then failed is reported as such and
     /// stays as a Parley-created worktree the person can select or remove.
     func approveTeamSession(_ session: TeamSession, objective: String, folder: String, allowedVendors: [PaneKind],
-                            permissionProfileID: String, paneLimit: Int, hours: Int, worktree: TeamWorktreeChoice) async throws {
+                            permissionProfileID: String, paneLimit: Int, hours: Int, worktree: TeamWorktreeChoice, containerConfigurations: [String: ContainerConfiguration]? = nil) async throws {
         guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
         let record: ManagedWorktreeRecord
         switch worktree {
         case .ordinaryFolder:
             try approveTeamSession(session, objective: objective, folder: folder, allowedVendors: allowedVendors,
-                permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours)
+                permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours, containerConfigurations: containerConfigurations)
             return
         case let .existing(path):
             // Authority and containment first; Git only after the approval would pass.
@@ -2932,7 +2981,7 @@ final class AppModel: ObservableObject {
         do {
             try core.teamSessions.approve(id: session.id, revision: session.revision, objective: objective, folder: record.path,
                 allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours,
-                worktree: TeamWorktreeBinding(record: record))
+                worktree: TeamWorktreeBinding(record: record), containerConfigurations: containerConfigurations)
         } catch {
             teamSessions = core.teamSessions.sessions()
             if case .create = worktree {
@@ -2967,7 +3016,10 @@ final class AppModel: ObservableObject {
         perform {
             guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
             let members = try core.teamSessions.stop(id: session.id, reason: "Stopped by the person")
-            try finishStoppingTeamPanes(sessionID: session.id, members: members)
+            Task {
+                do { try await finishStoppingTeamPanes(sessionID: session.id, members: members) }
+                catch { NSAlert(error: error).runModal() }
+            }
         }
     }
 
@@ -2985,7 +3037,10 @@ final class AppModel: ObservableObject {
         perform {
             guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
             let members = try core.teamSessions.ownedMembers(id: session.id)
-            try finishStoppingTeamPanes(sessionID: session.id, members: members)
+            Task {
+                do { try await finishStoppingTeamPanes(sessionID: session.id, members: members) }
+                catch { NSAlert(error: error).runModal() }
+            }
         }
     }
 
@@ -2993,23 +3048,43 @@ final class AppModel: ObservableObject {
     /// what happened per owned generation. Process state and recording
     /// failure are kept distinct: a pane that stopped but could not be
     /// recorded is reported as stopped-but-unrecorded, never as still running.
-    private func finishStoppingTeamPanes(sessionID: String, members: [TeamSessionMember]) throws {
+    private func finishStoppingTeamPanes(sessionID: String, members: [TeamSessionMember]) async throws {
         guard let core = residentCore, let controller else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
         // Planning needs fresh workbench state; a cached list could stop the wrong generation.
         let live: [WorkbenchPane]
         do { live = try controller.listPanes() } catch {
             throw RelayUIError.message("The workbench state could not be read, so no team pane was stopped: \(error.localizedDescription)")
         }
+        let containers = live.filter { pane in pane.containerConfiguration != nil && members.contains { $0.owns(pane) } }
+        let cleanupFailures = await Task.detached(priority: .userInitiated) {
+            var failures: [String: String] = [:]
+            for pane in containers {
+                do { try controller.prepareContainerStop(pane) }
+                catch { failures[pane.id] = error.localizedDescription }
+            }
+            return failures
+        }.value
+        let current = try controller.listPanes()
         let outcomes = TeamStopExecution.execute(
-            plan: TeamStopPlanner.plan(members: members, live: live),
-            stop: { try controller.stopPaneProcess($0) },
+            plan: TeamStopPlanner.plan(members: members, live: current),
+            stop: { id in
+                if let failure = cleanupFailures[id] { throw ContainerPaneError.refused(failure) }
+                try controller.stopPaneProcess(id, expectedGeneration: members.first { $0.paneID == id }?.launchGeneration)
+            },
             currentPane: { id in (try? controller.listPanes())?.first { $0.id == id } }
         )
-        let attempt = TeamStopAttempt(reason: "Stopped by the person", outcomes: outcomes)
+        let recordedOutcomes = outcomes.map { outcome in
+            if let failure = cleanupFailures[outcome.paneID], let member = members.first(where: { $0.paneID == outcome.paneID }),
+               current.contains(where: { member.owns($0) }) {
+                return TeamMemberStopOutcome(paneID: outcome.paneID, launchGeneration: outcome.launchGeneration, name: outcome.name, result: .failed, message: failure)
+            }
+            return outcome
+        }
+        let attempt = TeamStopAttempt(reason: "Stopped by the person", outcomes: recordedOutcomes)
         core.teamSessions.recordStopAttempt(id: sessionID, attempt: attempt)
         teamSessions = core.teamSessions.sessions()
         try refresh()
-        let failed = outcomes.filter { [.failed, .stoppedUnrecorded, .unknown].contains($0.result) }
+        let failed = recordedOutcomes.filter { [.failed, .stoppedUnrecorded, .unknown].contains($0.result) }
         if !failed.isEmpty {
             throw RelayUIError.message("Some team panes did not stop cleanly:\n" + failed.map { "\($0.name): \($0.result.label). \($0.message ?? "")" }.joined(separator: "\n")
                 + "\n\nThe session shows the recorded outcome; Stop team panes retries any owned generation still running.")
@@ -4086,9 +4161,12 @@ final class AppModel: ObservableObject {
         }
         Task {
             do {
+                var failures: [String] = []
                 for pane in reviewed where pane.containerConfiguration != nil {
-                    try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(pane) }.value
+                    do { try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(pane) }.value }
+                    catch { failures.append("\(pane.displayName): \(error.localizedDescription)") }
                 }
+                if !failures.isEmpty { throw ContainerPaneError.refused(failures.joined(separator: "\n")) }
                 let current = try controller.listPanes()
                 guard reviewed.allSatisfy({ old in current.contains(where: {
                     $0.id == old.id && $0.launchGeneration == old.launchGeneration && $0.cwd == old.cwd && $0.workspaceID == old.workspaceID

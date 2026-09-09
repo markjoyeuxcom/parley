@@ -6,7 +6,27 @@ private func containerExpect(_ value: @autoclosure () throws -> Bool, _ message:
     guard try value() else { throw NSError(domain: "ContainerPaneChecks", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
 }
 
+/// These checks deliberately consult the real Production/Development roots;
+/// an agent boundary cannot inspect them. Refusal stays a failed prerequisite,
+/// never a silent skip or a weakened production check.
+private func requireContainerControllerShell() throws {
+    for directory in ParleyRuntime.controlDirectories() {
+        if let resolved = realpath(directory.path, nil) { free(resolved); continue }
+        if errno == EPERM || errno == EACCES {
+            throw NSError(domain: "ContainerCheckPrerequisite", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "This check requires a human Shell pane with access to Parley's protected runtime paths. Use parley request-run; the check was not run."])
+        }
+    }
+}
+
 var containerPaneChecks: [(String, () throws -> Void)] { [
+    ("container Git review canonicalizes planned aliases and names submodule refusal", checkContainerGitReviewRefusals),
+    ("container bulk cleanup includes prepared host placeholders", checkContainerPreparedBulkStop),
+    ("container team controller preserves creation, activation and Stop ownership", checkContainerTeamController),
+    ("container follow-up image probe checks Linux utility contract", checkContainerImageUtilities),
+    ("container follow-up linked worktree accepts reviewed Git access", checkContainerLinkedWorktree),
+    ("container follow-up record reads stay responsive during Docker work", checkContainerResponsiveRecords),
+    ("container follow-up cleanup continues after one failed receipt", checkContainerCleanupContinuation),
     ("container recorded removal recovers a failed preparation", checkContainerPreparedRemovalRecovery),
     ("container old receipt removal preserves a replacement at the same generation", checkContainerOldReceiptRemoval),
     ("container controller refuses folders inside relay transport before mutation", checkContainerTransportFolderRefusal),
@@ -128,6 +148,30 @@ func checkContainerTransportSpike(image: String, docker: String) throws {
         try containerExpect(records.allSatisfy(\.removed), "container stop did not reconcile its receipt")
         try service.deleteLoginState(records[0])
         print("PASS Docker pinned image, recorded creation ID, attach, stop and login-volume removal")
+        let repository = directory.appendingPathComponent("git-repository")
+        let tree = directory.appendingPathComponent("git-linked")
+        for arguments in [["init", repository.path], ["-C", repository.path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"],
+                          ["-C", repository.path, "worktree", "add", "-b", "container-fixture", tree.path]] {
+            let output = try runner.run(executable: URL(fileURLWithPath: "/usr/bin/git"), arguments: arguments,
+                environment: ["PATH": "/usr/bin:/bin", "HOME": directory.path, "GIT_CONFIG_NOSYSTEM": "1"])
+            try containerExpect(output.status == 0, "worktree spike fixture failed: \(output.stderrText)")
+        }
+        try "fixture".write(to: tree.appendingPathComponent("container-fixture.txt"), atomically: true, encoding: .utf8)
+        var worktreeConfiguration = configuration
+        worktreeConfiguration.gitAccess = try ContainerGitAccess.inspect(folder: tree.path)
+        try service.validateFolder(tree.path, protectedDirectories: [transportRoot.path], gitAccess: worktreeConfiguration.gitAccess)
+        var worktreePane = source; worktreePane.id = "worktree-container-source"; worktreePane.cwd = tree.path
+        let worktreeID = try service.prepare(configuration: worktreeConfiguration, pane: worktreePane,
+            endpoint: transportRoot.appendingPathComponent(sourceToken).path, protocolDirectory: protocolFolder.path,
+            shimDirectory: directory.appendingPathComponent("linux-bin").path, token: sourceToken,
+            vendorArguments: ["sandbox", "--", "/usr/bin/git", "-C", tree.path, "status", "--porcelain"], runtime: "DEV")
+        let worktreeOutput = try runner.run(executable: URL(fileURLWithPath: docker),
+            arguments: ContainerLaunchProjection.attachArguments(configuration: worktreeConfiguration, containerID: worktreeID).filter { $0 != "--interactive" }, environment: environment)
+        try containerExpect(worktreeOutput.status == 0 && worktreeOutput.stdoutText.contains("container-fixture.txt"),
+            "Codex sandbox could not read the linked worktree with its shared Git mount (\(worktreeOutput.status)): \(worktreeOutput.stdoutText) \(worktreeOutput.stderrText)")
+        try service.stop(paneID: worktreePane.id)
+        for record in try service.records() where record.removed { try service.deleteLoginState(record) }
+        print("PASS Docker linked worktree Git status through Codex sandbox and exact shared metadata mount")
     }
     // Negative boundary: mounting one endpoint must not grant its sibling.
     _ = try invoke(String(repeating: "a", count: 48), ["whoami"], status: 125)
@@ -151,6 +195,10 @@ func checkContainerLaunchProjection() throws {
         do { _ = try ContainerLaunchProjection.createArguments(configuration: config, facts: facts, vendorArguments: bypass); throw NSError(domain: "accepted vendor approval bypass", code: 1) }
         catch is ContainerPaneError {}
     }
+    var legacy = config; legacy.legacyCodexSandbox = true
+    let sandbox = try ContainerLaunchProjection.createArguments(configuration: legacy, facts: facts, vendorArguments: ["sandbox", "--", "/bin/true"])
+    try containerExpect(sandbox.firstIndex(of: "features.use_legacy_landlock=true")! < sandbox.firstIndex(of: "--")!,
+        "Codex compatibility option was passed to the sandboxed command instead of Codex")
     var unsafe = facts
     unsafe.folder = "/"
     do { _ = try ContainerLaunchProjection.createArguments(configuration: config, facts: unsafe, vendorArguments: []); throw NSError(domain: "accepted broad root", code: 1) }
@@ -330,7 +378,8 @@ private final class ContainerLifecycleRunner: CommandRunning, @unchecked Sendabl
     func run(executable: URL, arguments a: [String], environment: [String: String], input: Data?) throws -> CommandOutput {
         calls.append(a)
         var text = ""
-        if a.contains("info") { text = daemon }
+        if a.contains("context") { text = "unix:///tmp/docker.sock" }
+        else if a.contains("info") { text = daemon }
         else if a.contains("image") { text = "sha256:" + String(repeating: "b", count: 64) }
         else if a.contains("volume") {
             if a.contains("create") {
@@ -358,6 +407,7 @@ private final class ContainerLifecycleRunner: CommandRunning, @unchecked Sendabl
 }
 
 func checkContainerControllerLifecycle() throws {
+    try requireContainerControllerShell()
     let directory = URL(fileURLWithPath: "/private/tmp/parley-container-controller-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: directory) }
     let project = directory.appendingPathComponent("project"), app = directory.appendingPathComponent("app")
@@ -458,6 +508,7 @@ private final class ContainerReviewFixture {
 }
 
 func checkContainerPreparedRemovalRecovery() throws {
+    try requireContainerControllerShell()
     for recovery in ["close", "host", "container"] {
         let fixture = try ContainerReviewFixture()
         let pane = try fixture.stoppedPane(folder: fixture.project.path)
@@ -544,6 +595,7 @@ func checkContainerControlPathOverlap() throws {
 
 
 func checkContainerOldReceiptRemoval() throws {
+    try requireContainerControllerShell()
     let fixture = try ContainerReviewFixture()
     let pane = try fixture.stoppedPane(folder: fixture.project.path)
     let profile = try fixture.profile(folder: pane.cwd)
@@ -566,4 +618,173 @@ func checkContainerOldReceiptRemoval() throws {
     try containerExpect(try fixture.controller.listPanes().first { $0.id == pane.id }?.isStarted == true, "replacement pane lost its running state")
     try fixture.controller.prepareContainerStop(active)
     try fixture.controller.stopPaneProcess(pane.id)
+}
+
+func checkContainerResponsiveRecords() throws {
+    let directory = URL(fileURLWithPath: "/private/tmp/parley-container-responsive-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runner = ContainerLifecycleRunner()
+    let service = try ContainerPaneService(directory: directory, environment: [:], runner: runner)
+    let config = ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock",
+        daemonID: "daemon-one", imageID: "sha256:" + String(repeating: "b", count: 64), imageName: "fixture", legacyCodexSandbox: false)
+    let pane = WorkbenchPane(id: "pane-fixture", kind: .codex, customName: nil, terminalTitle: "", cwd: "/project", currentCommand: "codex", isActive: true, workspaceID: "workspace")
+    runner.pauseNextCreate = true
+    let operation = ContainerPendingInvocation {
+        try service.prepare(configuration: config, pane: pane, endpoint: "/transport/endpoint", protocolDirectory: "/protocol",
+            shimDirectory: "/shim", token: "fixture", vendorArguments: [], runtime: "DEV")
+    }
+    operation.start()
+    guard runner.entered.wait(timeout: .now() + 3) == .success else { throw NSError(domain: "Docker was not reached", code: 1) }
+    let readCompleted = DispatchSemaphore(value: 0)
+    let reader = ContainerPendingInvocation { defer { readCompleted.signal() }; return String(try service.records().count) }
+    reader.start()
+    let responsive = readCompleted.wait(timeout: .now() + 0.5) == .success
+    runner.release.signal()
+    _ = try operation.wait()
+    _ = try reader.wait()
+    try containerExpect(responsive, "Status Center record reads waited for Docker")
+}
+
+func checkContainerCleanupContinuation() throws {
+    let directory = URL(fileURLWithPath: "/private/tmp/parley-container-cleanup-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runner = ContainerRecordingRunner()
+    runner.listed = ""
+    let service = try ContainerPaneService(directory: directory, environment: [:], runner: runner)
+    func record(_ daemon: String) -> [String: Any] {
+        ["id": "owner-" + daemon, "paneID": "pane-fixture", "generation": 1,
+         "configuration": ["dockerExecutable": "/fixture/docker", "daemonEndpoint": "unix:///tmp/docker.sock", "daemonID": daemon,
+             "imageID": "sha256:" + String(repeating: "b", count: 64), "imageName": "fixture", "legacyCodexSandbox": false],
+         "volume": "home-fixture", "runtime": "DEV", "containerID": String(repeating: "a", count: 64), "removed": false, "createdAt": 0]
+    }
+    let file = directory.appendingPathComponent("container-panes.json")
+    try JSONSerialization.data(withJSONObject: ["owner": "runtime-owner", "records": [record("unavailable"), record("daemon-one")]]).write(to: file)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    do { try service.stop(paneID: "pane-fixture"); throw NSError(domain: "cleanup hid its failure", code: 1) }
+    catch is ContainerPaneError {}
+    let records = try service.records()
+    try containerExpect(!records[0].removed && records[1].removed, "first cleanup failure prevented later cleanup")
+}
+
+func checkContainerImageUtilities() throws {
+    let directory = URL(fileURLWithPath: "/private/tmp/parley-container-image-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runner = ContainerLifecycleRunner()
+    let service = try ContainerPaneService(directory: directory, environment: [:], runner: runner)
+    _ = try service.preview(image: "fixture", vendor: .claude, legacyCodexSandbox: false)
+    let probes = runner.calls.filter { $0.contains("create") && $0.contains("--network=none") }
+    try containerExpect(probes.contains { $0.contains("/bin/sh") && $0.contains(where: { $0.contains("/usr/bin/stat") && $0.contains("/bin/chown") && $0.contains("/proc/sys/kernel/random/uuid") }) },
+        "image was accepted without checking the shim and initializer utilities")
+}
+
+func checkContainerLinkedWorktree() throws {
+    let directory = URL(fileURLWithPath: "/private/tmp/parley-container-worktree-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let repository = directory.appendingPathComponent("repository"), tree = directory.appendingPathComponent("linked")
+    let git = ProcessCommandRunner()
+    func run(_ args: [String]) throws {
+        let output = try git.run(executable: URL(fileURLWithPath: "/usr/bin/git"), arguments: args,
+            environment: ["PATH": "/usr/bin:/bin", "HOME": directory.path, "GIT_CONFIG_NOSYSTEM": "1"])
+        try containerExpect(output.status == 0, "fixture Git failed: \(output.stderrText)")
+    }
+    try run(["init", repository.path])
+    try run(["-C", repository.path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"])
+    try run(["-C", repository.path, "worktree", "add", "-b", "fixture-worktree", tree.path])
+    let service = try ContainerPaneService(directory: directory.appendingPathComponent("app"), environment: [:])
+    let access = try ContainerGitAccess.inspect(folder: tree.path)
+    try containerExpect(access?.commonDirectory == repository.path + "/.git", "shared Git access did not resolve the exact common directory")
+    try service.validateFolder(tree.path, protectedDirectories: [directory.appendingPathComponent("app").path], gitAccess: access)
+    do { try service.validateFolder(tree.path, protectedDirectories: []); throw NSError(domain: "unreviewed Git access accepted", code: 1) }
+    catch is ContainerPaneError {}
+    do { try service.validateFolder(tree.path, protectedDirectories: [repository.path], gitAccess: access); throw NSError(domain: "protected Git mount accepted", code: 1) }
+    catch is ContainerPaneError {}
+    let facts = ContainerLaunchFacts(paneID: "pane-fixture", generation: 1, vendor: .codex, folder: tree.path,
+        endpoint: "/transport/endpoint", protocolDirectory: "/protocol", shimDirectory: "/shim", uid: 501, gid: 20,
+        volume: "fixture-home", owner: "fixture-owner", runtime: "DEV")
+    let config = ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock", daemonID: "fixture",
+        imageID: "sha256:" + String(repeating: "b", count: 64), imageName: "fixture", legacyCodexSandbox: false, gitAccess: access)
+    let mounts = try ContainerLaunchProjection.createArguments(configuration: config, facts: facts, vendorArguments: []).filter { $0.hasPrefix("type=bind") }
+    try containerExpect(mounts.count == 5 && mounts.contains("type=bind,source=\(repository.path)/.git,target=\(repository.path)/.git"), "shared Git mount missing")
+    try containerExpect(!mounts.contains("type=bind,source=\(repository.path),target=\(repository.path)"), "primary checkout was exposed")
+    try FileManager.default.moveItem(at: repository.appendingPathComponent(".git"), to: repository.appendingPathComponent(".oldgit"))
+    try FileManager.default.copyItem(at: repository.appendingPathComponent(".oldgit"), to: repository.appendingPathComponent(".git"))
+    do { try service.validateFolder(tree.path, protectedDirectories: [], gitAccess: access); throw NSError(domain: "replaced Git identity accepted", code: 1) }
+    catch is ContainerPaneError {}
+}
+
+func checkContainerTeamController() throws {
+    try requireContainerControllerShell()
+    let fixture = try ContainerReviewFixture()
+    let controller = fixture.controller
+    let workspace = try controller.listWorkspaces()[0]
+    try controller.setWorkspaceAutomationPolicy(workspace.workspaceID, policy: .askAndDelegate)
+    let profile = try fixture.profile(folder: fixture.project.path)
+    let lead = try controller.createPane(kind: .claude, cwd: fixture.project.path, permissionProfile: profile)
+    let coordinator = TeamSessionCoordinator(authenticate: { $0 == "fixture-token" ? lead.id : nil },
+        panes: { try controller.listPanes() }, profiles: { PermissionProfileDefinition.builtIns }, record: { _, _, _ in })
+    let proposal = try coordinator.request(token: "fixture-token", proposal: TeamSessionProposal(objective: "fixture",
+        folder: fixture.project.path, paneLimit: 1, hours: 1))
+    try coordinator.approve(id: proposal.id, revision: proposal.revision, objective: "fixture", folder: fixture.project.path,
+        allowedVendors: [.codex], permissionProfileID: profile.definition.id, paneLimit: 1, hours: 1,
+        containerConfigurations: ["codex": fixture.configuration])
+    let provision = try coordinator.requestPane(token: "fixture-token", kind: .codex, name: "Container member", role: nil)
+    coordinator.fulfilProvisions(create: { session, grant, provision in
+        try controller.createTeamPane(session: session, grant: grant, provision: provision, permissionProfile: profile)
+    })
+    let pending = try coordinator.containerPreparation(id: provision.id)
+    try containerExpect(!pending.pane.isStarted && pending.pane.containerConfiguration == fixture.configuration && fixture.runner.calls.isEmpty,
+        "team creation ran Docker or lost its reviewed container configuration")
+    try controller.prepareContainerStart(pending.pane.id, configuration: fixture.configuration, permissionProfile: profile)
+    try coordinator.finishContainerProvision(id: provision.id, activate: { _, pane in
+        try controller.startPane(pane.id, permissionProfile: profile, containerConfiguration: fixture.configuration)
+        return try controller.listPanes().first { $0.id == pane.id }!
+    })
+    let started = try controller.listPanes().first { $0.id == pending.pane.id }!
+    let members = try coordinator.stop(id: proposal.id, reason: "fixture Stop")
+    try containerExpect(members.count == 1 && members[0].owns(started), "team Stop lost the initial activated generation")
+    try controller.prepareContainerStop(started)
+    try controller.stopPaneProcess(started.id, expectedGeneration: started.launchGeneration)
+    try containerExpect(fixture.runner.containers.isEmpty && (try fixture.service.records()).allSatisfy(\.removed), "team Stop left its owned container")
+    try containerExpect(try controller.listPanes().first { $0.id == lead.id }?.isStarted == true, "team Stop touched the requesting pane")
+}
+
+func checkContainerPreparedBulkStop() throws {
+    try requireContainerControllerShell()
+    let fixture = try ContainerReviewFixture()
+    let pane = try fixture.stoppedPane(folder: fixture.project.path)
+    try fixture.controller.prepareContainerStart(pane.id, configuration: fixture.configuration, permissionProfile: fixture.profile(folder: pane.cwd))
+    try fixture.controller.prepareAllContainerStops()
+    try containerExpect(fixture.runner.containers.isEmpty && (try fixture.service.records()).allSatisfy(\.removed),
+        "bulk cleanup skipped a prepared container on a host placeholder")
+    try fixture.controller.shutdown()
+}
+
+func checkContainerGitReviewRefusals() throws {
+    let root = URL(fileURLWithPath: "/private/tmp/parley-container-git-review-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let parent = root.appendingPathComponent("parent"), child = root.appendingPathComponent("child")
+    let runner = ProcessCommandRunner()
+    func git(_ arguments: [String]) throws {
+        let result = try runner.run(executable: URL(fileURLWithPath: "/usr/bin/git"), arguments: arguments,
+            environment: ["PATH": "/usr/bin:/bin", "HOME": root.path, "GIT_CONFIG_NOSYSTEM": "1"])
+        try containerExpect(result.status == 0, "submodule fixture failed: \(result.stderrText)")
+    }
+    for repository in [parent, child] {
+        try git(["init", repository.path])
+        try git(["-C", repository.path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"])
+    }
+    try git(["-C", parent.path, "-c", "protocol.file.allow=always", "submodule", "add", child.path, "module"])
+    var correctRefusal = false
+    do { _ = try ContainerGitAccess.inspect(folder: parent.appendingPathComponent("module").path) }
+    catch { correctRefusal = error.localizedDescription.lowercased().contains("submodule") }
+    try containerExpect(correctRefusal, "submodule refusal did not explain that submodules are unsupported")
+    let alias = root.appendingPathComponent("alias")
+    try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: parent)
+    let planned = try ContainerGitAccess.planned(folder: alias.appendingPathComponent("new-worktree").path, commonDirectory: parent.appendingPathComponent(".git").path)
+    try containerExpect(planned.folder == parent.appendingPathComponent("new-worktree").path, "planned worktree kept an alias that can never match the inspected path")
+    let existing = try ContainerGitAccess.planned(folder: alias.path, commonDirectory: parent.appendingPathComponent(".git").path)
+    try containerExpect(existing.folder == parent.path, "existing reviewed folder did not canonicalize")
 }

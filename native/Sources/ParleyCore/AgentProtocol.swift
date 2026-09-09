@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "29"
+    public static let version = "30"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -122,9 +122,10 @@ public enum AgentProtocol {
       one fixed `git worktree add` natively; agents never run Git through
       Parley. A linked worktree shares objects, refs, stashes, hooks and
       configuration with the repository through a `.git` directory outside
-      the pane folder: Parley grants no extra root for it, and whether a
-      vendor CLI may commit or change branches from there is that vendor's
-      own permission decision. `parley team status` reports the binding as
+      the pane folder. Host panes receive no extra root for it. Container
+      panes receive its exact shared Git mount only after native review;
+      the primary checkout is not mounted. Whether a vendor CLI may commit
+      or change branches remains that vendor's own permission decision. `parley team status` reports the binding as
       `worktree` (path, branch, recorded base commit, parleyCreated); the
       recorded base is the commit the tree was created from, never its
       current HEAD or a claim about who changed a file. Removing a worktree
@@ -134,7 +135,12 @@ public enum AgentProtocol {
       may run
       `parley team add --vendor <claude|codex|agy|copilot> [--name <name>] [--role <role>]`,
       one pane at a time, to create a new started agent pane in this
-      workspace bound to the approved folder and profile. stderr reports a
+      workspace bound to the approved folder, profile and per-vendor host or
+      container settings. Container images, daemons and Git mounts are chosen
+      only in the person's approval, never by team add. `parley team status`
+      names these vendors in `containerVendors`. Preparation owns and counts
+      the new pane immediately; team add waits for activation or an explicit
+      failure. stderr reports a
       Parley Pane Request ID; stdout returns the new pane id as JSON, after
       which ordinary Ask and Delegate apply. If the calling shell
       disconnects, `parley wait <id>` recovers either result only from this
@@ -207,7 +213,8 @@ public enum AgentProtocol {
 
     A pane whose whoami executionBoundary is container runs its vendor CLI in a
     person-approved local container. Its working folder and pane endpoint retain
-    their host paths; other host paths and host tools are not implied available.
+    their host paths. A linked worktree may also receive its explicitly reviewed
+    shared Git directory. Other host paths and host tools are not implied available.
     Use the injected PARLEY_COMMAND if PATH changes. Do not try to reach the
     Docker daemon or change container mounts. request-run still proposes a host
     executable in a new human Shell and requires the ordinary native approval;

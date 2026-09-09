@@ -13,10 +13,11 @@ public struct ContainerConfiguration: Codable, Equatable, Sendable {
     public var daemonID: String
     public var imageID: String
     public var imageName: String
+    public var gitAccess: ContainerGitAccess?
     public var legacyCodexSandbox: Bool
-    public init(dockerExecutable: String, daemonEndpoint: String, daemonID: String, imageID: String, imageName: String, legacyCodexSandbox: Bool) {
+    public init(dockerExecutable: String, daemonEndpoint: String, daemonID: String, imageID: String, imageName: String, legacyCodexSandbox: Bool, gitAccess: ContainerGitAccess? = nil) {
         self.dockerExecutable = dockerExecutable; self.daemonEndpoint = daemonEndpoint; self.daemonID = daemonID
-        self.imageID = imageID; self.imageName = imageName; self.legacyCodexSandbox = legacyCodexSandbox
+        self.imageID = imageID; self.imageName = imageName; self.legacyCodexSandbox = legacyCodexSandbox; self.gitAccess = gitAccess
     }
 }
 
@@ -75,8 +76,16 @@ public enum ContainerLaunchProjection {
         }
         for value in [facts.folder, facts.endpoint, facts.protocolDirectory, facts.shimDirectory] { try path(value) }
         let transportRoot = URL(fileURLWithPath: facts.endpoint).deletingLastPathComponent().path
+        let mountedFolders = [facts.folder] + (configuration.gitAccess.map { [$0.commonDirectory] } ?? [])
+        if let access = configuration.gitAccess {
+            try path(access.commonDirectory)
+            guard access.folder == facts.folder, !facts.folder.hasPrefix(access.commonDirectory + "/"),
+                  !access.commonDirectory.hasPrefix(facts.folder + "/"), access.commonDirectory != facts.folder else {
+                throw ContainerPaneError.refused("The reviewed shared Git mount does not match the working folder.")
+            }
+        }
         for protected in [transportRoot, facts.protocolDirectory, facts.shimDirectory] {
-            guard !protected.hasPrefix(facts.folder + "/"), !facts.folder.hasPrefix(protected + "/"), protected != facts.folder else {
+            guard mountedFolders.allSatisfy({ !protected.hasPrefix($0 + "/") && !$0.hasPrefix(protected + "/") && protected != $0 }) else {
                 throw ContainerPaneError.refused("The working folder overlaps Parley's container control files.")
             }
         }
@@ -113,10 +122,13 @@ public enum ContainerLaunchProjection {
             "--env", "TERM=xterm-256color", "--env", "COLORTERM=truecolor",
             "--env", "PARLEY_RELAY_TOKEN", "--env", "PARLEY_PROTOCOL_VERSION=\(AgentProtocol.version)",
             "--env", "PARLEY_COMMAND=\(facts.shimDirectory)/parley", "--env", "PARLEY_EXECUTION_BOUNDARY=container"]
+        if let access = configuration.gitAccess {
+            args += ["--mount", "type=bind,source=\(access.commonDirectory),target=\(access.commonDirectory)"]
+        }
         if facts.runtime == "DEV" { args += ["--env", "PARLEY_RUNTIME=DEV"] }
         args += ["--entrypoint", "/usr/local/bin/\(facts.vendor.rawValue)", configuration.imageID]
-        args += vendorArguments
         if configuration.legacyCodexSandbox && facts.vendor == .codex { args += ["-c", "features.use_legacy_landlock=true"] }
+        args += vendorArguments
         return args
     }
 

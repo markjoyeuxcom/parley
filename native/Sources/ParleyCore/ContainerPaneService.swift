@@ -25,6 +25,8 @@ public final class ContainerPaneService: @unchecked Sendable {
     private let environment: [String: String]
     private let runner: CommandRunning
     private let lock = NSRecursiveLock()
+    // Docker mutations serialize independently of short ownership-file reads.
+    private let recordLock = NSRecursiveLock()
     private var initialDocument = Document()
 
     public init(directory: URL, environment: [String: String], runner: CommandRunning = ProcessCommandRunner(timeout: 12, maximumCapturedBytes: 200_001)) throws {
@@ -35,6 +37,7 @@ public final class ContainerPaneService: @unchecked Sendable {
     }
 
     private func read() throws -> Document {
+        recordLock.lock(); defer { recordLock.unlock() }
         guard FileManager.default.fileExists(atPath: file.path) else { return initialDocument }
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         guard attributes[.type] as? FileAttributeType == .typeRegular,
@@ -47,6 +50,7 @@ public final class ContainerPaneService: @unchecked Sendable {
     }
 
     private func save(_ document: Document) throws {
+        recordLock.lock(); defer { recordLock.unlock() }
         guard document.records.count <= 500 else { throw ContainerPaneError.refused("Remove old container records in Status Center before creating more containers.") }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let data = try JSONEncoder().encode(document)
@@ -58,7 +62,7 @@ public final class ContainerPaneService: @unchecked Sendable {
         initialDocument = document
     }
 
-    public func records() throws -> [ContainerPaneRecord] { try lock.withLock { try read().records } }
+    public func records() throws -> [ContainerPaneRecord] { try read().records }
 
     private func run(_ executable: String, _ arguments: [String], token: String? = nil) throws -> CommandOutput {
         var childEnvironment = environment
@@ -86,6 +90,22 @@ public final class ContainerPaneService: @unchecked Sendable {
         guard actual == configuration.daemonID else { throw ContainerPaneError.refused("The Docker daemon changed since the preview. Review the container launch again.") }
     }
 
+    // Constant script, never assembled from an image name, folder or agent text.
+    // Vendor argv stays separate and is exec'd literally after the contract check.
+    public static let imageUtilityProbe = #"""
+    set -eu
+    for utility in /bin/cat /bin/chown /bin/date /bin/mkdir /bin/pwd /bin/rm /bin/rmdir /bin/sh /bin/sleep /bin/true /usr/bin/id /usr/bin/printf /usr/bin/stat /usr/bin/tr; do
+        if [ ! -x "$utility" ]; then printf 'Missing Linux utility: %s\n' "$utility" >&2; exit 78; fi
+    done
+    if ! /usr/bin/stat -c '%u:%a' /bin/sh >/dev/null 2>&1; then
+        printf '%s\n' 'The Linux shim requires GNU-compatible stat -c.' >&2; exit 78
+    fi
+    if [ ! -r /proc/sys/kernel/random/uuid ] && [ ! -x /usr/bin/uuidgen ]; then
+        printf '%s\n' 'The Linux shim requires /proc/sys/kernel/random/uuid or /usr/bin/uuidgen.' >&2; exit 78
+    fi
+    exec "$@"
+    """#
+
     /// Read-only host discovery plus a disposable vendor startup probe. It never
     /// pulls images, uses a host login, grants extra capabilities or contacts a model.
     public func preview(image: String, vendor: PaneKind, legacyCodexSandbox: Bool) throws -> ContainerConfiguration {
@@ -110,7 +130,7 @@ public final class ContainerPaneService: @unchecked Sendable {
             "--label", "\(ContainerLaunchProjection.ownerLabel)=\(probeID)", "--label", "\(ContainerLaunchProjection.runtimeLabel)=PROBE", "--log-driver=none", "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges=true",
             "--user", "\(getuid()):\(getgid())", "--env", "HOME=\(ContainerLaunchProjection.home)",
             "--tmpfs", "\(ContainerLaunchProjection.home):uid=\(getuid()),gid=\(getgid()),mode=700",
-            "--entrypoint", "/usr/local/bin/\(vendor.rawValue)", id]
+            "--entrypoint", "/bin/sh", id, "-c", Self.imageUtilityProbe, "parley-image-check", "/usr/local/bin/\(vendor.rawValue)"]
         if vendor == .codex {
             if legacyCodexSandbox { args += ["-c", "features.use_legacy_landlock=true"] }
             args += ["sandbox", "--", "/bin/true"]
@@ -160,7 +180,7 @@ public final class ContainerPaneService: @unchecked Sendable {
         }
     }
 
-    public func validateFolder(_ folder: String, protectedDirectories: [String]) throws {
+    public func validateFolder(_ folder: String, protectedDirectories: [String], gitAccess: ContainerGitAccess? = nil) throws {
         guard let resolved = realpath(folder, nil) else {
             throw ContainerPaneError.refused("The container working folder is no longer available.")
         }
@@ -175,15 +195,18 @@ public final class ContainerPaneService: @unchecked Sendable {
                 throw ContainerPaneError.refused("The project overlaps Parley's protected runtime files.")
             }
         }
-        var parent = URL(fileURLWithPath: folder)
-        while parent.path != "/" {
-            let git = parent.appendingPathComponent(".git")
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: git.path, isDirectory: &isDirectory) {
-                guard isDirectory.boolValue, (try? FileManager.default.attributesOfItem(atPath: git.path)[.type] as? FileAttributeType) != .typeSymbolicLink else { throw ContainerPaneError.refused("Linked worktrees and submodules need additional Git mounts and are not supported by container panes yet. Use a normal repository checkout.") }
-                break
+        let actualAccess = try ContainerGitAccess.inspect(folder: folder)
+        guard actualAccess == gitAccess else {
+            throw ContainerPaneError.refused("The linked worktree's shared Git access needs a new launch review.")
+        }
+        if let gitAccess {
+            for protected in protectedDirectories {
+                let protected = try canonicalProtectedDirectory(protected)
+                let common = gitAccess.commonDirectory
+                guard common != protected, !common.hasPrefix(protected + "/"), !protected.hasPrefix(common + "/") else {
+                    throw ContainerPaneError.refused("Shared Git metadata overlaps Parley's protected runtime files.")
+                }
             }
-            parent.deleteLastPathComponent()
         }
     }
 
@@ -292,14 +315,21 @@ public final class ContainerPaneService: @unchecked Sendable {
     public func stop(paneID: String, generation: Int? = nil) throws {
         try lock.withLock {
             let records = try read().records.filter { $0.paneID == paneID && !$0.removed && (generation == nil || $0.generation == generation) }
-            for record in records { try remove(record) }
+            try removeAll(records)
         }
     }
 
     public func stopAll() throws {
         let records = try records().filter { !$0.removed }
+        try removeAll(records)
+    }
+
+    private func removeAll(_ records: [ContainerPaneRecord]) throws {
         var failures: [String] = []
-        for record in records { do { try remove(record) } catch { failures.append(error.localizedDescription) } }
+        for record in records {
+            do { try remove(record) }
+            catch { failures.append("\(record.paneID), generation \(record.generation): \(error.localizedDescription)") }
+        }
         if !failures.isEmpty { throw ContainerPaneError.refused(failures.joined(separator: "\n")) }
     }
 
@@ -336,9 +366,9 @@ public final class ContainerPaneService: @unchecked Sendable {
             guard used.isEmpty else { throw ContainerPaneError.refused("A container still references this login volume.") }
             let existing = try checked(reviewed.configuration, ["volume", "ls", "--filter", "name=^\(reviewed.volume)$", "--format", "{{.Name}}"])
             if !existing.isEmpty {
-            let owner = try checked(reviewed.configuration, ["volume", "inspect", "--format", "{{index .Labels \"com.parley.volume-owner\"}}", reviewed.volume])
-            guard owner == document.owner else { throw ContainerPaneError.refused("The volume ownership changed; it was left alone.") }
-            _ = try checked(reviewed.configuration, ["volume", "rm", reviewed.volume])
+                let owner = try checked(reviewed.configuration, ["volume", "inspect", "--format", "{{index .Labels \"com.parley.volume-owner\"}}", reviewed.volume])
+                guard owner == document.owner else { throw ContainerPaneError.refused("The volume ownership changed; it was left alone.") }
+                _ = try checked(reviewed.configuration, ["volume", "rm", reviewed.volume])
             }
             document.records.removeAll { sameHome($0, reviewed) }
             try save(document)

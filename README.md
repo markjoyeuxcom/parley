@@ -577,16 +577,19 @@ before starting. Parley does not build or download images. The image must
 provide `/usr/local/bin/claude` or `/usr/local/bin/codex`, POSIX sh, GNU
 stat/coreutils and `/bin/chown`.
 
-Only the working folder, the pane's own relay endpoint and read-only protocol
-files are mounted from the host. The Docker socket and host vendor login are
+The working folder, the pane's own relay endpoint and read-only protocol
+files are mounted from the host. A linked worktree additionally mounts its shared
+Git directory only after you review its exact path; its primary checkout stays
+unmounted. Objects, refs, hooks and configuration remain shared.
+Changes to shared hooks or executable Git configuration can cause commands to run on your Mac, outside the container, during later host Git operations. Parley does not review those changes again. The Docker socket and host vendor login are
 not mounted. Sign in inside the container; its private named volume keeps
 vendor login, configuration and saved conversations. For Codex, choose
 **Sign in with Device Code** and open the supplied link in your Mac browser;
 no browser-login callback port is published. Codex's separately selected legacy
 Landlock mode is a temporary test option for compatible images when the default
 Bubblewrap sandbox is unavailable. Codex has deprecated it and plans to remove
-it; vendor permission prompts remain active. Linked worktrees and additional
-folders are currently refused.
+it; vendor permission prompts remain active. Submodules and arbitrary additional
+folders are refused. The image check also validates the required Linux utilities.
 
 Closing the main window keeps a container running. Closing its pane, restarting
 or quitting stops the recorded container, and a failed cleanup is reported.
@@ -601,5 +604,7 @@ The tested setup is recorded in the [container spike](docs/container-pane-spike.
 Mark verified Codex device login, an interactive reply, bidirectional messaging
 and pane restart on OrbStack. Broader image/daemon compatibility, Claude's live
 permission flow, resumed instruction uptake and login persistence across an app
-relaunch remain follow-up checks. Container team members and additional Git
-worktree mounts are planned extensions.
+relaunch remain follow-up checks. Team approval can choose host or container execution per vendor, with the image,
+daemon and any shared Git mount shown before approval. Each container member gets
+a private vendor-state volume. Creation counts during preparation; Stop can revoke
+startup, and a failed preparation is reported explicitly.
