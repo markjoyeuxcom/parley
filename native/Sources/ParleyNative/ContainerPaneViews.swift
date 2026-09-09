@@ -28,7 +28,8 @@ struct ContainerLaunchOptionsView: View {
                 if vendor == .codex {
                     Toggle("Use Codex’s legacy Landlock sandbox", isOn: $legacy)
                         .onChange(of: legacy) { _, _ in configuration = nil; message = nil }
-                    Text("Use only for a compatible image when its default Bubblewrap sandbox cannot start. Vendor permission prompts remain active.")
+                    Text("Codex has deprecated this option and plans to remove it. Use it only for testing a compatible image when its default Bubblewrap sandbox cannot start. Vendor permission prompts remain active.")
+                    Text("For Codex sign-in, choose Sign in with Device Code and open the supplied link in your Mac browser. This container does not publish the browser-login callback port.")
                 }
                 HStack {
                     Button(checking ? "Checking…" : "Check Image and Daemon", action: check)

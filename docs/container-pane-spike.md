@@ -44,11 +44,27 @@ container, extra namespace capability, permission bypass flag or automatic
 fallback was used. Claude's binary starts, but its sandbox and permission flow
 have not been validated in a signed-in interactive session.
 
+## Human test update
+
+Mark reported successful Codex device sign-in and an interactive reply in the
+Development build on 9 September. His screenshot also shows Codex's warning
+that `features.use_legacy_landlock` is deprecated and will be removed. This
+confirms the reported sign-in path; the greeting is not proof that whoami ran
+or that every protocol instruction was followed. No login cache or terminal
+history was inspected to record this result.
+
+Choose **Sign in with Device Code** inside Codex and complete it in the host
+browser. No callback port is published by the current container launch.
+[Official OpenAI authentication guidance](https://learn.chatgpt.com/docs/auth#login-on-headless-devices)
+recommends device-code authentication when the localhost callback is blocked.
+The deprecated Landlock mode remains a temporary prototype compatibility
+choice; a supported vendor sandbox path is required before stable promotion.
+
 ## Decision and remaining acceptance
 
 | Vendor | Prototype decision | Release decision |
 | --- | --- | --- |
-| Codex | Continue with the explicitly reviewed, tested Landlock mode for this image. | Pending subscription sign-in, ordinary approval prompts, fresh/resumed instruction uptake and login persistence. |
+| Codex | Device sign-in and an interactive reply reported working by Mark. Legacy Landlock is a deprecated prototype option. | Pending a supported sandbox path, ordinary approval prompts, fresh/resumed instruction uptake and login persistence. |
 | Claude Code | Continue as an experimental image launch with explicit disclosure that its sandbox may be unavailable. | Pending subscription sign-in, sandbox/ordinary permission behavior, fresh/resumed instruction uptake and login persistence. |
 
 Neither vendor is cleared for a stable release by this spike. If a vendor

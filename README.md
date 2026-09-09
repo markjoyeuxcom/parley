@@ -580,10 +580,13 @@ stat/coreutils and `/bin/chown`.
 Only the working folder, the pane's own relay endpoint and read-only protocol
 files are mounted from the host. The Docker socket and host vendor login are
 not mounted. Sign in inside the container; its private named volume keeps
-vendor login, configuration and saved conversations. Codex's separately
-selected legacy Landlock mode can be used with compatible images when the
-default Bubblewrap sandbox is unavailable; vendor permission prompts stay
-active. Linked worktrees and additional folders are currently refused.
+vendor login, configuration and saved conversations. For Codex, choose
+**Sign in with Device Code** and open the supplied link in your Mac browser;
+no browser-login callback port is published. Codex's separately selected legacy
+Landlock mode is a temporary test option for compatible images when the default
+Bubblewrap sandbox is unavailable. Codex has deprecated it and plans to remove
+it; vendor permission prompts remain active. Linked worktrees and additional
+folders are currently refused.
 
 Closing the main window keeps a container running. Closing its pane, restarting
 or quitting stops the recorded container, and a failed cleanup is reported.

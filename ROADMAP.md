@@ -20,9 +20,11 @@ compatibility statement for other images or daemons.
 
 The real Ghostty/Docker checks have exercised resize, Control-C, hidden-window
 input and confirmed container removal; the existing regression suite also ran.
-Release gates remain human verification of Claude/Codex sign-in, normal
-permissions, fresh/resumed instruction uptake, persistent login and total
-host-plus-VM idle cost.
+Mark reported successful Codex device sign-in and an interactive reply. Codex
+also warns that legacy Landlock is deprecated; a supported sandbox path is a
+release gate. Other gates remain Claude sign-in, normal permissions,
+fresh/resumed instruction uptake, persistent login and total host-plus-VM
+idle cost.
 Image checks are quota-free and are not treated as those human verdicts.
 Keep this work separate from a stable release candidate until those gates pass.
 Worktree mounts, container team members, image building, remote daemons,
