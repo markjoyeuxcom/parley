@@ -64,9 +64,11 @@ public extension CommandRunning {
 
 public final class ProcessCommandRunner: CommandRunning {
     private let timeout: TimeInterval
+    private let maximumCapturedBytes: Int?
 
-    public init(timeout: TimeInterval = 10) {
+    public init(timeout: TimeInterval = 10, maximumCapturedBytes: Int? = nil) {
         self.timeout = timeout
+        self.maximumCapturedBytes = maximumCapturedBytes.map { max(0, $0) }
     }
 
     public func run(
@@ -175,8 +177,8 @@ public final class ProcessCommandRunner: CommandRunning {
             waitForCapturedOutput(stdout: stdout, stderr: stderr, timeout: 0.2)
         }
 
-        let outputData = stdout.data()
-        var errorData = stderr.data()
+        let outputData = stdout.data(maximumBytes: maximumCapturedBytes)
+        var errorData = stderr.data(maximumBytes: maximumCapturedBytes)
         if wait.timedOut {
             if !errorData.isEmpty { errorData.append(Data("\n".utf8)) }
             errorData.append(Data("Command timed out after \(timeout) seconds".utf8))
@@ -222,9 +224,9 @@ private final class CommandCaptureFile {
         _ = Darwin.close(descriptor)
     }
 
-    func data() -> Data {
+    func data(maximumBytes: Int? = nil) -> Data {
         guard Darwin.lseek(descriptor, 0, SEEK_SET) >= 0 else { return Data() }
-        return readCommandDescriptor(descriptor)
+        return readCommandDescriptor(descriptor, maximumBytes: maximumBytes)
     }
 
     func byteCount() -> Int64 {
@@ -323,13 +325,15 @@ private func commandPOSIXError(_ status: Int32, operation: String) -> NSError {
     )
 }
 
-private func readCommandDescriptor(_ descriptor: Int32) -> Data {
+private func readCommandDescriptor(_ descriptor: Int32, maximumBytes: Int? = nil) -> Data {
     guard descriptor >= 0 else { return Data() }
     var data = Data()
     var buffer = [UInt8](repeating: 0, count: 8_192)
     while true {
+        let remaining = maximumBytes.map { $0 - data.count } ?? buffer.count
+        if remaining <= 0 { return data }
         let count = buffer.withUnsafeMutableBytes { bytes in
-            Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+            Darwin.read(descriptor, bytes.baseAddress, min(bytes.count, remaining))
         }
         if count > 0 {
             data.append(buffer, count: Int(count))

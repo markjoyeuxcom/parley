@@ -715,6 +715,14 @@ func workbenchFolderReservationChecks() throws {
 
 @MainActor
 let managedWorktreeChecks: [(String, () throws -> Void)] = [
+    ("worktree lifecycle malformed runtime state is unknown", worktreeUnknownRuntimeChecks),
+    ("worktree lifecycle permission guidance respects vendor boundaries", worktreePermissionGuidanceChecks),
+    ("worktree lifecycle history scope follows the recorded target only", worktreeHistoryScopeChecks),
+    ("worktree lifecycle merge ignores external drivers and refuses invalid output", worktreeMergeIsolationChecks),
+    ("worktree lifecycle preview isolates merge objects and reports conflicts", worktreeMergePreviewChecks),
+    ("worktree lifecycle disk scan is bounded and never follows symlinks", worktreeDiskUsageChecks),
+    ("worktree lifecycle recovery binds a moved tree to its creation marker", worktreeRecoveryChecks),
+    ("worktree lifecycle finish scope keeps unrelated panes and unknown usage", worktreeFinishScopeChecks),
     ("managed worktree cleanup refuses a tree containing another registered worktree", managedWorktreeNestedCleanupChecks),
     ("managed worktree creation is bound to the previewed repository and path", managedWorktreeBoundCreationChecks),
     ("managed worktree creation never adopts a competing creator's tree", managedWorktreeCompetingCreatorChecks),
@@ -728,3 +736,139 @@ let managedWorktreeChecks: [(String, () throws -> Void)] = [
     ("worktree cleanup policy decision table", worktreeCleanupPolicyChecks),
     ("managed worktree evidence is captured with delegation git facts", managedWorktreeEvidenceChecks),
 ]
+
+func worktreeMergePreviewChecks() throws {
+    let f = try WorktreeFixture()
+    defer { f.cleanup() }
+    let tree = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "feat/merge", baseRef: "main"))
+    let folder = URL(fileURLWithPath: tree.path)
+    let feature = try f.commit("feature", in: folder, contents: "feature\n")
+    let target = try f.commit("target", in: f.repo, contents: "target\n")
+    let status = try f.git(["status", "--porcelain"], in: folder)
+    let objectCount = try f.git(["count-objects", "-v"], in: f.repo)
+    let result = try f.service.mergePreview(tree, targetRef: "main")
+    try wtExpect(result.hasConflicts && result.conflictedPaths == ["src/main.swift"], "conflict preview did not report the conflicting file")
+    try wtExpect(result.sourceCommit == feature && result.targetCommit == target, "preview lost its exact commits")
+    try wtExpect(try f.git(["count-objects", "-v"], in: f.repo) == objectCount, "preview wrote into the source object store")
+    try wtExpect(try f.git(["status", "--porcelain"], in: folder) == status, "preview changed the checkout or index")
+    try wtExpect(try f.git(["rev-parse", "HEAD"], in: folder) == feature, "preview moved HEAD")
+    let clean = try f.service.mergePreview(tree, targetRef: feature)
+    try wtExpect(!clean.hasConflicts && clean.conflictedPaths.isEmpty, "identical commits were not clean")
+    _ = try wtRejects("option-shaped target accepted") { _ = try f.service.mergePreview(tree, targetRef: "--help") }
+}
+
+func worktreeDiskUsageChecks() throws {
+    let f = try WorktreeFixture()
+    defer { f.cleanup() }
+    let dir = f.root.appendingPathComponent("usage")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try Data(repeating: 1, count: 4096).write(to: dir.appendingPathComponent("file"))
+    try FileManager.default.createSymbolicLink(at: dir.appendingPathComponent("outside"), withDestinationURL: f.repo)
+    let usage = WorktreeDiskUsage.measure(path: dir.path)
+    try wtExpect(usage.isComplete && usage.fileCount == 1 && usage.logicalBytes == 4096, "disk scan followed a symlink or miscounted regular files")
+    try wtExpect(!WorktreeDiskUsage.measure(path: dir.path, maximumEntries: 1).isComplete, "bounded scan claimed a complete size")
+    try wtExpect(!WorktreeDiskUsage.measure(path: f.root.appendingPathComponent("absent").path).isComplete, "missing folder claimed zero bytes")
+}
+
+func worktreeRecoveryChecks() throws {
+    let f = try WorktreeFixture()
+    defer { f.cleanup() }
+    let record = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "feat/move", baseRef: "main"))
+    let moved = f.repo.appendingPathComponent("moved").path
+    try f.git(["worktree", "move", record.path, moved], in: f.repo)
+    let candidates = try f.service.recoveryCandidates(record)
+    try wtExpect(candidates == [moved], "moved worktree was not identified by its creation marker")
+    let recovered = try f.service.relocateRecord(record, to: moved)
+    try wtExpect(recovered.id == record.id && recovered.baseCommit == record.baseCommit && recovered.parleyCreated, "recovery lost original identity or ownership")
+    try wtExpect(try f.store.record(path: moved) == recovered, "recovered record was not durable")
+    _ = try wtRejects("stale recovery changed the record twice") { _ = try f.service.relocateRecord(record, to: moved) }
+    let gitDir = try f.git(["rev-parse", "--absolute-git-dir"], in: URL(fileURLWithPath: moved))
+    try "foreign".write(toFile: gitDir + "/parley-worktree-owner", atomically: true, encoding: .utf8)
+    try wtExpect(try f.service.recoveryCandidates(recovered).isEmpty, "foreign marker was adopted")
+}
+
+func worktreeFinishScopeChecks() throws {
+    let root = "/tmp/parley-finish-scope"
+    let inTree = WorkbenchPane(id: "inside", kind: .shell, customName: nil, terminalTitle: "", cwd: root, currentCommand: "", isActive: false, workspaceID: "mixed", isStarted: false)
+    var outside = inTree; outside.id = "outside"; outside.cwd = root + "-other"
+    let workspace = WorkbenchWorkspace(id: "mixed", name: "Mixed", isActive: false)
+    let usage = WorktreeUsage.project(path: root, panes: [inTree, outside], workspaces: [workspace], handoffs: [], otherPaneFolders: [], otherRuntimeUnknown: false, activeTeamPaths: [])
+    try wtExpect(usage.paneIDs == ["inside"] && !usage.isInactive, "stopped pane was ignored or prefix sibling was included")
+    try wtExpect(usage.workspaces.first?.canCloseWholeWorkspace == false, "finish would close an unrelated pane")
+    try wtExpect(usage.lastRetainedActivity == nil, "invented activity timestamp")
+    let unknown = WorktreeUsage.project(path: root, panes: [], workspaces: [], handoffs: [], otherPaneFolders: [], otherRuntimeUnknown: true, activeTeamPaths: [])
+    try wtExpect(!unknown.isInactive, "unknown other runtime was called inactive")
+}
+
+
+func worktreePermissionGuidanceChecks() throws {
+    for kind in PaneKind.allCases where kind != .shell {
+        let text = WorktreePermissionGuide.guidance(for: kind)
+        try wtExpect(text.contains(kind.label) && text.contains("own tool approvals"), "guidance lost the selected vendor")
+        try wtExpect(!text.contains("Parley's outer folder boundary"), "guidance incorrectly attributes vendor Git restrictions to Parley's control-plane boundary")
+    }
+}
+
+func worktreeHistoryScopeChecks() throws {
+    let path = "/tmp/recorded-worktree"
+    let date = Date(timeIntervalSinceReferenceDate: 6000)
+    let snapshot = DelegationGitSnapshot(capturedAt: date, folder: path, headRevision: nil, branch: nil, isDetached: false,
+        dirtyPaths: [], dirtyPathCount: 0, managedWorktree: .init(path: path, branch: "feat/check", baseCommit: nil, parleyCreated: true))
+    let object: [String: Any] = [
+        "id": "historical", "idempotencyKey": "k", "kind": "delegate", "sourcePaneID": "source", "sourceName": "Source",
+        "sourceKind": "codex", "sourceWorkspaceID": "unrelated-source", "targetPaneID": "target", "targetName": "Target",
+        "targetKind": "claude", "targetWorkspaceID": "closed-target", "targetWorkspaceName": "Closed project",
+        "text": "Task", "submitted": true, "state": "completed", "updatedAt": 9000, "transitions": [],
+        "gitFactsAtReturn": try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot))]
+    let handoff = try JSONDecoder().decode(RelayHandoff.self, from: JSONSerialization.data(withJSONObject: object))
+    let usage = WorktreeUsage.project(path: path, panes: [], workspaces: [], handoffs: [handoff],
+        otherPaneFolders: [], otherRuntimeUnknown: false, activeTeamPaths: [])
+    try wtExpect(usage.workspaces.map(\.id) == ["closed-target"] && usage.lastRetainedActivity == date,
+                 "history scope included a delegating source or invented a last-use timestamp")
+    let nested = WorktreeUsage.project(path: path + "/nested", panes: [], workspaces: [], handoffs: [handoff],
+        otherPaneFolders: [], otherRuntimeUnknown: false, activeTeamPaths: [])
+    try wtExpect(nested.workspaces.isEmpty && nested.lastRetainedActivity == nil, "historical evidence was attributed to a different tree")
+}
+
+func worktreeMergeIsolationChecks() throws {
+    let f = try WorktreeFixture()
+    defer { f.cleanup() }
+    let flag = f.root.appendingPathComponent("driver-ran")
+    try f.git(["config", "merge.hostile.driver", "touch " + flag.path], in: f.repo)
+    _ = try f.commit("attributes", in: f.repo, file: ".gitattributes", contents: "*.swift merge=hostile\n")
+    let record = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "feat/driver", baseRef: "main"))
+    _ = try f.commit("ours", in: f.repo, contents: "ours\n")
+    _ = try f.commit("theirs", in: URL(fileURLWithPath: record.path), contents: "theirs\n")
+    _ = try f.service.mergePreview(record, targetRef: "main")
+    try wtExpect(!FileManager.default.fileExists(atPath: flag.path), "preview ran the repository's external merge driver")
+    // Distinguish Git errors from conflicts, and reject oversized output.
+    for mode in ["failed", "oversized"] {
+        let executable = f.root.appendingPathComponent("preview-" + mode)
+        let script = """
+        #!/bin/sh
+        case " $* " in
+          *" merge-tree "*)
+            if [ "\(mode)" = "failed" ]; then exit 128; fi
+            /usr/bin/head -c 210000 /dev/zero
+            exit 0 ;;
+        esac
+        exec /usr/bin/git "$@"
+        """
+        try script.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let service = ManagedWorktreeService(store: f.store, gitExecutable: executable, environment: ["PATH": "/usr/bin:/bin"])
+        _ = try wtRejects("merge preview accepted " + mode) { _ = try service.mergePreview(record, targetRef: "main") }
+    }
+}
+
+
+func worktreeUnknownRuntimeChecks() throws {
+    let f = try WorktreeFixture()
+    defer { f.cleanup() }
+    let record = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "feat/unknown-runtime", baseRef: "main"))
+    let other = f.root.appendingPathComponent("other-state.json")
+    try #"{"panes":[{"id":"broken"}]}"#.write(to: other, atomically: true, encoding: .utf8)
+    let result = try f.service.inspectLifecycle(record, panes: [], workspaces: [], handoffs: [], activeTeamPaths: [], otherRuntimeStateFiles: [other])
+    try wtExpect(result.usage.otherRuntimeUnknown && !result.usage.isInactive,
+                 "malformed other-runtime pane folders were silently ignored")
+}

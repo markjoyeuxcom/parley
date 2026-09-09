@@ -583,9 +583,54 @@ changed count, upstream) refresh with the worktree scan for trees a pane sits
 in or an active session is bound to, and for every record when the browser
 opens, under a generation guard that applies only over unchanged records;
 `registered` is a tri-state and a read failure stays unknown, never
-"absent". Deferred: merge-tree previews, disk usage, merges, rebases, pushes,
-stashes, automatic cleanup, automatic branch deletion, per-pane worktrees and
-multi-folder grants.
+"absent".
+
+The browser's **Finish & Cleanup** view is an on-demand inspection surface,
+with no timer or background disk-size scan. It groups optional review, pane
+or workspace close, workspace-scoped history clearing and the existing
+guarded removal preview. Each destructive step remains separately confirmed.
+Close revalidates pane identity, generation and folder after confirmation;
+mixed workspaces expose individual panes. History clearing explicitly covers
+the entire named workspace, including other folders, and keeps its existing
+active-work protections.
+
+WorktreeUsage excludes stopped placeholders, other-runtime panes and active
+local team bindings from inactive candidates; unreadable other-runtime state
+stays unknown. This says nothing about other applications. Last retained
+activity is the latest exact-path delegation Git snapshot, never a terminal
+or filesystem inference. Only the target workspace is associated from such
+a snapshot; a delegating source is not a cleanup scope. In-view workspace
+associations remain available after closing panes, but are not a new durable
+history store. WorktreeDiskUsage measures logical regular-file bytes on
+request, never follows symlinks, and caps enumeration at 50,000 entries or two
+seconds. Partial and unavailable readings are labelled; APFS sharing means
+this is not reclaimable-space accounting.
+
+Recovery never adopts a tree by branch name. A moved record can be relinked
+only when the old path is confirmed absent, exactly one registered path in
+the same repository carries its original creation token, and a store-locked
+compare-and-replace still matches the reviewed record with no destination
+collision. Only the record path changes; historical evidence and live pane
+folders remain unchanged. Missing/foreign/unknown states get guidance and
+existing guarded actions. Track Existing preserves person ownership for
+unrecorded creations and never grants cleanup authority.
+
+Merge previews resolve the chosen integration ref and the tree's HEAD to
+immutable commits, then use fixed-argv Git merge-tree in a private bare
+temporary repository. An alternate object directory is read-only input;
+new objects are written only to temporary storage, which is removed after
+the command. Global/system configuration, templates and external project
+merge drivers are excluded; lazy fetching and replacement objects are
+disabled. This is an isolated-defaults prediction, not an actual merge or
+a verdict. It captures at most 200,001 bytes, rejects results over 200 KB or
+200 paths, distinguishes exit 1 conflicts from command failure and shows
+exact commits and limitations. UI requests discard stale selection/ref
+results. No checkout, index, branch or source Git objects are changed.
+Permission guidance is person-selected by vendor, does not inspect terminal
+text or claim to know a prompt, and never grants a permission root.
+
+Deferred: actual merges, rebases, pushes, stashes, automatic cleanup,
+automatic branch deletion, per-pane worktrees and multi-folder grants.
 
 ## SwiftPM inside agent panes
 

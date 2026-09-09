@@ -175,6 +175,21 @@ public final class ManagedWorktreeStore: @unchecked Sendable {
         }
     }
 
+    /// Compare under the same lock as the durable write; a stale recovery
+    /// never overwrites a concurrent edit or another record at the destination.
+    public func replace(_ expected: ManagedWorktreeRecord, with updated: ManagedWorktreeRecord) throws {
+        try lock.withLock {
+            var document = try load()
+            guard let index = document.records.firstIndex(where: { $0.id == expected.id }),
+                  document.records[index] == expected,
+                  !document.records.contains(where: { $0.id != expected.id && $0.path == updated.path }) else {
+                throw ManagedWorktreeError.invalid("The worktree record changed. Refresh before recovering it.")
+            }
+            document.records[index] = updated
+            try write(document)
+        }
+    }
+
     private func load() throws -> Document {
         guard FileManager.default.fileExists(atPath: file.path) else { return Document(records: []) }
         let decoder = JSONDecoder()
@@ -876,11 +891,15 @@ public struct ManagedWorktreeService: Sendable {
         var other: [String] = []
         var otherUnreadable = false
         for file in otherRuntimeStateFiles {
-            guard FileManager.default.fileExists(atPath: file.path) else { continue }
+            if Self.itemState(at: file.path) == .absent { continue }
             guard let data = try? Data(contentsOf: file),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let panes = object["panes"] as? [[String: Any]] else { otherUnreadable = true; continue }
-            other += panes.compactMap { $0["cwd"] as? String }
+            let folders = panes.compactMap { $0["cwd"] as? String }
+            guard folders.count == panes.count, folders.allSatisfy({ $0.hasPrefix("/") }) else {
+                otherUnreadable = true; continue
+            }
+            other += folders
         }
         var modified: [String] = [], untracked: [String] = [], ignored: [String] = []
         var truncated = false
@@ -1040,5 +1059,101 @@ public struct ManagedWorktreeService: Sendable {
             throw ManagedWorktreeError.git("exit status \(output.status)\(text.isEmpty ? "" : ": " + text)")
         }
         return output
+    }
+}
+
+extension ManagedWorktreeService {
+    /// Browser-only inspection. It owns no clock and authorizes no mutation.
+    public func inspectLifecycle(_ record: ManagedWorktreeRecord, panes: [WorkbenchPane], workspaces: [WorkbenchWorkspace],
+                                 handoffs: [RelayHandoff], activeTeamPaths: [String], otherRuntimeStateFiles: [URL]) throws -> WorktreeLifecycleInspection {
+        let cleanup = try cleanupPreview(record, livePaneFolders: panes.map(\.cwd), otherRuntimeStateFiles: otherRuntimeStateFiles)
+        let usage = WorktreeUsage.project(path: record.path, panes: panes, workspaces: workspaces, handoffs: handoffs,
+            otherPaneFolders: cleanup.facts.otherRuntimePaneFolders, otherRuntimeUnknown: cleanup.facts.otherRuntimeStateUnreadable,
+            activeTeamPaths: activeTeamPaths)
+        var paths: [String] = [], error: String?
+        do { paths = try recoveryCandidates(record) } catch let failure { error = failure.localizedDescription }
+        return WorktreeLifecycleInspection(cleanup: cleanup, usage: usage, recoveryPaths: paths, recoveryError: error, capturedAt: Date())
+    }
+
+    /// A same-branch directory is not evidence of a move. Match the original
+    /// opaque marker within the same repository, and refuse ambiguous matches.
+    public func recoveryCandidates(_ record: ManagedWorktreeRecord) throws -> [String] {
+        guard record.parleyCreated, record.creationToken != nil else { return [] }
+        let identity = GitRepositoryIdentity(commonDirectory: record.commonDirectory, toplevel: record.commonDirectory)
+        return try registeredWorktrees(of: identity).filter { item in
+            guard item.path != record.path, !item.isPrunable, !item.isPrimary,
+                  let found = try? self.identity(of: item.path), found.commonDirectory == record.commonDirectory else { return false }
+            return creationTokenMatches(relocated(record, to: item.path))
+        }.map(\.path).sorted()
+    }
+
+    private func relocated(_ record: ManagedWorktreeRecord, to path: String) -> ManagedWorktreeRecord {
+        ManagedWorktreeRecord(id: record.id, commonDirectory: record.commonDirectory, path: path, branch: record.branch,
+            baseRef: record.baseRef, baseCommit: record.baseCommit, createdAt: record.createdAt, parleyCreated: record.parleyCreated,
+            creationToken: record.creationToken, teamSessionID: record.teamSessionID, requestedByPaneID: record.requestedByPaneID,
+            warning: record.warning)
+    }
+
+    public func relocateRecord(_ record: ManagedWorktreeRecord, to path: String) throws -> ManagedWorktreeRecord {
+        guard Self.itemState(at: record.path) == .absent else {
+            throw ManagedWorktreeError.invalid("The old path still exists or cannot be inspected. Inspect it before updating this record.")
+        }
+        let canonical = GitWorktreeResolver.canonicalPath(path)
+        let candidates = try recoveryCandidates(record)
+        guard candidates.count == 1, candidates.first == canonical else {
+            throw ManagedWorktreeError.invalid("The original marker no longer identifies exactly this destination. Refresh and inspect Git's worktree list.")
+        }
+        let updated = relocated(record, to: canonical)
+        try store.replace(record, with: updated)
+        return updated
+    }
+
+    /// Uses a private bare repository with read-only access to existing objects.
+    /// Its empty config/templates prevent project hooks, filters or merge drivers
+    /// from executing. Only immutable resolved commits enter merge-tree's argv.
+    public func mergePreview(_ record: ManagedWorktreeRecord, targetRef: String) throws -> WorktreeMergePreview {
+        try WorktreeNaming.validateRef(targetRef)
+        let identity = try identity(of: record.path)
+        guard identity.commonDirectory == record.commonDirectory,
+              try registeredWorktrees(of: identity).contains(where: { $0.path == record.path && !$0.isPrunable }) else {
+            throw ManagedWorktreeError.invalid("The worktree identity changed. Refresh before previewing a merge.")
+        }
+        let source = try resolveCommit("HEAD", in: record.path)
+        let target = try resolveCommit(targetRef, in: record.path)
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("parley-merge-preview-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        var env = environment
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        env["GIT_ATTR_NOSYSTEM"] = "1"
+        env["GIT_NO_REPLACE_OBJECTS"] = "1"
+        env["GIT_NO_LAZY_FETCH"] = "1"
+        // C-quoted environment entry protects colons, newlines and backslashes.
+        let objects = record.commonDirectory + "/objects"
+        env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = "\"" + objects.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r").replacingOccurrences(of: "\t", with: "\\t") + "\""
+        let runner = ProcessCommandRunner(timeout: 15, maximumCapturedBytes: 200_001)
+        let initialized = try runner.run(executable: gitExecutable,
+            arguments: ["-C", scratch.path, "init", "--bare", "--template=", "--quiet"], environment: env)
+        guard initialized.status == 0 else { throw ManagedWorktreeError.git("Could not initialize temporary merge storage.") }
+        let output = try runner.run(executable: gitExecutable,
+            arguments: ["-C", scratch.path, "-c", "core.attributesFile=/dev/null", "-c", "core.fsmonitor=false",
+                        "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", target, source], environment: env)
+        guard output.status == 0 || output.status == 1 else {
+            throw ManagedWorktreeError.git("Merge preview unavailable (exit \(output.status)). Git may lack merge-tree support, objects may be missing or the branches may have no common history. " + String(output.stderrText.prefix(1000)))
+        }
+        guard output.stdout.count <= 200_000, output.stdout.last == 0 else {
+            throw ManagedWorktreeError.git("Merge preview output was incomplete or exceeded the display bound.")
+        }
+        let fields = output.stdout.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }
+        guard let tree = fields.first, tree.count == 40, tree.allSatisfy(\.isHexDigit) else {
+            throw ManagedWorktreeError.git("Git returned an unrecognized merge preview.")
+        }
+        let paths = Array(fields.dropFirst().prefix(while: { !$0.isEmpty }))
+        guard paths.count <= 200 else { throw ManagedWorktreeError.git("More than 200 conflicting paths; inspect this merge with Git.") }
+        return WorktreeMergePreview(sourceCommit: source, targetCommit: target, targetRef: targetRef,
+            hasConflicts: output.status == 1, conflictedPaths: paths, capturedAt: Date())
     }
 }

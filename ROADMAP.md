@@ -78,9 +78,21 @@ in the same request, protocol version bumped where its wording changes.
   pane-to-process attribution and basic figures, sampled only while visible.
 - [x] One pane grid with zoom and unzoom of a single terminal and one
   hideable collaboration dock, replacing Focus Canvas and the separate names.
-- Frozen, not removed: managed worktrees at their current scope; Agy as a
-  stated limitation until its instruction uptake is verified. Automatic
+- At the reduction baseline, managed worktrees were frozen at their then-current
+  scope; the person-authorized lifecycle follow-up below expands that scope.
+  Agy remains a stated limitation until its instruction uptake is verified. Automatic
   approval of requested command runs stays by the person's choice.
+
+#### Worktree lifecycle follow-up (9 September 2026)
+
+- [x] Finish a worktree through separately confirmed pane/workspace closure,
+  optional workspace-scoped history clearing and guarded checkout removal.
+- [x] Inactive managed-tree filtering, retained handoff activity and bounded
+  on-demand logical folder size.
+- [x] Recovery guidance and marker-verified relocation of Parley's record;
+  unrecorded existing trees stay person-owned.
+- [x] Commit-bound merge-conflict predictions in isolated temporary Git storage.
+- [x] Person-selected vendor guidance for shared Git-directory permissions.
 
 #### Phase 1 — consolidate around handoffs
 
