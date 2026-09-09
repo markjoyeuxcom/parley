@@ -1015,7 +1015,9 @@ public final class WorkbenchController: @unchecked Sendable {
         proposed.launchGeneration += 1
         var command = AgentProtocol.command(for: proposed.kind, protocolDirectory: protocolFolder, launchMode: launchMode)
         command.removeFirst()
-        command += PermissionProfileAdapter.launchPlan(for: proposed.kind, profile: permissionProfile).arguments
+        if !configuration.bypassVendorPermissions {
+            command += PermissionProfileAdapter.launchPlan(for: proposed.kind, profile: permissionProfile).arguments
+        }
         let id = try containerService.prepare(configuration: configuration, pane: proposed, endpoint: endpoint.path,
             protocolDirectory: protocolFolder.path, shimDirectory: shim.deletingLastPathComponent().path,
             token: token, vendorArguments: command, runtime: runtime.runtimeMarker ?? "PRODUCTION")
@@ -1487,9 +1489,10 @@ public final class WorkbenchController: @unchecked Sendable {
         document.panes[index].vendorRuntimeState = nil
         document.panes[index].vendorRuntimeSignal = nil
         document.panes[index].vendorRuntimeSignaledAt = nil
-        document.panes[index].permissionEnforcement = profile.map {
-            PermissionProfileAdapter.launchPlan(for: document.panes[index].kind, profile: $0).enforcement
-        }
+        document.panes[index].permissionEnforcement = document.panes[index].containerConfiguration?.bypassVendorPermissions == true
+            ? .guidanceOnly : profile.map {
+                PermissionProfileAdapter.launchPlan(for: document.panes[index].kind, profile: $0).enforcement
+            }
         document.activity[document.panes[index].id] = Date()
     }
 

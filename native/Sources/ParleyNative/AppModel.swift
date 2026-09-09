@@ -3970,6 +3970,7 @@ final class AppModel: ObservableObject {
     }
 
     func permissionProfileName(for pane: WorkbenchPane) -> String? {
+        if pane.containerConfiguration?.bypassVendorPermissions == true { return "Container bypass" }
         guard let id = pane.permissionSelection?.profileID else { return nil }
         return permissionProfiles.first(where: { $0.id == id })?.name ?? id
     }

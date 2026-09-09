@@ -108,7 +108,7 @@ public final class ContainerPaneService: @unchecked Sendable {
 
     /// Read-only host discovery plus a disposable vendor startup probe. It never
     /// pulls images, uses a host login, grants extra capabilities or contacts a model.
-    public func preview(image: String, vendor: PaneKind, legacyCodexSandbox: Bool) throws -> ContainerConfiguration {
+    public func preview(image: String, vendor: PaneKind, legacyCodexSandbox: Bool, bypassVendorPermissions: Bool = false) throws -> ContainerConfiguration {
         let image = image.trimmingCharacters(in: .whitespacesAndNewlines)
         guard [.codex, .claude].contains(vendor), !image.isEmpty, image.utf8.count <= 256,
               !image.hasPrefix("-"), !image.contains(where: { $0.isWhitespace || $0.isNewline }) else {
@@ -122,7 +122,7 @@ public final class ContainerPaneService: @unchecked Sendable {
         let daemon = try checked(executable, prefix + ["info", "--format", "{{.ID}}"])
         let id = try checked(executable, prefix + ["image", "inspect", "--format", "{{.Id}}", image])
         let configuration = ContainerConfiguration(dockerExecutable: executable, daemonEndpoint: endpoint, daemonID: daemon,
-            imageID: id, imageName: image, legacyCodexSandbox: legacyCodexSandbox)
+            imageID: id, imageName: image, legacyCodexSandbox: legacyCodexSandbox, bypassVendorPermissions: bypassVendorPermissions)
         try ContainerLaunchProjection.validate(configuration)
         let probeID = UUID().uuidString.lowercased()
         let probeCID = directory.appendingPathComponent("container-\(probeID).cid")
@@ -131,7 +131,9 @@ public final class ContainerPaneService: @unchecked Sendable {
             "--user", "\(getuid()):\(getgid())", "--env", "HOME=\(ContainerLaunchProjection.home)",
             "--tmpfs", "\(ContainerLaunchProjection.home):uid=\(getuid()),gid=\(getgid()),mode=700",
             "--entrypoint", "/bin/sh", id, "-c", Self.imageUtilityProbe, "parley-image-check", "/usr/local/bin/\(vendor.rawValue)"]
-        if vendor == .codex {
+        if bypassVendorPermissions {
+            args += [vendor == .codex ? "--dangerously-bypass-approvals-and-sandbox" : "--dangerously-skip-permissions", "--version"]
+        } else if vendor == .codex {
             if legacyCodexSandbox { args += ["-c", "features.use_legacy_landlock=true"] }
             args += ["sandbox", "--", "/bin/true"]
         } else { args += ["--version"] }

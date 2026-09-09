@@ -3602,7 +3602,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "30", "the shared protocol version drifted from cross-project agent awareness")
+    try expect(AgentProtocol.version == "31", "the shared protocol version drifted from cross-project agent awareness")
     try expect(
         AgentProtocol.text.contains("parley delegate <target> --parent <handoff-id>")
             && AgentProtocol.text.contains("requestChanges")
@@ -9919,6 +9919,16 @@ if let image = argument(named: "--container-ghostty-spike") {
         exit(0)
     } catch {
         print("FAIL container Ghostty spike (requires local Docker and a human Shell): \(error)")
+        exit(1)
+    }
+}
+
+if let image = argument(named: "--container-bypass-spike") {
+    do {
+        try checkContainerBypassSpike(image: image)
+        exit(0)
+    } catch {
+        print("FAIL container bypass spike (requires the selected local image and Docker daemon): \(error)")
         exit(1)
     }
 }

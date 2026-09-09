@@ -15,9 +15,28 @@ public struct ContainerConfiguration: Codable, Equatable, Sendable {
     public var imageName: String
     public var gitAccess: ContainerGitAccess?
     public var legacyCodexSandbox: Bool
-    public init(dockerExecutable: String, daemonEndpoint: String, daemonID: String, imageID: String, imageName: String, legacyCodexSandbox: Bool, gitAccess: ContainerGitAccess? = nil) {
+    public var bypassVendorPermissions: Bool
+    public var permissionModeLabel: String { bypassVendorPermissions ? "Vendor permissions bypassed" : "Vendor permissions enabled" }
+
+    private enum CodingKeys: String, CodingKey {
+        case dockerExecutable, daemonEndpoint, daemonID, imageID, imageName, gitAccess, legacyCodexSandbox, bypassVendorPermissions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        dockerExecutable = try values.decode(String.self, forKey: .dockerExecutable)
+        daemonEndpoint = try values.decode(String.self, forKey: .daemonEndpoint)
+        daemonID = try values.decode(String.self, forKey: .daemonID)
+        imageID = try values.decode(String.self, forKey: .imageID)
+        imageName = try values.decode(String.self, forKey: .imageName)
+        gitAccess = try values.decodeIfPresent(ContainerGitAccess.self, forKey: .gitAccess)
+        legacyCodexSandbox = try values.decode(Bool.self, forKey: .legacyCodexSandbox)
+        bypassVendorPermissions = try values.decodeIfPresent(Bool.self, forKey: .bypassVendorPermissions) ?? false
+    }
+    public init(dockerExecutable: String, daemonEndpoint: String, daemonID: String, imageID: String, imageName: String, legacyCodexSandbox: Bool, gitAccess: ContainerGitAccess? = nil, bypassVendorPermissions: Bool = false) {
         self.dockerExecutable = dockerExecutable; self.daemonEndpoint = daemonEndpoint; self.daemonID = daemonID
         self.imageID = imageID; self.imageName = imageName; self.legacyCodexSandbox = legacyCodexSandbox; self.gitAccess = gitAccess
+        self.bypassVendorPermissions = bypassVendorPermissions
     }
 }
 
@@ -50,6 +69,9 @@ public enum ContainerLaunchProjection {
     public static let home = "/home/parley"
 
     public static func validate(_ config: ContainerConfiguration) throws {
+        guard !config.bypassVendorPermissions || !config.legacyCodexSandbox else {
+            throw ContainerPaneError.refused("Choose vendor permissions with legacy Landlock or bypass vendor permissions, not both.")
+        }
         guard config.dockerExecutable.hasPrefix("/"), !config.dockerExecutable.contains("\n"),
               config.daemonEndpoint.hasPrefix("unix:///"), !config.daemonEndpoint.contains("\n"),
               !config.daemonID.isEmpty, config.imageID.hasPrefix("sha256:"), isHex(String(config.imageID.dropFirst(7)), length: 64) else {
@@ -104,7 +126,7 @@ public enum ContainerLaunchProjection {
                 || compact == "--permission-mode=bypassPermissions" || compact == "--ask-for-approval=never"
                 || compact == "approval_policy=never" || (argument == "never" && ["-a", "--ask-for-approval"].contains(previous))
         }) else {
-            throw ContainerPaneError.refused("Container launches never bypass vendor permissions.")
+            throw ContainerPaneError.refused("Vendor permission bypass is chosen in the native container review, never supplied through command arguments.")
         }
         let name = "parley-\(facts.owner)"
         var args = ["--host", configuration.daemonEndpoint, "create", "--rm", "-it", "--init", "--name", name,
@@ -127,6 +149,9 @@ public enum ContainerLaunchProjection {
         }
         if facts.runtime == "DEV" { args += ["--env", "PARLEY_RUNTIME=DEV"] }
         args += ["--entrypoint", "/usr/local/bin/\(facts.vendor.rawValue)", configuration.imageID]
+        if configuration.bypassVendorPermissions {
+            args += facts.vendor == .codex ? ["--dangerously-bypass-approvals-and-sandbox"] : ["--dangerously-skip-permissions"]
+        }
         if configuration.legacyCodexSandbox && facts.vendor == .codex { args += ["-c", "features.use_legacy_landlock=true"] }
         args += vendorArguments
         return args

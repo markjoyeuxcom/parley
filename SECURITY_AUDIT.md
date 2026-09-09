@@ -1,6 +1,6 @@
 # Parley security assessment
 
-Updated: 30 August 2026
+Updated: 9 September 2026 (container permission-bypass boundary)
 
 This assessment describes the current native Swift implementation. Report new
 vulnerabilities through [SECURITY.md](SECURITY.md).
@@ -20,7 +20,7 @@ launching a vendor CLI or spending subscription quota.
 
 | Finding | Current status |
 | --- | --- |
-| Agent access to Parley control authority | **Mitigated for vendor panes.** Every vendor process tree receives an allow-default Seatbelt profile with targeted file and socket denials for both runtimes; only its generated protocol files, managed shim and capability-named endpoint are reopened. Shell panes remain trusted, unsandboxed human shells. |
+| Agent access to Parley control authority | **Mitigated for host vendor panes.** Host vendor processes receive an allow-default Seatbelt profile with targeted file and socket denials for both runtimes; only their generated protocol files, managed shim and capability-named endpoint are reopened. Container vendors rely on Docker and exact mounts; Seatbelt on the host client cannot constrain the external daemon. Shell panes remain trusted, unsandboxed human shells. |
 | Sibling pane capability reuse | **Mitigated.** Each pane has a durable random credential, and the filesystem transport rejects a valid token presented through another pane's endpoint. |
 | Relayed model output can influence another model | **Accepted product risk.** Messages are attributed and targets are explicit, but model-authored content is untrusted. Permission prompts remain vendor-owned and `paste` allows review before submission. |
 | Terminal submission could merge multiline payloads with Enter events | **Fixed.** Ghostty paste carries the payload as one text operation. Submission is a distinct Enter event after paste succeeds. |
@@ -29,6 +29,24 @@ launching a vendor CLI or spending subscription quota.
 | Mutable relay locator permitted remote delivery | **Fixed.** Agent commands use one local capability-separated filesystem transport; the UI uses an authenticated local Unix socket. Neither accepts a remote destination. |
 | Unbounded or stranded automated work | **Mitigated.** Targets admit one active Ask or delegation, waits observe pane closure and credential rotation, cancellation is explicit, durable records are bounded and uncertain delivery is never silently retried. |
 | Complete inherited launch environment | **Partially mitigated.** Parley capabilities and parent multiplexer markers are scrubbed, compatibility probes use a minimal environment and vendor process access is constrained by Seatbelt. A complete vendor-launch allowlist is not claimed. |
+
+## Container permission bypass
+
+The person can explicitly enable vendor permission bypass for a local container
+pane or a team's per-vendor container settings. It is off by default; older
+records decode as off. Fixed flags are generated only for that container's vendor
+command, never the host launch. Native preparation and activation compare the
+complete reviewed configuration, including bypass; changing it requires review
+and restart. The normal profile restrictions are omitted and the mode is visible.
+
+Docker retains the exact mounts, non-root user, dropped capabilities and
+no-new-privileges setting; no daemon socket or host vendor login is mounted.
+Bypass permits commands, network use and changes to mounted files without the
+usual vendor prompts. The pane's persisted vendor credentials are accessible
+inside the container. Shared writable Git hooks or executable configuration may
+cause commands to run on the Mac during later host Git operations. Native
+requested-host-command approvals remain separate. Neither a vendor bypass nor a
+container is a claim that untrusted project code is harmless.
 
 ## Current controls
 
