@@ -31,8 +31,12 @@ Breaking any of these changes the product.
    Never add API keys or a direct model API path.
 2. **Real interactive sessions.** Preserve each CLI's TUI, prompts, permission
    flow and session behavior. Parley does not replace them with a chat UI.
-3. **No approval bypass.** Never pass a `--dangerously-*` option,
-   `danger-full-access` or an equivalent bypass.
+3. **Host approval protection; reviewed container exception.** Host vendor
+   launches never pass a `--dangerously-*` option, `danger-full-access` or an
+   equivalent bypass. The person may explicitly select Bypass vendor permissions
+   for a local container pane or a team's per-vendor container configuration.
+   Only that reviewed container launch receives the fixed vendor bypass flag;
+   Docker isolation and native host command-run approvals remain in force.
 4. **Cross-vendor first, pane-explicit.** Automatic targets are explicit agent
    panes other than the sender. Same-vendor routes require distinct panes.
    Never broadcast implicitly, target a shell through Relay/Paste/Ask, or guess
@@ -436,8 +440,9 @@ generation, workspace, requesting pane, grant, time) the moment the controller
 returns, before any Ghostty mounting step that may fail; a mounting failure is
 reported on the owned member, never dropped from the count or from Stop. The
 limit counts every creation for the session's lifetime. Members cannot add
-panes or nest sessions. Every created pane keeps its vendor's own permission
-prompts; Parley never answers them, never restarts a pane on an agent's behalf
+panes or nest sessions. Vendor permission prompts remain active except for an
+explicitly approved per-vendor container bypass. Parley never answers prompts,
+never restarts a pane on an agent's behalf
 and never restores team authority from any journal. Sessions appear as native
 activity records for visibility only. The Team Sessions sheet is the
 monitoring surface and never blocks provisioning; any other sheet or modal
@@ -528,8 +533,7 @@ approved working folder is inside the requester's working folder; only a created
 tree is placed under `.worktrees/`. Host-pane grants are never widened to the
 repository or shared `.git` directory. Container grants can separately bind the
 explicitly reviewed shared Git mount described below, without mounting the primary
-checkout. Whether a vendor may commit from a linked worktree remains that vendor's
-own permission decision, as the approval, Help and protocol explain. A created tree whose approval then fails
+checkout. Git writes follow the reviewed vendor permission mode, as the approval, Help and protocol explain. A created tree whose approval then fails
 is reported as created-but-unapproved and stays selectable or removable.
 `parley team status` exposes the binding as `worktree`; panes, the Team
 Sessions detail and the Status Center delegation inspector show path, branch
@@ -646,7 +650,22 @@ without a project mount, pane capability, network or signed-in session. The fixe
 probe first verifies the Linux shim and home-initializer utility contract. It
 cannot establish login, instruction uptake or continued compatibility.
 Codex's legacy Landlock mode is a separate explicit choice; it is not enabled
-silently. No vendor permission bypass or privileged container is allowed.
+silently. Bypass vendor permissions is a separate native, off-by-default choice,
+authorized by Mark on 9 September 2026 as the container-only exception to invariant 3.
+`ContainerConfiguration.bypassVendorPermissions` defaults to false when absent in
+older records and is part of exact configuration comparisons for preparation,
+activation and team grants. Only the native review chooses it; agents cannot
+supply it to team add. Codex receives `--dangerously-bypass-approvals-and-sandbox`,
+Claude receives `--dangerously-skip-permissions`, after the image ID in Docker's
+argv. Normal profile launch arguments are omitted in that mode and enforcement
+is labelled guidance only; host launches still use `PermissionProfileAdapter`.
+Bypass and legacy Landlock cannot be combined. The image probe checks utilities
+and vendor `--version` with the chosen flag instead of demanding an inner sandbox.
+Docker mounts, non-root UID/GID, capability drop, no-new-privileges and native
+host command-run approval are unchanged. Privileged containers remain prohibited.
+The native review, pane badge, Team Sessions and Status Center disclose bypass;
+mounted files, shared Git metadata, network and the pane's vendor login become
+available without the usual vendor permission prompts.
 
 `ContainerLaunchProjection` builds argv with an explicit daemon, non-root
 UID/GID, four exact host mounts (project and own endpoint writable; protocol
@@ -720,6 +739,7 @@ count as silently skipped default tests:
 ```bash
 node scripts/run-native-swift.mjs run --package-path native parley-native-checks --container-transport-spike <local-image>
 node scripts/run-native-swift.mjs run --package-path native parley-native-checks --container-ghostty-spike <local-image>
+node scripts/run-native-swift.mjs run --package-path native parley-native-checks --container-bypass-spike <local-image>
 ```
 
 The transport check uses disposable fixture credentials, never a live pane's
@@ -741,9 +761,9 @@ option to avoid unsupported nested macOS sandboxes. Project and dependency manif
 with the agent's existing permissions, including any permitted network access.
 Parley's outer boundary and vendor approvals remain active. The setting only
 automates a SwiftPM flag; it does not expand the agent's existing permissions.
-The no-approval-bypass invariant still applies to all vendor launch permissions
-and Parley's mandatory boundary; this opt-in affects only SwiftPM's additional
-subprocess sandbox.
+Host launches retain invariant 3's approval protection. The separately reviewed
+container bypass is independent of this opt-in, which affects only SwiftPM's
+additional subprocess sandbox.
 
 The wrapper resolves the current PATH toolchain, including mise, on each
 invocation. It does not install a language toolchain or change global shell

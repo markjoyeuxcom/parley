@@ -48,7 +48,7 @@ struct TeamSessionsView: View {
                 Spacer()
                 Button("Done") { model.dismissTeamSessionReview() }.keyboardShortcut(.cancelAction)
             }
-            Text("A requesting agent pane proposes one objective, folder and team size. Approval lets that pane create up to the pane limit of new agent panes in its workspace without another click per pane. Every new pane is an ordinary vendor session with its own permission prompts.")
+            Text("A requesting agent pane proposes one objective, folder and team size. Approval lets that pane create up to the pane limit of new agent panes in its workspace without another click per pane. Vendor prompts remain active unless you explicitly approve container permission bypass for that vendor.")
                 .foregroundStyle(.secondary)
             if let error = model.teamSessionError { Text(error).foregroundStyle(.red) }
             HSplitView {
@@ -289,6 +289,8 @@ private struct TeamSessionApproval: View {
                 }
             }
             containerSection
+            Text("The profile applies to host panes and containers with vendor permissions enabled. Container bypass overrides its file, command and network restrictions.")
+                .font(.caption).foregroundStyle(.secondary)
             Picker("Permission profile for new panes", selection: $profileID) {
                 ForEach(model.permissionProfiles) { profile in
                     Text(profile.name).tag(profile.id)
@@ -391,7 +393,7 @@ private struct TeamSessionDetail: View {
             if let containers = session.containerConfigurations, !containers.isEmpty {
                 ForEach(containers.keys.sorted(), id: \.self) { vendor in
                     if let configuration = containers[vendor] {
-                        Text("\(vendor): container · \(configuration.imageName)\n\(configuration.daemonEndpoint)")
+                        Text("\(vendor): container · \(configuration.imageName) · \(configuration.permissionModeLabel)\n\(configuration.daemonEndpoint)")
                             .font(.caption).textSelection(.enabled)
                     }
                 }
@@ -445,7 +447,7 @@ private struct TeamSessionDetail: View {
             Text("Decisions requiring you").font(.system(size: 12, weight: .semibold))
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(decisions, id: \.self) { item in Text(item).font(.system(size: 11)) }
-                if decisions.isEmpty { Text("None. Vendor permission prompts appear inside each pane.").font(.system(size: 11)).foregroundStyle(.secondary) }
+                if decisions.isEmpty { Text("None. Vendor prompts appear inside panes unless container permission bypass was approved.").font(.system(size: 11)).foregroundStyle(.secondary) }
             }
 
             if let outcome = session.stopOutcome {

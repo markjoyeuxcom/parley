@@ -1252,23 +1252,26 @@ func checkContainerTeamGrant() throws {
     let old = try JSONDecoder().decode(TeamSessionGrant.self, from: JSONEncoder().encode(original))
     try teamExpect(old.containerConfigurations == nil, "an older host grant acquired container authority")
     var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as! [String: Any]
-    json["containerConfigurations"] = ["codex": try JSONSerialization.jsonObject(with: JSONEncoder().encode(containerTeamConfiguration()))]
+    var configuration = containerTeamConfiguration(); configuration.bypassVendorPermissions = true
+    json["containerConfigurations"] = ["codex": try JSONSerialization.jsonObject(with: JSONEncoder().encode(configuration))]
     let decoded = try JSONDecoder().decode(TeamSessionGrant.self, from: JSONSerialization.data(withJSONObject: json))
     let roundtrip = try JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as! [String: Any]
-    try teamExpect(roundtrip["containerConfigurations"] != nil, "reviewed container settings were lost from the grant")
+    try teamExpect(roundtrip["containerConfigurations"] != nil && decoded.containerConfigurations?["codex"] == configuration,
+        "reviewed container settings or bypass mode were lost from the grant")
 }
 
 func checkContainerTeamPreparation() throws {
+    var configuration = containerTeamConfiguration(); configuration.bypassVendorPermissions = true
     let fixture = try TeamFixture(); defer { fixture.cleanup() }
     let box = PaneBox(fixture.live)
     let coordinator = fixture.coordinator { box.current() }
     let request = try coordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "fixture", folder: fixture.project, paneLimit: 2, hours: 1))
     try coordinator.approve(id: request.id, revision: request.revision, objective: "fixture", folder: fixture.project,
-        allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 2, hours: 1, containerConfigurations: ["codex": containerTeamConfiguration()])
+        allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 2, hours: 1, containerConfigurations: ["codex": configuration])
     let provision = try coordinator.requestPane(token: "lead-token", kind: .codex, name: "Container", role: nil)
     var created = fixture.lead
     created.id = "container-member"; created.kind = .codex; created.isStarted = false; created.launchGeneration = 0
-    created.containerConfiguration = containerTeamConfiguration()
+    created.containerConfiguration = configuration
     coordinator.fulfilProvisions(create: { _, _, _ in box.update { $0.append(created) }; return created })
     try teamExpect(coordinator.sessions().first?.members.count == 1, "container placeholder was not owned immediately")
     try teamExpect(coordinator.pendingProvisions().contains(where: { $0.id == provision.id }), "unstarted container was reported as a completed provision")
@@ -1278,7 +1281,7 @@ func checkContainerTeamPreparation() throws {
     coordinator.fulfilProvisions(create: { _, _, _ in throw TeamSessionError.invalid("duplicate creation") })
     try teamExpect(coordinator.provision(id: provision.id)?.failure == nil, "refresh retried a preparing pane")
     try coordinator.finishContainerProvision(id: provision.id, activate: { grant, pane in
-        try teamExpect(grant.containerConfigurations?["codex"] == containerTeamConfiguration(), "activation changed the reviewed image or daemon")
+        try teamExpect(grant.containerConfigurations?["codex"] == configuration, "activation changed the reviewed image, daemon or bypass mode")
         var started = pane; started.isStarted = true; started.launchGeneration += 1
         box.update { panes in panes[panes.firstIndex { $0.id == pane.id }!] = started }
         return started

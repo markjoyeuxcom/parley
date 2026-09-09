@@ -20,6 +20,9 @@ private func requireContainerControllerShell() throws {
 }
 
 var containerPaneChecks: [(String, () throws -> Void)] { [
+    ("container reviewed bypass stays inside the container", checkContainerReviewedBypass),
+    ("container bypass preflight checks vendor startup without an inner sandbox", checkContainerBypassPreflight),
+    ("container bypass controller binds review and restores host permissions", checkContainerBypassController),
     ("container Git review canonicalizes planned aliases and names submodule refusal", checkContainerGitReviewRefusals),
     ("container bulk cleanup includes prepared host placeholders", checkContainerPreparedBulkStop),
     ("container team controller preserves creation, activation and Stop ownership", checkContainerTeamController),
@@ -787,4 +790,116 @@ func checkContainerGitReviewRefusals() throws {
     try containerExpect(planned.folder == parent.appendingPathComponent("new-worktree").path, "planned worktree kept an alias that can never match the inspected path")
     let existing = try ContainerGitAccess.planned(folder: alias.path, commonDirectory: parent.appendingPathComponent(".git").path)
     try containerExpect(existing.folder == parent.path, "existing reviewed folder did not canonicalize")
+}
+
+func checkContainerReviewedBypass() throws {
+    let standard = ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock",
+        daemonID: "daemon-one", imageID: "sha256:" + String(repeating: "b", count: 64), imageName: "fixture", legacyCodexSandbox: false)
+    var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(standard)) as! [String: Any]
+    json["bypassVendorPermissions"] = true
+    let reviewed = try JSONDecoder().decode(ContainerConfiguration.self, from: JSONSerialization.data(withJSONObject: json))
+    for (vendor, flag) in [(PaneKind.codex, "--dangerously-bypass-approvals-and-sandbox"), (.claude, "--dangerously-skip-permissions")] {
+        for mode in [AgentLaunchMode.fresh, .resume] {
+            let facts = ContainerLaunchFacts(paneID: "pane-fixture", generation: 1, vendor: vendor, folder: "/project",
+                endpoint: "/transport/fixture", protocolDirectory: "/runtime/protocol", shimDirectory: "/runtime/bin",
+                uid: 501, gid: 20, volume: "fixture-home", owner: "fixture-owner", runtime: "DEV")
+            let command = Array(AgentProtocol.command(for: vendor, protocolDirectory: URL(fileURLWithPath: "/runtime/protocol"), launchMode: mode).dropFirst())
+            let args = try ContainerLaunchProjection.createArguments(configuration: reviewed, facts: facts, vendorArguments: command)
+            guard let image = args.firstIndex(of: reviewed.imageID) else { throw NSError(domain: "missing image", code: 1) }
+            try containerExpect(args[image + 1] == flag, "reviewed container bypass flag missing or outside the image command")
+            try containerExpect(Array(args.dropFirst(image + 2)) == command, "bypass changed protocol, hooks or Resume arguments")
+            try containerExpect(args.contains("--cap-drop=ALL") && args.contains("--security-opt=no-new-privileges=true") && !args.contains("--privileged"), "bypass weakened Docker isolation")
+            try containerExpect(args.filter { $0.hasPrefix("type=bind,") }.count == 4, "bypass widened mounts")
+            let defaultArgs = try ContainerLaunchProjection.createArguments(configuration: standard, facts: facts, vendorArguments: command)
+            try containerExpect(!defaultArgs.contains(flag), "normal container acquired bypass")
+            try containerExpect(!AgentProtocol.command(for: vendor, protocolDirectory: URL(fileURLWithPath: "/runtime/protocol"), launchMode: mode).contains(flag), "host command acquired container bypass")
+        }
+    }
+    let roundtrip = try JSONSerialization.jsonObject(with: JSONEncoder().encode(reviewed)) as! [String: Any]
+    try containerExpect(roundtrip["bypassVendorPermissions"] as? Bool == true, "reviewed bypass was lost on persistence")
+    json.removeValue(forKey: "bypassVendorPermissions")
+    let old = try JSONDecoder().decode(ContainerConfiguration.self, from: JSONSerialization.data(withJSONObject: json))
+    let oldJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as! [String: Any]
+    try containerExpect(oldJSON["bypassVendorPermissions"] as? Bool != true, "older configuration acquired bypass")
+}
+
+func checkContainerBypassPreflight() throws {
+    let directory = URL(fileURLWithPath: "/private/tmp/parley-bypass-probe-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runner = ContainerLifecycleRunner()
+    let service = try ContainerPaneService(directory: directory, environment: [:], runner: runner)
+    for (vendor, flag) in [(PaneKind.codex, "--dangerously-bypass-approvals-and-sandbox"), (.claude, "--dangerously-skip-permissions")] {
+        runner.calls = []
+        let configuration = try service.preview(image: "fixture", vendor: vendor, legacyCodexSandbox: false, bypassVendorPermissions: true)
+        let probe = runner.calls.first { $0.contains("create") && $0.contains("--network=none") }!
+        try containerExpect(configuration.bypassVendorPermissions && probe.suffix(3) == ["/usr/local/bin/\(vendor.rawValue)", flag, "--version"], "image preflight used an inner sandbox or lost bypass mode")
+        try containerExpect(!probe.contains("--mount") && !probe.contains("sandbox") && probe.contains(ContainerPaneService.imageUtilityProbe), "bypass probe exposed files or skipped the utility contract")
+        try containerExpect((try service.records()).allSatisfy(\.removed), "bypass probe retained a live receipt")
+    }
+    runner.calls = []
+    _ = try service.preview(image: "fixture", vendor: .codex, legacyCodexSandbox: false)
+    let normal = runner.calls.first { $0.contains("create") && $0.contains("--network=none") }!
+    try containerExpect(normal.suffix(3) == ["sandbox", "--", "/bin/true"], "normal mode stopped checking the inner sandbox")
+    runner.calls = []
+    do {
+        _ = try service.preview(image: "fixture", vendor: .codex, legacyCodexSandbox: true, bypassVendorPermissions: true)
+        throw NSError(domain: "conflicting modes accepted", code: 1)
+    } catch is ContainerPaneError {}
+    try containerExpect(!runner.calls.contains { $0.contains("create") }, "conflicting modes created a container")
+}
+
+func checkContainerBypassController() throws {
+    try requireContainerControllerShell()
+    for vendor in [PaneKind.codex, .claude] {
+        let fixture = try ContainerReviewFixture()
+        let profile = try fixture.profile(folder: fixture.project.path)
+        let pane = try fixture.controller.createPane(kind: vendor, cwd: fixture.project.path, permissionProfile: profile)
+        try fixture.controller.stopPaneProcess(pane.id)
+        var reviewed = fixture.configuration; reviewed.bypassVendorPermissions = true
+        try fixture.controller.prepareContainerStart(pane.id, configuration: reviewed, permissionProfile: profile, launchMode: .resume)
+        let create = fixture.runner.calls.first { $0.contains("create") && $0.contains(reviewed.imageID) && $0.contains("--network=bridge") }!
+        let expectedFlag = vendor == .codex ? "--dangerously-bypass-approvals-and-sandbox" : "--dangerously-skip-permissions"
+        try containerExpect(create.contains(expectedFlag), "controller lost reviewed bypass")
+        try containerExpect(!create.contains("--sandbox") && !create.contains("--permission-mode") && !create.contains("--ask-for-approval"), "profile arguments conflicted with bypass")
+        do {
+            try fixture.controller.startPane(pane.id, permissionProfile: profile, launchMode: .resume, containerConfiguration: fixture.configuration)
+            throw NSError(domain: "changed bypass review activated", code: 1)
+        } catch is ContainerPaneError {}
+        try fixture.controller.startPane(pane.id, permissionProfile: profile, launchMode: .resume, containerConfiguration: reviewed)
+        let started = try fixture.controller.listPanes().first { $0.id == pane.id }!
+        try containerExpect(started.containerConfiguration == reviewed && started.permissionEnforcement == .guidanceOnly, "bypass pane falsely advertised enforced profile")
+        let saved = try JSONDecoder().decode(WorkbenchPane.self, from: JSONEncoder().encode(started))
+        try containerExpect(saved.containerConfiguration?.bypassVendorPermissions == true, "pane persistence lost bypass")
+        try fixture.controller.prepareContainerStop(started)
+        try fixture.controller.stopPaneProcess(pane.id)
+        try fixture.controller.startPane(pane.id, permissionProfile: profile)
+        let host = try fixture.controller.listPanes().first { $0.id == pane.id }!
+        let launch = try fixture.controller.launchConfiguration(for: pane.id)
+        try containerExpect(host.containerConfiguration == nil && host.permissionEnforcement == .partiallyEnforced, "return to host kept bypass metadata")
+        try containerExpect(!launch.command.contains(expectedFlag) && launch.command.contains(vendor == .codex ? "--sandbox" : "--permission-mode"), "container bypass leaked into host launch")
+        try fixture.controller.shutdown()
+    }
+}
+
+/// Real vendor parsing/startup only; no model call, login, project or endpoint mount.
+func checkContainerBypassSpike(image: String) throws {
+    let directory = URL(fileURLWithPath: "/private/tmp/parley-bypass-spike-\(UUID().uuidString.lowercased())")
+    let service = try ContainerPaneService(directory: directory, environment: ["HOME": NSHomeDirectory()])
+    do {
+        for vendor in [PaneKind.codex, .claude] {
+            let configuration = try service.preview(image: image, vendor: vendor, legacyCodexSandbox: false, bypassVendorPermissions: true)
+            try containerExpect(configuration.bypassVendorPermissions && !configuration.legacyCodexSandbox, "real image probe lost bypass selection")
+            print("PASS Docker \(vendor.label) bypass startup and Linux utility probe without an inner sandbox")
+        }
+        try containerExpect((try service.records()).allSatisfy(\.removed), "probe cleanup left a live receipt")
+        try FileManager.default.removeItem(at: directory)
+    } catch {
+        do {
+            try service.stopAll()
+            try FileManager.default.removeItem(at: directory)
+        } catch {
+            print("Probe cleanup not confirmed; receipts retained at \(directory.path)")
+        }
+        throw error
+    }
 }

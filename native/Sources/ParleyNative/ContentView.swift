@@ -2018,8 +2018,10 @@ private struct PaneRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .layoutPriority(1)
-                    if pane.containerConfiguration != nil {
-                        Text("CONTAINER").font(ChromeFont.meta).foregroundStyle(.secondary)
+                    if let configuration = pane.containerConfiguration {
+                        Text(configuration.bypassVendorPermissions ? "CONTAINER · BYPASS" : "CONTAINER")
+                            .font(ChromeFont.meta).foregroundStyle(configuration.bypassVendorPermissions ? Color.orange : Color.secondary)
+                            .help(configuration.permissionModeLabel)
                     }
                     if pane.isWorkspaceLead {
                         Text("Lead")

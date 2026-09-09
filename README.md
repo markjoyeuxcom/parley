@@ -8,7 +8,8 @@ workspaces, panes and local coordination around them.
 
 Parley uses subscription CLIs already installed and signed in on the Mac. It
 does not contain API-key fields, call model APIs directly, hide vendor activity
-or bypass a vendor's approval flow.
+or bypass a host vendor's approval flow. An explicit container-only option can
+skip vendor permission checks while Docker supplies the execution boundary.
 
 ## What works
 
@@ -590,6 +591,17 @@ Landlock mode is a temporary test option for compatible images when the default
 Bubblewrap sandbox is unavailable. Codex has deprecated it and plans to remove
 it; vendor permission prompts remain active. Submodules and arbitrary additional
 folders are refused. The image check also validates the required Linux utilities.
+
+**Bypass vendor permissions (container only)** is off by default. Selecting it
+launches Codex with `--dangerously-bypass-approvals-and-sandbox` or Claude with
+`--dangerously-skip-permissions`. Docker keeps the same mounts and isolation;
+the agent can change mounted files, run commands, use the network and access its
+saved vendor login without the usual vendor prompts. The selected profile's
+restrictions are not applied. Codex's inner sandbox is not required in this mode,
+and legacy Landlock cannot be selected alongside it. Host panes and requested
+host command runs retain their existing permission controls. The pane badge,
+Status Center and Team Sessions show the selected bypass mode. Existing saved
+containers keep their previous permission mode.
 
 Closing the main window keeps a container running. Closing its pane, restarting
 or quitting stops the recorded container, and a failed cleanup is reported.

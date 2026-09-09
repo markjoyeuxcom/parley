@@ -10,6 +10,7 @@ struct PermissionProfilePickerView: View {
     @State private var approvedRoots: [String]
     @State private var editingProfile: PermissionProfileDefinition?
     @State private var runInContainer: Bool
+    @State private var bypassVendorPermissions: Bool
     @State private var containerConfiguration: ContainerConfiguration?
     private let existingContainer: ContainerConfiguration?
 
@@ -24,6 +25,7 @@ struct PermissionProfilePickerView: View {
         }
         existingContainer = model.panes.first(where: { $0.id == paneID })?.containerConfiguration
         _runInContainer = State(initialValue: existingContainer != nil)
+        _bypassVendorPermissions = State(initialValue: existingContainer?.bypassVendorPermissions ?? false)
         _containerConfiguration = State(initialValue: nil)
         let selected = model.defaultPermissionProfileID(for: request)
         _selectedProfileID = State(initialValue: selected)
@@ -49,7 +51,7 @@ struct PermissionProfilePickerView: View {
                     .font(.title2.weight(.semibold))
                 Text(request.isFolderAccessReview
                     ? "Review the exact folders this pane receives at launch. Applying a change restarts the vendor session; its working folder does not change."
-                    : "Choose what this pane should be prepared to do. The vendor CLI still owns every confirmation it cannot express at launch.")
+                    : "Review this pane’s folders and launch permissions.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -67,15 +69,20 @@ struct PermissionProfilePickerView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    profileChoice
-                    if let profile = selectedProfile {
-                        capabilitySummary(profile)
-                        rootScope(profile)
-                        enforcementSummary(profile)
-                    }
                     if [.claude, .codex].contains(request.kind) {
                         ContainerLaunchOptionsView(model: model, vendor: request.kind, folder: request.folder, enabled: $runInContainer,
-                            configuration: $containerConfiguration, existing: existingContainer)
+                            configuration: $containerConfiguration, existing: existingContainer, onBypassChange: { bypassVendorPermissions = $0 })
+                    }
+                    if !(runInContainer && bypassVendorPermissions) { profileChoice }
+                    if let profile = selectedProfile {
+                        if runInContainer && bypassVendorPermissions {
+                            Text("The saved permission profile is not applied to this container. Turning bypass off restores the profile controls.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            capabilitySummary(profile)
+                            enforcementSummary(profile)
+                        }
+                        rootScope(profile)
                     }
                     hardBoundary
                 }
@@ -314,7 +321,9 @@ struct PermissionProfilePickerView: View {
         VStack(alignment: .leading, spacing: 7) {
             Text("ALWAYS OUTSIDE THE PROFILE")
                 .permissionSectionLabel()
-            Text("No profile grants access to Parley control files, credentials or keychains, permission-bypass flags, privilege escalation, destructive host operations, Git pushes, deployments or infrastructure mutation. Vendor prompts remain explicit where the operating system cannot enforce the intent directly.")
+            Text(runInContainer
+                ? "Only the folders and relay endpoint shown in this review are mounted. The Docker socket, host vendor login and other Parley control files are not mounted. Container bypass does not authorize host command runs; those keep their separate native review."
+                : "No profile grants access to Parley control files, credentials or keychains, permission-bypass flags, privilege escalation, destructive host operations, Git pushes, deployments or infrastructure mutation. Vendor prompts remain explicit where the operating system cannot enforce the intent directly.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

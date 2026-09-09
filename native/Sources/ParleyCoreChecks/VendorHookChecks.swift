@@ -42,7 +42,7 @@ private func hookPane(
 }
 
 func checkOfficialVendorHookAdaptersAndSignals() throws {
-    try hookExpect(AgentProtocol.version == "30", "official hooks did not use the current shared protocol")
+    try hookExpect(AgentProtocol.version == "31", "official hooks did not use the current shared protocol")
 
     let directory = try hookCheckDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -91,7 +91,9 @@ func checkOfficialVendorHookAdaptersAndSignals() throws {
     let agyCommand = AgentProtocol.command(for: .agy, protocolDirectory: protocolDirectory)
     try hookExpect(!agyCommand.joined(separator: " ").contains("signal"), "Agy received an unverified hook adapter")
     for command in [claudeCommand, codexCommand, copilotCommand, agyCommand] {
-        let joined = command.joined(separator: " ")
+        // Protocol prose describes the native container exception. Inspect the
+        // actual launch flags and hook payloads, excluding only instruction text.
+        let joined = command.filter { $0 != AgentProtocol.text && !$0.hasPrefix("developer_instructions=") }.joined(separator: " ")
         try hookExpect(!joined.contains("dangerously") && !joined.contains("bypass"), "hook adapter bypassed approval or trust")
     }
 

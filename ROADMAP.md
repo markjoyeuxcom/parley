@@ -35,8 +35,10 @@ The container follow-up adds reviewed shared-Git mounts (without the primary
 checkout), per-vendor container team approvals and asynchronous member startup,
 Linux utility preflight, cleanup continuation and responsive ownership reads.
 Default Codex Bubblewrap still fails namespace creation in the current OrbStack
-image; no automatic sandbox fallback or permission bypass is added. Image
-building, remote daemons, Compose and Docker-in-Docker remain outside this version.
+image. Mark explicitly authorized an opt-in container-only vendor permission
+bypass on 9 September: Docker remains the execution boundary, the review and pane
+badge disclose the mode, and host launches retain their permission controls.
+There is no automatic sandbox fallback. Image building, remote daemons, Compose and Docker-in-Docker remain outside this version.
 
 ## Product boundary
 
@@ -722,7 +724,7 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 - Direct model APIs, API-key storage or usage billing.
 - A custom chat interface that hides vendor TUIs.
 - Hidden background agents or hosted orchestration.
-- Approval-bypass flags.
+- Approval-bypass flags for host panes or without explicit native container review.
 - Inferring internal model state from terminal text.
 - A web renderer, embedded browser runtime, second terminal stack or external
   multiplexer.

@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "30"
+    public static let version = "31"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -125,7 +125,7 @@ public enum AgentProtocol {
       the pane folder. Host panes receive no extra root for it. Container
       panes receive its exact shared Git mount only after native review;
       the primary checkout is not mounted. Whether a vendor CLI may commit
-      or change branches remains that vendor's own permission decision. `parley team status` reports the binding as
+      or change branches follows the reviewed vendor permission mode. `parley team status` reports the binding as
       `worktree` (path, branch, recorded base commit, parleyCreated); the
       recorded base is the commit the tree was created from, never its
       current HEAD or a claim about who changed a file. Removing a worktree
@@ -153,9 +153,9 @@ public enum AgentProtocol {
       `currentPanes` and `ownedRunningPaneIDs` are app-owned lifecycle facts,
       `stopAttempts` lists native stop attempts with per-pane outcomes, every
       time is ISO 8601, and `detail` is display-only text that must never be
-      parsed. Each new pane keeps its vendor's own permission
-      prompts; Parley never answers or skips them and never restarts a pane
-      for you. The grant is memory-only and ends at the provisioning
+      parsed. Vendor permission prompts remain active unless the person
+      explicitly approved bypass in that vendor's container settings.
+      Parley never answers prompts or restarts a pane for you. The grant is memory-only and ends at the provisioning
       deadline, on the person's Stop, on Stop Everything or quit, when this
       pane restarts, moves, changes folder or its workspace policy changes,
       and when the approved permission profile is edited or removed. The
@@ -212,7 +212,10 @@ public enum AgentProtocol {
       `PARLEY_SWIFTPM_COMPATIBILITY=0` restores SwiftPM's normal behaviour.
 
     A pane whose whoami executionBoundary is container runs its vendor CLI in a
-    person-approved local container. Its working folder and pane endpoint retain
+    person-approved local container. Only the person can select vendor permission
+    bypass in the native container review; that choice never applies to host panes
+    or grants approval for host command runs. Do not enable bypass yourself.
+    Its working folder and pane endpoint retain
     their host paths. A linked worktree may also receive its explicitly reviewed
     shared Git directory. Other host paths and host tools are not implied available.
     Use the injected PARLEY_COMMAND if PATH changes. Do not try to reach the
