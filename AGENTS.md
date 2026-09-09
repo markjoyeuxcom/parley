@@ -661,6 +661,9 @@ submodules and arbitrary additional permission roots. Linked worktrees require
 the canonical common directory and its device/inode, all checked again before
 preparation. The native review names that writable mount and its shared refs,
 objects, hooks and configuration; the primary checkout is never mounted.
+Changes to shared hooks or executable Git configuration can cause commands to run on your Mac, outside the container, during later host Git operations. Parley does not review those changes again.
+Planned folders resolve through their nearest existing parent, so aliases match
+the later inspected tree. Submodule gitdirs are refused with a named reason.
 Working folders cannot contain or sit inside either runtime's control or relay
 transport directories, including the current runtime's explicit paths. Compare
 canonical realpath spellings before credential rotation or any Docker command;
@@ -719,7 +722,9 @@ node scripts/run-native-swift.mjs run --package-path native parley-native-checks
 ```
 
 The transport check uses disposable fixture credentials, never a live pane's
-capability. The Ghostty check requires a human Shell. Image sign-in, fresh and
+capability. The Ghostty check requires a human Shell. The five controller/container checks
+that verify protected runtime roots also require it and report that prerequisite
+explicitly; they never silently skip or count as passing inside an agent pane. Image sign-in, fresh and
 resumed vendor instruction uptake, normal approval prompts and post-relaunch
 login persistence remain explicit human compatibility follow-ups. Ship the
 reviewed greenfield implementation with known limitations recorded; untested

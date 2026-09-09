@@ -6,7 +6,21 @@ private func containerExpect(_ value: @autoclosure () throws -> Bool, _ message:
     guard try value() else { throw NSError(domain: "ContainerPaneChecks", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
 }
 
+/// These checks deliberately consult the real Production/Development roots;
+/// an agent boundary cannot inspect them. Refusal stays a failed prerequisite,
+/// never a silent skip or a weakened production check.
+private func requireContainerControllerShell() throws {
+    for directory in ParleyRuntime.controlDirectories() {
+        if let resolved = realpath(directory.path, nil) { free(resolved); continue }
+        if errno == EPERM || errno == EACCES {
+            throw NSError(domain: "ContainerCheckPrerequisite", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "This check requires a human Shell pane with access to Parley's protected runtime paths. Use parley request-run; the check was not run."])
+        }
+    }
+}
+
 var containerPaneChecks: [(String, () throws -> Void)] { [
+    ("container Git review canonicalizes planned aliases and names submodule refusal", checkContainerGitReviewRefusals),
     ("container bulk cleanup includes prepared host placeholders", checkContainerPreparedBulkStop),
     ("container team controller preserves creation, activation and Stop ownership", checkContainerTeamController),
     ("container follow-up image probe checks Linux utility contract", checkContainerImageUtilities),
@@ -393,6 +407,7 @@ private final class ContainerLifecycleRunner: CommandRunning, @unchecked Sendabl
 }
 
 func checkContainerControllerLifecycle() throws {
+    try requireContainerControllerShell()
     let directory = URL(fileURLWithPath: "/private/tmp/parley-container-controller-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: directory) }
     let project = directory.appendingPathComponent("project"), app = directory.appendingPathComponent("app")
@@ -493,6 +508,7 @@ private final class ContainerReviewFixture {
 }
 
 func checkContainerPreparedRemovalRecovery() throws {
+    try requireContainerControllerShell()
     for recovery in ["close", "host", "container"] {
         let fixture = try ContainerReviewFixture()
         let pane = try fixture.stoppedPane(folder: fixture.project.path)
@@ -579,6 +595,7 @@ func checkContainerControlPathOverlap() throws {
 
 
 func checkContainerOldReceiptRemoval() throws {
+    try requireContainerControllerShell()
     let fixture = try ContainerReviewFixture()
     let pane = try fixture.stoppedPane(folder: fixture.project.path)
     let profile = try fixture.profile(folder: pane.cwd)
@@ -698,6 +715,7 @@ func checkContainerLinkedWorktree() throws {
 }
 
 func checkContainerTeamController() throws {
+    try requireContainerControllerShell()
     let fixture = try ContainerReviewFixture()
     let controller = fixture.controller
     let workspace = try controller.listWorkspaces()[0]
@@ -733,6 +751,7 @@ func checkContainerTeamController() throws {
 }
 
 func checkContainerPreparedBulkStop() throws {
+    try requireContainerControllerShell()
     let fixture = try ContainerReviewFixture()
     let pane = try fixture.stoppedPane(folder: fixture.project.path)
     try fixture.controller.prepareContainerStart(pane.id, configuration: fixture.configuration, permissionProfile: fixture.profile(folder: pane.cwd))
@@ -740,4 +759,32 @@ func checkContainerPreparedBulkStop() throws {
     try containerExpect(fixture.runner.containers.isEmpty && (try fixture.service.records()).allSatisfy(\.removed),
         "bulk cleanup skipped a prepared container on a host placeholder")
     try fixture.controller.shutdown()
+}
+
+func checkContainerGitReviewRefusals() throws {
+    let root = URL(fileURLWithPath: "/private/tmp/parley-container-git-review-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let parent = root.appendingPathComponent("parent"), child = root.appendingPathComponent("child")
+    let runner = ProcessCommandRunner()
+    func git(_ arguments: [String]) throws {
+        let result = try runner.run(executable: URL(fileURLWithPath: "/usr/bin/git"), arguments: arguments,
+            environment: ["PATH": "/usr/bin:/bin", "HOME": root.path, "GIT_CONFIG_NOSYSTEM": "1"])
+        try containerExpect(result.status == 0, "submodule fixture failed: \(result.stderrText)")
+    }
+    for repository in [parent, child] {
+        try git(["init", repository.path])
+        try git(["-C", repository.path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"])
+    }
+    try git(["-C", parent.path, "-c", "protocol.file.allow=always", "submodule", "add", child.path, "module"])
+    var correctRefusal = false
+    do { _ = try ContainerGitAccess.inspect(folder: parent.appendingPathComponent("module").path) }
+    catch { correctRefusal = error.localizedDescription.lowercased().contains("submodule") }
+    try containerExpect(correctRefusal, "submodule refusal did not explain that submodules are unsupported")
+    let alias = root.appendingPathComponent("alias")
+    try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: parent)
+    let planned = try ContainerGitAccess.planned(folder: alias.appendingPathComponent("new-worktree").path, commonDirectory: parent.appendingPathComponent(".git").path)
+    try containerExpect(planned.folder == parent.appendingPathComponent("new-worktree").path, "planned worktree kept an alias that can never match the inspected path")
+    let existing = try ContainerGitAccess.planned(folder: alias.path, commonDirectory: parent.appendingPathComponent(".git").path)
+    try containerExpect(existing.folder == parent.path, "existing reviewed folder did not canonicalize")
 }

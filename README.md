@@ -580,7 +580,8 @@ stat/coreutils and `/bin/chown`.
 The working folder, the pane's own relay endpoint and read-only protocol
 files are mounted from the host. A linked worktree additionally mounts its shared
 Git directory only after you review its exact path; its primary checkout stays
-unmounted. Objects, refs, hooks and configuration remain shared. The Docker socket and host vendor login are
+unmounted. Objects, refs, hooks and configuration remain shared.
+Changes to shared hooks or executable Git configuration can cause commands to run on your Mac, outside the container, during later host Git operations. Parley does not review those changes again. The Docker socket and host vendor login are
 not mounted. Sign in inside the container; its private named volume keeps
 vendor login, configuration and saved conversations. For Codex, choose
 **Sign in with Device Code** and open the supplied link in your Mac browser;

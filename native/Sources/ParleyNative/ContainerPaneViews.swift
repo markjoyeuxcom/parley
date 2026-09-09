@@ -43,7 +43,7 @@ struct ContainerLaunchOptionsView: View {
                         .font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
                 }
                 if let access = configuration?.gitAccess {
-                    Text("Additional writable Git mount: \(access.commonDirectory)\nThis shares repository objects, refs, hooks and configuration with the other worktrees. It does not mount the primary checkout. Vendor permission prompts still govern Git writes.")
+                    Text("Additional writable Git mount: \(access.commonDirectory)\nThis shares repository objects, refs, hooks and configuration with the other worktrees. It does not mount the primary checkout. Vendor permission prompts still govern Git writes. Changes to shared hooks or executable Git configuration can cause commands to run on your Mac, outside the container, during later host Git operations. Parley does not review those changes again.")
                         .textSelection(.enabled)
                 }
                 if let message { Text(message).foregroundStyle(.orange).textSelection(.enabled) }
