@@ -524,11 +524,12 @@ app calls `preflightApproval` (same checks as `approve`, no mutation,
 planned-path containment through the nearest existing ancestor) before any
 Git runs, then creates or attaches, then approves with the folder equal to
 exactly that tree and `TeamWorktreeBinding` on the session. In every mode the
-grant is one folder inside the requester's working folder; only a created
-tree is placed under `.worktrees/`. A grant is never widened to the
-repository or to the shared `.git` directory: whether a vendor may commit
-from a linked worktree is that vendor's own permission decision, and the
-approval, help and protocol say so. A created tree whose approval then fails
+approved working folder is inside the requester's working folder; only a created
+tree is placed under `.worktrees/`. Host-pane grants are never widened to the
+repository or shared `.git` directory. Container grants can separately bind the
+explicitly reviewed shared Git mount described below, without mounting the primary
+checkout. Whether a vendor may commit from a linked worktree remains that vendor's
+own permission decision, as the approval, Help and protocol explain. A created tree whose approval then fails
 is reported as created-but-unapproved and stays selectable or removable.
 `parley team status` exposes the binding as `worktree`; panes, the Team
 Sessions detail and the Status Center delegation inspector show path, branch
