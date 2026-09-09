@@ -91,7 +91,9 @@ func checkOfficialVendorHookAdaptersAndSignals() throws {
     let agyCommand = AgentProtocol.command(for: .agy, protocolDirectory: protocolDirectory)
     try hookExpect(!agyCommand.joined(separator: " ").contains("signal"), "Agy received an unverified hook adapter")
     for command in [claudeCommand, codexCommand, copilotCommand, agyCommand] {
-        let joined = command.joined(separator: " ")
+        // Protocol prose describes the native container exception. Inspect the
+        // actual launch flags and hook payloads, excluding only instruction text.
+        let joined = command.filter { $0 != AgentProtocol.text && !$0.hasPrefix("developer_instructions=") }.joined(separator: " ")
         try hookExpect(!joined.contains("dangerously") && !joined.contains("bypass"), "hook adapter bypassed approval or trust")
     }
 
