@@ -74,8 +74,9 @@ public enum ContainerLaunchProjection {
             throw ContainerPaneError.refused("Container panes currently support Claude Code and Codex as a non-root user.")
         }
         for value in [facts.folder, facts.endpoint, facts.protocolDirectory, facts.shimDirectory] { try path(value) }
-        for protected in [facts.endpoint, facts.protocolDirectory, facts.shimDirectory] {
-            guard !protected.hasPrefix(facts.folder + "/"), protected != facts.folder else {
+        let transportRoot = URL(fileURLWithPath: facts.endpoint).deletingLastPathComponent().path
+        for protected in [transportRoot, facts.protocolDirectory, facts.shimDirectory] {
+            guard !protected.hasPrefix(facts.folder + "/"), !facts.folder.hasPrefix(protected + "/"), protected != facts.folder else {
                 throw ContainerPaneError.refused("The working folder overlaps Parley's container control files.")
             }
         }

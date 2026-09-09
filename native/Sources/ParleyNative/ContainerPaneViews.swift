@@ -126,15 +126,12 @@ struct ContainerRecordsView: View {
         working = true
         Task {
             do {
-                try await Task.detached(priority: .userInitiated) {
-                    if deleteLogin { try service.deleteLoginState(record) } else { try service.remove(record) }
-                }.value
-                if !deleteLogin, let pane = model.panes.first(where: { $0.id == record.paneID && $0.launchGeneration == record.generation }) {
-                    if let controller = model.controller {
-                        try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(pane) }.value
-                        try controller.stopPaneProcess(pane.id)
-                        try model.refresh()
-                    }
+                if deleteLogin {
+                    try await Task.detached(priority: .userInitiated) { try service.deleteLoginState(record) }.value
+                } else if let controller = model.controller {
+                    let pane = try await Task.detached(priority: .userInitiated) { try controller.removeRecordedContainer(record) }.value
+                    if let pane { try controller.stopPaneProcess(pane.id, expectedGeneration: pane.launchGeneration) }
+                    try model.refresh()
                 }
                 reload()
             } catch { message = error.localizedDescription }

@@ -655,6 +655,10 @@ and sibling pane endpoints are never mounted. The container is the vendor's
 boundary; Seatbelt remains around the host Docker client but cannot constrain
 operations performed by the external daemon. Reject broad/overlapping roots,
 linked worktrees, submodules and additional permission roots in this version.
+Working folders cannot contain or sit inside either runtime's control or relay
+transport directories, including the current runtime's explicit paths. Compare
+canonical realpath spellings before credential rotation or any Docker command;
+Foundation path standardization can shorten /private/tmp back to /tmp.
 There is no per-pane widening to shared Git metadata. Team-created members
 remain host panes; adding container members is deferred.
 
@@ -663,6 +667,10 @@ performs Docker work off the main actor without holding the workbench lock;
 activation checks its exact pane generation, folder, workspace, policy, profile
 and fresh/resume mode. Cleanup also runs in the background and issues an
 in-memory generation-bound stop receipt before a main-actor Ghostty termination.
+Status Center removes only the selected creation record. Once no container
+remains for that pane, it clears a matching prepared receipt even when native
+activation never advanced the pane generation. An older record cannot stop a
+replacement; final surface cleanup checks the returned pane generation again.
 A lost Docker client triggers receipt-based cleanup, never an inference that
 the container stopped. Creation uses `docker create` then a Ghostty-owned
 `docker start --attach --interactive`. `container-panes.json` records intent and the daemon-issued ID

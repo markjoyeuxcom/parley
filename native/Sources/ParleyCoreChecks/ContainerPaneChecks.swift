@@ -7,6 +7,10 @@ private func containerExpect(_ value: @autoclosure () throws -> Bool, _ message:
 }
 
 var containerPaneChecks: [(String, () throws -> Void)] { [
+    ("container recorded removal recovers a failed preparation", checkContainerPreparedRemovalRecovery),
+    ("container old receipt removal preserves a replacement at the same generation", checkContainerOldReceiptRemoval),
+    ("container controller refuses folders inside relay transport before mutation", checkContainerTransportFolderRefusal),
+    ("container projection refuses both directions of control-path overlap", checkContainerControlPathOverlap),
     ("container controller keeps Docker outside its lock and binds restart receipts", checkContainerControllerLifecycle),
     ("container creation stays inert until explicit preparation", checkContainerInertCreation),
     ("container launch preserves reviewed boundaries", checkContainerLaunchProjection),
@@ -418,4 +422,148 @@ func checkContainerControllerLifecycle() throws {
     do { try controller.startPane(pane.id, permissionProfile: profile); throw NSError(domain: "late launch survived shutdown", code: 1) }
     catch is ParleyWorkbenchError {}
     try containerExpect(runner.containers.isEmpty && (try service.records()).allSatisfy(\.removed), "shutdown left an owned fake container")
+}
+
+
+private final class ContainerReviewFixture {
+    let directory = URL(fileURLWithPath: "/private/tmp/parley-container-review-\(UUID().uuidString)")
+    let runner = ContainerLifecycleRunner()
+    let service: ContainerPaneService
+    let controller: WorkbenchController
+    let credentials: RelayCredentials
+    let configuration = ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock",
+        daemonID: "daemon-one", imageID: "sha256:" + String(repeating: "b", count: 64), imageName: "fixture", legacyCodexSandbox: false)
+    var project: URL { directory.appendingPathComponent("project") }
+    var transport: URL { directory.appendingPathComponent("transport") }
+    init() throws {
+        let app = directory.appendingPathComponent("app")
+        try FileManager.default.createDirectory(at: directory.appendingPathComponent("project"), withIntermediateDirectories: true)
+        service = try ContainerPaneService(directory: app, environment: [:], runner: runner)
+        controller = try WorkbenchController(applicationDirectory: app, environment: ["PATH": "/usr/bin:/bin"], containerService: service)
+        credentials = try RelayCredentials(file: app.appendingPathComponent("relay-tokens.json"))
+        try controller.bootstrap(cwd: directory.appendingPathComponent("project").path)
+        controller.configureRelay(RelayRuntime(infoFile: app.appendingPathComponent("relay-url"), shimDirectory: app.appendingPathComponent("bin"),
+            transportDirectory: directory.appendingPathComponent("transport"), credentials: credentials, runtimeMarker: "DEV"))
+    }
+    deinit { try? FileManager.default.removeItem(at: directory) }
+    func profile(folder: String) throws -> EffectivePermissionProfile {
+        let definition = try PermissionProfileStore(file: directory.appendingPathComponent("profiles.json")).profiles().first { $0.id == "default" }!
+        return try PermissionProfileResolver.resolve(definition: definition, paneFolder: folder, approvedRoots: [])
+    }
+    func stoppedPane(folder: String) throws -> WorkbenchPane {
+        let pane = try controller.createPane(kind: .codex, cwd: folder, permissionProfile: profile(folder: folder))
+        try controller.stopPaneProcess(pane.id)
+        return try controller.listPanes().first { $0.id == pane.id }!
+    }
+}
+
+func checkContainerPreparedRemovalRecovery() throws {
+    for recovery in ["close", "host", "container"] {
+        let fixture = try ContainerReviewFixture()
+        let pane = try fixture.stoppedPane(folder: fixture.project.path)
+        let profile = try fixture.profile(folder: pane.cwd)
+        try fixture.controller.prepareContainerStart(pane.id, configuration: fixture.configuration, permissionProfile: profile)
+        // A real rejected activation leaves a next-generation receipt on a host placeholder.
+        do {
+            try fixture.controller.startPane(pane.id, permissionProfile: profile, launchMode: .resume, containerConfiguration: fixture.configuration)
+            throw NSError(domain: "mismatched activation accepted", code: 1)
+        } catch is ContainerPaneError {}
+        let record = try fixture.service.records().first { $0.paneID == pane.id && !$0.removed }!
+        try containerExpect(record.generation == pane.launchGeneration + 1 && pane.containerConfiguration == nil,
+            "fixture did not reach the failed next-generation preparation")
+        let token = try fixture.credentials.token(for: pane.id)
+        let containers = fixture.runner.containers
+        fixture.runner.daemon = "changed-daemon"
+        do {
+            _ = try fixture.controller.removeRecordedContainer(record)
+            throw NSError(domain: "recorded removal accepted a changed daemon", code: 1)
+        } catch is ContainerPaneError {}
+        try containerExpect(fixture.runner.containers == containers && (try fixture.credentials.token(for: pane.id)) == token,
+            "failed recorded removal changed containers or credentials")
+        do {
+            try fixture.controller.closePane(pane.id)
+            throw NSError(domain: "failed removal authorized pane closure", code: 1)
+        } catch is ContainerPaneError {}
+        fixture.runner.daemon = "daemon-one"
+        let recovered = try fixture.controller.removeRecordedContainer(record)
+        try containerExpect(recovered?.id == pane.id, "Status Center removal did not recover the prepared-but-never-started pane")
+        try containerExpect(fixture.runner.containers.isEmpty, "removal left a fixture container")
+        switch recovery {
+        case "host":
+            try fixture.controller.startPane(pane.id, permissionProfile: profile)
+            do {
+                try fixture.controller.stopPaneProcess(pane.id, expectedGeneration: recovered!.launchGeneration)
+                throw NSError(domain: "late cleanup stopped a replacement host session", code: 1)
+            } catch is ContainerPaneError {}
+            try containerExpect(try fixture.controller.listPanes().first { $0.id == pane.id }?.isStarted == true, "host restart stayed wedged or was stopped by late cleanup")
+        case "container":
+            try fixture.controller.prepareContainerStart(pane.id, configuration: fixture.configuration, permissionProfile: profile)
+            try fixture.controller.startPane(pane.id, permissionProfile: profile, containerConfiguration: fixture.configuration)
+            let active = try fixture.controller.listPanes().first { $0.id == pane.id }!
+            try fixture.controller.prepareContainerStop(active)
+            try fixture.controller.stopPaneProcess(pane.id)
+        default:
+            try fixture.controller.closePane(pane.id)
+            try containerExpect(try !fixture.controller.listPanes().contains { $0.id == pane.id }, "recovered pane could not close")
+        }
+    }
+}
+
+func checkContainerTransportFolderRefusal() throws {
+    let fixture = try ContainerReviewFixture()
+    let endpoint = fixture.transport.appendingPathComponent(String(repeating: "a", count: 48)).appendingPathComponent("inbox")
+    try FileManager.default.createDirectory(at: endpoint, withIntermediateDirectories: true)
+    let pane = try fixture.stoppedPane(folder: endpoint.path)
+    let token = try fixture.credentials.token(for: pane.id)
+    do {
+        try fixture.controller.prepareContainerStart(pane.id, configuration: fixture.configuration, permissionProfile: fixture.profile(folder: pane.cwd))
+        throw NSError(domain: "container accepted a sibling relay endpoint as its project", code: 1)
+    } catch is ContainerPaneError {}
+    try containerExpect(fixture.runner.calls.isEmpty, "transport folder reached Docker before refusal")
+    try containerExpect(try fixture.credentials.token(for: pane.id) == token, "refusal rotated the pane capability")
+    try containerExpect(try fixture.service.records().isEmpty, "refusal created ownership state")
+}
+
+func checkContainerControlPathOverlap() throws {
+    let fixture = try ContainerReviewFixture()
+    let facts = ContainerLaunchFacts(paneID: "pane-fixture", generation: 2, vendor: .codex, folder: "/project",
+        endpoint: "/transport/own-endpoint", protocolDirectory: "/runtime/agent-protocol",
+        shimDirectory: "/runtime/linux-bin", uid: 501, gid: 20, volume: "parley-home-fixture", owner: "owner-fixture", runtime: "DEV")
+    for path in ["/transport", facts.endpoint, facts.protocolDirectory, facts.shimDirectory] {
+        for folder in [path, path + "/child", URL(fileURLWithPath: path).deletingLastPathComponent().path] {
+            var overlap = facts; overlap.folder = folder
+            do {
+                _ = try ContainerLaunchProjection.createArguments(configuration: fixture.configuration, facts: overlap, vendorArguments: [])
+                throw NSError(domain: "control-path overlap accepted: \(folder)", code: 1)
+            } catch is ContainerPaneError {}
+        }
+    }
+    var adjacent = facts; adjacent.folder = "/transport-project"
+    _ = try ContainerLaunchProjection.createArguments(configuration: fixture.configuration, facts: adjacent, vendorArguments: [])
+}
+
+
+func checkContainerOldReceiptRemoval() throws {
+    let fixture = try ContainerReviewFixture()
+    let pane = try fixture.stoppedPane(folder: fixture.project.path)
+    let profile = try fixture.profile(folder: pane.cwd)
+    try fixture.controller.prepareContainerStart(pane.id, configuration: fixture.configuration, permissionProfile: profile)
+    let oldRecord = try fixture.service.records().first { $0.paneID == pane.id && !$0.removed }!
+    try fixture.controller.prepareContainerStop(pane)
+    let removedRecord = try fixture.service.records().first { $0.id == oldRecord.id }!
+    var replacement = fixture.configuration
+    replacement.daemonID = "daemon-two"
+    fixture.runner.daemon = "daemon-two"
+    try fixture.controller.prepareContainerStart(pane.id, configuration: replacement, permissionProfile: profile)
+    try fixture.controller.startPane(pane.id, permissionProfile: profile, containerConfiguration: replacement)
+    let active = try fixture.controller.listPanes().first { $0.id == pane.id }!
+    try containerExpect(active.launchGeneration == oldRecord.generation, "replacement must share the unstarted attempt's proposed generation")
+    let containers = fixture.runner.containers
+    let token = try fixture.credentials.token(for: pane.id)
+    let candidate = try fixture.controller.removeRecordedContainer(removedRecord)
+    try containerExpect(candidate == nil && fixture.runner.containers == containers, "old receipt removal stopped a newer container at the reused generation")
+    try containerExpect(try fixture.credentials.token(for: pane.id) == token, "old receipt removal changed the replacement capability")
+    try containerExpect(try fixture.controller.listPanes().first { $0.id == pane.id }?.isStarted == true, "replacement pane lost its running state")
+    try fixture.controller.prepareContainerStop(active)
+    try fixture.controller.stopPaneProcess(pane.id)
 }

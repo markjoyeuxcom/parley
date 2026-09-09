@@ -743,11 +743,14 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
 
-    public func stopPaneProcess(_ paneID: String) throws {
+    public func stopPaneProcess(_ paneID: String, expectedGeneration: Int? = nil) throws {
         try lock.withLock {
             try requireNoTerminationInProgress()
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
+            }
+            if let expectedGeneration, document.panes[index].launchGeneration != expectedGeneration {
+                throw ContainerPaneError.refused("The pane restarted after container cleanup; its new session was left alone.")
             }
             guard document.panes[index].kind.isAgent, document.panes[index].isStarted else { return }
             try terminateSurface(paneID)
@@ -992,7 +995,11 @@ public final class WorkbenchController: @unchecked Sendable {
             return (pane, runtime)
         }
         defer { _ = lock.withLock { containerPreparations.remove(paneID) } }
-        try containerService.validateFolder(snapshot.cwd, protectedDirectories: ParleyRuntime.controlDirectories().map(\.path))
+        let controlDirectories = ParleyRuntime.controlDirectories() + [applicationDirectory]
+        let protectedDirectories = controlDirectories
+            + controlDirectories.map { RelayFileTransport.runtimeDirectory(applicationDirectory: $0) }
+            + [runtime.transportDirectory]
+        try containerService.validateFolder(snapshot.cwd, protectedDirectories: protectedDirectories.map(\.path))
         let root = applicationDirectory.appendingPathComponent("container-runtime")
         let protocolFolder = try AgentProtocol.install(in: root)
         let shim = try RelayShim.installCommand(in: root.appendingPathComponent("bin"),
@@ -1044,6 +1051,38 @@ public final class WorkbenchController: @unchecked Sendable {
             }
             confirmedContainerStops[reviewed.id] = reviewed.launchGeneration
             preparedContainerIDs[reviewed.id] = nil
+        }
+    }
+
+    /// Native Status Center removal, run off the main actor. Returns only a
+    /// matching pane whose surface may be stopped after Docker cleanup.
+    public func removeRecordedContainer(_ record: ContainerPaneRecord) throws -> WorkbenchPane? {
+        let snapshot: WorkbenchPane? = try lock.withLock {
+            try requireNoTerminationInProgress()
+            guard !containerPreparations.contains(record.paneID) else {
+                throw ContainerPaneError.refused("This pane's container operation is still in progress.")
+            }
+            containerPreparations.insert(record.paneID)
+            return document.panes.first { $0.id == record.paneID }
+        }
+        defer { _ = lock.withLock { containerPreparations.remove(record.paneID) } }
+        // The person's action names exactly this record, never every container
+        // with the pane ID. In particular, an old receipt cannot stop a replacement.
+        try containerService.remove(record)
+        guard try !containerService.records().contains(where: { $0.paneID == record.paneID && !$0.removed }) else { return nil }
+        return lock.withLock {
+            guard let snapshot, let current = document.panes.first(where: { $0.id == record.paneID }),
+                  current.launchGeneration == snapshot.launchGeneration, current.cwd == snapshot.cwd,
+                  current.containerConfiguration == snapshot.containerConfiguration,
+                  current.isStarted == snapshot.isStarted else { return nil }
+            let prepared = preparedContainerIDs[current.id]
+            let removedPreparation = prepared?.id == record.containerID && prepared?.generation == record.generation
+                && prepared?.configuration == record.configuration
+            let removedCurrent = current.launchGeneration == record.generation && current.containerConfiguration == record.configuration
+            guard removedPreparation || removedCurrent else { return nil }
+            confirmedContainerStops[current.id] = current.launchGeneration
+            preparedContainerIDs[current.id] = nil
+            return current
         }
     }
 

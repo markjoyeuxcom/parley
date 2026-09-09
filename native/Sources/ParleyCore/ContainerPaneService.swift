@@ -139,6 +139,27 @@ public final class ContainerPaneService: @unchecked Sendable {
         return configuration
     }
 
+    /// Use the same realpath spelling as the project. Foundation standardization
+    /// may shorten /private/tmp to /tmp again, defeating a containment comparison.
+    /// A runtime that has not been created yet is resolved through its nearest
+    /// existing ancestor, without creating or reading any control-directory contents.
+    private func canonicalProtectedDirectory(_ path: String) throws -> String {
+        var ancestor = URL(fileURLWithPath: path)
+        var suffix: [String] = []
+        while true {
+            if let resolved = realpath(ancestor.path, nil) {
+                defer { free(resolved) }
+                let canonical = String(cString: resolved)
+                return suffix.reversed().reduce(canonical) { $0 == "/" ? "/" + $1 : $0 + "/" + $1 }
+            }
+            guard errno == ENOENT, ancestor.path != "/" else {
+                throw ContainerPaneError.refused("Parley's protected runtime paths could not be verified; the container was not prepared.")
+            }
+            suffix.append(ancestor.lastPathComponent)
+            ancestor.deleteLastPathComponent()
+        }
+    }
+
     public func validateFolder(_ folder: String, protectedDirectories: [String]) throws {
         guard let resolved = realpath(folder, nil) else {
             throw ContainerPaneError.refused("The container working folder is no longer available.")
@@ -149,7 +170,7 @@ public final class ContainerPaneService: @unchecked Sendable {
             throw ContainerPaneError.refused("Choose one canonical project folder for the container, not the home directory or filesystem root.")
         }
         for protected in protectedDirectories {
-            let protected = URL(fileURLWithPath: protected).resolvingSymlinksInPath().standardizedFileURL.path
+            let protected = try canonicalProtectedDirectory(protected)
             guard folder != protected, !protected.hasPrefix(folder + "/"), !folder.hasPrefix(protected + "/") else {
                 throw ContainerPaneError.refused("The project overlaps Parley's protected runtime files.")
             }
