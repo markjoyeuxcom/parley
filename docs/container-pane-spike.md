@@ -50,8 +50,11 @@ Mark reported successful Codex device sign-in and an interactive reply in the
 Development build on 9 September. His screenshot also shows Codex's warning
 that `features.use_legacy_landlock` is deprecated and will be removed. This
 confirms the reported sign-in path; the greeting is not proof that whoami ran
-or that every protocol instruction was followed. No login cache or terminal
-history was inspected to record this result.
+or that every protocol instruction was followed. Mark subsequently reported
+that the container pane can both send and receive Parley messages. This records
+human confirmation of bidirectional messaging; it does not mark correlated
+Ask/Answer, Delegate, reviewed context or resumed-session behavior as tested.
+No login cache or terminal history was inspected to record these results.
 
 Choose **Sign in with Device Code** inside Codex and complete it in the host
 browser. No callback port is published by the current container launch.
@@ -64,7 +67,7 @@ choice; a supported vendor sandbox path is required before stable promotion.
 
 | Vendor | Prototype decision | Release decision |
 | --- | --- | --- |
-| Codex | Device sign-in and an interactive reply reported working by Mark. Legacy Landlock is a deprecated prototype option. | Pending a supported sandbox path, ordinary approval prompts, fresh/resumed instruction uptake and login persistence. |
+| Codex | Device sign-in, an interactive reply and bidirectional Parley messages reported working by Mark. Legacy Landlock is a deprecated prototype option. | Pending a supported sandbox path, ordinary approval prompts, fresh/resumed instruction uptake and login persistence. |
 | Claude Code | Continue as an experimental image launch with explicit disclosure that its sandbox may be unavailable. | Pending subscription sign-in, sandbox/ordinary permission behavior, fresh/resumed instruction uptake and login persistence. |
 
 Neither vendor is cleared for a stable release by this spike. If a vendor
