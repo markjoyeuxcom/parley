@@ -20,9 +20,9 @@ compatibility statement for other images or daemons.
 
 The real Ghostty/Docker checks have exercised resize, Control-C, hidden-window
 input and confirmed container removal; the existing regression suite also ran.
-Mark reported successful Codex device sign-in, an interactive reply and
-bidirectional Parley messaging from the container pane. Codex also warns that legacy Landlock is deprecated; a supported sandbox path is a
-release gate. Other gates remain Claude sign-in, normal permissions,
+Mark reported successful Codex device sign-in, an interactive reply,
+bidirectional Parley messaging and container pane restart. Codex also warns
+that legacy Landlock is deprecated; a supported sandbox path is a release gate. Other gates remain Claude sign-in, normal permissions,
 fresh/resumed instruction uptake, persistent login and total host-plus-VM
 idle cost.
 Image checks are quota-free and are not treated as those human verdicts.

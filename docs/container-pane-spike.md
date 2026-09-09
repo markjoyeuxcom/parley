@@ -54,6 +54,9 @@ or that every protocol instruction was followed. Mark subsequently reported
 that the container pane can both send and receive Parley messages. This records
 human confirmation of bidirectional messaging; it does not mark correlated
 Ask/Answer, Delegate, reviewed context or resumed-session behavior as tested.
+Mark then reported that restarting the container pane worked. Native pane
+restart is recorded as passing; vendor Resume and the detailed login-persistence
+checks remain separate acceptance items.
 No login cache or terminal history was inspected to record these results.
 
 Choose **Sign in with Device Code** inside Codex and complete it in the host
@@ -67,7 +70,7 @@ choice; a supported vendor sandbox path is required before stable promotion.
 
 | Vendor | Prototype decision | Release decision |
 | --- | --- | --- |
-| Codex | Device sign-in, an interactive reply and bidirectional Parley messages reported working by Mark. Legacy Landlock is a deprecated prototype option. | Pending a supported sandbox path, ordinary approval prompts, fresh/resumed instruction uptake and login persistence. |
+| Codex | Device sign-in, an interactive reply, bidirectional Parley messages and pane restart reported working by Mark. Legacy Landlock is a deprecated prototype option. | Pending a supported sandbox path, ordinary approval prompts, fresh/resumed instruction uptake and login persistence. |
 | Claude Code | Continue as an experimental image launch with explicit disclosure that its sandbox may be unavailable. | Pending subscription sign-in, sandbox/ordinary permission behavior, fresh/resumed instruction uptake and login persistence. |
 
 Neither vendor is cleared for a stable release by this spike. If a vendor
