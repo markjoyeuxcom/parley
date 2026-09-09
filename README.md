@@ -321,6 +321,21 @@ every ignored entry for acknowledgement, reports what Git and the filesystem
 show afterwards, and never uses `--force` or deletes the branch. Parley never commits, merges, rebases, pushes or stashes, and grants
 no extra permission for the worktree's shared `.git` directory.
 
+The browser's **Finish & Cleanup** view brings together optional pane closure,
+workspace history clearing and the existing guarded removal. Each step is
+confirmed separately; history clearing covers the whole named workspace.
+Inactive filtering uses panes in both Parley runtimes and active local teams;
+unknown usage stays unknown. On-demand logical folder sizes are bounded and
+are not estimates of space reclaimed.
+
+Recovery explains missing or externally changed trees and can update a moved
+record only when its original creation marker identifies the new path.
+**Track Existing** keeps unrecorded trees person-owned. A merge-conflict
+preview compares exact commits using isolated Git defaults and temporary
+objects; it changes no checkout or branch and can differ from a real merge
+with project-specific behavior. Vendor-selected permission guidance explains
+the shared Git directory without granting additional access.
+
 ## Local architecture
 
 ```text

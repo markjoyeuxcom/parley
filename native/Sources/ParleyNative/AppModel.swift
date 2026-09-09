@@ -1868,15 +1868,65 @@ final class AppModel: ObservableObject {
         return try controller.listPanes().map(\.cwd)
     }
 
-    /// Person-triggered cleanup of one Parley-created worktree: a fresh
-    /// preview, one concrete confirmation naming what will be deleted, a
-    /// second full revalidation inside the removal, and an honest outcome.
+    /// Browser-only, on-demand read. No inspection runs from the refresh tick.
+    func inspectWorktreeLifecycle(_ record: ManagedWorktreeRecord) async throws -> WorktreeLifecycleInspection {
+        guard let service = managedWorktreeService, let controller else { throw RelayUIError.message("The workbench is unavailable.") }
+        let currentPanes = try controller.listPanes()
+        let currentWorkspaces = try controller.listWorkspaces()
+        let history = statusHandoffs
+        let teams = (residentCore?.teamSessions.sessions() ?? teamSessions).filter { !$0.state.isTerminal }.compactMap { $0.worktree?.path }
+        let files = otherRuntimeStateFiles
+        let task = Task.detached(priority: .utility) {
+            try service.inspectLifecycle(record, panes: currentPanes, workspaces: currentWorkspaces, handoffs: history,
+                activeTeamPaths: teams, otherRuntimeStateFiles: files)
+        }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    func previewWorktreeMerge(_ record: ManagedWorktreeRecord, target: String) async throws -> WorktreeMergePreview {
+        guard let service = managedWorktreeService else { throw RelayUIError.message("The workbench is unavailable.") }
+        let task = Task.detached(priority: .userInitiated) { try service.mergePreview(record, targetRef: target) }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    func recoverWorktreeRecord(_ record: ManagedWorktreeRecord, to path: String) async throws {
+        guard let service = managedWorktreeService else { throw RelayUIError.message("The workbench is unavailable.") }
+        let alert = NSAlert()
+        alert.messageText = "Update recorded worktree path?"
+        alert.informativeText = "From: \(DelegationGitFacts.displayPath(record.path))\n\nTo: \(DelegationGitFacts.displayPath(path))\n\nParley rechecks the original creation marker and unchanged record. Only Parley's path record changes. Pane folders, workspaces, Git and files are untouched."
+        alert.addButton(withTitle: "Update Recorded Path")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        try beginManagedWorktreeMutation(.attach, path: path)
+        defer { endManagedWorktreeMutation(); reloadManagedWorktrees(); scheduleManagedWorktreeFactsRefresh(force: true, scope: .all) }
+        _ = try await Task.detached(priority: .userInitiated) { try service.relocateRecord(record, to: path) }.value
+    }
+
+    func trackExistingWorktree(_ tree: GitWorktreeRecord, repositoryFolder: String) async throws {
+        let alert = NSAlert()
+        alert.messageText = "Track this existing worktree?"
+        alert.informativeText = "\(DelegationGitFacts.displayPath(tree.path))\n\nSave a Parley record for inspection, permission guidance and merge previews. This does not claim Parley created it or authorize its removal."
+        alert.addButton(withTitle: "Track Existing")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        _ = try await attachManagedWorktree(existingPath: tree.path, repositoryFolder: repositoryFolder, teamSessionID: nil, requestedByPaneID: nil)
+    }
+
+    private func requireNoWorktreeTeamBinding(_ path: String) throws {
+        let sessions = residentCore?.teamSessions.sessions() ?? teamSessions
+        guard !sessions.contains(where: {
+            !$0.state.isTerminal && $0.worktree.map { WorktreeCleanupPolicy.isNested($0.path, in: path) } == true
+        }) else { throw RelayUIError.message("An active team is bound to this worktree. Choose Stop session in Team Sessions before removing its folder.") }
+    }
+
+    /// Reuses the existing fresh preview, folder reservation and removal checks.
     func removeManagedWorktree(_ record: ManagedWorktreeRecord) {
         guard let service = managedWorktreeService, let controller else { return }
         let stateFiles = otherRuntimeStateFiles
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                try self.requireNoWorktreeTeamBinding(record.path)
                 try self.beginManagedWorktreeMutation(.remove, path: record.path)
             } catch {
                 NSAlert(error: error).runModal()
@@ -1957,7 +2007,10 @@ final class AppModel: ObservableObject {
             // up: the pane list is read again now, and the service re-reads
             // every Git fact inside remove before touching anything.
             let currentFolders: [String]
-            do { currentFolders = try self.livePaneFoldersForCleanup() } catch {
+            do {
+                try self.requireNoWorktreeTeamBinding(record.path)
+                currentFolders = try self.livePaneFoldersForCleanup()
+            } catch {
                 NSAlert(error: error).runModal()
                 return
             }
@@ -6033,7 +6086,7 @@ final class AppModel: ObservableObject {
         )
     }
 
-    func close(_ pane: WorkbenchPane) {
+    func close(_ pane: WorkbenchPane, onlyInsideWorktree: String? = nil) {
         let alert = NSAlert()
         alert.messageText = "Close \(pane.displayName)?"
         alert.informativeText = "This ends the app-resident pane process. It cannot be recovered from Parley."
@@ -6041,6 +6094,14 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Close Pane")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if let path = onlyInsideWorktree {
+            guard let fresh = try? controller?.listPanes().first(where: { $0.id == pane.id }),
+                  fresh.launchGeneration == pane.launchGeneration, fresh.cwd == pane.cwd,
+                  WorktreeCleanupPolicy.isNested(fresh.cwd, in: path) else {
+                NSAlert(error: RelayUIError.message("This pane changed since the preview. Refresh before closing it.")).runModal()
+                return
+            }
+        }
         let closesWorkspace = panes.filter { $0.workspaceID == pane.workspaceID }.count == 1
         perform {
             try controller?.closePane(pane.id)
@@ -6398,7 +6459,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func close(_ workspace: WorkbenchWorkspace) {
+    func close(_ workspace: WorkbenchWorkspace, onlyInsideWorktree: String? = nil) {
+        let reviewedPanes = panes.filter { $0.workspaceID == workspace.workspaceID }
         let paneCount = panes.filter { $0.workspaceID == workspace.workspaceID }.count
         let alert = NSAlert()
         alert.messageText = "Close \(workspace.name)?"
@@ -6410,6 +6472,14 @@ final class AppModel: ObservableObject {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         perform {
             guard let controller else { return }
+            if let path = onlyInsideWorktree {
+                let fresh = try controller.listPanes().filter { $0.workspaceID == workspace.workspaceID }
+                guard !fresh.isEmpty, fresh.count == reviewedPanes.count,
+                      fresh.allSatisfy({ pane in
+                          WorktreeCleanupPolicy.isNested(pane.cwd, in: path) &&
+                          reviewedPanes.contains(where: { $0.id == pane.id && $0.launchGeneration == pane.launchGeneration && $0.cwd == pane.cwd })
+                      }) else { throw RelayUIError.message("Workspace panes changed or include another folder. Refresh before closing it.") }
+            }
             try controller.closeWorkspace(workspace.id)
             try? workspaceRegistry.remove(workspaceID: workspace.workspaceID)
             nativeLayouts.removeValue(forKey: workspace.workspaceID)

@@ -1,3 +1,4 @@
+import AppKit
 import ParleyCore
 import SwiftUI
 
@@ -10,6 +11,8 @@ struct WorktreeBrowserView: View {
     @State private var createPreview: ManagedWorktreeService.CreatePreview?
     @State private var createError: String?
     @State private var busy = false
+    @State private var tab = 0
+    @State private var lifecycleID: String?
 
     private var selectedWorktree: GitWorktreeRecord? {
         guard let selectedPath else { return nil }
@@ -20,13 +23,21 @@ struct WorktreeBrowserView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            content
-            Divider()
-            managedSection
+            Picker("Worktree view", selection: $tab) {
+                Text("Browse").tag(0)
+                Text("Finish & Cleanup").tag(1)
+            }.pickerStyle(.segmented).padding(.horizontal, 18).padding(.vertical, 8)
+            if tab == 0 {
+                content
+                Divider()
+                managedSection
+            } else {
+                WorktreeLifecycleView(model: model, selectedID: $lifecycleID)
+            }
             Divider()
             footer
         }
-        .frame(width: 700, height: 640)
+        .frame(width: 940, height: 730)
         .onAppear { model.scheduleManagedWorktreeFactsRefresh(force: true, scope: .all) }
         .onChange(of: model.discoveredWorktreeRepository) { _, repository in
             createPreview = nil
@@ -41,7 +52,7 @@ struct WorktreeBrowserView: View {
         VStack(alignment: .leading, spacing: 5) {
             Text("Git Worktrees")
                 .font(.system(size: 16, weight: .semibold))
-            Text("The list is read-only discovery from Git; opening a worktree creates or focuses an ordinary Parley workspace without changing Git state. Below it, New Worktree and Remove are explicit actions that each show exactly what one fixed Git command will do before you confirm.")
+            Text("Browse and open Git checkouts, or finish a worktree with separate previews for closing panes, clearing records and removing its folder. Inactive usage, recovery, merge predictions and permission guidance are available in Finish & Cleanup.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -185,6 +196,7 @@ struct WorktreeBrowserView: View {
                                 }
                                 Spacer(minLength: 4)
                                 Button("Open") { model.openManagedWorktree(record) }.controlSize(.small)
+                                Button("Finish…") { lifecycleID = record.id; tab = 1 }.controlSize(.small)
                                 if record.parleyCreated {
                                     Button("Remove…") { model.removeManagedWorktree(record) }.controlSize(.small)
                                         .disabled(model.managedWorktreeMutation != nil)
@@ -209,11 +221,26 @@ struct WorktreeBrowserView: View {
             Spacer()
             Button("Cancel") { model.worktreeBrowserPresented = false }
                 .keyboardShortcut(.cancelAction)
+            if tab == 0, let tree = selectedWorktree, !tree.isPrimary,
+               !model.managedWorktrees.contains(where: { $0.path == tree.path }),
+               let repository = model.discoveredWorktreeRepository {
+                Button("Track Existing…") {
+                    busy = true
+                    Task { @MainActor in
+                        defer { busy = false }
+                        do {
+                            try await model.trackExistingWorktree(tree, repositoryFolder: repository.primaryPath)
+                            lifecycleID = model.managedWorktrees.first(where: { $0.path == tree.path })?.id
+                            if lifecycleID != nil { tab = 1 }
+                        } catch { NSAlert(error: error).runModal() }
+                    }
+                }.disabled(busy || !model.canOpenDiscoveredWorktree(tree))
+            }
             Button("Open Workspace") {
                 if let selectedWorktree { model.openDiscoveredWorktree(selectedWorktree) }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(selectedWorktree.map(model.canOpenDiscoveredWorktree) != true)
+            .disabled(tab != 0 || selectedWorktree.map(model.canOpenDiscoveredWorktree) != true)
         }
         .padding(14)
     }
