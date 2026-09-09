@@ -951,7 +951,11 @@ final class AppModel: ObservableObject {
     /// Closing the main window is handled by AppDelegate and only hides it.
     /// Full application termination is the deliberate lifetime boundary for
     /// every retained Ghostty exec surface.
-    func resolveTermination() -> Bool {
+    func resolveTermination() async -> Bool {
+        guard !applyingPanePermissions else {
+            NSAlert(error: RelayUIError.message("Wait for the reviewed pane launch to finish before quitting.")).runModal()
+            return false
+        }
         if preparedForUninstall { return true }
         guard RuntimeTerminationPolicy.shouldOfferChoice(
             runtime: runtime,
@@ -978,8 +982,9 @@ final class AppModel: ObservableObject {
         switch alert.runModal() {
         case .alertFirstButtonReturn:
             do {
-                residentCore?.stop()
+                try await Task.detached(priority: .userInitiated) { try controller.prepareAllContainerStops() }.value
                 try controller.shutdown()
+                residentCore?.stop()
                 return true
             } catch {
                 let failure = NSAlert()
@@ -1149,8 +1154,9 @@ final class AppModel: ObservableObject {
                         "Parley cannot prepare for uninstallation while an Ask or tracked delegation is active. Finish or cancel that work first."
                     )
                 }
-                self.residentCore?.stop()
+                try await Task.detached(priority: .userInitiated) { try controller.prepareAllContainerStops() }.value
                 try controller.shutdown()
+                self.residentCore?.stop()
                 self.relayClient = nil
                 self.coreAvailable = false
                 self.coreError = nil
@@ -3923,11 +3929,18 @@ final class AppModel: ObservableObject {
         return try saveCustomPermissionProfile(source.clone(id: identifier, name: trimmed))
     }
 
+    @Published var applyingPanePermissions = false
+
     func applyPermissionProfile(
         to request: PanePermissionRequest,
         profileID: String,
-        approvedRoots: [String]
-    ) {
+        approvedRoots: [String],
+        containerConfiguration: ContainerConfiguration? = nil
+    ) async {
+        guard !applyingPanePermissions else { return }
+        applyingPanePermissions = true
+        defer { applyingPanePermissions = false }
+        var createdContainerPlaceholder = false
         do {
             guard panePermissionRequest?.id == request.id else { return }
             guard let definition = permissionProfiles.first(where: { $0.id == profileID }) else {
@@ -3949,12 +3962,20 @@ final class AppModel: ObservableObject {
                 let created = try controller.createPane(
                     kind: request.kind,
                     cwd: request.folder,
-                    permissionProfile: effective
+                    permissionProfile: effective,
+                    containerConfiguration: containerConfiguration
                 )
                 recordNativeSplit(created: created, target: splitTarget, direction: direction)
                 rememberFolder(request.folder)
+                if let containerConfiguration {
+                    // Retain one stopped placeholder if preparation fails; another
+                    // click must not create duplicate panes or vendor-state volumes.
+                    createdContainerPlaceholder = true
+                    try refresh()
+                    try await launchReviewedPane(created.id, profile: effective, mode: .fresh, configuration: containerConfiguration)
+                }
             case let .restart(paneID):
-                try controller.restartPane(paneID, permissionProfile: effective)
+                try await launchReviewedPane(paneID, profile: effective, mode: .fresh, configuration: containerConfiguration)
                 if let pane = panes.first(where: { $0.id == paneID }) {
                     try recordSuccessfulActivity(RelayActivityEventRequest(
                         kind: .paneRestarted,
@@ -3976,19 +3997,7 @@ final class AppModel: ObservableObject {
                 guard let plan = VendorResumeAdapter.plan(for: pane.kind) else {
                     throw RelayUIError.message("That pane does not support vendor session resume.")
                 }
-                if replacingRunningProcess {
-                    try controller.restartPane(
-                        paneID,
-                        permissionProfile: effective,
-                        launchMode: .resume
-                    )
-                } else {
-                    try controller.startPane(
-                        paneID,
-                        permissionProfile: effective,
-                        launchMode: .resume
-                    )
-                }
+                try await launchReviewedPane(paneID, profile: effective, mode: .resume, configuration: containerConfiguration)
                 try recordSuccessfulActivity(RelayActivityEventRequest(
                     kind: .paneResumeRequested,
                     workspaceID: pane.workspaceID,
@@ -4002,7 +4011,7 @@ final class AppModel: ObservableObject {
                 guard let pane = panes.first(where: { $0.id == paneID }) else {
                     throw RelayUIError.message("That pane no longer exists.")
                 }
-                guard effective.selection != pane.permissionSelection else {
+                guard effective.selection != pane.permissionSelection || containerConfiguration != pane.containerConfiguration else {
                     throw RelayUIError.message("Folder access is unchanged; the pane was not restarted.")
                 }
                 let alert = NSAlert()
@@ -4012,7 +4021,7 @@ final class AppModel: ObservableObject {
                 alert.addButton(withTitle: "Restart with Access")
                 alert.addButton(withTitle: "Keep Current Session")
                 guard alert.runModal() == .alertFirstButtonReturn else { return }
-                try controller.restartPane(paneID, permissionProfile: effective)
+                try await launchReviewedPane(paneID, profile: effective, mode: .fresh, configuration: containerConfiguration)
                 try recordSuccessfulActivity(RelayActivityEventRequest(
                     kind: .paneRestarted,
                     workspaceID: pane.workspaceID,
@@ -4023,7 +4032,7 @@ final class AppModel: ObservableObject {
                     detail: "\(pane.kind.label) pane restarted with \(definition.name) access to \(effective.approvedRoots.count) reviewed folder\(effective.approvedRoots.count == 1 ? "" : "s")."
                 ))
             case let .start(paneID):
-                try controller.startPane(paneID, permissionProfile: effective)
+                try await launchReviewedPane(paneID, profile: effective, mode: .fresh, configuration: containerConfiguration)
             }
 
             if definition.defaultLifetime == .remembered, !request.isFolderAccessReview {
@@ -4036,11 +4045,61 @@ final class AppModel: ObservableObject {
             try refresh()
             terminalHandle.focus()
         } catch {
+            if createdContainerPlaceholder { panePermissionRequest = nil }
+            try? refresh()
             NSAlert(error: error).runModal()
         }
     }
 
+    private func launchReviewedPane(_ paneID: String, profile: EffectivePermissionProfile,
+        mode: AgentLaunchMode, configuration: ContainerConfiguration?) async throws {
+        guard let controller, let reviewed = try controller.listPanes().first(where: { $0.id == paneID }) else {
+            throw RelayUIError.message("That pane no longer exists.")
+        }
+        if reviewed.containerConfiguration != nil {
+            try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(reviewed) }.value
+            try controller.stopPaneProcess(paneID)
+        } else if configuration != nil, reviewed.isStarted {
+            try controller.stopPaneProcess(paneID)
+        }
+        if let configuration {
+            try await Task.detached(priority: .userInitiated) {
+                try controller.prepareContainerStart(paneID, configuration: configuration, permissionProfile: profile, launchMode: mode)
+            }.value
+            guard permissionProfiles.contains(profile.definition) else {
+                throw RelayUIError.message("The permission profile changed during preparation. Remove the prepared container in Status Center and review Start again.")
+            }
+            try controller.startPane(paneID, permissionProfile: profile, launchMode: mode, containerConfiguration: configuration)
+        } else if try controller.listPanes().first(where: { $0.id == paneID })?.isStarted == true {
+            try controller.restartPane(paneID, permissionProfile: profile, launchMode: mode)
+        } else {
+            try controller.startPane(paneID, permissionProfile: profile, launchMode: mode)
+        }
+    }
+
+    /// Docker may be unavailable for seconds. Keep the main actor and the
+    /// relay's workbench reads free, then revalidate before touching Ghostty.
+    private func performAfterContainerStops(_ reviewed: [WorkbenchPane], operation: @escaping @MainActor () throws -> Void) {
+        guard reviewed.contains(where: { $0.containerConfiguration != nil }), let controller else {
+            perform(operation)
+            return
+        }
+        Task {
+            do {
+                for pane in reviewed where pane.containerConfiguration != nil {
+                    try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(pane) }.value
+                }
+                let current = try controller.listPanes()
+                guard reviewed.allSatisfy({ old in current.contains(where: {
+                    $0.id == old.id && $0.launchGeneration == old.launchGeneration && $0.cwd == old.cwd && $0.workspaceID == old.workspaceID
+                }) }) else { throw RelayUIError.message("The panes changed during container cleanup. Review the action again.") }
+                try operation()
+            } catch { NSAlert(error: error).runModal() }
+        }
+    }
+
     func cancelPermissionProfileSelection() {
+        guard !applyingPanePermissions else { return }
         panePermissionRequest = nil
         terminalHandle.focus()
     }
@@ -6103,7 +6162,7 @@ final class AppModel: ObservableObject {
             }
         }
         let closesWorkspace = panes.filter { $0.workspaceID == pane.workspaceID }.count == 1
-        perform {
+        performAfterContainerStops([pane]) { [self] in
             try controller?.closePane(pane.id)
             if focusCanvasPaneID == pane.id { focusCanvasPaneID = nil }
             if handoffComposerDraft?.sourcePaneID == pane.id || handoffComposerDraft?.targetPaneID == pane.id {
@@ -6470,7 +6529,7 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Close Workspace")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform {
+        performAfterContainerStops(reviewedPanes) { [self] in
             guard let controller else { return }
             if let path = onlyInsideWorktree {
                 let fresh = try controller.listPanes().filter { $0.workspaceID == workspace.workspaceID }
@@ -6479,6 +6538,10 @@ final class AppModel: ObservableObject {
                           WorktreeCleanupPolicy.isNested(pane.cwd, in: path) &&
                           reviewedPanes.contains(where: { $0.id == pane.id && $0.launchGeneration == pane.launchGeneration && $0.cwd == pane.cwd })
                       }) else { throw RelayUIError.message("Workspace panes changed or include another folder. Refresh before closing it.") }
+            }
+            let currentIDs = Set(try controller.listPanes().filter { $0.workspaceID == workspace.workspaceID }.map(\.id))
+            guard currentIDs == Set(reviewedPanes.map(\.id)) else {
+                throw RelayUIError.message("Workspace membership changed during cleanup; review Close again.")
             }
             try controller.closeWorkspace(workspace.id)
             try? workspaceRegistry.remove(workspaceID: workspace.workspaceID)
@@ -6635,8 +6698,13 @@ final class AppModel: ObservableObject {
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
 
-        perform {
+        let reviewed = panes.filter { $0.workspaceID == workspace?.workspaceID }
+        performAfterContainerStops(reviewed) { [self] in
             guard let controller else { return }
+            let current = try controller.listPanes().filter { $0.workspaceID == workspace?.workspaceID }
+            guard Set(current.map(\.id)) == Set(reviewed.map(\.id)) else {
+                throw RelayUIError.message("Workspace membership changed during cleanup; review replacement again.")
+            }
             let restored = try controller.restoreWorkspaceLayout(
                 layout,
                 replacing: workspace?.id

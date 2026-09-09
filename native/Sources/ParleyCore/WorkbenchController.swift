@@ -69,13 +69,26 @@ public final class WorkbenchController: @unchecked Sendable {
 
     /// Every surface termination goes through here so the re-entrancy guard
     /// covers each lifecycle path alike.
-    private func terminateSurface(_ paneID: String) {
+    private func terminateSurface(_ paneID: String) throws {
+        if let pane = document.panes.first(where: { $0.id == paneID }), pane.containerConfiguration != nil {
+            guard confirmedContainerStops[paneID] == pane.launchGeneration else {
+                throw ContainerPaneError.refused("Stop this container through its native action before ending the pane.")
+            }
+        }
+        guard !containerPreparations.contains(paneID), preparedContainerIDs[paneID] == nil || confirmedContainerStops[paneID] == document.panes.first(where: { $0.id == paneID })?.launchGeneration else {
+            throw ContainerPaneError.refused("This pane's prepared container must be removed before closing it.")
+        }
+        preparedContainerIDs[paneID] = nil
         terminatingDepth += 1
         defer { terminatingDepth -= 1 }
         terminalTransport?.terminate(paneID)
     }
 
-    private func terminateAllSurfaces() {
+    private func terminateAllSurfaces() throws {
+        guard containerPreparations.isEmpty, document.panes.allSatisfy({
+            $0.containerConfiguration == nil || confirmedContainerStops[$0.id] == $0.launchGeneration
+        }) else { throw ContainerPaneError.refused("Container cleanup must finish before Parley can stop.") }
+        preparedContainerIDs.removeAll()
         terminatingDepth += 1
         defer { terminatingDepth -= 1 }
         terminalTransport?.terminateAll()
@@ -86,6 +99,7 @@ public final class WorkbenchController: @unchecked Sendable {
     /// refresh triggered by a synchronous close report retries later instead
     /// of mutating a document another operation is still changing.
     private func requireNoTerminationInProgress() throws {
+        guard !isShutDown else { throw ParleyWorkbenchError.commandFailed("Parley has shut down; a pending launch cannot start another process.") }
         guard terminatingDepth == 0 else {
             throw ParleyWorkbenchError.commandFailed("A pane is being terminated; this change can be retried once it has finished.")
         }
@@ -96,6 +110,21 @@ public final class WorkbenchController: @unchecked Sendable {
         let generation: Int
         let mode: AgentLaunchMode
     }
+
+    public let containerService: ContainerPaneService
+    private struct PreparedContainer {
+        let generation: Int
+        let id: String
+        let configuration: ContainerConfiguration
+        let mode: AgentLaunchMode
+        let profile: EffectivePermissionProfile
+        let folder: String
+        let workspaceID: String
+        let automationPolicy: WorkspaceAutomationPolicy
+    }
+    private var preparedContainerIDs: [String: PreparedContainer] = [:]
+    private var confirmedContainerStops: [String: Int] = [:]
+    private var containerPreparations: Set<String> = []
 
     public let applicationDirectory: URL
     public let protocolDirectory: URL
@@ -136,13 +165,15 @@ public final class WorkbenchController: @unchecked Sendable {
         environment: [String: String]? = nil,
         swiftPMCompatibilityEnabled: Bool = false,
         fileManager: FileManager = .default,
-        titlePersistenceInterval: TimeInterval = 1
+        titlePersistenceInterval: TimeInterval = 1,
+        containerService: ContainerPaneService? = nil
     ) throws {
         let directory = applicationDirectory ?? fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Parley Native", isDirectory: true)
         self.applicationDirectory = directory
         self.titlePersistenceInterval = max(0.05, titlePersistenceInterval)
         self.environment = Self.scrubInheritedCapabilities(environment ?? EnvironmentResolver.resolved())
+        self.containerService = try containerService ?? ContainerPaneService(directory: directory, environment: self.environment)
         self.fileManager = fileManager
         self.swiftPMCompatibilityEnabled = swiftPMCompatibilityEnabled
         stateFile = directory.appendingPathComponent("workbench-state.json")
@@ -432,10 +463,12 @@ public final class WorkbenchController: @unchecked Sendable {
     public func createPane(
         kind: PaneKind,
         cwd: String,
-        permissionProfile: EffectivePermissionProfile? = nil
+        permissionProfile: EffectivePermissionProfile? = nil,
+        containerConfiguration: ContainerConfiguration? = nil
     ) throws -> WorkbenchPane {
         try requireDirectory(cwd)
         return try lock.withLock {
+            try requireNoTerminationInProgress()
             guard let activeWorkspace = document.workspaces.first(where: \.isActive) else {
                 throw ParleyWorkbenchError.workspaceNotFound("active")
             }
@@ -445,13 +478,17 @@ public final class WorkbenchController: @unchecked Sendable {
                 supplied: permissionProfile,
                 selection: nil
             )
-            let pane = try makePane(
+            var pane = try makePane(
                 kind: kind,
                 cwd: cwd,
                 workspace: activeWorkspace,
-                started: true,
+                started: containerConfiguration == nil,
                 permissionProfile: profile
             )
+            pane.containerConfiguration = containerConfiguration
+            // Creating an inert placeholder is local metadata only. Docker preparation
+            // is an explicit background operation before startPane may activate it.
+            if containerConfiguration != nil { confirmedContainerStops[pane.id] = pane.launchGeneration }
             for index in document.panes.indices { document.panes[index].isActive = false }
             document.panes.append(pane)
             document.activity[pane.id] = Date()
@@ -592,29 +629,39 @@ public final class WorkbenchController: @unchecked Sendable {
     public func restartPane(
         _ paneID: String,
         permissionProfile: EffectivePermissionProfile? = nil,
-        launchMode: AgentLaunchMode = .fresh
+        launchMode: AgentLaunchMode = .fresh,
+        containerConfiguration: ContainerConfiguration? = nil
     ) throws {
         try lock.withLock {
             try requireNoTerminationInProgress()
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
-            try requireDirectory(document.panes[index].cwd)
-            if document.panes[index].kind.isAgent, let relayRuntime {
-                _ = try relayRuntime.credentials.rotate(paneID)
+            guard containerConfiguration == nil else {
+                throw ContainerPaneError.refused("Stop and prepare the container in the background before starting this pane.")
             }
+            try requireDirectory(document.panes[index].cwd)
             let profile = try effectivePermissionProfile(
                 for: document.panes[index].kind,
                 cwd: document.panes[index].cwd,
                 supplied: permissionProfile,
                 selection: document.panes[index].permissionSelection
             )
-            terminateSurface(paneID)
+            try terminateSurface(paneID)
             // Re-resolve after the transport ran: act on this pane or not at all.
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
             copilotTrustConfirmations[paneID] = nil
+            document.panes[index].isStarted = false
+            document.panes[index].inputAvailable = false
+            document.panes[index].relayEnabled = false
+            document.panes[index].currentCommand = "stopped"
+            try persistLocked()
+            if document.panes[index].kind.isAgent, let relayRuntime {
+                _ = try relayRuntime.credentials.rotate(paneID)
+            }
+            document.panes[index].containerConfiguration = containerConfiguration
             markStartedLocked(index: index, profile: profile)
             if document.panes[index].kind.isAgent {
                 agentLaunchRequests[paneID] = AgentLaunchRequest(
@@ -631,7 +678,8 @@ public final class WorkbenchController: @unchecked Sendable {
     public func startPane(
         _ paneID: String,
         permissionProfile: EffectivePermissionProfile? = nil,
-        launchMode: AgentLaunchMode = .fresh
+        launchMode: AgentLaunchMode = .fresh,
+        containerConfiguration: ContainerConfiguration? = nil
     ) throws {
         try lock.withLock {
             try requireNoTerminationInProgress()
@@ -646,6 +694,25 @@ public final class WorkbenchController: @unchecked Sendable {
                 supplied: permissionProfile,
                 selection: document.panes[index].permissionSelection
             )
+            guard !containerPreparations.contains(paneID) else {
+                throw ContainerPaneError.refused("This pane's container is still being prepared.")
+            }
+            if let containerConfiguration {
+                guard let prepared = preparedContainerIDs[paneID],
+                      prepared.generation == document.panes[index].launchGeneration + 1,
+                      prepared.configuration == containerConfiguration, prepared.mode == launchMode,
+                      prepared.profile == profile, prepared.folder == document.panes[index].cwd,
+                      prepared.workspaceID == document.panes[index].workspaceID,
+                      prepared.automationPolicy == document.panes[index].automationPolicy else {
+                    throw ContainerPaneError.refused("This container was not prepared for the exact reviewed pane, profile and launch mode.")
+                }
+            } else {
+                guard preparedContainerIDs[paneID] == nil else {
+                    throw ContainerPaneError.refused("Remove the prepared container before starting a host session.")
+                }
+                if let relayRuntime { _ = try relayRuntime.credentials.rotate(paneID) }
+            }
+            document.panes[index].containerConfiguration = containerConfiguration
             markStartedLocked(index: index, profile: profile)
             agentLaunchRequests[paneID] = AgentLaunchRequest(
                 generation: document.panes[index].launchGeneration,
@@ -663,7 +730,8 @@ public final class WorkbenchController: @unchecked Sendable {
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
-            guard document.panes[index].kind.isAgent, !document.panes[index].isStarted else {
+            guard !containerPreparations.contains(paneID), preparedContainerIDs[paneID] == nil,
+                  document.panes[index].kind.isAgent, !document.panes[index].isStarted else {
                 throw ParleyWorkbenchError.commandFailed(
                     "Only a stopped agent pane can choose a new working folder."
                 )
@@ -675,14 +743,17 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
 
-    public func stopPaneProcess(_ paneID: String) throws {
+    public func stopPaneProcess(_ paneID: String, expectedGeneration: Int? = nil) throws {
         try lock.withLock {
             try requireNoTerminationInProgress()
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
+            if let expectedGeneration, document.panes[index].launchGeneration != expectedGeneration {
+                throw ContainerPaneError.refused("The pane restarted after container cleanup; its new session was left alone.")
+            }
             guard document.panes[index].kind.isAgent, document.panes[index].isStarted else { return }
-            terminateSurface(paneID)
+            try terminateSurface(paneID)
             // Re-resolve after the transport ran: act on this pane or not at all.
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
@@ -690,6 +761,7 @@ public final class WorkbenchController: @unchecked Sendable {
             copilotTrustConfirmations[paneID] = nil
             agentLaunchRequests[paneID] = nil
             document.panes[index].launchGeneration &+= 1
+            confirmedContainerStops[paneID] = document.panes[index].launchGeneration
             document.panes[index].isStarted = false
             document.panes[index].isDead = false
             document.panes[index].inputAvailable = false
@@ -716,7 +788,7 @@ public final class WorkbenchController: @unchecked Sendable {
             // report refreshes the app inside this call (the lock is recursive).
             // Nested lifecycle mutations are refused above; still remove by
             // identity, never by an index computed before the transport ran.
-            terminateSurface(paneID)
+            try terminateSurface(paneID)
             copilotTrustConfirmations[paneID] = nil
             agentLaunchRequests[paneID] = nil
             document.panes.removeAll { $0.id == paneID }
@@ -737,7 +809,7 @@ public final class WorkbenchController: @unchecked Sendable {
             let workspace = document.workspaces[try workspaceIndexLocked(workspaceID)]
             let paneIDs = document.panes.filter { $0.workspaceID == workspace.workspaceID }.map(\.id)
             for paneID in paneIDs {
-                terminateSurface(paneID)
+                try terminateSurface(paneID)
                 copilotTrustConfirmations[paneID] = nil
                 agentLaunchRequests[paneID] = nil
                 try relayRuntime?.credentials.forget(paneID)
@@ -752,9 +824,9 @@ public final class WorkbenchController: @unchecked Sendable {
 
     public func shutdown() throws {
         try lock.withLock {
+            try terminateAllSurfaces()
             isShutDown = true
             for pane in document.panes { try relayRuntime?.credentials.forget(pane.id) }
-            terminateAllSurfaces()
             agentLaunchRequests.removeAll()
             copilotTrustConfirmations.removeAll()
             for index in document.panes.indices {
@@ -850,6 +922,15 @@ public final class WorkbenchController: @unchecked Sendable {
             try requireNotReservedForRemoval(layout.defaultFolder)
             for leaf in layout.root.leaves { try requireNotReservedForRemoval(leaf.folder) }
             let replacement = try replacedWorkspaceID.map { document.workspaces[try workspaceIndexLocked($0)] }
+            try requireNoTerminationInProgress()
+            if let replacement {
+                for pane in document.panes where pane.workspaceID == replacement.workspaceID {
+                    guard !containerPreparations.contains(pane.id),
+                          pane.containerConfiguration == nil || confirmedContainerStops[pane.id] == pane.launchGeneration else {
+                        throw ContainerPaneError.refused("Finish container cleanup before replacing this workspace.")
+                    }
+                }
+            }
             let workspace = try createWorkspaceLocked(
                 launchFolder: layout.defaultFolder,
                 name: layout.name,
@@ -880,7 +961,7 @@ public final class WorkbenchController: @unchecked Sendable {
             if let replacement {
                 let oldIDs = document.panes.filter { $0.workspaceID == replacement.workspaceID }.map(\.id)
                 for id in oldIDs {
-                    terminateSurface(id)
+                    try terminateSurface(id)
                     copilotTrustConfirmations[id] = nil
                     agentLaunchRequests[id] = nil
                     try relayRuntime?.credentials.forget(id)
@@ -892,6 +973,124 @@ public final class WorkbenchController: @unchecked Sendable {
             try persistLocked()
             return document.workspaces.first(where: { $0.workspaceID == workspace.workspaceID }) ?? workspace
         }
+    }
+
+    /// Run off the main actor. No Docker operation holds the workbench lock.
+    /// The stopped pane and exact reviewed configuration are rechecked before
+    /// the prepared generation becomes eligible for native activation.
+    public func prepareContainerStart(_ paneID: String, configuration: ContainerConfiguration,
+        permissionProfile: EffectivePermissionProfile, launchMode: AgentLaunchMode = .fresh) throws {
+        let (snapshot, runtime): (WorkbenchPane, RelayRuntime) = try lock.withLock {
+            try requireNoTerminationInProgress()
+            guard !isShutDown, let pane = document.panes.first(where: { $0.id == paneID }),
+                  pane.kind.isAgent, !pane.isStarted, let runtime = relayRuntime,
+                  !containerPreparations.contains(paneID), preparedContainerIDs[paneID] == nil else {
+                throw ContainerPaneError.refused("Container preparation requires an unchanged stopped agent pane and the active core.")
+            }
+            guard permissionProfile.approvedRoots == [pane.cwd] else {
+                throw ContainerPaneError.refused("Container panes currently require exactly their working folder as the approved root.")
+            }
+            containerPreparations.insert(paneID)
+            confirmedContainerStops[paneID] = nil
+            return (pane, runtime)
+        }
+        defer { _ = lock.withLock { containerPreparations.remove(paneID) } }
+        let controlDirectories = ParleyRuntime.controlDirectories() + [applicationDirectory]
+        let protectedDirectories = controlDirectories
+            + controlDirectories.map { RelayFileTransport.runtimeDirectory(applicationDirectory: $0) }
+            + [runtime.transportDirectory]
+        try containerService.validateFolder(snapshot.cwd, protectedDirectories: protectedDirectories.map(\.path))
+        let root = applicationDirectory.appendingPathComponent("container-runtime")
+        let protocolFolder = try AgentProtocol.install(in: root)
+        let shim = try RelayShim.installCommand(in: root.appendingPathComponent("bin"),
+            transportDirectory: runtime.transportDirectory, runtimeMarker: runtime.runtimeMarker, platform: .linux)
+        let token = try runtime.credentials.rotate(paneID)
+        let endpoint = try RelayFileTransport.prepareEndpoint(runtimeDirectory: runtime.transportDirectory, paneToken: token)
+        var proposed = snapshot
+        proposed.containerConfiguration = configuration
+        proposed.launchGeneration += 1
+        var command = AgentProtocol.command(for: proposed.kind, protocolDirectory: protocolFolder, launchMode: launchMode)
+        command.removeFirst()
+        command += PermissionProfileAdapter.launchPlan(for: proposed.kind, profile: permissionProfile).arguments
+        let id = try containerService.prepare(configuration: configuration, pane: proposed, endpoint: endpoint.path,
+            protocolDirectory: protocolFolder.path, shimDirectory: shim.deletingLastPathComponent().path,
+            token: token, vendorArguments: command, runtime: runtime.runtimeMarker ?? "PRODUCTION")
+        try lock.withLock {
+            guard !isShutDown, let current = document.panes.first(where: { $0.id == paneID }),
+                  !current.isStarted, current.launchGeneration == snapshot.launchGeneration,
+                  current.cwd == snapshot.cwd, current.workspaceID == snapshot.workspaceID,
+                  current.automationPolicy == snapshot.automationPolicy,
+                  current.permissionSelection == snapshot.permissionSelection else {
+                throw ContainerPaneError.refused("The pane changed while its container was being prepared. Remove the recorded container in Status Center before retrying.")
+            }
+            preparedContainerIDs[paneID] = PreparedContainer(generation: proposed.launchGeneration, id: id,
+                configuration: configuration, mode: launchMode, profile: permissionProfile, folder: proposed.cwd,
+                workspaceID: proposed.workspaceID, automationPolicy: proposed.automationPolicy)
+        }
+    }
+
+    /// Background cleanup is bound to the pane revision the native action saw.
+    /// A subsequent start invalidates this receipt without another Docker read.
+    public func prepareContainerStop(_ reviewed: WorkbenchPane) throws {
+        try lock.withLock {
+            guard !containerPreparations.contains(reviewed.id), let current = document.panes.first(where: { $0.id == reviewed.id }),
+                  current.launchGeneration == reviewed.launchGeneration, current.cwd == reviewed.cwd,
+                  current.containerConfiguration == reviewed.containerConfiguration else {
+                throw ContainerPaneError.refused("The pane changed; review its container again before stopping it.")
+            }
+            containerPreparations.insert(reviewed.id)
+        }
+        defer { _ = lock.withLock { containerPreparations.remove(reviewed.id) } }
+        // Includes a created-but-not-started next generation belonging to this
+        // exact stopped pane. An in-flight preparation cannot overlap this call.
+        try containerService.stop(paneID: reviewed.id)
+        try lock.withLock {
+            guard let current = document.panes.first(where: { $0.id == reviewed.id }),
+                  current.launchGeneration == reviewed.launchGeneration else {
+                throw ContainerPaneError.refused("The pane changed during container cleanup; its surface was left alone.")
+            }
+            confirmedContainerStops[reviewed.id] = reviewed.launchGeneration
+            preparedContainerIDs[reviewed.id] = nil
+        }
+    }
+
+    /// Native Status Center removal, run off the main actor. Returns only a
+    /// matching pane whose surface may be stopped after Docker cleanup.
+    public func removeRecordedContainer(_ record: ContainerPaneRecord) throws -> WorkbenchPane? {
+        let snapshot: WorkbenchPane? = try lock.withLock {
+            try requireNoTerminationInProgress()
+            guard !containerPreparations.contains(record.paneID) else {
+                throw ContainerPaneError.refused("This pane's container operation is still in progress.")
+            }
+            containerPreparations.insert(record.paneID)
+            return document.panes.first { $0.id == record.paneID }
+        }
+        defer { _ = lock.withLock { containerPreparations.remove(record.paneID) } }
+        // The person's action names exactly this record, never every container
+        // with the pane ID. In particular, an old receipt cannot stop a replacement.
+        try containerService.remove(record)
+        guard try !containerService.records().contains(where: { $0.paneID == record.paneID && !$0.removed }) else { return nil }
+        return lock.withLock {
+            guard let snapshot, let current = document.panes.first(where: { $0.id == record.paneID }),
+                  current.launchGeneration == snapshot.launchGeneration, current.cwd == snapshot.cwd,
+                  current.containerConfiguration == snapshot.containerConfiguration,
+                  current.isStarted == snapshot.isStarted else { return nil }
+            let prepared = preparedContainerIDs[current.id]
+            let removedPreparation = prepared?.id == record.containerID && prepared?.generation == record.generation
+                && prepared?.configuration == record.configuration
+            let removedCurrent = current.launchGeneration == record.generation && current.containerConfiguration == record.configuration
+            guard removedPreparation || removedCurrent else { return nil }
+            confirmedContainerStops[current.id] = current.launchGeneration
+            preparedContainerIDs[current.id] = nil
+            return current
+        }
+    }
+
+    public func prepareAllContainerStops() throws {
+        let panes = try listPanes()
+        for pane in panes where pane.containerConfiguration != nil { try prepareContainerStop(pane) }
+        // Orphans and interrupted image checks have no live pane to visit.
+        try containerService.stopAll()
     }
 
     public func launchConfiguration(for paneID: String) throws -> GhosttyPaneLaunch {
@@ -932,6 +1131,23 @@ public final class WorkbenchController: @unchecked Sendable {
                     )
                 }
                 let token = try relayRuntime.credentials.token(for: pane.id)
+                if let container = pane.containerConfiguration {
+                    guard let receipt = preparedContainerIDs[pane.id], receipt.generation == pane.launchGeneration else {
+                        throw ContainerPaneError.refused("This container launch has not been prepared. Review permissions and start the pane again.")
+                    }
+                    let root = applicationDirectory.appendingPathComponent("container-runtime")
+                    let boundary = try AgentProcessBoundary(applicationDirectory: applicationDirectory,
+                        protocolDirectory: root.appendingPathComponent("agent-protocol"), shimDirectory: root.appendingPathComponent("bin"),
+                        protectedControlEndpoint: applicationDirectory.appendingPathComponent("relay.sock"),
+                        transportDirectory: relayRuntime.transportDirectory, paneToken: token, fileManager: fileManager)
+                    let stripped = Set(ProcessInfo.processInfo.environment.keys.filter { $0.hasPrefix("DOCKER_") || ($0.hasPrefix("PARLEY_") && launchEnvironment[$0] == nil) })
+                        .union(["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "TMUX", "TMUX_PANE"])
+                    let command = boundary.arguments + ["/usr/bin/env"] + stripped.sorted().flatMap { ["-u", $0] } + [container.dockerExecutable] + (try ContainerLaunchProjection.attachArguments(configuration: container, containerID: receipt.id))
+                    launchEnvironment["PATH"] = environment["PATH"] ?? "/usr/bin:/bin"
+                    launchEnvironment["HOME"] = NSHomeDirectory()
+                    return GhosttyPaneLaunch(paneID: pane.id, generation: pane.launchGeneration, workingDirectory: pane.cwd,
+                        environment: launchEnvironment, command: GhosttyLaunchCommand.render(command))
+                }
                 launchEnvironment["PARLEY_RELAY_TOKEN"] = token
                 launchEnvironment["PARLEY_PROTOCOL_VERSION"] = AgentProtocol.version
                 if swiftPMLaunches[pane.id]?.generation != pane.launchGeneration {
@@ -1038,6 +1254,9 @@ public final class WorkbenchController: @unchecked Sendable {
     public func terminalDidChangeWorkingDirectory(paneID: String, path: String) throws {
         guard path.hasPrefix("/") else { return }
         try lock.withLock {
+            // Guest OSC working-directory reports do not establish a host path
+            // or broaden the folder used by context staging and request-run.
+            guard document.panes.first(where: { $0.id == paneID })?.containerConfiguration == nil else { return }
             if document.panes.first(where: { $0.id == paneID })?.cwd != path {
                 copilotTrustConfirmations.removeValue(forKey: paneID)
             }

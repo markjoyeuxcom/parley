@@ -211,3 +211,32 @@ Do not rotate the Developer ID certificate and Sparkle key in the same release.
 If any signing or notarization stage fails, leave the prior published release
 and appcast untouched, correct the release input and rerun the notarized
 release workflow.
+
+## Experimental container acceptance
+
+The greenfield release includes the reviewed container implementation with its
+known compatibility limits. Untested images, daemons or vendor flows are
+follow-ups, not blanket release blockers. Keep the tested configuration and
+remaining work explicit in the release notes; do not describe a test that was
+not run as passing. The normal build, regression, soak, packaging and launch
+checks still apply.
+
+When expanding compatibility, record the local daemon, exact image ID and the
+vendor versions from inside that image. Run the explicit transport and Ghostty
+Docker checks in AGENTS.md, including resize, Control-C, hidden-window input
+and confirmed stop. Continue these person-supervised checks:
+
+1. Start one Claude and one Codex container pane with the normal permission
+   review; use only the compatibility setting explicitly reviewed there.
+2. Sign in using each vendor's supported interactive or device flow. Do not
+   mount host credentials or replace subscription login with API keys.
+3. Verify fresh and resumed protocol uptake, one correlated Ask and Delegate,
+   reviewed context, returned-file staging, an allowed operation and a refused
+   operation. Record what the vendor actually did; hook signals are not proof.
+4. Close/restart each pane, relaunch Parley and verify login persistence without
+   claiming the original process survived. Inspect old-generation receipts.
+5. Stop during work and test a daemon outage during cleanup. Uncertain removal
+   must remain visible. Confirm that deleting saved vendor state refuses while
+   referenced, then removes only the explicitly selected unused volume.
+6. Compare total idle resource use including the Docker VM; Parley's process
+   list intentionally does not account for processes inside the container.

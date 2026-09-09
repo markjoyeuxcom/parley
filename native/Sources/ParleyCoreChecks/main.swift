@@ -3602,7 +3602,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "28", "the shared protocol version drifted from cross-project agent awareness")
+    try expect(AgentProtocol.version == "29", "the shared protocol version drifted from cross-project agent awareness")
     try expect(
         AgentProtocol.text.contains("parley delegate <target> --parent <handoff-id>")
             && AgentProtocol.text.contains("requestChanges")
@@ -9913,9 +9913,29 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == ApprovedComma
     ApprovedCommandWorker.execute(ticketPath: CommandLine.arguments[2])
 }
 
+if let image = argument(named: "--container-ghostty-spike") {
+    do {
+        try checkContainerGhosttySpike(image: image, docker: argument(named: "--docker") ?? "/usr/local/bin/docker")
+        exit(0)
+    } catch {
+        print("FAIL container Ghostty spike (requires local Docker and a human Shell): \(error)")
+        exit(1)
+    }
+}
+
+if let image = argument(named: "--container-transport-spike") {
+    do {
+        try checkContainerTransportSpike(image: image, docker: argument(named: "--docker") ?? "/usr/local/bin/docker")
+        exit(0)
+    } catch {
+        print("FAIL container transport spike (requires a running local Docker daemon and the selected image): \(error)")
+        exit(1)
+    }
+}
+
 // `--only <substring>` runs the matching checks alone during local iteration.
 let onlyFilter = argument(named: "--only")?.lowercased()
-let selectedChecks = (checks + reviewRegressionChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + auxiliaryWindowChecks + helpAuditChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
+let selectedChecks = (containerPaneChecks + checks + reviewRegressionChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + auxiliaryWindowChecks + helpAuditChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var failureCount = 0

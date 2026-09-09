@@ -13,12 +13,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var pendingExternalRequests: [ExternalApplicationRequest] = []
     private var titlebarDoubleClickMonitor: Any?
     private var keyDownMonitor: Any?
-    var terminationHandler: (() -> Bool)?
+    var terminationHandler: (() async -> Bool)?
+    private var terminationPending = false
     var terminalFocusRepairHandler: ((NSEvent) -> Void)?
     var applicationShortcutHandler: ((WorkbenchKeyboardShortcut) -> Void)?
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        (terminationHandler?() ?? true) ? .terminateNow : .terminateCancel
+        guard !terminationPending else { return .terminateLater }
+        guard let terminationHandler else { return .terminateNow }
+        terminationPending = true
+        Task {
+            let approved = await terminationHandler()
+            terminationPending = false
+            sender.reply(toApplicationShouldTerminate: approved)
+        }
+        return .terminateLater
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -267,7 +276,7 @@ struct ParleyNativeApp: App {
         Window("Parley", id: "main") {
             ContentView(model: model)
                 .onAppear {
-                    appDelegate.terminationHandler = { model.resolveTermination() }
+                    appDelegate.terminationHandler = { await model.resolveTermination() }
                     appDelegate.terminalFocusRepairHandler = { event in
                         model.repairNativeTerminalFocus(for: event)
                     }

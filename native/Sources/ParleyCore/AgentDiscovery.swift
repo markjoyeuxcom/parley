@@ -38,6 +38,7 @@ public struct RelayAgentIdentity: Codable, Equatable, Sendable {
     public let inputPathAvailable: Bool
     public let relayEnabled: Bool
     public let protocolVersion: String?
+    public let executionBoundary: String?
 
     init(pane: WorkbenchPane) {
         let canonicalRole = canonicalAgentRole(pane.role)
@@ -54,6 +55,7 @@ public struct RelayAgentIdentity: Codable, Equatable, Sendable {
         inputPathAvailable = pane.inputAvailable
         relayEnabled = pane.relayEnabled
         protocolVersion = pane.protocolVersion.map(boundedAgentLabel)
+        executionBoundary = pane.containerConfiguration == nil ? "host" : "container"
     }
 }
 

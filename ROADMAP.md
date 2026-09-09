@@ -4,6 +4,36 @@ Parley is a native macOS workbench for visible, supervised cross-vendor AI CLI
 collaboration. It coordinates existing subscription CLIs; it does not replace
 their models, authentication, tools, permission prompts or terminal interfaces.
 
+## Container agent panes
+
+The implementation includes the portable Linux shim, pinned local image/daemon
+launch projection, recorded container ownership and native launch/cleanup UI.
+The container owns vendor execution; the native core remains on macOS.
+`AgentProtocol.version` is 29, including content-free execution-boundary
+identity and the host semantics of request-run from a container.
+
+The [OrbStack spike record](docs/container-pane-spike.md) covers the real file transport with disposable pane
+identities. The default Bubblewrap namespace path is unavailable in the tested
+unprivileged container; Codex's explicitly selected legacy Landlock path ran
+an allowed command and refused a disallowed write. This is not a blanket
+compatibility statement for other images or daemons.
+
+The real Ghostty/Docker checks have exercised resize, Control-C, hidden-window
+input and confirmed container removal; the existing regression suite also ran.
+Mark reported successful Codex device sign-in, an interactive reply,
+bidirectional Parley messaging and container pane restart. Codex also warns
+that legacy Landlock is deprecated. Compatibility follow-ups include a working
+default sandbox, Claude sign-in, normal permissions, fresh/resumed instruction
+uptake, persistent login and total host-plus-VM idle cost. Image checks are
+quota-free and do not establish those outcomes.
+
+Mark's release decision on 9 September: this is a greenfield project; ship the
+reviewed implementation with its tested configuration and known limitations.
+The remaining compatibility work does not hold the feature out of main or the
+next release. Build, regression, packaging and release verification still apply.
+Worktree mounts and container team members are planned extensions. Image
+building, remote daemons, Compose and Docker-in-Docker remain outside this version.
+
 ## Product boundary
 
 A feature belongs in Parley when it coordinates different vendor panes or makes
@@ -12,7 +42,7 @@ perform alone stays with that vendor.
 
 Non-negotiable properties:
 
-- locally installed subscription CLIs only;
+- locally installed subscription CLIs, on the host or in a reviewed local image;
 - real vendor TUIs and permission prompts;
 - explicit pane targets and no implicit broadcast;
 - visible, interruptible work;

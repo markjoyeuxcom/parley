@@ -442,6 +442,7 @@ struct StatusCenterView: View {
         case .health:
             recovery
             coreHealth
+            statusGroup("CONTAINERS") { ContainerRecordsView(model: model) }
             paneProcesses
             timeline
         }

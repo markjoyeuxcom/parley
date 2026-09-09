@@ -4573,6 +4573,8 @@ public enum RelayShimError: LocalizedError, Equatable {
     }
 }
 
+public enum RelayShimPlatform: Sendable { case macOS, linux }
+
 public enum RelayShim {
     public static func install(
         in applicationDirectory: URL,
@@ -4596,7 +4598,8 @@ public enum RelayShim {
         in bin: URL,
         transportDirectory: URL? = nil,
         runtimeMarker: String? = nil,
-        openExecutable: URL = URL(fileURLWithPath: "/usr/bin/open")
+        openExecutable: URL = URL(fileURLWithPath: "/usr/bin/open"),
+        platform: RelayShimPlatform = .macOS
     ) throws -> URL {
         let transport = transportDirectory
             ?? RelayFileTransport.runtimeDirectory(applicationDirectory: bin.deletingLastPathComponent())
@@ -4604,7 +4607,8 @@ public enum RelayShim {
             script(
                 transportDirectory: transport,
                 runtimeMarker: runtimeMarker,
-                openExecutable: openExecutable
+                openExecutable: openExecutable,
+                platform: platform
             ),
             in: bin
         )
@@ -4656,9 +4660,19 @@ public enum RelayShim {
     private static func script(
         transportDirectory: URL,
         runtimeMarker: String?,
-        openExecutable: URL
+        openExecutable: URL,
+        platform: RelayShimPlatform = .macOS
     ) -> String {
-        scriptTemplate.replacingOccurrences(
+        var source = scriptTemplate
+        if platform == .linux {
+            source = source.replacingOccurrences(of: "/usr/bin/stat -f '%u'", with: "/usr/bin/stat -c '%u'")
+                .replacingOccurrences(of: "/usr/bin/stat -f '%Lp'", with: "/usr/bin/stat -c '%a'")
+                .replacingOccurrences(of: "/usr/bin/stat -f '%m'", with: "/usr/bin/stat -c '%Y'")
+                .replacingOccurrences(of: "/usr/bin/uuidgen", with: "parley_uuid")
+                .replacingOccurrences(of: "  if [ -n \"${PARLEY_RELAY_TOKEN:-}\" ]; then", with: "  echo 'parley open is unavailable inside a container' >&2; exit 2\n  if [ -n \"${PARLEY_RELAY_TOKEN:-}\" ]; then")
+            source = source.replacingOccurrences(of: "set -eu", with: "set -eu\nparley_uuid() { if [ -r /proc/sys/kernel/random/uuid ]; then /bin/cat /proc/sys/kernel/random/uuid; else /usr/bin/uuidgen; fi; }")
+        }
+        return source.replacingOccurrences(
             of: "__PARLEY_TRANSPORT_ROOT__",
             // Keep the exact spelling granted by AgentProcessBoundary. On
             // macOS, standardizedFileURL rewrites /private/tmp to /tmp; those

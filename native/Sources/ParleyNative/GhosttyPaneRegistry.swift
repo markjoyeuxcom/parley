@@ -203,8 +203,25 @@ final class GhosttyPaneRegistry {
                 onPaneFocused?(paneID)
             },
             onClose: { [weak self] paneID, processAlive in
-                try? self?.workbench?.terminalDidClose(paneID: paneID, processAlive: processAlive)
-                self?.onPaneStateChanged?()
+                guard let self, let workbench = self.workbench else { return }
+                let closed = try? workbench.listPanes().first { $0.id == paneID }
+                try? workbench.terminalDidClose(paneID: paneID, processAlive: processAlive)
+                self.onPaneStateChanged?()
+                // A lost docker client does not prove its daemon-owned process
+                // ended. Reconcile its exact receipt in the background. Ordinary
+                // deliberate termination has already completed this cleanup.
+                if !processAlive, !workbench.isTerminatingSurface,
+                   let closed, closed.containerConfiguration != nil, closed.launchGeneration == launch.generation {
+                    Task { [weak self] in
+                        do {
+                            try await Task.detached(priority: .utility) { try workbench.prepareContainerStop(closed) }.value
+                            try workbench.stopPaneProcess(paneID)
+                            self?.onPaneStateChanged?()
+                        } catch {
+                            NSAlert(error: ContainerPaneError.refused("The container client ended, but cleanup was not confirmed. Its receipt remains in Status Center. \(error.localizedDescription)")).runModal()
+                        }
+                    }
+                }
             },
             onWorkingDirectory: { [weak self] paneID, path in
                 try? self?.workbench?.terminalDidChangeWorkingDirectory(paneID: paneID, path: path)

@@ -2018,6 +2018,9 @@ private struct PaneRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .layoutPriority(1)
+                    if pane.containerConfiguration != nil {
+                        Text("CONTAINER").font(ChromeFont.meta).foregroundStyle(.secondary)
+                    }
                     if pane.isWorkspaceLead {
                         Text("Lead")
                             .font(ChromeFont.meta)

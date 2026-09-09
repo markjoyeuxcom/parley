@@ -24,6 +24,10 @@ private func helpAuditContains(_ text: String, _ phrases: [String]) throws {
 
 @MainActor
 let helpAuditChecks: [(String, () throws -> Void)] = [
+    ("Help audit explains container ownership and retained vendor state", {
+        let topic = try helpAuditTopic("container-panes")
+        try helpAuditContains(topic.searchableText, ["local Unix-socket", "recorded container ID", "never adopts", "Docker output logging is disabled", "Delete Saved Vendor State", "request-run", "legacy Landlock", "deprecated", "Sign in with Device Code", "callback port"])
+    }),
     ("Help audit distinguishes automatic updates from manual release downloads", {
         let topic = try helpAuditTopic("release-lifecycle")
         try helpAuditContains(topic.searchableText, [

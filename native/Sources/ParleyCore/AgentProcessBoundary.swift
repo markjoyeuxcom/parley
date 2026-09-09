@@ -14,8 +14,9 @@ public enum AgentProcessBoundaryError: LocalizedError, Equatable {
     }
 }
 
-/// A mandatory outer Seatbelt profile around every vendor CLI and all of its
-/// descendants. Vendor-owned sandboxes still run inside this boundary; this
+/// A mandatory outer Seatbelt profile around host vendor CLIs and their
+/// descendants, or around a container pane's host Docker client. It cannot
+/// constrain work performed by the external Docker daemon. For host CLIs this
 /// layer protects only Parley's own control plane and does not restrict the
 /// repository, vendor authentication, ordinary tools, or network access.
 public struct AgentProcessBoundary: Sendable {

@@ -566,3 +566,40 @@ chooses a separate data purge.
 
 Parley is licensed under Apache-2.0. Embedded third-party notices are in
 `THIRD_PARTY_NOTICES.md`.
+
+## Container panes (experimental)
+
+Claude Code and Codex can run in a person-reviewed local Linux container while
+Ghostty keeps their real terminal interface. In the pane's permission review,
+select **Run in a container**, enter a locally installed image and choose
+**Check Image and Daemon**. Review the daemon, pinned image and disclosure
+before starting. Parley does not build or download images. The image must
+provide `/usr/local/bin/claude` or `/usr/local/bin/codex`, POSIX sh, GNU
+stat/coreutils and `/bin/chown`.
+
+Only the working folder, the pane's own relay endpoint and read-only protocol
+files are mounted from the host. The Docker socket and host vendor login are
+not mounted. Sign in inside the container; its private named volume keeps
+vendor login, configuration and saved conversations. For Codex, choose
+**Sign in with Device Code** and open the supplied link in your Mac browser;
+no browser-login callback port is published. Codex's separately selected legacy
+Landlock mode is a temporary test option for compatible images when the default
+Bubblewrap sandbox is unavailable. Codex has deprecated it and plans to remove
+it; vendor permission prompts remain active. Linked worktrees and additional
+folders are currently refused.
+
+Closing the main window keeps a container running. Closing its pane, restarting
+or quitting stops the recorded container, and a failed cleanup is reported.
+**Status Center → Health → Containers** shows creation receipts and offers
+**Stop and Remove** and a separately confirmed **Delete Saved Vendor State**.
+Docker output logging is disabled. Ordinary history clearing does not delete
+vendor-owned state. Process lists show the host Docker client, not processes
+inside the container. A reviewed command run requested from a container still
+runs on the host in a new human Shell.
+
+The tested setup is recorded in the [container spike](docs/container-pane-spike.md).
+Mark verified Codex device login, an interactive reply, bidirectional messaging
+and pane restart on OrbStack. Broader image/daemon compatibility, Claude's live
+permission flow, resumed instruction uptake and login persistence across an app
+relaunch remain follow-up checks. Container team members and additional Git
+worktree mounts are planned extensions.

@@ -26,8 +26,9 @@ makes that coordination visible, safe or recoverable, it belongs in Parley.
 
 Breaking any of these changes the product.
 
-1. **Subscription CLIs only.** Use locally installed, already signed-in vendor
-   binaries. Never add API keys or a direct model API path.
+1. **Subscription CLIs only.** Use vendor binaries installed on the host or
+   in a person-reviewed local container image, with the person's vendor login.
+   Never add API keys or a direct model API path.
 2. **Real interactive sessions.** Preserve each CLI's TUI, prompts, permission
    flow and session behavior. Parley does not replace them with a chat UI.
 3. **No approval bypass.** Never pass a `--dangerously-*` option,
@@ -325,7 +326,7 @@ grant this confirmation.
 Spawn fixed executables with argument arrays. Agent-authored content must never
 be interpolated into a shell command.
 
-Every vendor process tree launches through `AgentProcessBoundary`. Its macOS
+Host vendor process trees launch through `AgentProcessBoundary`. Its macOS
 Seatbelt profile denies Parley's broad Application Support directory and relay
 transport root, then reopens only generated protocol files, the managed shim
 and that pane's capability-named endpoint. `RelayFileTransport` must reject a
@@ -631,6 +632,83 @@ text or claim to know a prompt, and never grants a permission root.
 
 Deferred: actual merges, rebases, pushes, stashes, automatic cleanup,
 automatic branch deletion, per-pane worktrees and multi-folder grants.
+
+## Experimental container panes
+
+Container execution is independent of `AgentLaunchMode` (fresh/resume). The
+person selects it in the native permission review for Claude or Codex and
+checks a locally installed image. Parley never builds or pulls images. The
+image supplies `/usr/local/bin/claude` or `/usr/local/bin/codex`, POSIX sh,
+GNU stat/coreutils and `/bin/chown`. `ContainerPaneService.preview` pins a
+local Unix-socket endpoint, daemon ID and image ID and probes the vendor
+without a project mount, pane capability, network or signed-in session. It
+cannot establish login, instruction uptake or continued compatibility.
+Codex's legacy Landlock mode is a separate explicit choice; it is not enabled
+silently. No vendor permission bypass or privileged container is allowed.
+
+`ContainerLaunchProjection` builds argv with an explicit daemon, non-root
+UID/GID, four exact host mounts (project and own endpoint writable; protocol
+and Linux shim read-only), one private named home volume, disabled Docker
+output logging and an explicit vendor entrypoint. Only allowlisted Parley
+metadata reaches the container. The Docker socket, host vendor configuration
+and sibling pane endpoints are never mounted. The container is the vendor's
+boundary; Seatbelt remains around the host Docker client but cannot constrain
+operations performed by the external daemon. Reject broad/overlapping roots,
+linked worktrees, submodules and additional permission roots in this version.
+Working folders cannot contain or sit inside either runtime's control or relay
+transport directories, including the current runtime's explicit paths. Compare
+canonical realpath spellings before credential rotation or any Docker command;
+Foundation path standardization can shorten /private/tmp back to /tmp.
+There is no per-pane widening to shared Git metadata. Team-created members
+remain host panes; adding container members is deferred.
+
+Native creation first persists a stopped placeholder. `prepareContainerStart`
+performs Docker work off the main actor without holding the workbench lock;
+activation checks its exact pane generation, folder, workspace, policy, profile
+and fresh/resume mode. Cleanup also runs in the background and issues an
+in-memory generation-bound stop receipt before a main-actor Ghostty termination.
+Status Center removes only the selected creation record. Once no container
+remains for that pane, it clears a matching prepared receipt even when native
+activation never advanced the pane generation. An older record cannot stop a
+replacement; final surface cleanup checks the returned pane generation again.
+A lost Docker client triggers receipt-based cleanup, never an inference that
+the container stopped. Creation uses `docker create` then a Ghostty-owned
+`docker start --attach --interactive`. `container-panes.json` records intent and the daemon-issued ID
+before attach, with protected `container-<owner>.cid` files preserving uncertain
+creates. Image probes and the home-volume initializer also have receipts.
+Names and labels are discovery aids, never sufficient cleanup authority.
+Cleanup checks the recorded daemon, exact full ID and ownership marker, uses
+bounded stop/remove commands without force, and preserves uncertain records.
+Stop/close/restart/quit must stop the owned container before terminating its
+host surface; a failed stop refuses the lifecycle operation. Old records are
+shown in Status Center and never adopted as surviving sessions. No daemon
+scan or process sampling is introduced into the refresh tick.
+
+Closing the main window keeps containers alive. Docker logging is disabled,
+but vendor login, configuration and conversations in a pane's named volume
+survive container removal. Status Center > Health > Containers separately
+confirms deletion and refuses a referenced or foreign volume; ordinary history
+clearing does not delete vendor state. Agent `whoami.executionBoundary` reports
+host/container configuration only. Container terminal working-directory reports
+never replace the reviewed host folder used by context capture and command
+requests. Process rows describe the host client,
+never inferred processes inside the VM. A container's `request-run` still
+requests a host human Shell and the native preview discloses that boundary.
+
+Real Docker checks are explicit, fail if prerequisites are missing, and never
+count as silently skipped default tests:
+
+```bash
+node scripts/run-native-swift.mjs run --package-path native parley-native-checks --container-transport-spike <local-image>
+node scripts/run-native-swift.mjs run --package-path native parley-native-checks --container-ghostty-spike <local-image>
+```
+
+The transport check uses disposable fixture credentials, never a live pane's
+capability. The Ghostty check requires a human Shell. Image sign-in, fresh and
+resumed vendor instruction uptake, normal approval prompts and post-relaunch
+login persistence remain explicit human compatibility follow-ups. Ship the
+reviewed greenfield implementation with known limitations recorded; untested
+configurations do not hold the feature out of main or the next release.
 
 ## SwiftPM inside agent panes
 

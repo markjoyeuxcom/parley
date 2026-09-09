@@ -151,6 +151,11 @@ private struct CommandRunPreview: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("\(run.source.displayName) · \(run.source.kind.label)").font(.headline)
+            if run.source.containerConfiguration != nil {
+                Text("Requested from a container. This command runs on the host Mac as you, outside that container.")
+                    .font(.callout).foregroundStyle(.orange)
+            }
+
             Text("Workspace: \(run.source.workspaceName ?? run.source.workspaceID)\nRequest: \(run.id)")
                 .font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
             Text(ReviewedCommandRunCoordinator.trustDisclosure).font(.system(size: 12))
