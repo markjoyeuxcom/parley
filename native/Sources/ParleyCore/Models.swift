@@ -213,6 +213,7 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
     public var automationPolicy: WorkspaceAutomationPolicy
     public var permissionSelection: PermissionProfileSelection?
     public var permissionEnforcement: PermissionEnforcementLevel?
+    public var containerConfiguration: ContainerConfiguration?
     /// Changes whenever Parley must replace this pane's Ghostty exec surface.
     /// It is app-owned identity, not a process id and not a persisted vendor
     /// session identifier.
@@ -244,7 +245,8 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         automationPolicy: WorkspaceAutomationPolicy = .askAndDelegate,
         permissionSelection: PermissionProfileSelection? = nil,
         permissionEnforcement: PermissionEnforcementLevel? = nil,
-        launchGeneration: Int = 0
+        launchGeneration: Int = 0,
+        containerConfiguration: ContainerConfiguration? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -270,6 +272,7 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         self.permissionSelection = permissionSelection
         self.permissionEnforcement = permissionEnforcement
         self.launchGeneration = launchGeneration
+        self.containerConfiguration = containerConfiguration
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -295,6 +298,7 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         case automationPolicy
         case permissionSelection
         case permissionEnforcement
+        case containerConfiguration
         case launchGeneration
         case workspaceID
         // Decode-only fields from the tmux and pre-broker schemas.
@@ -336,6 +340,7 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
             PermissionEnforcementLevel.self,
             forKey: .permissionEnforcement
         )
+        containerConfiguration = try values.decodeIfPresent(ContainerConfiguration.self, forKey: .containerConfiguration)
         launchGeneration = try values.decodeIfPresent(Int.self, forKey: .launchGeneration) ?? 0
         workspaceID = try values.decodeIfPresent(String.self, forKey: .workspaceID)
             ?? values.decodeIfPresent(String.self, forKey: .windowID)
@@ -366,6 +371,7 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         try values.encode(automationPolicy, forKey: .automationPolicy)
         try values.encodeIfPresent(permissionSelection, forKey: .permissionSelection)
         try values.encodeIfPresent(permissionEnforcement, forKey: .permissionEnforcement)
+        try values.encodeIfPresent(containerConfiguration, forKey: .containerConfiguration)
         try values.encode(launchGeneration, forKey: .launchGeneration)
         try values.encode(workspaceID, forKey: .workspaceID)
     }

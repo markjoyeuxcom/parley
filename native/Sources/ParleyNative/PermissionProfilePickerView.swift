@@ -9,10 +9,22 @@ struct PermissionProfilePickerView: View {
     @State private var selectedProfileID: String
     @State private var approvedRoots: [String]
     @State private var editingProfile: PermissionProfileDefinition?
+    @State private var runInContainer: Bool
+    @State private var containerConfiguration: ContainerConfiguration?
+    private let existingContainer: ContainerConfiguration?
 
     init(model: AppModel, request: PanePermissionRequest) {
         self.model = model
         self.request = request
+        let paneID: String?
+        switch request.action {
+        case .create: paneID = nil
+        case let .restart(id), let .start(id), let .folderAccess(id): paneID = id
+        case let .resume(id, _): paneID = id
+        }
+        existingContainer = model.panes.first(where: { $0.id == paneID })?.containerConfiguration
+        _runInContainer = State(initialValue: existingContainer != nil)
+        _containerConfiguration = State(initialValue: nil)
         let selected = model.defaultPermissionProfileID(for: request)
         _selectedProfileID = State(initialValue: selected)
         let restoredRoots = request.existingSelection?.profileID == selected
@@ -61,6 +73,10 @@ struct PermissionProfilePickerView: View {
                         rootScope(profile)
                         enforcementSummary(profile)
                     }
+                    if [.claude, .codex].contains(request.kind) {
+                        ContainerLaunchOptionsView(model: model, vendor: request.kind, enabled: $runInContainer,
+                            configuration: $containerConfiguration, existing: existingContainer)
+                    }
                     hardBoundary
                 }
                 .padding(20)
@@ -76,12 +92,14 @@ struct PermissionProfilePickerView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                if model.applyingPanePermissions { ProgressView().controlSize(.small) }
                 Button(request.actionLabel) {
-                    model.applyPermissionProfile(
+                    Task { await model.applyPermissionProfile(
                         to: request,
                         profileID: selectedProfileID,
-                        approvedRoots: approvedRoots
-                    )
+                        approvedRoots: approvedRoots,
+                        containerConfiguration: runInContainer ? containerConfiguration : nil
+                    ) }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canContinue)
@@ -89,6 +107,7 @@ struct PermissionProfilePickerView: View {
             .padding(16)
         }
         .frame(width: 610, height: 660)
+        .disabled(model.applyingPanePermissions)
         .interactiveDismissDisabled()
         .sheet(item: $editingProfile) { profile in
             CustomPermissionProfileEditorView(
@@ -317,13 +336,14 @@ struct PermissionProfilePickerView: View {
 
     private var canContinue: Bool {
         guard let effectiveProfile else { return false }
+        if runInContainer && (containerConfiguration == nil || effectiveProfile.approvedRoots != [canonical(request.folder)]) { return false }
         guard effectiveProfile.approvedRoots.contains(canonical(request.folder)) else { return false }
         return !request.isFolderAccessReview || hasChanges
     }
 
     private var hasChanges: Bool {
         guard let effectiveProfile else { return false }
-        return effectiveProfile.selection != request.existingSelection
+        return effectiveProfile.selection != request.existingSelection || runInContainer != (existingContainer != nil) || (runInContainer && containerConfiguration != existingContainer)
     }
 
     private func accessProjection(for profile: PermissionProfileDefinition) -> WorkspaceFolderAccessSnapshot {

@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "28"
+    public static let version = "29"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -13,7 +13,7 @@ public enum AgentProtocol {
 
     - At the start of a session, inspect this pane's authenticated identity with
       `parley whoami`. Its JSON contains app-owned pane, vendor, workspace, role
-      and lifecycle fields, never
+      and lifecycle fields, plus executionBoundary (host or container), never
       a credential, folder, prompt or terminal text.
     - Use `parley help` for the complete command index and `parley protocol`
       to recover this exact canonical reference after context loss. Both are
@@ -204,6 +204,15 @@ public enum AgentProtocol {
       Do not set `PARLEY_SWIFTPM_COMPATIBILITY=1` or pass `--disable-sandbox`
       without the person's authorization. A per-command
       `PARLEY_SWIFTPM_COMPATIBILITY=0` restores SwiftPM's normal behaviour.
+
+    A pane whose whoami executionBoundary is container runs its vendor CLI in a
+    person-approved local container. Its working folder and pane endpoint retain
+    their host paths; other host paths and host tools are not implied available.
+    Use the injected PARLEY_COMMAND if PATH changes. Do not try to reach the
+    Docker daemon or change container mounts. request-run still proposes a host
+    executable in a new human Shell and requires the ordinary native approval;
+    it never executes inside the container. Vendor login and saved conversations
+    belong to that pane's persistent volume, not to the host vendor session.
 
     Features in the native UI are person-controlled, not additional agent commands:
     - Pane and workspace menus manage splits, folders, zoom, moving, roles and

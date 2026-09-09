@@ -4,6 +4,30 @@ Parley is a native macOS workbench for visible, supervised cross-vendor AI CLI
 collaboration. It coordinates existing subscription CLIs; it does not replace
 their models, authentication, tools, permission prompts or terminal interfaces.
 
+## Experimental container agent panes — implementation branch
+
+A separate branch implements the portable Linux shim, pinned local image/daemon
+launch projection, recorded container ownership and native launch/cleanup UI.
+The container owns vendor execution; the native core remains on macOS.
+`AgentProtocol.version` is 29, including content-free execution-boundary
+identity and the host semantics of request-run from a container.
+
+The [OrbStack spike record](docs/container-pane-spike.md) covers the real file transport with disposable pane
+identities. The default Bubblewrap namespace path is unavailable in the tested
+unprivileged container; Codex's explicitly selected legacy Landlock path ran
+an allowed command and refused a disallowed write. This is not a blanket
+compatibility statement for other images or daemons.
+
+The real Ghostty/Docker checks have exercised resize, Control-C, hidden-window
+input and confirmed container removal; the existing regression suite also ran.
+Release gates remain human verification of Claude/Codex sign-in, normal
+permissions, fresh/resumed instruction uptake, persistent login and total
+host-plus-VM idle cost.
+Image checks are quota-free and are not treated as those human verdicts.
+Keep this work separate from a stable release candidate until those gates pass.
+Worktree mounts, container team members, image building, remote daemons,
+Compose and Docker-in-Docker remain outside this first version.
+
 ## Product boundary
 
 A feature belongs in Parley when it coordinates different vendor panes or makes
@@ -12,7 +36,7 @@ perform alone stays with that vendor.
 
 Non-negotiable properties:
 
-- locally installed subscription CLIs only;
+- locally installed subscription CLIs, on the host or in a reviewed local image;
 - real vendor TUIs and permission prompts;
 - explicit pane targets and no implicit broadcast;
 - visible, interruptible work;

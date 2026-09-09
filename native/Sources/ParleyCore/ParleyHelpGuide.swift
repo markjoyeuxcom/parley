@@ -1005,6 +1005,33 @@ public enum ParleyHelpGuide {
             ]
         ),
         ParleyHelpTopic(
+            id: "container-panes",
+            title: "Container agent panes",
+            summary: "Run a reviewed Linux image locally, keep vendor permissions explicit and remove saved container state.",
+            symbol: "shippingbox",
+            sections: [
+                ParleyHelpSection(
+                    id: "container-launch",
+                    title: "Review a container launch",
+                    paragraphs: [
+                        "In the permission review for a Claude Code or Codex pane, select Run in a container (experimental), enter a locally installed image and choose Check Image and Daemon. The image must contain /usr/local/bin/claude or /usr/local/bin/codex, POSIX sh, GNU stat and coreutils, and /bin/chown. Parley never builds or downloads an image for you. Trust the image before probing it: its code runs in a disposable container with no project or pane endpoint mounted.",
+                        "Review the exact image ID and local Unix-socket daemon. Parley checks both again before creation. The container receives your numeric UID/GID, one writable project folder, only its own relay endpoint, read-only protocol and shim files, and a private named volume for this pane’s vendor state. The Docker socket and host vendor login are never mounted. Linked worktrees, submodules and additional approved roots are refused in this first version; container team provisioning is deferred.",
+                        "The container replaces the host execution boundary for the vendor. The local Docker daemon runs outside Parley’s control. Vendor permission prompts remain authoritative. Codex’s default Bubblewrap sandbox may be unavailable; the separately selected legacy Landlock option is checked before launch. Claude’s sandbox may be unavailable and its regular permission flow still applies. Startup checks do not verify sign-in, instruction uptake or a vendor conversation.",
+                    ]
+                ),
+                ParleyHelpSection(
+                    id: "container-lifetime",
+                    title: "Stop containers and delete saved vendor state",
+                    paragraphs: [
+                        "Closing the main window keeps containers running. Closing a pane, restarting it or quitting stops the exact recorded container before ending its Ghostty surface. If Docker cannot confirm cleanup, Parley reports the failure and refuses that lifecycle action. A new app launch never adopts an old container as a surviving vendor session.",
+                        "Status Center → Health → Containers lists creation receipts, including containers from closed or previous pane generations. Stop and Remove uses the recorded container ID and rechecks the daemon and ownership marker. Labels and names alone never authorize cleanup. Processes lists the host Docker client; processes inside the container are not listed.",
+                        "Docker output logging is disabled. A named volume can still contain vendor login, configuration and saved conversations after the container ends. Delete Saved Vendor State permanently removes that volume after a separate confirmation and refuses while any container references it. Clearing Parley history or closing a workspace does not silently log you out or delete vendor-owned conversations.",
+                        "A request-run from a container still proposes a host executable, outside the container, in a new human Shell with the ordinary native approval. Its preview labels that source. Fresh and Resume remain independent of container execution; the vendor owns available saved sessions.",
+                    ]
+                ),
+            ]
+        ),
+        ParleyHelpTopic(
             id: "troubleshooting",
             title: "Troubleshooting",
             summary: "Resolve the common cases without starting a second Parley instance or losing terminal state.",
