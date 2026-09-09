@@ -5,6 +5,8 @@ import SwiftUI
 struct ContainerLaunchOptionsView: View {
     @ObservedObject var model: AppModel
     let vendor: PaneKind
+    let folder: String
+    let plannedCommonDirectory: String?
     @Binding var enabled: Bool
     @Binding var configuration: ContainerConfiguration?
     @State private var image: String
@@ -12,8 +14,8 @@ struct ContainerLaunchOptionsView: View {
     @State private var checking = false
     @State private var message: String?
 
-    init(model: AppModel, vendor: PaneKind, enabled: Binding<Bool>, configuration: Binding<ContainerConfiguration?>, existing: ContainerConfiguration?) {
-        self.model = model; self.vendor = vendor; _enabled = enabled; _configuration = configuration
+    init(model: AppModel, vendor: PaneKind, folder: String, plannedCommonDirectory: String? = nil, enabled: Binding<Bool>, configuration: Binding<ContainerConfiguration?>, existing: ContainerConfiguration?) {
+        self.model = model; self.vendor = vendor; self.folder = folder; self.plannedCommonDirectory = plannedCommonDirectory; _enabled = enabled; _configuration = configuration
         _image = State(initialValue: existing?.imageName ?? "")
         _legacy = State(initialValue: existing?.legacyCodexSandbox ?? false)
     }
@@ -24,7 +26,7 @@ struct ContainerLaunchOptionsView: View {
             if enabled {
                 TextField("Locally installed image", text: $image).textFieldStyle(.roundedBorder)
                     .onChange(of: image) { _, _ in configuration = nil; message = nil }
-                Text("The image must contain /usr/local/bin/\(vendor.rawValue). Parley does not build or download images. Trust the image and the local daemon before starting it.")
+                Text("The image must contain /usr/local/bin/\(vendor.rawValue). Parley does not build or download images. Checking executes code from this image in a disposable container with no network, project files or login. Trust the image and the local daemon before checking it.")
                 if vendor == .codex {
                     Toggle("Use Codex’s legacy Landlock sandbox", isOn: $legacy)
                         .onChange(of: legacy) { _, _ in configuration = nil; message = nil }
@@ -40,27 +42,38 @@ struct ContainerLaunchOptionsView: View {
                     Text("Daemon: \(configuration.daemonEndpoint)\nImage: \(configuration.imageID)")
                         .font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
                 }
+                if let access = configuration?.gitAccess {
+                    Text("Additional writable Git mount: \(access.commonDirectory)\nThis shares repository objects, refs, hooks and configuration with the other worktrees. It does not mount the primary checkout. Vendor permission prompts still govern Git writes.")
+                        .textSelection(.enabled)
+                }
                 if let message { Text(message).foregroundStyle(.orange).textSelection(.enabled) }
-                Text("The container is the execution boundary. Only this working folder is mounted writable, plus this pane’s relay endpoint. Docker runs outside Parley’s control. No Docker socket or host login is mounted. Sign in inside the pane; a private named volume keeps this pane’s vendor login, configuration and saved conversations until you delete them in Status Center. Closing the main window keeps the container running; closing the pane or quitting stops it. Docker output logging is disabled.")
-                Text("Vendor sandbox availability varies by image. Claude’s own sandbox may be unavailable and its regular permission flow still applies. Checks do not prove login, instruction uptake or a vendor session. Linked worktrees, additional folders and container team provisioning are not supported yet.")
+                Text("The container is the execution boundary. The working folder and this pane’s relay endpoint are writable; any additional shared Git mount is listed above. Docker runs outside Parley’s control. No Docker socket or host login is mounted. Sign in inside the pane; a private named volume keeps this pane’s vendor login, configuration and saved conversations until you delete them in Status Center. Closing the main window keeps the container running; closing the pane or quitting stops it. Docker output logging is disabled.")
+                Text("Vendor sandbox availability varies by image. Claude’s own sandbox may be unavailable and its regular permission flow still applies. Checks do not prove login, instruction uptake or a vendor session. Linked worktrees require review of their shared Git directory; arbitrary additional folders are not mounted.")
             }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
+        .onChange(of: folder) { _, _ in configuration = nil; message = nil }
+        .onChange(of: plannedCommonDirectory) { _, _ in configuration = nil; message = nil }
     }
 
     private func check() {
         guard let service = model.controller?.containerService else { return }
         let selectedImage = image
         let selectedLegacy = legacy
+        let selectedFolder = folder
+        let selectedCommon = plannedCommonDirectory
         checking = true; configuration = nil; message = nil
         Task {
             do {
                 let preview = try await Task.detached(priority: .userInitiated) {
-                    try service.preview(image: selectedImage, vendor: vendor, legacyCodexSandbox: selectedLegacy)
+                    var preview = try service.preview(image: selectedImage, vendor: vendor, legacyCodexSandbox: selectedLegacy)
+                    preview.gitAccess = try selectedCommon.map { try ContainerGitAccess.planned(folder: selectedFolder, commonDirectory: $0) }
+                        ?? ContainerGitAccess.inspect(folder: selectedFolder)
+                    return preview
                 }.value
-                if image == selectedImage && legacy == selectedLegacy { configuration = preview }
+                if image == selectedImage && legacy == selectedLegacy && folder == selectedFolder && plannedCommonDirectory == selectedCommon { configuration = preview }
             } catch { message = error.localizedDescription }
             checking = false
         }

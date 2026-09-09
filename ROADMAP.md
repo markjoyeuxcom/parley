@@ -31,7 +31,11 @@ Mark's release decision on 9 September: this is a greenfield project; ship the
 reviewed implementation with its tested configuration and known limitations.
 The remaining compatibility work does not hold the feature out of main or the
 next release. Build, regression, packaging and release verification still apply.
-Worktree mounts and container team members are planned extensions. Image
+The container follow-up adds reviewed shared-Git mounts (without the primary
+checkout), per-vendor container team approvals and asynchronous member startup,
+Linux utility preflight, cleanup continuation and responsive ownership reads.
+Default Codex Bubblewrap still fails namespace creation in the current OrbStack
+image; no automatic sandbox fallback or permission bypass is added. Image
 building, remote daemons, Compose and Docker-in-Docker remain outside this version.
 
 ## Product boundary

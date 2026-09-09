@@ -74,7 +74,7 @@ struct PermissionProfilePickerView: View {
                         enforcementSummary(profile)
                     }
                     if [.claude, .codex].contains(request.kind) {
-                        ContainerLaunchOptionsView(model: model, vendor: request.kind, enabled: $runInContainer,
+                        ContainerLaunchOptionsView(model: model, vendor: request.kind, folder: request.folder, enabled: $runInContainer,
                             configuration: $containerConfiguration, existing: existingContainer)
                     }
                     hardBoundary

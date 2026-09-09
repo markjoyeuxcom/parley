@@ -1,0 +1,76 @@
+import Darwin
+import Foundation
+
+/// Exact shared Git metadata shown in the native launch review. This is a
+/// writable mount, not a claim that a vendor has approved a Git operation.
+public struct ContainerGitAccess: Codable, Equatable, Sendable {
+    public let folder: String
+    public let commonDirectory: String
+    public let device: UInt64
+    public let fileID: UInt64
+
+    static func canonical(_ path: String) throws -> String {
+        guard let resolved = realpath(path, nil) else { throw ContainerPaneError.refused("A Git path is unavailable; review the worktree again.") }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    public static func planned(folder: String, commonDirectory: String) throws -> Self {
+        let common = try canonical(commonDirectory)
+        let attrs = try FileManager.default.attributesOfItem(atPath: common)
+        guard attrs[.type] as? FileAttributeType == .typeDirectory,
+              let device = (attrs[.systemNumber] as? NSNumber)?.uint64Value,
+              let fileID = (attrs[.systemFileNumber] as? NSNumber)?.uint64Value else {
+            throw ContainerPaneError.refused("The shared Git directory identity could not be read.")
+        }
+        return Self(folder: folder, commonDirectory: common, device: device, fileID: fileID)
+    }
+
+    /// Read only bounded Git pointers, then corroborate them against Git's
+    /// registry. Submodules and arbitrary external gitdirs are not worktrees.
+    public static func inspect(folder: String) throws -> Self? {
+        let canonicalFolder = try canonical(folder)
+        var parent = URL(fileURLWithPath: canonicalFolder)
+        while parent.path != "/" {
+            let marker = parent.appendingPathComponent(".git")
+            switch ManagedWorktreeService.itemState(at: marker.path) {
+            case .absent: parent.deleteLastPathComponent(); continue
+            case .unknown: throw ContainerPaneError.refused("The working folder's Git metadata could not be inspected.")
+            case .present(let directory):
+                if directory { return nil }
+                guard parent.path == canonicalFolder else {
+                    throw ContainerPaneError.refused("Choose the linked worktree root as the container working folder.")
+                }
+                func pointer(_ url: URL) throws -> String {
+                    let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+                    guard attrs[.type] as? FileAttributeType == .typeRegular,
+                          (attrs[.size] as? NSNumber)?.intValue ?? Int.max <= 4096 else {
+                        throw ContainerPaneError.refused("Git pointers must be bounded regular files, not symlinks.")
+                    }
+                    return try String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .newlines)
+                }
+                let value = try pointer(marker)
+                guard value.hasPrefix("gitdir: ") else { throw ContainerPaneError.refused("The worktree Git pointer is invalid.") }
+                let gitPath = String(value.dropFirst(8))
+                let admin = try canonical(gitPath.hasPrefix("/") ? gitPath : canonicalFolder + "/" + gitPath)
+                let commonPointer = try pointer(URL(fileURLWithPath: admin + "/commondir"))
+                let common = try canonical(commonPointer.hasPrefix("/") ? commonPointer : admin + "/" + commonPointer)
+                guard admin.hasPrefix(common + "/worktrees/"), !admin.dropFirst((common + "/worktrees/").count).contains("/"),
+                      try canonical(pointer(URL(fileURLWithPath: admin + "/gitdir"))) == marker.path else {
+                    throw ContainerPaneError.refused("Only registered linked worktrees can receive shared Git access.")
+                }
+                let result = try planned(folder: canonicalFolder, commonDirectory: common)
+                let runner = ProcessCommandRunner(timeout: 5, maximumCapturedBytes: 200_001)
+                let output = try runner.run(executable: URL(fileURLWithPath: "/usr/bin/git"),
+                    arguments: ["-C", canonicalFolder, "worktree", "list", "--porcelain", "-z"],
+                    environment: ["PATH": "/usr/bin:/bin", "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat"])
+                guard output.status == 0, output.stdout.count <= 200_000,
+                      RegisteredWorktree.parse(output.stdout).contains(where: { (try? canonical($0.path)) == canonicalFolder }) else {
+                    throw ContainerPaneError.refused("Git no longer lists this linked worktree.")
+                }
+                return result
+            }
+        }
+        return nil
+    }
+}

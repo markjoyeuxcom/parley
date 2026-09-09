@@ -96,6 +96,8 @@ private struct TeamSessionApproval: View {
     @State private var objective: String
     @State private var folder: String
     @State private var vendors: Set<PaneKind>
+    @State private var containerVendors: Set<PaneKind> = []
+    @State private var containerConfigurations: [String: ContainerConfiguration] = [:]
     @State private var profileID: String
     @State private var paneLimit: Int
     @State private var hours: Int
@@ -162,6 +164,40 @@ private struct TeamSessionApproval: View {
                   preview.baseRef == worktreeBase.trimmingCharacters(in: .whitespaces) else { return nil }
             return .create(preview: preview)
         }
+    }
+
+    private var containerFolder: String {
+        switch worktreeMode {
+        case .none: folder
+        case .existing: existingWorktreePath
+        case .create: worktreePreview?.path ?? ""
+        }
+    }
+
+    private var reviewedContainers: [String: ContainerConfiguration] {
+        containerConfigurations.filter { key, _ in
+            PaneKind(rawValue: key).map { vendors.contains($0) && containerVendors.contains($0) } ?? false
+        }
+    }
+
+    private var containersReady: Bool {
+        containerVendors.intersection(vendors).allSatisfy { reviewedContainers[$0.rawValue] != nil }
+    }
+
+    @ViewBuilder private var containerSection: some View {
+        ForEach([PaneKind.claude, .codex].filter { vendors.contains($0) }, id: \.self) { vendor in
+            VStack(alignment: .leading) {
+                Text("\(vendor.label) team members").font(.system(size: 11, weight: .medium))
+                ContainerLaunchOptionsView(model: model, vendor: vendor, folder: containerFolder,
+                    plannedCommonDirectory: worktreeMode == .create ? worktreePreview?.commonDirectory : nil,
+                    enabled: Binding(get: { containerVendors.contains(vendor) }, set: { on in
+                        if on { containerVendors.insert(vendor) } else { containerVendors.remove(vendor) }
+                    }), configuration: Binding(get: { containerConfigurations[vendor.rawValue] },
+                        set: { containerConfigurations[vendor.rawValue] = $0 }), existing: nil)
+            }
+        }
+        Text("Each vendor uses the execution settings you approve here. Team members cannot select an image, daemon or additional mounts. Every container gets its own private vendor-state volume.")
+            .font(.caption).foregroundStyle(.secondary)
     }
 
     private func previewWorktree() {
@@ -252,6 +288,7 @@ private struct TeamSessionApproval: View {
                     Toggle(kind.label, isOn: vendorBinding(kind))
                 }
             }
+            containerSection
             Picker("Permission profile for new panes", selection: $profileID) {
                 ForEach(model.permissionProfiles) { profile in
                     Text(profile.name).tag(profile.id)
@@ -281,10 +318,10 @@ private struct TeamSessionApproval: View {
                         do {
                             try await model.approveTeamSession(session, objective: objective, folder: folder,
                                 allowedVendors: PaneKind.allCases.filter { vendors.contains($0) }, permissionProfileID: profileID,
-                                paneLimit: paneLimit, hours: hours, worktree: choice)
+                                paneLimit: paneLimit, hours: hours, worktree: choice, containerConfigurations: reviewedContainers)
                         } catch { self.error = error.localizedDescription }
                     }
-                }.buttonStyle(.borderedProminent).disabled(busy || worktreeChoice == nil)
+                }.buttonStyle(.borderedProminent).disabled(busy || worktreeChoice == nil || !containersReady)
             }
         }.padding(12)
     }
@@ -351,6 +388,14 @@ private struct TeamSessionDetail: View {
             Text(TeamSessionDisclosure.deadline).font(.system(size: 11)).foregroundStyle(.secondary)
             Text("Folder: \(session.folder)\nVendors: \(session.allowedVendors.map(\.label).joined(separator: ", "))\nPermission profile: \(session.permissionProfileID.flatMap { id in model.permissionProfiles.first { $0.id == id }?.name } ?? session.permissionProfileID ?? "—")\nSession: \(session.id)")
                 .font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+            if let containers = session.containerConfigurations, !containers.isEmpty {
+                ForEach(containers.keys.sorted(), id: \.self) { vendor in
+                    if let configuration = containers[vendor] {
+                        Text("\(vendor): container · \(configuration.imageName)\n\(configuration.daemonEndpoint)")
+                            .font(.caption).textSelection(.enabled)
+                    }
+                }
+            }
             if let binding = session.worktree {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Worktree: \(binding.summary)").font(.system(size: 11, weight: .medium))

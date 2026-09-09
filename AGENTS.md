@@ -641,26 +641,39 @@ checks a locally installed image. Parley never builds or pulls images. The
 image supplies `/usr/local/bin/claude` or `/usr/local/bin/codex`, POSIX sh,
 GNU stat/coreutils and `/bin/chown`. `ContainerPaneService.preview` pins a
 local Unix-socket endpoint, daemon ID and image ID and probes the vendor
-without a project mount, pane capability, network or signed-in session. It
+without a project mount, pane capability, network or signed-in session. The fixed
+probe first verifies the Linux shim and home-initializer utility contract. It
 cannot establish login, instruction uptake or continued compatibility.
 Codex's legacy Landlock mode is a separate explicit choice; it is not enabled
 silently. No vendor permission bypass or privileged container is allowed.
 
 `ContainerLaunchProjection` builds argv with an explicit daemon, non-root
 UID/GID, four exact host mounts (project and own endpoint writable; protocol
-and Linux shim read-only), one private named home volume, disabled Docker
+and Linux shim read-only), plus the reviewed shared Git directory for a linked
+worktree, one private named home volume, disabled Docker
 output logging and an explicit vendor entrypoint. Only allowlisted Parley
 metadata reaches the container. The Docker socket, host vendor configuration
 and sibling pane endpoints are never mounted. The container is the vendor's
 boundary; Seatbelt remains around the host Docker client but cannot constrain
 operations performed by the external daemon. Reject broad/overlapping roots,
-linked worktrees, submodules and additional permission roots in this version.
+submodules and arbitrary additional permission roots. Linked worktrees require
+`ContainerGitAccess`: bounded regular Git pointers, a matching registered tree,
+the canonical common directory and its device/inode, all checked again before
+preparation. The native review names that writable mount and its shared refs,
+objects, hooks and configuration; the primary checkout is never mounted.
 Working folders cannot contain or sit inside either runtime's control or relay
 transport directories, including the current runtime's explicit paths. Compare
 canonical realpath spellings before credential rotation or any Docker command;
 Foundation path standardization can shorten /private/tmp back to /tmp.
-There is no per-pane widening to shared Git metadata. Team-created members
-remain host panes; adding container members is deferred.
+A team's memory-only grant binds its reviewed per-vendor container configurations.
+Agents choose an allowed vendor, never an image, daemon or mount. Creation records
+an inert, owned placeholder before Docker preparation; the provision stays pending
+and blocks another add. Native activation rechecks the live grant, deadline,
+profile and exact placeholder, then transfers ownership to its initial started
+generation. Stop/expiry while preparing refuses activation and attempts cleanup;
+failed cleanup keeps the receipt and warning. No Docker work holds the team or
+workbench lock or runs on the main actor. Team Stop cleans every still-owned
+container before terminating its surface and reports per-member failures.
 
 Native creation first persists a stopped placeholder. `prepareContainerStart`
 performs Docker work off the main actor without holding the workbench lock;
@@ -682,7 +695,9 @@ bounded stop/remove commands without force, and preserves uncertain records.
 Stop/close/restart/quit must stop the owned container before terminating its
 host surface; a failed stop refuses the lifecycle operation. Old records are
 shown in Status Center and never adopted as surviving sessions. No daemon
-scan or process sampling is introduced into the refresh tick.
+scan or process sampling is introduced into the refresh tick. Ownership file reads
+use a short independent lock, so Status Center does not wait on Docker. Bulk
+cleanup visits every receipt/pane after a failure and reports each unresolved one.
 
 Closing the main window keeps containers alive. Docker logging is disabled,
 but vendor login, configuration and conversations in a pane's named volume

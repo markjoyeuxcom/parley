@@ -726,6 +726,9 @@ func teamSessionWorktreeBindingChecks() throws {
 
 @MainActor
 let teamSessionChecks: [(String, () throws -> Void)] = [
+    ("container team retains ownership after activation recording failure", checkContainerTeamActivationFailure),
+    ("container team grant retains reviewed execution settings", checkContainerTeamGrant),
+    ("container team provisioning owns before preparation and waits before reporting", checkContainerTeamPreparation),
     ("team session worktree binding is exact, contained and visible in status", teamSessionWorktreeBindingChecks),
     ("team session review regression changed profile revokes approval", teamSessionReviewProfileMutationCheck),
     ("team session review regression partial creation remains owned", teamSessionReviewPartialCreationCheck),
@@ -1232,4 +1235,92 @@ func teamSessionBoundedDiagnosticsChecks() throws {
     try teamExpect(status.text.contains("\"messageTruncated\":true") && status.text.contains("\"reasonTruncated\":true"), "truncation metadata is missing from status")
     try teamExpect(!TeamMemberStopOutcome(paneID: "p", launchGeneration: 1, name: "n", result: .stopped, message: "fine").messageTruncated, "a short message was flagged truncated")
     try teamExpect(!status.text.contains("\u{1b}") && stored.detail?.utf8.count ?? 0 < 4_000, "control characters or an unbounded detail reached the status record")
+}
+
+private func containerTeamConfiguration() -> ContainerConfiguration {
+    ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock", daemonID: "fixture",
+        imageID: "sha256:" + String(repeating: "b", count: 64), imageName: "fixture", legacyCodexSandbox: false)
+}
+
+func checkContainerTeamGrant() throws {
+    let fixture = try TeamFixture(); defer { fixture.cleanup() }
+    let coordinator = fixture.coordinator { fixture.live }
+    let request = try coordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "fixture", folder: fixture.project, paneLimit: 2, hours: 1))
+    try coordinator.approve(id: request.id, revision: request.revision, objective: "fixture", folder: fixture.project,
+        allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 2, hours: 1)
+    let original = coordinator.grant(for: request.id)!
+    let old = try JSONDecoder().decode(TeamSessionGrant.self, from: JSONEncoder().encode(original))
+    try teamExpect(old.containerConfigurations == nil, "an older host grant acquired container authority")
+    var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as! [String: Any]
+    json["containerConfigurations"] = ["codex": try JSONSerialization.jsonObject(with: JSONEncoder().encode(containerTeamConfiguration()))]
+    let decoded = try JSONDecoder().decode(TeamSessionGrant.self, from: JSONSerialization.data(withJSONObject: json))
+    let roundtrip = try JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as! [String: Any]
+    try teamExpect(roundtrip["containerConfigurations"] != nil, "reviewed container settings were lost from the grant")
+}
+
+func checkContainerTeamPreparation() throws {
+    let fixture = try TeamFixture(); defer { fixture.cleanup() }
+    let box = PaneBox(fixture.live)
+    let coordinator = fixture.coordinator { box.current() }
+    let request = try coordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "fixture", folder: fixture.project, paneLimit: 2, hours: 1))
+    try coordinator.approve(id: request.id, revision: request.revision, objective: "fixture", folder: fixture.project,
+        allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 2, hours: 1, containerConfigurations: ["codex": containerTeamConfiguration()])
+    let provision = try coordinator.requestPane(token: "lead-token", kind: .codex, name: "Container", role: nil)
+    var created = fixture.lead
+    created.id = "container-member"; created.kind = .codex; created.isStarted = false; created.launchGeneration = 0
+    created.containerConfiguration = containerTeamConfiguration()
+    coordinator.fulfilProvisions(create: { _, _, _ in box.update { $0.append(created) }; return created })
+    try teamExpect(coordinator.sessions().first?.members.count == 1, "container placeholder was not owned immediately")
+    try teamExpect(coordinator.pendingProvisions().contains(where: { $0.id == provision.id }), "unstarted container was reported as a completed provision")
+    try teamRejects("a second provision overlapped container preparation") {
+        _ = try coordinator.requestPane(token: "lead-token", kind: .codex, name: "Overlap", role: nil)
+    }
+    coordinator.fulfilProvisions(create: { _, _, _ in throw TeamSessionError.invalid("duplicate creation") })
+    try teamExpect(coordinator.provision(id: provision.id)?.failure == nil, "refresh retried a preparing pane")
+    try coordinator.finishContainerProvision(id: provision.id, activate: { grant, pane in
+        try teamExpect(grant.containerConfigurations?["codex"] == containerTeamConfiguration(), "activation changed the reviewed image or daemon")
+        var started = pane; started.isStarted = true; started.launchGeneration += 1
+        box.update { panes in panes[panes.firstIndex { $0.id == pane.id }!] = started }
+        return started
+    })
+    let active = coordinator.sessions().first!
+    try teamExpect(active.members.count == 1 && active.members[0].launchGeneration == 1 && coordinator.provision(id: provision.id)?.isSettled == true,
+        "initial activation lost ownership or failed to settle the provision")
+    try teamExpect(active.ownedRunningMembers(in: box.current()).count == 1, "team Stop would miss the activated container")
+    let second = try coordinator.requestPane(token: "lead-token", kind: .codex, name: "Second", role: nil)
+    created.id = "second-container"
+    coordinator.fulfilProvisions(create: { _, _, _ in box.update { $0.append(created) }; return created })
+    _ = try coordinator.stop(id: request.id, reason: "fixture stop while Docker prepares")
+    try teamRejects("stopped team could begin Docker preparation") { _ = try coordinator.containerPreparation(id: second.id) }
+    var activatedAfterStop = false
+    try teamRejects("revoked team grant activated its prepared container") {
+        try coordinator.finishContainerProvision(id: second.id, activate: { _, pane in activatedAfterStop = true; return pane })
+    }
+    try teamExpect(!activatedAfterStop && coordinator.sessions().first?.members.count == 2, "revocation lost ownership or ran activation")
+    coordinator.failContainerProvision(id: second.id, reason: "preparation cancelled and container removed")
+    try teamExpect(coordinator.provision(id: second.id)?.failure != nil, "cancelled preparation left team add waiting")
+}
+
+func checkContainerTeamActivationFailure() throws {
+    let fixture = try TeamFixture(); defer { fixture.cleanup() }
+    let box = PaneBox(fixture.live)
+    let coordinator = fixture.coordinator { box.current() }
+    let request = try coordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "fixture", folder: fixture.project, paneLimit: 1, hours: 1))
+    try coordinator.approve(id: request.id, revision: request.revision, objective: "fixture", folder: fixture.project,
+        allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 1, hours: 1, containerConfigurations: ["codex": containerTeamConfiguration()])
+    let provision = try coordinator.requestPane(token: "lead-token", kind: .codex, name: "Container", role: nil)
+    var created = fixture.lead; created.id = "failed-start"; created.kind = .codex; created.isStarted = false; created.launchGeneration = 0
+    created.containerConfiguration = containerTeamConfiguration()
+    coordinator.fulfilProvisions(create: { _, _, _ in box.update { $0.append(created) }; return created })
+    try teamRejects("activation recording failure was hidden") {
+        try coordinator.finishContainerProvision(id: provision.id, activate: { _, pane in
+            var started = pane; started.isStarted = true; started.launchGeneration += 1
+            box.update { panes in panes[panes.firstIndex { $0.id == pane.id }!] = started }
+            throw TeamSessionError.invalid("fixture persistence failure after in-memory activation")
+        })
+    }
+    coordinator.failContainerProvision(id: provision.id, reason: "fixture persistence failure")
+    try teamExpect(coordinator.sessions().first?.ownedRunningMembers(in: box.current()).count == 1,
+        "activation failure left an unowned started container")
+    try teamExpect(coordinator.provision(id: provision.id)?.failure != nil, "failed activation left the requester waiting")
 }
