@@ -312,6 +312,8 @@ public final class ContextProcessCommandRunner: ContextCommandRunning, @unchecke
                 kill(process.processIdentifier, SIGKILL)
                 _ = finished.wait(timeout: .now() + 1)
             }
+            try? stdout.fileHandleForReading.close()
+            try? stderr.fileHandleForReading.close()
         }
         process.waitUntilExit()
         readers.wait()

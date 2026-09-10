@@ -59,3 +59,24 @@ Detailed logs and the standalone soak JSON remain under the checkout's ignored
 `dist/` directory. The validation logs completed successfully, but the original
 Parley validation receipt became unavailable after the interrupted tool session;
 the subsequent soak returned a captured exit status of zero without truncation.
+
+## Integration with the core audit
+
+GitLab main includes the core audit as `e71eb26`, merged by `e24c086`. The
+host-permissions branch incorporates that main revision. The sole textual
+conflict was the audit's `O_CLOEXEC` addition in the retired disk control-token
+loader. The resolution keeps the memory-only token generator; no such lock or
+file remains to inherit. The relay credential and inbox-watcher close-on-exec
+changes remain.
+
+The socket descriptor cleanup and interrupted-read retry coexist with peer-PID
+authentication and per-send SIGPIPE suppression. The worker's bounded display
+retry, Ctrl+C return to Shell and cancel-file race fix coexist with approval
+digests. Context-review interruption, context-process cleanup and canonical
+team-folder joining are retained, including both audit regression checks.
+
+The integrated tree passed build, all 326 native checks (including both added
+audit regressions), all 41 Node tests, the public scan, five repeated control
+socket checks and the 25-round eight-pane Ghostty soak. The reviewed validation
+run returned exit status zero, not cancelled, with untruncated output. The real
+Codex probe results above predate this merge; its implementation is unchanged.

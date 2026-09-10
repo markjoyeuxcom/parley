@@ -188,7 +188,11 @@ public final class RelayHTTPServer: @unchecked Sendable {
             let connections = connections
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 defer { connections.leave() }
-                self?.serve(client)
+                guard let self else {
+                    Darwin.close(client)
+                    return
+                }
+                self.serve(client)
             }
         }
     }
@@ -702,6 +706,9 @@ public final class RelayHTTPServer: @unchecked Sendable {
         while true {
             var buffer = [UInt8](repeating: 0, count: 8_192)
             let count = Darwin.recv(client, &buffer, buffer.count, 0)
+            if count < 0, errno == EINTR {
+                continue
+            }
             guard count > 0 else { throw RelayServerError.malformedRequest("incomplete relay request") }
             received.append(contentsOf: buffer.prefix(count))
 

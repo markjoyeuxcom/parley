@@ -53,7 +53,7 @@ Implementation and validation:
 - [x] Add a real Codex tool-launch preflight and regression coverage alongside
   the launch checks. Ordinary commands and patching, private-path denials,
   endpoint access, approved execution, native authorization, Relay/Ask and
-  existing helper paths pass. Build, all 324 native checks, 41 Node tests and
+  existing helper paths pass. Build, all 326 native checks after the core-audit merge, 41 Node tests and
   the 25-round eight-pane Ghostty soak pass. See the
   [validation record](docs/host-permission-validation.md).
 - [ ] Manually exercise fresh and supported resumed interactive sessions for

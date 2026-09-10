@@ -749,7 +749,25 @@ let teamSessionChecks: [(String, () throws -> Void)] = [
     ("team session Stop affects only team-owned panes", teamSessionStopChecks),
     ("team session waits, status and recovery are owner-only", teamSessionWaitChecks),
     ("team session native pane creation carries approved values only", teamSessionNativePaneChecks),
+    ("team session planned folder root canonicalization avoids double slash", teamSessionPlannedFolderRootCanonicalizationCheck),
 ]
+
+func teamSessionPlannedFolderRootCanonicalizationCheck() throws {
+    let tmp = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+    let project = tmp.appendingPathComponent("parley-canonical-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: project) }
+
+    let planned = project.appendingPathComponent("sub/future").path
+    let canonical = try TeamSessionCoordinator.canonicalPlannedFolder(planned, within: project.path)
+    try teamExpect(!canonical.hasPrefix("//"), "canonical path has double slash prefix: \(canonical)")
+    try teamExpect(canonical == project.appendingPathComponent("sub/future").path, "canonical path mismatch: \(canonical)")
+
+    let rootPlanned = "/parley_test_root_ancestor_\(UUID().uuidString)/future"
+    let rootCanonical = try TeamSessionCoordinator.canonicalPlannedFolder(rootPlanned, within: "/")
+    try teamExpect(!rootCanonical.hasPrefix("//"), "root canonical path formatted with double slash: \(rootCanonical)")
+    try teamExpect(rootCanonical.hasPrefix("/parley_test_root_ancestor_"), "root canonical path lost prefix: \(rootCanonical)")
+}
 
 // Independent review regressions: failure paths beyond the happy-path checks.
 func teamSessionReviewProfileMutationCheck() throws {

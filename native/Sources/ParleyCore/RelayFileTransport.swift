@@ -235,7 +235,7 @@ public final class RelayFileTransport: @unchecked Sendable {
             }
             for (token, endpoint) in live where inboxWatchers[token] == nil {
                 let inbox = endpoint.appendingPathComponent("inbox", isDirectory: true)
-                let descriptor = open(inbox.path, O_EVTONLY | O_DIRECTORY | O_NOFOLLOW)
+                let descriptor = open(inbox.path, O_EVTONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
                 guard descriptor >= 0 else { continue }
                 let watcher = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: [.write, .extend, .link, .rename, .delete], queue: queue)
                 watcher.setEventHandler { [weak self] in
