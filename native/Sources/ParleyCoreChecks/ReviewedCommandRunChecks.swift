@@ -11,6 +11,7 @@ private func runRejects(_ operation: () throws -> Void) throws {
 
 @MainActor
 let reviewedCommandRunChecks: [(String, () throws -> Void)] = [
+    ("terminal links open only ordinary web URLs", terminalLinkPolicyChecks),
     ("command wait reports an unobserved exit instead of a silent success", commandWaitOutcomeChecks),
     ("spawned commands never inherit a blocked signal mask", commandSpawnSignalMaskChecks),
     ("host preflight failure names what was observed, not cleared legacy settings", hostPreflightMessageChecks),
@@ -1190,4 +1191,41 @@ func commandSpawnSignalMaskChecks() throws {
         "the child inherited this thread's blocked signal mask; a tool that waits on SIGCHLD would hang forever")
     try runExpect(output.status == 128 + SIGUSR1,
         "expected the child to die from the signal it raised, got status \(output.status)")
+}
+
+
+/// Pane output is written by a vendor CLI, and an OSC 8 hyperlink can display
+/// one thing while pointing at another. A click is untrusted input: a scheme
+/// that could launch something local must never reach NSWorkspace.
+///
+/// Each refusal below carries a host, so it can only be rejected by the scheme
+/// allowlist. An earlier version of this check used hostless URLs, which the
+/// host requirement rejected on its own: it passed even with `file` and
+/// `javascript` added to the allowlist.
+func terminalLinkPolicyChecks() throws {
+    for allowed in ["https://gitlab.com/markjoyeuxcom/apps/parley",
+                    "http://localhost:8080/health",
+                    "https://example.com/a?b=c#d"] {
+        try runExpect(TerminalLinkPolicy.openableURL(allowed) != nil, "refused an ordinary web URL: \(allowed)")
+    }
+    // Scheme allowlist, each with a host of its own.
+    for refused in ["file://localhost/etc/passwd",
+                    "ftp://example.com/payload",
+                    "vscode://file/Users/markjoyeux/.ssh/id_ed25519",
+                    "x-parley-evil://example.com/run",
+                    "smb://example.com/share"] {
+        try runExpect(TerminalLinkPolicy.openableURL(refused) == nil,
+            "a terminal click would have opened \(refused); only http and https may reach the system")
+    }
+    // Hostless and script schemes, refused whatever the allowlist says.
+    for refused in ["javascript:alert(1)", "file:///etc/passwd", "mailto:someone@example.com", "https://", ""] {
+        try runExpect(TerminalLinkPolicy.openableURL(refused) == nil, "accepted a link with no host: \(refused)")
+    }
+    // A control character can hide a rendered link's real destination.
+    for refused in ["https://example.com/\u{1b}]8;;", "http://exa\u{7f}mple.com", "https://example.com/\u{0}"] {
+        try runExpect(TerminalLinkPolicy.openableURL(refused) == nil, "accepted a link containing a control character")
+    }
+    try runExpect(TerminalLinkPolicy.openableURL("https://example.com/" + String(repeating: "a", count: 5000)) == nil,
+        "an oversized link was accepted")
+    try runExpect(TerminalLinkPolicy.openableURL("HTTPS://Example.com") != nil, "scheme matching must be case-insensitive")
 }

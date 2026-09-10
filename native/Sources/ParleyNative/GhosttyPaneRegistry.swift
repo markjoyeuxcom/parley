@@ -15,6 +15,7 @@ final class GhosttyPaneRegistry {
         TerminalSurfaceFocusDelegate,
         TerminalSurfaceCloseDelegate,
         TerminalSurfacePwdDelegate,
+        TerminalSurfaceOpenURLDelegate,
         TerminalSurfaceLifecycleDelegate
     {
         let paneID: String
@@ -24,6 +25,7 @@ final class GhosttyPaneRegistry {
         var onWorkingDirectory: (String, String) -> Void
         var onAttach: (String) -> Void
         var onDetach: (String) -> Void
+        var onOpenURL: (String) -> Void
 
         init(
             paneID: String,
@@ -32,7 +34,8 @@ final class GhosttyPaneRegistry {
             onClose: @escaping (String, Bool) -> Void,
             onWorkingDirectory: @escaping (String, String) -> Void,
             onAttach: @escaping (String) -> Void,
-            onDetach: @escaping (String) -> Void
+            onDetach: @escaping (String) -> Void,
+            onOpenURL: @escaping (String) -> Void
         ) {
             self.paneID = paneID
             self.onTitle = onTitle
@@ -41,6 +44,7 @@ final class GhosttyPaneRegistry {
             self.onWorkingDirectory = onWorkingDirectory
             self.onAttach = onAttach
             self.onDetach = onDetach
+            self.onOpenURL = onOpenURL
         }
 
         func terminalDidChangeTitle(_ title: String) { onTitle(paneID, title) }
@@ -49,6 +53,7 @@ final class GhosttyPaneRegistry {
         func terminalDidChangeWorkingDirectory(_ path: String) { onWorkingDirectory(paneID, path) }
         func terminalDidAttachSurface(_ surface: TerminalSurface) { onAttach(paneID) }
         func terminalDidDetachSurface() { onDetach(paneID) }
+        func terminalDidRequestOpenURL(_ url: String, kind: TerminalOpenURLKind) { onOpenURL(url) }
     }
 
     private struct Entry {
@@ -234,6 +239,14 @@ final class GhosttyPaneRegistry {
             onDetach: { [weak self] paneID in
                 try? self?.workbench?.terminalDidDetach(paneID: paneID)
                 self?.onPaneStateChanged?()
+            },
+            // The pane's own process wrote this link. Only an ordinary web URL
+            // is handed to the system; anything that could launch something
+            // local is ignored rather than reported, because a refused click is
+            // not an error the person asked for.
+            onOpenURL: { url in
+                guard let opened = TerminalLinkPolicy.openableURL(url) else { return }
+                NSWorkspace.shared.open(opened)
             }
         )
         view.delegate = delegate
