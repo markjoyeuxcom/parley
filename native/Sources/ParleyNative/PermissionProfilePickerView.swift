@@ -73,6 +73,12 @@ struct PermissionProfilePickerView: View {
                         ContainerLaunchOptionsView(model: model, vendor: request.kind, folder: request.folder, enabled: $runInContainer,
                             configuration: $containerConfiguration, existing: existingContainer, onBypassChange: { bypassVendorPermissions = $0 })
                     }
+                    if !runInContainer {
+                        Text(HostAgentPermissions.disclosure).font(.caption).foregroundStyle(.secondary)
+                        if request.kind == .codex {
+                            Text("Starting checks Codex’s native tool sandbox and private-file rules first. Existing vendor configuration is kept.").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     if !(runInContainer && bypassVendorPermissions) { profileChoice }
                     if let profile = selectedProfile {
                         if runInContainer && bypassVendorPermissions {
@@ -323,7 +329,7 @@ struct PermissionProfilePickerView: View {
                 .permissionSectionLabel()
             Text(runInContainer
                 ? "Only the folders and relay endpoint shown in this review are mounted. The Docker socket, host vendor login and other Parley control files are not mounted. Container bypass does not authorize host command runs; those keep their separate native review."
-                : "No profile grants access to Parley control files, credentials or keychains, permission-bypass flags, privilege escalation, destructive host operations, Git pushes, deployments or infrastructure mutation. Vendor prompts remain explicit where the operating system cannot enforce the intent directly.")
+                : "Profiles do not authorize access to Parley control files, credentials or keychains, host permission bypass, privilege escalation, destructive host operations, Git pushes, deployments or infrastructure mutation. These are policy intentions, not an independent host sandbox. The vendor controls enforcement and approval.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

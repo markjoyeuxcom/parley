@@ -255,20 +255,17 @@ final class AppModel: ObservableObject {
     @Published private(set) var releaseLifecycleMessage: String?
     @Published private(set) var swiftPMCompatibilityEnabled = false
     /// The person's choice to approve agent command runs without a preview.
-    /// Read from and written to the owner-only authorization file inside the
-    /// application directory, never a preference domain.
-    @Published private(set) var automaticCommandRunApprovalEnabled = false
+    /// Native memory only, reset when the app quits; never restored from disk.
+    var automaticCommandRunApprovalEnabled: Bool { commandRunAuthorization.automaticApproval }
     /// The person's choice to end a clean run's pane instead of handing it to a shell.
-    @Published private(set) var automaticCommandRunPaneCloseEnabled = false
-    /// Why the authorization file was ignored or could not be written, if so.
-    @Published private(set) var commandRunAuthorizationError: String?
+    var automaticCommandRunPaneCloseEnabled: Bool { commandRunAuthorization.closeCleanPanes }
     /// Automatic pane closes that failed or closed without restoring focus,
     /// per run, so one run's success never erases another run's explanation.
     @Published private(set) var commandRunPaneCloseErrors: [String: String] = [:]
     var commandRunPaneCloseError: String? {
         commandRunPaneCloseErrors.isEmpty ? nil : commandRunPaneCloseErrors.keys.sorted().compactMap { commandRunPaneCloseErrors[$0] }.joined(separator: "\n")
     }
-    private let commandRunAuthorization: CommandRunAuthorizationStore
+    @Published private var commandRunAuthorization = CommandRunAuthorizationSession()
     private var commandRunPaneCleanup = CommandRunPaneCleanup()
     /// Closing a pane makes Ghostty report the close synchronously, which
     /// refreshes the model from inside the close; the cleanup pass must not
@@ -461,13 +458,6 @@ final class AppModel: ObservableObject {
             collaborationDockVisible = preferences.bool(forKey: Self.collaborationDockVisibleKey)
         }
         swiftPMCompatibilityEnabled = preferences.bool(forKey: Self.swiftPMCompatibilityKey)
-        commandRunAuthorization = CommandRunAuthorizationStore(
-            file: applicationDirectory.appendingPathComponent(CommandRunAuthorizationStore.fileName)
-        )
-        let authorization = commandRunAuthorization.load()
-        automaticCommandRunApprovalEnabled = authorization.automaticApproval
-        automaticCommandRunPaneCloseEnabled = authorization.closeCleanPanes
-        commandRunAuthorizationError = authorization.error
         layoutStore = SavedWorkspaceLayoutStore(
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
         )
@@ -1276,37 +1266,16 @@ final class AppModel: ObservableObject {
         controller?.setSwiftPMCompatibilityEnabled(enabled)
     }
 
-    /// Settings > General. The choice is the person's; it is written to the
-    /// owner-only authorization file and pushed into the coordinator from
-    /// here (and from every refresh, so a core started later sees it), never
-    /// taken from an agent request, a preference domain or the journal.
-    /// Turning on fails closed: if the file cannot be written, nothing changes.
+    /// Native choices last for this app session only; disk state cannot grant them.
     func setAutomaticCommandRunApprovalEnabled(_ enabled: Bool) {
-        let outcome = persistCommandRunAuthorization(automaticApproval: enabled, closeCleanPanes: automaticCommandRunPaneCloseEnabled,
-            turningOn: enabled, setting: "Automatic approval of agent command runs")
-        guard outcome.applied else { return }
-        automaticCommandRunApprovalEnabled = enabled
+        commandRunAuthorization.automaticApproval = enabled
         residentCore?.commandRuns.setAutomaticApproval(enabled)
         try? refresh()
     }
 
-    /// Settings > General. Applies to runs staged after it is turned on: the
-    /// worker ticket carries the choice, so a pane already handed to an
-    /// interactive shell is never affected.
+    /// Applies only to runs staged after the choice changes.
     func setAutomaticCommandRunPaneCloseEnabled(_ enabled: Bool) {
-        let outcome = persistCommandRunAuthorization(automaticApproval: automaticCommandRunApprovalEnabled, closeCleanPanes: enabled,
-            turningOn: enabled, setting: "Closing a clean run's pane")
-        guard outcome.applied else { return }
-        automaticCommandRunPaneCloseEnabled = enabled
-    }
-
-    private func persistCommandRunAuthorization(automaticApproval: Bool, closeCleanPanes: Bool, turningOn: Bool, setting: String) -> CommandRunAuthorizationChange.Outcome {
-        var saveError: String?
-        do { try commandRunAuthorization.save(automaticApproval: automaticApproval, closeCleanPanes: closeCleanPanes) }
-        catch { saveError = error.localizedDescription }
-        let outcome = CommandRunAuthorizationChange.outcome(turningOn: turningOn, saveError: saveError, setting: setting)
-        commandRunAuthorizationError = outcome.message
-        return outcome
+        commandRunAuthorization.closeCleanPanes = enabled
     }
 
     func setAutomaticUpdateChecksEnabled(_ enabled: Bool) {
@@ -2668,7 +2637,7 @@ final class AppModel: ObservableObject {
         if runs != commandRuns { commandRuns = runs }
         if grants != commandRunGrants { commandRunGrants = grants }
         let commandRunMessage = coordinator.lastError ?? (core.commandRunCleanupWarnings.isEmpty ? nil : core.commandRunCleanupWarnings.joined(separator: "\n"))
-            ?? commandRunPaneCloseError ?? commandRunAuthorizationError
+            ?? commandRunPaneCloseError
         if commandRunError != commandRunMessage { commandRunError = commandRunMessage }
         refreshCommandRunAttention()
     }
@@ -2947,12 +2916,31 @@ final class AppModel: ObservableObject {
     }
 
     func approveTeamSession(_ session: TeamSession, objective: String, folder: String, allowedVendors: [PaneKind],
-                            permissionProfileID: String, paneLimit: Int, hours: Int, containerConfigurations: [String: ContainerConfiguration]? = nil) throws {
+                            permissionProfileID: String, paneLimit: Int, hours: Int, containerConfigurations: [String: ContainerConfiguration]? = nil) async throws {
         guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
+        try core.teamSessions.preflightApproval(id: session.id, revision: session.revision, objective: objective, folder: folder,
+            allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours, folderExists: true)
+        try await preflightHostTeam(folder: folder, allowedVendors: allowedVendors, profileID: permissionProfileID, containers: containerConfigurations)
         try core.teamSessions.approve(id: session.id, revision: session.revision, objective: objective, folder: folder,
             allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours, containerConfigurations: containerConfigurations)
         teamSessions = core.teamSessions.sessions()
         selectedTeamSessionID = session.id
+    }
+
+    private func preflightHostTeam(folder: String, allowedVendors: [PaneKind], profileID: String,
+                                   containers: [String: ContainerConfiguration]?) async throws {
+        guard allowedVendors.contains(.codex), containers?[PaneKind.codex.rawValue] == nil else { return }
+        guard let controller, let definition = permissionProfiles.first(where: { $0.id == profileID }) else {
+            throw TeamSessionError.invalid("The reviewed host permission profile is unavailable.")
+        }
+        let profile = try PermissionProfileResolver.resolve(definition: definition, paneFolder: folder,
+            approvedRoots: definition.rootMode == .exactApprovedRoots ? [folder] : [])
+        try await Task.detached(priority: .userInitiated) {
+            try controller.preflightHostLaunch(folder: folder, profile: profile)
+        }.value
+        guard try permissionProfileStore.profiles().contains(definition) else {
+            throw TeamSessionError.invalid("The profile changed during the host tool check. Review the team again.")
+        }
     }
 
     /// Approval bound to a worktree. Git work runs off the main thread first;
@@ -2965,7 +2953,7 @@ final class AppModel: ObservableObject {
         let record: ManagedWorktreeRecord
         switch worktree {
         case .ordinaryFolder:
-            try approveTeamSession(session, objective: objective, folder: folder, allowedVendors: allowedVendors,
+            try await approveTeamSession(session, objective: objective, folder: folder, allowedVendors: allowedVendors,
                 permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours, containerConfigurations: containerConfigurations)
             return
         case let .existing(path):
@@ -2979,6 +2967,7 @@ final class AppModel: ObservableObject {
             record = try await createManagedWorktree(preview: preview, repositoryFolder: folder, teamSessionID: session.id, requestedByPaneID: session.source.id)
         }
         do {
+            try await preflightHostTeam(folder: record.path, allowedVendors: allowedVendors, profileID: permissionProfileID, containers: containerConfigurations)
             try core.teamSessions.approve(id: session.id, revision: session.revision, objective: objective, folder: record.path,
                 allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours,
                 worktree: TeamWorktreeBinding(record: record), containerConfigurations: containerConfigurations)
@@ -4032,6 +4021,15 @@ final class AppModel: ObservableObject {
             }
 
             guard let controller else { return }
+            if containerConfiguration == nil, request.kind == .codex {
+                try await Task.detached(priority: .userInitiated) {
+                    try controller.preflightHostLaunch(folder: request.folder, profile: effective)
+                }.value
+                guard panePermissionRequest?.id == request.id,
+                      permissionProfiles.contains(definition) else {
+                    throw RelayUIError.message("The permission review changed during the host tool check. Review Start again.")
+                }
+            }
             switch request.action {
             case let .create(direction):
                 let splitTarget = activePane

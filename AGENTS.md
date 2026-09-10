@@ -84,7 +84,7 @@ native/
   Sources/
     ParleyCore/
       AgentProtocol.swift              canonical agent-facing contract
-      AgentProcessBoundary.swift       per-agent Seatbelt boundary
+      AgentProcessBoundary.swift       container host-client Seatbelt boundary
       AppResidentPaneLifecycle.swift   explicit window/quit lifetime policy
       CommandRunner.swift              bounded argv process execution
       AutomaticUpdateConfiguration.swift signed Production update boundary
@@ -330,12 +330,37 @@ grant this confirmation.
 Spawn fixed executables with argument arrays. Agent-authored content must never
 be interpolated into a shell command.
 
-Host vendor process trees launch through `AgentProcessBoundary`. Its macOS
-Seatbelt profile denies Parley's broad Application Support directory and relay
-transport root, then reopens only generated protocol files, the managed shim
-and that pane's capability-named endpoint. `RelayFileTransport` must reject a
-valid token through a different endpoint. Shell panes remain deliberately
-unsandboxed human shells.
+Host vendor CLIs launch directly as trusted local applications, with their own
+permissions and approval prompts. Do not put Parley's Seatbelt profile around
+host CLIs: it prevents Codex from applying its tool sandbox. Host bypass flags
+remain forbidden. `HostAgentPermissions` supplies Codex-native private-runtime
+denials with exact protocol/shim read access and own-endpoint write access;
+its built-in profile parent retains Codex's Git and configuration protections.
+Those rules cover sandboxed tools, not the CLI parent, integrations or approved
+unsandboxed commands. Other vendors keep their existing native launch controls;
+never present a profile intention as OS enforcement.
+
+The Codex start/restart/resume review and host-team approval run a bounded
+preflight off the main actor. A transient `codex app-server --stdio` reads
+configuration only (no thread or model); raw config is never logged. Conflicting
+legacy sandbox settings are refused. `codex sandbox -P` then exercises a real
+tool, synthetic private-file denials and own-endpoint access. This verifies the
+configuration at that moment, not a future session's behavior. Vendor config
+can change later; existing processes are never silently restarted.
+
+Native control uses a fresh memory-only token, a socket path supplied directly
+by native construction, and kernel peer-PID checks on both sides before native
+control requests are accepted. The client checks the peer before sending any
+authority. Both socket writers suppress SIGPIPE per send. The old control-token
+file is never read. `AgentProcessBoundary` remains only around the host Docker
+client; Docker owns the vendor's container boundary and reviewed mounts.
+
+Pane capabilities still authenticate and route explicit messages.
+`RelayFileTransport` rejects a valid token through a different endpoint. An
+unrestricted same-user host process can nevertheless read another pane's
+credential or alter local records. Attribution is not isolation against such a
+process. Human Shell panes are unsandboxed; reviewed containers provide stronger
+separation, subject to their mounts and trusted local daemon.
 
 Vendor CLIs may rebuild `PATH`. The runtime-local shim is preferred but not
 guaranteed, so `~/.local/bin/parley` remains a runtime-neutral router. Exact
@@ -343,9 +368,9 @@ guaranteed, so `~/.local/bin/parley` remains a runtime-neutral router. Exact
 Only Production may install or upgrade the stable router. The router contains
 no credential and no transport authority.
 
-The relay transport path spelling granted by Seatbelt must exactly match the
-path embedded in the shim. Filesystem aliases are not interchangeable in
-Seatbelt subpath rules.
+The relay transport path spelling in native permission rules and the container
+client Seatbelt profile must match the shim. Include canonical aliases where
+needed; path spelling is part of the permission contract.
 
 `EnvironmentResolver` may run fixed `/bin/zsh -lic` PATH discovery with
 sentinels and a hard timeout. Apply `LANG=C.UTF-8` only when every effective
@@ -365,7 +390,7 @@ Shell pane; a fixed worker spawns argv directly, captures bounded stdout/stderr
 and real exit status, then execs an ordinary human Shell. Never interpolate
 agent content into a shell string, send input to an existing Shell, or present
 captured output as verification. This is explicitly outside the agent boundary
-and vendor tool enforcement; normal vendor launches retain their boundary.
+and vendor tool enforcement; host vendor launches retain their own controls.
 
 Per-run approval is the default. Optional exact-command session trust is native,
 off by default, memory-only, revocable and visibly disclosed. It keys exact argv,
@@ -373,14 +398,18 @@ canonical folder and source generation and includes mutable code with human file
 and credential access. Cross-vendor attribution cannot be guaranteed while it is
 granted. Restart/move/folder/policy changes, Stop Everything and quit invalidate
 it. Do not restore execution authority from the handoff journal. Separately,
-**Settings > General > Agent command runs** holds the person's durable choice
-to approve requested runs automatically. Both switches in that section are
-execution authority and live in `CommandRunAuthorizationStore`
-(`command-run-authorization.json`, owner-only, inside the agent-denied
-application directory, narrowly validated on every read, anything odd reads
-as off), never in a preference domain an agent process could write; nothing
-reads them from an agent request or the journal. `AppModel` pushes the
-approval choice into `ReviewedCommandRunCoordinator.setAutomaticApproval`.
+**Settings > General > Agent command runs** holds two native session choices.
+`CommandRunAuthorizationSession` starts with both off on every app launch;
+neither preference domains, agent requests nor the retired
+`command-run-authorization.json` can restore authority. Both choices reset on
+quit. `AppModel` pushes the approval choice into
+`ReviewedCommandRunCoordinator.setAutomaticApproval`.
+Approved worker tickets carry a digest whose expected value stays in app memory
+and travels as a literal worker launch argument. A worker checks the exact
+claimed bytes before decoding or executing them; editing the file cannot change
+the approved argv. Result authentication does not protect against an unrestricted
+same-user process reading the staged ticket's result key. Treat captures as
+reported evidence, not proof against a compromised local account.
 While on, an eligible request is approved exactly as requested with no
 session grant and `approvedAutomatically` recorded on the run (decoded as
 false for older journal records), requests already waiting are approved if
@@ -658,7 +687,8 @@ activation and team grants. Only the native review chooses it; agents cannot
 supply it to team add. Codex receives `--dangerously-bypass-approvals-and-sandbox`,
 Claude receives `--dangerously-skip-permissions`, after the image ID in Docker's
 argv. Normal profile launch arguments are omitted in that mode and enforcement
-is labelled guidance only; host launches still use `PermissionProfileAdapter`.
+is labelled guidance only; host launches retain vendor controls, with Codex
+using `HostAgentPermissions` and the other vendors using `PermissionProfileAdapter`.
 Bypass and legacy Landlock cannot be combined. The image probe checks utilities
 and vendor `--version` with the chosen flag instead of demanding an inner sandbox.
 Docker mounts, non-root UID/GID, capability drop, no-new-privileges and native
@@ -759,7 +789,7 @@ agent panes receive a runtime-local `swift` wrapper for SwiftPM `build`,
 `test`, `run` and `package`. It adds SwiftPM's `--disable-sandbox`
 option to avoid unsupported nested macOS sandboxes. Project and dependency manifests and plugins run
 with the agent's existing permissions, including any permitted network access.
-Parley's outer boundary and vendor approvals remain active. The setting only
+Vendor approvals and any vendor sandbox remain active. The setting only
 automates a SwiftPM flag; it does not expand the agent's existing permissions.
 Host launches retain invariant 3's approval protection. The separately reviewed
 container bypass is independent of this opt-in, which affects only SwiftPM's
@@ -922,10 +952,13 @@ npm test
 npm run build
 ```
 
-For terminal/lifetime changes also run the Ghostty soak. Checks must not launch
-a vendor CLI, spend subscription quota, mutate unrelated user processes or
-depend on network access. CI runs deterministic checks and the native build on
-macOS with complete Git history for the public scan.
+For terminal/lifetime changes also run the Ghostty soak. Default checks must
+not launch a vendor CLI, spend subscription quota, mutate unrelated user
+processes or depend on network access. The explicit manual
+`parley-native-checks --host-vendor-spike <absolute-codex-path>` check runs a
+local Codex config query and sandbox probes with disposable configuration and
+synthetic files. It starts no model or signed-in session. CI runs deterministic
+checks and the native build on macOS with complete Git history for the public scan.
 
 The manual release jobs must pass the 25-round eight-pane soak, write the
 standalone JSON report, include it in SHA256SUMS and attach it to the release.

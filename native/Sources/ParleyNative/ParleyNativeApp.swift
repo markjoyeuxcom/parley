@@ -260,8 +260,8 @@ enum ParleyNativeEntry {
     @MainActor static func main() {
         let arguments = CommandLine.arguments
         if arguments.count > 1 && arguments[1] == ApprovedCommandWorker.argument {
-            guard arguments.count == 3 else { Foundation.exit(2) }
-            ApprovedCommandWorker.execute(ticketPath: arguments[2])
+            guard arguments.count == 4 else { Foundation.exit(2) }
+            ApprovedCommandWorker.execute(ticketPath: arguments[2], expectedDigest: arguments[3])
         }
         ParleyNativeApp.main()
     }

@@ -87,9 +87,7 @@ private struct GeneralSettingsView: View {
                 Text(ReviewedCommandRunPaneClosePolicy.disclosure)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if let problem = model.commandRunAuthorizationError {
-                    Text(problem).font(.caption).foregroundStyle(.red)
-                }
+                Text("Both choices last for this app session and reset to off when Parley quits.").font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Swift package builds") {

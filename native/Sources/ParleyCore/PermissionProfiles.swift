@@ -33,8 +33,8 @@ public enum PermissionProfileLifetime: String, CaseIterable, Codable, Equatable,
 }
 
 /// These are not editable profile capabilities. Every resolved profile carries
-/// the complete set, no adapter translates one into a grant, and Parley's
-/// mandatory Seatbelt boundary separately protects its concrete control paths.
+/// the complete set and no adapter translates one into a grant. Host agents
+/// use vendor controls; these intentions are not an independent OS boundary.
 public enum PermissionHardBoundary: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
     case parleyControlPlane
     case credentialsAndKeychains

@@ -3,7 +3,7 @@ import Foundation
 /// A runtime-local opt-in for SwiftPM inside the agent process boundary.
 /// Selects Swift from the caller's current PATH, including mise shims.
 public enum SwiftPMCompatibility {
-    public static let explanation = "When enabled, SwiftPM build, test, run and package commands in new agent panes omit SwiftPM's additional subprocess sandbox. Project and dependency manifests and plugins run with the agent's existing permissions, including any permitted network access. This setting only automates the SwiftPM flag. Parley's outer boundary and vendor tool approvals remain active. Human Shell panes keep SwiftPM's normal defaults."
+    public static let explanation = "When enabled, SwiftPM build, test, run and package commands in new agent panes omit SwiftPM's additional subprocess sandbox. Project and dependency manifests and plugins run with the agent's existing permissions, including any permitted network access. This setting only automates the SwiftPM flag. Vendor tool approvals and any vendor sandbox remain active. Human Shell panes keep SwiftPM's normal defaults."
 
     public static func directory(in applicationDirectory: URL) -> URL {
         applicationDirectory.appendingPathComponent("agent-protocol/swiftpm-bin", isDirectory: true)

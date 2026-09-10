@@ -3602,7 +3602,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "31", "the shared protocol version drifted from cross-project agent awareness")
+    try expect(AgentProtocol.version == "32", "the shared protocol version drifted from cross-project agent awareness")
     try expect(
         AgentProtocol.text.contains("parley delegate <target> --parent <handoff-id>")
             && AgentProtocol.text.contains("requestChanges")
@@ -6647,6 +6647,17 @@ private func checkCoreControlSurvivesClientReattachment() throws {
     _ = try server.start()
     defer { server.stop() }
 
+    let firstToken = try RelayCoreControlToken.generate()
+    let nextToken = try RelayCoreControlToken.generate()
+    try expect(firstToken.count == 64 && nextToken.count == 64 && firstToken != nextToken, "native control authority was not fresh")
+    let foreign = try ProcessCommandRunner(timeout: 3).run(executable: URL(fileURLWithPath: "/usr/bin/curl"),
+        arguments: ["--disable", "--silent", "--header", "Content-Length: 0", "--unix-socket", directory.appendingPathComponent("relay.sock").path,
+                    "--header", "X-Parley-Control: \(controlToken)", "--write-out", "%{http_code}", "http://localhost/consultations"],
+        environment: ["PATH": "/usr/bin:/bin"])
+    try expect(foreign.stdoutText.hasSuffix("401"), "foreign control probe: status \(foreign.status), stdout \(foreign.stdoutText), stderr \(foreign.stderrText)")
+    try expect(!RelayCoreClient(infoFile: infoFile, controlToken: controlToken, expectedServerPID: getpid() + 1).isHealthy(),
+        "the native client sent a request to an unexpected peer process")
+
     let askResult = LockedAskResult()
     DispatchQueue.global(qos: .utility).async {
         askResult.set(broker.handleAsk(token: sourceToken, target: "agy", text: "Can a new UI finish this wait?"))
@@ -6654,6 +6665,8 @@ private func checkCoreControlSurvivesClientReattachment() throws {
     try expect(eventually { broker.consultations().count == 1 }, "coordination core did not retain the consultation")
 
     var attachedClient: RelayCoreClient? = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    try "unix:/private/tmp/parley-untrusted-redirect.sock".write(to: infoFile, atomically: true, encoding: .utf8)
+    try expect(attachedClient?.isHealthy() == true, "editable locator redirected the native client")
     let attachedCount = try attachedClient?.consultations().count
     try expect(attachedCount == 1, "the first UI client could not inspect core state")
     let attachedHandoffs = try attachedClient?.handoffs()
@@ -9758,7 +9771,8 @@ let checks: [(String, () throws -> Void)] = [
     ("external workspace open contract", checkExternalWorkspaceOpenContract),
     ("content-free attention projection contract", checkContentFreeAttentionProjectionContract),
     ("menu bar attention indicator summary", checkMenuBarAttentionInboxProjection),
-    ("mandatory pane-scoped agent process boundary", checkAgentProcessBoundaryIsMandatoryAndPaneScoped),
+    ("container client pane-scoped process boundary", checkAgentProcessBoundaryIsMandatoryAndPaneScoped),
+    ("host launches retain vendor controls for fresh and resumed panes", checkHostLaunchesPreserveVendorControls),
     ("native workspace layout tree", checkNativeWorkspaceLayoutTree),
     ("window and split geometry recovery", checkWindowAndSplitGeometryRecovery),
     ("pane attention is authoritative and aged", checkPaneAttentionProjectionIsAuthoritativeAndAged),
@@ -9909,8 +9923,18 @@ if let resultPath = ProcessInfo.processInfo.environment["PARLEY_COMMAND_CAPTURE_
     exit(FileManager.default.fileExists(atPath: resultPath) ? 0 : 1)
 }
 
-if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == ApprovedCommandWorker.argument {
-    ApprovedCommandWorker.execute(ticketPath: CommandLine.arguments[2])
+if CommandLine.arguments.count == 4 && CommandLine.arguments[1] == ApprovedCommandWorker.argument {
+    ApprovedCommandWorker.execute(ticketPath: CommandLine.arguments[2], expectedDigest: CommandLine.arguments[3])
+}
+
+if let executable = argument(named: "--host-vendor-spike") {
+    do {
+        try checkHostVendorTools(executable: URL(fileURLWithPath: executable))
+        exit(0)
+    } catch {
+        print("FAIL host vendor tool spike (requires installed Codex and a human Shell): \(error)")
+        exit(1)
+    }
 }
 
 if let image = argument(named: "--container-ghostty-spike") {

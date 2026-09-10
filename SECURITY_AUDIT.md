@@ -1,6 +1,6 @@
 # Parley security assessment
 
-Updated: 9 September 2026 (container permission-bypass boundary)
+Updated: 10 September 2026 (vendor-managed host permissions)
 
 This assessment describes the current native Swift implementation. Report new
 vulnerabilities through [SECURITY.md](SECURITY.md).
@@ -20,15 +20,34 @@ launching a vendor CLI or spending subscription quota.
 
 | Finding | Current status |
 | --- | --- |
-| Agent access to Parley control authority | **Mitigated for host vendor panes.** Host vendor processes receive an allow-default Seatbelt profile with targeted file and socket denials for both runtimes; only their generated protocol files, managed shim and capability-named endpoint are reopened. Container vendors rely on Docker and exact mounts; Seatbelt on the host client cannot constrain the external daemon. Shell panes remain trusted, unsandboxed human shells. |
+| Agent access to Parley control authority | **Native authority separated; host isolation deliberately reduced.** Native control tokens and command-run settings are memory-only; control requests require the app peer PID, and clients pin the socket path and verify its peer before sending authority. Approved worker bytes must match an app-held digest. Host CLIs have no Parley outer sandbox. Codex receives native tool rules; other vendors retain their own controls. Unrestricted same-user host code can still read pane capabilities or alter local records. Containers retain exact reviewed mounts; the daemon is trusted. |
 | Sibling pane capability reuse | **Mitigated.** Each pane has a durable random credential, and the filesystem transport rejects a valid token presented through another pane's endpoint. |
 | Relayed model output can influence another model | **Accepted product risk.** Messages are attributed and targets are explicit, but model-authored content is untrusted. Permission prompts remain vendor-owned and `paste` allows review before submission. |
 | Terminal submission could merge multiline payloads with Enter events | **Fixed.** Ghostty paste carries the payload as one text operation. Submission is a distinct Enter event after paste succeeds. |
 | Process metadata could be mistaken for prompt readiness | **Fixed.** Parley records only whether a retained Ghostty surface is attached and can accept input. It does not infer prompt, permission or thinking state from terminal text. |
 | Pane capabilities survived process replacement | **Fixed.** Restart rotates the credential and inherited Parley capability variables are scrubbed before launch. |
-| Mutable relay locator permitted remote delivery | **Fixed.** Agent commands use one local capability-separated filesystem transport; the UI uses an authenticated local Unix socket. Neither accepts a remote destination. |
+| Mutable relay locator permitted remote delivery | **Fixed.** Agent commands use the local filesystem transport. The native client uses a directly supplied socket path, ignores editable locator contents and checks the server PID before sending its token. |
 | Unbounded or stranded automated work | **Mitigated.** Targets admit one active Ask or delegation, waits observe pane closure and credential rotation, cancellation is explicit, durable records are bounded and uncertain delivery is never silently retried. |
-| Complete inherited launch environment | **Partially mitigated.** Parley capabilities and parent multiplexer markers are scrubbed, compatibility probes use a minimal environment and vendor process access is constrained by Seatbelt. A complete vendor-launch allowlist is not claimed. |
+| Complete inherited launch environment | **Partially mitigated.** Parley capabilities and parent multiplexer markers are scrubbed where required. A complete vendor-launch allowlist is not claimed; host CLIs remain trusted local applications. |
+
+## Host launch and native authority
+
+Host vendors no longer inherit Parley's outer Seatbelt profile, which prevented
+Codex from applying its own tool sandbox. No host bypass flags are introduced.
+Codex extends its read-only or workspace profile with private-runtime denies and
+exact protocol, shim and endpoint exceptions. A transient local config query and
+real sandbox probe precede the native host review's start; legacy configuration
+that would replace the native rules is refused without editing vendor settings.
+Host-team approval checks the same configuration. Other vendor launch controls
+remain unchanged; guidance is not presented as enforcement.
+
+The retired `core-control-token` and `command-run-authorization.json` files are
+never read. Both automatic command-run choices reset to off on app relaunch.
+The control client and server verify kernel peer identity; the client never reads
+a mutable locator to choose where to send its memory-only token. Socket writes
+suppress SIGPIPE per call, including after a peer closes before sending headers.
+Approved worker tickets are single-use and checked against the digest passed from
+native memory before any decode or command execution.
 
 ## Container permission bypass
 
@@ -83,9 +102,14 @@ retained Ghostty surfaces without starting a vendor CLI.
 - Parley does not defend against root, the logged-in Mac owner deliberately
   reading local state, a compromised vendor binary or peer software with equal
   user authority.
-- Seatbelt applies to Parley-launched vendor trees; it is not account-wide process
-  isolation or complete hostile-code containment. Brokered processes launched
-  through other macOS services require a separate threat model.
+- Host vendor permission rules constrain sandboxed tools, not the vendor parent,
+  integrations or approved unsandboxed commands. A profile preflight proves only
+  the configuration and tool behavior observed then. Vendor configuration may
+  change afterwards. Containers provide stronger separation subject to mounts.
+- Native authority is protected against editable-file substitution, not debugger
+  injection into app memory or compromise of the Mac account. The staged worker
+  result key is readable by unrestricted same-user code before consumption, so
+  authenticated captured results are not proof against that adversary.
 - Prompt injection cannot be eliminated by attribution. Keep vendor permission
   prompts enabled, use restrictive profiles and choose unsent paste when human
   review is required.

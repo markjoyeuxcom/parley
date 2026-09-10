@@ -7,18 +7,16 @@ public enum AgentProcessBoundaryError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .sandboxUnavailable:
-            "Parley cannot start an agent safely because macOS sandbox-exec is unavailable. Shell panes remain available."
+            "Parley cannot start the container client because macOS sandbox-exec is unavailable. Shell panes remain available."
         case .invalidPaneCapability:
             "Parley refused an invalid pane relay capability."
         }
     }
 }
 
-/// A mandatory outer Seatbelt profile around host vendor CLIs and their
-/// descendants, or around a container pane's host Docker client. It cannot
-/// constrain work performed by the external Docker daemon. For host CLIs this
-/// layer protects only Parley's own control plane and does not restrict the
-/// repository, vendor authentication, ordinary tools, or network access.
+/// Outer Seatbelt profile for a container pane’s host Docker client only.
+/// The daemon and container do not inherit it. Host vendor CLIs use their
+/// own permissions instead, so their nested tool sandboxes can start.
 public struct AgentProcessBoundary: Sendable {
     public let arguments: [String]
     public let endpointDirectory: URL

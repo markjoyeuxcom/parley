@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "31"
+    public static let version = "32"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -86,8 +86,9 @@ public enum AgentProtocol {
       in Settings > General; while that switch is on, an eligible request is
       approved as requested and starts without a preview, and turning it off
       returns any such approval that has not started to waiting. Both are the
-      person's choice alone, stored where agents cannot reach, visibly
-      disclosed and revocable. That trust
+      person's choice alone, kept in native app memory for this app session,
+      reset on quit, visibly disclosed and revocable. No disk file restores
+      automatic approval. That trust
       includes mutable project code and access to the person's files and
       other pane credentials; cross-vendor attribution cannot be guaranteed
       while it is granted. Never grant it yourself, never ask for the switch
@@ -200,7 +201,7 @@ public enum AgentProtocol {
       `PARLEY_SWIFTPM_COMPATIBILITY=1`, Parley's runtime-local `swift` wrapper
       adds `--disable-sandbox` only to SwiftPM build, test, run and package
       commands. Manifests and plugins then use the agent's existing permissions;
-      Parley's outer boundary and vendor tool approvals remain active.
+      Vendor tool approvals and any vendor sandbox remain active.
       If your shell rebuilds PATH, use `"$PARLEY_SWIFT_COMMAND" build ...`
       (or test, run, package) to reach the same wrapper and selected toolchain.
       The setting is off by default and is controlled in the native UI at
@@ -210,6 +211,16 @@ public enum AgentProtocol {
       Do not set `PARLEY_SWIFTPM_COMPATIBILITY=1` or pass `--disable-sandbox`
       without the person's authorization. A per-command
       `PARLEY_SWIFTPM_COMPATIBILITY=0` restores SwiftPM's normal behaviour.
+
+    Host vendor CLIs run without a Parley outer sandbox and are trusted local
+    applications. Vendor permissions and tool approvals still apply; Parley
+    never supplies a host approval-bypass flag. Codex receives native private-path
+    rules, which constrain its sandboxed commands, not its parent or integrations.
+    An unrestricted same-user host process can obtain pane credentials or alter
+    local records; attribution is not an isolation guarantee. Native control
+    authority stays in app memory and is bound to the app's process. Use reviewed
+    containers for stronger separation. Changed launch policy applies only to
+    a new or explicitly person-restarted pane, never silently to a running one.
 
     A pane whose whoami executionBoundary is container runs its vendor CLI in a
     person-approved local container. Only the person can select vendor permission

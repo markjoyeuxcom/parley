@@ -31,7 +31,7 @@ let reviewedCommandRunChecks: [(String, () throws -> Void)] = [
     ("reviewed command run approvals, exact grants and restart revocation", reviewedRunLifecycleChecks),
     ("reviewed command run automatic approval is a native switch that approves eligible requests as requested", reviewedRunAutomaticApprovalChecks),
     ("reviewed command run pane auto-close applies only to clean, saved, finished runs", reviewedRunPaneCloseChecks),
-    ("reviewed command run authorization file is owner-only, validated and reads as off when untrusted", reviewedRunAuthorizationStoreChecks),
+    ("reviewed command run authorization is native and session-only", reviewedRunAuthorizationStoreChecks),
     ("reviewed command run pane cleanup closes only an ended pane of the created generation, across refreshes", reviewedRunPaneCleanupChecks),
     ("reviewed command run worker ends a clean run's pane only when its ticket says so", reviewedRunWorkerExitWhenCleanChecks),
     ("reviewed command run pane close survives a terminal transport that re-enters the workbench", reviewedRunReentrantCloseChecks),
@@ -278,63 +278,24 @@ func reviewedRunLegacyDecodeChecks() throws {
 }
 
 func reviewedRunAuthorizationStoreChecks() throws {
-    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("parley-run-auth-\(UUID().uuidString)")
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("parley-run-auth-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let file = root.appendingPathComponent("private").appendingPathComponent(CommandRunAuthorizationStore.fileName)
-    let store = CommandRunAuthorizationStore(file: file)
-    try runExpect(store.load() == .off, "a missing file did not read as off without error")
-    try store.save(automaticApproval: true, closeCleanPanes: false)
-    var info = stat()
-    try runExpect(lstat(file.path, &info) == 0 && info.st_mode & 0o777 == 0o600, "the authorization file is not owner-only")
-    try runExpect(store.load() == .init(automaticApproval: true, closeCleanPanes: false, error: nil), "a saved choice did not round-trip")
-    try store.save(automaticApproval: true, closeCleanPanes: true)
-    try runExpect(store.load() == .init(automaticApproval: true, closeCleanPanes: true, error: nil), "the second choice did not round-trip")
-    try runExpect(!FileManager.default.contentsOfDirectory(atPath: file.deletingLastPathComponent().path).contains(where: { $0.hasSuffix(".tmp") }), "a temporary file was left behind")
-
-    func expectOff(_ label: String) throws {
-        let loaded = store.load()
-        try runExpect(!loaded.automaticApproval && !loaded.closeCleanPanes && loaded.error != nil, "\(label) did not read as off with an explanation (\(loaded))")
-    }
-    try Data("not json".utf8).write(to: file)
-    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-    try expectOff("a malformed file")
-    try Data("{\"version\":1,\"automaticApproval\":\"yes\",\"closeCleanPanes\":true,\"updatedAt\":\"2026-09-06T18:00:00Z\"}".utf8).write(to: file)
-    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-    try expectOff("a non-boolean value")
-    try Data("{\"version\":2,\"automaticApproval\":true,\"closeCleanPanes\":true,\"updatedAt\":\"2026-09-06T18:00:00Z\"}".utf8).write(to: file)
-    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-    try expectOff("an unsupported version")
-    try store.save(automaticApproval: true, closeCleanPanes: true)
-    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
-    try expectOff("a group- or world-readable file")
-    try FileManager.default.removeItem(at: file)
-    let elsewhere = root.appendingPathComponent("elsewhere.json")
-    try Data("{\"version\":1,\"automaticApproval\":true,\"closeCleanPanes\":true,\"updatedAt\":\"2026-09-06T18:00:00Z\"}".utf8).write(to: elsewhere)
-    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: elsewhere.path)
-    try FileManager.default.createSymbolicLink(at: file, withDestinationURL: elsewhere)
-    try expectOff("a symbolic link")
-    try FileManager.default.removeItem(at: file)
-    try Data(String(repeating: " ", count: CommandRunAuthorizationStore.maximumBytes + 1).utf8).write(to: file)
-    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-    try expectOff("an oversized file")
-    // An unprotected true value is never migrated from anywhere else.
-    try FileManager.default.removeItem(at: file)
-    try runExpect(store.load() == .off, "removing the file did not read as off")
-
-    // A Settings change reports what really happened: turning on fails
-    // closed, turning off always applies for this session and says when the
-    // saved choice may return.
-    typealias Change = CommandRunAuthorizationChange
-    try runExpect(Change.outcome(turningOn: true, saveError: nil, setting: "X") == .init(applied: true, message: nil), "a saved enable was not applied")
-    try runExpect(Change.outcome(turningOn: false, saveError: nil, setting: "X") == .init(applied: true, message: nil), "a saved disable was not applied")
-    let failedOn = Change.outcome(turningOn: true, saveError: "disk full", setting: "X")
-    try runExpect(!failedOn.applied && failedOn.message?.contains("remains off") == true, "a failed enable was applied or misreported: \(failedOn)")
-    let failedOff = Change.outcome(turningOn: false, saveError: "disk full", setting: "X")
-    try runExpect(failedOff.applied && failedOff.message?.contains("off for this session") == true && failedOff.message?.contains("may return") == true, "a failed disable was not applied for the session or misreported: \(failedOff)")
-    // The store itself refuses to write into a file path it cannot own.
-    let blocked = CommandRunAuthorizationStore(file: root.appendingPathComponent("blocked-dir").appendingPathComponent("x").appendingPathComponent(CommandRunAuthorizationStore.fileName))
-    try Data().write(to: root.appendingPathComponent("blocked-dir"))
-    try runRejects { try blocked.save(automaticApproval: false, closeCleanPanes: false) }
+    let file = root.appendingPathComponent("command-run-authorization.json")
+    let legacy = Data(#"{"version":1,"automaticApproval":true,"closeCleanPanes":true,"updatedAt":"2026-09-06T18:00:00Z"}"#.utf8)
+    try legacy.write(to: file)
+    var session = CommandRunAuthorizationSession()
+    try runExpect(!session.automaticApproval && !session.closeCleanPanes, "a new session restored authority from disk")
+    session.automaticApproval = true
+    session.closeCleanPanes = true
+    try runExpect(session.automaticApproval && session.closeCleanPanes, "native session choices were not applied")
+    try Data("untrusted replacement".utf8).write(to: file)
+    try runExpect(session.automaticApproval && session.closeCleanPanes, "editing disk state changed a native session choice")
+    let nextSession = CommandRunAuthorizationSession()
+    try runExpect(!nextSession.automaticApproval && !nextSession.closeCleanPanes, "authority survived app relaunch")
+    session.automaticApproval = false
+    try runExpect(!session.automaticApproval, "revocation did not apply immediately")
+    try runExpect(try Data(contentsOf: file) == Data("untrusted replacement".utf8), "session settings modified the retired file")
 }
 
 func reviewedRunPaneCleanupChecks() throws {
@@ -488,7 +449,7 @@ func reviewedRunWorkerExitWhenCleanChecks() throws {
         guard let ticket else { throw ReviewedCommandRunError.invalid("No worker ticket") }
         let launchedAt = ProcessInfo.processInfo.systemUptime
         let output = try ProcessCommandRunner(timeout: 5).run(executable: URL(fileURLWithPath: CommandLine.arguments[0]),
-            arguments: [ApprovedCommandWorker.argument, ticket.path], environment: ["PATH": "/usr/bin:/bin"])
+            arguments: [ApprovedCommandWorker.argument, ticket.path, try ApprovedCommandWorker.ticketDigest(for: ticket)], environment: ["PATH": "/usr/bin:/bin"])
         lastWorkerLifetime = ProcessInfo.processInfo.systemUptime - launchedAt
         let result = try ApprovedCommandWorker.result(runID: request.id, directory: directory)
         coordinator.complete(id: request.id, result: result ?? ReviewedCommandRunResult(exitStatus: nil, stdout: Data(), stderr: Data()))
@@ -748,6 +709,13 @@ func reviewedRunTicketChecks() throws {
         ticketPath = try ApprovedCommandWorker.stage(run: run, directory: store, shellExecutable: "/bin/zsh", ownerPID: ProcessInfo.processInfo.processIdentifier)
     }
     guard let ticketPath else { throw ReviewedCommandRunError.invalid("No approved worker ticket was created") }
+    let approvedBytes = try Data(contentsOf: ticketPath)
+    let changed = String(decoding: approvedBytes, as: UTF8.self).replacingOccurrences(of: "$(literal)", with: "unapproved")
+    try Data(changed.utf8).write(to: ticketPath)
+    try runRejects { _ = try ApprovedCommandWorker.consume(ticketPath) }
+    try? FileManager.default.removeItem(at: ticketPath.deletingLastPathComponent().appendingPathComponent("consumed.json"))
+    try approvedBytes.write(to: ticketPath)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: ticketPath.path)
     let first = try ApprovedCommandWorker.consume(ticketPath)
     try runExpect(first.runID == request.id && first.command.argv == request.command.argv, "ticket changed the approved command")
     try runRejects { _ = try ApprovedCommandWorker.consume(ticketPath) }
@@ -878,7 +846,7 @@ func reviewedRunWorkerProcessChecks() throws {
     }
     guard let ticket else { throw ReviewedCommandRunError.invalid("No worker ticket") }
     let output = try ProcessCommandRunner(timeout: 5).run(executable: URL(fileURLWithPath: CommandLine.arguments[0]),
-        arguments: [ApprovedCommandWorker.argument, ticket.path], environment: ["PATH": "/usr/bin:/bin"])
+        arguments: [ApprovedCommandWorker.argument, ticket.path, try ApprovedCommandWorker.ticketDigest(for: ticket)], environment: ["PATH": "/usr/bin:/bin"])
     try runExpect(output.status == 0 && output.stdoutText.contains("worker-out") && output.stderrText.contains("worker-err"),
         "worker failed to mirror output and finish its ordinary-shell replacement: \(output.stderrText)")
     let result = try ApprovedCommandWorker.result(runID: request.id, directory: directory)
@@ -951,13 +919,10 @@ func reviewedRunExpiredWorkerChecks() throws {
     let directory = root.appendingPathComponent("approved-command-runs")
     var ticket: URL?
     coordinator.launchApproved { run in ticket = try ApprovedCommandWorker.stage(run: run, directory: directory,
-        shellExecutable: "/usr/bin/true", ownerPID: ProcessInfo.processInfo.processIdentifier) }
+        shellExecutable: "/usr/bin/true", ownerPID: ProcessInfo.processInfo.processIdentifier, now: .distantPast) }
     guard let ticket else { throw ReviewedCommandRunError.invalid("Missing ticket") }
-    var object = try JSONSerialization.jsonObject(with: Data(contentsOf: ticket)) as! [String: Any]
-    object["expiresAt"] = -1_000
-    try JSONSerialization.data(withJSONObject: object).write(to: ticket)
     _ = try ProcessCommandRunner(timeout: 5).run(executable: URL(fileURLWithPath: CommandLine.arguments[0]),
-        arguments: [ApprovedCommandWorker.argument, ticket.path], environment: ["PATH": "/usr/bin:/bin"])
+        arguments: [ApprovedCommandWorker.argument, ticket.path, try ApprovedCommandWorker.ticketDigest(for: ticket)], environment: ["PATH": "/usr/bin:/bin"])
     guard let result = try ApprovedCommandWorker.result(runID: request.id, directory: directory) else {
         throw ReviewedCommandRunError.invalid("An expired claimed ticket left no terminal worker result.")
     }
@@ -1010,7 +975,7 @@ func reviewedRunLeaseRecoveryChecks() throws {
     let finished = DispatchSemaphore(value: 0)
     DispatchQueue.global().async {
         let value = Result { try ProcessCommandRunner(timeout: 6).run(executable: URL(fileURLWithPath: CommandLine.arguments[0]),
-            arguments: [ApprovedCommandWorker.argument, path.path], environment: ["PATH": "/usr/bin:/bin"]) }
+            arguments: [ApprovedCommandWorker.argument, path.path, try ApprovedCommandWorker.ticketDigest(for: path)], environment: ["PATH": "/usr/bin:/bin"]) }
         box.lock.withLock { box.value = value }
         finished.signal()
     }

@@ -62,7 +62,7 @@ private struct AuthenticatedCommandResult: Codable {
 }
 private final class CommandResultKeys: @unchecked Sendable {
     let lock = NSLock()
-    var values: [String: SymmetricKey] = [:]
+    var values: [String: (key: SymmetricKey, digest: String)] = [:]
 }
 
 // Signal handlers perform no allocation or Foundation work.
@@ -74,7 +74,7 @@ private func interruptCommandWorker(_ signal: Int32) { commandWorkerInterrupted 
 public enum ApprovedCommandWorker {
     private static let resultKeys = CommandResultKeys()
     public static let argument = "--parley-approved-command-worker"
-    public static func stage(run: ReviewedCommandRun, directory: URL, shellExecutable: String, ownerPID: Int32, exitWhenClean: Bool = false) throws -> URL {
+    public static func stage(run: ReviewedCommandRun, directory: URL, shellExecutable: String, ownerPID: Int32, exitWhenClean: Bool = false, now: Date = Date()) throws -> URL {
         guard run.state == .running, UUID(uuidString: run.id) != nil,
               shellExecutable.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: shellExecutable) else {
             throw ReviewedCommandRunError.invalid("Only a natively approved running request can create a worker ticket.")
@@ -86,21 +86,34 @@ public enum ApprovedCommandWorker {
         let key = SymmetricKey(size: .bits256)
         let keyData = key.withUnsafeBytes { Data($0) }
         let ticket = ApprovedCommandTicket(resultKey: keyData, runID: run.id, command: run.command, sourceFolder: run.sourceFolder,
-            shellExecutable: shellExecutable, ownerPID: ownerPID, expiresAt: Date().addingTimeInterval(120),
+            shellExecutable: shellExecutable, ownerPID: ownerPID, expiresAt: now.addingTimeInterval(120),
             exitInsteadOfShellWhenClean: exitWhenClean)
         let path = job.appendingPathComponent("ticket.json")
-        try writeNew(JSONEncoder().encode(ticket), to: path)
-        resultKeys.lock.withLock { resultKeys.values[job.path] = key }
+        let bytes = try JSONEncoder().encode(ticket)
+        try writeNew(bytes, to: path)
+        resultKeys.lock.withLock { resultKeys.values[job.path] = (key, digest(bytes)) }
         return path
     }
 
+    /// The expected digest comes from app memory, never from the ticket on disk.
+    public static func ticketDigest(for ticket: URL) throws -> String {
+        guard let value = resultKeys.lock.withLock({ resultKeys.values[ticket.deletingLastPathComponent().path]?.digest }) else {
+            throw ReviewedCommandRunError.invalid("No native approval exists for this worker ticket.")
+        }
+        return value
+    }
+
+    private static func digest(_ bytes: Data) -> String {
+        SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    }
+
     public static func consume(_ ticket: URL) throws -> ApprovedCommandTicket {
-        let value = try claim(ticket)
+        let value = try claim(ticket, expectedDigest: ticketDigest(for: ticket))
         try validate(value)
         return value
     }
 
-    private static func claim(_ ticket: URL) throws -> ApprovedCommandTicket {
+    private static func claim(_ ticket: URL, expectedDigest: String) throws -> ApprovedCommandTicket {
         guard ticket.lastPathComponent == "ticket.json" else { throw ReviewedCommandRunError.invalid("Invalid worker ticket name.") }
         let job = ticket.deletingLastPathComponent()
         try privateDirectory(job)
@@ -115,7 +128,11 @@ public enum ApprovedCommandWorker {
                 try? writeNew(Data(), to: consumed)
             }
         }
-        let value = try JSONDecoder().decode(ApprovedCommandTicket.self, from: readPrivate(consumed, limit: 100_000))
+        let bytes = try readPrivate(consumed, limit: 100_000)
+        guard expectedDigest.count == 64, digest(bytes) == expectedDigest else {
+            throw ReviewedCommandRunError.invalid("The approved command ticket changed before execution; nothing was run.")
+        }
+        let value = try JSONDecoder().decode(ApprovedCommandTicket.self, from: bytes)
         guard value.resultKey.count == 32, value.runID == job.lastPathComponent else { throw ReviewedCommandRunError.invalid("Invalid worker ticket identity.") }
         // Remove the signing key before any approved child can start. Retain
         // an empty atomic-claim marker so the ticket can never be replayed.
@@ -169,7 +186,7 @@ public enum ApprovedCommandWorker {
         let path = job.appendingPathComponent("result.json")
         guard FileManager.default.fileExists(atPath: path.path) else { return nil }
         try privateDirectory(job)
-        guard let key = resultKeys.lock.withLock({ resultKeys.values[job.path] }) else {
+        guard let key = resultKeys.lock.withLock({ resultKeys.values[job.path]?.key }) else {
             throw ReviewedCommandRunError.invalid("No live application authority exists for this result; history cannot restore a run.")
         }
         let envelope = try JSONDecoder().decode(AuthenticatedCommandResult.self, from: readPrivate(path, limit: 200_000))
@@ -265,7 +282,7 @@ public enum ApprovedCommandWorker {
     /// for a keypress. A clean run that ends its pane must outlive that.
     public static let minimumCleanExitRuntime: TimeInterval = 0.5
 
-    public static func execute(ticketPath: String) -> Never {
+    public static func execute(ticketPath: String, expectedDigest: String) -> Never {
         let started = ProcessInfo.processInfo.systemUptime // monotonic: a clock change cannot shorten the floor
         let path = URL(fileURLWithPath: ticketPath)
         let job = path.deletingLastPathComponent()
@@ -274,7 +291,7 @@ public enum ApprovedCommandWorker {
         var endsPaneAfterResult = false
         do {
             lease = try acquireLease(job)
-            let ticket = try claim(path)
+            let ticket = try claim(path, expectedDigest: expectedDigest)
             shell = ticket.shellExecutable
             commandWorkerInterrupted = 0
             for value in [SIGHUP, SIGTERM, SIGINT] { signal(value, interruptCommandWorker) }

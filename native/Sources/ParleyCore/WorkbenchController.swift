@@ -599,7 +599,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 try? fileManager.removeItem(at: ticket.deletingLastPathComponent())
                 throw error
             }
-            approvedShellLaunches[pane.id] = (pane.launchGeneration, [workerExecutable.path, ApprovedCommandWorker.argument, ticket.path])
+            approvedShellLaunches[pane.id] = (pane.launchGeneration, [workerExecutable.path, ApprovedCommandWorker.argument, ticket.path, try ApprovedCommandWorker.ticketDigest(for: ticket)])
             return pane
         }
     }
@@ -1149,7 +1149,7 @@ public final class WorkbenchController: @unchecked Sendable {
             } else {
                 guard let relayRuntime else {
                     throw ParleyWorkbenchError.commandFailed(
-                        "Parley cannot start an agent without its protected relay boundary. Shell panes remain available."
+                        "Parley cannot start an agent without its relay endpoint. Shell panes remain available."
                     )
                 }
                 let token = try relayRuntime.credentials.token(for: pane.id)
@@ -1189,16 +1189,9 @@ public final class WorkbenchController: @unchecked Sendable {
                     commandPath: relayRuntime.shimDirectory.appendingPathComponent("parley"),
                     inherited: environment
                 ) { launchEnvironment[key] = value }
-                let boundary = try AgentProcessBoundary(
-                    applicationDirectory: applicationDirectory,
-                    protocolDirectory: protocolDirectory,
-                    shimDirectory: relayRuntime.shimDirectory,
-                    protectedControlEndpoint: applicationDirectory.appendingPathComponent("relay.sock"),
-                    transportDirectory: relayRuntime.transportDirectory,
-                    paneToken: token,
-                    fileManager: fileManager
-                )
-                argv = boundary.arguments + ["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE"]
+                let endpoint = try RelayFileTransport.prepareEndpoint(
+                    runtimeDirectory: relayRuntime.transportDirectory, paneToken: token, fileManager: fileManager)
+                argv = ["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE"]
                 let launchMode = agentLaunchRequests[pane.id].flatMap {
                     $0.generation == pane.launchGeneration ? $0.mode : nil
                 } ?? .fresh
@@ -1213,10 +1206,14 @@ public final class WorkbenchController: @unchecked Sendable {
                     supplied: nil,
                     selection: pane.permissionSelection
                 ) {
-                    command.append(contentsOf: PermissionProfileAdapter.launchPlan(
-                        for: pane.kind,
-                        profile: profile
-                    ).arguments)
+                    if pane.kind == .codex {
+                        command += HostAgentPermissions(applicationDirectory: applicationDirectory,
+                            protocolDirectory: protocolDirectory, shimDirectory: relayRuntime.shimDirectory,
+                            transportDirectory: relayRuntime.transportDirectory, endpointDirectory: endpoint,
+                            profile: profile).launchArguments
+                    } else {
+                        command += PermissionProfileAdapter.launchPlan(for: pane.kind, profile: profile).arguments
+                    }
                 }
                 argv.append(contentsOf: command)
             }
@@ -1228,6 +1225,17 @@ public final class WorkbenchController: @unchecked Sendable {
                 command: GhosttyLaunchCommand.render(argv)
             )
         }
+    }
+
+    public func preflightHostLaunch(folder: String, profile: EffectivePermissionProfile) throws {
+        let runtime = try lock.withLock {
+            guard let relayRuntime else { throw PermissionProfileError.invalid("The relay is unavailable.") }
+            return relayRuntime
+        }
+        try HostAgentPermissions.preflight(applicationDirectory: applicationDirectory,
+            protocolDirectory: protocolDirectory, shimDirectory: runtime.shimDirectory,
+            transportDirectory: runtime.transportDirectory, folder: folder, profile: profile,
+            environment: environment)
     }
 
     /// Applies a title in memory and schedules one coalesced write. Returns

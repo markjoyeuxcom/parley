@@ -876,7 +876,7 @@ func checkContainerBypassController() throws {
         let host = try fixture.controller.listPanes().first { $0.id == pane.id }!
         let launch = try fixture.controller.launchConfiguration(for: pane.id)
         try containerExpect(host.containerConfiguration == nil && host.permissionEnforcement == .partiallyEnforced, "return to host kept bypass metadata")
-        try containerExpect(!launch.command.contains(expectedFlag) && launch.command.contains(vendor == .codex ? "--sandbox" : "--permission-mode"), "container bypass leaked into host launch")
+        try containerExpect(!launch.command.contains(expectedFlag) && launch.command.contains(vendor == .codex ? "default_permissions=" : "--permission-mode"), "container bypass leaked into host launch")
         try fixture.controller.shutdown()
     }
 }
