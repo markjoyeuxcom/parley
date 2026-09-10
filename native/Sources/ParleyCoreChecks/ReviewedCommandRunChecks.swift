@@ -12,6 +12,7 @@ private func runRejects(_ operation: () throws -> Void) throws {
 @MainActor
 let reviewedCommandRunChecks: [(String, () throws -> Void)] = [
     ("command wait reports an unobserved exit instead of a silent success", commandWaitOutcomeChecks),
+    ("spawned commands never inherit a blocked signal mask", commandSpawnSignalMaskChecks),
     ("host preflight failure names what was observed, not cleared legacy settings", hostPreflightMessageChecks),
     ("reviewed command run approval attention presents once and respects dismissal", reviewedRunApprovalAttentionChecks),
     ("reviewed command run approval attention defers without losing requests", reviewedRunDeferredAttentionChecks),
@@ -1158,4 +1159,35 @@ func hostPreflightMessageChecks() throws {
     let denied = HostAgentPermissions.failureMessage(
         status: 81, privateHeld: false, endpointWritten: true, stderr: "", diagnostic: nil)
     try runExpect(denied.contains("deny"), "exit 81 must name the failed denial")
+}
+
+
+/// posix_spawn hands the child the calling thread's blocked mask unless it is
+/// told otherwise, and Swift concurrency and the terminal stack run threads
+/// with signals blocked. A tool that inherits a blocked SIGCHLD never learns
+/// its own children exited and hangs silently until it is killed.
+///
+/// The child here signals itself. With a cleared mask the signal is delivered
+/// and kills it; with an inherited mask it is held pending and the child exits
+/// 7 instead.
+func commandSpawnSignalMaskChecks() throws {
+    var blocked = sigset_t()
+    sigemptyset(&blocked)
+    sigaddset(&blocked, SIGUSR1)
+    var previous = sigset_t()
+    sigemptyset(&previous)
+    guard pthread_sigmask(SIG_BLOCK, &blocked, &previous) == 0 else {
+        throw NSError(domain: "ReviewedCommandRun", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "could not block SIGUSR1 for the spawn check"])
+    }
+    defer { _ = pthread_sigmask(SIG_SETMASK, &previous, nil) }
+    let output = try ProcessCommandRunner(timeout: 10).run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: ["-c", "kill -USR1 $$; exit 7"],
+        environment: ["PATH": "/usr/bin:/bin"],
+        input: nil)
+    try runExpect(output.status != 7,
+        "the child inherited this thread's blocked signal mask; a tool that waits on SIGCHLD would hang forever")
+    try runExpect(output.status == 128 + SIGUSR1,
+        "expected the child to die from the signal it raised, got status \(output.status)")
 }

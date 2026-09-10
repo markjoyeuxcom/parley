@@ -143,7 +143,25 @@ public final class ProcessCommandRunner: CommandRunning {
             throw commandPOSIXError(attributesStatus, operation: "posix_spawnattr_init")
         }
         defer { posix_spawnattr_destroy(&attributes) }
-        let closeUnmappedDescriptors = Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)
+        // A spawned tool must start from a clean signal state. posix_spawn
+        // otherwise hands it the calling thread's blocked mask, and Swift
+        // concurrency and the terminal stack run threads with signals blocked.
+        // A child that inherits a blocked SIGCHLD can never be told its own
+        // children exited: it waits forever, silently, and only SIGKILL ends
+        // it. Reset every disposition to default and clear the mask.
+        var defaultedSignals = sigset_t()
+        sigfillset(&defaultedSignals)
+        var clearedMask = sigset_t()
+        sigemptyset(&clearedMask)
+        let signalDefaultStatus = posix_spawnattr_setsigdefault(&attributes, &defaultedSignals)
+        guard signalDefaultStatus == 0 else {
+            throw commandPOSIXError(signalDefaultStatus, operation: "posix_spawnattr_setsigdefault")
+        }
+        let signalMaskStatus = posix_spawnattr_setsigmask(&attributes, &clearedMask)
+        guard signalMaskStatus == 0 else {
+            throw commandPOSIXError(signalMaskStatus, operation: "posix_spawnattr_setsigmask")
+        }
+        let closeUnmappedDescriptors = Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
         let flagsStatus = posix_spawnattr_setflags(&attributes, closeUnmappedDescriptors)
         guard flagsStatus == 0 else {
             throw commandPOSIXError(flagsStatus, operation: "isolate child file descriptors")
