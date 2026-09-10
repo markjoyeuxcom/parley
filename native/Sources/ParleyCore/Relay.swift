@@ -144,7 +144,7 @@ public final class RelayCredentials: @unchecked Sendable {
         // O_EXLOCK acquires a process-wide advisory lock as part of open and
         // holds it until close, avoiding a Swift name collision between the
         // flock(2) function and Darwin's `flock` structure.
-        let descriptor = Darwin.open(lockPath, O_CREAT | O_RDWR | O_EXLOCK, S_IRUSR | S_IWUSR)
+        let descriptor = Darwin.open(lockPath, O_CREAT | O_RDWR | O_EXLOCK | O_CLOEXEC, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else {
             throw RelayCredentialError.lockFailed(String(cString: strerror(errno)))
         }
@@ -3873,6 +3873,15 @@ public final class RelayBroker: @unchecked Sendable {
         for id in Array(delegationRecords.keys) {
             finishDelegationLocked(handoffID: id, state: .interrupted, detail: reason)
         }
+        for (id, var review) in contextReviewRecords where review.state == .awaitingReview {
+            review.state = .interrupted
+            review.updatedAt = Date()
+            review.detail = reason
+            contextReviewRecords[id] = review
+            try? contextReviewStore?.record(review)
+            noteChangeLocked()
+        }
+        consultationCondition.broadcast()
         consultationCondition.unlock()
     }
 

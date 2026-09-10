@@ -196,4 +196,65 @@ private func reviewController(_ root: URL) throws -> WorkbenchController {
         let profile = try PermissionProfileResolver.resolve(definition: PermissionProfileDefinition.builtIns.first { $0.id == "default" }!, paneFolder: FileManager.default.currentDirectoryPath)
         try reviewExpect(PermissionProfileAdapter.launchPlan(for: .claude, profile: profile).arguments == ["--permission-mode", "default"], "version-specific alias emitted")
     }),
+    ("review regression cancelAll unblocks context reviews in awaitingReview", {
+        let root = try reviewRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let credentials = try RelayCredentials(file: root.appendingPathComponent("tokens.json"))
+        let source = reviewPane("source", .claude), target = reviewPane("target", .codex)
+        let sourceToken = try credentials.token(for: source.id)
+        let reviewStore = try AgentContextReviewStore(file: root.appendingPathComponent("context-reviews.json"))
+        let broker = RelayBroker(
+            credentials: credentials,
+            panes: { [source, target] },
+            paste: { _, _ in },
+            submit: { _, _ in },
+            contextSubmit: { _, _ in },
+            consultationTimeout: 60,
+            contextReviewStore: reviewStore
+        )
+        let staged = broker.handleContextDraft(
+            token: sourceToken,
+            name: "Test review",
+            path: "test.txt",
+            text: "sample"
+        )
+        let summary = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(staged.text.utf8))
+
+        final class SafeResult: @unchecked Sendable {
+            private let lock = NSLock()
+            private var storage: RelayTextResponse?
+            var value: RelayTextResponse? { lock.withLock { storage } }
+            func set(_ val: RelayTextResponse) { lock.withLock { storage = val } }
+        }
+        let askResult = SafeResult()
+        DispatchQueue.global(qos: .utility).async {
+            askResult.set(broker.handleContextAsk(
+                token: sourceToken,
+                draftID: summary.id,
+                target: target.id,
+                text: "question"
+            ))
+        }
+
+        let deadline = Date().addingTimeInterval(3)
+        while broker.contextReviews().first?.state != .awaitingReview && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        try reviewExpect(broker.contextReviews().first?.state == .awaitingReview, "draft did not reach awaitingReview")
+        try reviewExpect(askResult.value == nil, "ask returned early before cancelAll")
+
+        broker.cancelAll(reason: "App shutdown during review")
+
+        let returnDeadline = Date().addingTimeInterval(3)
+        while askResult.value == nil && Date() < returnDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        guard let result = askResult.value else {
+            throw NSError(domain: "ReviewRegression", code: 1, userInfo: [NSLocalizedDescriptionKey: "cancelAll did not unblock waiting handleContextAsk"])
+        }
+        try reviewExpect(result.status == 409, "unexpected status code: \(result.status)")
+        try reviewExpect(result.text.contains("App shutdown during review"), "unexpected error text: \(result.text)")
+        try reviewExpect(broker.contextReviews().first?.state == .interrupted, "context review was not marked interrupted")
+        let reloaded = try AgentContextReviewStore(file: root.appendingPathComponent("context-reviews.json"))
+        try reviewExpect(reloaded.reviews().first?.state == .interrupted, "persisted context review was not marked interrupted")
+    }),
 ]

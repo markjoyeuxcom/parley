@@ -64,7 +64,7 @@ public enum RelayCoreControlToken {
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
 
         let lockPath = file.path + ".lock"
-        let descriptor = Darwin.open(lockPath, O_CREAT | O_RDWR | O_EXLOCK, S_IRUSR | S_IWUSR)
+        let descriptor = Darwin.open(lockPath, O_CREAT | O_RDWR | O_EXLOCK | O_CLOEXEC, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else {
             throw RelayCoreError.socket("could not lock the control credential: \(String(cString: strerror(errno)))")
         }
