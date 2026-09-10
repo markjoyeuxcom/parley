@@ -154,7 +154,12 @@ public enum ApprovedCommandWorker {
         if FileManager.default.fileExists(atPath: cancelled.path) { return true }
         if renameError != ENOENT { throw NSError(domain: NSPOSIXErrorDomain, code: Int(renameError)) }
         let path = job.appendingPathComponent("cancel")
-        if !FileManager.default.fileExists(atPath: path.path) { try writeNew(Data(), to: path) }
+        if !FileManager.default.fileExists(atPath: path.path) {
+            do {
+                try writeNew(Data(), to: path)
+            } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EEXIST) {
+            }
+        }
         return false
     }
 
@@ -301,7 +306,7 @@ public enum ApprovedCommandWorker {
             guard renamex_np(temporary.path, job.appendingPathComponent("result.json").path, UInt32(RENAME_EXCL)) == 0 else { throw posixError() }
             endsPaneAfterResult = ticket.exitInsteadOfShellWhenClean && ReviewedCommandRunPaneClosePolicy.isClean(result)
             mirror(Data("\r\n[Parley captured command result: exit \(result.exitStatus.map(String.init) ?? "unavailable"), signal \(result.terminationSignal.map(String.init) ?? "none"). \(endsPaneAfterResult ? "Clean result; this pane closes." : "Returning to Shell.")]\r\n".utf8), to: STDOUT_FILENO)
-            if commandWorkerInterrupted != 0 || kill(ticket.ownerPID, 0) != 0 { exit(0) }
+            if commandWorkerInterrupted == SIGHUP || commandWorkerInterrupted == SIGTERM || kill(ticket.ownerPID, 0) != 0 { exit(0) }
             _ = chdir(ticket.command.folder)
         } catch {
             if lease >= 0 {
@@ -353,13 +358,25 @@ public enum ApprovedCommandWorker {
         Data((runID + "\0").utf8) + payload
     }
 
+    // Display-only PTY mirror. stdout/stderr are non-blocking; retry briefly on EAGAIN/EWOULDBLOCK
+    // up to ~100ms before dropping so bursts don't truncate, while bounding backpressure on the command.
     private static func mirror(_ data: Data, to descriptor: Int32) {
         data.withUnsafeBytes { bytes in
             var offset = 0
+            var retries = 0
             while offset < bytes.count {
                 let count = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
-                if count > 0 { offset += count }
-                else if errno != EINTR { break }
+                if count > 0 {
+                    offset += count
+                    retries = 0
+                } else if errno == EINTR {
+                    continue
+                } else if (errno == EAGAIN || errno == EWOULDBLOCK) && retries < 100 {
+                    retries += 1
+                    usleep(1_000)
+                } else {
+                    break
+                }
             }
         }
     }

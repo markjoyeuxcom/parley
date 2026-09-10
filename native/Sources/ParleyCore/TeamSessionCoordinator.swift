@@ -547,7 +547,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
     /// ancestor is canonicalised (symlinks resolved) and the remaining
     /// components must be plain names, so nothing can escape by traversal or
     /// by a link created later at the missing part.
-    static func canonicalPlannedFolder(_ folder: String, within sourceFolder: String) throws -> String {
+    public static func canonicalPlannedFolder(_ folder: String, within sourceFolder: String) throws -> String {
         guard folder.hasPrefix("/") else { throw TeamSessionError.invalid("The team folder must be absolute.") }
         var existing = URL(fileURLWithPath: folder).standardizedFileURL
         var remainder: [String] = []
@@ -563,7 +563,15 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: existing.path, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw TeamSessionError.invalid("The planned folder's parent must be an existing directory.")
         }
-        let canonical = ([WorkspaceFolderIdentity.matchingKey(existing.path)] + remainder).joined(separator: "/")
+        let base = WorkspaceFolderIdentity.matchingKey(existing.path)
+        let canonical: String
+        if remainder.isEmpty {
+            canonical = base
+        } else if base == "/" {
+            canonical = "/" + remainder.joined(separator: "/")
+        } else {
+            canonical = base + "/" + remainder.joined(separator: "/")
+        }
         let root = WorkspaceFolderIdentity.matchingKey(sourceFolder)
         guard canonical == root || canonical.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
             throw TeamSessionError.invalid("The team folder must be inside the lead pane's working folder.")
@@ -571,7 +579,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         return canonical
     }
 
-    static func canonicalFolder(_ folder: String, within sourceFolder: String) throws -> String {
+    public static func canonicalFolder(_ folder: String, within sourceFolder: String) throws -> String {
         guard folder.hasPrefix("/") else { throw TeamSessionError.invalid("The team folder must be absolute.") }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue else {
