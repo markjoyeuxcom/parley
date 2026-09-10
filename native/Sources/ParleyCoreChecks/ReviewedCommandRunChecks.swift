@@ -11,6 +11,9 @@ private func runRejects(_ operation: () throws -> Void) throws {
 
 @MainActor
 let reviewedCommandRunChecks: [(String, () throws -> Void)] = [
+    ("command wait reports an unobserved exit instead of a silent success", commandWaitOutcomeChecks),
+    ("spawned commands never inherit a blocked signal mask", commandSpawnSignalMaskChecks),
+    ("host preflight failure names what was observed, not cleared legacy settings", hostPreflightMessageChecks),
     ("reviewed command run approval attention presents once and respects dismissal", reviewedRunApprovalAttentionChecks),
     ("reviewed command run approval attention defers without losing requests", reviewedRunDeferredAttentionChecks),
     ("reviewed command run cleanup cannot disable coordination", reviewedRunCleanupIsolationChecks),
@@ -1122,4 +1125,69 @@ func reviewedRunClearedLateResultChecks() throws {
         "a late result resurrected a cleared command run")
     try runExpect(coordinator.runs().isEmpty,
         "a late result restored content to the cleared recovery cache")
+}
+
+
+/// A child reaped elsewhere leaves no exit status of ours. Reporting the
+/// untouched zero would present a command we never saw finish as a clean run.
+func commandWaitOutcomeChecks() throws {
+    try runExpect(CommandExitStatus.resolve(outcome: .reaped, raw: 0) == 0, "a real clean exit must stay 0")
+    try runExpect(CommandExitStatus.resolve(outcome: .reaped, raw: 81 << 8) == 81, "a real exit status must survive")
+    try runExpect(CommandExitStatus.resolve(outcome: .timedOut, raw: 0) == 124, "a timeout must report 124")
+    try runExpect(CommandExitStatus.resolve(outcome: .unobserved, raw: 0) != 0,
+        "an unobserved wait reported success; a command never seen to finish must not read as clean")
+    try runExpect(CommandExitStatus.resolve(outcome: .unobserved, raw: 0) == CommandExitStatus.unobserved,
+        "an unobserved wait must report its own status")
+    try runExpect(CommandExitStatus.unobserved != CommandExitStatus.timedOut,
+        "unobserved and timed out must stay distinguishable")
+}
+
+/// The configuration query runs first and rejects legacy sandbox keys, so a
+/// later probe failure must never send the person hunting for them again.
+func hostPreflightMessageChecks() throws {
+    let timedOut = HostAgentPermissions.failureMessage(
+        status: CommandExitStatus.timedOut, privateHeld: true, endpointWritten: true,
+        stderr: "", diagnostic: "wait=killed-after-timeout elapsedMs=20003")
+    try runExpect(!timedOut.contains("sandbox_mode") && !timedOut.contains("sandbox_workspace_write"),
+        "a timeout still blamed legacy sandbox settings the configuration query already cleared")
+    try runExpect(timedOut.contains("elapsedMs=20003") && timedOut.contains("wait=killed-after-timeout"),
+        "the wait diagnostic was dropped from the timeout message")
+    let unobserved = HostAgentPermissions.failureMessage(
+        status: CommandExitStatus.unobserved, privateHeld: true, endpointWritten: true,
+        stderr: "", diagnostic: "wait=wait-error-10 elapsedMs=12")
+    try runExpect(unobserved.lowercased().contains("unknown"), "an unobserved probe must say its result is unknown")
+    let denied = HostAgentPermissions.failureMessage(
+        status: 81, privateHeld: false, endpointWritten: true, stderr: "", diagnostic: nil)
+    try runExpect(denied.contains("deny"), "exit 81 must name the failed denial")
+}
+
+
+/// posix_spawn hands the child the calling thread's blocked mask unless it is
+/// told otherwise, and Swift concurrency and the terminal stack run threads
+/// with signals blocked. A tool that inherits a blocked SIGCHLD never learns
+/// its own children exited and hangs silently until it is killed.
+///
+/// The child here signals itself. With a cleared mask the signal is delivered
+/// and kills it; with an inherited mask it is held pending and the child exits
+/// 7 instead.
+func commandSpawnSignalMaskChecks() throws {
+    var blocked = sigset_t()
+    sigemptyset(&blocked)
+    sigaddset(&blocked, SIGUSR1)
+    var previous = sigset_t()
+    sigemptyset(&previous)
+    guard pthread_sigmask(SIG_BLOCK, &blocked, &previous) == 0 else {
+        throw NSError(domain: "ReviewedCommandRun", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "could not block SIGUSR1 for the spawn check"])
+    }
+    defer { _ = pthread_sigmask(SIG_SETMASK, &previous, nil) }
+    let output = try ProcessCommandRunner(timeout: 10).run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: ["-c", "kill -USR1 $$; exit 7"],
+        environment: ["PATH": "/usr/bin:/bin"],
+        input: nil)
+    try runExpect(output.status != 7,
+        "the child inherited this thread's blocked signal mask; a tool that waits on SIGCHLD would hang forever")
+    try runExpect(output.status == 128 + SIGUSR1,
+        "expected the child to die from the signal it raised, got status \(output.status)")
 }

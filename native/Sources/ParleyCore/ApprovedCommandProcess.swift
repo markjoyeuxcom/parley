@@ -21,7 +21,15 @@ public enum ApprovedCommandProcess {
         defer { posix_spawn_file_actions_destroy(&actions) }
         try checked(posix_spawnattr_init(&attributes))
         defer { posix_spawnattr_destroy(&attributes) }
-        try checked(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)))
+        // Same clean signal state as ProcessCommandRunner: an approved command
+        // must not inherit a blocked mask from whichever thread spawned it.
+        var defaultedSignals = sigset_t()
+        sigfillset(&defaultedSignals)
+        var clearedMask = sigset_t()
+        sigemptyset(&clearedMask)
+        try checked(posix_spawnattr_setsigdefault(&attributes, &defaultedSignals))
+        try checked(posix_spawnattr_setsigmask(&attributes, &clearedMask))
+        try checked(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)))
         try checked(posix_spawnattr_setpgroup(&attributes, 0))
         try checked(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0))
         try checked(posix_spawn_file_actions_adddup2(&actions, output.1, STDOUT_FILENO))

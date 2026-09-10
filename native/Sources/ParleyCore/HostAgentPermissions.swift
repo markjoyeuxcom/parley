@@ -80,10 +80,41 @@ public struct HostAgentPermissions: Sendable {
             arguments: ["sandbox", "-P", permissions.profileName, "-C", folder] + permissions.configurationArguments
                 + ["--", "/bin/sh", "-c", script, "parley-host-preflight", privateFile.path, endpointFile.path],
             environment: environment, input: nil)
-        guard output.status == 0,
-              (try? Data(contentsOf: privateFile)) == Data("private probe".utf8),
-              (try? Data(contentsOf: endpointFile)) == Data("checked".utf8) else {
-            throw PermissionProfileError.invalid("Codex’s host tool preflight failed (exit \(output.status)). The native sandbox must run, deny Parley private files and allow its own endpoint. Check Codex’s permission configuration: legacy sandbox_mode or sandbox_workspace_write settings can override default_permissions. Parley changed no vendor settings. \(String(output.stderrText.prefix(1200)))")
+        let privateHeld = (try? Data(contentsOf: privateFile)) == Data("private probe".utf8)
+        let endpointWritten = (try? Data(contentsOf: endpointFile)) == Data("checked".utf8)
+        guard output.status == 0, privateHeld, endpointWritten else {
+            throw PermissionProfileError.invalid(failureMessage(
+                status: output.status, privateHeld: privateHeld, endpointWritten: endpointWritten,
+                stderr: output.stderrText, diagnostic: output.diagnostic))
         }
+    }
+
+    /// The configuration query already ran and accepted the applicable
+    /// settings, so this never blames legacy sandbox keys it has just cleared.
+    /// It names what was actually observed instead.
+    public static func failureMessage(status: Int32, privateHeld: Bool, endpointWritten: Bool,
+                               stderr: String, diagnostic: String?) -> String {
+        let cause: String
+        switch status {
+        case CommandExitStatus.timedOut:
+            cause = "Codex did not finish the sandbox probe before Parley’s timeout. Nothing indicates your Codex configuration is wrong: the configuration query just before this accepted it."
+        case CommandExitStatus.unobserved:
+            cause = "Parley could not observe the sandbox probe’s exit, so its result is unknown. This is a Parley fault, not a Codex configuration problem."
+        case 80:
+            cause = "The sandbox refused to run an ordinary command."
+        case 81, 82:
+            cause = "The sandbox ran but did not deny Parley’s private files, so the permission rules were not applied as written."
+        case 83, 84:
+            cause = "The sandbox ran but denied this pane’s own relay endpoint, which it must be able to read and write."
+        default:
+            cause = privateHeld && endpointWritten
+                ? "Codex reported a sandbox failure."
+                : "The sandbox ran but its filesystem rules did not hold."
+        }
+        var message = "Codex’s host tool preflight failed (exit \(status)). \(cause) Parley changed no vendor settings."
+        if let diagnostic { message += " [\(diagnostic)]" }
+        let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { message += " \(String(trimmed.prefix(1200)))" }
+        return message
     }
 }

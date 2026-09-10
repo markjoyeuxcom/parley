@@ -45,6 +45,40 @@ public enum CommandOutputExpectation: Sendable {
     case mayArriveAfterClientExit
 }
 
+/// How a spawned command's exit was actually observed.
+///
+/// `unobserved` means the child was reaped by something else in this process,
+/// so no exit status of ours exists. That is not success and must never be
+/// reported as one: a caller checking `status == 0` would otherwise treat a
+/// command it never saw finish as a clean run.
+public enum CommandWaitOutcome: Equatable, Sendable {
+    case reaped
+    case timedOut
+    case unobserved
+}
+
+public enum CommandExitStatus {
+    /// The deadline passed and the child was signalled. Matches timeout(1).
+    public static let timedOut: Int32 = 124
+    /// The wait itself failed, so no exit status was observed.
+    public static let unobserved: Int32 = 125
+
+    public static func resolve(outcome: CommandWaitOutcome, raw: Int32) -> Int32 {
+        switch outcome {
+        case .reaped: return exitStatus(from: raw)
+        case .timedOut: return timedOut
+        case .unobserved: return unobserved
+        }
+    }
+
+    static func exitStatus(from status: Int32) -> Int32 {
+        let signal = status & 0x7f
+        if signal == 0 { return (status >> 8) & 0xff }
+        if signal == 0x7f { return 1 }
+        return 128 + signal
+    }
+}
+
 public extension CommandRunning {
     func run(
         executable: URL,
@@ -109,7 +143,25 @@ public final class ProcessCommandRunner: CommandRunning {
             throw commandPOSIXError(attributesStatus, operation: "posix_spawnattr_init")
         }
         defer { posix_spawnattr_destroy(&attributes) }
-        let closeUnmappedDescriptors = Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)
+        // A spawned tool must start from a clean signal state. posix_spawn
+        // otherwise hands it the calling thread's blocked mask, and Swift
+        // concurrency and the terminal stack run threads with signals blocked.
+        // A child that inherits a blocked SIGCHLD can never be told its own
+        // children exited: it waits forever, silently, and only SIGKILL ends
+        // it. Reset every disposition to default and clear the mask.
+        var defaultedSignals = sigset_t()
+        sigfillset(&defaultedSignals)
+        var clearedMask = sigset_t()
+        sigemptyset(&clearedMask)
+        let signalDefaultStatus = posix_spawnattr_setsigdefault(&attributes, &defaultedSignals)
+        guard signalDefaultStatus == 0 else {
+            throw commandPOSIXError(signalDefaultStatus, operation: "posix_spawnattr_setsigdefault")
+        }
+        let signalMaskStatus = posix_spawnattr_setsigmask(&attributes, &clearedMask)
+        guard signalMaskStatus == 0 else {
+            throw commandPOSIXError(signalMaskStatus, operation: "posix_spawnattr_setsigmask")
+        }
+        let closeUnmappedDescriptors = Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
         let flagsStatus = posix_spawnattr_setflags(&attributes, closeUnmappedDescriptors)
         guard flagsStatus == 0 else {
             throw commandPOSIXError(flagsStatus, operation: "isolate child file descriptors")
@@ -179,14 +231,17 @@ public final class ProcessCommandRunner: CommandRunning {
 
         let outputData = stdout.data(maximumBytes: maximumCapturedBytes)
         var errorData = stderr.data(maximumBytes: maximumCapturedBytes)
-        if wait.timedOut {
+        if wait.outcome == .timedOut {
             if !errorData.isEmpty { errorData.append(Data("\n".utf8)) }
             errorData.append(Data("Command timed out after \(timeout) seconds".utf8))
+        } else if wait.outcome == .unobserved {
+            if !errorData.isEmpty { errorData.append(Data("\n".utf8)) }
+            errorData.append(Data("Parley could not observe this command's exit (\(wait.reason)); its result is unknown.".utf8))
         }
         return CommandOutput(
             stdout: outputData,
             stderr: errorData,
-            status: wait.timedOut ? 124 : commandExitStatus(wait.status),
+            status: CommandExitStatus.resolve(outcome: wait.outcome, raw: wait.status),
             diagnostic: [
                 "wait=\(wait.reason)",
                 "elapsedMs=\((DispatchTime.now().uptimeNanoseconds &- started) / 1_000_000)",
@@ -382,14 +437,16 @@ private func waitForCapturedOutput(
 private func waitForCommand(
     _ processIdentifier: pid_t,
     timeout: TimeInterval
-) -> (status: Int32, timedOut: Bool, reason: String) {
+) -> (status: Int32, outcome: CommandWaitOutcome, reason: String) {
     let timeoutNanoseconds = UInt64(max(0, timeout) * 1_000_000_000)
     let deadline = DispatchTime.now().uptimeNanoseconds &+ timeoutNanoseconds
     var status = Int32()
     while DispatchTime.now().uptimeNanoseconds < deadline {
         let result = waitpid(processIdentifier, &status, WNOHANG)
-        if result == processIdentifier { return (status, false, "reaped") }
-        if result < 0, errno != EINTR { return (status, false, "wait-error-\(errno)") }
+        if result == processIdentifier { return (status, .reaped, "reaped") }
+        // The child was reaped elsewhere, or the wait is unusable. `status` was
+        // never written, so reporting it would invent a clean exit.
+        if result < 0, errno != EINTR { return (status, .unobserved, "wait-error-\(errno)") }
         usleep(10_000)
     }
 
@@ -397,20 +454,13 @@ private func waitForCommand(
     let terminationDeadline = DispatchTime.now().uptimeNanoseconds &+ 1_000_000_000
     while DispatchTime.now().uptimeNanoseconds < terminationDeadline {
         let result = waitpid(processIdentifier, &status, WNOHANG)
-        if result == processIdentifier { return (status, true, "terminated-after-timeout") }
-        if result < 0, errno != EINTR { return (status, true, "timeout-wait-error-\(errno)") }
+        if result == processIdentifier { return (status, .timedOut, "terminated-after-timeout") }
+        if result < 0, errno != EINTR { return (status, .timedOut, "timeout-wait-error-\(errno)") }
         usleep(10_000)
     }
     _ = kill(processIdentifier, SIGKILL)
     while waitpid(processIdentifier, &status, 0) < 0, errno == EINTR {}
-    return (status, true, "killed-after-timeout")
-}
-
-private func commandExitStatus(_ status: Int32) -> Int32 {
-    let signal = status & 0x7f
-    if signal == 0 { return (status >> 8) & 0xff }
-    if signal == 0x7f { return 1 }
-    return 128 + signal
+    return (status, .timedOut, "killed-after-timeout")
 }
 
 public enum EnvironmentResolver {
