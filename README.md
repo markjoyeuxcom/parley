@@ -43,8 +43,8 @@ skip vendor permission checks while Docker supplies the execution boundary.
   reports a real signal; Copilot and unsupported vendors otherwise remain visibly
   Unknown rather than being inferred from terminal text.
 - Production and Development runtime isolation.
-- Pane-scoped relay capabilities and a macOS Seatbelt boundary around every
-  vendor process tree.
+- Pane-scoped relay capabilities, vendor-managed host permissions and reviewed
+  containers for stronger separation.
 - Production-only signed stable update checks with explicit opt-in, visible
   installation and the normal pane-aware quit confirmation. Development never
   connects to the update feed.
@@ -421,10 +421,9 @@ outside the agent boundary. The runs notice shows that the switch is on, runs
 stay listed under **Review runs and trust** and in Status Center, Cancel still
 works, and turning the switch off restores per-run approval at once and
 returns any request it approved that has not started yet to waiting. Both
-choices in this section are stored in Parley's private application directory,
-which agent processes cannot read or write; if that file cannot be trusted,
-both read as off and Settings says why. Only you can change them; an agent
-cannot.
+choices in this section live only in native app memory for this app session
+and reset to off on quit. Preference files and old authorization records cannot
+turn them on. Closing the main window keeps the session running.
 
 A second switch in the same section, **Close the Shell pane when a run
 finishes cleanly** (also off by default), applies to runs that start after it
@@ -443,6 +442,28 @@ only from the same live requesting generation. Rejection or an uncertain
 failure is not permission to resend automatically. Existing Relay/Paste routes
 still refuse Shell targets.
 
+### Host permissions
+
+Host vendor CLIs run as trusted local applications with their own sandbox and
+approval prompts. Parley adds no outer Seatbelt wrapper and never supplies host
+approval-bypass flags. An unrestricted same-user process can read pane credentials
+or change local records; attribution does not isolate host agents from each other.
+Choose a reviewed container when you need stronger separation.
+
+Codex receives native private-runtime denies, read access to the protocol and
+shim, and write access to its own relay endpoint. The native start review checks
+resolved vendor configuration and runs a real sandbox probe before launch;
+conflicting legacy `sandbox_mode` / `sandbox_workspace_write` settings are refused,
+with the vendor settings left untouched. These controls cover sandboxed tools,
+not the vendor parent or approved unsandboxed commands. Existing panes need an
+explicit restart to receive the changed launch policy.
+
+Native control authority stays in app memory and checks socket peer identity.
+Automatic approval and closing clean command-run panes are native choices for
+this app session, resetting to off when Parley quits. The old
+`core-control-token` and `command-run-authorization.json` files are left unread.
+Approved command tickets must match a digest held by the app before execution.
+
 ### Swift package builds in agent panes
 
 SwiftPM compatibility is available in **Settings → General → Swift package
@@ -451,7 +472,7 @@ agent panes receive a runtime-local `swift` wrapper for SwiftPM `build`,
 `test`, `run` and `package`. It adds SwiftPM's `--disable-sandbox`
 option to avoid unsupported nested macOS sandboxes. Project and dependency manifests and plugins run
 with the agent's existing permissions, including any permitted network access.
-Parley's outer boundary and vendor approvals remain active. The setting only
+Vendor approvals and any vendor sandbox remain active. The setting only
 automates a SwiftPM flag; it does not expand the agent's existing permissions.
 
 The wrapper resolves the current PATH toolchain, including mise, on each

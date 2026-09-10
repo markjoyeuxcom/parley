@@ -46,7 +46,7 @@ func checkSwiftPMCompatibilityLaunchScope() throws {
             try swiftPMExpect(FileManager.default.isExecutableFile(atPath: helper.path), "packaged runtime did not install an executable helper")
             try swiftPMExpect(helper.path.hasPrefix(controller.protocolDirectory.path + "/"), "helper escaped the existing read-only protocol boundary")
             try swiftPMExpect(launch.environment["PATH"]?.split(separator: ":").contains(Substring(helper.deletingLastPathComponent().path)) == true, "agent PATH omitted the helper")
-            try swiftPMExpect(launch.command.contains("sandbox-exec") && launch.command.contains("deny file-read* file-write*"), "compatibility removed the outer boundary")
+            try swiftPMExpect(!launch.command.contains("sandbox-exec"), "a host vendor still launches inside the incompatible outer sandbox")
         }
         let shell = try controller.createPane(kind: .shell, cwd: root.path)
         let launch = try controller.launchConfiguration(for: shell.id)

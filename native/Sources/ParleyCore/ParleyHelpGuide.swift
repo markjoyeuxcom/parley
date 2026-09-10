@@ -604,6 +604,15 @@ public enum ParleyHelpGuide {
             symbol: "terminal",
             sections: [
                 ParleyHelpSection(
+                    id: "host-vendor-permissions",
+                    title: "Host agents and vendor permissions",
+                    paragraphs: [
+                        HostAgentPermissions.disclosure,
+                        "Codex receives native private-path rules. Its Start, Restart and Resume review checks resolved configuration and exercises a real sandboxed tool, private-file denials and own-endpoint access. Host-team approval checks the same configuration. Conflicting legacy sandbox_mode or sandbox_workspace_write settings are refused; Parley leaves the vendor configuration untouched. This check describes that moment, not instruction uptake or future permission changes. Other vendors retain their own existing controls and prompts.",
+                        "Native control authority stays in app memory and checks the socket peer process. Existing panes keep their launch policy until you explicitly restart them. Host approval-bypass flags remain unavailable; stronger separation is provided by reviewed containers and their exact mounts.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "cli-permissions-test-runs",
                     title: "Request, review and run",
                     paragraphs: [
@@ -621,19 +630,19 @@ public enum ParleyHelpGuide {
                     title: "Exact-command session trust",
                     paragraphs: [
                         "Optional exact-command session trust is off by default, memory-only and granted or revoked by you in Review runs and trust. It matches exact argv, canonical folder and requesting pane generation, including mutable project code edited between runs. Exact argv is not a boundary around the code it executes.",
+                        "The two Agent command runs choices in Settings > General also last for this app session only and reset to off on quit. Old command-run authorization files are left unread; they cannot enable either choice.",
                         "Active session grants stay visible. Restart, move, folder or policy changes, Stop Everything and quit invalidate them; they do not survive relaunch. Revoke a grant when you want future matching requests to need review again.",
                     ]
                 ),
                 ParleyHelpSection(
                     id: "command-runs-settings",
-                    title: "Persistent Settings switches",
+                    title: "Settings choices for this app session",
                     paragraphs: [
-                        "Settings > General > Agent command runs has two separate switches, both off by default. Unlike exact-command session trust, these choices survive relaunch until you change them. They are stored in Parley’s private application directory, which ordinary agent panes cannot read or write; an untrusted settings file is treated as both off and Settings explains why.",
+                        "Settings > General > Agent command runs has two separate switches, both off by default. They live only in native app memory for this app session and reset to off on quit. Neither preference files nor old authorization records can enable them. Closing the main window keeps the app session running.",
                         "Approve agent command runs automatically authorizes every eligible request exactly as requested, without a preview or an exact-command session grant. Turning it on also approves eligible waiting requests. The requester must still be a current agent pane, workspace policy must allow runs, and the canonical folder must be inside that pane’s folder. The runs notice, review sheet and run records disclose automatic approval.",
                         "Turning automatic approval off returns queued automatic approvals that have not launched to waiting. It does not revoke manual approvals or exact-command session grants, and does not stop a command already running. Revoke those grants or use Cancel separately when needed.",
                         "Close the Shell pane when a run finishes cleanly is independent of automatic approval. Its choice is fixed when the run starts: switching it later does not change that run. A clean run has exit 0, no signal, was not cancelled and has no truncated output. With clean-close enabled at launch, its worker exits instead of handing over an interactive shell; after the captured result is saved and the worker has exited, Parley removes the run pane automatically.",
                         "Focus returns to the previous surviving pane only if you are still on the run’s pane. An interactive shell is never closed by this option, and a pane you restarted is yours. Failed, cancelled or truncated runs keep their panes for inspection and ordinary shell use. A result that could not be saved does not qualify for automatic pane removal. The captured result remains in Review runs and trust and Status Center.",
-                        "If a switch cannot be saved, Settings shows the error. Enabling fails and stays off. Disabling still takes effect for this session, but the previously saved choice may return after relaunch; turn it off again once storage is writable.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -1064,7 +1073,7 @@ public enum ParleyHelpGuide {
                     id: "troubleshooting-test-runs",
                     title: "A test needs a human Shell",
                     items: [
-                        "1. If SwiftPM reports sandbox_apply: Operation not permitted in an agent pane, open Settings > General > Swift package builds. Compatibility is off by default; opt in deliberately, then explicitly restart that agent pane or start a new one. This changes SwiftPM’s nested sandbox only; Parley’s outer boundary and vendor approvals remain.",
+                        "1. If SwiftPM reports sandbox_apply: Operation not permitted in an agent pane, open Settings > General > Swift package builds. Compatibility is off by default; opt in deliberately, then explicitly restart that agent pane or start a new one. This changes SwiftPM’s nested sandbox only; Vendor approvals and any vendor sandbox remain.",
                         "2. Retry the build or test with the compatibility wrapper. If the vendor rebuilt PATH, the PARLEY_SWIFT_COMMAND helper below reaches the same wrapper. Do not enable compatibility or restart a pane silently on someone else’s behalf.",
                         "3. A remaining GUI test failure such as EPERM spawning /usr/bin/login under AgentProcessBoundary needs a human Shell’s permissions. From the project folder, ask for one reviewed run with request-run. The npm example below resolves the installed npm executable and runs that project’s test script; it requires npm on PATH and a package.json test script.",
                         "4. Review runs and trust shows the exact command and folder for native approval. Run once in new Shell creates a new visible pane. An existing matching session grant or the automatic approval switch can authorize it without another preview; the run record says how it was approved.",

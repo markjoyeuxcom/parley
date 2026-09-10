@@ -45,29 +45,8 @@ final class AppResidentCoordinationCore {
         transportDirectory: URL,
         permissionProfiles: @escaping () throws -> [PermissionProfileDefinition]
     ) throws {
-        let controlToken = try RelayCoreControlToken.loadOrCreate(
-            at: applicationDirectory.appendingPathComponent("core-control-token")
-        )
+        let controlToken = try RelayCoreControlToken.generate()
         let infoFile = applicationDirectory.appendingPathComponent("relay-url")
-        let previousClient = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
-        if previousClient.isHealthy() {
-            let response = try previousClient.shutdownLegacyCoreIfIdle()
-            guard response.status == 202 else {
-                let active = response.readiness.activeWorkCount
-                throw AppResidentCoordinationCoreError.message(
-                    "Parley cannot replace the older coordination core while \(active) tracked item\(active == 1 ? " is" : "s are") active. Finish or cancel that work, then reopen Parley."
-                )
-            }
-            let deadline = Date().addingTimeInterval(3)
-            while previousClient.isHealthy(), Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.05)
-            }
-            guard !previousClient.isHealthy() else {
-                throw AppResidentCoordinationCoreError.message(
-                    "The older coordination core accepted shutdown but did not release its local socket."
-                )
-            }
-        }
         let historyRetentionStore = CollaborationHistoryRetentionStore(
             file: applicationDirectory.appendingPathComponent("history-retention.json")
         )

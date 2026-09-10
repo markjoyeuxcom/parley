@@ -55,12 +55,12 @@ private func reviewController(_ root: URL) throws -> WorkbenchController {
         source.isStarted = false
         try reviewExpect(!broker.handoffs().contains { $0.state == .waiting }, "stopped source left delegation active")
     }),
-    ("review regression launch protects both runtimes and control sockets", {
+    ("review regression Codex permissions cover both runtimes without a host wrapper", {
         let root = try reviewRoot(); defer { try? FileManager.default.removeItem(at: root) }
         let controller = try reviewController(root)
-        let pane = try controller.createPane(kind: .claude, cwd: root.path)
+        let pane = try controller.createPane(kind: .codex, cwd: root.path)
         let command = try controller.launchConfiguration(for: pane.id).command
-        try reviewExpect(command.contains("deny network-outbound"), "real launch omitted socket deny")
+        try reviewExpect(command.contains("default_permissions=") && !command.contains("/usr/bin/sandbox-exec"), "host launch omitted native permissions or retained the outer wrapper")
         for mode in ParleyRuntimeMode.allCases {
             let runtime = ParleyRuntime.make(mode: mode, homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
             try reviewExpect(command.contains(runtime.applicationDirectory.path), "sibling control directory unprotected")

@@ -18,23 +18,17 @@ struct RelayHistoryRetentionUpdateRequest: Codable {
 }
 
 public enum RelayCoreError: LocalizedError {
-    case invalidControlToken
     case randomGenerationFailed
     case socket(String)
-    case invalidLocator
     case malformedResponse
     case response(Int, String)
 
     public var errorDescription: String? {
         switch self {
-        case .invalidControlToken:
-            "Parley's core control credential is invalid."
         case .randomGenerationFailed:
             "Parley could not create its core control credential."
         case let .socket(detail):
             "Parley core: \(detail)"
-        case .invalidLocator:
-            "Parley's core endpoint is missing or invalid."
         case .malformedResponse:
             "Parley's core returned a malformed response."
         case let .response(status, detail):
@@ -46,42 +40,13 @@ public enum RelayCoreError: LocalizedError {
 /// A capability used only by the native UI to inspect and complete broker
 /// state. Agent panes receive their own pane credential, never this token.
 public enum RelayCoreControlToken {
-    public static func load(at file: URL) throws -> String {
-        guard FileManager.default.fileExists(atPath: file.path) else {
-            throw RelayCoreError.invalidControlToken
-        }
-        let token = try String(contentsOf: file, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard token.count == 64, token.allSatisfy(\.isHexDigit) else {
-            throw RelayCoreError.invalidControlToken
-        }
-        return token
-    }
-
-    public static func loadOrCreate(at file: URL, fileManager: FileManager = .default) throws -> String {
-        let directory = file.deletingLastPathComponent()
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-
-        let lockPath = file.path + ".lock"
-        let descriptor = Darwin.open(lockPath, O_CREAT | O_RDWR | O_EXLOCK, S_IRUSR | S_IWUSR)
-        guard descriptor >= 0 else {
-            throw RelayCoreError.socket("could not lock the control credential: \(String(cString: strerror(errno)))")
-        }
-        defer { Darwin.close(descriptor) }
-        _ = Darwin.fchmod(descriptor, S_IRUSR | S_IWUSR)
-
-        if fileManager.fileExists(atPath: file.path) {
-            return try load(at: file)
-        }
-
+    /// Fresh authority for one app-resident core. Never read or write a token file.
+    public static func generate() throws -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
             throw RelayCoreError.randomGenerationFailed
         }
         let token = bytes.map { String(format: "%02x", $0) }.joined()
-        try token.write(to: file, atomically: true, encoding: .utf8)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         return token
     }
 }
@@ -89,38 +54,21 @@ public enum RelayCoreControlToken {
 /// A short-lived native UI client. Coordination state remains in the core, so
 /// discarding this value and creating another never discards a consultation.
 public struct RelayCoreClient: Sendable {
-    public let infoFile: URL
+    private let socketFile: URL
     private let controlToken: String
+    private let expectedServerPID: Int32
 
-    public init(infoFile: URL, controlToken: String) {
-        self.infoFile = infoFile
+    /// The socket path is supplied by trusted native construction. `infoFile`
+    /// names its directory only; its editable contents are never consulted.
+    public init(infoFile: URL, controlToken: String, socketFile: URL? = nil, expectedServerPID: Int32 = getpid()) {
+        self.socketFile = socketFile ?? infoFile.deletingLastPathComponent().appendingPathComponent("relay.sock")
         self.controlToken = controlToken
+        self.expectedServerPID = expectedServerPID
     }
 
     public func isHealthy() -> Bool {
         guard let response = try? request(method: "GET", path: "/health", body: Data()) else { return false }
         return response.status == 200 && response.body == Data("ok".utf8)
-    }
-
-    /// Used only to retire the pre-app-resident core during the first upgrade.
-    public func shutdownLegacyCoreIfIdle() throws -> LegacyCoreShutdownResponse {
-        try legacyCoreShutdownRequest(path: "/ui/shutdown-if-idle")
-    }
-
-    private func legacyCoreShutdownRequest(path: String) throws -> LegacyCoreShutdownResponse {
-        let response = try request(
-            method: "POST",
-            path: path,
-            headers: ["X-Parley-Control": controlToken],
-            body: Data()
-        )
-        guard response.status == 202 || response.status == 409 else {
-            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
-        }
-        return LegacyCoreShutdownResponse(
-            status: response.status,
-            readiness: try JSONDecoder().decode(LegacyCoreShutdownReadiness.self, from: response.body)
-        )
     }
 
     public func consultations() throws -> [RelayConsultation] {
@@ -632,10 +580,7 @@ public struct RelayCoreClient: Sendable {
         body: Data,
         receiveTimeout: TimeInterval = 3
     ) throws -> CoreHTTPResponse {
-        let locator = try String(contentsOf: infoFile, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard locator.hasPrefix("unix:") else { throw RelayCoreError.invalidLocator }
-        let socketPath = String(locator.dropFirst("unix:".count))
+        let socketPath = socketFile.path
 
         let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw socketError("could not create client socket") }
@@ -657,6 +602,10 @@ public struct RelayCoreClient: Sendable {
             }
         }
         guard status == 0 else { throw socketError("could not connect") }
+        // Authenticate the process before sending even one credential byte.
+        guard LocalSocketPeer.matches(descriptor, pid: expectedServerPID) else {
+            throw socketError("the control socket is not owned by this app process")
+        }
 
         var head = "\(method) \(path) HTTP/1.1\r\nHost: parley\r\nConnection: close\r\nContent-Length: \(body.count)\r\n"
         for (name, value) in headers.sorted(by: { $0.key < $1.key }) {
@@ -699,7 +648,7 @@ public struct RelayCoreClient: Sendable {
             guard let base = raw.baseAddress else { return }
             var sent = 0
             while sent < raw.count {
-                let count = Darwin.send(descriptor, base.advanced(by: sent), raw.count - sent, 0)
+                let count = Darwin.send(descriptor, base.advanced(by: sent), raw.count - sent, MSG_NOSIGNAL)
                 if count < 0, errno == EINTR { continue }
                 guard count > 0 else { throw socketError("could not send request") }
                 sent += count
@@ -725,17 +674,17 @@ public struct RelayCoreClient: Sendable {
     }
 }
 
-public struct LegacyCoreShutdownResponse: Equatable, Sendable {
-    public let status: Int
-    public let readiness: LegacyCoreShutdownReadiness
-
-    public init(status: Int, readiness: LegacyCoreShutdownReadiness) {
-        self.status = status
-        self.readiness = readiness
-    }
-}
-
 private struct CoreHTTPResponse {
     let status: Int
     let body: Data
+}
+
+/// Kernel-reported peer identity, independent of any owner-writable path or token file.
+enum LocalSocketPeer {
+    static func matches(_ descriptor: Int32, pid: Int32) -> Bool {
+        var peer: pid_t = 0
+        var size = socklen_t(MemoryLayout<pid_t>.size)
+        return pid > 1 && getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &peer, &size) == 0
+            && size == MemoryLayout<pid_t>.size && peer == pid
+    }
 }

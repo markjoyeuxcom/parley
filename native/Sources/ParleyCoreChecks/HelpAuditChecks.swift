@@ -52,7 +52,7 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         try helpAuditContains(text, [
             "Per-run approval is the default", "editable", "outside the agent boundary",
             "Approve agent command runs automatically", "Close the Shell pane when a run finishes cleanly",
-            "both off by default", "survive relaunch", "memory-only", "without a preview",
+            "both off by default", "reset to off on quit", "memory-only", "without a preview",
             "queued automatic approvals", "manual approvals", "session grants", "already running",
             "fixed when the run starts", "exit 0", "signal", "cancelled", "truncated", "saved",
             "interactive shell", "restarted", "still on the run", "captured result", "parley wait",
@@ -80,6 +80,11 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
             "released", "filters", "toggles", "unapplied", "minimise", "hide Parley",
             "drafts", "refresh pauses", "saved settings", "history", "main window", "panes running",
         ])
+    }),
+    ("Help audit distinguishes vendor-managed host execution and native authority", {
+        let topic = try helpAuditTopic("command-runs")
+        try helpAuditContains(topic.searchableText, ["no outer sandbox", "attribution is not an isolation guarantee",
+            "private-path rules", "legacy sandbox_mode", "app memory", "peer process", "reset to off on quit"])
     }),
     ("Help audit gives test-run recovery and uninstall steps", {
         let topic = try helpAuditTopic("troubleshooting")

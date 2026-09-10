@@ -4,6 +4,70 @@ Parley is a native macOS workbench for visible, supervised cross-vendor AI CLI
 collaboration. It coordinates existing subscription CLIs; it does not replace
 their models, authentication, tools, permission prompts or terminal interfaces.
 
+## Host permissions: vendor-managed execution
+
+**Agreed with Mark on 10 September 2026; implemented on the feature branch.**
+Host vendor CLIs now run without Parley's mandatory outer Seatbelt wrapper. Treat host
+agents as trusted local applications, let each vendor own its sandbox and
+permission prompts, and use reviewed containers when stronger separation from
+host files and other panes is wanted. This replaces the requirement that every
+host vendor process tree has a separate Parley-enforced boundary; it does not
+remove the vendor's own controls or authorize host approval-bypass flags.
+
+The investigation reproduced the compatibility failure in a reviewed human
+Shell: Codex's sandbox command succeeds on its own and fails with
+`sandbox_apply: Operation not permitted` inside Parley's style of outer
+profile. Reducing the outer restrictions to read-only denials, write-only
+denials or a network denial did not fix it. Letting the sandbox helper leave
+the outer boundary made it run but also exposed a protected synthetic file.
+That exception cannot preserve the existing protection. Identical profiles
+could be reapplied; this does not make Codex's different tool profiles work.
+
+A Codex-native permission profile passed all six synthetic checks: project
+reads and writes worked, private-file reads and writes were denied, and its
+own endpoint remained readable and writable. Such rules protect commands
+inside that vendor sandbox. They do not independently constrain the vendor
+CLI parent, its integrations or commands approved outside its sandbox.
+
+Implementation and validation:
+
+- [x] Remove the mandatory Parley Seatbelt wrapper from host vendor launches;
+  preserve explicit folders, argv, pane identity, launch generations and
+  lifecycle ownership. Keep container isolation and reviewed mounts.
+- [x] Preserve vendor-native permission profiles and approvals. For Codex,
+  supply private-runtime denials and reopen only its protocol, shim and own
+  endpoint through supported native permission configuration. Fresh and
+  supported resume launch projections are checked for each vendor; the real
+  Codex sandbox probe passes. Interactive acceptance remains below. No host
+  dangerous flags are substituted and guidance is not labelled enforcement.
+- [x] Protect native execution authority independently: command-run choices
+  and control tokens now live only in app memory. Native control requires the
+  app peer PID; clients pin the socket path and verify its peer before sending
+  the token. Worker tickets must match an app-held digest. File substitution,
+  foreign-process control requests and changed tickets are tested.
+- [x] Update AGENTS.md, Help, README, the security audit and canonical protocol
+  with the new host trust model. Retain capability authentication and explicit
+  routing, but stop promising that an uncontained same-user host agent cannot
+  obtain another pane's credential, alter local records or impersonate it.
+  Distinguish those limits from container isolation and human review.
+- [x] Add a real Codex tool-launch preflight and regression coverage alongside
+  the launch checks. Ordinary commands and patching, private-path denials,
+  endpoint access, approved execution, native authorization, Relay/Ask and
+  existing helper paths pass. Build, all 324 native checks, 41 Node tests and
+  the 25-round eight-pane Ghostty soak pass. See the
+  [validation record](docs/host-permission-validation.md).
+- [ ] Manually exercise fresh and supported resumed interactive sessions for
+  each vendor in the new app build, including its normal permission prompt.
+  Existing panes require an explicit person-authorized restart; none were
+  restarted during implementation.
+
+Panes, messaging, delegation, Context Packs and worktrees remain Parley's
+coordination responsibilities. This decision adds no Parley-owned replacement
+for vendor tool permissions, disables no global macOS protection and makes no
+change to running panes. The weaker host isolation is an accepted product
+choice. Native execution approval is protected against editable-file
+substitution, not compromise of the Mac account or injection into app memory.
+
 ## Container agent panes
 
 The implementation includes the portable Linux shim, pinned local image/daemon
@@ -583,7 +647,10 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 
 - [x] One canonical `AgentProtocol.text` and protocol version stamp.
 - [x] Vendor-specific injection mechanics without divergent wording.
-- [x] Seatbelt boundary around every vendor process tree.
+- [x] Current implementation: Seatbelt around host vendor process trees and
+  host Docker clients; reviewed mounts isolate container vendors. The planned
+  [vendor-managed host transition](#host-permissions-vendor-managed-execution)
+  replaces the host wrapper after native authorization protection is addressed.
 - [x] Capability-named relay endpoints and exact endpoint/token authentication.
 - [x] No raw control capability, credentials or broad private runtime exposed to
   an adjacent agent pane.

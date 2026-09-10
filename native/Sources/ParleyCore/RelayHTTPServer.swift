@@ -24,6 +24,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
     private let infoFile: URL
     private let socketFile: URL
     private let controlToken: String?
+    private let controlPeerPID: Int32
     private let queue = DispatchQueue(label: "parley.native.relay", qos: .utility)
     private let connections = DispatchGroup()
     private let lock = NSLock()
@@ -34,12 +35,14 @@ public final class RelayHTTPServer: @unchecked Sendable {
         broker: RelayBroker,
         infoFile: URL,
         socketFile: URL? = nil,
-        controlToken: String? = nil
+        controlToken: String? = nil,
+        controlPeerPID: Int32 = getpid()
     ) {
         self.broker = broker
         self.infoFile = infoFile
         self.socketFile = socketFile ?? infoFile.deletingLastPathComponent().appendingPathComponent("relay.sock")
         self.controlToken = controlToken
+        self.controlPeerPID = controlPeerPID
     }
 
     deinit {
@@ -204,7 +207,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 return
             }
             if request.method == "GET", request.path == "/consultations" {
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -212,7 +215,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 return
             }
             if request.method == "GET", request.path == "/context-reviews" {
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -224,7 +227,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 return
             }
             if request.method == "GET", request.path == "/ui/reviewed-busy-drafts" {
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -236,7 +239,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 return
             }
             if request.method == "GET", request.path == "/handoffs/unread" {
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -244,7 +247,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 return
             }
             if request.method == "GET", request.path == "/ui/history/retention" {
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -257,7 +260,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
             }
             if request.method == "GET",
                request.path == "/handoffs" || request.path.hasPrefix("/handoffs?") {
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -278,7 +281,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
             }
             if request.method == "GET",
                request.path == "/activity-events" || request.path.hasPrefix("/activity-events?") {
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -312,7 +315,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
             let text = String(decoding: request.body, as: UTF8.self)
             switch request.path {
             case "/ui/activity":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -331,7 +334,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     write(RelayTextResponse(status: 500, text: error.localizedDescription), to: client)
                 }
             case "/ui/history/delete-all":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -341,7 +344,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 write(broker.deleteAllHistory(), to: client)
             case "/ui/history/delete-workspace":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -357,7 +360,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     workspaceName: scope.workspaceName
                 ), to: client)
             case "/ui/history/retention":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -382,35 +385,35 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     write(RelayTextResponse(status: 500, text: error.localizedDescription), to: client)
                 }
             case let path where path.hasPrefix("/ui/read/"):
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
                 let handoffID = String(path.dropFirst("/ui/read/".count))
                 write(broker.markHandoffRead(handoffID), to: client)
             case let path where path.hasPrefix("/ui/retry/"):
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
                 let handoffID = String(path.dropFirst("/ui/retry/".count))
                 write(broker.retryHandoff(handoffID), to: client)
             case let path where path.hasPrefix("/ui/cancel/"):
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
                 let handoffID = String(path.dropFirst("/ui/cancel/".count))
                 write(broker.cancelHandoff(handoffID), to: client)
             case let path where path.hasPrefix("/ui/answer/"):
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
                 let consultationID = String(path.dropFirst("/ui/answer/".count))
                 write(broker.answerFromUI(consultationID: consultationID, text: text), to: client)
             case "/ui/ask":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -430,7 +433,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     origin: ask.origin ?? .human
                 ), to: client)
             case "/ui/review-ask":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -450,7 +453,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     relationship: review.relationship
                 ), to: client)
             case "/ui/request-changes":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -469,7 +472,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     inReplyToHandoffID: changes.inReplyToHandoffID
                 ), to: client)
             case "/ui/handoff-review":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -482,7 +485,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 write(broker.updateHandoffReview(update), to: client)
             case "/ui/ask-many":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -502,7 +505,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     origin: comparison.origin ?? .human
                 ), to: client)
             case "/ui/reviewed-busy-drafts":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -515,7 +518,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 write(broker.enqueueReviewedBusyAskFromUI(draft), to: client)
             case "/ui/reviewed-busy-drafts/send":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -528,14 +531,14 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 write(broker.sendReviewedBusyAskFromUI(send), to: client)
             case let path where path.hasPrefix("/ui/reviewed-busy-drafts/cancel/"):
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
                 let draftID = String(path.dropFirst("/ui/reviewed-busy-drafts/cancel/".count))
                 write(broker.cancelReviewedBusyDraftFromUI(draftID), to: client)
             case "/ui/context-reviews/approve":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -548,7 +551,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 write(broker.approveContextReview(approval), to: client)
             case "/ui/context-reviews/complete":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -561,7 +564,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 write(broker.completeContextDraft(approval), to: client)
             case "/ui/context-reviews/capture":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -574,7 +577,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 write(broker.captureTrustedContext(capture), to: client)
             case "/ui/context-reviews/delete":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -584,7 +587,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 write(broker.deleteContextReviews(deletion), to: client)
             case "/ui/context-reviews/discard":
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -594,7 +597,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 write(broker.discardContextDraft(discard), to: client)
             case let path where path.hasPrefix("/ui/context-reviews/reject/"):
-                guard controlAuthorized(request) else {
+                guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
                     return
                 }
@@ -807,7 +810,8 @@ public final class RelayHTTPServer: @unchecked Sendable {
         send(Data(head.utf8) + body, to: client)
     }
 
-    private func controlAuthorized(_ request: Request) -> Bool {
+    private func controlAuthorized(_ request: Request, client: Int32) -> Bool {
+        guard LocalSocketPeer.matches(client, pid: controlPeerPID) else { return false }
         guard let controlToken else { return false }
         let presented = request.headers["x-parley-control"] ?? ""
         let left = Array(controlToken.utf8)
@@ -839,7 +843,7 @@ public final class RelayHTTPServer: @unchecked Sendable {
             guard let base = raw.baseAddress else { return }
             var written = 0
             while written < raw.count {
-                let count = Darwin.send(client, base.advanced(by: written), raw.count - written, 0)
+                let count = Darwin.send(client, base.advanced(by: written), raw.count - written, MSG_NOSIGNAL)
                 if count < 0, errno == EINTR { continue }
                 if count <= 0 { return }
                 written += count
