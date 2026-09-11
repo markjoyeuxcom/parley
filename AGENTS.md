@@ -984,6 +984,22 @@ npm test
 npm run build
 ```
 
+`npm test` also runs the platform dependency scan. `ParleyCore` is the part of
+Parley that could one day run somewhere other than macOS, and
+`scripts/platform-dependency-scan.mjs` records exactly which of its files may
+carry a platform import. It is a ratchet: a new file taking one fails, and a
+listed file that stops needing one also fails, so the baseline tightens rather
+than going stale. Change that baseline only as a deliberate decision.
+
+It guards imports, not APIs. A Linux build additionally needs the guarantees
+behind those imports re-derived rather than renamed — `LOCAL_PEERPID`,
+`O_EXLOCK`, `O_EVTONLY`, `renamex_np`, `POSIX_SPAWN_CLOEXEC_DEFAULT`,
+`SO_NOSIGPIPE`, `proc_pidinfo`, `KERN_PROCARGS2`. A file-level split of
+ParleyCore is not currently possible: the platform-importing files define the
+domain vocabulary the rest consumes, so extracting the 65 import-free files
+alone fails with thousands of missing-type errors. Seams must move those
+definitions first.
+
 For terminal/lifetime changes also run the Ghostty soak. Default checks must
 not launch a vendor CLI, spend subscription quota, mutate unrelated user
 processes or depend on network access. The explicit manual
