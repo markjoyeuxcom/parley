@@ -1694,27 +1694,21 @@ struct ContentView: View {
             .background(Color(nsColor: NSColor(white: 0.075, alpha: 1)))
             .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             .overlay {
-                if let attention {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .strokeBorder(ChromeColor.attention(attention.reason), lineWidth: 2)
-                        if paneSurface.containsActivePane {
-                            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                .strokeBorder(Color.accentColor, lineWidth: 1)
-                                .padding(3)
-                        }
-                    }
-                    .allowsHitTesting(false)
-                } else {
+                // The outer ring is selection and nothing else; attention is a
+                // separate inner ring. Position alone tells them apart, so a
+                // selected pane looks the same whether or not it has attention.
+                let rings = PaneChromeRings.forPane(
+                    selected: paneSurface.containsActivePane, attention: attention?.reason)
+                ZStack {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .strokeBorder(
-                            paneSurface.containsActivePane
-                                ? Color.accentColor
-                                : Color(nsColor: .separatorColor).opacity(0.9),
-                            lineWidth: paneSurface.containsActivePane ? 2 : 1
-                        )
-                        .allowsHitTesting(false)
+                        .strokeBorder(ChromeColor.color(rings.outer), lineWidth: rings.outerWidth)
+                    if let inner = rings.inner {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .strokeBorder(ChromeColor.color(inner), lineWidth: rings.innerWidth)
+                            .padding(4)
+                    }
                 }
+                .allowsHitTesting(false)
             }
             .shadow(
                 color: attention.map { ChromeColor.attention($0.reason).opacity(0.28) }

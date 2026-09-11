@@ -8,7 +8,8 @@ import SwiftUI
 /// - orange: a person's attention is needed (permission, stale protocol,
 ///   relay off, shared writers, disconnected core)
 /// - red: failure (failed or interrupted handoff, non-zero exit, terminal gone)
-/// - green: connection health only (the core dot)
+/// - green: connection health (the core dot) and a returned result waiting to
+///   be read. Both mean "nothing is wrong here"; they never share a surface.
 /// - secondary: everything neutral (completed, stopped, identity, metadata)
 enum ChromeColor {
     static let identityBar = Color.secondary.opacity(0.45)
@@ -47,11 +48,19 @@ enum ChromeColor {
         }
     }
 
+    /// One source of truth with the border decision in `PaneChromeRings`, so a
+    /// chip and a border can never disagree about what a state looks like.
     static func attention(_ reason: PaneAttentionReason) -> Color {
-        switch reason {
-        case .permissionRequest: .orange
-        case .returnedResult: .accentColor
-        case .interruptedHandoff: .red
+        color(PaneChromeRings.tone(for: reason))
+    }
+
+    static func color(_ tone: ChromeTone) -> Color {
+        switch tone {
+        case .accent: .accentColor
+        case .orange: .orange
+        case .red: .red
+        case .green: .green
+        case .separator: Color(nsColor: .separatorColor).opacity(0.9)
         }
     }
 
