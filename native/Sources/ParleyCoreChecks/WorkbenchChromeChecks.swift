@@ -183,3 +183,44 @@ func checkGlobalUnzoomClearsWhateverPaneIsZoomed() throws {
     try chromeExpect(WorkbenchZoomPolicy.next(current: nil, requested: "C", active: "A", visible: ["A", "B"]) == nil, "a pane that is not visible was zoomed")
     try chromeExpect(WorkbenchZoomPolicy.next(current: nil, requested: nil, active: nil, visible: ["A"]) == nil, "the global action zoomed with no active pane")
 }
+
+
+/// A returned result used to draw an accent ring, and so did selection, so a
+/// selected pane with a result looked exactly like one without. Each state must
+/// stay distinguishable on its own.
+func checkPaneBordersTellSelectionApartFromAttention() throws {
+    let reasons: [PaneAttentionReason] = [.permissionRequest, .returnedResult, .interruptedHandoff]
+
+    try chromeExpect(PaneChromeRings.tone(for: .returnedResult) != .accent,
+        "a returned result is drawn in the selection colour again; the two states become indistinguishable")
+    for reason in reasons {
+        try chromeExpect(PaneChromeRings.tone(for: reason) != .accent,
+            "attention reason \(reason) uses the selection colour")
+        try chromeExpect(PaneChromeRings.tone(for: reason) != .separator,
+            "attention reason \(reason) uses the unselected border colour")
+    }
+    for a in reasons {
+        for b in reasons where a != b {
+            try chromeExpect(PaneChromeRings.tone(for: a) != PaneChromeRings.tone(for: b),
+                "attention reasons \(a) and \(b) share a colour")
+        }
+    }
+
+    // Selection owns the outer ring; attention never changes it, so a selected
+    // pane reads as selected whether or not something wants attention.
+    var rendered: Set<String> = []
+    for selected in [true, false] {
+        let plain = PaneChromeRings.forPane(selected: selected, attention: nil)
+        try chromeExpect(plain.inner == nil, "a pane with no attention drew an inner ring")
+        rendered.insert("\(plain.outer)/\(plain.outerWidth)/nil")
+        for reason in reasons {
+            let rings = PaneChromeRings.forPane(selected: selected, attention: reason)
+            try chromeExpect(rings.outer == plain.outer && rings.outerWidth == plain.outerWidth,
+                "attention changed the selection ring for \(reason); selection must read the same either way")
+            try chromeExpect(rings.inner != nil, "attention \(reason) drew no inner ring")
+            rendered.insert("\(rings.outer)/\(rings.outerWidth)/\(String(describing: rings.inner))")
+        }
+    }
+    try chromeExpect(rendered.count == 8,
+        "the eight selection/attention combinations do not render distinctly (got \(rendered.count))")
+}

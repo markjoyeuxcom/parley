@@ -9718,6 +9718,7 @@ let checks: [(String, () throws -> Void)] = [
     ("command palette search", checkCommandPaletteSearch),
     ("workbench accessibility descriptions", checkAccessibilityDescriptions),
     ("chrome chip case is sentence case", checkChromeChipCaseIsSentenceCaseForStateLabels),
+    ("pane borders tell selection apart from every attention reason", checkPaneBordersTellSelectionApartFromAttention),
     ("workbench notice lane is prioritised and never hides facts", checkWorkbenchNoticeLaneIsPrioritisedAndNeverHidesFacts),
     ("workbench notice lane represents every worktree collision", checkWorkbenchNoticeLaneRepresentsEveryWorktreeCollision),
     ("global unzoom clears whatever pane is zoomed", checkGlobalUnzoomClearsWhateverPaneIsZoomed),
