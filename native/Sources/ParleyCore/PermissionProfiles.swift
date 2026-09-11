@@ -16,6 +16,31 @@ public enum PermissionCapability: String, CaseIterable, Codable, Equatable, Hash
     case infrastructureMutation
 }
 
+public extension PermissionCapability {
+    /// Plain wording for a person reading a launch review, so a capability is
+    /// never shown only as a camel-cased identifier.
+    var label: String {
+        switch self {
+        case .projectRead: "reading the project"
+        case .repositoryInspection: "inspecting the repository"
+        case .projectWrite: "writing in the project"
+        case .projectToolExecution: "running project tools"
+        case .localProcessExecution: "running local processes"
+        case .networkAccess: "network access"
+        case .externalFileAccess: "reading files outside the project"
+        case .gitRemoteMutation: "changing Git remotes"
+        case .deployment: "deploying"
+        case .infrastructureMutation: "changing infrastructure"
+        }
+    }
+
+    static func sentence(_ capabilities: [PermissionCapability]) -> String {
+        let labels = capabilities.map(\.label)
+        guard let last = labels.last else { return "" }
+        return labels.count == 1 ? last : labels.dropLast().joined(separator: ", ") + " and " + last
+    }
+}
+
 public enum PermissionRule: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
     case allow
     case requireApproval
@@ -280,6 +305,12 @@ public enum PermissionProfileAdapter {
         }
 
         let write = profile.definition.rule(for: .projectWrite)
+        // Only projectWrite reaches a vendor today. The execution capabilities
+        // are recorded, shown in the review, and not translated into any launch
+        // argument, so the detail has to say so rather than let a reader assume
+        // the whole profile was applied.
+        let execution = [PermissionCapability.projectToolExecution, .localProcessExecution]
+            .filter { profile.definition.rule(for: $0) != .allow }
         let rootArguments = profile.definition.rootMode == .exactApprovedRoots
             ? profile.approvedRoots.flatMap { ["--add-dir", $0] }
             : []
@@ -311,10 +342,12 @@ public enum PermissionProfileAdapter {
             detail = "Copilot plan mode and exact additional directories are configured where supported."
         }
 
+        let untranslated = execution.isEmpty ? "" :
+            " This profile restricts \(PermissionCapability.sentence(execution)), which is not translated into a launch argument: only project write is. Those remain the vendor's own prompts to make."
         return PermissionProfileLaunchPlan(
             arguments: arguments,
             enforcement: arguments.isEmpty ? .guidanceOnly : .partiallyEnforced,
-            detail: detail + " Vendor prompts remain authoritative for capabilities the CLI cannot express."
+            detail: detail + " Vendor prompts remain authoritative for capabilities the CLI cannot express." + untranslated
         )
     }
 }
