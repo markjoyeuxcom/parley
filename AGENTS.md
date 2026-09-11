@@ -356,6 +356,14 @@ the raw status was never written, so `CommandWaitOutcome` reports `unobserved`
 output. A timeout stays 124. Never let a command nobody saw finish satisfy a
 `status == 0` check.
 
+Every wait on that path is bounded, the one after `SIGKILL` included. A child
+parked in an uninterruptible kernel wait cannot be reaped until the kernel
+releases it, so `BoundedReap` gives up at its bound and still reports the
+timeout rather than holding the thread past the deadline it exists to enforce.
+Giving up leaves a zombie until the process exits; a permanently blocked thread
+would be worse. Its primitives are injectable because that state cannot be
+created on demand, and a check that cannot fail is not coverage.
+
 Host vendor CLIs launch directly as trusted local applications, with their own
 permissions and approval prompts. Do not put Parley's Seatbelt profile around
 host CLIs: it prevents Codex from applying its tool sandbox. Host bypass flags
