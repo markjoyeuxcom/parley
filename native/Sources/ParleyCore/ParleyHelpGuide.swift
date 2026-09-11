@@ -134,6 +134,8 @@ public enum ParleyHelpGuide {
                     items: [
                         "Normal dragging selects text in the native terminal even when a mouse-aware vendor TUI is active. Releasing a selection copies it to the macOS clipboard.",
                         "Ghostty handles mouse reporting, selection, copy and scrollback directly. Parley does not place another terminal multiplexer between the mouse and the vendor TUI.",
+                        "Command-click a web link in a pane to open it in your browser. This works the same in a container pane, because the link is recognised in the rendered text on your Mac, which makes a vendor CLI's subscription login URL reachable without copying it by hand.",
+                        "A pane's text is written by a vendor CLI rather than by you, and a terminal hyperlink can display one address while pointing at another, so Parley opens only an ordinary web address with a host and no control characters. Other schemes, including ones that could start something on your Mac, are ignored and the click does nothing. Parley never opens a link on its own.",
                         "Ghostty retains authoritative terminal modes and scrollback while a leaf is hidden and restores the same surface when it reattaches.",
                         "Moving keyboard focus between leaves does not send DEC focus-out to a background agent. Safe relay readiness stays independent from which leaf receives the person's typing.",
                         "Native divider positions currently reopen balanced; Balance Panes rebuilds an even native split tree.",
