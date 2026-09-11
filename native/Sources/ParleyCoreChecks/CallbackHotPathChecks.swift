@@ -342,6 +342,114 @@ func activityJournalFaultRecoveryChecks() throws {
     try pathExpect(replayC.events().map(\.id) == ["event-10", "event-7", "event-5", "event-3", "event-1"], "replay after a repaired tail is wrong: \(replayC.events().map(\.id))")
 }
 
+private final class HandoffJournalFaults: @unchecked Sendable {
+    let lock = NSLock()
+    /// Per write call: a positive value writes at most that many bytes, -1 fails with ENOSPC; empty passes through.
+    var writePlan: [Int] = []
+    var fsyncFails = false
+    var truncateFails = false
+
+    var io: RelayHandoffJournal.IO {
+        RelayHandoffJournal.IO(
+            write: { [self] descriptor, base, count in
+                let plan: Int? = lock.withLock { writePlan.isEmpty ? nil : writePlan.removeFirst() }
+                guard let plan else { return Darwin.write(descriptor, base, count) }
+                if plan < 0 { errno = ENOSPC; return -1 }
+                return Darwin.write(descriptor, base, min(plan, count))
+            },
+            fsync: { [self] descriptor in
+                if lock.withLock({ fsyncFails }) { errno = EIO; return -1 }
+                return Darwin.fsync(descriptor)
+            },
+            truncate: { [self] descriptor, size in
+                if lock.withLock({ truncateFails }) { errno = EIO; return -1 }
+                return Darwin.ftruncate(descriptor, size)
+            })
+    }
+}
+
+private func journalHandoff(_ index: Int) throws -> RelayHandoff {
+    // The app never constructs handoffs directly, so fixtures decode the
+    // durable form the journal actually replays.
+    let object: [String: Any] = [
+        "id": "handoff-\(index)", "idempotencyKey": "key-\(index)", "kind": "delegate",
+        "sourcePaneID": "a", "sourceName": "A", "sourceKind": "claude", "sourceWorkspaceID": "w", "sourceWorkspaceName": "W",
+        "targetPaneID": "b", "targetName": "B", "targetKind": "codex", "targetWorkspaceID": "w", "targetWorkspaceName": "W",
+        "text": "body \(index)", "submitted": true, "state": "completed", "updatedAt": TimeInterval(index),
+        "resultText": "done",
+        "transitions": [["state": "completed", "occurredAt": TimeInterval(index), "detail": "fixture"]],
+    ]
+    return try JSONDecoder().decode(RelayHandoff.self, from: try JSONSerialization.data(withJSONObject: object))
+}
+
+func handoffJournalFaultRecoveryChecks() throws {
+    // The handoff journal carries the same durability contract as the activity
+    // journal: a failed append must never leave partial bytes that a later
+    // acknowledged append fuses into an invalid record, because one fused line
+    // in the middle of the file makes the whole journal unreadable at launch
+    // and takes cross-vendor coordination down with it.
+    let directory = URL(fileURLWithPath: "/tmp/parley-hjf-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("handoffs.jsonl")
+    let faults = HandoffJournalFaults()
+    let journal = try RelayHandoffJournal(file: file, maximumHandoffs: 10, io: faults.io)
+    try journal.recordDurably(journalHandoff(1))
+    let committed = fileSize(file.path)
+
+    // Partial write then ENOSPC: boundary restored, nothing acknowledged.
+    faults.lock.withLock { faults.writePlan = [10, -1] }
+    try pathRejects("a partial append was acknowledged") { try journal.recordDurably(journalHandoff(2)) }
+    try pathExpect(fileSize(file.path) == committed, "partial bytes were left after a failed append (\(fileSize(file.path)) vs \(committed))")
+    try pathExpect(!journal.hasUncertainTail && journal.handoffs().map(\.id) == ["handoff-1"], "a restored boundary was reported uncertain or the projection changed")
+    try journal.recordDurably(journalHandoff(3))
+    let replayA = try RelayHandoffJournal(file: file, maximumHandoffs: 10)
+    try pathExpect(replayA.handoffs().map(\.id) == ["handoff-3", "handoff-1"], "replay after a partial failure and a later append lost or fused records: \(replayA.handoffs().map(\.id))")
+
+    // Partial write and the boundary cannot be restored: the tail is uncertain
+    // and is repaired from the acknowledged projection before the next append.
+    faults.lock.withLock { faults.writePlan = [10, -1]; faults.truncateFails = true }
+    try pathRejects("a partial append with a failed truncate was acknowledged") { try journal.recordDurably(journalHandoff(4)) }
+    try pathExpect(journal.hasUncertainTail, "an unrestorable tail was not marked uncertain")
+    faults.lock.withLock { faults.truncateFails = false }
+    try journal.recordDurably(journalHandoff(5))
+    try pathExpect(!journal.hasUncertainTail, "the tail was not repaired before the next append")
+    let replayB = try RelayHandoffJournal(file: file, maximumHandoffs: 10)
+    try pathExpect(replayB.handoffs().map(\.id) == ["handoff-5", "handoff-3", "handoff-1"], "replay after tail repair is wrong: \(replayB.handoffs().map(\.id))")
+
+    // fsync failure is uncertain completion: not acknowledged, boundary restored.
+    let beforeSync = fileSize(file.path)
+    faults.lock.withLock { faults.fsyncFails = true }
+    try pathRejects("an unsynced append was acknowledged") { try journal.recordDurably(journalHandoff(6)) }
+    faults.lock.withLock { faults.fsyncFails = false }
+    try pathExpect(fileSize(file.path) == beforeSync && journal.handoffs().map(\.id) == ["handoff-5", "handoff-3", "handoff-1"], "an fsync failure left bytes or changed the projection")
+
+    // A failed repair refuses further durable appends until repair succeeds.
+    faults.lock.withLock { faults.writePlan = [10, -1]; faults.truncateFails = true }
+    try pathRejects("a partial append with a failed truncate was acknowledged") { try journal.recordDurably(journalHandoff(7)) }
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+    try pathRejects("an append was acknowledged while the tail could not be repaired") { try journal.recordDurably(journalHandoff(8)) }
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    try pathExpect(journal.hasUncertainTail && journal.handoffs().map(\.id) == ["handoff-5", "handoff-3", "handoff-1"], "a failed repair acknowledged a record or cleared the uncertain tail")
+    faults.lock.withLock { faults.truncateFails = false }
+    try journal.recordDurably(journalHandoff(9))
+    try pathExpect(!journal.hasUncertainTail, "repair did not succeed once the directory was writable")
+    let replayC = try RelayHandoffJournal(file: file, maximumHandoffs: 10)
+    try pathExpect(replayC.handoffs().map(\.id) == ["handoff-9", "handoff-5", "handoff-3", "handoff-1"], "replay after a repaired tail is wrong: \(replayC.handoffs().map(\.id))")
+
+    // record() is deliberately non-durable: a relay that already reached a live
+    // terminal keeps its in-memory projection when persistence fails. That
+    // exception is about memory, not about leaving fused bytes on disk.
+    let beforeLossy = fileSize(file.path)
+    faults.lock.withLock { faults.writePlan = [10, -1] }
+    journal.record(try journalHandoff(10))
+    try pathExpect(journal.handoffs().map(\.id).contains("handoff-10"), "record() dropped a delivered handoff from the projection")
+    try pathExpect(journal.lastError != nil, "record() hid a persistence failure")
+    try pathExpect(fileSize(file.path) == beforeLossy, "record() left partial bytes past the committed boundary (\(fileSize(file.path)) vs \(beforeLossy))")
+    let replayD = try RelayHandoffJournal(file: file, maximumHandoffs: 10)
+    try pathExpect(replayD.handoffs().map(\.id) == ["handoff-9", "handoff-5", "handoff-3", "handoff-1"], "a lossy record() corrupted the replayed journal: \(replayD.handoffs().map(\.id))")
+}
+
 func activityJournalRetentionChecks() throws {
     // Records pruned from the projection never come back when retention grows.
     let directory = URL(fileURLWithPath: "/tmp/parley-actr-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
@@ -466,6 +574,7 @@ func taskManagerSamplingCoordinatorChecks() throws {
 @MainActor
 let callbackHotPathChecks: [(String, () throws -> Void)] = [
     ("activity journal restores the committed boundary and repairs uncertain tails before any further append", activityJournalFaultRecoveryChecks),
+    ("handoff journal restores the committed boundary and repairs uncertain tails before any further append", handoffJournalFaultRecoveryChecks),
     ("activity journal never resurrects pruned history when retention grows", activityJournalRetentionChecks),
     ("activity journal surfaces and clears compaction failures after a durable append", activityJournalMaintenanceErrorChecks),
     ("task manager sampling coordinator never overlaps, drops or publishes stale samples", taskManagerSamplingCoordinatorChecks),

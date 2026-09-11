@@ -13,6 +13,7 @@ private func runRejects(_ operation: () throws -> Void) throws {
 let reviewedCommandRunChecks: [(String, () throws -> Void)] = [
     ("terminal links open only ordinary web URLs", terminalLinkPolicyChecks),
     ("command wait reports an unobserved exit instead of a silent success", commandWaitOutcomeChecks),
+    ("command timeout bounds the reap after SIGKILL instead of blocking forever", commandKillPathBoundedChecks),
     ("spawned commands never inherit a blocked signal mask", commandSpawnSignalMaskChecks),
     ("host preflight failure names what was observed, not cleared legacy settings", hostPreflightMessageChecks),
     ("reviewed command run approval attention presents once and respects dismissal", reviewedRunApprovalAttentionChecks),
@@ -1148,6 +1149,64 @@ func commandWaitOutcomeChecks() throws {
         "a reaped child that genuinely exited 124 must not be rewritten")
     try runExpect(CommandExitStatus.unobserved != CommandExitStatus.timedOut,
         "unobserved and timed out must stay distinguishable")
+}
+
+/// Every wait in the timeout path is bounded, including the one after SIGKILL.
+///
+/// A child that cannot be reaped cannot be created on demand, so the primitives
+/// are injected: a wait that never reports the child gone stands in for one
+/// parked in an uninterruptible kernel wait. Before this was bounded, that case
+/// blocked the calling thread for as long as the kernel did.
+func commandKillPathBoundedChecks() throws {
+    var status = Int32()
+    let child: pid_t = 4242
+
+    // The child never reaps. The reap must give up at the bound and say so,
+    // rather than calling wait again forever.
+    var attempts = 0
+    var clock: UInt64 = 0
+    let unreapable = BoundedReap.run(
+        child, status: &status,
+        boundNanoseconds: 1_000_000_000,
+        now: { clock },
+        wait: { _, _, _ in attempts += 1; return 0 },
+        pause: { _ in clock &+= 10_000_000 })
+    try runExpect(unreapable == "killed-after-timeout-unreaped",
+        "an unreapable child did not report the bound was reached: \(unreapable)")
+    try runExpect(attempts > 1 && attempts <= 200,
+        "the bounded reap polled \(attempts) times; it should retry within the bound and then stop")
+
+    // A child that does exit is reaped normally and keeps the existing reason,
+    // so bounding the wait did not change what a successful kill reports.
+    let reaped = BoundedReap.run(
+        child, status: &status,
+        now: { 0 },
+        wait: { pid, _, _ in pid },
+        pause: { _ in })
+    try runExpect(reaped == "killed-after-timeout", "a reaped child reported the wrong wait reason: \(reaped)")
+
+    // A wait that fails outright is reported rather than retried to the bound.
+    let failed = BoundedReap.run(
+        child, status: &status,
+        now: { 0 },
+        wait: { _, _, _ in errno = ECHILD; return -1 },
+        pause: { _ in })
+    try runExpect(failed == "kill-wait-error-\(ECHILD)", "a failed wait was not reported: \(failed)")
+
+    // End to end: a child that ignores SIGTERM still returns the caller's
+    // timeout, through the real primitives.
+    let started = DispatchTime.now().uptimeNanoseconds
+    let output = try ProcessCommandRunner(timeout: 1).run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: ["-c", "trap '' TERM; sleep 30"],
+        environment: [:],
+        input: nil)
+    let elapsedMs = (DispatchTime.now().uptimeNanoseconds &- started) / 1_000_000
+    try runExpect(output.status == CommandExitStatus.timedOut,
+        "a command that ignored SIGTERM did not report the timeout: status \(output.status)")
+    try runExpect(elapsedMs < 10_000, "the timeout path took \(elapsedMs) ms")
+    try runExpect(output.diagnostic?.contains("wait=killed-after-timeout") == true,
+        "the SIGTERM-ignoring child did not exercise the SIGKILL path: \(output.diagnostic ?? "no diagnostic")")
 }
 
 /// The configuration query runs first and rejects legacy sandbox keys, so a

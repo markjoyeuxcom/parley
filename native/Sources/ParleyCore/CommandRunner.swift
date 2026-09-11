@@ -379,8 +379,44 @@ private func waitForCommand(
         usleep(10_000)
     }
     _ = kill(processIdentifier, SIGKILL)
-    while waitpid(processIdentifier, &status, 0) < 0, errno == EINTR {}
-    return (status, .timedOut, "killed-after-timeout")
+    return (status, .timedOut, BoundedReap.run(processIdentifier, status: &status))
+}
+
+/// Reaps a child that has already been signalled, giving up at a bound rather
+/// than blocking forever.
+///
+/// `SIGKILL` is not instant. A child stuck in an uninterruptible kernel wait — a
+/// hung network mount, an unresponsive FUSE filesystem — cannot be reaped until
+/// that wait resolves, and an unbounded `waitpid` there holds the calling thread
+/// for as long as the kernel does. That defeats the deadline the caller asked
+/// for, which is the one thing a timeout path exists to guarantee.
+///
+/// The primitives are injectable because a process in that state cannot be
+/// created on demand: a check supplies a wait that never reaps and proves this
+/// gives up, which is the behaviour worth pinning.
+public enum BoundedReap {
+    public static let bound: UInt64 = 1_000_000_000
+
+    public static func run(
+        _ processIdentifier: pid_t,
+        status: UnsafeMutablePointer<Int32>,
+        boundNanoseconds: UInt64 = bound,
+        now: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+        wait: (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t = { waitpid($0, $1, $2) },
+        pause: (UInt32) -> Void = { usleep($0) }
+    ) -> String {
+        let deadline = now() &+ boundNanoseconds
+        while now() < deadline {
+            let result = wait(processIdentifier, status, WNOHANG)
+            if result == processIdentifier { return "killed-after-timeout" }
+            if result < 0, errno != EINTR { return "kill-wait-error-\(errno)" }
+            pause(10_000)
+        }
+        // Giving up leaves a zombie until this process exits. That is strictly
+        // better than a permanently blocked thread, and the caller still sees
+        // the timeout it asked for rather than an invented clean exit.
+        return "killed-after-timeout-unreaped"
+    }
 }
 
 public enum EnvironmentResolver {

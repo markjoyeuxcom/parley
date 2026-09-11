@@ -23,15 +23,43 @@ public enum RelayHandoffJournalError: LocalizedError {
 /// cross-record schema. Older snapshots are compacted periodically; the live
 /// record remains append-only between those bounded compactions.
 public final class RelayHandoffJournal: @unchecked Sendable {
+    /// The system calls an append depends on. Checks inject faults here to
+    /// prove partial writes, failed syncs and failed truncations never fuse
+    /// into an acknowledged record; production uses `.system`.
+    public struct IO: Sendable {
+        public var write: @Sendable (Int32, UnsafeRawPointer, Int) -> Int
+        public var fsync: @Sendable (Int32) -> Int32
+        public var truncate: @Sendable (Int32, off_t) -> Int32
+
+        public init(write: @escaping @Sendable (Int32, UnsafeRawPointer, Int) -> Int,
+                    fsync: @escaping @Sendable (Int32) -> Int32,
+                    truncate: @escaping @Sendable (Int32, off_t) -> Int32) {
+            self.write = write
+            self.fsync = fsync
+            self.truncate = truncate
+        }
+
+        public static let system = IO(
+            write: { descriptor, base, count in Darwin.write(descriptor, base, count) },
+            fsync: { descriptor in Darwin.fsync(descriptor) },
+            truncate: { descriptor, size in Darwin.ftruncate(descriptor, size) })
+    }
+
     private let file: URL
     private var maximumHandoffs: Int
     private let lock = NSLock()
     private var byID: [String: RelayHandoff]
     private var eventCount: Int
     private var storedError: String?
+    /// A failed append whose partial bytes could not be truncated away. No
+    /// further append is acknowledged until the file is rewritten from the
+    /// acknowledged projection.
+    private var uncertainTail = false
+    private let io: IO
 
-    public init(file: URL, maximumHandoffs: Int = 500) throws {
+    public init(file: URL, maximumHandoffs: Int = 500, io: IO = .system) throws {
         self.file = file
+        self.io = io
         self.maximumHandoffs = max(1, maximumHandoffs)
 
         let loaded = try Self.load(file: file)
@@ -63,6 +91,10 @@ public final class RelayHandoffJournal: @unchecked Sendable {
         lock.withLock { storedError }
     }
 
+    public var hasUncertainTail: Bool {
+        lock.withLock { uncertainTail }
+    }
+
     /// Persistence failure must not break a relay that already reached a live
     /// terminal. Keep the in-memory projection current and retain the error for
     /// the Status Center's core-health diagnostics.
@@ -71,6 +103,7 @@ public final class RelayHandoffJournal: @unchecked Sendable {
             byID[handoff.id] = handoff
             _ = pruneLocked()
             do {
+                try repairUncertainTailLocked()
                 try appendLocked(handoff)
                 eventCount += 1
                 if eventCount > maximumHandoffs * 8 {
@@ -88,6 +121,7 @@ public final class RelayHandoffJournal: @unchecked Sendable {
     public func recordDurably(_ handoff: RelayHandoff) throws {
         try lock.withLock {
             do {
+                try repairUncertainTailLocked()
                 try appendLocked(handoff)
             } catch {
                 storedError = error.localizedDescription
@@ -221,9 +255,36 @@ public final class RelayHandoffJournal: @unchecked Sendable {
               metadata.st_uid == geteuid() else {
             throw RelayHandoffJournalError.unsafeFile
         }
-        try writeAll(data, to: descriptor)
-        guard Darwin.fsync(descriptor) == 0 else {
-            throw RelayHandoffJournalError.writeFailed(String(cString: strerror(errno)))
+        // The committed boundary: everything before it was acknowledged.
+        let committed = metadata.st_size
+        do {
+            try writeAll(data, to: descriptor)
+            guard io.fsync(descriptor) == 0 else {
+                throw RelayHandoffJournalError.writeFailed(String(cString: strerror(errno)))
+            }
+        } catch {
+            // Partial bytes or an unsynced record must not survive past the
+            // boundary. A later append would otherwise start mid-line and fuse
+            // the two into one record that no launch can decode. If they cannot
+            // be cut away, every later append first rewrites the projection.
+            if io.truncate(descriptor, committed) != 0 || io.fsync(descriptor) != 0 {
+                uncertainTail = true
+            }
+            throw error
+        }
+    }
+
+    /// Rewrites the acknowledged projection when an earlier append left bytes
+    /// past the committed boundary. Appending after them is what turns a failed
+    /// write into an unreadable journal, so this runs before any further append.
+    private func repairUncertainTailLocked() throws {
+        guard uncertainTail else { return }
+        do {
+            try compactLocked()
+        } catch {
+            throw RelayHandoffJournalError.writeFailed(
+                "the journal tail is uncertain after an earlier failed append and could not be repaired: \(error.localizedDescription)"
+            )
         }
     }
 
@@ -232,7 +293,7 @@ public final class RelayHandoffJournal: @unchecked Sendable {
             guard let base = raw.baseAddress else { return }
             var written = 0
             while written < raw.count {
-                let count = Darwin.write(descriptor, base.advanced(by: written), raw.count - written)
+                let count = io.write(descriptor, base.advanced(by: written), raw.count - written)
                 if count < 0, errno == EINTR { continue }
                 guard count > 0 else {
                     throw RelayHandoffJournalError.writeFailed(String(cString: strerror(errno)))
@@ -270,7 +331,7 @@ public final class RelayHandoffJournal: @unchecked Sendable {
             if !installed { try? FileManager.default.removeItem(at: temporary) }
         }
         try writeAll(data, to: descriptor)
-        guard Darwin.fsync(descriptor) == 0 else {
+        guard io.fsync(descriptor) == 0 else {
             throw RelayHandoffJournalError.writeFailed(String(cString: strerror(errno)))
         }
         guard Darwin.rename(temporary.path, file.path) == 0 else {
@@ -278,5 +339,8 @@ public final class RelayHandoffJournal: @unchecked Sendable {
         }
         installed = true
         eventCount = ordered.count
+        // Every successful atomic install is a complete, valid file: any
+        // earlier maintenance failure or uncertain tail is over.
+        uncertainTail = false
     }
 }
