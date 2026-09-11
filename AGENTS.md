@@ -991,6 +991,19 @@ carry a platform import. It is a ratchet: a new file taking one fails, and a
 listed file that stops needing one also fails, so the baseline tightens rather
 than going stale. Change that baseline only as a deliberate decision.
 
+Two tools support the seam work that shrinks that baseline.
+`scripts/type-closure.mjs <TypeName>` reports what a type actually depends on,
+following stored properties and enum associated values, and says how much of
+that sits in platform-importing files. Follow referenced types rather than file
+lists: a file-level guess over-reported one closure by more than double.
+`scripts/lift-declarations.mjs` moves whole declarations between files and is a
+dry run unless given `--write`.
+
+After any lift, confirm it was a move rather than an edit by comparing removed
+against re-added lines in the staged diff. A green suite will not notice a
+renamed enum case, and these types are `Codable` and persisted in the handoff
+journal, so that would be a silent migration of existing records.
+
 It guards imports, not APIs. A Linux build additionally needs the guarantees
 behind those imports re-derived rather than renamed — `LOCAL_PEERPID`,
 `O_EXLOCK`, `O_EVTONLY`, `renamex_np`, `POSIX_SPAWN_CLOEXEC_DEFAULT`,
