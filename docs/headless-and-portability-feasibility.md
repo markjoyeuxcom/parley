@@ -13,9 +13,10 @@ They are usually said in one breath, but they stack:
 2. **A remote box** — run on a Linux server.
 3. **Windows** — run on Windows.
 
-Each is a superset of the one before, and the difficulty is not linear. 1 is an
-afternoon-shaped problem with a product question attached. 2 is real but bounded
-work. 3 is a platform-layer rewrite.
+Each is a superset of the one before, and the difficulty is not linear. 1 is the
+smallest, but it is not small: it needs a replacement PTY owner and a decision
+about who owns terminals and processes, on top of the product question. 2 adds
+re-deriving platform guarantees. 3 is a platform-layer rewrite.
 
 ## What is already portable
 
@@ -116,9 +117,17 @@ would need a spike.
 
 What is needed:
 
-- A PTY owner that is not Ghostty. `openpty`/`forkpty` per vendor CLI, with
-  delivery becoming a write plus a newline instead of paste-then-Enter. The
-  injected-closure seam means nothing in the broker changes.
+- A PTY owner that is not Ghostty. The injected-closure seam means the broker
+  itself does not change, but the delivery contract does not reduce to a write
+  plus a newline: today a multiline payload travels as one bracketed paste and
+  submission is a separate Enter key event, precisely so raw newlines are never
+  sent as keys. A replacement owner has to reproduce that, and Copilot's
+  focus-and-restore behaviour, against real vendor TUIs. Treat it as unproven
+  until one is driven that way.
+- A decision about terminal ownership. `WorkbenchController` states that Ghostty
+  surfaces own the vendor process, terminal state and session, with
+  `PaneTerminalTransport` as the broker's narrow interface. Moving PTY ownership
+  is a change to invariant 7, independent of Linux, not a UI extraction.
 - The human surfaces become commands. Ask and Return previews, context approval,
   verdicts and Status Center are today native-control-only, over the UI socket.
   Each would need a CLI equivalent (`parley review`, `parley approve <id>`),
@@ -139,9 +148,15 @@ So this is a decision about what the product is, taken before any code.
 
 **Feasible, bounded, and the natural home for a headless build.**
 
-Everything in Target 1, plus porting the 29 Darwin-importing files. The table
-above is the complete list of what needs a Linux path; none of it is exotic, and
-each has a direct equivalent. Docker is native rather than a VM, so container
+Everything in Target 1, plus the platform surface in the table above. Each entry
+has a Linux counterpart, but a counterpart is not a direct equivalent: what has
+to survive is the guarantee, not the call. `LOCAL_PEERPID` establishes who is on
+the other end of the control socket; `SO_PEERCRED` or `SO_PEERPIDFD` must be
+shown to establish the same thing. `O_EXLOCK` and `renamex_np` carry exclusive
+publication; OFD locks and `renameat2` have to be demonstrated to, not assumed
+to. Compilation succeeding proves nothing about any of them, so each needs a
+contract check exercising its failure case. Treat the table as the list of
+guarantees to re-derive. Docker is native rather than a VM, so container
 panes get simpler, not harder.
 
 Sequencing that avoids a big-bang port: raise `Package.swift` to declare Linux,
@@ -202,7 +217,19 @@ Order:
 
 Measured here: the file and line counts, the Darwin import distribution, the
 POSIX API table, the Ghostty framework slices, `.macOS(.v14)`, and the vendor
-CLIs' published platform variants.
+CLIs' published platform variants. Also measured since: in a Linux Swift
+container, `Darwin` to `Glibc` and `CryptoKit` to `swift-crypto` are mechanical
+and the compiler walks past them; the residue is roughly 18 files around the
+syscall guarantees above.
+
+One number that could mislead: extracting only the 65 import-free files into
+their own target fails with about 5,000 errors, 612 of them for `RelayHandoff`
+alone. That is not 5,000 obstacles. It establishes that a file-level filter is
+invalid, because the platform-importing files define the domain vocabulary the
+rest consumes, and missing vocabulary fans out. It neither proves a small
+extraction nor an enormous one. The ordering it implies is to lift domain
+declarations out of platform-importing files first, following referenced types
+rather than the file list, and only then choose platform protocols.
 
 Not established, and each would change the shape of this: whether vendor TUIs
 behave correctly under a bare PTY with no renderer; whether they behave under
