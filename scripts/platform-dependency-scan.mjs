@@ -40,7 +40,6 @@ export const BASELINE = {
   "CommandRunner.swift": ["Darwin"],
   "ContainerGitAccess.swift": ["Darwin"],
   "ContainerPaneService.swift": ["Darwin"],
-  "ContainerPanes.swift": ["Darwin"],
   "ContextPacks.swift": ["CryptoKit", "Darwin", "ImageIO"],
   "CoreService.swift": ["Darwin", "Security"],
   "Diagnostics.swift": ["Darwin"],

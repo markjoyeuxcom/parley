@@ -1,14 +1,11 @@
 import Darwin
 import Foundation
 
-/// Exact shared Git metadata shown in the native launch review. This is a
-/// writable mount, not a claim that a vendor has approved a Git operation.
-public struct ContainerGitAccess: Codable, Equatable, Sendable {
-    public let folder: String
-    public let commonDirectory: String
-    public let device: UInt64
-    public let fileID: UInt64
-
+/// Resolving shared Git metadata: following symlinks with `realpath`, reading
+/// Git's pointers, and corroborating them against Git's own registry. The
+/// value these produce is declared in `ContainerGitIdentity.swift`, which
+/// needs no platform, so a recorded mount can be read without this file.
+extension ContainerGitAccess {
     static func canonical(_ path: String) throws -> String {
         guard let resolved = realpath(path, nil) else { throw ContainerPaneError.refused("A Git path is unavailable; review the worktree again.") }
         defer { free(resolved) }

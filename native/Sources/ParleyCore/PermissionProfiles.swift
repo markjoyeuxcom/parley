@@ -27,10 +27,6 @@ public enum PermissionRootMode: String, CaseIterable, Codable, Equatable, Hashab
     case exactApprovedRoots
 }
 
-public enum PermissionProfileLifetime: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
-    case session
-    case remembered
-}
 
 /// These are not editable profile capabilities. Every resolved profile carries
 /// the complete set and no adapter translates one into a grant. Host agents
@@ -172,35 +168,6 @@ public struct PermissionProfileDefinition: Identifiable, Codable, Equatable, Sen
     }
 }
 
-public struct PermissionProfileSelection: Codable, Equatable, Sendable {
-    public let profileID: String
-    public let approvedRoots: [String]
-    public let lifetime: PermissionProfileLifetime
-
-    public init(profileID: String, approvedRoots: [String], lifetime: PermissionProfileLifetime) {
-        self.profileID = profileID
-        self.approvedRoots = approvedRoots
-        self.lifetime = lifetime
-    }
-
-    /// Base64 keeps paths and JSON punctuation out of the durable metadata
-    /// envelope while retaining a portable value.
-    public var metadataValue: String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(self) else { return "" }
-        return data.base64EncodedString()
-    }
-
-    public init?(metadataValue: String) {
-        guard !metadataValue.isEmpty,
-              let data = Data(base64Encoded: metadataValue),
-              let decoded = try? JSONDecoder().decode(Self.self, from: data) else {
-            return nil
-        }
-        self = decoded
-    }
-}
 
 public struct WorkspaceFolderAccessOption: Identifiable, Equatable, Sendable {
     public let path: String
@@ -282,22 +249,6 @@ public struct EffectivePermissionProfile: Equatable, Sendable {
     public var lifetime: PermissionProfileLifetime { selection.lifetime }
 }
 
-/// A profile expresses more than any vendor CLI currently enforces. Parley
-/// therefore distinguishes exact enforcement from a safe partial translation
-/// and from launch guidance that the vendor must still confirm itself.
-public enum PermissionEnforcementLevel: String, Codable, Equatable, Sendable {
-    case enforced
-    case partiallyEnforced
-    case guidanceOnly
-
-    public var label: String {
-        switch self {
-        case .enforced: "Enforced"
-        case .partiallyEnforced: "Partially enforced"
-        case .guidanceOnly: "Guidance only"
-        }
-    }
-}
 
 public struct PermissionProfileLaunchPlan: Equatable, Sendable {
     public let arguments: [String]
