@@ -1,98 +1,17 @@
 import Darwin
 import Foundation
 
-public struct CommandOutput: Equatable, Sendable {
-    public let stdout: Data
-    public let stderr: Data
-    public let status: Int32
-    public let diagnostic: String?
-
-    public init(
-        stdout: Data = Data(),
-        stderr: Data = Data(),
-        status: Int32 = 0,
-        diagnostic: String? = nil
-    ) {
-        self.stdout = stdout
-        self.stderr = stderr
-        self.status = status
-        self.diagnostic = diagnostic
-    }
-
-    public var stdoutText: String { String(decoding: stdout, as: UTF8.self) }
-    public var stderrText: String { String(decoding: stderr, as: UTF8.self) }
-}
-
-public protocol CommandRunning {
-    func run(
-        executable: URL,
-        arguments: [String],
-        environment: [String: String],
-        input: Data?
-    ) throws -> CommandOutput
-
-    func run(
-        executable: URL,
-        arguments: [String],
-        environment: [String: String],
-        input: Data?,
-        outputExpectation: CommandOutputExpectation
-    ) throws -> CommandOutput
-}
-
-public enum CommandOutputExpectation: Sendable {
-    case immediate
-    case mayArriveAfterClientExit
-}
-
-/// How a spawned command's exit was actually observed.
+/// How this operating system encodes a reaped child's exit.
 ///
-/// `unobserved` means the child was reaped by something else in this process,
-/// so no exit status of ours exists. That is not success and must never be
-/// reported as one: a caller checking `status == 0` would otherwise treat a
-/// command it never saw finish as a clean run.
-public enum CommandWaitOutcome: Equatable, Sendable {
-    case reaped
-    case timedOut
-    case unobserved
-}
-
-public enum CommandExitStatus {
-    /// The deadline passed and the child was signalled. Matches timeout(1).
-    public static let timedOut: Int32 = 124
-    /// The wait itself failed, so no exit status was observed.
-    public static let unobserved: Int32 = 125
-
-    public static func resolve(outcome: CommandWaitOutcome, raw: Int32) -> Int32 {
-        switch outcome {
-        case .reaped: return exitStatus(from: raw)
-        case .timedOut: return timedOut
-        case .unobserved: return unobserved
-        }
-    }
-
+/// Kept beside the spawn implementation rather than in `CommandContract`: the
+/// bit layout below is a POSIX wait status, not part of what running a command
+/// means. A port supplies its own decoding and reuses the contract unchanged.
+enum POSIXWaitStatus {
     static func exitStatus(from status: Int32) -> Int32 {
         let signal = status & 0x7f
         if signal == 0 { return (status >> 8) & 0xff }
         if signal == 0x7f { return 1 }
         return 128 + signal
-    }
-}
-
-public extension CommandRunning {
-    func run(
-        executable: URL,
-        arguments: [String],
-        environment: [String: String],
-        input: Data?,
-        outputExpectation: CommandOutputExpectation
-    ) throws -> CommandOutput {
-        try run(
-            executable: executable,
-            arguments: arguments,
-            environment: environment,
-            input: input
-        )
     }
 }
 
@@ -241,7 +160,8 @@ public final class ProcessCommandRunner: CommandRunning {
         return CommandOutput(
             stdout: outputData,
             stderr: errorData,
-            status: CommandExitStatus.resolve(outcome: wait.outcome, raw: wait.status),
+            status: CommandExitStatus.resolve(
+                outcome: wait.outcome, exitStatus: POSIXWaitStatus.exitStatus(from: wait.status)),
             diagnostic: [
                 "wait=\(wait.reason)",
                 "elapsedMs=\((DispatchTime.now().uptimeNanoseconds &- started) / 1_000_000)",

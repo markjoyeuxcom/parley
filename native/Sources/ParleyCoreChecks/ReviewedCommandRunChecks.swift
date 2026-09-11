@@ -1132,13 +1132,20 @@ func reviewedRunClearedLateResultChecks() throws {
 /// A child reaped elsewhere leaves no exit status of ours. Reporting the
 /// untouched zero would present a command we never saw finish as a clean run.
 func commandWaitOutcomeChecks() throws {
-    try runExpect(CommandExitStatus.resolve(outcome: .reaped, raw: 0) == 0, "a real clean exit must stay 0")
-    try runExpect(CommandExitStatus.resolve(outcome: .reaped, raw: 81 << 8) == 81, "a real exit status must survive")
-    try runExpect(CommandExitStatus.resolve(outcome: .timedOut, raw: 0) == 124, "a timeout must report 124")
-    try runExpect(CommandExitStatus.resolve(outcome: .unobserved, raw: 0) != 0,
+    // The contract maps an observation to a status. Turning a POSIX wait
+    // encoding into that status belongs to the runner, and is covered by the
+    // real-subprocess checks that assert exit 7 and 128 + SIGUSR1.
+    try runExpect(CommandExitStatus.resolve(outcome: .reaped, exitStatus: 0) == 0, "a real clean exit must stay 0")
+    try runExpect(CommandExitStatus.resolve(outcome: .reaped, exitStatus: 81) == 81, "a real exit status must survive")
+    try runExpect(CommandExitStatus.resolve(outcome: .timedOut, exitStatus: 0) == 124, "a timeout must report 124")
+    try runExpect(CommandExitStatus.resolve(outcome: .unobserved, exitStatus: 0) != 0,
         "an unobserved wait reported success; a command never seen to finish must not read as clean")
-    try runExpect(CommandExitStatus.resolve(outcome: .unobserved, raw: 0) == CommandExitStatus.unobserved,
+    try runExpect(CommandExitStatus.resolve(outcome: .unobserved, exitStatus: 0) == CommandExitStatus.unobserved,
         "an unobserved wait must report its own status")
+    // A reaped child's status must pass through untouched, so the contract can
+    // never silently reinterpret what the runner observed.
+    try runExpect(CommandExitStatus.resolve(outcome: .reaped, exitStatus: CommandExitStatus.timedOut) == CommandExitStatus.timedOut,
+        "a reaped child that genuinely exited 124 must not be rewritten")
     try runExpect(CommandExitStatus.unobserved != CommandExitStatus.timedOut,
         "unobserved and timed out must stay distinguishable")
 }
