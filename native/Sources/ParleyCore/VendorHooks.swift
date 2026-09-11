@@ -96,11 +96,21 @@ public enum VendorHookAdapter {
         )
     }
 
-    public static func launchArguments(for vendor: PaneKind, protocolDirectory: URL) -> [String] {
+    public static func launchArguments(
+        for vendor: PaneKind,
+        protocolDirectory: URL,
+        shellCommandRule: PermissionRule = .allow
+    ) -> [String] {
         let shimExecutable = managedShimPath(for: protocolDirectory)
         return switch vendor {
         case .claude:
-            ["--settings", protocolDirectory.appendingPathComponent("claude-hooks.json").path]
+            // One --settings, always. The flag takes a path or a JSON string
+            // and is not variadic, so a second one would be last-wins: the
+            // permissions a profile asks for have to travel in the same value
+            // as the hooks, not alongside them.
+            shellCommandRule == .allow
+                ? ["--settings", protocolDirectory.appendingPathComponent("claude-hooks.json").path]
+                : ["--settings", claudeSettingsJSON(shimExecutable: shimExecutable, shellCommandRule: shellCommandRule)]
         case .codex:
             codexHooks(shimExecutable: shimExecutable).flatMap { ["-c", $0] }
         case .copilot:
@@ -188,6 +198,24 @@ public enum VendorHookAdapter {
         protocolDirectory.deletingLastPathComponent()
             .appendingPathComponent("bin/parley")
             .path
+    }
+
+    /// Claude's settings with the profile's execution rule expressed as a
+    /// permission rule rather than a permission mode.
+    ///
+    /// A mode cannot say "accept edits but ask before commands": it is one
+    /// dimension and the profile has two. A rule can. An ask rule is also
+    /// documented to outrank every mode, so this is not advisory decoration -
+    /// it is the one lever that makes the profile's execution rule real.
+    public static func claudeSettingsJSON(shimExecutable: String, shellCommandRule: PermissionRule) -> String {
+        var settings: [String: Any] = ["hooks": claudeHooks(shimExecutable: shimExecutable)["hooks"] as Any]
+        switch shellCommandRule {
+        case .allow: break
+        case .requireApproval: settings["permissions"] = ["ask": ["Bash"]]
+        case .deny: settings["permissions"] = ["deny": ["Bash"]]
+        }
+        let data = (try? JSONSerialization.data(withJSONObject: settings, options: [.sortedKeys])) ?? Data("{}".utf8)
+        return String(decoding: data, as: UTF8.self)
     }
 
     private static func hookCommand(shimExecutable: String, signal: VendorHookSignal) -> String {

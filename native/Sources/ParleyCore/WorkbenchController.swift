@@ -1013,7 +1013,14 @@ public final class WorkbenchController: @unchecked Sendable {
         var proposed = snapshot
         proposed.containerConfiguration = configuration
         proposed.launchGeneration += 1
-        var command = AgentProtocol.command(for: proposed.kind, protocolDirectory: protocolFolder, launchMode: launchMode)
+        // Bypass is the person's explicit choice, and an ask rule outranks
+        // every permission mode including bypassPermissions. Emitting one here
+        // would quietly overrule that choice, so a bypassed container carries
+        // no execution rule at all.
+        var command = AgentProtocol.command(
+            for: proposed.kind, protocolDirectory: protocolFolder, launchMode: launchMode,
+            shellCommandRule: configuration.bypassVendorPermissions
+                ? .allow : PermissionProfileAdapter.shellCommandRule(permissionProfile))
         command.removeFirst()
         if !configuration.bypassVendorPermissions {
             command += PermissionProfileAdapter.launchPlan(for: proposed.kind, profile: permissionProfile).arguments
@@ -1195,17 +1202,21 @@ public final class WorkbenchController: @unchecked Sendable {
                 let launchMode = agentLaunchRequests[pane.id].flatMap {
                     $0.generation == pane.launchGeneration ? $0.mode : nil
                 } ?? .fresh
-                var command = AgentProtocol.command(
-                    for: pane.kind,
-                    protocolDirectory: protocolDirectory,
-                    launchMode: launchMode
-                )
-                if let profile = try effectivePermissionProfile(
+                // Resolve the profile first: Claude's settings have to carry the
+                // execution rule, and that value is built with the command.
+                let resolved = try effectivePermissionProfile(
                     for: pane.kind,
                     cwd: pane.cwd,
                     supplied: nil,
                     selection: pane.permissionSelection
-                ) {
+                )
+                var command = AgentProtocol.command(
+                    for: pane.kind,
+                    protocolDirectory: protocolDirectory,
+                    launchMode: launchMode,
+                    shellCommandRule: resolved.map(PermissionProfileAdapter.shellCommandRule) ?? .allow
+                )
+                if let profile = resolved {
                     if pane.kind == .codex {
                         command += HostAgentPermissions(applicationDirectory: applicationDirectory,
                             protocolDirectory: protocolDirectory, shimDirectory: relayRuntime.shimDirectory,

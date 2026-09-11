@@ -349,17 +349,18 @@ public enum AgentProtocol {
     public static func command(
         for kind: PaneKind,
         protocolDirectory: URL,
-        launchMode: AgentLaunchMode = .fresh
+        launchMode: AgentLaunchMode = .fresh,
+        shellCommandRule: PermissionRule = .allow
     ) -> [String] {
         let freshCommand: [String] = switch kind {
         case .shell:
             []
         case .claude:
             ["claude", "--append-system-prompt", text]
-                + VendorHookAdapter.launchArguments(for: kind, protocolDirectory: protocolDirectory)
+                + VendorHookAdapter.launchArguments(for: kind, protocolDirectory: protocolDirectory, shellCommandRule: shellCommandRule)
         case .codex:
             ["codex", "-c", "developer_instructions=\(tomlString(text))"]
-                + VendorHookAdapter.launchArguments(for: kind, protocolDirectory: protocolDirectory)
+                + VendorHookAdapter.launchArguments(for: kind, protocolDirectory: protocolDirectory, shellCommandRule: shellCommandRule)
         case .agy:
             ["agy", "--add-dir", protocolDirectory.path]
         case .copilot:
@@ -368,7 +369,7 @@ public enum AgentProtocol {
             // person approving it; all filesystem and other shell tools retain
             // Copilot's normal confirmation flow.
             ["copilot", "--allow-tool=shell(parley)"]
-                + VendorHookAdapter.launchArguments(for: kind, protocolDirectory: protocolDirectory)
+                + VendorHookAdapter.launchArguments(for: kind, protocolDirectory: protocolDirectory, shellCommandRule: shellCommandRule)
         }
         return VendorResumeAdapter.command(
             freshCommand: freshCommand,

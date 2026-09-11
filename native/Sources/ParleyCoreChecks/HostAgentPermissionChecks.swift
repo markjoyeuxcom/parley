@@ -79,7 +79,12 @@ func checkHostLaunchesPreserveVendorControls() throws {
             let launch = try controller.launchConfiguration(for: pane.id)
             let token = try credentials.token(for: pane.id)
             let endpoint = RelayFileTransport.endpointDirectory(runtimeDirectory: transport, paneToken: token)
-            var expected = AgentProtocol.command(for: kind, protocolDirectory: controller.protocolDirectory, launchMode: mode)
+            // The launch carries the profile's execution rule, so the expected
+            // argv has to be built with the same rule or this compares a
+            // restricted launch against a permissive one.
+            var expected = AgentProtocol.command(
+                for: kind, protocolDirectory: controller.protocolDirectory, launchMode: mode,
+                shellCommandRule: PermissionProfileAdapter.shellCommandRule(profile))
             if kind == .codex {
                 let permissions = HostAgentPermissions(applicationDirectory: app, protocolDirectory: controller.protocolDirectory,
                     shimDirectory: shim, transportDirectory: transport, endpointDirectory: endpoint, profile: profile)
