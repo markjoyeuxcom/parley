@@ -85,6 +85,7 @@ native/
     ParleyCore/
       AgentProtocol.swift              canonical agent-facing contract
       AgentProcessBoundary.swift       container host-client Seatbelt boundary
+      HostAgentPermissions.swift       Codex-native host permission rules
       AppResidentPaneLifecycle.swift   explicit window/quit lifetime policy
       CommandRunner.swift              bounded argv process execution
       AutomaticUpdateConfiguration.swift signed Production update boundary
@@ -263,6 +264,16 @@ Human Ask and Return submit only after an editable preview. A real current
 Ghostty selection may prefill it; otherwise it starts empty. Never capture
 scrollback or a whole conversation implicitly.
 
+A link clicked in a pane (command-click) is opened through
+`TerminalLinkPolicy`. Pane text is written by a vendor CLI rather than by the
+person, and an OSC 8 hyperlink can display one address while pointing at
+another, so a click is untrusted input: only `http` or `https` with a host, no
+control characters, bounded length. Every other scheme is ignored, including
+`file:`, `javascript:` and application schemes that could start something
+locally. A refused click does nothing rather than reporting an error. Parley
+never opens a link on its own; detecting that a line looks like a login URL and
+acting on it would infer intent from terminal text.
+
 Ghostty appearance import is an explicit person action. Parse only bounded
 font family, font size, theme, palette and hex colour values from the documented
 XDG and macOS locations. Never load a raw Ghostty config into a terminal, follow
@@ -329,6 +340,21 @@ grant this confirmation.
 
 Spawn fixed executables with argument arrays. Agent-authored content must never
 be interpolated into a shell command.
+
+A spawned tool must start from a clean signal state. `posix_spawn` otherwise
+hands the child the calling thread's blocked mask, and Swift concurrency and
+the terminal stack run threads with signals blocked. A child that inherits a
+blocked `SIGCHLD` is never told its own children exited: it waits forever,
+silently, and only `SIGKILL` ends it. Every spawner therefore sets
+`POSIX_SPAWN_SETSIGDEF` and `POSIX_SPAWN_SETSIGMASK`, resetting each
+disposition to default and clearing the mask. Resetting dispositions alone is
+not enough; the mask is the half that bit.
+
+A command whose exit was never observed is not a success. When `waitpid` fails,
+the raw status was never written, so `CommandWaitOutcome` reports `unobserved`
+(status 125) rather than the untouched zero, and says so on the command's error
+output. A timeout stays 124. Never let a command nobody saw finish satisfy a
+`status == 0` check.
 
 Host vendor CLIs launch directly as trusted local applications, with their own
 permissions and approval prompts. Do not put Parley's Seatbelt profile around
@@ -773,10 +799,13 @@ node scripts/run-native-swift.mjs run --package-path native parley-native-checks
 ```
 
 The transport check uses disposable fixture credentials, never a live pane's
-capability. The Ghostty check requires a human Shell. The five controller/container checks
-that verify protected runtime roots also require it and report that prerequisite
-explicitly; they never silently skip or count as passing inside an agent pane. Image sign-in, fresh and
-resumed vendor instruction uptake, normal approval prompts and post-relaunch
+capability. The container checks that verify protected runtime roots report a
+prerequisite explicitly rather than skipping when they cannot reach those
+paths; they never count as passing unrun. Since v0.1.30 removed Parley's outer
+boundary from host panes, those checks and the Ghostty launch checks do run
+inside a host agent pane: the full suite passes there. A container pane still
+has a real boundary, so the prerequisite can still be reported from one.
+Image sign-in, fresh and resumed vendor instruction uptake, normal approval prompts and post-relaunch
 login persistence remain explicit human compatibility follow-ups. Ship the
 reviewed greenfield implementation with known limitations recorded; untested
 configurations do not hold the feature out of main or the next release.
@@ -807,9 +836,9 @@ The repository's native runner honours the same explicit opt-in before
 stripping pane capabilities from build children. For an existing agent pane,
 a person-authorized `PARLEY_SWIFTPM_COMPATIBILITY=1 npm test` or
 `PARLEY_SWIFTPM_COMPATIBILITY=1 npm run build` enables it for that command only. Never infer opt-in
-merely from being inside Parley. Tests that themselves create another
-Seatbelt sandbox or need an unrestricted UI process may still require a
-human Shell pane; report those limits rather than silently skipping checks.
+merely from being inside Parley. A host agent pane has no outer Parley sandbox
+since v0.1.30 and runs the whole suite; a check that still cannot run in the
+current pane must report that limit rather than silently skipping.
 
 ## Reviewed context boundary
 
