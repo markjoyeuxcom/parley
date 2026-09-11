@@ -196,6 +196,33 @@ private func reviewController(_ root: URL) throws -> WorkbenchController {
         let profile = try PermissionProfileResolver.resolve(definition: PermissionProfileDefinition.builtIns.first { $0.id == "default" }!, paneFolder: FileManager.default.currentDirectoryPath)
         try reviewExpect(PermissionProfileAdapter.launchPlan(for: .claude, profile: profile).arguments == ["--permission-mode", "default"], "version-specific alias emitted")
     }),
+    ("a launch plan says which profile rules never reach the vendor", {
+        // Only projectWrite is translated into a launch argument. A profile can
+        // restrict tool and process execution, the review shows those rules,
+        // and nothing carries them to the CLI. Saying so is the difference
+        // between a limit and a silent one.
+        let flexible = PermissionProfileDefinition.builtIns.first { $0.id == "flexible" }!
+        let profile = try PermissionProfileResolver.resolve(
+            definition: flexible, paneFolder: FileManager.default.currentDirectoryPath)
+        let plan = PermissionProfileAdapter.launchPlan(for: .claude, profile: profile)
+        try reviewExpect(plan.arguments.contains("acceptEdits"),
+            "the flexible profile should still map project write to acceptEdits")
+        try reviewExpect(profile.definition.rule(for: .localProcessExecution) != .allow,
+            "this check needs a profile that restricts local process execution")
+        try reviewExpect(plan.detail.contains("running local processes"),
+            "the plan does not name the restricted execution capability it silently drops")
+        try reviewExpect(plan.detail.contains("not translated into a launch argument"),
+            "the plan does not say the restriction fails to reach the vendor")
+
+        // A profile that allows execution has nothing to disclose.
+        let broad = PermissionProfileDefinition.builtIns.first { $0.id == "broad-workspace" }!
+        let folder = FileManager.default.currentDirectoryPath
+        let open = try PermissionProfileResolver.resolve(
+            definition: broad, paneFolder: folder, approvedRoots: [folder])
+        let openPlan = PermissionProfileAdapter.launchPlan(for: .claude, profile: open)
+        try reviewExpect(!openPlan.detail.contains("not translated into a launch argument"),
+            "a profile that allows execution should not claim something was dropped")
+    }),
     ("review regression cancelAll unblocks context reviews in awaitingReview", {
         let root = try reviewRoot(); defer { try? FileManager.default.removeItem(at: root) }
         let credentials = try RelayCredentials(file: root.appendingPathComponent("tokens.json"))
