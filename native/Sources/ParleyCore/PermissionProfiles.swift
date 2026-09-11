@@ -292,6 +292,17 @@ public struct PermissionProfileLaunchPlan: Equatable, Sendable {
 /// conservative: an absent vendor control becomes guidance, never a claim that
 /// Parley enforced a capability the CLI does not expose.
 public enum PermissionProfileAdapter {
+    /// The rule that should govern running a shell command, taken as the
+    /// stricter of the two execution capabilities. One vendor tool covers both,
+    /// so the narrower intent has to win rather than be averaged away.
+    public static func shellCommandRule(_ profile: EffectivePermissionProfile) -> PermissionRule {
+        let rules = [profile.definition.rule(for: .projectToolExecution),
+                     profile.definition.rule(for: .localProcessExecution)]
+        if rules.contains(.deny) { return .deny }
+        if rules.contains(.requireApproval) { return .requireApproval }
+        return .allow
+    }
+
     public static func launchPlan(
         for kind: PaneKind,
         profile: EffectivePermissionProfile
@@ -342,12 +353,18 @@ public enum PermissionProfileAdapter {
             detail = "Copilot plan mode and exact additional directories are configured where supported."
         }
 
-        let untranslated = execution.isEmpty ? "" :
+        // Claude now carries the execution rule as a permission rule in its
+        // settings, so the disclosure has to narrow with the behaviour rather
+        // than keep claiming the restriction is dropped.
+        let carriesExecution = kind == .claude
+        let untranslated = execution.isEmpty || carriesExecution ? "" :
             " This profile restricts \(PermissionCapability.sentence(execution)), which is not translated into a launch argument: only project write is. Those remain the vendor's own prompts to make."
+        let carried = execution.isEmpty || !carriesExecution ? "" :
+            " It also restricts \(PermissionCapability.sentence(execution)), carried as a rule that asks before a shell command and outranks the permission mode."
         return PermissionProfileLaunchPlan(
             arguments: arguments,
             enforcement: arguments.isEmpty ? .guidanceOnly : .partiallyEnforced,
-            detail: detail + " Vendor prompts remain authoritative for capabilities the CLI cannot express." + untranslated
+            detail: detail + " Vendor prompts remain authoritative for capabilities the CLI cannot express." + untranslated + carried
         )
     }
 }

@@ -196,32 +196,52 @@ private func reviewController(_ root: URL) throws -> WorkbenchController {
         let profile = try PermissionProfileResolver.resolve(definition: PermissionProfileDefinition.builtIns.first { $0.id == "default" }!, paneFolder: FileManager.default.currentDirectoryPath)
         try reviewExpect(PermissionProfileAdapter.launchPlan(for: .claude, profile: profile).arguments == ["--permission-mode", "default"], "version-specific alias emitted")
     }),
-    ("a launch plan says which profile rules never reach the vendor", {
-        // Only projectWrite is translated into a launch argument. A profile can
-        // restrict tool and process execution, the review shows those rules,
-        // and nothing carries them to the CLI. Saying so is the difference
-        // between a limit and a silent one.
-        let flexible = PermissionProfileDefinition.builtIns.first { $0.id == "flexible" }!
-        let profile = try PermissionProfileResolver.resolve(
-            definition: flexible, paneFolder: FileManager.default.currentDirectoryPath)
-        let plan = PermissionProfileAdapter.launchPlan(for: .claude, profile: profile)
-        try reviewExpect(plan.arguments.contains("acceptEdits"),
-            "the flexible profile should still map project write to acceptEdits")
-        try reviewExpect(profile.definition.rule(for: .localProcessExecution) != .allow,
-            "this check needs a profile that restricts local process execution")
-        try reviewExpect(plan.detail.contains("running local processes"),
-            "the plan does not name the restricted execution capability it silently drops")
-        try reviewExpect(plan.detail.contains("not translated into a launch argument"),
-            "the plan does not say the restriction fails to reach the vendor")
-
-        // A profile that allows execution has nothing to disclose.
-        let broad = PermissionProfileDefinition.builtIns.first { $0.id == "broad-workspace" }!
+    ("a profile's execution rule reaches Claude and is disclosed where it cannot", {
         let folder = FileManager.default.currentDirectoryPath
-        let open = try PermissionProfileResolver.resolve(
-            definition: broad, paneFolder: folder, approvedRoots: [folder])
-        let openPlan = PermissionProfileAdapter.launchPlan(for: .claude, profile: open)
-        try reviewExpect(!openPlan.detail.contains("not translated into a launch argument"),
-            "a profile that allows execution should not claim something was dropped")
+        let flexible = PermissionProfileDefinition.builtIns.first { $0.id == "flexible" }!
+        let profile = try PermissionProfileResolver.resolve(definition: flexible, paneFolder: folder)
+        try reviewExpect(profile.definition.rule(for: .localProcessExecution) != .allow,
+            "this check needs a profile that restricts execution")
+        try reviewExpect(PermissionProfileAdapter.shellCommandRule(profile) == .requireApproval,
+            "a restricted execution capability must produce a requireApproval shell rule")
+
+        // Claude carries it as a rule, because a permission mode cannot say
+        // "accept edits but ask before commands".
+        let settings = VendorHookAdapter.claudeSettingsJSON(
+            shimExecutable: "/tmp/parley", shellCommandRule: PermissionProfileAdapter.shellCommandRule(profile))
+        let decoded = try JSONSerialization.jsonObject(with: Data(settings.utf8)) as! [String: Any]
+        try reviewExpect(decoded["hooks"] != nil, "the settings dropped the lifecycle hooks")
+        let permissions = decoded["permissions"] as? [String: [String]]
+        try reviewExpect(permissions?["ask"] == ["Bash"],
+            "a profile restricting execution did not produce an ask rule for Bash")
+
+        // Exactly one --settings: the flag is not variadic, so a second would
+        // be last-wins and silently drop either the hooks or the permissions.
+        let arguments = VendorHookAdapter.launchArguments(
+            for: .claude, protocolDirectory: URL(fileURLWithPath: "/tmp/protocol"),
+            shellCommandRule: .requireApproval)
+        try reviewExpect(arguments.filter { $0 == "--settings" }.count == 1,
+            "Claude received more than one --settings; the later one wins and the earlier is lost")
+
+        // An allowing profile changes nothing: still the plain hooks file.
+        let broad = PermissionProfileDefinition.builtIns.first { $0.id == "broad-workspace" }!
+        let open = try PermissionProfileResolver.resolve(definition: broad, paneFolder: folder, approvedRoots: [folder])
+        try reviewExpect(PermissionProfileAdapter.shellCommandRule(open) == .allow,
+            "broad-workspace allows execution and must produce no rule")
+        try reviewExpect(VendorHookAdapter.launchArguments(
+            for: .claude, protocolDirectory: URL(fileURLWithPath: "/tmp/protocol"), shellCommandRule: .allow)
+            .contains("/tmp/protocol/claude-hooks.json"),
+            "an allowing profile should still use the shared hooks file")
+
+        // A vendor that cannot carry the rule must still say so.
+        let copilot = PermissionProfileAdapter.launchPlan(for: .copilot, profile: profile)
+        try reviewExpect(copilot.detail.contains("not translated into a launch argument"),
+            "a vendor that cannot carry the execution rule must disclose that")
+        let claudePlan = PermissionProfileAdapter.launchPlan(for: .claude, profile: profile)
+        try reviewExpect(!claudePlan.detail.contains("not translated into a launch argument"),
+            "Claude now carries the rule and must not claim it was dropped")
+        try reviewExpect(claudePlan.detail.contains("outranks the permission mode"),
+            "Claude's plan should say the rule outranks the mode")
     }),
     ("review regression cancelAll unblocks context reviews in awaitingReview", {
         let root = try reviewRoot(); defer { try? FileManager.default.removeItem(at: root) }
