@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 // Guards ParleyCore's platform surface.
 //
-// ParleyCore is the part of Parley that could one day run somewhere other than
-// macOS. Most of it already could: the file-level dependency on Apple
-// frameworks is concentrated in a known set. This scan records that set exactly
-// and fails when it grows, so the pure majority cannot quietly re-acquire a
-// platform dependency between releases.
+// ParleyCore's file-level dependency on Apple frameworks is concentrated in a
+// known set. This scan records that set exactly and fails when it changes, so
+// the rest cannot quietly acquire one between releases.
+//
+// Read the number it prints as a maintenance fact, not portability progress.
+// A file carrying no platform import may still depend on a Darwin-bound service,
+// and useful separation work can leave the count untouched: lifting a domain
+// type out of a platform-importing file is real progress the count cannot see.
+// Portability is established by compiling a dependency-complete slice, not here.
 //
 // It is a ratchet, not a snapshot. Adding a platform import to a new file fails.
 // Removing one from a listed file also fails, because the baseline below must
