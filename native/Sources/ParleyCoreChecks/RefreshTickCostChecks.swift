@@ -11,6 +11,58 @@ private func tickPane(_ id: String, _ kind: PaneKind, _ name: String, workspace:
         automationPolicy: .askAndDelegate)
 }
 
+/// Reading history must not take the workbench lock when there is nothing to
+/// reconcile. `panes()` reaches through to `WorkbenchController.listPanes()`,
+/// which locks the whole document model, and the idle state — no delegation in
+/// flight — is the common one.
+func idleHistoryReadAvoidsWorkbenchChecks() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-idle-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let journal = try RelayHandoffJournal(file: directory.appendingPathComponent("handoffs.jsonl"))
+    let source = tickPane("idle-source", .claude, "Source")
+    let target = tickPane("idle-target", .codex, "Target")
+    let paneReads = Counter()
+    let broker = RelayBroker(
+        credentials: credentials,
+        panes: { paneReads.increment(); return [source, target] },
+        paste: { _, _ in }, submit: { _, _ in },
+        handoffJournal: journal)
+    let sourceToken = try credentials.token(for: source.id)
+
+    // Ordinary relays leave no delegation to reconcile.
+    for index in 0..<3 {
+        let response = broker.handle(token: sourceToken, target: target.id, text: "message \(index)", idempotencyKey: "idle-relay-\(index)")
+        try tickExpect(response.status == 200, "fixture relay \(index) failed with \(response.status)")
+    }
+
+    let beforeIdle = paneReads.value
+    for _ in 0..<20 {
+        _ = broker.handoffs()
+        _ = broker.unreadHandoffs()
+    }
+    try tickExpect(paneReads.value == beforeIdle,
+        "an idle history read reached the workbench \(paneReads.value - beforeIdle) times for nothing to reconcile")
+
+    // With a delegation in flight the reconcile must still happen, or a target
+    // that went away would never be noticed.
+    let delegated = broker.handleDelegate(token: sourceToken, target: target.id, text: "Do it.", idempotencyKey: "idle-delegate-1")
+    try tickExpect(delegated.status == 200, "fixture delegation failed with \(delegated.status)")
+    let beforeActive = paneReads.value
+    _ = broker.handoffs()
+    try tickExpect(paneReads.value > beforeActive,
+        "a history read with an active delegation skipped reconciliation")
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.withLock { count += 1 } }
+    var value: Int { lock.withLock { count } }
+}
+
 /// Measures, against a real control server and client, the work the periodic
 /// refresh tick used to perform on the main thread: the five relay requests
 /// (server encode, socket round trip, client decode) and the Status Center's

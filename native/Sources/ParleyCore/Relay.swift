@@ -4004,10 +4004,15 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     private func reconcileDelegations() {
-        guard let livePanes = try? panes() else { return }
+        // Read what there is to reconcile before asking for panes. This runs on
+        // ordinary history reads, and `panes()` takes the workbench controller's
+        // lock across the whole document model, so with no delegations in flight
+        // — the usual state — it was contending for a lock to iterate nothing.
         consultationCondition.lock()
         let ids = Array(delegationRecords.keys)
         consultationCondition.unlock()
+        guard !ids.isEmpty else { return }
+        guard let livePanes = try? panes() else { return }
         for id in ids { reconcileDelegation(id, livePanes: livePanes) }
     }
 
