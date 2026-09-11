@@ -9970,7 +9970,7 @@ if let image = argument(named: "--container-transport-spike") {
 
 // `--only <substring>` runs the matching checks alone during local iteration.
 let onlyFilter = argument(named: "--only")?.lowercased()
-let selectedChecks = (containerPaneChecks + checks + reviewRegressionChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + auxiliaryWindowChecks + helpAuditChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
+let selectedChecks = (containerPaneChecks + checks + reviewRegressionChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + auxiliaryWindowChecks + helpAuditChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var failureCount = 0

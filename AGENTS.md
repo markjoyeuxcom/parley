@@ -134,7 +134,12 @@ Production and a separate Development directory.
   publishes the pane list once per run-loop turn with no relay fetch or
   layout work, because no view renders titles today.
 - `GhosttyPaneRegistry` retains views by pane id across SwiftUI remounts and
-  main-window hiding.
+  main-window hiding. `NativeTerminalHost` hosts that surface in a
+  `TerminalHostView` rather than being it, so a pane whose surface was briefly
+  unavailable — a pane list not yet published during a restore — is attached on
+  a later update instead of showing its error for the life of the view. Only a
+  changed launch generation rebuilds the representable, so recovery cannot
+  depend on one.
 - Closing/hiding the main window keeps panes and coordination alive while the
   application remains running.
 - Auxiliary windows (Status Center, Help, About, Settings) are
@@ -330,7 +335,14 @@ to check a claim, adds no schema and never rewrites the staged file.
 
 Multiline payloads travel through Ghostty paste as one text operation.
 Submission is a separate Enter key event after paste succeeds. Never send raw
-newlines as key events. Copilot may require briefly focusing the target for
+newlines as key events. The settle between those steps pumps the main run loop,
+so the pane can be stopped, closed or restarted part-way through a delivery: the
+target is re-resolved by pane id, launch generation and view identity before
+each step that sends input, and a pane that went away refuses rather than
+writing into a torn-down surface. Restoring the person's focus afterwards is not
+delivery and never turns a completed submission into a reported failure. Bound
+those settles against a monotonic clock; a wall-clock deadline spins the main
+thread for the length of any backward step. Copilot may require briefly focusing the target for
 paste/submit and restoring the person's previous pane; refuse delivery at its
 folder-trust prompt. Copilot handoffs remain blocked until the person confirms
 **Confirm Copilot Folder Trust** in its pane menu for that launch. Hooks cannot

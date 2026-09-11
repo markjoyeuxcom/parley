@@ -307,15 +307,20 @@ final class GhosttyPaneRegistry {
         let timing = PaneSubmissionTiming.forKind(pane.kind, submit: submit)
         _ = entry.view.acquireProgrammaticFocus()
         settleTerminalInput(for: timing.afterFocus)
+        try requireLiveTarget(paneID, entry)
         guard entry.view.paste(text: text) else {
             throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
         }
         if submit {
             settleTerminalInput(for: timing.afterPaste)
+            try requireLiveTarget(paneID, entry)
             guard entry.view.sendKey(.enter) else {
                 throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
             }
         }
+        // Restoring the person's focus is not delivery. By here the text has
+        // landed, so a pane that went away during this last settle must not turn
+        // a completed submission into a reported failure the caller may resend.
         if let previousWindow, let previousResponder, previousResponder !== entry.view {
             settleTerminalInput(for: timing.beforeRestoringFocus)
             previousWindow.makeFirstResponder(previousResponder)
@@ -355,14 +360,38 @@ final class GhosttyPaneRegistry {
         for paneID in Array(entries.keys) { stop(paneID: paneID) }
     }
 
+    /// Lets the terminal consume what was just delivered before the next step.
+    ///
+    /// The deadline is monotonic on purpose. `Date()` is the wall clock, and a
+    /// backward step from an NTP correction would keep the comparison true for
+    /// the length of the step, spinning the main thread and freezing the window
+    /// until the clock caught up. Only the run loop's own `before:` argument
+    /// stays a `Date`, because that is the API's shape, and it is recomputed
+    /// from the current clock on every turn rather than held across the wait.
     private func settleTerminalInput(for interval: TimeInterval) {
         guard interval > 0 else { return }
-        let deadline = Date().addingTimeInterval(interval)
-        while Date() < deadline {
-            _ = RunLoop.current.run(
-                mode: .default,
-                before: min(deadline, Date().addingTimeInterval(0.01))
-            )
+        let deadline = DispatchTime.now().uptimeNanoseconds &+ UInt64(interval * 1_000_000_000)
+        while true {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else { return }
+            let remaining = min(0.01, Double(deadline &- now) / 1_000_000_000)
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(remaining))
+        }
+    }
+
+    /// Confirms the pane is still the one this delivery started against.
+    ///
+    /// `settleTerminalInput` pumps the main run loop, so a close, stop, restart
+    /// or workspace change can run between one input step and the next. The
+    /// `Entry` captured before that is then stale: its view may already have had
+    /// its controller cleared by `stop(paneID:)`. Sending the rest of a delivery
+    /// into a torn-down surface would report a submission that never landed.
+    private func requireLiveTarget(_ paneID: String, _ started: Entry) throws {
+        guard let current = entries[paneID],
+              current.generation == started.generation,
+              current.view === started.view,
+              current.view.controller != nil else {
+            throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
         }
     }
 
