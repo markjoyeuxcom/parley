@@ -699,7 +699,10 @@ Container execution is independent of `AgentLaunchMode` (fresh/resume). The
 person selects it in the native permission review for Claude or Codex and
 checks a locally installed image. Parley never builds or pulls images. The
 image supplies `/usr/local/bin/claude` or `/usr/local/bin/codex`, POSIX sh,
-GNU stat/coreutils and `/bin/chown`. `ContainerPaneService.preview` pins a
+GNU stat/coreutils and `/bin/chown`; `docs/container-images.md` states the exact
+utility contract, the run-time shape an image must tolerate, worked Dockerfiles
+and the command to check an image against the same probe.
+`ContainerPaneService.preview` pins a
 local Unix-socket endpoint, daemon ID and image ID and probes the vendor
 without a project mount, pane capability, network or signed-in session. The fixed
 probe first verifies the Linux shim and home-initializer utility contract. It
