@@ -1045,6 +1045,15 @@ domain vocabulary the rest consumes, so extracting the 65 import-free files
 alone fails with thousands of missing-type errors. Seams must move those
 definitions first.
 
+A check must leave nothing behind outside the repository, and a per-run unique
+name is how that goes wrong quietly. `UserDefaults(suiteName:)` writes to
+`~/Library/Preferences`, `removePersistentDomain` empties the domain but leaves
+the file, and `cfprefsd` can write an emptied domain back after the check
+returns — so deleting the file is not enough on its own. Name such a domain
+fixed rather than per-run and clear it on the way in as well as out, so the
+count is bounded however many times the suite runs. A UUID per run accumulated
+1,626 files before anyone looked.
+
 For terminal/lifetime changes also run the Ghostty soak. Default checks must
 not launch a vendor CLI, spend subscription quota, mutate unrelated user
 processes or depend on network access. The explicit manual
