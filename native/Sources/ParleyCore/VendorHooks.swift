@@ -74,7 +74,7 @@ public enum VendorHookAdapter {
     public static func install(in protocolDirectory: URL, fileManager: FileManager = .default) throws {
         let shimExecutable = managedShimPath(for: protocolDirectory)
         let claude = protocolDirectory.appendingPathComponent("claude-hooks.json")
-        try writeJSON(claudeHooks(shimExecutable: shimExecutable), to: claude, fileManager: fileManager)
+        try writeJSON(claudeSettings(shimExecutable: shimExecutable, shellCommandRule: .allow), to: claude, fileManager: fileManager)
 
         let copilotDirectory = protocolDirectory.appendingPathComponent("copilot-hooks", isDirectory: true)
         try fileManager.createDirectory(
@@ -207,13 +207,35 @@ public enum VendorHookAdapter {
     /// dimension and the profile has two. A rule can. An ask rule is also
     /// documented to outrank every mode, so this is not advisory decoration -
     /// it is the one lever that makes the profile's execution rule real.
-    public static func claudeSettingsJSON(shimExecutable: String, shellCommandRule: PermissionRule) -> String {
+    /// Claude's own permission rules for Parley's command. When the profile
+    /// allows shell execution, `parley …` and the runtime-local shim run
+    /// without a prompt, the way Copilot already permits `shell(parley)`;
+    /// every other shell command keeps Claude's prompt, because acceptEdits
+    /// mode only pre-approves file edits. A profile that asks before shell
+    /// commands keeps asking for Parley's command too: that was the person's
+    /// choice. `"$PARLEY_COMMAND" …` is matched literally by Claude and still
+    /// prompts.
+    public static func claudeParleyCommandRules(shimExecutable: String) -> [String] {
+        ["Bash(parley:*)", "Bash(\(shimExecutable):*)"]
+    }
+
+    /// The one settings object Claude receives: lifecycle hooks plus the
+    /// permission rules the profile's shell rule calls for. The allow form is
+    /// also what `install` writes to `claude-hooks.json`, so the file a
+    /// permissive launch names and the inline JSON a restrictive launch passes
+    /// are built by the same code.
+    public static func claudeSettings(shimExecutable: String, shellCommandRule: PermissionRule) -> [String: Any] {
         var settings: [String: Any] = ["hooks": claudeHooks(shimExecutable: shimExecutable)["hooks"] as Any]
         switch shellCommandRule {
-        case .allow: break
+        case .allow: settings["permissions"] = ["allow": claudeParleyCommandRules(shimExecutable: shimExecutable)]
         case .requireApproval: settings["permissions"] = ["ask": ["Bash"]]
         case .deny: settings["permissions"] = ["deny": ["Bash"]]
         }
+        return settings
+    }
+
+    public static func claudeSettingsJSON(shimExecutable: String, shellCommandRule: PermissionRule) -> String {
+        let settings = claudeSettings(shimExecutable: shimExecutable, shellCommandRule: shellCommandRule)
         let data = (try? JSONSerialization.data(withJSONObject: settings, options: [.sortedKeys])) ?? Data("{}".utf8)
         return String(decoding: data, as: UTF8.self)
     }

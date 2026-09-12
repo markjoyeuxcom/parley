@@ -74,7 +74,7 @@ public struct HandoffRecipe: Identifiable, Codable, Equatable, Sendable {
             id: "adversarial-bug-hunt",
             name: "Adversarial bug hunt",
             kind: .delegate,
-            instructions: "Delegate a bounded adversarial bug hunt to {{targets}}. Require concrete file and line evidence. Ask the target to post `parley progress current` at each milestone and to return a substantial report with `parley done current --file <path>`. Wait for the tracked result, assess every finding, and fix only confirmed issues."
+            instructions: "Delegate a bounded adversarial bug hunt to {{targets}}. Require concrete file and line evidence. Ask the target to post `parley progress current` at each milestone of work longer than a minute or so, and to return a substantial report with `parley done current --file <path>`. Wait for the tracked result, assess every finding, and fix only confirmed issues."
         ),
         HandoffRecipe(
             id: "compare-recommendations",
@@ -86,7 +86,7 @@ public struct HandoffRecipe: Identifiable, Codable, Equatable, Sendable {
             id: "review-and-correct",
             name: "Review and correct",
             kind: .delegate,
-            instructions: "Follow the review-and-correct practice with {{targets}} as guidance, not a required sequence. Start with `parley delegate <implementer> \"<task>\"` to one of {{targets}}, asking it to post `parley progress current` at each milestone and to return its result with `parley done current` or `parley done current --file <path>` using the plain Markdown headings ## Implemented, ## Tested (each command and its claimed outcome) and ## Unable to test (the reason). When the result returns, ask a different vendor among {{targets}} to review the shared diff and name concrete file and line evidence. Send the agreed corrections back as one linked request for changes with `parley delegate <implementer> --parent <handoff-id> \"<changes>\"`, then have the reviewer verify the revised result independently. Treat every progress note, evidence section and review as an agent-declared claim and decide yourself what to accept."
+            instructions: "Follow the review-and-correct practice with {{targets}} as guidance, not a required sequence. Start with `parley delegate <implementer> \"<task>\"` to one of {{targets}}, asking it to post `parley progress current` at each milestone of work longer than a minute or so, and to return its result with `parley done current` or `parley done current --file <path>` using the plain Markdown headings ## Implemented, ## Tested (each command and its claimed outcome) and ## Unable to test (the reason). When the result returns, ask a different vendor among {{targets}} to review the shared diff and name concrete file and line evidence. Send the agreed corrections back as one linked request for changes with `parley delegate <implementer> --parent <handoff-id> \"<changes>\"`, then have the reviewer verify the revised result independently. Treat every progress note, evidence section and review as an agent-declared claim and decide yourself what to accept."
         ),
     ]
 }

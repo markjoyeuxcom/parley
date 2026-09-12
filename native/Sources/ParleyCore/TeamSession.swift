@@ -677,6 +677,16 @@ public struct TeamSession: Identifiable, Codable, Equatable, Sendable {
         members.filter { member in live.contains { member.owns($0) && $0.isStarted && !$0.isDead } }
     }
 
+    /// Panes this session created whose created generation was stopped and
+    /// that remain as stopped placeholders. A pane the person restarted since
+    /// is not one of them; nor is the requester or any unrelated pane. These
+    /// are what grouped cleanup may close, each named in the confirmation.
+    public func stoppedPlaceholders(in live: [WorkbenchPane]) -> [WorkbenchPane] {
+        members.compactMap { member in
+            live.first { $0.id == member.paneID && member.ownership(of: $0) == .stopped }
+        }
+    }
+
     public func currentPaneStates(in live: [WorkbenchPane]) -> [TeamPaneState] {
         members.map { member in
             let pane = live.first { $0.id == member.paneID }
@@ -747,9 +757,54 @@ public struct TeamSession: Identifiable, Codable, Equatable, Sendable {
 }
 
 public enum TeamSessionDisclosure {
-    public static let approval = "Approval lets the requesting pane create up to the pane limit of new agent panes in this workspace, bound to the approved folder, exact permission profile and per-vendor host or container settings shown here, without another approval per pane. Vendor prompts remain active unless you explicitly select Bypass vendor permissions in that vendor's container review. Bypass replaces the profile restrictions for those container members only; host panes retain their profile. Parley never answers a vendor prompt. The grant lives only in memory and ends at the provisioning deadline, on Stop, on quit, when the requesting pane restarts, moves, changes folder or its workspace policy changes, and when the approved permission profile is edited or removed."
+    public static let approval = "Approval lets the requesting pane create up to the pane limit of new agent panes in this workspace, bound to the approved folder, exact permission profile and per-vendor host or container settings shown here, without another approval per pane. Vendor prompts remain active unless you explicitly select Bypass vendor permissions in that vendor's container review. Bypass replaces the profile restrictions for those container members only; host panes retain their profile. Parley never answers a vendor prompt, so a host team is supervised automation, not unattended: Claude runs parley commands without asking but asks before other shell commands, Codex asks when a command needs to leave its sandbox, and Agy asks before commands and has no allowlist. Only container members with approved bypass run without prompts. The grant lives only in memory and ends at the provisioning deadline, on Stop, on quit, when the requesting pane restarts, moves, changes folder or its workspace policy changes, and when the approved permission profile is edited or removed."
     public static let deadline = "The deadline bounds provisioning only: after it no new panes can be created. It does not stop or pause work already running in created panes; stopping them is always your explicit action."
     public static let stop = "Stop revokes the grant, refuses further provisioning and stops the processes of panes this session created, identified by pane id and the exact generation Parley started; they remain as stopped placeholders you can close. A pane you restarted since creation is no longer team-owned and is skipped; a pane you moved to another workspace stays owned. The requesting pane and unrelated panes are not touched. Tracked Ask or Delegate work already in flight is not cancelled; cancel it in Status Center. The recorded outcome lists exactly what was stopped, skipped or could not be stopped, with a retry."
     public static let expiry = "When provisioning authority expires or is interrupted, new panes are refused. Running panes are not stopped automatically; Stop team panes remains available for still-owned panes until you use it."
     public static let worktree = "A team worktree is one Git worktree per feature: every pane the session creates shares that folder, its branch, index and uncommitted files, while objects, refs, stashes, hooks and configuration stay shared with the whole repository through a .git directory outside the pane folder. Host panes receive no extra permission root for that shared .git directory. Container members receive a shared Git mount only after you review its exact path here; the primary checkout is not mounted. Changes to shared hooks or executable Git configuration can cause commands to run on your Mac, outside the container, during later host Git operations. Parley does not review those changes again. In both cases, whether a vendor CLI may commit, switch or push from the worktree is that vendor's own permission decision and may need its approval or fail. Creating a tree runs a single fixed git worktree add under <repository>/.worktrees/ from the base commit shown here; selecting an existing tree records no ownership. Parley never commits, merges, rebases, pushes, forces or deletes a branch, and removing a worktree is a separate explicit action."
+}
+
+/// Which handoffs belong to a team session. A session's work is every handoff
+/// with a session-created pane on either side, started after that pane was
+/// created and, once the session has ended, no later than its end. The
+/// requester's other handoffs, before or during the session, are not the
+/// session's: the Team Sessions sheet used to list every handoff the
+/// requester had ever made, which buried the session's own work.
+public struct TeamSessionWorkScope: Equatable, Sendable {
+    /// Session-created pane ids and when each was created.
+    public let memberCreation: [String: Date]
+    public let endedAt: Date?
+
+    public init(memberCreation: [String: Date], endedAt: Date?) {
+        self.memberCreation = memberCreation
+        self.endedAt = endedAt
+    }
+
+    public init(session: TeamSession) {
+        self.init(
+            memberCreation: Dictionary(session.members.map { ($0.paneID, $0.createdAt) }, uniquingKeysWith: min),
+            endedAt: session.endedAt
+        )
+    }
+
+    public static func startedAt(_ handoff: RelayHandoff) -> Date {
+        handoff.transitions.first?.occurredAt ?? handoff.updatedAt
+    }
+
+    public func includes(_ handoff: RelayHandoff) -> Bool {
+        let started = Self.startedAt(handoff)
+        if let endedAt, started > endedAt { return false }
+        return [handoff.sourcePaneID, handoff.targetPaneID].contains { paneID in
+            guard let created = memberCreation[paneID] else { return false }
+            return started >= created
+        }
+    }
+}
+
+extension TeamSession {
+    /// The handoffs that are this session's work, newest first.
+    public func work(in handoffs: [RelayHandoff]) -> [RelayHandoff] {
+        let scope = TeamSessionWorkScope(session: self)
+        return handoffs.filter(scope.includes).sorted { $0.updatedAt > $1.updatedAt }
+    }
 }
