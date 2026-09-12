@@ -594,7 +594,7 @@ public enum ParleyHelpGuide {
                     paragraphs: [
                         "When you close Status Center, Settings, Help or About, that window’s content is released. On reopening, window-local filters, search, selections and toggles return to their defaults; unapplied edits are discarded. This does not erase saved settings, workspaces or collaboration history.",
                         "If you minimise one of those windows or hide Parley, its drafts and local controls stay in memory while live refresh pauses. Restore the window or unhide the app to continue. Closing the window is different from minimising it or hiding the app.",
-                        "Closing the main window keeps app-resident panes running and coordination alive. Quit and Stop Everything end those processes; auxiliary window closure does not.",
+                        "Closing the main window keeps app-resident panes running and coordination alive. Quitting ends those processes; auxiliary window closure does not.",
                     ]
                 ),
             ]
@@ -633,7 +633,7 @@ public enum ParleyHelpGuide {
                     paragraphs: [
                         "Optional exact-command session trust is off by default, memory-only and granted or revoked by you in Review runs and trust. It matches exact argv, canonical folder and requesting pane generation, including mutable project code edited between runs. Exact argv is not a boundary around the code it executes.",
                         "The two Agent command runs choices in Settings > General also last for this app session only and reset to off on quit. Old command-run authorization files are left unread; they cannot enable either choice.",
-                        "Active session grants stay visible. Restart, move, folder or policy changes, Stop Everything and quit invalidate them; they do not survive relaunch. Revoke a grant when you want future matching requests to need review again.",
+                        "Active session grants stay visible. Restart, move, folder or policy changes and quit invalidate them; they do not survive relaunch. Revoke a grant when you want future matching requests to need review again.",
                     ]
                 ),
                 ParleyHelpSection(
@@ -652,7 +652,7 @@ public enum ParleyHelpGuide {
                     title: "Results, cancellation and recovery",
                     paragraphs: [
                         "The command has closed stdin and separate piped stdout/stderr, bounded to 30 KB each with explicit truncation. Parley returns a captured result with the approved argv/folder, output, exit status or signal and cancellation/truncation flags. Unless clean-close was selected at launch and the run qualifies, the pane becomes an ordinary interactive human Shell afterward.",
-                        "One run may be active per requester. Cancel in Review runs and trust stops the owned process group. Stop Everything and quit end tracked runs and revoke session grants; they do not turn off the persistent Settings switches.",
+                        "One run may be active per requester. Cancel in Review runs and trust stops the owned process group. Quitting ends tracked runs and revokes session grants; it does not turn off the persistent Settings switches.",
                         "The request prints a Parley Run ID on stderr. If its calling shell disconnects, the same live requesting pane generation can use parley wait with that exact ID to recover the captured result. Do not silently resend a rejected, interrupted or uncertain run. Troubleshooting has the SwiftPM-to-human-Shell test path.",
                     ],
                     commands: [
@@ -1101,8 +1101,9 @@ public enum ParleyHelpGuide {
                     title: "Quit, detach, or reset the runtime",
                     items: [
                         "Press Command-Q to quit the app. Closing the main window with its red button leaves Parley running; closing auxiliary windows releases their local content as described in Settings and appearance.",
-                        "An owned Production or Development runtime always offers Keep Running, Stop Everything, or Cancel, even when every agent is stopped or dead.",
-                        "Closing the main window keeps panes running while Parley remains open. Quit or Stop Everything ends every pane process and the app-resident coordination core.",
+                        "An owned Production or Development runtime always confirms before quitting, offering Quit Parley or Cancel, even when every agent is stopped or dead.",
+                        "There is no separate Stop Everything action. To end one pane, exit the CLI inside it (for example /exit or Control-D), use Close Pane, or restart it; a container pane can also be stopped from Status Center > Health > Containers. To end every pane, quit.",
+                        "Closing the main window keeps panes running while Parley remains open. Quitting ends every pane process and the app-resident coordination core.",
                         "If Parley cannot verify that every pane stopped, it reports the failure and keeps the app open instead of claiming shutdown succeeded.",
                     ]
                 ),

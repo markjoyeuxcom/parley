@@ -172,7 +172,7 @@ private struct CommandRunPreview: View {
             if run.state == .pending {
                 Toggle("Auto-approve this command for this session", isOn: $autoApprove)
                 if autoApprove {
-                    Text("Trust applies to this exact argv, canonical folder and requesting pane generation, including code changed between runs. It ends on restart, move, folder or policy change, revocation, Stop Everything or quit.")
+                    Text("Trust applies to this exact argv, canonical folder and requesting pane generation, including code changed between runs. It ends on restart, move, folder or policy change, revocation or quit.")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 if let error { Text(error).foregroundStyle(.red) }

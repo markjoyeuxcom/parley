@@ -101,8 +101,8 @@ public enum AgentProtocol {
       stderr reports a Parley Run ID; `parley wait <id>` recovers it only from
       the same live requesting generation. A rejected, interrupted or uncertain
       run must not be silently resubmitted. The person can Cancel in Requested
-      command runs or Status Center; Stop Everything and quit also end tracked runs
-      and revoke grants. The completed pane remains an ordinary human Shell
+      command runs or Status Center; quitting Parley also ends tracked runs
+      and revokes grants. The completed pane remains an ordinary human Shell
       unless the person chose in Settings > General to end a cleanly finished
       run's pane instead: then the worker exits after a clean result, no
       shell is opened, and Parley removes the pane once its process has
@@ -157,7 +157,7 @@ public enum AgentProtocol {
       parsed. Vendor permission prompts remain active unless the person
       explicitly approved bypass in that vendor's container settings.
       Parley never answers prompts or restarts a pane for you. The grant is memory-only and ends at the provisioning
-      deadline, on the person's Stop, on Stop Everything or quit, when this
+      deadline, on the person's Stop, on quit, when this
       pane restarts, moves, changes folder or its workspace policy changes,
       and when the approved permission profile is edited or removed. The
       deadline bounds provisioning only; it never stops running work. Only

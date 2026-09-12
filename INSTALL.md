@@ -70,8 +70,9 @@ Closing Parley's main window keeps its retained Ghostty panes and the
 app-resident coordination core alive while Parley remains running. Explicitly
 closing a pane or workspace ends those processes.
 
-Command-Q, **Stop Everything** and confirmed full quit end every pane process
-and the coordination core. A later launch restores workspace definitions;
+A confirmed full quit (Command-Q) ends every pane process and the coordination
+core; there is no separate Stop Everything action. A later launch restores
+workspace definitions;
 shells may restart and agent panes return as stopped placeholders. Parley does
 not claim that a vendor conversation survived application exit.
 

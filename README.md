@@ -59,8 +59,10 @@ application level rather than tying them to one SwiftUI view mount.
   core running while the Parley application remains open.
 - Reopening the window shows the same retained panes and processes.
 - Closing a pane or workspace explicitly ends the processes it contains.
-- **Stop Everything**, **Prepare to Uninstall** and a confirmed full application
-  quit end every pane process and the app-resident coordination core.
+- **Prepare to Uninstall** and a confirmed full application quit end every pane
+  process and the app-resident coordination core. There is no separate Stop
+  Everything action: end one pane by exiting its CLI, closing it or restarting
+  it, and end all of them by quitting.
 - After a full quit, workspace definitions and local history remain. Shell
   surfaces can be recreated on the next launch; agent panes return as stopped
   placeholders because Parley never pretends a vendor conversation survived.
@@ -410,8 +412,7 @@ pane generation. This is trust in mutable code, not a code boundary: the run
 can access your files and other panes' credentials, so cross-vendor attribution
 cannot be guaranteed while it is granted. A persistent notice exposes active
 trust; **Review runs and trust** or Status Center lets you revoke it. Restart,
-move, source-folder or workspace-policy changes, Stop Everything and quit
-invalidate grants. Nothing restores grants or execution authority from history.
+move, source-folder or workspace-policy changes and quit invalidate grants. Nothing restores grants or execution authority from history.
 
 If you would rather not review each run, **Settings > General > Agent command
 runs > Approve agent command runs automatically** (off by default) approves

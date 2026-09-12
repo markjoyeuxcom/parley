@@ -165,8 +165,14 @@ Production and a separate Development directory.
   mounted content and invalidated with it. The placeholder shown while
   released carries the same minimum frame as the content.
 - Closing a pane or workspace explicitly ends its processes.
-- Stop Everything, Prepare to Uninstall and confirmed full quit end every pane
-  process and the coordination core.
+- Prepare to Uninstall and confirmed full quit end every pane process and the
+  coordination core. There is no separate Stop Everything action: the
+  quit-time choice was removed in the 30 August 2026 native cutover, and the
+  quit dialog offers Quit Parley or Cancel only. One pane ends when the person
+  exits its CLI, closes it or restarts it; a container pane can also be stopped
+  from Status Center > Health > Containers. Help, README, INSTALL and the
+  protocol text described the removed item for two weeks; do not reintroduce
+  the name without the button.
 - On a later app launch, workspace definitions remain, shells can restart and
   agent panes are stopped placeholders. Never claim a vendor session survived.
 
@@ -279,7 +285,19 @@ delegation per target.
 
 Human Ask and Return submit only after an editable preview. A real current
 Ghostty selection may prefill it; otherwise it starts empty. Never capture
-scrollback or a whole conversation implicitly.
+scrollback or a whole conversation implicitly. The composer is inline chrome,
+not a sheet, so it requests focus when it appears and again for each new
+draft; and the app-wide keyDown focus repair (`repairNativeTerminalFocus`,
+which hands first responder back to the selected terminal on every
+non-Command keystroke) must do nothing while the composer is open or while any
+editable text view is first responder. Without that guard every keystroke into
+the composer, or into a text field such as the container review's published
+port, went to the pane behind it and the box looked dead. A human-initiated
+Ask's answer is a returned result on that handoff, never text written into the
+source pane's prompt: when it completes, Status Center opens on the exact
+handoff, found by the idempotency key the app minted, so the answer is on
+screen rather than only a Result badge. Delivering it onward is the person's
+explicit Return with its own preview.
 
 A link clicked in a pane (command-click) is opened through
 `TerminalLinkPolicy`. Pane text is written by a vendor CLI rather than by the
@@ -454,8 +472,7 @@ Per-run approval is the default. Optional exact-command session trust is native,
 off by default, memory-only, revocable and visibly disclosed. It keys exact argv,
 canonical folder and source generation and includes mutable code with human file
 and credential access. Cross-vendor attribution cannot be guaranteed while it is
-granted. Restart/move/folder/policy changes, Stop Everything and quit invalidate
-it. Do not restore execution authority from the handoff journal. Separately,
+granted. Restart/move/folder/policy changes and quit invalidate it. Do not restore execution authority from the handoff journal. Separately,
 **Settings > General > Agent command runs** holds two native session choices.
 `CommandRunAuthorizationSession` starts with both off on every app launch;
 neither preference domains, agent requests nor the retired
@@ -542,8 +559,8 @@ owned, and the lead, unrelated panes and in-flight Ask/Delegate work are
 untouched. Actual stop failures are shown with a retry. The deadline bounds
 provisioning only: expiry or interruption revokes the grant and stops nothing,
 while "Stop team panes" stays available for still-owned running panes. Lead
-restart, move, folder or policy change, an edited or removed approved profile,
-Stop Everything and quit interrupt the session. Requests, decisions and pane
+restart, move, folder or policy change, an edited or removed approved profile
+and quit interrupt the session. Requests, decisions and pane
 results are recoverable only by the same live requesting-pane generation.
 Agent-facing status names the requester as `requesterPaneID`; the `lead`
 routing alias keeps meaning the marked workspace lead, and members address

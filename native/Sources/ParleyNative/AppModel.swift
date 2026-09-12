@@ -277,6 +277,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var automaticUpdateDetail = "Automatic updates require an installed, notarized Production build."
     @Published private(set) var selectedSettingsSection = ApplicationSettingsSection.general
     @Published private(set) var settingsOpenRequestID: UUID?
+    /// One-shot request for the root view to open Status Center, set together
+    /// with `requestedStatusHandoffID` so the window opens on that handoff.
+    /// Model code cannot call `openWindow`; the view observes this instead.
+    @Published private(set) var statusCenterOpenRequestID: UUID?
     @Published private(set) var betaFeedbackBundle: BetaFeedbackBundle?
     @Published private(set) var betaFeedbackExporting = false
     @Published private(set) var diagnosticsExporting = false
@@ -823,6 +827,14 @@ final class AppModel: ObservableObject {
 
     func repairNativeTerminalFocus(for event: NSEvent) {
         guard event.type == .keyDown, let window = event.window else { return }
+        // This repair runs on every non-Command keystroke, and it exists so a
+        // terminal that lost first responder to a stray click gets it back. It
+        // must never take keystrokes away from text the person is deliberately
+        // editing: with the handoff composer open, or with any editable text
+        // view as first responder (a SwiftUI TextEditor or a TextField's field
+        // editor), the box looked dead because each key handed focus straight
+        // back to the pane behind it.
+        guard handoffComposerDraft == nil, !(window.firstResponder is NSTextView) else { return }
         _ = ghosttyRegistry.repairFocusIfNeeded(
             in: window,
             modifierFlags: event.modifierFlags
@@ -7046,11 +7058,28 @@ final class AppModel: ObservableObject {
                 guard response.status == 200 else {
                     throw RelayUIError.message(response.text)
                 }
+                // The answer is durable by now, but a person who asked from this
+                // pane saw nothing: it was only a Result badge and an unread
+                // count. Reveal the exact completed handoff, found by the key
+                // this app minted, so the answer is on screen when it arrives.
+                self?.revealCompletedUIAsk(idempotencyKey: idempotencyKey)
             } catch {
                 self?.refreshStatusCenterQuietly()
                 NSAlert(error: error).runModal()
             }
         }
+    }
+
+    /// Opens Status Center on the Ask this app just launched, identified by the
+    /// idempotency key it minted rather than by guessing at the newest record.
+    /// Nothing is delivered into the source pane: an agent's prompt is never
+    /// written to unrequested. Delivering the answer onward stays an explicit
+    /// person action with its own editable preview.
+    private func revealCompletedUIAsk(idempotencyKey: String) {
+        let history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        guard let handoff = history.first(where: { $0.idempotencyKey == idempotencyKey && $0.kind == .ask }) else { return }
+        guard openAttentionNavigation(.handoff(handoff.id)) else { return }
+        statusCenterOpenRequestID = UUID()
     }
 
     private static func paletteSubject(_ text: String) -> String {

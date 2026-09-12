@@ -560,14 +560,14 @@ private func checkRuntimeTerminationChoiceSurvivesDeadAgents() throws {
             runtime: production,
             controllerAvailable: true
         ),
-        "Production hid Stop Everything when no live agent remained"
+        "Production skipped the quit confirmation when no live agent remained"
     )
     try expect(
         RuntimeTerminationPolicy.shouldOfferChoice(
             runtime: development,
             controllerAvailable: true
         ),
-        "Development hid Stop Everything when every agent was dead"
+        "Development skipped the quit confirmation when every agent was dead"
     )
     try expect(
         !RuntimeTerminationPolicy.shouldOfferChoice(
