@@ -134,12 +134,16 @@ Production and a separate Development directory.
   publishes the pane list once per run-loop turn with no relay fetch or
   layout work, because no view renders titles today.
 - `GhosttyPaneRegistry` retains views by pane id across SwiftUI remounts and
-  main-window hiding. `NativeTerminalHost` hosts that surface in a
-  `TerminalHostView` rather than being it, so a pane whose surface was briefly
-  unavailable — a pane list not yet published during a restore — is attached on
-  a later update instead of showing its error for the life of the view. Only a
-  changed launch generation rebuilds the representable, so recovery cannot
-  depend on one.
+  main-window hiding. `NativeTerminalHost` returns that exact retained view as
+  its representable's view. Do not wrap it in a container that adopts the
+  surface as a subview: the registry hands the same `AppTerminalView` to every
+  host that asks for the pane, SwiftUI builds a new host before dismantling the
+  old one during a layout change, and the old host then tears the surface out of
+  its new parent and hides it. v0.1.35 shipped that regression — every existing
+  pane went black when a new one opened, leaving only the newest drawing. A pane
+  whose surface was briefly unavailable therefore keeps its placeholder until
+  its launch generation changes; fixing that must not reintroduce shared-view
+  reparenting.
 - Closing/hiding the main window keeps panes and coordination alive while the
   application remains running.
 - Auxiliary windows (Status Center, Help, About, Settings) are
