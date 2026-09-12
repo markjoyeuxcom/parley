@@ -6882,8 +6882,15 @@ private func checkAgentAskSubmitsAndBlocksUntilTheTargetAnswers() throws {
     try expect(pending.sourcePaneID == "%1" && pending.targetPaneID == "%2", "consultation lost its route")
     try expect(submitted.value?.paneID == "%2" && submitted.value?.submit == true, "automatic Ask submitted to the wrong pane")
     try expect(submitted.value?.text.contains("Planner asked:") == true, "automatic Ask omitted source attribution")
-    try expect(submitted.value?.text.contains("parley answer current") == true, "target was not given the pane-correlated answer command")
-    try expect(submitted.value?.text.contains(pending.id) == false, "target was asked to copy a fragile consultation UUID")
+    // Reversed deliberately. This previously required the pane-correlated
+    // `parley answer current` and forbade naming the id, on the view that the
+    // id was fragile to copy. `current` is the fragile one: it resolves to
+    // whichever question the pane holds when the command runs, so a target that
+    // answers an expired question lands its answer on a newer one and Parley
+    // reports success. AgentProtocol.text already directs agents to the exact
+    // `parley answer <id>` a consultation supplies.
+    try expect(submitted.value?.text.contains("parley answer \(pending.id)") == true, "target was not given its exact consultation id")
+    try expect(submitted.value?.text.contains("parley answer current") == false, "target was still taught the pane-correlated form")
     let waitingHandoff = try require(broker.handoffs().first(where: { $0.id == pending.id }), "Ask created no observable handoff")
     try expect(waitingHandoff.idempotencyKey == "ask-board-1", "Ask handoff lost its idempotency key")
     try expect(waitingHandoff.kind == .ask && waitingHandoff.state == .waiting, "Ask handoff did not enter waiting state")
@@ -9970,7 +9977,7 @@ if let image = argument(named: "--container-transport-spike") {
 
 // `--only <substring>` runs the matching checks alone during local iteration.
 let onlyFilter = argument(named: "--only")?.lowercased()
-let selectedChecks = (containerPaneChecks + checks + reviewRegressionChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + auxiliaryWindowChecks + helpAuditChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
+let selectedChecks = (containerPaneChecks + checks + reviewRegressionChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + auxiliaryWindowChecks + helpAuditChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var failureCount = 0
