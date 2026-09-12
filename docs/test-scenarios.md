@@ -54,7 +54,9 @@ handoffs work. Agy reports hook state as Unknown by design.
 ## P1.3 Container pane acceptance
 
 1. Start a Claude container pane and a Codex container pane.
-2. Sign each in using its device-code or paste-code flow.
+2. Sign each in. Claude: paste-code flow. Codex: either device code (no
+   port) or, with **Published port** set to 1455 in the container review,
+   browser sign-in — the callback must complete on the Mac.
 3. Confirm protocol uptake (`parley whoami`, protocol 32) fresh and resumed.
 4. Send an Ask and a Delegate between a container pane and a host pane.
 5. Check normal permission prompts appear (unless you chose bypass — then the

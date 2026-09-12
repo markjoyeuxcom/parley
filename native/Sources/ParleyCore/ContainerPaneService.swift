@@ -108,7 +108,7 @@ public final class ContainerPaneService: @unchecked Sendable {
 
     /// Read-only host discovery plus a disposable vendor startup probe. It never
     /// pulls images, uses a host login, grants extra capabilities or contacts a model.
-    public func preview(image: String, vendor: PaneKind, legacyCodexSandbox: Bool, bypassVendorPermissions: Bool = false) throws -> ContainerConfiguration {
+    public func preview(image: String, vendor: PaneKind, legacyCodexSandbox: Bool, bypassVendorPermissions: Bool = false, publishedPort: Int? = nil) throws -> ContainerConfiguration {
         let image = image.trimmingCharacters(in: .whitespacesAndNewlines)
         guard [.codex, .claude].contains(vendor), !image.isEmpty, image.utf8.count <= 256,
               !image.hasPrefix("-"), !image.contains(where: { $0.isWhitespace || $0.isNewline }) else {
@@ -122,7 +122,8 @@ public final class ContainerPaneService: @unchecked Sendable {
         let daemon = try checked(executable, prefix + ["info", "--format", "{{.ID}}"])
         let id = try checked(executable, prefix + ["image", "inspect", "--format", "{{.Id}}", image])
         let configuration = ContainerConfiguration(dockerExecutable: executable, daemonEndpoint: endpoint, daemonID: daemon,
-            imageID: id, imageName: image, legacyCodexSandbox: legacyCodexSandbox, bypassVendorPermissions: bypassVendorPermissions)
+            imageID: id, imageName: image, legacyCodexSandbox: legacyCodexSandbox, bypassVendorPermissions: bypassVendorPermissions,
+            publishedPort: publishedPort)
         try ContainerLaunchProjection.validate(configuration)
         let probeID = UUID().uuidString.lowercased()
         let probeCID = directory.appendingPathComponent("container-\(probeID).cid")

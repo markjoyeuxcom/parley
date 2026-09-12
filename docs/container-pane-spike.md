@@ -60,10 +60,15 @@ restart is recorded as passing; vendor Resume and the detailed login-persistence
 checks remain separate acceptance items.
 No login cache or terminal history was inspected to record these results.
 
-Choose **Sign in with Device Code** inside Codex and complete it in the host
-browser. No callback port is published by the current container launch.
+Codex signs in one of two ways inside a container. **Sign in with Device Code**
+needs no port: complete it in the host browser.
 [Official OpenAI authentication guidance](https://learn.chatgpt.com/docs/auth#login-on-headless-devices)
-recommends device-code authentication when the localhost callback is blocked.
+recommends it when the localhost callback is blocked. Browser sign-in instead
+returns to `localhost:1455`, which cannot reach a container on bridge
+networking; since the reviewed **Published port** option, entering 1455 in the
+container review forwards `127.0.0.1:1455` on the Mac to the same port inside
+the container, loopback only, so the callback completes. An empty port publishes
+nothing, which is what every earlier container record decodes to.
 The deprecated Landlock mode remains an explicit compatibility choice for the
 tested image. A default sandbox path that works without this setting is a
 follow-up because the vendor plans to remove the legacy option.

@@ -2013,9 +2013,11 @@ private struct PaneRow: View {
                         .truncationMode(.middle)
                         .layoutPriority(1)
                     if let configuration = pane.containerConfiguration {
-                        Text(configuration.bypassVendorPermissions ? "CONTAINER · BYPASS" : "CONTAINER")
+                        Text([configuration.bypassVendorPermissions ? "CONTAINER · BYPASS" : "CONTAINER",
+                              configuration.publishedPort.map { "PORT \($0)" }].compactMap { $0 }.joined(separator: " · "))
                             .font(ChromeFont.meta).foregroundStyle(configuration.bypassVendorPermissions ? Color.orange : Color.secondary)
-                            .help(configuration.permissionModeLabel)
+                            .help(configuration.permissionModeLabel
+                                + (configuration.publishedPort.map { " · port \($0) forwarded from this Mac’s loopback" } ?? ""))
                     }
                     if pane.isWorkspaceLead {
                         Text("Lead")
