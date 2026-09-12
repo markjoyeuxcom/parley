@@ -3792,6 +3792,30 @@ public final class RelayBroker: @unchecked Sendable {
         return (sender, target)
     }
 
+    /// Explains a consultation that no longer exists to the pane that was its
+    /// target. A target that finished slow work and answered deserves to know
+    /// the question closed, rather than a bare "unknown consultation" that
+    /// reads like a fault and invites a retry that can never be accepted.
+    ///
+    /// Only the pane that was asked learns anything. Any other caller keeps the
+    /// bare refusal, and a handoff Parley no longer retains is not guessed at.
+    private func retiredConsultationDetailLocked(_ consultationID: String, senderID: String) -> String? {
+        guard let handoff = handoffRecords[consultationID],
+              handoff.kind == .ask,
+              handoff.targetPaneID == senderID else { return nil }
+        let closedAt = handoff.transitions.last { $0.state == handoff.state }?.occurredAt ?? handoff.updatedAt
+        let formatter = ISO8601DateFormatter()
+        let reason = switch handoff.state {
+        case .failed: "timed out before an answer arrived"
+        case .cancelled: "was cancelled"
+        case .interrupted: "was interrupted"
+        case .completed: "already has an answer"
+        default: "is no longer awaiting an answer"
+        }
+        return "This consultation \(reason) at \(formatter.string(from: closedAt)). "
+            + "Your answer was not accepted or delivered, and retrying will not reopen it."
+    }
+
     private func acceptAnswer(
         from senderID: String,
         presentedCredential: String?,
@@ -3807,8 +3831,9 @@ public final class RelayBroker: @unchecked Sendable {
 
         consultationCondition.lock()
         guard var record = consultationRecords[consultationID] else {
+            let detail = retiredConsultationDetailLocked(consultationID, senderID: senderID)
             consultationCondition.unlock()
-            return RelayTextResponse(status: 404, text: "unknown consultation")
+            return RelayTextResponse(status: 404, text: detail ?? "unknown consultation")
         }
         guard record.consultation.targetPaneID == senderID else {
             consultationCondition.unlock()
@@ -3965,11 +3990,11 @@ public final class RelayBroker: @unchecked Sendable {
         \(consultation.question)
 
         Return the answer to the waiting \(consultation.sourceName) turn by running:
-        parley answer current "your answer"
+        parley answer \(consultation.id) "your answer"
 
         If Parley's instructions are missing, run `parley protocol` (or `"$PARLEY_COMMAND" protocol` when PATH changed). Vendor tool approval still applies.
 
-        For a multiline answer, pipe the text to `parley answer current`. Parley identifies the waiting question from this pane's credential, so do not copy or invent an id. Do not only print the answer in this pane; the requester is blocked waiting for that command.
+        For a multiline answer, pipe the text to `parley answer \(consultation.id)`. That id names this exact question; use it verbatim. Do not substitute `current`, which resolves to whichever question this pane holds when the command runs and may by then be a later one. Do not only print the answer in this pane; the requester is blocked waiting for that command.
         """
     }
 

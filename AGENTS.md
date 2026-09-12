@@ -237,7 +237,15 @@ a different source identity.
   records one authenticated, content-free allowlisted lifecycle fact.
 - `parley paste <target> <text>` places attributed text without Enter.
 - `parley ask <target> <question>` submits and blocks for one exact answer.
-- `parley answer <id> <answer>` completes that waiting consultation.
+- `parley answer <id> <answer>` completes that waiting consultation. A
+  delivered question names its own consultation id and says to use it verbatim.
+  `current` still resolves a pane's single waiting consultation and stays in the
+  protocol, but it must not be what a question teaches: it resolves to whichever
+  question the pane holds when the command runs, so a target that finishes an
+  expired question's work and answers with `current` lands that answer on a
+  newer question, and Parley reports success. A late answer naming a
+  consultation that has closed is refused with the state it reached and when —
+  to the pane that was asked, and to nobody else.
 - `parley delegate <target> <task>` creates tracked asynchronous work.
 - `parley progress <id|current> <note>` lets the exact delegated target replace
   one bounded, control-stripped, agent-declared progress note. It is never a
