@@ -550,7 +550,12 @@ never restarts a pane on an agent's behalf
 and never restores team authority from any journal. Sessions appear as native
 activity records for visibility only. The Team Sessions sheet is the
 monitoring surface and never blocks provisioning; any other sheet or modal
-does, and creation never steals focus from a visible window.
+does, and creation never steals focus from a visible window. Its Work list is
+`TeamSessionWorkScope`: only handoffs with a session-created pane on either
+side, started after that pane was created and not after the session ended.
+The requester's other handoffs are not the session's; listing every handoff
+the requester had ever made buried the session's own work in every v0.1.42
+acceptance run.
 
 Ownership is pane id plus created generation. Stop revokes the grant and stops
 only still-owned processes, leaving them as stopped placeholders; a pane the
@@ -1015,7 +1020,17 @@ pane with a mismatched stamp shows **RESTART FOR PROTOCOL**. UI remounting canno
 alter an existing model context.
 
 - Claude Code appends the protocol with `--append-system-prompt` and receives
-  generated lifecycle hooks through an additional `--settings` file.
+  generated lifecycle hooks through an additional `--settings` file. When the
+  profile allows shell execution that file also carries `permissions.allow`
+  rules for Parley's own command (`Bash(parley:*)` and the runtime-local shim
+  path), the counterpart of Copilot's `shell(parley)`, so protocol commands do
+  not prompt while every other shell command keeps Claude's prompt; a profile
+  that asks before shell commands keeps asking for `parley` too. A host team
+  is therefore supervised automation: Codex asks on sandbox escalation, Agy
+  asks before commands and has no allowlist (only `--dangerously-skip-permissions`,
+  which invariant 3 forbids on the host), and only container members with
+  approved bypass run unattended. Help, the protocol and the team approval
+  say so.
 - Codex receives the protocol through `developer_instructions` and generated
   lifecycle hooks through fixed inline `-c` values.
 - Agy is passed generated `agent-protocol/AGENTS.md` through `--add-dir`.

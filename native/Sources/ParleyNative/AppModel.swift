@@ -3045,6 +3045,48 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Closes the stopped placeholders this session created, each named in one
+    /// confirmation. Ownership is re-read from the live workbench after the
+    /// confirmation, so a pane the person restarted meanwhile is skipped and
+    /// reported rather than closed, and the last pane of a workspace stays.
+    func closeStoppedTeamPanes(_ session: TeamSession) {
+        let candidates = session.stoppedPlaceholders(in: panes)
+        guard !candidates.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = "Close \(candidates.count) stopped team pane\(candidates.count == 1 ? "" : "s")?"
+        alert.informativeText = candidates.map { "• \($0.displayName)" }.joined(separator: "\n")
+            + "\n\nThese are stopped placeholders this session created. Closing removes them from the workspace. Nothing running is touched, and a pane you restarted since is skipped."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Close Stopped Panes")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        performAfterContainerStops(candidates) { [self] in
+            guard let controller else { return }
+            var skipped: [String] = []
+            for pane in candidates {
+                let live = try controller.listPanes()
+                guard session.stoppedPlaceholders(in: live).contains(where: { $0.id == pane.id }) else {
+                    skipped.append("\(pane.displayName) (no longer a stopped placeholder of this session)")
+                    continue
+                }
+                guard live.filter({ $0.workspaceID == pane.workspaceID }).count > 1 else {
+                    skipped.append("\(pane.displayName) (last pane in its workspace)")
+                    continue
+                }
+                try controller.closePane(pane.id)
+                if focusCanvasPaneID == pane.id { focusCanvasPaneID = nil }
+            }
+            try refresh()
+            if !skipped.isEmpty {
+                let note = NSAlert()
+                note.messageText = "Some panes were not closed"
+                note.informativeText = skipped.joined(separator: "\n")
+                note.alertStyle = .informational
+                note.runModal()
+            }
+        }
+    }
+
     /// Executes the pure stop plan against the workbench and records exactly
     /// what happened per owned generation. Process state and recording
     /// failure are kept distinct: a pane that stopped but could not be

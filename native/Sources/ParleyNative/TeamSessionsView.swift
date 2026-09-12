@@ -334,19 +334,18 @@ private struct TeamSessionDetail: View {
     let session: TeamSession
 
     private var participantIDs: Set<String> { Set(session.members.map(\.paneID) + [session.source.id]) }
+    /// Only handoffs with a session-created pane on either side, made while
+    /// the session ran. The requester's other work is not the session's.
     private var work: [RelayHandoff] {
-        Array(model.handoffs
-            .filter { participantIDs.contains($0.sourcePaneID) || participantIDs.contains($0.targetPaneID) }
-            .sorted { $0.updatedAt > $1.updatedAt }
-            .prefix(12))
+        Array(session.work(in: model.handoffs).prefix(12))
     }
     private var decisions: [String] {
         var items: [String] = []
         for run in model.commandRuns where run.state == .pending && participantIDs.contains(run.source.id) {
             items.append("Command run requested by \(run.source.displayName): \(run.command.display)")
         }
-        for handoff in model.handoffs where handoff.attention != nil
-            && (participantIDs.contains(handoff.sourcePaneID) || participantIDs.contains(handoff.targetPaneID)) {
+        let scope = TeamSessionWorkScope(session: session)
+        for handoff in model.handoffs where handoff.attention != nil && scope.includes(handoff) {
             items.append("\(handoff.kind.label) from \(handoff.sourceName) to \(handoff.targetName) needs your review")
         }
         return items
@@ -374,6 +373,7 @@ private struct TeamSessionDetail: View {
     }
 
     private var ownedRunning: [TeamSessionMember] { session.ownedRunningMembers(in: model.panes) }
+    private var stoppedPlaceholders: [WorkbenchPane] { session.stoppedPlaceholders(in: model.panes) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -441,7 +441,7 @@ private struct TeamSessionDetail: View {
                     Text("\(handoff.kind.label): \(handoff.sourceName) → \(handoff.targetName) · \(handoff.state.rawValue)")
                         .font(.system(size: 11))
                 }
-                if work.isEmpty { Text("No handoffs between participants yet.").font(.system(size: 11)).foregroundStyle(.secondary) }
+                if work.isEmpty { Text("No handoffs with this session's panes yet. The requester's other work is not listed here.").font(.system(size: 11)).foregroundStyle(.secondary) }
             }
 
             Text("Decisions requiring you").font(.system(size: 12, weight: .semibold))
@@ -453,7 +453,7 @@ private struct TeamSessionDetail: View {
             if let outcome = session.stopOutcome {
                 Text("Last stop attempt (\(session.stopAttempts.last.map { $0.attemptedAt.formatted(date: .abbreviated, time: .shortened) + " " + (TimeZone.current.abbreviation() ?? "local") } ?? "")): \(outcome)").font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
             }
-            if session.state == .active || !ownedRunning.isEmpty {
+            if session.state == .active || !ownedRunning.isEmpty || !stoppedPlaceholders.isEmpty {
                 Divider()
                 Text(TeamSessionDisclosure.stop).font(.system(size: 11)).foregroundStyle(.secondary)
                 HStack {
@@ -463,9 +463,16 @@ private struct TeamSessionDetail: View {
                     if session.state != .active, !ownedRunning.isEmpty {
                         Button("Stop team panes… (\(ownedRunning.count) still running)", role: .destructive) { model.stopTeamPanes(session) }
                     }
+                    if !stoppedPlaceholders.isEmpty {
+                        Button("Close stopped team panes… (\(stoppedPlaceholders.count))", role: .destructive) { model.closeStoppedTeamPanes(session) }
+                    }
                 }
-                if session.state != .active {
+                if session.state != .active, !ownedRunning.isEmpty {
                     Text("Provisioning authority has ended; this only stops panes this session created and still owns.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                if !stoppedPlaceholders.isEmpty {
+                    Text("Closing removes only this session's stopped placeholders, each named in the confirmation. A pane you restarted, the requester and unrelated panes are never closed here.")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }

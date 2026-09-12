@@ -261,7 +261,18 @@ question, or the refusal is a bare error.
 - `parley team request --folder <f> --panes 2 "<objective>"` from a lead pane.
 - Approve the preview; `parley team add --vendor codex`.
 - `parley team status`; Team Sessions sheet shows membership.
+- The sheet's Work list shows only handoffs with the session's panes, made
+  while it ran. The requester's earlier or unrelated handoffs are absent.
+  **Fail:** older workspace handoffs appear under Work. v0.1.42 did this.
 - Stop team panes; confirm a pane you restarted yourself is skipped and reported.
+- An Agy host member keeps its own approval prompts; a run that needs them is
+  not unattended, by design. Container bypass exists for Claude and Codex only.
+- A Claude host member on Flexible runs `parley whoami` with no prompt, and
+  still prompts for `ls`. **Fail:** a `parley` command prompts, or an unrelated
+  command runs without one.
+- After Stop: **Close stopped team panes…** in the sheet names each stopped
+  placeholder, closes only those, and leaves the requester, unrelated panes
+  and any pane you restarted alone.
 
 ## P3.4 Managed worktrees
 

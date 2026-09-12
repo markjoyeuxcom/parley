@@ -724,8 +724,63 @@ func teamSessionWorktreeBindingChecks() throws {
     try teamExpect(legacySession.worktree == nil && legacySession.id == active.id, "a record without a worktree field failed to decode")
 }
 
+/// The Team Sessions sheet lists only the session's own work: handoffs with a
+/// session-created pane on either side, started after that pane existed and
+/// not after the session ended. The requester's other handoffs, before or
+/// during the session, are not listed. Every acceptance run on v0.1.42 saw the
+/// requester's whole history under "Work".
+private func teamSessionWorkScopeChecks() throws {
+    let directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("parley-team-work-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let requesterToken = try credentials.token(for: "%requester")
+    let memberToken = try credentials.token(for: "%member")
+    let panes = [
+        WorkbenchPane(id: "%requester", kind: .claude, customName: "Lead", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0", workspaceName: "app"),
+        WorkbenchPane(id: "%member", kind: .codex, customName: "Team Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0", workspaceName: "app"),
+        WorkbenchPane(id: "%other", kind: .agy, customName: "Old Agy", terminalTitle: "", cwd: directory.path, currentCommand: "agy", isActive: false, workspaceID: "@0", workspaceName: "app"),
+    ]
+    let broker = RelayBroker(credentials: credentials, panes: { panes }, paste: { _, _ in }, submit: { _, _ in })
+    func handoffID(_ response: RelayResponse, _ label: String) throws -> String {
+        try teamExpect(response.status < 300, "\(label) was refused: \(response.status) \(response.body.error ?? "")")
+        guard let id = response.body.handoffID else {
+            throw NSError(domain: "TeamSession", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(label) recorded no handoff id"])
+        }
+        return id
+    }
+
+    // The requester's history before the session: not the session's work.
+    let before = try handoffID(broker.handleDelegate(token: requesterToken, target: "%other", text: "Old delegation before any team."), "pre-session delegation")
+    usleep(20_000)
+    let memberCreated = Date()
+    usleep(20_000)
+    // During the session: to the member, from the member, and unrelated.
+    let toMember = try handoffID(broker.handleDelegate(token: requesterToken, target: "%member", text: "Inspect the file."), "session delegation")
+    let fromMember = try handoffID(broker.handlePaste(token: memberToken, target: "%requester", text: "Progress note back."), "member paste")
+    let unrelated = try handoffID(broker.handlePaste(token: requesterToken, target: "%other", text: "Something else entirely."), "unrelated paste")
+    usleep(20_000)
+    let endedAt = Date()
+    usleep(20_000)
+    let afterEnd = try handoffID(broker.handlePaste(token: memberToken, target: "%requester", text: "Sent after the session ended."), "post-session paste")
+
+    let handoffs = broker.handoffs()
+    func ids(_ scope: TeamSessionWorkScope) -> Set<String> { Set(handoffs.filter(scope.includes).map(\.id)) }
+
+    let live = ids(TeamSessionWorkScope(memberCreation: ["%member": memberCreated], endedAt: nil))
+    try teamExpect(live.contains(toMember) && live.contains(fromMember), "a live session dropped its own member handoffs")
+    try teamExpect(!live.contains(before), "a live session listed a requester handoff from before the session")
+    try teamExpect(!live.contains(unrelated), "a live session listed the requester's unrelated work")
+    try teamExpect(live.contains(afterEnd), "a live session hid a member handoff that is still within it")
+
+    let ended = ids(TeamSessionWorkScope(memberCreation: ["%member": memberCreated], endedAt: endedAt))
+    try teamExpect(ended == [toMember, fromMember], "an ended session listed the wrong work: \(ended)")
+    try teamExpect(ids(TeamSessionWorkScope(memberCreation: [:], endedAt: nil)).isEmpty, "a session with no panes listed work")
+}
+
 @MainActor
 let teamSessionChecks: [(String, () throws -> Void)] = [
+    ("team session work lists only handoffs with session panes while it ran", teamSessionWorkScopeChecks),
     ("container team retains ownership after activation recording failure", checkContainerTeamActivationFailure),
     ("container team grant retains reviewed execution settings", checkContainerTeamGrant),
     ("container team provisioning owns before preparation and waits before reporting", checkContainerTeamPreparation),

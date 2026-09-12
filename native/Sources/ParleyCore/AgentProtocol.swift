@@ -155,7 +155,12 @@ public enum AgentProtocol {
       `stopAttempts` lists native stop attempts with per-pane outcomes, every
       time is ISO 8601, and `detail` is display-only text that must never be
       parsed. Vendor permission prompts remain active unless the person
-      explicitly approved bypass in that vendor's container settings.
+      explicitly approved bypass in that vendor's container settings, so a
+      host team is supervised automation, not unattended: Claude runs `parley`
+      commands without asking but asks before other shell commands, Codex asks
+      when a command needs to leave its sandbox, and Agy asks before commands
+      and has no allowlist. Only container members whose bypass the person
+      approved run without prompts; plan an unattended team around those.
       Parley never answers prompts or restarts a pane for you. The grant is memory-only and ends at the provisioning
       deadline, on the person's Stop, on quit, when this
       pane restarts, moves, changes folder or its workspace policy changes,
@@ -174,7 +179,8 @@ public enum AgentProtocol {
       agent-declared note of at most \(DelegationProgressText.maximumBytes) UTF-8 bytes with
       `parley progress current "<note>"`. Progress is not proof of activity or
       completion; use `done` or `fail` for the
-      terminal outcome.
+      terminal outcome. Post progress for work that takes more than a minute
+      or so; a ten-second check needs none.
     - When delegated work reaches a terminal outcome, run
       `parley done current "<report>"` or `parley fail current "<reason>"`.
       For a substantial UTF-8 result file, use

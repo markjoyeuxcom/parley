@@ -223,7 +223,10 @@ private func reviewController(_ root: URL) throws -> WorkbenchController {
         try reviewExpect(arguments.filter { $0 == "--settings" }.count == 1,
             "Claude received more than one --settings; the later one wins and the earlier is lost")
 
-        // An allowing profile changes nothing: still the plain hooks file.
+        // An allowing profile uses the shared settings file, and that file
+        // pre-allows Parley's own command so protocol commands do not prompt;
+        // it must not pre-allow anything else, and the asking profile must
+        // not pre-allow parley either, because the person chose asking.
         let broad = PermissionProfileDefinition.builtIns.first { $0.id == "broad-workspace" }!
         let open = try PermissionProfileResolver.resolve(definition: broad, paneFolder: folder, approvedRoots: [folder])
         try reviewExpect(PermissionProfileAdapter.shellCommandRule(open) == .allow,
@@ -231,7 +234,23 @@ private func reviewController(_ root: URL) throws -> WorkbenchController {
         try reviewExpect(VendorHookAdapter.launchArguments(
             for: .claude, protocolDirectory: URL(fileURLWithPath: "/tmp/protocol"), shellCommandRule: .allow)
             .contains("/tmp/protocol/claude-hooks.json"),
-            "an allowing profile should still use the shared hooks file")
+            "an allowing profile should still use the shared settings file")
+        try reviewExpect(permissions?["allow"] == nil,
+            "a profile that asks before shell commands pre-allowed something")
+        let allowing = try JSONSerialization.jsonObject(with: Data(VendorHookAdapter.claudeSettingsJSON(
+            shimExecutable: "/tmp/parley", shellCommandRule: .allow).utf8)) as! [String: Any]
+        let allowRules = (allowing["permissions"] as? [String: [String]])?["allow"]
+        try reviewExpect(allowRules == ["Bash(parley:*)", "Bash(/tmp/parley:*)"],
+            "an allowing profile did not pre-allow exactly Parley's command: \(allowRules ?? [])")
+        let protocolDirectory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("parley-claude-settings-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: protocolDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: protocolDirectory) }
+        try VendorHookAdapter.install(in: protocolDirectory)
+        let written = try JSONSerialization.jsonObject(with: Data(contentsOf: protocolDirectory.appendingPathComponent("claude-hooks.json"))) as! [String: Any]
+        let writtenRules = (written["permissions"] as? [String: [String]])?["allow"] ?? []
+        try reviewExpect(written["hooks"] != nil && writtenRules.contains("Bash(parley:*)") && writtenRules.count == 2,
+            "the shared settings file a permissive launch names does not carry the hooks plus Parley's allow rules: \(writtenRules)")
 
         // A vendor that cannot carry the rule must still say so.
         let copilot = PermissionProfileAdapter.launchPlan(for: .copilot, profile: profile)
