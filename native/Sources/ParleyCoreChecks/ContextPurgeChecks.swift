@@ -103,8 +103,8 @@ let contextPurgeChecks: [(String, () throws -> Void)] = [
         let server = RelayHTTPServer(broker: fixture.broker, infoFile: info, controlToken: "purge-control")
         try server.start()
         defer { server.stop() }
-        let native = RelayCoreClient(infoFile: info, controlToken: "purge-control")
-        let agent = RelayCoreClient(infoFile: info, controlToken: fixture.sourceToken)
+        let native = RelayCoreClient(infoFile: info, controlToken: "purge-control", allowsTrackedRequestsOnMainThread: true)
+        let agent = RelayCoreClient(infoFile: info, controlToken: fixture.sourceToken, allowsTrackedRequestsOnMainThread: true)
         let current = deletion([(first, first.updatedAt), (second, second.updatedAt)])
         try purgeExpect(agent.deleteContextReviews(current).status == 401, "a pane credential erased saved context")
         let stale = deletion([(first, first.updatedAt), (second, second.updatedAt.addingTimeInterval(-1))])

@@ -5629,7 +5629,7 @@ private func checkHistoryRetentionCoreControlRoute() throws {
         ))
     }
 
-    let client = RelayCoreClient(infoFile: infoFile, controlToken: "retention-control")
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: "retention-control", allowsTrackedRequestsOnMainThread: true)
     let initialPolicy = try client.historyRetentionPolicy()
     try expect(initialPolicy == .defaultPolicy, "the UI could not read core-owned retention")
     let change = try client.updateHistoryRetention(maximumRecords: 100)
@@ -5642,7 +5642,7 @@ private func checkHistoryRetentionCoreControlRoute() throws {
     let persistedPolicy = try retentionStore.policy()
     try expect(persistedPolicy.maximumRecords == 100, "the core did not persist updated retention")
 
-    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control", allowsTrackedRequestsOnMainThread: true)
     var unauthorizedRejected = false
     do {
         _ = try unauthorized.updateHistoryRetention(maximumRecords: 250)
@@ -5694,7 +5694,7 @@ private func checkHumanAskAgainUsesTrackedCoreControlRoute() throws {
     try server.start()
     defer { server.stop() }
 
-    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control", allowsTrackedRequestsOnMainThread: true)
     let rejected = try unauthorized.askFromUI(
         sourcePaneID: "%source",
         targetPaneID: "%target",
@@ -5704,7 +5704,7 @@ private func checkHumanAskAgainUsesTrackedCoreControlRoute() throws {
     try expect(rejected.status == 401, "an unauthenticated UI repeated an Ask")
     try expect(submissions.values.isEmpty, "the rejected repeated Ask submitted terminal input")
 
-    let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken, allowsTrackedRequestsOnMainThread: true)
     let result = LockedAskResult()
     DispatchQueue.global(qos: .utility).async {
         do {
@@ -6232,8 +6232,8 @@ private func checkAllWorkspaceHistoryClearing() throws {
     let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: "history-control")
     try server.start()
     defer { server.stop() }
-    let client = RelayCoreClient(infoFile: infoFile, controlToken: "history-control")
-    let agent = RelayCoreClient(infoFile: infoFile, controlToken: token)
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: "history-control", allowsTrackedRequestsOnMainThread: true)
+    let agent = RelayCoreClient(infoFile: infoFile, controlToken: token, allowsTrackedRequestsOnMainThread: true)
     let denied = try agent.deleteAllHistory()
     try expect(denied.status == 401, "a pane credential could clear all history")
     try expect(broker.handoffs().count == 5, "rejected clearing changed the records")
@@ -6646,7 +6646,7 @@ private func checkLargeCoreActivityResponseIsComplete() throws {
     let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
     try server.start()
     defer { server.stop() }
-    let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken, allowsTrackedRequestsOnMainThread: true)
     let handoffs = try client.handoffs(limit: 40)
     try expect(handoffs.count == 40, "large activity response was truncated")
     try expect(handoffs.allSatisfy { $0.text.count > 4_000 }, "large activity response lost handoff bodies")
@@ -6697,7 +6697,7 @@ private func checkCoreControlSurvivesClientReattachment() throws {
     }
     try expect(eventually { broker.consultations().count == 1 }, "coordination core did not retain the consultation")
 
-    var attachedClient: RelayCoreClient? = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    var attachedClient: RelayCoreClient? = RelayCoreClient(infoFile: infoFile, controlToken: controlToken, allowsTrackedRequestsOnMainThread: true)
     try "unix:/private/tmp/parley-untrusted-redirect.sock".write(to: infoFile, atomically: true, encoding: .utf8)
     try expect(attachedClient?.isHealthy() == true, "editable locator redirected the native client")
     let attachedCount = try attachedClient?.consultations().count
@@ -6706,7 +6706,7 @@ private func checkCoreControlSurvivesClientReattachment() throws {
     try expect(attachedHandoffs?.count == 1 && attachedHandoffs?.first?.state == .waiting, "the first UI client could not inspect handoff state")
     attachedClient = nil
 
-    let reattachedClient = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let reattachedClient = RelayCoreClient(infoFile: infoFile, controlToken: controlToken, allowsTrackedRequestsOnMainThread: true)
     let pending = try require(try reattachedClient.consultations().first, "a reattached UI lost the active consultation")
     let reattachedHandoff = try require(try reattachedClient.handoffs().first, "a reattached UI lost the active handoff")
     try expect(reattachedHandoff.id == pending.id, "consultation and handoff identities diverged after UI reattachment")
@@ -6724,7 +6724,7 @@ private func checkCoreControlSurvivesClientReattachment() throws {
     try expect(recentActivityIDs == [activity.id], "reattached UI could not read operational activity")
     var unauthorizedActivityWasRejected = false
     do {
-        _ = try RelayCoreClient(infoFile: infoFile, controlToken: "not-the-control-token").recordActivity(
+        _ = try RelayCoreClient(infoFile: infoFile, controlToken: "not-the-control-token", allowsTrackedRequestsOnMainThread: true).recordActivity(
             RelayActivityEventRequest(
                 kind: .workspaceCreated,
                 workspaceID: "@9",
@@ -6750,7 +6750,7 @@ private func checkCoreControlSurvivesClientReattachment() throws {
     try expect(unread.transitions.suffix(2).allSatisfy { $0.origin == .human }, "manual UI return was not recorded as human intervention")
     let unreadHandoffs = try reattachedClient.unreadHandoffs()
     try expect(unreadHandoffs.map(\.id) == [pending.id], "the unread endpoint omitted the returned Ask")
-    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "not-the-control-token")
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "not-the-control-token", allowsTrackedRequestsOnMainThread: true)
     let unauthorizedRead = try unauthorized.markHandoffRead(pending.id)
     try expect(unauthorizedRead.status == 401, "an unauthenticated UI marked a result read")
     let stillUnread = try reattachedClient.handoffs().first(where: { $0.id == pending.id })?.hasUnreadResult
@@ -7289,7 +7289,7 @@ private func checkHumanAskManyCoreControlRoute() throws {
     try server.start()
     defer { server.stop() }
 
-    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control", allowsTrackedRequestsOnMainThread: true)
     do {
         _ = try unauthorized.askManyFromUI(
             sourcePaneID: "%1",
@@ -7303,7 +7303,7 @@ private func checkHumanAskManyCoreControlRoute() throws {
     }
     try expect(submissions.values.isEmpty, "the rejected UI comparison submitted terminal input")
 
-    let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken, allowsTrackedRequestsOnMainThread: true)
     let result = LockedAskManyUIResult()
     DispatchQueue.global(qos: .utility).async {
         do {
@@ -7643,7 +7643,7 @@ private func checkReviewedBusyQueueRequiresExplicitHumanSend() throws {
     let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: "busy-control")
     try server.start()
     defer { server.stop() }
-    let client = RelayCoreClient(infoFile: infoFile, controlToken: "busy-control")
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: "busy-control", allowsTrackedRequestsOnMainThread: true)
     let clientDraft = try client.enqueueReviewedBusyDraft(ReviewedBusyDraftCreateRequest(
         sourcePaneID: source.id,
         targetPaneID: target.id,
@@ -7652,7 +7652,7 @@ private func checkReviewedBusyQueueRequiresExplicitHumanSend() throws {
     let clientDrafts = try client.reviewedBusyDrafts()
     try expect(clientDrafts.map(\.id) == [clientDraft.id], "the authenticated UI could not reattach to the durable busy queue")
 
-    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control", allowsTrackedRequestsOnMainThread: true)
     do {
         _ = try unauthorized.reviewedBusyDrafts()
         throw CheckFailure(description: "an unauthenticated client read reviewed busy text")
@@ -8264,7 +8264,7 @@ private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate
     let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
     try server.start()
     defer { server.stop() }
-    let control = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let control = RelayCoreClient(infoFile: infoFile, controlToken: controlToken, allowsTrackedRequestsOnMainThread: true)
 
     let staged = broker.handleContextDraft(
         token: claudeToken,
@@ -8976,7 +8976,7 @@ private func checkTrustedContextCaptureExtendsAgentDraftWithoutTrustingApproval(
     let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
     try server.start()
     defer { server.stop() }
-    let control = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let control = RelayCoreClient(infoFile: infoFile, controlToken: controlToken, allowsTrackedRequestsOnMainThread: true)
     let staged = broker.handleContextDraft(
         token: sourceToken,
         name: "Trust boundary",
@@ -9097,7 +9097,7 @@ private func checkContextReviewTransportBoundsAndEscaping() throws {
     let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
     try server.start()
     defer { server.stop() }
-    let control = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let control = RelayCoreClient(infoFile: infoFile, controlToken: controlToken, allowsTrackedRequestsOnMainThread: true)
 
     let escapeHeavyText = String(repeating: "\\\"", count: 21_000)
     let staged = broker.handleContextDraft(

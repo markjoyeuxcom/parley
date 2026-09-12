@@ -482,6 +482,90 @@ func movedPaneLeavesSourceActiveChecks() throws {
     try pathExpect(try controller.listWorkspaces().first(where: \.isActive)?.workspaceID == source.workspaceID, "the move changed which workspace is on screen")
 }
 
+/// A UI control request that may wait on the core for minutes must never run
+/// on the main thread: the core delivers into Ghostty through
+/// DispatchQueue.main.sync, so a main thread parked in recv is a deadlock.
+/// v0.1.40 froze on a context-pack Ask for exactly this reason. The client
+/// refuses such a call before touching the socket, so the failure is an alert
+/// rather than a force-quit; the same call off the main thread reaches the
+/// socket, and a short read on the main thread is still allowed.
+func trackedRequestRefusedOnMainThreadChecks() throws {
+    try pathExpect(Thread.isMainThread, "this check only means something on the main thread")
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("parley-main-thread-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    // No core is listening on this socket: a request that reaches it fails to
+    // connect, which is how the two halves below are told apart.
+    let client = RelayCoreClient(infoFile: root.appendingPathComponent("relay.json"), controlToken: "main-thread-control")
+    func tracked() throws -> RelayTextResponse {
+        try client.askFromUI(sourcePaneID: "pane-a", targetPaneID: "pane-b", text: "hello", idempotencyKey: "main-thread-check-0001")
+    }
+
+    var onMain: Error?
+    do { _ = try tracked() } catch { onMain = error }
+    guard case RelayCoreError.mainThreadBlockingRequest? = onMain else {
+        throw NSError(domain: "CallbackHotPath", code: 1, userInfo: [NSLocalizedDescriptionKey:
+            "a tracked request on the main thread was not refused: \(onMain.map { String(describing: $0) } ?? "it returned")"])
+    }
+
+    var offMain: Error?
+    let group = DispatchGroup()
+    group.enter()
+    DispatchQueue.global(qos: .userInitiated).async {
+        defer { group.leave() }
+        do { _ = try tracked() } catch { offMain = error }
+    }
+    try pathExpect(group.wait(timeout: .now() + 10) == .success, "the off-main request did not return")
+    guard let offMain else {
+        throw NSError(domain: "CallbackHotPath", code: 1, userInfo: [NSLocalizedDescriptionKey: "the off-main request succeeded with no core listening"])
+    }
+    if case RelayCoreError.mainThreadBlockingRequest = offMain {
+        throw NSError(domain: "CallbackHotPath", code: 1, userInfo: [NSLocalizedDescriptionKey: "the guard refused a request that was already off the main thread"])
+    }
+
+    // The refresh tick reads through this client on the main thread with the
+    // short default timeout; that must still reach the socket.
+    var shortRead: Error?
+    do { _ = try client.consultations() } catch { shortRead = error }
+    if case RelayCoreError.mainThreadBlockingRequest? = shortRead {
+        throw NSError(domain: "CallbackHotPath", code: 1, userInfo: [NSLocalizedDescriptionKey: "a short main-thread read was refused as if it were tracked"])
+    }
+}
+
+/// A routing role is unique per workspace and refused, not silently
+/// replaced, when a second pane in the same workspace asks for it. Another
+/// workspace may use the same role.
+func paneRoleUniquenessChecks() throws {
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("parley-role-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let project = root.appendingPathComponent("project")
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    let controller = try WorkbenchController(applicationDirectory: root.appendingPathComponent("runtime"),
+        environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"])
+    let workspace = try controller.createWorkspace(folder: project.path)
+    let first = try controller.createPane(kind: .claude, cwd: project.path)
+    let second = try controller.createPane(kind: .codex, cwd: project.path)
+    try controller.setPaneRole("reviewer", paneID: first.id, workspaceID: workspace.workspaceID)
+
+    var refusal: String?
+    do {
+        try controller.setPaneRole("reviewer", paneID: second.id, workspaceID: workspace.workspaceID)
+    } catch {
+        refusal = error.localizedDescription
+    }
+    let refusalText = try pathRequire(refusal, "a second pane in the same workspace was given @reviewer without a refusal")
+    try pathExpect(refusalText.contains("already assigned"), "the refusal does not say the role is taken: \(refusalText)")
+    let panes = try controller.listPanes()
+    try pathExpect(panes.first { $0.id == first.id }?.role == "reviewer", "the refusal removed the role from the pane that held it")
+    try pathExpect(panes.first { $0.id == second.id }?.role == nil, "the refused role was recorded on the second pane anyway")
+
+    // The same role in another workspace is a different namespace.
+    let other = try controller.createWorkspace(folder: project.path)
+    let elsewhere = try controller.createPane(kind: .agy, cwd: project.path)
+    try controller.setPaneRole("reviewer", paneID: elsewhere.id, workspaceID: other.workspaceID)
+    try pathExpect(try controller.listPanes().first { $0.id == elsewhere.id }?.role == "reviewer", "another workspace could not reuse the role")
+}
+
 private func pathRequire<T>(_ value: T?, _ message: String) throws -> T {
     guard let value else { throw NSError(domain: "CallbackHotPath", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     return value
@@ -613,6 +697,8 @@ let callbackHotPathChecks: [(String, () throws -> Void)] = [
     ("activity journal restores the committed boundary and repairs uncertain tails before any further append", activityJournalFaultRecoveryChecks),
     ("handoff journal restores the committed boundary and repairs uncertain tails before any further append", handoffJournalFaultRecoveryChecks),
     ("moving the active pane leaves the source workspace with an active pane", movedPaneLeavesSourceActiveChecks),
+    ("a routing role is refused for a second pane in the same workspace", paneRoleUniquenessChecks),
+    ("a tracked core request is refused on the main thread and allowed off it", trackedRequestRefusedOnMainThreadChecks),
     ("activity journal never resurrects pruned history when retention grows", activityJournalRetentionChecks),
     ("activity journal surfaces and clears compaction failures after a durable append", activityJournalMaintenanceErrorChecks),
     ("task manager sampling coordinator never overlaps, drops or publishes stale samples", taskManagerSamplingCoordinatorChecks),

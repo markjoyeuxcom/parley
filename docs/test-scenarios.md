@@ -172,6 +172,11 @@ question, or the refusal is a bare error.
 - Capture a File, a Git Diff and a Selection into a Context Pack.
 - An agent stages a draft — it is labelled agent-provided and unapproved.
 - Approve a pack and deliver it; the header wording changes appropriately.
+- **Ask with Context** on an agent-staged draft, and **Approve and Ask** on an
+  agent's context Ask: the sheet closes at once, the target pane receives the
+  pack, and the app stays responsive the whole time.
+  **Fail:** Parley stops responding after confirming. v0.1.40 froze here until
+  it was force-quit.
 - Discard a draft; delete a saved context record.
 - A `done --file` result: open **Show returned file**.
 

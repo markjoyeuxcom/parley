@@ -131,8 +131,8 @@ func checkRequestChangesIsOneLinkedDelegateChild() throws {
     let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
     try server.start()
     defer { server.stop() }
-    let control = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
-    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control")
+    let control = RelayCoreClient(infoFile: infoFile, controlToken: controlToken, allowsTrackedRequestsOnMainThread: true)
+    let unauthorized = RelayCoreClient(infoFile: infoFile, controlToken: "wrong-control", allowsTrackedRequestsOnMainThread: true)
 
     // Missing parent: refused before anything is created.
     let missing = broker.handleDelegate(

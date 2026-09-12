@@ -99,7 +99,7 @@ func refreshTickCostChecks() throws {
     let server = RelayHTTPServer(broker: broker, infoFile: infoFile, controlToken: controlToken)
     try server.start()
     defer { server.stop() }
-    let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
+    let client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken, allowsTrackedRequestsOnMainThread: true)
 
     func milliseconds(_ iterations: Int, _ work: () throws -> Void) throws -> Double {
         try work() // warm caches and the socket path once
