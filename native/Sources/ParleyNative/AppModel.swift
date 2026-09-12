@@ -5270,11 +5270,14 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Approves an agent's context Ask, or sends a person-reviewed draft
-    /// directly, off the main actor. Either request returns only after the
-    /// core has delivered into the target pane, and that delivery hops to the
-    /// main thread, so the caller must not be standing on it. The client
-    /// refuses a tracked request from the main thread for the same reason.
+    /// Approves an agent's context Ask, or sends a person-reviewed draft as a
+    /// correlated Ask, off the main actor. Either request returns only after
+    /// the core has delivered into the target pane (and, for the person's own
+    /// Ask, after the answer arrives), and that delivery hops to the main
+    /// thread, so the caller must not be standing on it. The client refuses a
+    /// tracked request from the main thread for the same reason. The person's
+    /// Ask is revealed in Status Center by the key minted here, exactly like
+    /// the toolbar Ask.
     private func launchTrackedContextSend(
         relayClient: RelayCoreClient,
         approve: Bool,
@@ -5283,6 +5286,7 @@ final class AppModel: ObservableObject {
         pack: ContextPack,
         target: WorkbenchPane
     ) {
+        let idempotencyKey = UUID().uuidString.lowercased()
         Task { [weak self] in
             do {
                 let response = try await Task.detached(priority: .userInitiated) {
@@ -5298,7 +5302,8 @@ final class AppModel: ObservableObject {
                         reviewID: reviewID,
                         expectedUpdatedAt: expectedUpdatedAt,
                         pack: pack,
-                        targetPaneID: target.id
+                        targetPaneID: target.id,
+                        idempotencyKey: idempotencyKey
                     )
                 }.value
                 self?.refreshStatusCenterQuietly()
@@ -5313,7 +5318,11 @@ final class AppModel: ObservableObject {
                     alert.runModal()
                 }
                 try? self?.refresh()
-                self?.terminalHandle.focus()
+                if approve {
+                    self?.terminalHandle.focus()
+                } else {
+                    self?.revealCompletedUIAsk(idempotencyKey: idempotencyKey)
+                }
             } catch {
                 self?.refreshStatusCenterQuietly()
                 NSAlert(error: error).runModal()
@@ -5974,17 +5983,29 @@ final class AppModel: ObservableObject {
         field.placeholderString = "reviewer"
         field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
         alert.accessoryView = field
+        alert.window.initialFirstResponder = field
         alert.addButton(withTitle: "Set Role")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        field.validateEditing()
         var role = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if role.hasPrefix("@") { role.removeFirst() }
-        guard !role.isEmpty else { return }
-        perform {
-            guard let controller else { return }
-            try controller.setPaneRole(role, paneID: pane.id, workspaceID: pane.workspaceID)
-            try refresh()
-            terminalHandle.focus()
+        // Every outcome is visible. An empty entry says so instead of doing
+        // nothing, and the result is shown once this dialog has fully closed,
+        // so a refusal is never presented while the menu that opened the
+        // dialog is still winding down.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard !role.isEmpty else {
+                NSAlert(error: RelayUIError.message("Enter a role such as reviewer before choosing Set Role. Nothing was changed.")).runModal()
+                return
+            }
+            perform {
+                guard let controller else { return }
+                try controller.setPaneRole(role, paneID: pane.id, workspaceID: pane.workspaceID)
+                try refresh()
+                terminalHandle.focus()
+            }
         }
     }
 
