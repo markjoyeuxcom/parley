@@ -153,7 +153,8 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
     /// grant binds that one path and nothing wider, and the same
     /// requester-containment rule applies to it.
     public func approve(id: String, revision: String, objective: String, folder: String, allowedVendors: [PaneKind],
-                        permissionProfileID: String, paneLimit: Int, hours: Int, worktree: TeamWorktreeBinding? = nil, containerConfigurations: [String: ContainerConfiguration]? = nil) throws {
+                        permissionProfileID: String, paneLimit: Int, hours: Int, worktree: TeamWorktreeBinding? = nil, containerConfigurations: [String: ContainerConfiguration]? = nil,
+                        hostApprovals: [String: PermissionApprovalHandling]? = nil) throws {
         try lock.withLock {
             guard !stopped, var session = records[id], session.state == .pending, session.revision == revision,
                   let source = currentRequester(session) else {
@@ -195,7 +196,8 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                 workspaceID: source.workspaceID, automationPolicy: source.automationPolicy, folder: canonical, allowedVendors: vendors,
                 approvedProfile: definition, approvedRoots: definition.rootMode == .exactApprovedRoots ? [canonical] : [],
                 paneLimit: paneLimit, provisioningDeadline: now.addingTimeInterval(TimeInterval(hours) * 3_600), approvedAt: now,
-                containerConfigurations: containerConfigurations)
+                containerConfigurations: containerConfigurations, hostApprovals: hostApprovals)
+            session.hostApprovals = hostApprovals
             session.objective = cleanObjective
             session.folder = canonical
             session.allowedVendors = vendors

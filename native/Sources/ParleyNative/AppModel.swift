@@ -2813,7 +2813,8 @@ final class AppModel: ObservableObject {
                 let profile = try PermissionProfileResolver.resolve(
                     definition: grant.approvedProfile,
                     paneFolder: grant.folder,
-                    approvedRoots: grant.approvedRoots
+                    approvedRoots: grant.approvedRoots,
+                    approvals: grant.approvals(for: provision.kind)
                 )
                 return try controller.createTeamPane(session: session, grant: grant, provision: provision, permissionProfile: profile)
             }, mount: { session, created in
@@ -2849,7 +2850,8 @@ final class AppModel: ObservableObject {
               let provision = coordinator.pendingProvisions().first(where: { $0.paneID == pane.id }) else {
             throw TeamSessionError.invalid("The container preparation no longer has its approved grant.")
         }
-        let profile = try PermissionProfileResolver.resolve(definition: grant.approvedProfile, paneFolder: grant.folder, approvedRoots: grant.approvedRoots)
+        let profile = try PermissionProfileResolver.resolve(definition: grant.approvedProfile, paneFolder: grant.folder, approvedRoots: grant.approvedRoots,
+            approvals: grant.approvals(for: pane.kind))
         Task {
             do {
                 let approved = try coordinator.containerPreparation(id: provision.id)
@@ -2928,13 +2930,15 @@ final class AppModel: ObservableObject {
     }
 
     func approveTeamSession(_ session: TeamSession, objective: String, folder: String, allowedVendors: [PaneKind],
-                            permissionProfileID: String, paneLimit: Int, hours: Int, containerConfigurations: [String: ContainerConfiguration]? = nil) async throws {
+                            permissionProfileID: String, paneLimit: Int, hours: Int, containerConfigurations: [String: ContainerConfiguration]? = nil,
+                            hostApprovals: [String: PermissionApprovalHandling]? = nil) async throws {
         guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
         try core.teamSessions.preflightApproval(id: session.id, revision: session.revision, objective: objective, folder: folder,
             allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours, folderExists: true)
         try await preflightHostTeam(folder: folder, allowedVendors: allowedVendors, profileID: permissionProfileID, containers: containerConfigurations)
         try core.teamSessions.approve(id: session.id, revision: session.revision, objective: objective, folder: folder,
-            allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours, containerConfigurations: containerConfigurations)
+            allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours, containerConfigurations: containerConfigurations,
+            hostApprovals: hostApprovals)
         teamSessions = core.teamSessions.sessions()
         selectedTeamSessionID = session.id
     }
@@ -2960,13 +2964,15 @@ final class AppModel: ObservableObject {
     /// was created but whose approval then failed is reported as such and
     /// stays as a Parley-created worktree the person can select or remove.
     func approveTeamSession(_ session: TeamSession, objective: String, folder: String, allowedVendors: [PaneKind],
-                            permissionProfileID: String, paneLimit: Int, hours: Int, worktree: TeamWorktreeChoice, containerConfigurations: [String: ContainerConfiguration]? = nil) async throws {
+                            permissionProfileID: String, paneLimit: Int, hours: Int, worktree: TeamWorktreeChoice, containerConfigurations: [String: ContainerConfiguration]? = nil,
+                            hostApprovals: [String: PermissionApprovalHandling]? = nil) async throws {
         guard let core = residentCore else { throw TeamSessionError.invalid("The native team session service is unavailable.") }
         let record: ManagedWorktreeRecord
         switch worktree {
         case .ordinaryFolder:
             try await approveTeamSession(session, objective: objective, folder: folder, allowedVendors: allowedVendors,
-                permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours, containerConfigurations: containerConfigurations)
+                permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours, containerConfigurations: containerConfigurations,
+                hostApprovals: hostApprovals)
             return
         case let .existing(path):
             // Authority and containment first; Git only after the approval would pass.
@@ -2982,7 +2988,7 @@ final class AppModel: ObservableObject {
             try await preflightHostTeam(folder: record.path, allowedVendors: allowedVendors, profileID: permissionProfileID, containers: containerConfigurations)
             try core.teamSessions.approve(id: session.id, revision: session.revision, objective: objective, folder: record.path,
                 allowedVendors: allowedVendors, permissionProfileID: permissionProfileID, paneLimit: paneLimit, hours: hours,
-                worktree: TeamWorktreeBinding(record: record), containerConfigurations: containerConfigurations)
+                worktree: TeamWorktreeBinding(record: record), containerConfigurations: containerConfigurations, hostApprovals: hostApprovals)
         } catch {
             teamSessions = core.teamSessions.sessions()
             if case .create = worktree {

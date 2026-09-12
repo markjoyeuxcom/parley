@@ -37,6 +37,15 @@ Breaking any of these changes the product.
    for a local container pane or a team's per-vendor container configuration.
    Only that reviewed container launch receives the fixed vendor bypass flag;
    Docker isolation and native host command-run approvals remain in force.
+   A vendor's own automatic reviewer is not a bypass: Claude's auto mode
+   (`--permission-mode auto`), Codex's auto review
+   (`-c approvals_reviewer=auto_review`) and Copilot's assisted approval
+   (`--assisted-approval`) keep the sandbox and the deny and ask rules and can
+   refuse, so the person may select **Vendor's automatic reviewer** per
+   launch or per team vendor (`PermissionApprovalHandling`,
+   `TeamSessionGrant.hostApprovals`) as an explicit, disclosed choice. Agy has
+   no reviewer, only a skip-all flag, so it always asks on the host. Skip-all
+   flags stay forbidden.
 4. **Cross-vendor first, pane-explicit.** Automatic targets are explicit agent
    panes other than the sender. Same-vendor routes require distinct panes.
    Never broadcast implicitly, target a shell through Relay/Paste/Ask, or guess

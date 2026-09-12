@@ -12,6 +12,7 @@ struct PermissionProfilePickerView: View {
     @State private var runInContainer: Bool
     @State private var bypassVendorPermissions: Bool
     @State private var containerConfiguration: ContainerConfiguration?
+    @State private var approvals: PermissionApprovalHandling
     private let existingContainer: ContainerConfiguration?
 
     init(model: AppModel, request: PanePermissionRequest) {
@@ -40,6 +41,7 @@ struct PermissionProfilePickerView: View {
             initialRoots.insert(request.folder, at: 0)
         }
         _approvedRoots = State(initialValue: initialRoots)
+        _approvals = State(initialValue: request.existingSelection?.approvals ?? .person)
     }
 
     var body: some View {
@@ -86,6 +88,7 @@ struct PermissionProfilePickerView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         } else {
                             capabilitySummary(profile)
+                            approvalsSection
                             enforcementSummary(profile)
                         }
                         rootScope(profile)
@@ -345,8 +348,49 @@ struct PermissionProfilePickerView: View {
         return try? PermissionProfileResolver.resolve(
             definition: profile,
             paneFolder: request.folder,
-            approvedRoots: profile.rootMode == .exactApprovedRoots ? approvedRoots : []
+            approvedRoots: profile.rootMode == .exactApprovedRoots ? approvedRoots : [],
+            approvals: approvals
         )
+    }
+
+    /// Who answers the vendor's prompts. A vendor's own automatic reviewer
+    /// keeps its sandbox and rules and can still refuse; it is not a bypass,
+    /// and Agy has none, so the picker is disabled there and says why.
+    private var approvalsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("APPROVALS")
+                .permissionSectionLabel()
+            Picker("Approvals", selection: $approvals) {
+                ForEach(PermissionApprovalHandling.allCases, id: \.self) { handling in
+                    Text(handling.label).tag(handling)
+                }
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+            .disabled(request.kind == .agy || (runInContainer && bypassVendorPermissions))
+            Text(approvalsCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var approvalsCaption: String {
+        if runInContainer && bypassVendorPermissions {
+            return "Container bypass answers nothing: the vendor asks no questions in that container, so this choice does not apply."
+        }
+        switch request.kind {
+        case .claude:
+            return "Vendor's reviewer means Claude's auto mode: its classifier approves routine actions and blocks irreversible, destructive or outward-aimed ones. Deny and ask rules from this profile still apply first. Not a bypass; Claude can still refuse or ask."
+        case .codex:
+            return "Vendor's reviewer means Codex auto review: a reviewer agent decides sandbox escalation requests inside the same sandbox. It grants no network or extra folders and can refuse. Not a bypass."
+        case .copilot:
+            return "Vendor's reviewer means Copilot assisted approval: its judge reviews tool permission requests. It needs Copilot's AUTO_APPROVAL feature flag; Copilot reports if that is off."
+        case .agy:
+            return "Agy has no automatic reviewer, only a skip-all-permissions flag Parley never passes on the host, so Agy always asks. To stop it asking for Parley's command, add command(parley) to the allow list in ~/.gemini/antigravity-cli/settings.json yourself."
+        case .shell:
+            return "Shell panes have no vendor prompts."
+        }
     }
 
     private var canContinue: Bool {

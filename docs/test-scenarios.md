@@ -219,6 +219,13 @@ question, or the refusal is a bare error.
   allows still runs inside the sandbox: Codex documents auto-review as "a
   reviewer swap, not a permission grant", so a network command still fails
   under a network-restricted profile. Remove that line to see Codex's prompt.
+- **Approvals → Vendor's automatic reviewer** on a Claude pane (auto mode) and
+  a Codex pane (auto review): a routine command such as `ls` runs with no
+  prompt; a destructive one such as `git push --force` is refused or asked.
+  On an Agy pane the picker is disabled and the review says Agy has no
+  reviewer. Vendor Enforcement names the mode.
+  **Fail:** a routine command still prompts, a destructive one runs silently,
+  or the pane launch carries any skip-all flag.
 - A container pane with **Bypass vendor permissions**: badge, review, Status
   Center and Team Sessions all disclose it.
 

@@ -1547,6 +1547,7 @@ public final class WorkbenchController: @unchecked Sendable {
             definition: chosen,
             paneFolder: cwd,
             approvedRoots: chosen.rootMode == .exactApprovedRoots ? (selection?.approvedRoots ?? [cwd]) : [],
+            approvals: selection?.approvals ?? .person,
             fileManager: fileManager
         )
     }
