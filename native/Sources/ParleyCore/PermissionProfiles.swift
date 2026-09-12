@@ -272,6 +272,7 @@ public struct EffectivePermissionProfile: Equatable, Sendable {
 
     public var approvedRoots: [String] { selection.approvedRoots }
     public var lifetime: PermissionProfileLifetime { selection.lifetime }
+    public var approvals: PermissionApprovalHandling { selection.approvals }
 }
 
 
@@ -327,6 +328,10 @@ public enum PermissionProfileAdapter {
             : []
         let arguments: [String]
         let detail: String
+        // The vendor's own automatic reviewer, where it has one. Every form
+        // keeps the sandbox and the deny and ask rules and can still refuse;
+        // none is a skip-all flag, which stays forbidden on the host.
+        let reviewer = profile.approvals == .vendorReviewer
 
         switch kind {
         case .shell:
@@ -334,23 +339,35 @@ public enum PermissionProfileAdapter {
             detail = "Shell panes use the person's interactive shell permissions."
         case .claude:
             let mode = switch write {
-            case .allow: "acceptEdits"
-            case .requireApproval: "default"
+            case .allow: reviewer ? "auto" : "acceptEdits"
+            case .requireApproval: reviewer ? "auto" : "default"
             case .deny: "plan"
             }
             arguments = ["--permission-mode", mode] + rootArguments
             detail = "Claude permission mode and exact additional directories are configured at launch."
+                + (reviewer
+                    ? (write == .deny
+                        ? " Plan mode leaves nothing for Claude's auto mode classifier to approve, so it is not enabled."
+                        : " Auto mode: Claude's classifier approves routine actions and blocks irreversible, destructive or outward-aimed ones; deny and ask rules still apply first.")
+                    : "")
         case .codex:
             let sandbox = write == .allow ? "workspace-write" : "read-only"
-            arguments = ["--sandbox", sandbox, "--ask-for-approval", "on-request"] + rootArguments
+            arguments = ["--sandbox", sandbox, "--ask-for-approval", "on-request"]
+                + (reviewer ? ["-c", "approvals_reviewer=auto_review"] : [])
+                + rootArguments
             detail = "Codex sandbox and approval policy are configured at launch."
+                + (reviewer ? " Auto review: Codex's reviewer agent decides escalation requests inside the same sandbox; it grants no network or extra roots and can refuse." : "")
         case .agy:
             let mode = write == .allow ? "accept-edits" : "plan"
             arguments = ["--mode", mode, "--sandbox"] + rootArguments
             detail = "Agy mode, sandbox and exact additional directories are configured at launch."
+                + (reviewer ? " Agy has no automatic reviewer, only a skip-all-permissions flag Parley never passes on the host, so Agy still asks; to stop it asking for Parley's command, add command(parley) to the allow list in ~/.gemini/antigravity-cli/settings.json yourself." : "")
         case .copilot:
-            arguments = (write == .deny ? ["--plan"] : []) + rootArguments
+            arguments = (write == .deny ? ["--plan"] : [])
+                + (reviewer ? ["--assisted-approval"] : [])
+                + rootArguments
             detail = "Copilot plan mode and exact additional directories are configured where supported."
+                + (reviewer ? " Assisted approval: Copilot's judge reviews tool permission requests; it needs Copilot's AUTO_APPROVAL feature flag, and Copilot reports if that is off." : "")
         }
 
         // Claude now carries the execution rule as a permission rule in its
@@ -390,6 +407,7 @@ public enum PermissionProfileResolver {
         definition: PermissionProfileDefinition,
         paneFolder: String,
         approvedRoots: [String] = [],
+        approvals: PermissionApprovalHandling = .person,
         fileManager: FileManager = .default
     ) throws -> EffectivePermissionProfile {
         try PermissionProfileValidator.validate(definition)
@@ -424,7 +442,8 @@ public enum PermissionProfileResolver {
             selection: PermissionProfileSelection(
                 profileID: definition.id,
                 approvedRoots: canonicalRoots,
-                lifetime: definition.defaultLifetime
+                lifetime: definition.defaultLifetime,
+                approvals: approvals
             ),
             hardBoundaries: Set(PermissionHardBoundary.allCases)
         )

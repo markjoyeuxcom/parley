@@ -349,13 +349,21 @@ public struct TeamSessionGrant: Identifiable, Codable, Equatable, Sendable {
     /// Provisioning authority ends here. Work already running is not stopped.
     public let provisioningDeadline: Date
     public let containerConfigurations: [String: ContainerConfiguration]?
+    /// Who answers vendor prompts for host members, per vendor raw value.
+    /// Chosen only in the person's approval; absent means the person does.
+    public let hostApprovals: [String: PermissionApprovalHandling]?
     public let approvedAt: Date
 
     public var permissionProfileID: String { approvedProfile.id }
 
+    public func approvals(for kind: PaneKind) -> PermissionApprovalHandling {
+        hostApprovals?[kind.rawValue] ?? .person
+    }
+
     public init(id: String, requesterPaneID: String, requesterGeneration: Int, workspaceID: String, automationPolicy: WorkspaceAutomationPolicy,
                 folder: String, allowedVendors: [PaneKind], approvedProfile: PermissionProfileDefinition, approvedRoots: [String],
-                paneLimit: Int, provisioningDeadline: Date, approvedAt: Date, containerConfigurations: [String: ContainerConfiguration]? = nil) {
+                paneLimit: Int, provisioningDeadline: Date, approvedAt: Date, containerConfigurations: [String: ContainerConfiguration]? = nil,
+                hostApprovals: [String: PermissionApprovalHandling]? = nil) {
         self.id = id
         self.requesterPaneID = requesterPaneID
         self.requesterGeneration = requesterGeneration
@@ -369,6 +377,7 @@ public struct TeamSessionGrant: Identifiable, Codable, Equatable, Sendable {
         self.provisioningDeadline = provisioningDeadline
         self.approvedAt = approvedAt
         self.containerConfigurations = containerConfigurations
+        self.hostApprovals = hostApprovals
     }
 
     public func matches(requester: WorkbenchPane) -> Bool {
@@ -658,6 +667,9 @@ public struct TeamSession: Identifiable, Codable, Equatable, Sendable {
     /// The worktree the approved folder is, when the person bound one.
     public var worktree: TeamWorktreeBinding? = nil
     public var containerConfigurations: [String: ContainerConfiguration]? = nil
+    /// Who answers vendor prompts for host members, per vendor, as approved.
+    /// Display only; the grant is the authority while the session is active.
+    public var hostApprovals: [String: PermissionApprovalHandling]? = nil
     /// Native stop attempts in order, as recorded by the app. Bounded so
     /// repeated retries never grow past the transport cap.
     public var stopAttempts: [TeamStopAttempt] = []

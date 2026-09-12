@@ -724,6 +724,42 @@ func teamSessionWorktreeBindingChecks() throws {
     try teamExpect(legacySession.worktree == nil && legacySession.id == active.id, "a record without a worktree field failed to decode")
 }
 
+/// The person's per-vendor approvals choice for host members travels in the
+/// grant and reaches each member's profile. An unchosen vendor means the
+/// person answers, and Agy never gains a skip-all flag whatever was chosen.
+private func teamSessionHostApprovalsChecks() throws {
+    let fixture = try TeamFixture()
+    defer { fixture.cleanup() }
+    let box = PaneBox(fixture.live)
+    let coordinator = fixture.coordinator { box.current() }
+    let proposal = TeamSessionProposal(objective: "Unattended review", folder: fixture.project, paneLimit: 3, hours: 2)
+    let session = try coordinator.request(token: "lead-token", proposal: proposal, idempotencyKey: "approvals-1")
+    try coordinator.approve(id: session.id, revision: session.revision, objective: "Unattended review", folder: fixture.project,
+        allowedVendors: [.codex, .claude, .agy], permissionProfileID: "flexible", paneLimit: 3, hours: 2,
+        hostApprovals: ["codex": .vendorReviewer, "agy": .vendorReviewer])
+    guard let grant = coordinator.grant(for: session.id) else {
+        throw NSError(domain: "TeamSession", code: 1, userInfo: [NSLocalizedDescriptionKey: "approval created no grant"])
+    }
+    try teamExpect(grant.approvals(for: .codex) == .vendorReviewer, "the Codex reviewer choice did not reach the grant")
+    try teamExpect(grant.approvals(for: .claude) == .person, "an unchosen vendor did not default to the person answering")
+    try teamExpect(coordinator.sessions().first { $0.id == session.id }?.hostApprovals?["codex"] == .vendorReviewer,
+        "the session record does not show the reviewer choice")
+
+    let codexProfile = try PermissionProfileResolver.resolve(definition: grant.approvedProfile, paneFolder: grant.folder,
+        approvedRoots: grant.approvedRoots, approvals: grant.approvals(for: .codex))
+    try teamExpect(PermissionProfileAdapter.launchPlan(for: .codex, profile: codexProfile).arguments.contains("approvals_reviewer=auto_review"),
+        "a Codex member built from the grant does not launch with auto review")
+    let claudeProfile = try PermissionProfileResolver.resolve(definition: grant.approvedProfile, paneFolder: grant.folder,
+        approvedRoots: grant.approvedRoots, approvals: grant.approvals(for: .claude))
+    try teamExpect(!PermissionProfileAdapter.launchPlan(for: .claude, profile: claudeProfile).arguments.contains("auto"),
+        "a Claude member the person answers for launched in auto mode")
+    let agyProfile = try PermissionProfileResolver.resolve(definition: grant.approvedProfile, paneFolder: grant.folder,
+        approvedRoots: grant.approvedRoots, approvals: grant.approvals(for: .agy))
+    let agyPlan = PermissionProfileAdapter.launchPlan(for: .agy, profile: agyProfile)
+    try teamExpect(!agyPlan.arguments.contains { $0.hasPrefix("--dangerously") } && agyPlan.detail.contains("no automatic reviewer"),
+        "an Agy member gained a skip-all flag or lost the disclosure: \(agyPlan.arguments)")
+}
+
 /// The Team Sessions sheet lists only the session's own work: handoffs with a
 /// session-created pane on either side, started after that pane existed and
 /// not after the session ended. The requester's other handoffs, before or
@@ -781,6 +817,7 @@ private func teamSessionWorkScopeChecks() throws {
 @MainActor
 let teamSessionChecks: [(String, () throws -> Void)] = [
     ("team session work lists only handoffs with session panes while it ran", teamSessionWorkScopeChecks),
+    ("team host approvals travel in the grant and reach each member's launch", teamSessionHostApprovalsChecks),
     ("container team retains ownership after activation recording failure", checkContainerTeamActivationFailure),
     ("container team grant retains reviewed execution settings", checkContainerTeamGrant),
     ("container team provisioning owns before preparation and waits before reporting", checkContainerTeamPreparation),

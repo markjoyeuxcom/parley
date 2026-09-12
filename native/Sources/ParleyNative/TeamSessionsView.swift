@@ -98,6 +98,7 @@ private struct TeamSessionApproval: View {
     @State private var vendors: Set<PaneKind>
     @State private var containerVendors: Set<PaneKind> = []
     @State private var containerConfigurations: [String: ContainerConfiguration] = [:]
+    @State private var hostApprovals: [String: PermissionApprovalHandling] = [:]
     @State private var profileID: String
     @State private var paneLimit: Int
     @State private var hours: Int
@@ -182,6 +183,43 @@ private struct TeamSessionApproval: View {
 
     private var containersReady: Bool {
         containerVendors.intersection(vendors).allSatisfy { reviewedContainers[$0.rawValue] != nil }
+    }
+
+    /// Host vendors this approval allows, in the order the vendor list shows.
+    private var hostVendors: [PaneKind] {
+        PaneKind.allCases.filter { vendors.contains($0) && !containerVendors.contains($0) }
+    }
+
+    /// Only host vendors that were reviewed here, and only the reviewer choice;
+    /// the person answering is the absent default.
+    private var reviewedHostApprovals: [String: PermissionApprovalHandling]? {
+        let chosen = hostApprovals.filter { key, handling in
+            handling == .vendorReviewer && PaneKind(rawValue: key).map { hostVendors.contains($0) && $0 != .agy } == true
+        }
+        return chosen.isEmpty ? nil : chosen
+    }
+
+    /// Who answers vendor prompts for host members. A vendor's automatic
+    /// reviewer keeps its sandbox and rules and can refuse; it is not a bypass.
+    @ViewBuilder private var hostApprovalsSection: some View {
+        if !hostVendors.isEmpty {
+            Text("Approvals for host members").font(.system(size: 11, weight: .medium))
+            ForEach(hostVendors, id: \.self) { vendor in
+                HStack(alignment: .top) {
+                    Text(vendor.label).frame(width: 70, alignment: .leading)
+                    Picker("Approvals for \(vendor.label)", selection: Binding(
+                        get: { hostApprovals[vendor.rawValue] ?? .person },
+                        set: { hostApprovals[vendor.rawValue] = $0 })) {
+                        ForEach(PermissionApprovalHandling.allCases, id: \.self) { Text($0.label).tag($0) }
+                    }
+                    .labelsHidden()
+                    .disabled(vendor == .agy)
+                }
+                .font(.system(size: 11))
+            }
+            Text("Vendor's automatic reviewer means Claude's auto mode, Codex's auto review or Copilot's assisted approval: each keeps the vendor's sandbox and rules and can still refuse, so members with it usually run without prompts but never past a deny. Agy has no reviewer and always asks. This is how an unattended host team is approved; nothing here is a skip-all flag.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder private var containerSection: some View {
@@ -289,6 +327,7 @@ private struct TeamSessionApproval: View {
                 }
             }
             containerSection
+            hostApprovalsSection
             Text("The profile applies to host panes and containers with vendor permissions enabled. Container bypass overrides its file, command and network restrictions.")
                 .font(.caption).foregroundStyle(.secondary)
             Picker("Permission profile for new panes", selection: $profileID) {
@@ -320,7 +359,8 @@ private struct TeamSessionApproval: View {
                         do {
                             try await model.approveTeamSession(session, objective: objective, folder: folder,
                                 allowedVendors: PaneKind.allCases.filter { vendors.contains($0) }, permissionProfileID: profileID,
-                                paneLimit: paneLimit, hours: hours, worktree: choice, containerConfigurations: reviewedContainers)
+                                paneLimit: paneLimit, hours: hours, worktree: choice, containerConfigurations: reviewedContainers,
+                                hostApprovals: reviewedHostApprovals)
                         } catch { self.error = error.localizedDescription }
                     }
                 }.buttonStyle(.borderedProminent).disabled(busy || worktreeChoice == nil || !containersReady)
@@ -396,6 +436,12 @@ private struct TeamSessionDetail: View {
                         Text("\(vendor): container · \(configuration.imageName) · \(configuration.permissionModeLabel)\n\(configuration.daemonEndpoint)")
                             .font(.caption).textSelection(.enabled)
                     }
+                }
+            }
+            if let approvals = session.hostApprovals, !approvals.isEmpty {
+                ForEach(approvals.keys.sorted(), id: \.self) { vendor in
+                    Text("\(vendor): host · approvals by the vendor's automatic reviewer (not a bypass; it can refuse)")
+                        .font(.caption).textSelection(.enabled)
                 }
             }
             if let binding = session.worktree {
