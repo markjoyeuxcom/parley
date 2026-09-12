@@ -42,8 +42,10 @@ For **each** of Claude, Codex, Agy, Copilot:
    The vendor's own permission prompt must appear and behave normally.
 3. Ask it `parley whoami`. Identity, vendor and protocol version are right.
 4. Ask what Parley protocol version it received. It should say 32.
-5. Stop the pane. Restart via **Resume**. Confirm the vendor's own picker
-   appears and the session continues on its terms.
+5. End the session from inside the CLI (`/exit`, or Control-D at its prompt).
+   The pane shows the process as exited; there is no Parley "stop" for a host
+   pane. Then use the pane menu's **Resume** item. Confirm the vendor's own
+   picker appears and the session continues on its terms.
 6. Repeat step 3 after resume.
 
 **Fail:** a vendor can't start, the protocol is missing after resume, or Parley
@@ -108,10 +110,16 @@ question, or the refusal is a bare error.
 - Close a pane — its process ends (check Status Center → Health).
 - Restart a pane — new launch generation, old session not claimed to survive.
 - Move a pane to another workspace — surface, scrollback and process preserved.
+  Move the **selected** pane: the source workspace stays on screen with one of
+  its remaining panes selected, and the moved pane is drawing when you switch
+  to the target.
+  **Fail:** the source shows "No pane in this workspace", the window content
+  collapses, or the move only takes effect after reselecting the workspace.
 - Zoom and unzoom a single terminal.
 - Close the main window — panes keep running; reopen — same surfaces.
-- **Stop Everything** — every pane process ends.
-- Quit with panes running — the pane-aware confirmation appears.
+- Quit with panes running — the pane-aware confirmation appears ("Quit and end
+  N agents?"); confirming ends every pane process and the coordination core.
+  There is no separate Stop Everything item: quitting is how everything stops.
 
 ## P2.2 Workspaces and folders
 
@@ -147,6 +155,14 @@ question, or the refusal is a bare error.
 
 - Select text in a pane, use Ask — the selection prefills the editable preview.
 - Send with no selection — the composer starts empty.
+- Toolbar **Ask**: the composer takes focus on open; your first keystrokes land
+  in the box without clicking it. Open a second Ask; focus returns again.
+  **Fail:** keystrokes go to the terminal behind the composer.
+- Click back into a terminal and type — the pane still takes input normally.
+  **Fail:** the focus guard has broken ordinary terminal focus.
+- Send an Ask and let the target answer: Status Center opens on that exact
+  handoff with the answer visible. Nothing is pasted into the source pane.
+  **Fail:** only a Result badge appears, or text lands in the source prompt.
 - Return a result to its source.
 - Challenge and Verify on a returned handoff — lineage is recorded.
 - Set a human verdict and note; confirm an agent cannot set one.

@@ -450,6 +450,43 @@ func handoffJournalFaultRecoveryChecks() throws {
     try pathExpect(replayD.handoffs().map(\.id) == ["handoff-9", "handoff-5", "handoff-3", "handoff-1"], "a lossy record() corrupted the replayed journal: \(replayD.handoffs().map(\.id))")
 }
 
+/// Moving the active pane out of a workspace must leave that workspace with an
+/// active pane. The document has exactly one; before this, the moved pane kept
+/// it into the target workspace, the source the person was still looking at
+/// had panes but none active, and the workbench showed "No pane in this
+/// workspace" until the workspace was reselected.
+func movedPaneLeavesSourceActiveChecks() throws {
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("parley-move-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let project = root.appendingPathComponent("project")
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    let controller = try WorkbenchController(applicationDirectory: root.appendingPathComponent("runtime"),
+        environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"])
+    let source = try controller.createWorkspace(folder: project.path)
+    let stays = try controller.createPane(kind: .claude, cwd: project.path)
+    let mover = try controller.createPane(kind: .codex, cwd: project.path)
+    let target = try controller.createWorkspace(folder: project.path)
+    try controller.selectWorkspace(source.id)
+    try controller.selectPane(mover.id)
+    try pathExpect(try controller.listPanes().first { $0.id == mover.id }?.isActive == true, "fixture could not make the moving pane active")
+
+    _ = try controller.movePane(mover.id, toWorkspaceID: target.id, activeHandoffCount: 0)
+
+    let panes = try controller.listPanes()
+    let moved = try pathRequire(panes.first { $0.id == mover.id }, "the moved pane disappeared")
+    try pathExpect(panes.contains { $0.id == stays.id && $0.workspaceID == source.workspaceID }, "the remaining pane disappeared from the source workspace")
+    try pathExpect(moved.workspaceID == target.workspaceID, "the pane did not move")
+    try pathExpect(!moved.isActive, "the moved pane stayed the active pane in a workspace the person is not looking at")
+    try pathExpect(panes.contains { $0.workspaceID == source.workspaceID && $0.isActive }, "the source workspace was left with panes but no active pane")
+    try pathExpect(panes.filter(\.isActive).count == 1, "the document has \(panes.filter(\.isActive).count) active panes; it must have exactly one")
+    try pathExpect(try controller.listWorkspaces().first(where: \.isActive)?.workspaceID == source.workspaceID, "the move changed which workspace is on screen")
+}
+
+private func pathRequire<T>(_ value: T?, _ message: String) throws -> T {
+    guard let value else { throw NSError(domain: "CallbackHotPath", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+    return value
+}
+
 func activityJournalRetentionChecks() throws {
     // Records pruned from the projection never come back when retention grows.
     let directory = URL(fileURLWithPath: "/tmp/parley-actr-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
@@ -575,6 +612,7 @@ func taskManagerSamplingCoordinatorChecks() throws {
 let callbackHotPathChecks: [(String, () throws -> Void)] = [
     ("activity journal restores the committed boundary and repairs uncertain tails before any further append", activityJournalFaultRecoveryChecks),
     ("handoff journal restores the committed boundary and repairs uncertain tails before any further append", handoffJournalFaultRecoveryChecks),
+    ("moving the active pane leaves the source workspace with an active pane", movedPaneLeavesSourceActiveChecks),
     ("activity journal never resurrects pruned history when retention grows", activityJournalRetentionChecks),
     ("activity journal surfaces and clears compaction failures after a durable append", activityJournalMaintenanceErrorChecks),
     ("task manager sampling coordinator never overlaps, drops or publishes stale samples", taskManagerSamplingCoordinatorChecks),

@@ -4,6 +4,12 @@ import SwiftUI
 
 struct HandoffComposerView: View {
     @ObservedObject var model: AppModel
+    /// The composer is inline chrome, not a sheet, so nothing takes keyboard
+    /// focus from the Ghostty pane the person was in when they chose Ask. Left
+    /// alone, their first keystrokes go to that terminal and the box looks
+    /// dead until clicked. Focus is requested when the composer appears and
+    /// again for each new draft.
+    @FocusState private var editorFocused: Bool
 
     @ViewBuilder
     var body: some View {
@@ -92,6 +98,7 @@ struct HandoffComposerView: View {
                         .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
                 }
                 .disabled(model.submittingHandoffComposer)
+                .focused($editorFocused)
                 .accessibilityLabel("Message to \(draft.targetName)")
 
                 HStack(spacing: 8) {
@@ -142,6 +149,10 @@ struct HandoffComposerView: View {
             .padding(.vertical, 9)
             .background(Color.accentColor.opacity(0.045))
             .accessibilityElement(children: .contain)
+            // Deferred one turn: the editor is not yet in the window when
+            // onAppear fires, and a focus request made before that is dropped.
+            .onAppear { DispatchQueue.main.async { editorFocused = true } }
+            .onChange(of: draft.id) { _, _ in DispatchQueue.main.async { editorFocused = true } }
         }
     }
 

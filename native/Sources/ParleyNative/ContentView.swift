@@ -42,7 +42,12 @@ struct ContentView: View {
                     paneFocusStrip
                     Divider()
                 }
+                // Every branch of `terminal` must fill: the pane split does so
+                // itself, but the "no pane" and "unavailable" placeholders only
+                // took their intrinsic height, and the whole window's content
+                // collapsed to the bottom whenever one of them showed.
                 terminal
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 Divider()
                 workbenchStatusBar
                     .sheet(item: paneChoiceRequest) { request in
@@ -101,6 +106,10 @@ struct ContentView: View {
         .onChange(of: model.settingsOpenRequestID) { _, requestID in
             guard requestID != nil else { return }
             openSettings()
+        }
+        .onChange(of: model.statusCenterOpenRequestID) { _, requestID in
+            guard requestID != nil else { return }
+            openWindow(id: "status-center")
         }
         .alert(
             "Parley needs attention",

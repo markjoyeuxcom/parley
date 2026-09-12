@@ -64,7 +64,7 @@ The lifetime boundary is explicit:
 
 - close/hide main window: keep retained panes and coordination running;
 - close pane/workspace: end its exact processes;
-- full quit, Stop Everything or Prepare to Uninstall: end all surfaces,
+- full quit or Prepare to Uninstall: end all surfaces,
   processes and coordination endpoints;
 - next app launch: retain workspace definitions, recreate shells, present agent
   panes as stopped placeholders.

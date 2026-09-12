@@ -906,9 +906,23 @@ public final class WorkbenchController: @unchecked Sendable {
                }) {
                 throw ParleyWorkbenchError.commandFailed("The target workspace already has @\(role).")
             }
+            let sourceWorkspaceID = document.panes[index].workspaceID
             document.panes[index].workspaceID = target.workspaceID
             document.panes[index].workspaceName = target.name
             document.panes[index].automationPolicy = target.automationPolicy
+            // The document has one active pane. If it was the one that just
+            // moved, the source workspace — still the one on screen, since a
+            // move keeps it open — is left with panes but none active, and the
+            // workbench shows "No pane in this workspace" until the person
+            // reselects the workspace. Hand activity to a remaining source
+            // pane instead; the policy above guarantees there is one.
+            if document.panes[index].isActive,
+               let successor = document.panes.firstIndex(where: {
+                   $0.id != paneID && $0.workspaceID == sourceWorkspaceID
+               }) {
+                document.panes[index].isActive = false
+                document.panes[successor].isActive = true
+            }
             try persistLocked()
             return document.panes[index]
         }
