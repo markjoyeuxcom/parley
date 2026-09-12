@@ -5230,35 +5230,78 @@ final class AppModel: ObservableObject {
                 detail: "\(draft.pack.parts.count) source\(draft.pack.parts.count == 1 ? "" : "s") · \(rendered.utf8.count) UTF-8 bytes · from \(source.displayName)\(isAwaitingAgent ? " · approval unblocks the waiting source pane" : "")",
                 action: isAwaitingAgent ? "Approve and Ask" : "Ask with Context"
             ) else { return }
-            if let reviewID = draft.reviewID, draft.reviewState == .awaitingReview {
+            if let reviewID = draft.reviewID {
                 guard let relayClient else {
-                    throw RelayUIError.message("The app-resident core is unavailable, so this agent request cannot be approved.")
+                    throw RelayUIError.message(isAwaitingAgent
+                        ? "The app-resident core is unavailable, so this agent request cannot be approved."
+                        : "The app-resident core is unavailable, so this agent draft cannot be sent safely.")
                 }
                 guard let expectedUpdatedAt = draft.reviewUpdatedAt else {
-                    throw RelayUIError.message("Reopen this agent review before approving its latest sources.")
+                    throw RelayUIError.message(isAwaitingAgent
+                        ? "Reopen this agent review before approving its latest sources."
+                        : "Reopen this agent review before sending its latest sources.")
                 }
-                let response = try relayClient.approveContextReview(
+                // The sheet closes now and the tracked request runs off the main
+                // actor. Both routes return only once the core has delivered into
+                // the target pane, and the core delivers through the main thread:
+                // waiting here froze v0.1.40 until it was force-quit.
+                contextPackPresented = false
+                contextPackDraft = nil
+                launchTrackedContextSend(
+                    relayClient: relayClient,
+                    approve: isAwaitingAgent,
                     reviewID: reviewID,
                     expectedUpdatedAt: expectedUpdatedAt,
                     pack: draft.pack,
-                    targetPaneID: target.id
+                    target: target
                 )
-                guard (200..<300).contains(response.status) else {
-                    throw RelayUIError.message(response.text)
-                }
-            } else if let reviewID = draft.reviewID {
-                guard let relayClient else {
-                    throw RelayUIError.message("The app-resident core is unavailable, so this agent draft cannot be sent safely.")
-                }
-                guard let expectedUpdatedAt = draft.reviewUpdatedAt else {
-                    throw RelayUIError.message("Reopen this agent review before sending its latest sources.")
-                }
-                let response = try relayClient.completeContextDraft(
-                    reviewID: reviewID,
-                    expectedUpdatedAt: expectedUpdatedAt,
-                    pack: draft.pack,
-                    targetPaneID: target.id
-                )
+                return
+            }
+            try submitOrOfferBusyQueue(
+                rendered,
+                from: source,
+                to: target,
+                preserveFormatting: true
+            )
+            contextPackPresented = false
+            contextPackDraft = nil
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    /// Approves an agent's context Ask, or sends a person-reviewed draft
+    /// directly, off the main actor. Either request returns only after the
+    /// core has delivered into the target pane, and that delivery hops to the
+    /// main thread, so the caller must not be standing on it. The client
+    /// refuses a tracked request from the main thread for the same reason.
+    private func launchTrackedContextSend(
+        relayClient: RelayCoreClient,
+        approve: Bool,
+        reviewID: String,
+        expectedUpdatedAt: Date,
+        pack: ContextPack,
+        target: WorkbenchPane
+    ) {
+        Task { [weak self] in
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    if approve {
+                        return try relayClient.approveContextReview(
+                            reviewID: reviewID,
+                            expectedUpdatedAt: expectedUpdatedAt,
+                            pack: pack,
+                            targetPaneID: target.id
+                        )
+                    }
+                    return try relayClient.completeContextDraft(
+                        reviewID: reviewID,
+                        expectedUpdatedAt: expectedUpdatedAt,
+                        pack: pack,
+                        targetPaneID: target.id
+                    )
+                }.value
+                self?.refreshStatusCenterQuietly()
                 guard (200..<300).contains(response.status) else {
                     throw RelayUIError.message(response.text)
                 }
@@ -5269,18 +5312,12 @@ final class AppModel: ObservableObject {
                     alert.alertStyle = .warning
                     alert.runModal()
                 }
-            } else {
-                try submitOrOfferBusyQueue(
-                    rendered,
-                    from: source,
-                    to: target,
-                    preserveFormatting: true
-                )
+                try? self?.refresh()
+                self?.terminalHandle.focus()
+            } catch {
+                self?.refreshStatusCenterQuietly()
+                NSAlert(error: error).runModal()
             }
-            contextPackPresented = false
-            contextPackDraft = nil
-            try refresh()
-            terminalHandle.focus()
         }
     }
 

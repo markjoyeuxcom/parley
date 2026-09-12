@@ -22,6 +22,7 @@ public enum RelayCoreError: LocalizedError {
     case socket(String)
     case malformedResponse
     case response(Int, String)
+    case mainThreadBlockingRequest(String)
 
     public var errorDescription: String? {
         switch self {
@@ -33,6 +34,8 @@ public enum RelayCoreError: LocalizedError {
             "Parley's core returned a malformed response."
         case let .response(status, detail):
             "Parley's core returned \(status): \(detail)"
+        case let .mainThreadBlockingRequest(path):
+            "Parley refused to wait on its core from the main thread (\(path)). That request can take minutes and the core delivers through the main thread, so waiting here would freeze the app. Nothing was sent."
         }
     }
 }
@@ -60,10 +63,23 @@ public struct RelayCoreClient: Sendable {
 
     /// The socket path is supplied by trusted native construction. `infoFile`
     /// names its directory only; its editable contents are never consulted.
-    public init(infoFile: URL, controlToken: String, socketFile: URL? = nil, expectedServerPID: Int32 = getpid()) {
+    /// The app's core delivers into panes through `DispatchQueue.main.sync`, so
+    /// a tracked request made from the main thread can never complete. A check
+    /// fixture whose core delivers through plain closures may opt out; the app
+    /// never does.
+    private let allowsTrackedRequestsOnMainThread: Bool
+
+    public init(
+        infoFile: URL,
+        controlToken: String,
+        socketFile: URL? = nil,
+        expectedServerPID: Int32 = getpid(),
+        allowsTrackedRequestsOnMainThread: Bool = false
+    ) {
         self.socketFile = socketFile ?? infoFile.deletingLastPathComponent().appendingPathComponent("relay.sock")
         self.controlToken = controlToken
         self.expectedServerPID = expectedServerPID
+        self.allowsTrackedRequestsOnMainThread = allowsTrackedRequestsOnMainThread
     }
 
     public func isHealthy() -> Bool {
@@ -580,6 +596,16 @@ public struct RelayCoreClient: Sendable {
         body: Data,
         receiveTimeout: TimeInterval = 3
     ) throws -> CoreHTTPResponse {
+        // A tracked request returns only after the core has delivered into a
+        // pane or an answer has arrived, and the core delivers through
+        // DispatchQueue.main.sync. A main thread parked in recv below can never
+        // service that hop: v0.1.40 froze on a context-pack Ask until it was
+        // force-quit. Refuse before touching the socket, so a call site that
+        // forgets gets an alert rather than a frozen app.
+        if receiveTimeout >= RelayCoreTransportLimits.trackedResponseTimeout, Thread.isMainThread,
+           !allowsTrackedRequestsOnMainThread {
+            throw RelayCoreError.mainThreadBlockingRequest(path)
+        }
         let socketPath = socketFile.path
 
         let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)

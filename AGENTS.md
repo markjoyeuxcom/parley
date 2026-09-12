@@ -955,6 +955,17 @@ terminal input and failed delivery as terminal `.failed`. A delivery followed
 by persistence failure must state that delivery occurred and warn against
 resending. Keep rendered packs at 90 KB and control bodies at 200 KB.
 
+Every UI control request that uses `trackedResponseTimeout` (Ask, Ask-many,
+request changes, busy-draft send, context approve and context complete) runs
+inside `Task.detached`, never on the main actor. Those requests return only
+after the core has delivered into the target pane or an answer has arrived,
+and the core delivers through `DispatchQueue.main.sync`; a main thread parked
+in `recv` can never service that hop. v0.1.40 froze on a context-pack Ask for
+exactly this reason, until the person force-quit it. `RelayCoreClient` now
+refuses a tracked request made from the main thread before it touches the
+socket, so a call site that forgets gets an alert instead of a frozen app;
+short reads such as the refresh tick stay allowed on the main thread.
+
 ## Roles and mobility
 
 Roles are owner-controlled metadata independent of display name. Use
